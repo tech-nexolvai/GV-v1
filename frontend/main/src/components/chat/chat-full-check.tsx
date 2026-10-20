@@ -202,6 +202,8 @@ export interface CloudReview {
   onUpdate: (() => void) | null;
   updating: boolean;
   failed: boolean;
+  /** #1803: when the draft was last made again from the decisions ("14:32"); null before. */
+  updatedAt?: string | null;
 }
 
 export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page = 1, totalPages = null, counts = null, proof = null, review = null, packaged = false, unsent = false }: {
@@ -310,7 +312,7 @@ export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page =
         </div>
         {review && review.total > 0 && (
           <p data-slot="chat-cloud-review" className="text-xs text-muted-foreground tabular-nums">
-            {review.decided} of {review.total} overridden{review.reviewedBy ? ` · reviewed by ${review.reviewedBy}` : ''} · optional: Agree, Not a problem or Make it Wrong below changes the drawing
+            {review.decided} of {review.total} overridden{review.reviewedBy ? ` · reviewed by ${review.reviewedBy}` : ''} · optional: open an item to add or remove a red mark, or mark it Right
           </p>
         )}
         {review?.failed && <p role="alert" className="text-sm text-muted-foreground">The cloud drawing could not be made again right now. Try again.</p>}

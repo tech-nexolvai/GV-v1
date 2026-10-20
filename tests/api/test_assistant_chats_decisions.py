@@ -180,7 +180,8 @@ def test_the_cloud_drawing_follows_the_decisions_and_keeps_older_files(postgres_
         assert "Vendor: 3'-10\"" in sheet and 'Should be: 37"' in sheet
         assert _red_near(pdf, 3, VENDOR_BOX) > 5
         assert _red_near(pdf, 4, PAGE3_BOX) == 0
-        assert "Proved by: Agreed by reviewer-one" in pages[4]
+        # The reviewer's Wrong says it is the reviewer's decision, never the login (#1803).
+        assert "Why: Decided by the reviewer" in pages[4] and "reviewer-one" not in pages[4]
         notes = " ".join(pages[5].split())
         assert "Not compared (2)" in notes and "Sink base width" not in notes
 
@@ -239,7 +240,9 @@ def test_the_csv_carries_the_decisions(postgres_engine, tmp_path) -> None:  # ty
         assert by_id["F3"]["Decision"] == ""
         # Where the zero-click cloud drawing puts each item (#1581).
         assert by_id["F1"]["Should be"] == '37" (architect, page 1)'
-        assert by_id["F1"]["Proof"].startswith("Wrong, proved by code (clouded): Agreed by")
+        assert by_id["F1"]["Proof"].startswith(
+            "Wrong, decided by the reviewer (clouded): Decided by the reviewer: =SUM(A1)"
+        )
         assert by_id["F2"]["Proof"].startswith(
             "Not compared: could not read the vendor's value on page 3. Needed:"
         )

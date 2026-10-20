@@ -96,6 +96,7 @@ from app.review.assistant.proof import (
     proof_counts,
     proof_group,
     proof_line,
+    reviewer_decided,
     should_be,
     should_be_value,
     vendor_own,
@@ -943,7 +944,9 @@ def _proof_entries(
                 body,
             ),
             Paragraph(
-                f"<b>Proved by:</b> {escape(vendor_text(proof_line(finding), 'code') or 'code')}",
+                # A Wrong the reviewer made (#1803) is the reviewer's decision, not code's proof.
+                f"<b>{'Why' if reviewer_decided(finding) else 'Proved by'}:</b> "
+                f"{escape(vendor_text(proof_line(finding), 'code') or 'code')}",
                 body,
             ),
             Paragraph(escape(f"{pages}. {item.where}"), grey),

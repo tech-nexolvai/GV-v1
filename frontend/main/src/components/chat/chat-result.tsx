@@ -71,13 +71,19 @@ export interface FullCheckResultProps {
 }
 
 export function FullCheckResult(props: FullCheckResultProps) {
-  const { findings, decisionOf, chatId, files, reviewAction, packageState, work, pictureUrl, onOpen, onRunAgain = null, review = null, summary = null, activity = null, rounds = null } = props;
+  const { decisionOf, chatId, files, reviewAction, packageState, work, pictureUrl, onOpen, onRunAgain = null, review = null, summary = null, activity = null, rounds = null } = props;
+  // The reviewer's newest decision laid onto each finding, so its row shows what it changed (#1803: the reviewer's "should be").
+  const findings = props.findings.map((finding) => {
+    const decision = decisionOf(finding);
+    return decision && decision !== finding.decision ? { ...finding, decision } : finding;
+  });
   const groups = resultGroups(findings, decisionOf);
   const [tab, setTab] = useState<ResultTab>(groups.wrong.length ? 'wrong' : groups.notCompared.length ? 'not_compared' : 'right');
   const [category, setCategory] = useState<FindingCategory | null>(null);
-  const counts: Record<ResultTab, number> = { wrong: groups.wrong.length, right: groups.right.length, not_compared: groups.notCompared.length };
-  const listOf: Record<ResultTab, ChatFinding[]> = { wrong: groups.wrong, right: groups.right, not_compared: groups.notCompared };
-  const inTab = listOf[tab].concat(tab === 'wrong' ? groups.dismissed : []);
+  // #1803: what the reviewer marked Right is Right, as the vendor's files say ("Right (reviewer)"), listed first under Right.
+  const counts: Record<ResultTab, number> = { wrong: groups.wrong.length, right: groups.right.length + groups.dismissed.length, not_compared: groups.notCompared.length };
+  const listOf: Record<ResultTab, ChatFinding[]> = { wrong: groups.wrong, right: [...groups.dismissed, ...groups.right], not_compared: groups.notCompared };
+  const inTab = listOf[tab];
   const categories = categoriesPresent(inTab);
   const shown = category ? inTab.filter((finding) => (finding.category ?? 'other') === category) : inTab;
   const filesMade = filesLine(files).count;
@@ -150,13 +156,14 @@ export function FullCheckResult(props: FullCheckResultProps) {
               : <WrongRow key={finding.id} finding={finding} number={commentNumber(finding, packageState)} pictureUrl={pictureUrl} onOpen={onOpen} />))}
           </div>
         ))}
-        {tab === 'wrong' && shown.some((finding) => groups.dismissed.includes(finding)) && (
+        {tab === 'right' && shown.some((finding) => groups.dismissed.includes(finding)) && (
           <>
-            <GroupHead words="Not a problem (your call)" count={shown.filter((finding) => groups.dismissed.includes(finding)).length} />
+            <GroupHead words="Right (your call)" note="marked Right by the reviewer" count={shown.filter((finding) => groups.dismissed.includes(finding)).length} />
             {shown.filter((finding) => groups.dismissed.includes(finding)).map((finding) => <CompactRow key={finding.id} kind="dismissed" finding={finding} onOpen={onOpen} />)}
+            {shown.some((finding) => !groups.dismissed.includes(finding)) && <GroupHead words="Right" note="matches the architect or GV’s rules" count={shown.filter((finding) => !groups.dismissed.includes(finding)).length} />}
           </>
         )}
-        {tab === 'right' && shown.map((finding) => <CompactRow key={finding.id} kind="right" finding={finding} onOpen={onOpen} />)}
+        {tab === 'right' && shown.filter((finding) => !groups.dismissed.includes(finding)).map((finding) => <CompactRow key={finding.id} kind="right" finding={finding} onOpen={onOpen} />)}
         {tab === 'not_compared' && notComparedGroups(shown).map((group) => (
           <div key={group.reason} data-slot="chat-result-reason" data-reason={group.reason}>
             <GroupHead words={group.words} count={group.findings.length} />
@@ -233,7 +240,11 @@ function ResultHead({ files, chatId, reviewAction, previewPage, onRunAgain, revi
     ? onRunAgain && <button type="button" data-slot="chat-result-run-again" onClick={onRunAgain} className={BUTTON_PRIMARY}><RotateCw className="size-4" aria-hidden="true" />Run the check again</button>
     : files.pkg ? <a data-slot="chat-package-download" href={href(files.pkg)} download={files.pkg.name} aria-label={`Download package: ${files.pkg.name}`} className={BUTTON_PRIMARY}><Download className="size-4" aria-hidden="true" />Download package</a>
       : files.cloud && <a data-slot="chat-cloud-download" href={href(files.cloud)} download={files.cloud.name} aria-label={`Download ${files.cloud.name}`} className={BUTTON_PRIMARY}><Download className="size-4" aria-hidden="true" />Download cloud drawing</a>;
-  const secondary = verdict?.draft
+  // #1803: once the draft is made again from the decisions, its download says so.
+  const updated = review?.updatedAt && !review.updating && files.pkg
+    ? <a data-slot="chat-package-download" data-updated="true" href={href(files.pkg)} download={files.pkg.name} aria-label={`Download updated draft: ${files.pkg.name}`} className={BUTTON_PRIMARY}><Download className="size-4" aria-hidden="true" />Download updated draft</a>
+    : null;
+  const secondary = updated && verdict?.draft ? null : verdict?.draft
     ? files.pkg && <a data-slot="chat-package-download" href={href(files.pkg)} download={files.pkg.name} aria-label={`Download draft package: ${files.pkg.name}`} className={BUTTON}><Download className="size-4" aria-hidden="true" />Download draft</a>
     : files.cloud && <a href={openHref(files.cloud, href(files.cloud))} target="_blank" rel="noopener noreferrer" className={BUTTON}><ExternalLink className="size-4" aria-hidden="true" />Open cloud drawing</a>;
   return (
@@ -259,19 +270,31 @@ function ResultHead({ files, chatId, reviewAction, previewPage, onRunAgain, revi
             <p data-slot="chat-review-sentence" className="max-w-prose text-[14.5px] leading-relaxed text-muted-foreground">{verdict.sentence}</p>
           </>
         )}
-        {(primary || secondary || (review?.onUpdate && review.decided > 0)) && (
+        {(primary || secondary || updated || (review?.onUpdate && review.decided > 0 && (review.failed || !review.updatedAt))) && (
           <div className="flex flex-wrap gap-2">
-            {primary}
+            {updated ?? primary}
             {secondary}
-            {review?.onUpdate && review.decided > 0 && (
-              <button type="button" data-slot="chat-cloud-update" onClick={review.onUpdate} disabled={review.updating} aria-busy={review.updating} className={cn(BUTTON, 'disabled:cursor-progress disabled:opacity-70')}>
-                <RefreshCw className={cn('size-4', review.updating && 'animate-spin motion-reduce:animate-none')} aria-hidden="true" />
-                {review.updating ? 'Updating the cloud drawing…' : 'Update cloud drawing'}
+            {/* #1803: the draft is made again by itself after each decision; the button stays as the way to try again. */}
+            {review?.onUpdate && review.decided > 0 && (review.failed || (!review.updatedAt && !review.updating)) && (
+              <button type="button" data-slot="chat-cloud-update" onClick={review.onUpdate} className={BUTTON}>
+                <RefreshCw className="size-4" aria-hidden="true" />
+                {review.failed ? 'Try again' : 'Update the draft'}
               </button>
             )}
           </div>
         )}
-        {review?.failed && <p role="alert" className="text-sm text-muted-foreground">The cloud drawing could not be made again right now. Try again.</p>}
+        {review?.updating && (
+          <p role="status" data-slot="chat-draft-line" data-state="updating" className="inline-flex items-center gap-2 text-[13px] text-muted-foreground">
+            <RefreshCw className="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+            Updating the draft…
+          </p>
+        )}
+        {!review?.updating && review?.updatedAt && !review.failed && (
+          <p role="status" data-slot="chat-draft-line" data-state="updated" className="text-[13px] text-muted-foreground">
+            Draft updated <span className="num">{review.updatedAt}</span> · the cloud drawing, letter, register and Not-compared list include what you decided
+          </p>
+        )}
+        {review?.failed && <p role="alert" data-slot="chat-draft-line" data-state="failed" className="text-sm text-muted-foreground">The draft could not be made again right now.</p>}
         {line.count > 0 && (
           <div className="grid min-w-0 gap-1 border-t pt-3">
             <button type="button" aria-expanded={filesOpen} aria-controls={filesId} onClick={() => setFilesOpen(!filesOpen)} data-slot="chat-result-files" className="inline-flex max-w-full min-w-0 items-center gap-2 rounded-md text-left text-[13px] text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
@@ -437,12 +460,12 @@ function CompactRow({ kind, finding, onOpen }: { kind: 'right' | 'not_compared' 
       onClick={() => onOpen(finding.id)}
       className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 border-t px-[18px] py-2.5 text-left transition-colors first:border-t-0 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset max-md:grid-cols-[auto_minmax(0,1fr)] max-md:px-3.5"
     >
-      <OutcomeGlyph kind={kind === 'dismissed' ? 'not_compared' : kind} className="mt-0.5" />
+      <OutcomeGlyph kind={kind === 'dismissed' ? 'right' : kind} className="mt-0.5" />
       <span className="grid min-w-0 gap-0.5">
         <span className="text-sm leading-5 font-medium text-foreground">{thing}</span>
         <Where finding={finding} />
         {kind === 'not_compared' && <span className="text-[13px] text-muted-foreground">Needs <span className="font-medium text-foreground/80">{neededWords(finding).replace(/"/g, '″')}</span></span>}
-        {kind === 'dismissed' && <span className="text-[13px] text-muted-foreground">Marked not a problem{finding.decision?.by ? ` by ${finding.decision.by}` : ''}</span>}
+        {kind === 'dismissed' && <span className="text-[13px] text-muted-foreground">Right (reviewer){finding.decision?.by ? ` · marked by ${finding.decision.by}` : ''}{finding.decision?.note ? ` · “${finding.decision.note}”` : ''}</span>}
       </span>
       <span className="num text-right text-[13.5px] whitespace-nowrap text-foreground max-md:col-start-2 max-md:text-left">
         {vendor.main}

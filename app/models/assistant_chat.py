@@ -160,6 +160,9 @@ class AssistantFindingDecision(Base, TimestampedUUID, Immutable):
     finding_id: Mapped[str] = mapped_column(String(64))
     decision: Mapped[str] = mapped_column(String(16))
     note: Mapped[str | None] = mapped_column(Text, default=None)
+    should_be: Mapped[str | None] = mapped_column(Text, default=None)
+    """What the vendor's value should be, as the reviewer gave it with an Agree (#1803): the item's
+    green "should be" on every file, also where the architect prints no value."""
     decided_by: Mapped[str] = mapped_column(String(200))
     """The principal who decided."""
     decided_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now)
@@ -169,6 +172,10 @@ class AssistantFindingDecision(Base, TimestampedUUID, Immutable):
             f"decision IN ({_listed(FINDING_DECISIONS)})", name="assistant_finding_decision_value"
         ),
         CheckConstraint("finding_id <> ''", name="assistant_finding_decision_finding"),
+        CheckConstraint(
+            "should_be IS NULL OR (decision = 'agree' AND should_be <> '')",
+            name="assistant_finding_decision_should_be",
+        ),
     )
 
 

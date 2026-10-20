@@ -297,38 +297,55 @@ describe('a full-check answer', () => {
     expect(progressWords({ created_at: '2026-10-17T10:00:00Z', findings: [], coverage: null, progress: { ...progress, phase: 'reading', pages_done: 0, drawings_done: 0, eta_seconds: null } })).toBe('Comparing drawing 1 of 36 · 2 wrong so far');
   });
 
-  it('keeps the optional override in the evidence panel, and makes the cloud drawing again from it (#1525, owner decision 3)', async () => {
+  it('offers clear overrides in the evidence panel and makes the draft again by itself (#1803)', async () => {
     const user = userEvent.setup();
-    const decide = vi.fn(async (_message: string, _finding: string, decision: string) => ({ decision, by: 'anant', at: '2026-10-17T11:00:00Z' }));
+    const decide = vi.fn(async (_message: string, _finding: string, decision: string, extra?: { note?: string; should_be?: string }) => ({ decision, by: 'anant', at: '2026-10-17T11:00:00Z', ...(extra?.should_be ? { should_be: extra.should_be } : {}), note: extra?.note || null }));
     const NEW_CLOUD: ChatFile = { ...CLOUD, id: 'f-c2', name: 'vendor-clouded-reviewed.pdf', url: '/api/v1/chats/c-1/files/f-c2' };
     const remake = vi.fn(async () => NEW_CLOUD);
     const reload = vi.fn();
     render(<AssistantMessage message={answer({ findings, files: [CLOUD, REPORT] })} chatId="c-1" models={[OPUS]} fullCheck decide={decide} remakeCloud={remake} onReload={reload} />);
     const node = screen.getByRole('article', { name: 'Answer' });
     expect(node.querySelector('[data-slot="chat-cloud-update"]')).toBeNull();
-    // A Wrong row opens the panel; "Not a problem" there takes it off the Wrong tile (listed apart).
+    // A Wrong item: "Not a mistake: remove the red mark", with an optional reason; it becomes Right (reviewer).
     await user.click(within(node).getByRole('button', { name: /^Filler, page \d+\. Open the evidence$/ }));
     const panel = await screen.findByRole('dialog');
-    await user.click(within(panel).getByRole('button', { name: 'Not a problem' }));
-    expect(decide).toHaveBeenCalledWith('msg-1', 'w2', 'not_a_problem');
+    expect(within(panel).queryByRole('button', { name: /It’s a mistake/ })).toBeNull();
+    expect(within(panel).getByText(/The red cloud and its comment come off/)).toBeTruthy();
+    await user.click(within(panel).getByRole('button', { name: 'Not a mistake: remove the red mark' }));
+    await user.type(within(panel).getByRole('textbox', { name: /Reason/ }), 'Field fit');
+    await user.click(within(panel).getByRole('button', { name: 'Remove the red mark' }));
+    expect(decide).toHaveBeenCalledWith('msg-1', 'w2', 'not_a_problem', expect.objectContaining({ note: 'Field fit' }));
     await waitFor(() => expect(tiles(node)[0]).toMatch(/^wrong:Wrong1/));
+    expect(tiles(node)[1]).toMatch(/^right:Right3/);
+    expect(within(screen.getByRole('dialog')).getByText('Right (reviewer).')).toBeTruthy();
+    // The draft is made again by itself, a moment later.
+    await waitFor(() => expect(remake).toHaveBeenCalledWith('msg-1'), { timeout: 3000 });
+    await waitFor(() => expect(screen.getByRole('dialog').querySelector('[data-slot="chat-evidence-draft"]')?.getAttribute('data-state')).toBe('updated'));
+    expect(reload).toHaveBeenCalled();
     await user.keyboard('{Escape}');
-    expect(node.querySelector('[data-slot="chat-result-list"]')?.textContent).toContain('Not a problem (your call)');
-    // A Not-compared item offers "Make it Wrong" (the Agree route): it moves to Wrong.
+    await user.click(within(node).getByRole('tab', { name: /^Right/ }));
+    expect(node.querySelector('[data-slot="chat-result-list"]')?.textContent).toContain('Right (your call)');
+    expect(node.querySelector('[data-slot="chat-draft-line"]')?.textContent).toMatch(/^Draft updated/);
+
+    // A Not-compared item: "It's a mistake: add a red mark" asks what it should be, filled in with the architect's value.
     await user.click(within(node).getByRole('tab', { name: /^Not compared/ }));
     await user.click(within(node).getByRole('button', { name: /^Island overhang, page \d+\. Open the evidence$/ }));
     const second = await screen.findByRole('dialog');
-    expect(within(second).queryByRole('button', { name: 'Not a problem' })).toBeNull();
-    await user.click(within(second).getByRole('button', { name: 'Make it Wrong' }));
-    expect(decide).toHaveBeenCalledWith('msg-1', 'k1', 'agree');
+    expect(within(second).queryByRole('button', { name: /remove the red mark/ })).toBeNull();
+    expect(within(second).getByRole('button', { name: 'It’s fine: mark Right' })).toBeTruthy();
+    await user.click(within(second).getByRole('button', { name: 'It’s a mistake: add a red mark' }));
+    const value = within(second).getByRole('textbox', { name: 'Should be' });
+    expect((value as HTMLInputElement).value).toBe('24"');
+    await user.clear(value);
+    expect(within(second).getByRole('button', { name: 'Add the red mark' }).hasAttribute('disabled')).toBe(true);
+    await user.type(value, '12"');
+    await user.click(within(second).getByRole('button', { name: 'Add the red mark' }));
+    expect(decide).toHaveBeenCalledWith('msg-1', 'k1', 'agree', expect.objectContaining({ should_be: '12"' }));
     await waitFor(() => expect(tiles(node)[0]).toMatch(/^wrong:Wrong2/));
-    await user.keyboard('{Escape}');
-
-    await user.click(within(node).getByRole('button', { name: 'Update cloud drawing' }));
-    expect(remake).toHaveBeenCalledWith('msg-1');
-    await waitFor(() => expect(within(node).getByRole('link', { name: 'Open the cloud drawing' }).getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-c2?inline=true'));
-    expect(reload).toHaveBeenCalled();
-  });
+    expect([...screen.getByRole('dialog').querySelectorAll('[data-slot="chat-evidence-side"] figcaption')].map((caption) => caption.textContent)).toContain('Should be12″');
+    expect(within(screen.getByRole('dialog')).getByText('Wrong (reviewer).')).toBeTruthy();
+    await waitFor(() => expect(remake).toHaveBeenCalledTimes(2), { timeout: 3000 });
+  }, 20_000);
 
   it('the evidence panel shows both values large and the spot boxed on the vendor’s page picture (#1717)', async () => {
     const user = userEvent.setup();
@@ -348,16 +365,18 @@ describe('a full-check answer', () => {
   it('takes an override back when the server refuses it', async () => {
     const user = userEvent.setup();
     const decide = vi.fn(async () => { throw new Error('409'); });
-    render(<AssistantMessage message={answer({ findings, files: [CLOUD] })} chatId="c-1" models={[OPUS]} fullCheck decide={decide} remakeCloud={vi.fn()} />);
+    const remake = vi.fn();
+    render(<AssistantMessage message={answer({ findings, files: [CLOUD] })} chatId="c-1" models={[OPUS]} fullCheck decide={decide} remakeCloud={remake} />);
     const node = screen.getByRole('article', { name: 'Answer' });
     await user.click(within(node).getByRole('button', { name: /^Sink base width, page \d+\. Open the evidence$/ }));
     const panel = await screen.findByRole('dialog');
-    const button = within(panel).getByRole('button', { name: 'Not a problem' });
-    await user.click(button);
+    await user.click(within(panel).getByRole('button', { name: 'Not a mistake: remove the red mark' }));
+    await user.click(within(panel).getByRole('button', { name: 'Remove the red mark' }));
     // Said in the panel itself: the page behind an open panel is hidden.
     await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('alert').textContent).toBe('Your answer was not saved. Try again.'));
-    expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Not a problem' }).getAttribute('aria-pressed')).toBe('false');
+    expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Not a mistake: remove the red mark' })).toBeTruthy();
     expect(tiles(node)[0]).toMatch(/^wrong:Wrong2/);
+    expect(remake).not.toHaveBeenCalled();
   });
 
   it('the question’s bubble names the full check, its products and effort', () => {

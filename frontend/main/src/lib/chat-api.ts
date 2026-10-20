@@ -276,8 +276,16 @@ export type FindingDecisionValue = 'agree' | 'not_a_problem';
 export interface FindingDecision {
   decision: FindingDecisionValue;
   note?: string | null;
+  /** #1803: with an Agree, what the reviewer says the vendor's value should be (the green "should be"). */
+  should_be?: string | null;
   by?: string | null;
   at?: string | null;
+}
+
+/** #1803: what the reviewer adds to a decision: a note (the vendor reads it) and, with an Agree, the value it should be. */
+export interface FindingDecisionExtra {
+  note?: string | null;
+  should_be?: string | null;
 }
 
 export type ChatBlock =
@@ -1072,9 +1080,14 @@ export const chatPaths = {
     `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/findings/${id(findingId)}/decision`,
 };
 
-/** Record the reviewer's Agree / Not a problem on one finding; the server answers with who and when. */
-export function decideFinding(chatId: string, messageId: string, findingId: string, decision: FindingDecisionValue, note?: string): Promise<FindingDecision> {
-  return json<FindingDecision>(chatPaths.decision(chatId, messageId, findingId), { method: 'POST', body: JSON.stringify(note ? { decision, note } : { decision }) });
+/** Record the reviewer's Agree / Not a problem on one finding (with its note and, for an Agree, the value it should be); the server answers with who and when. */
+export function decideFinding(chatId: string, messageId: string, findingId: string, decision: FindingDecisionValue, extra?: FindingDecisionExtra): Promise<FindingDecision> {
+  const note = extra?.note?.trim();
+  const shouldBe = decision === 'agree' ? extra?.should_be?.trim() : '';
+  return json<FindingDecision>(chatPaths.decision(chatId, messageId, findingId), {
+    method: 'POST',
+    body: JSON.stringify({ decision, ...(note ? { note } : {}), ...(shouldBe ? { should_be: shouldBe } : {}) }),
+  });
 }
 
 // ── Requests ────────────────────────────────────────────────

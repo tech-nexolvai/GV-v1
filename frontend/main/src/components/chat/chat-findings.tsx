@@ -3,7 +3,7 @@ import { Check, ChevronRight, CircleAlert, ExternalLink, ImageOff, Maximize2, X 
 
 import { RoundChip } from '@/components/chat/chat-trust';
 import { useMediaQuery } from '@/hooks/use-media-query';
-import type { ChatFinding, ChatResolver, ChatResolverEntry, FindingCategory, FindingDecisionValue, FindingStatus, SettledOutcome } from '@/lib/chat-api';
+import type { ChatFinding, ChatResolver, ChatResolverEntry, FindingCategory, FindingDecision, FindingDecisionExtra, FindingDecisionValue, FindingStatus, SettledOutcome } from '@/lib/chat-api';
 import {
   alsoOnWords,
   architectPage,
@@ -245,7 +245,9 @@ function LargePicture({ src, label, page, box, tone, onOpen }: {
 export interface DecisionProps {
   /** The reviewer's answer on this finding (saved, or just given). */
   decision: FindingDecisionValue | null;
-  onDecide: (decision: FindingDecisionValue) => void;
+  /** #1803: the whole decision (its note and "should be"), when there is one. */
+  saved?: FindingDecision | null;
+  onDecide: (decision: FindingDecisionValue, extra?: FindingDecisionExtra) => void;
   busy?: boolean;
 }
 

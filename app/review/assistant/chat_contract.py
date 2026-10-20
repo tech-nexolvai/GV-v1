@@ -483,12 +483,27 @@ type ChatDecision = Literal["agree", "not_a_problem"]
 
 
 class ChatFindingDecisionIn(BaseModel):
-    """The reviewer's ✓ Agree / ✗ Not a problem on one finding (#1521)."""
+    """The reviewer's ✓ Agree / ✗ Not a problem on one finding (#1521). On the screen (#1803): an
+    Agree is "It's a mistake: add a red mark", a Not a problem is "It's fine: mark Right" or "Not
+    a mistake: remove the red mark" (the item is Right, noted "(reviewer)")."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     decision: ChatDecision
     note: str | None = Field(default=None, max_length=2000)
+    should_be: str | None = Field(
+        default=None,
+        max_length=80,
+        description="With an Agree only: what the vendor's value should be, as the reviewer "
+        "gives it (the green \"should be\" on the cloud drawing, the letter and the register). "
+        "Empty or left out: what code knows (the architect's value).",
+    )
+
+    @model_validator(mode="after")
+    def _should_be_with_agree(self) -> ChatFindingDecisionIn:
+        if self.should_be is not None and self.should_be.strip() and self.decision != "agree":
+            raise ValueError("should_be goes with an agree only")
+        return self
 
 
 class ChatFindingDecisionOut(BaseModel):
@@ -498,6 +513,7 @@ class ChatFindingDecisionOut(BaseModel):
 
     decision: ChatDecision
     note: str | None = None
+    should_be: str | None = None
     by: str
     at: datetime
 
@@ -619,7 +635,7 @@ class ChatFindingProofOut(BaseModel):
         description="clouded: Wrong, proved by code (red cloud); right; not_compared: could not be "
         "compared under the architect-first rules (#1619: listed with its reason in the "
         "Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer "
-        "marked it not a problem."
+        "marked it Right (Not a problem; the vendor's files say 'Right (reviewer)')."
     )
     should_be: str | None = Field(
         default=None,

@@ -13,7 +13,7 @@ import { FullCheckResult } from '@/components/chat/chat-result';
 import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState } from '@/components/chat/chat-motion';
-import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionValue } from '@/lib/chat-api';
+import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionExtra, type FindingDecisionValue } from '@/lib/chat-api';
 import { coverageCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
 import { fullCheckBubble, fullCheckFiles, withoutCodeNote } from '@/lib/chat-full-check';
 import { commentNumber, resultGroups } from '@/lib/chat-result';
@@ -311,8 +311,8 @@ export interface AssistantMessageProps {
    * trust summary → coverage.
    */
   fullCheck?: boolean;
-  /** #1522 (PATH step 5): record the reviewer's Agree / Not a problem on a finding. */
-  decide?: (messageId: string, findingId: string, decision: FindingDecisionValue) => Promise<unknown>;
+  /** #1522 (PATH step 5): record the reviewer's Agree / Not a problem on a finding (#1803: with its note and the value it should be). */
+  decide?: (messageId: string, findingId: string, decision: FindingDecisionValue, extra?: FindingDecisionExtra) => Promise<unknown>;
   /** #1525: make the cloud drawing again from the reviewer's decisions; returns the new drawing. */
   remakeCloud?: (messageId: string) => Promise<ChatFile>;
   /** #1578: a finding of this answer to open in the evidence viewer at once (the job tracker's link). */
@@ -411,16 +411,55 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   // The viewer's arrows step through the findings in the order the sections show them.
   const ordered = architectView ? (() => {
     const groups = resultGroups(findings, decisionOf);
-    return [...groups.wrong, ...groups.dismissed, ...groups.notCompared, ...groups.right];
+    return [...groups.wrong, ...groups.notCompared, ...groups.dismissed, ...groups.right];
   })() : sectionOrder(shown, filter);
+  // #1803: after each saved decision of a full check, the draft (cloud drawing, letter, register,
+  // Not-compared list, package) is made again by itself, a moment later so quick decisions share one
+  // remake; decisions saved while it runs make it once more after.
+  const [remakeWanted, setRemakeWanted] = useState(0);
+  const [remakeDone, setRemakeDone] = useState(0);
+  const [remakeRunning, setRemakeRunning] = useState(false);
+  const [remakeFailed, setRemakeFailed] = useState(false);
+  const [draftAt, setDraftAt] = useState<Date | null>(null);
+  // The page's functions change on every render; the timer reads the newest ones.
+  const latestRemake = useRef({ remakeCloud, onReload });
+  useEffect(() => { latestRemake.current = { remakeCloud, onReload }; });
+  const canRemake = Boolean(remakeCloud && messageId);
+  useEffect(() => {
+    if (!canRemake || !messageId || remakeWanted === remakeDone || remakeRunning || remakeFailed) return undefined;
+    const target = remakeWanted;
+    const timer = setTimeout(() => {
+      const { remakeCloud: remake, onReload: reload } = latestRemake.current;
+      if (!remake) return;
+      setRemakeRunning(true);
+      remake(messageId).then(
+        (file) => {
+          setMadeFiles((known) => (known.some((each) => each.id === file.id) ? known : [...known, file]));
+          // The new letter, register, list and package are added to the message's files on the server: read the chat again.
+          reload?.();
+          setDraftAt(new Date());
+          setRemakeDone(target);
+        },
+        () => setRemakeFailed(true),
+      ).finally(() => setRemakeRunning(false));
+    }, REMAKE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [canRemake, messageId, remakeWanted, remakeDone, remakeRunning, remakeFailed]);
+  const askRemake = () => { setRemakeFailed(false); setRemakeWanted((count) => count + 1); };
+  const cloudState: 'idle' | 'updating' | 'failed' = remakeFailed ? 'failed' : remakeRunning || remakeWanted !== remakeDone ? 'updating' : 'idle';
   const decisionFor = finished && !decisionsOff && decide && messageId ? (finding: ChatFinding): DecisionProps => ({
     decision: decisionOf(finding)?.decision ?? null,
-    onDecide: (decision) => {
+    saved: decisionOf(finding),
+    onDecide: (decision, extra) => {
       const before = decisions[finding.id];
       setDecideFailed(null);
-      setDecisions((now) => ({ ...now, [finding.id]: { ...(now[finding.id] ?? finding.decision ?? {}), decision } }));
-      decide(messageId, finding.id, decision).then(
-        (saved) => setDecisions((now) => ({ ...now, [finding.id]: isDecision(saved) ? saved : { decision } })),
+      const laid: FindingDecision = { ...(decisions[finding.id] ?? finding.decision ?? {}), decision, note: extra?.note?.trim() || null, should_be: decision === 'agree' ? extra?.should_be?.trim() || null : null };
+      setDecisions((now) => ({ ...now, [finding.id]: laid }));
+      (extra ? decide(messageId, finding.id, decision, extra) : decide(messageId, finding.id, decision)).then(
+        (saved) => {
+          setDecisions((now) => ({ ...now, [finding.id]: isDecision(saved) ? saved : laid }));
+          if (fullCheck && remakeCloud) askRemake();
+        },
         (error: unknown) => {
           const status = error instanceof ApiError ? error.status : null;
           if (status === 404 || status === 405) setDecisionsOff(true);
@@ -440,19 +479,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   // #1525: "12 of 43 decided", and the cloud drawing made again from the answers.
   const decidedCount = actionable.filter((finding) => decisionOf(finding)).length;
   const deciders = [...new Set(actionable.map((finding) => decisionOf(finding)?.by).filter((by): by is string => Boolean(by)))];
-  const [cloudState, setCloudState] = useState<'idle' | 'updating' | 'failed'>('idle');
-  const updateCloud = remakeCloud && messageId && decisionFor ? () => {
-    setCloudState('updating');
-    remakeCloud(messageId).then(
-      (file) => {
-        setCloudState('idle');
-        setMadeFiles((known) => (known.some((each) => each.id === file.id) ? known : [...known, file]));
-        // The new check report is added to the message's files on the server: read the chat again.
-        onReload?.();
-      },
-      () => setCloudState('failed'),
-    );
-  } : null;
+  const updateCloud = decisionFor && remakeCloud && messageId ? askRemake : null;
   const review: CloudReview | null = decisionFor ? {
     decided: decidedCount,
     total: actionable.length,
@@ -460,6 +487,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
     onUpdate: updateCloud,
     updating: cloudState === 'updating',
     failed: cloudState === 'failed',
+    updatedAt: draftAt ? clockWords(draftAt) : null,
   } : null;
 
   // The task list sits inside the activity timeline, at its newest update (the last task step);
@@ -615,6 +643,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           decisionFor={resultShown ? decisionFor : null}
           numberOf={resultShown ? (finding) => commentNumber(finding, message.package_state) : null}
           notice={decideFailed}
+          draft={resultShown && review ? { updating: review.updating, failed: review.failed, updatedAt: review.updatedAt, pkg: made.pkg, href: made.pkg ? made.pkg.url || chatPaths.file(chatId, made.pkg.id) : null, onRetry: review.onUpdate } : null}
         />
       )}
       {finished && !resultShown && (
@@ -731,4 +760,12 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       )}
     </article>
   );
+}
+
+/** #1803: how long after a decision the draft is made again (quick decisions share one remake). */
+const REMAKE_DELAY_MS = 1200;
+
+/** "14:32": the time the draft was made again, on the reviewer's clock. */
+function clockWords(at: Date): string {
+  return at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }

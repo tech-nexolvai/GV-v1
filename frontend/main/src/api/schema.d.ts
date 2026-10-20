@@ -161,7 +161,8 @@ export interface paths {
          *     red clouds at the Wrong items code proved and at every agreed item, none at an item marked not
          *     a problem; the rest listed in grey; stamped "Checked automatically by GV Review: <date>, and
          *     reviewed by <name>". A new cloud drawing and check report each time (older files are kept),
-         *     and for a full check a new send-ready package (#1622); returns the cloud drawing.
+         *     and for a full check a new send-ready package (#1622) and Not-compared list (#1803: the items
+         *     the reviewer decided leave it); returns the cloud drawing.
          */
         post: operations["cloud_drawing_api_v1_chats__chat_id__messages__message_id__cloud_drawing_post"];
         delete?: never;
@@ -4747,12 +4748,19 @@ export interface components {
         };
         /**
          * ChatFindingDecisionIn
-         * @description The reviewer's ✓ Agree / ✗ Not a problem on one finding (#1521).
+         * @description The reviewer's ✓ Agree / ✗ Not a problem on one finding (#1521). On the screen (#1803): an
+         *     Agree is "It's a mistake: add a red mark", a Not a problem is "It's fine: mark Right" or "Not
+         *     a mistake: remove the red mark" (the item is Right, noted "(reviewer)").
          */
         ChatFindingDecisionIn: {
             decision: components["schemas"]["ChatDecision"];
             /** Note */
             note?: string | null;
+            /**
+             * Should Be
+             * @description With an Agree only: what the vendor's value should be, as the reviewer gives it (the green "should be" on the cloud drawing, the letter and the register). Empty or left out: what code knows (the architect's value).
+             */
+            should_be?: string | null;
         };
         /**
          * ChatFindingDecisionOut
@@ -4769,6 +4777,8 @@ export interface components {
             decision: components["schemas"]["ChatDecision"];
             /** Note */
             note?: string | null;
+            /** Should Be */
+            should_be?: string | null;
         };
         /**
          * ChatFindingDimOut
@@ -5090,7 +5100,7 @@ export interface components {
         ChatFindingProofOut: {
             /**
              * Group
-             * @description clouded: Wrong, proved by code (red cloud); right; not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it not a problem.
+             * @description clouded: Wrong, proved by code (red cloud); right; not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').
              * @enum {string}
              */
             group: "clouded" | "right" | "not_compared" | "dismissed";

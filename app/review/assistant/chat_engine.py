@@ -982,6 +982,8 @@ class ChatEngine:
         #: findings (an architect that gives no size), for the Not-compared PDF and workbook.
         self.incomplete_note: str | None = None
         self.extra_gaps: list[dict[str, Any]] = []
+        #: The set's gaps the Not-compared list named, once it is made (#1803).
+        self._set_gaps: list[Any] | None = None
         #: A full check's live state for the live screen (`live_check.LiveCheck`, #1710), set by
         #: `chat_service`; the simple check reports its drawings, phases and decisions to it.
         self.live: Any = None
@@ -2895,6 +2897,10 @@ class ChatEngine:
             _log.info("assistant chat: %d set gaps outside the product scope left out", left_out)
         listed = self._not_compared_files([*nothing, *not_compared.gap_rows(set_gaps)])
         names += [name for name, _path in listed]
+        if listed:
+            # Kept with the package block, so the list can be made again after the reviewer's
+            # decisions with the same set-level rows (#1803).
+            self._set_gaps = json.loads(json.dumps(list(set_gaps), default=str))
         # The send-ready package (#1622) holds every file just made, the Not-compared list too.
         context = worked.get("context")
         if context is not None and any(what == "cloud drawing" for what, _name, _path in kept):
@@ -2965,7 +2971,10 @@ class ChatEngine:
                 )
             register(file_id, made.name, made.size, ZIP_MIME, made.sha256)
             # What the screen (the review result) and a remade package read again.
-            self._add_block({"type": "package", "package": context.block()})
+            stored = context.block()
+            if self._set_gaps is not None:
+                stored = {**stored, "set_gaps": self._set_gaps}
+            self._add_block({"type": "package", "package": stored})
         except Exception as failed:  # noqa: BLE001 - told plainly in the answer
             _log.warning("assistant chat package failed: %s", type(failed).__name__)
             out.unlink(missing_ok=True)

@@ -54,6 +54,8 @@ __all__ = [
     "NO_REQUIREMENT_REASON",
     "PAIRING_REASON",
     "PROTOTYPE_PROOF",
+    "REVIEWER",
+    "REVIEWER_WRONG",
     "RULE_LINE",
     "TWO_READS",
     "ProofGroup",
@@ -63,6 +65,7 @@ __all__ = [
     "code_proved",
     "could_not_compare_reason",
     "governs",
+    "group_words",
     "needs_pairing",
     "no_stated_requirement",
     "pairing_proved",
@@ -70,6 +73,9 @@ __all__ = [
     "proof_group",
     "proof_line",
     "proof_of",
+    "reviewer_decided",
+    "reviewer_should_be",
+    "reviewer_wrong",
     "scaled",
     "should_be",
     "should_be_value",
@@ -88,8 +94,19 @@ GROUP_WORDS: Final[Mapping[str, str]] = {
     "clouded": "Wrong, proved by code (clouded)",
     "right": "Right",
     "not_compared": "Not compared",
-    "dismissed": "Not a problem (reviewer)",
+    "dismissed": "Right (reviewer)",
 }
+#: A Wrong the reviewer made (#1803), as the report and the CSV name its group.
+REVIEWER_CLOUDED_WORDS: Final = "Wrong, decided by the reviewer (clouded)"
+
+
+def group_words(finding: Mapping[str, Any], group: str) -> str:
+    """The group's words for this item (`GROUP_WORDS`); a Wrong the reviewer made says so."""
+    if group == "clouded" and reviewer_decided(finding):
+        return REVIEWER_CLOUDED_WORDS
+    return GROUP_WORDS[group]
+
+
 #: The rule, in one line, on the drawing's cover and the report.
 RULE_LINE: Final = (
     "The architect's drawings govern. Only differences code proved are clouded in red (GV's rule, "
@@ -180,6 +197,23 @@ def _decided(finding: Mapping[str, Any]) -> str | None:
     if isinstance(decision, Mapping) and decision.get("decision"):
         return str(decision["decision"])
     return None
+
+
+def reviewer_should_be(finding: Mapping[str, Any]) -> str | None:
+    """The value the reviewer said it should be with an Agree (#1803, "It's a mistake: add a red
+    mark"), as the vendor may read it; `None` without one."""
+    decision = finding.get("decision")
+    if _decided(finding) != "agree" or not isinstance(decision, Mapping):
+        return None
+    return vendor_text(decision.get("should_be")) or None
+
+
+def reviewer_decided(finding: Mapping[str, Any]) -> bool:
+    """A Wrong the reviewer made (an Agree) that code did not prove by itself: its proof is the
+    reviewer's decision (#1803)."""
+    return _decided(finding) == "agree" and not (
+        finding.get("status") == "different" and code_proved(finding)
+    )
 
 
 def _witnesses(finding: Mapping[str, Any]) -> list[str]:
@@ -314,6 +348,9 @@ def stated_requirement(finding: Mapping[str, Any]) -> str | None:
     value = vendor_text(should_be_value(finding))
     if not value:
         return None
+    if reviewer_should_be(finding) is not None:
+        # The reviewer said what it should be (#1803): the reviewer is the witness.
+        return value
     if any(ch.isdigit() for ch in value) or "text" in _witnesses(finding):
         # A size, or a finish code read from the drawing's text (#1623).
         return value
@@ -359,16 +396,17 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
         return "not_compared"  # GV's reviewer only (#1652): never clouded, whoever clicks
     status = finding.get("status")
     decided = _decided(finding)
-    if status in ("different", "check"):
-        # Agreed = clouded, when the vendor can be told what it should be (#1622: a comment with
-        # no stated requirement is never sent).
-        if decided == "agree" and stated_requirement(finding) is not None:
-            return "clouded"
-        if decided == "not_a_problem":
-            return "dismissed"
-    if status == "different" and code_proved(finding):
+    proved = status == "different" and code_proved(finding)
+    if not proved and classified(finding).outcome == "right":
+        return "right"  # compared and Right: nothing to override
+    # The reviewer's decision on any other item (#1803: a Not-compared item whose two values look
+    # the same can be decided too). Agreed = clouded, when the vendor can be told what it should
+    # be (#1622: a comment with no stated requirement is never sent; the reviewer can give one).
+    if decided == "agree" and stated_requirement(finding) is not None:
         return "clouded"
-    return "right" if classified(finding).outcome == "right" else "not_compared"
+    if decided == "not_a_problem":
+        return "dismissed"
+    return "clouded" if proved else "not_compared"
 
 
 def classified(finding: Mapping[str, Any]) -> classification.Classified:
@@ -453,6 +491,11 @@ def should_be_value(finding: Mapping[str, Any]) -> str:
     """Just the value the vendor's should be: code's inches of the governing value when it read
     one (`37"`, `80 1/8"`), GV's limits when they settled it (`1" to 2"`), else that value as
     printed."""
+    given = reviewer_should_be(finding)
+    if given is not None:
+        # The reviewer's value (#1803), written as code writes it when it is the same value.
+        known = _code_should_be(finding)
+        return known if _same_value(known) == _same_value(given) else given
     limits = _gv_limits(finding)
     if limits is not None:
         return limits
@@ -469,6 +512,23 @@ def should_be_value(finding: Mapping[str, Any]) -> str:
     return _short(finding.get("architect"))
 
 
+#: Who governs a value the reviewer gave (#1803), as every file says it: "24" (reviewer)".
+REVIEWER: Final = "reviewer"
+
+
+def _same_value(text: str) -> str:
+    """A value as compared with another: no spaces, one kind of inch and foot mark."""
+    return "".join(text.split()).replace("″", '"').replace("′", "'").replace("”", '"').lower()
+
+
+def _code_should_be(finding: Mapping[str, Any]) -> str:
+    """`should_be_value` without the reviewer's own value: what code knows."""
+    decision = finding.get("decision")
+    if isinstance(decision, Mapping) and decision.get("should_be"):
+        finding = {**finding, "decision": {**decision, "should_be": None}}
+    return should_be_value(finding)
+
+
 def architect_file(finding: Mapping[str, Any]) -> str | None:
     """The architect's file when it is not the vendor's (separate PDFs, #1722): the name its spot
     is in, so "page 1" is never read as the vendor's page 1. `None` on GV's combined sheets."""
@@ -482,6 +542,10 @@ def architect_file(finding: Mapping[str, Any]) -> str | None:
 def governs(finding: Mapping[str, Any]) -> str:
     """What governs the value, named plainly with where it is printed: "architect 3'-1", page 28",
     "GV rule", "brand prototype 24", page 40", "the vendor's own parts (printed 80")"."""
+    given = reviewer_should_be(finding)
+    if given is not None and _same_value(given) != _same_value(_code_should_be(finding)):
+        # The reviewer gave a value code does not know (#1803).
+        return REVIEWER
     source = str(finding.get("source") or "architect")
     words = _SOURCE_WORDS.get(source, source.replace("_", " "))
     architect = _short(finding.get("architect"), 60)
@@ -530,9 +594,10 @@ def proof_line(finding: Mapping[str, Any]) -> str:
     by code", "parts add up to 80 1/8", printed 80"", GV's limits, "agreed by Anant". What code
     settled by itself (#1554) is said in the resolver's own words."""
     parts: list[str] = []
-    decision = finding.get("decision")
-    if _decided(finding) == "agree" and isinstance(decision, Mapping):
-        parts.append(f"agreed by {decision.get('by') or 'the reviewer'}")
+    if _decided(finding) == "agree":
+        # The reviewer's decision (#1803), with the reviewer's note when the vendor may read it;
+        # never the reviewer's login (the letter's "reviewed by" names the people).
+        parts.append(reviewer_wrong(finding))
     how = _settled_how(finding)
     witnesses = _witnesses(finding)
     if needs_pairing(finding) and pairing_proved(finding):
@@ -567,6 +632,19 @@ def proof_line(finding: Mapping[str, Any]) -> str:
     return text[0].upper() + text[1:]
 
 
+def reviewer_wrong(finding: Mapping[str, Any]) -> str:
+    """ "decided by the reviewer", with the reviewer's note when the vendor may read it (#1803;
+    the Right side is `vendor_text.reviewer_right`)."""
+    decision = finding.get("decision")
+    note = decision.get("note") if isinstance(decision, Mapping) else None
+    words = vendor_text(note, "") if note else ""
+    return f"{REVIEWER_WRONG}: {words}" if words else REVIEWER_WRONG
+
+
+#: The reviewer's Agree as every file says it (#1803).
+REVIEWER_WRONG: Final = "decided by the reviewer"
+
+
 def could_not_compare_reason(finding: Mapping[str, Any]) -> str:
     """Why an item code could not settle could not be compared, in one line ("the architect prints
     no size here"): the resolver's reason, else the check reason, else its question or why."""
@@ -599,7 +677,7 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
             # A GV rule result with nothing the vendor can act on (#1622).
             reason = NO_REQUIREMENT_REASON
     elif group == "dismissed":
-        reason = "The reviewer marked it not a problem."
+        reason = "The reviewer marked it Right."
     return {
         "group": group,
         "should_be": should_be(finding) if wrong else None,

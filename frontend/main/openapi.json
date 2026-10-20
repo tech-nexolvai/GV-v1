@@ -4524,7 +4524,7 @@
       },
       "ChatFindingDecisionIn": {
         "additionalProperties": false,
-        "description": "The reviewer's \u2713 Agree / \u2717 Not a problem on one finding (#1521).",
+        "description": "The reviewer's \u2713 Agree / \u2717 Not a problem on one finding (#1521). On the screen (#1803): an\nAgree is \"It's a mistake: add a red mark\", a Not a problem is \"It's fine: mark Right\" or \"Not\na mistake: remove the red mark\" (the item is Right, noted \"(reviewer)\").",
         "properties": {
           "decision": {
             "$ref": "#/components/schemas/ChatDecision"
@@ -4540,6 +4540,19 @@
               }
             ],
             "title": "Note"
+          },
+          "should_be": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With an Agree only: what the vendor's value should be, as the reviewer gives it (the green \"should be\" on the cloud drawing, the letter and the register). Empty or left out: what code knows (the architect's value).",
+            "title": "Should Be"
           }
         },
         "required": [
@@ -4573,6 +4586,17 @@
               }
             ],
             "title": "Note"
+          },
+          "should_be": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Should Be"
           }
         },
         "required": [
@@ -5446,7 +5470,7 @@
         "description": "Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read\n(`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a\nproblem override.",
         "properties": {
           "group": {
-            "description": "clouded: Wrong, proved by code (red cloud); right; not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it not a problem.",
+            "description": "clouded: Wrong, proved by code (red cloud); right; not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').",
             "enum": [
               "clouded",
               "right",
@@ -23696,7 +23720,7 @@
     },
     "/api/v1/chats/{chat_id}/messages/{message_id}/cloud-drawing": {
       "post": {
-        "description": "The zero-click cloud drawing made again with the reviewer's decisions as overrides (#1581):\nred clouds at the Wrong items code proved and at every agreed item, none at an item marked not\na problem; the rest listed in grey; stamped \"Checked automatically by GV Review: <date>, and\nreviewed by <name>\". A new cloud drawing and check report each time (older files are kept),\nand for a full check a new send-ready package (#1622); returns the cloud drawing.",
+        "description": "The zero-click cloud drawing made again with the reviewer's decisions as overrides (#1581):\nred clouds at the Wrong items code proved and at every agreed item, none at an item marked not\na problem; the rest listed in grey; stamped \"Checked automatically by GV Review: <date>, and\nreviewed by <name>\". A new cloud drawing and check report each time (older files are kept),\nand for a full check a new send-ready package (#1622) and Not-compared list (#1803: the items\nthe reviewer decided leave it); returns the cloud drawing.",
         "operationId": "cloud_drawing_api_v1_chats__chat_id__messages__message_id__cloud_drawing_post",
         "parameters": [
           {

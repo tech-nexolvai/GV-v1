@@ -52,7 +52,7 @@ import os
 import signal
 import threading
 import uuid
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
@@ -99,6 +99,7 @@ from app.review.assistant.chat_contract import (
     ChatOut,
 )
 from app.review.assistant.chat_corrections import corrections_by_answer, with_corrections
+from app.review.assistant.not_compared import XLSX_MIME
 from app.review.assistant.chat_decisions import (
     decided_findings,
     decided_summary,
@@ -939,9 +940,12 @@ def decide_finding(
         decision=body.decision,
         note=body.note,
         decided_by=principal.id,
+        should_be=body.should_be,
     )
     # The set's memory (#1548): every later chat on the set knows what the reviewer decided.
-    text, page = decision_note(finding, body.decision, principal.id, body.note)
+    text, page = decision_note(
+        finding, body.decision, principal.id, body.note, should_be=decided.should_be
+    )
     chat = session.get(AssistantChat, chat_id)
     if chat is not None:
         add_note(
@@ -983,7 +987,8 @@ def cloud_drawing(
     red clouds at the Wrong items code proved and at every agreed item, none at an item marked not
     a problem; the rest listed in grey; stamped "Checked automatically by GV Review: <date>, and
     reviewed by <name>". A new cloud drawing and check report each time (older files are kept),
-    and for a full check a new send-ready package (#1622); returns the cloud drawing."""
+    and for a full check a new send-ready package (#1622) and Not-compared list (#1803: the items
+    the reviewer decided leave it); returns the cloud drawing."""
     chat, package = _chat(session, chat_id, principal)
     _not_running(registry, chat_id, message_id)
     row = _answer(session, chat_id, message_id)
@@ -1018,6 +1023,14 @@ def cloud_drawing(
     # A full check's send-ready package is made again too (#1622), from the same list.
     if row.mode == "full_check":
         scratch[package_id] = workspace.files / f"{package_id}.partial"
+    # And its Not-compared PDF and workbook (#1803: an item the reviewer decided leaves the
+    # list), when the check kept the set's own gaps to list again; an older answer keeps its list.
+    stored = package_block(row.blocks) or {}
+    set_gaps = stored.get("set_gaps") if row.mode == "full_check" else None
+    list_ids = (uuid4(), uuid4())
+    if isinstance(set_gaps, list):
+        for file_id in list_ids:
+            scratch[file_id] = workspace.files / f"{file_id}.partial"
     try:
         made = make_decided_files(
             workspace,
@@ -1028,12 +1041,16 @@ def cloud_drawing(
             scratch[report_id],
             settled=resolver_settled(row.blocks),
             package_out=scratch.get(package_id),
-            extra=_not_compared_files(session, workspace, message_id),
+            extra=[] if isinstance(set_gaps, list) else _not_compared_files(
+                session, workspace, message_id
+            ),
             identity=package_identity(session, package, tuple(row.products or ())),
             numbers=stored_numbers(session, package.id, message_id),
-            incomplete=CheckState.from_dict(
-                (package_block(row.blocks) or {}).get("state")
-            ).incomplete,
+            incomplete=CheckState.from_dict(stored.get("state")).incomplete,
+            not_compared_out=(
+                (scratch[list_ids[0]], scratch[list_ids[1]]) if isinstance(set_gaps, list) else None
+            ),
+            set_gaps=[gap for gap in set_gaps or [] if isinstance(gap, Mapping)],
         )
     except LookupError:
         raise CodedHTTPException(
@@ -1050,6 +1067,12 @@ def cloud_drawing(
         (drawing_id, made.drawing, "application/pdf"),
         (report_id, made.report, "application/pdf"),
     ]
+    if made.not_compared is not None:
+        pdf, sheet = made.not_compared
+        kept.append((list_ids[0], pdf, "application/pdf"))
+        kept.append(
+            (list_ids[1], sheet, XLSX_MIME if sheet.name.endswith(".xlsx") else "text/csv")
+        )
     if made.package is not None:
         kept.append((package_id, made.package, ZIP_MIME))
     for file_id, file, mime in kept:
