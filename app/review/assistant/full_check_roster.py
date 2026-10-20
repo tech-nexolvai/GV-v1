@@ -2602,7 +2602,7 @@ class _Run:
                 if extent[0] in ("same_extent", "cannot_tell"):
                     # Geometry that shows different points spends no call (#1641). Where it cannot
                     # tell (a sheet not to scale), the stronger model makes the blind pick, as the
-                    # simple check's blind look (#1819: Raj's template, two planted mistakes
+                    # simple check's blind look (#1819: a cabinet template, two planted mistakes
                     # stayed grey here and were red in the simple check).
                     reply = self._blind_pick(
                         finding, vendor, architect, page_map, strong=extent[0] == "cannot_tell"

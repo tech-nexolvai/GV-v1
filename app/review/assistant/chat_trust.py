@@ -709,7 +709,7 @@ def code_read_both(finding: Mapping[str, Any]) -> bool:
     """Whether code itself read both of a `same` item's values at their spots (#1819): each side
     is a label code numbered from the drawing's own text layer (`dims`, route `text`), and code's
     printed checks found that very value there on both sides. Then the item was looked at, by
-    code, however blurry the AI's own view was (Raj's template: 41 Right items stayed Not
+    code, however blurry the AI's own view was (a cabinet template: 41 Right items stayed Not
     compared because the architect's sheet was viewed whole at 139 dpi). Nothing else is
     loosened: the page pair must still be compared, and a value read only from drawn ink or a
     typed value with a box never counts here."""
