@@ -155,7 +155,7 @@ MIN_GAP_RUN_MICROS: Final = 250_000
 _LATER_PHASES: Final = PROTECTED
 #: Code's estimate of one advocate call's prompt (two crops and the question) and its reply.
 _ADVOCATE_PROMPT_TOKENS: Final = 7_000
-_ADVOCATE_MAX_TOKENS: Final = 2_000
+_ADVOCATE_MAX_TOKENS: Final = 12_000  # adaptive thinking first (#1775, C4)
 _SUMMARY_MAX_TOKENS: Final = 800
 _SUMMARY_PROMPT_TOKENS: Final = 1_500
 _ADVOCATE_WORKERS: Final = 6
@@ -1891,10 +1891,12 @@ class _Run:
 
         before = engine.spent
         try:
+            # A judgement (do the two measure the same points?): adaptive thinking at a lower
+            # effort, never thinking off (#1775, C4).
             reply = engine._call(
                 model=model,
-                effort="low",
-                thinking=thinking_config(model, False),
+                effort="medium",
+                thinking=thinking_config(model, True),
                 system=ADVOCATE_SYSTEM,
                 tools=(),
                 messages=[{"role": "user", "content": content}],

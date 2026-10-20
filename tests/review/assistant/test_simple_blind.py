@@ -22,7 +22,7 @@ from app.review.assistant.simple_check.blind import (
     look_all,
     question,
 )
-from app.review.assistant.simple_check.verify import Item, Verified, verify_answer
+from app.review.assistant.simple_check.verify import BlindAnswer, Item, Verified, verify_answer
 from tests.review.assistant.test_simple_verify import (
     ROUND_2,
     _pack,
@@ -76,6 +76,7 @@ def _candidate(kind: str = "pair") -> tuple[Verified, Item]:
 class _Reply:
     payload: Any
     stop_reason: str = "end_turn"
+    usage: dict[str, Any] | None = None
 
     def text(self) -> str:
         return self.payload if isinstance(self.payload, str) else json.dumps(self.payload)
@@ -256,3 +257,18 @@ def test_an_absence_look_agreeing_makes_it_red() -> None:
     assert done[0].outcome == "red"
     # The architect's drawing with its dimension marked, then the vendor's numbered.
     assert engine.crops[0]["crops"][0]["guides"] == ["D4"] and engine.crops[1]["marks"] is True
+
+
+def test_the_look_always_thinks_and_saves_its_thinking_tokens() -> None:
+    """#1775, C4: the gate of every red is a judgement: adaptive thinking on any model, and the
+    thinking tokens saved with the look (a red whose look did not think can be found)."""
+    verified, item = _candidate()
+    usage = {"output_tokens": 900, "output_tokens_details": {"thinking_tokens": 640}}
+    engine = _Engine([_Reply(_agreeing(), usage=usage)])
+    answer, _why = look(engine, verified, item, BlindSettings("claude-sonnet-5-5", "medium"))  # type: ignore[arg-type]
+    assert engine.calls[0]["thinking"]["type"] == "adaptive"
+    assert answer is not None and answer.thinking_tokens == 640
+    saved = answer.as_dict()
+    assert saved["thinking_tokens"] == 640
+    assert BlindAnswer.from_dict(saved).thinking_tokens == 640
+    assert BlindAnswer.from_dict({"pick": "D1", "verdict": "same_thing"}).thinking_tokens is None

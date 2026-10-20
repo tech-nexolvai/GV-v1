@@ -42,11 +42,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 __all__ = [
     "END_WORDS",
+    "LEGACY_VERDICTS",
     "OTHER_KINDS",
     "OTHER_VERDICTS",
     "REPLY_SCHEMA",
     "SCHEMA_VERSION",
-    "LEGACY_VERDICTS",
     "VERDICTS",
     "WEAK_POINTS",
     "Box",

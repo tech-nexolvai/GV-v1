@@ -66,7 +66,13 @@ from typing import Any, Final
 from pydantic import ValidationError
 
 from app.review.assistant.chat_provider import ChatProvider, ProviderFailure, failure_from
-from app.review.assistant.chat_request import MODELS, ChatModel, call_params, thinking_config
+from app.review.assistant.chat_request import (
+    MODELS,
+    ChatModel,
+    call_params,
+    thinking_config,
+    thinking_tokens,
+)
 from app.review.assistant.page_pictures import fitting_dpi
 from app.review.assistant.simple_check.prompts import item_text, repair_text
 from app.review.assistant.simple_check.schema import (
@@ -513,6 +519,8 @@ def _merge(usage: dict[str, int], update: object) -> None:
         for key, value in update.items():
             if isinstance(value, int) and not isinstance(value, bool):
                 usage[key] = value
+        if isinstance(update.get("output_tokens_details"), Mapping):
+            usage["thinking_tokens"] = thinking_tokens(update)
 
 
 def _stream(
@@ -754,6 +762,7 @@ def _add(total: dict[str, int], usage: Mapping[str, int]) -> None:
         "output_tokens",
         "cache_read_input_tokens",
         "cache_creation_input_tokens",
+        "thinking_tokens",
     ):
         total[key] = total.get(key, 0) + int(usage.get(key, 0) or 0)
 
