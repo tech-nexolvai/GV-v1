@@ -477,10 +477,11 @@ def test_skill_md_holds_no_client_value(shape: re.Pattern[str]) -> None:
 
 @pytest.mark.parametrize("shape", CLIENT_VALUE_SHAPES, ids=lambda shape: shape.pattern)
 def test_the_product_files_hold_no_client_value(shape: re.Pattern[str]) -> None:
-    """#1547: the products' skill files and the registry are in the repository too."""
-    folder = SKILL_SOURCE.parent / "products"
-    files = [*sorted(folder.glob("*.md")), registry().source]
-    assert len(files) >= 3
+    """#1547: the products' skill files and the registry are in the repository too; #1776: every
+    product pack's files (and the template's)."""
+    packs = registry().source.parent / "products"
+    files = [*sorted(p for p in packs.glob("*/*") if p.is_file()), registry().source]
+    assert len(files) >= 2 * 9
     for path in files:
         text = path.read_text(encoding="utf-8")
         assert not shape.search(text), (path.name, shape.search(text))
