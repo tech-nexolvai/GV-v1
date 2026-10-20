@@ -7,7 +7,8 @@ quietly stayed grey (log forensics, 2026-10-20). This reader takes the answer ou
 wrappings and nothing more:
 
 1. the whole reply, when it is bare JSON;
-2. else the one fenced block that is JSON (two different fenced answers: refused, never picked);
+2. else the one fenced block that is JSON, when no brace is left outside it (two different
+   fenced answers, or a fenced one and a bare one: refused, never picked);
 3. else the text from its first `{` to its last `}`, when that whole span is one JSON object.
 
 It never takes a piece from inside a broken or cut answer, and never chooses between two answers:
@@ -46,6 +47,10 @@ def json_of_reply(text: str) -> object:
     if len(fenced) > 1:
         raise ValueError("the reply has more than one JSON answer")
     if fenced:
+        # A brace outside the fenced answer may be a second answer (a draft and a correction):
+        # never pick one of them.
+        if "{" in _FENCED.sub("", plain):
+            raise ValueError("the reply may hold a second JSON answer outside its code block")
         return fenced[0]
     start, end = plain.find("{"), plain.rfind("}")
     if 0 <= start < end:

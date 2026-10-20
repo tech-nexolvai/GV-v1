@@ -3998,7 +3998,10 @@ class ChatEngine:
                     "not compared in detail: its helper did not write its report "
                     f"(it stopped: {stop})"
                 )
-                for page in agent.pages or ():
+                # Only a page-comparing helper's pages (never the tag reader's or a prover's: their
+                # pages were compared by others).
+                owned = agent.pages if agent.lens in (*LENSES, "gap") else None
+                for page in owned or ():
                     try:
                         self._note_coverage(int(page), why)
                     except Exception:  # noqa: BLE001 - the report below still names the stop

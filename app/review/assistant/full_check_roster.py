@@ -879,14 +879,21 @@ class _Run:
                 + (f" and {more} more" if more > 0 else "")
             )
         plan = getattr(self.engine, "_plan", None)
-        if plan is None or not self.engine.book.coverage_used:
+        if plan is None:
             return None
+        if not self.engine.book.coverage_used:
+            return "no page's comparison was recorded"
         skipped = {int(page) for page, _why in getattr(plan, "skipped", ())}
+        coverage = self.engine.book.coverage_map()
+        planned = [int(e["page"]) for e in coverage["pages"] if int(e["page"]) not in skipped]
+        # A page still "same"/"different" whose note says it was not reached or only partly
+        # compared is not compared either (#1654's pattern).
+        unfinished = set(unfinished_pages(planned, coverage))
         left = sorted(
             int(entry["page"])
-            for entry in self.engine.book.coverage_map()["pages"]
-            if entry.get("status") not in ("same", "different")
-            and int(entry["page"]) not in skipped
+            for entry in coverage["pages"]
+            if int(entry["page"]) not in skipped
+            and (entry.get("status") not in ("same", "different") or entry["page"] in unfinished)
         )
         if not left:
             return None
@@ -1127,8 +1134,10 @@ class _Run:
         engine = self.engine
         if report.strip():
             try:
-                json_of_reply(report)
+                rows = object_of_reply(report).get("tags")
             except ValueError:
+                rows = None
+            if not isinstance(rows, list):
                 # Its rows were never compared: the tags are not checked (#1811).
                 self.failed_steps.append("the tag table could not be read")
         for given in compare_tags(report):

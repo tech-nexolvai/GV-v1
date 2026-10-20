@@ -149,7 +149,8 @@ def code_summary(
         checked = int(coverage.get("same") or 0) + int(coverage.get("different") or 0)
         rest = max(0, total - checked)
         first = f"Checked {checked} of {total} pages ({scope})" + (
-            f"; {rest} {'page was' if rest == 1 else 'pages were'} not fully compared."
+            f"; {rest} {'page was' if rest == 1 else 'pages were'} not compared (title or divider "
+            "sheets, pages with no drawing to compare, or not reached)."
             if rest
             else "."
         )

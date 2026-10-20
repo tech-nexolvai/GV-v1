@@ -979,8 +979,7 @@ def test_a_vendor_page_not_compared_is_never_send_it(
     assert full_check_roster.NOT_SENDABLE_NEXT in outcome.text
     assert "Check incomplete: 1 vendor page was not compared (p3). Not for sending" in outcome.text
     state = _package_state(outcome)
-    if state:
-        assert state.get("incomplete") == "1 vendor page was not compared (p3)"
+    assert not state or state.get("incomplete") == "1 vendor page was not compared (p3)"
 
 
 def test_a_whole_roster_check_with_wrongs_still_says_send_it(
@@ -988,6 +987,7 @@ def test_a_whole_roster_check_with_wrongs_still_says_send_it(
 ) -> None:
     _clean_ink(monkeypatch)
     outcome = _roster(tmp_path, _Roster()).run()
+    assert "Next: send the cloud drawing to the vendor." in outcome.text.splitlines()
     assert "Check incomplete" not in outcome.text
     assert full_check_roster.NOT_SENDABLE_NEXT not in outcome.text
 
@@ -1049,3 +1049,85 @@ def test_a_helper_with_no_report_is_logged_and_its_pages_noted(
     coverage = next(b for b in outcome.blocks if b.get("type") == "coverage")["coverage"]
     page = next(p for p in coverage["pages"] if p["page"] == 2)
     assert page["by"] != "helper:1"  # a later look compared the page again
+
+
+def test_a_wrong_shaped_tag_table_is_a_failed_step() -> None:
+    from types import SimpleNamespace
+
+    for report in ('[{"page": 2, "side": "vendor"}]', '{"rows": []}', '{"tags": "none"}'):
+        run = full_check_roster._Run(engine=SimpleNamespace())  # type: ignore[arg-type]
+        run._apply_tags(report)
+        assert run.failed_steps == ["the tag table could not be read"], report
+    run = full_check_roster._Run(engine=SimpleNamespace())  # type: ignore[arg-type]
+    run._apply_tags('{"tags": []}')  # read, nothing tagged on both sides: not a failure
+    assert run.failed_steps == []
+
+
+def test_a_page_noted_not_reached_is_not_compared_even_when_marked_different(
+    tmp_path: Path,
+) -> None:
+    """#1654's pattern: a page still "different" whose note says it was not reached within the
+    price, or that its helper wrote no report, is not compared: never "send it"."""
+    from types import SimpleNamespace
+
+    harness = _roster(tmp_path, _Roster())
+    book = harness.engine.book
+    book.set_coverage(
+        {
+            "pages": [
+                {"page": 1, "status": "same"},
+                {"page": 2, "status": "different",
+                 "note": "partly compared; not reached within the fixed price"},
+                {"page": 3, "status": "same"},
+                {"page": 4, "status": "same"},
+                {"page": 5, "status": "same"},
+                {"page": 6, "status": "same"},
+            ]
+        },
+        "helper:1",
+    )  # fmt: skip
+    book.note_coverage(3, "not compared in detail: its helper did not write its report")
+    harness.engine._plan = SimpleNamespace(skipped=())
+    run = full_check_roster._Run(engine=harness.engine)
+    assert run._not_for_sending() == "2 vendor pages were not compared (p2, p3)"
+    harness.engine._plan = SimpleNamespace(skipped=((2, "divider"), (3, "divider")))
+    assert run._not_for_sending() is None
+
+
+def test_nothing_recorded_is_not_for_sending(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    harness = _roster(tmp_path, _Roster())
+    harness.engine._plan = SimpleNamespace(skipped=())
+    run = full_check_roster._Run(engine=harness.engine)
+    assert not harness.engine.book.coverage_used
+    assert run._not_for_sending() == "no page's comparison was recorded"
+
+
+class _SilentTags(_Roster):
+    """The tag reader never writes its report."""
+
+    def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
+        if brief.startswith("TAGS:"):
+            self._seen("tags", params)
+            return reply(text(""), model=SONNET)
+        return super().helper(params, brief)
+
+
+def test_a_silent_tag_reader_never_notes_pages_it_does_not_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clean_ink(monkeypatch)
+    harness = _roster(tmp_path, _SilentTags())
+    noted: list[int] = []
+    original = harness.engine._note_coverage
+
+    def note(page: int, words: str) -> None:
+        if "did not write its report" in words:
+            noted.append(page)
+        original(page, words)
+
+    monkeypatch.setattr(harness.engine, "_note_coverage", note)
+    outcome = harness.run()
+    assert noted == []
+    assert "send the cloud drawing" not in outcome.text  # the tag step broke: not for sending

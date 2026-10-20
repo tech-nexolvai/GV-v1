@@ -42,6 +42,12 @@ def test_the_answer_is_read_out_of_its_wrapping(text: str) -> None:
         # Two different answers: never choose between them.
         '```json\n{"pick": "D1"}\n```\nOn second thought:\n```json\n{"pick": "D2"}\n```',
         'First {"pick": "D1"} then {"pick": "D2"}',
+        # A fenced draft and a bare correction (or the other way round): never one picked.
+        (
+            'Draft:\n```json\n{"pick": "D4", "verdict": "same_thing"}\n```\nWait, corrected:\n'
+            '{"pick": "none", "verdict": "unsure"}'
+        ),
+        '{"verdict": "unsure"}\n...\n```json\n{"verdict": "same_thing"}\n```',
         # A brace in the words before the answer and none after: not one object.
         "The label {A} is printed twice.",
     ],

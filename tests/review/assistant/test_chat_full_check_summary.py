@@ -457,11 +457,14 @@ def test_a_full_check_streams_progress_and_stores_the_last_one(
         # #1811: pages never compared (no architect drawing, not reached, open differences) are
         # never counted as checked; a run that compared nothing says 0, not the unpaired pages.
         ({"total": 9, "same": 0, "different": 0, "not_comparable": 4, "not_opened": 5},
-         "Checked 0 of 9 pages (countertops, 1 round); 9 pages were not fully compared."),
+         ("Checked 0 of 9 pages (countertops, 1 round); 9 pages were not compared (title or "
+         "divider sheets, pages with no drawing to compare, or not reached).")),
         ({"total": 60, "same": 20, "different": 12, "not_comparable": 28, "not_opened": 0},
-         "Checked 32 of 60 pages (countertops, 1 round); 28 pages were not fully compared."),
+         ("Checked 32 of 60 pages (countertops, 1 round); 28 pages were not compared (title or "
+         "divider sheets, pages with no drawing to compare, or not reached).")),
         ({"total": 5, "same": 3, "different": 1, "not_comparable": 1, "not_opened": 0},
-         "Checked 4 of 5 pages (countertops, 1 round); 1 page was not fully compared."),
+         ("Checked 4 of 5 pages (countertops, 1 round); 1 page was not compared (title or "
+         "divider sheets, pages with no drawing to compare, or not reached).")),
         ({"total": 5, "same": 3, "different": 2, "not_comparable": 0, "not_opened": 0},
          "Checked 5 of 5 pages (countertops, 1 round)."),
     ],
