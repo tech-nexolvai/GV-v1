@@ -954,11 +954,26 @@ def _trade_check(measures: object, ends: tuple[Ends, str]) -> Check:
 OBJECTION: Final = "objection"
 
 
+def _contradicts(pair: Mapping[str, Any], ends: Mapping[str, str]) -> bool:
+    """Whether the AI's own answer contradicts its "different points" (#1773 review): it writes
+    the very same end words on both drawings (in either order, every end named) and gives no note.
+    Ends of one rough kind are not enough (two outlets' centre lines, two units' tops are
+    different points), and the note is where the AI says why the points differ."""
+    if str(pair.get("note") or "").strip():
+        return False
+    vendor = [_plain(ends["vendor_from"]), _plain(ends["vendor_to"])]
+    architect = [_plain(ends["architect_from"]), _plain(ends["architect_to"])]
+    if not all(vendor + architect):
+        return False
+    return vendor in (architect, architect[::-1])
+
+
 def _objection(matched: tuple[Ends, str], differ: bool) -> Check | None:
     """Code's answer to the AI's "different points" (DeepSeekMath-V2: check the "no" as well as
-    the "yes"): a passed `objection` check when the AI's own end words name the same two points on
-    both drawings and code reads two different values; None otherwise (the AI's "no" stands). A
-    pair it lets through still needs every code check and the blind look to be red.
+    the "yes"): a passed `objection` check when the AI's own end words are the same words on both
+    drawings with no note (`_contradicts`, checked first), code's end words agree and code reads
+    two different values; None otherwise (the AI's "no" stands). A pair it lets through still
+    needs every code check and the blind look to be red.
 
     Code's drawn geometry (`same_extent`) is never evidence against the "no": it allows the two
     lines' ends to differ by the values' own difference, which is exactly what two dimensions to
@@ -968,7 +983,7 @@ def _objection(matched: tuple[Ends, str], differ: bool) -> Check | None:
     return Check(
         OBJECTION,
         "pass",
-        f"the AI said {DIFFERENT_POINTS}, but its own end words name the same two points "
+        f"the AI said {DIFFERENT_POINTS}, but its own end words are the same on both drawings "
         f"({matched[1]})",
     )
 
@@ -1015,6 +1030,7 @@ _ORDER: Final = (
     "trade",
     "ends",
     "geometry",
+    OBJECTION,
 )
 
 
@@ -1290,6 +1306,9 @@ def _verify_pair(
     if not objected and verdict not in ("same", "different"):
         note = str(pair.get("note") or "").strip()
         return one.grey(UNSURE + (f": {note}" if note else ""), "not_proved")
+    if objected and not _contradicts(pair, ends):
+        # Nothing in the AI's own answer contradicts its "different points": it stands.
+        return one.grey(DIFFERENT_POINTS, "different_reference")
     v_in, a_in = _fraction(vendor.get("inches")), _fraction(architect.get("inches"))
     if v_in is None:
         v_in = _read_label(vendor, "vendor", pack, number)

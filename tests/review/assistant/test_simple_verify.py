@@ -515,7 +515,7 @@ def test_a_different_points_its_own_ends_contradict_goes_to_the_blind_look() -> 
     found = _one(_pair("p2.D1", "p1.D1", "different_points"))
     assert found.outcome == "candidate" and found.needs_blind and found.blind == "pair"
     objection = next(c for c in found.checks if c.name == v.OBJECTION)
-    assert objection.outcome == "pass" and "its own end words name the same" in objection.why
+    assert objection.outcome == "pass" and "its own end words are the same" in objection.why
     assert [c.name for c in found.checks if c.outcome != "pass"] == []
     assert with_blind(found, _agrees(found)).outcome == "red"
     refused = with_blind(found, None, "the call failed")
@@ -540,6 +540,55 @@ def test_a_different_points_code_geometry_never_overrules_it(
         assert found.outcome == "not_compared" and not found.needs_blind
         assert found.reason == v.DIFFERENT_POINTS
         assert all(c.name != v.OBJECTION for c in found.checks)
+
+
+@pytest.mark.parametrize(
+    "ends",
+    [
+        # two different outlets: the prompt tells the AI to call these different points
+        (
+            "wall face (left)",
+            "centre line (outlet A)",
+            "wall face (left)",
+            "centre line (outlet B)",
+        ),
+        # the same kind of end on two different units
+        ("floor", "top of unit (base)", "floor", "top of unit (tall)"),
+        ("cabinet", "cabinet", "filler", "panel"),
+        ("centre of sink", "left wall", "centre of faucet", "left wall"),
+        ("left wall", "cabinet side (front)", "left wall", "cabinet side (front of door)"),
+    ],
+)
+def test_a_different_points_with_ends_of_one_kind_but_other_words_stays_grey(
+    monkeypatch: pytest.MonkeyPatch, ends: tuple[str, str, str, str]
+) -> None:
+    """Only end words that are the same words contradict the AI's "different points" (#1773
+    review): two ends of one rough kind (two outlets, two units' tops) are not the same point, so
+    the "no" stands and nothing goes to the blind look."""
+    monkeypatch.setattr(v, "same_extent", lambda *a: ("cannot_tell", "too few dimensions"))
+    found = _one(_pair("p2.D1", "p1.D1", "different_points", ends))
+    assert found.outcome == "not_compared" and not found.needs_blind
+    assert found.reason == v.DIFFERENT_POINTS
+
+
+def test_a_different_points_with_a_note_stays_grey(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The AI's note is where it says why the points differ: with a note, its "no" stands even
+    when its end words are the same."""
+    monkeypatch.setattr(v, "same_extent", lambda *a: ("cannot_tell", "too few dimensions"))
+    pair = _pair("p2.D1", "p1.D1", "different_points")
+    pair["note"] = "the vendor's runs to the stone's underside, the architect's to its top"
+    found = _one(pair)
+    assert found.outcome == "not_compared" and not found.needs_blind
+    assert found.reason == v.DIFFERENT_POINTS
+
+
+def test_a_different_points_same_words_in_the_other_order_goes_to_the_blind_look(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(v, "same_extent", lambda *a: ("cannot_tell", "too few dimensions"))
+    ends = ("left wall", "right wall", "Right_Wall", "left wall")
+    found = _one(_pair("p2.D1", "p1.D1", "different_points", ends))
+    assert found.outcome == "candidate" and found.needs_blind
 
 
 @pytest.mark.parametrize(
