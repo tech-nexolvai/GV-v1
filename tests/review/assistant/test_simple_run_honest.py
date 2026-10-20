@@ -6,6 +6,7 @@ compare calls and the blind look replaced; no model call, no money."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
@@ -64,7 +65,8 @@ def test_a_code_check_that_crashes_makes_the_check_not_for_sending(
     outcome = run.engine.run()
     name = CODE_CHECK_NAMES[check]
     _not_for_sending(outcome, name)
-    assert f"could not run ({name})" in outcome.text
+    assert outcome.text.count(f"could not run ({name})") == 1  # named once, not twice
+    assert str(_state(outcome)["incomplete"]).count(name) == 1
     assert run.engine.code_checks_failed == [name]
 
 
@@ -181,3 +183,29 @@ def test_a_drawing_the_work_list_missed_is_reported_and_not_for_sending(
     assert "**Not compared: 1 vendor page with a drawing was not compared" in outcome.text
     rows = run.engine.extra_gaps
     assert any(row["page"] == 4 and run_module.UNCOVERED_NOTE in row["what"] for row in rows)
+
+
+def test_a_roster_check_without_labels_or_with_a_crash_is_not_for_sending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The older full checks (roster, lead) go on when the labels step broke, and their code
+    checks may crash: each is named once, so the check is S0, never "send it"."""
+    run = _Run(tmp_path)
+    run.engine.settings = dataclasses.replace(run.engine.settings, full_check_mode="roster")
+    status = json.loads((run.pack / "status.json").read_text())
+    status["state"] = set_pack.READY_WITHOUT_LABELS
+    (run.pack / "status.json").write_text(json.dumps(status), encoding="utf-8")
+    monkeypatch.setattr(engine_module, "add_run_fit", _boom)
+    run.engine.incomplete_note = "an earlier reason"
+    run.engine.add_code_findings()
+    note = str(run.engine.incomplete_note)
+    assert note.startswith("an earlier reason; 2 steps of the check could not run")
+    assert note.count(engine_module.LABELS_STEP) == 1
+    assert note.count(CODE_CHECK_NAMES["run_fit"]) == 1
+
+
+def test_a_whole_roster_check_gets_no_note(tmp_path: Path) -> None:
+    run = _Run(tmp_path)
+    run.engine.settings = dataclasses.replace(run.engine.settings, full_check_mode="roster")
+    run.engine.add_code_findings()
+    assert run.engine.incomplete_note is None and run.engine.code_checks_failed == []

@@ -32,6 +32,7 @@ from vocabulary.product_registry import (
     RegistryError,
     load_registry,
     registry,
+    registry_data,
     reset_registry,
 )
 from vocabulary.semantic_types import ProductType
@@ -107,8 +108,7 @@ def test_product_type_is_the_registry() -> None:
 
 
 def _broken(tmp_path: Path, change: object) -> Path:
-    data = yaml.safe_load(DEFAULT_REGISTRY.read_text(encoding="utf-8"))
-    data["skills_folder"] = str((DEFAULT_REGISTRY.parent / data["skills_folder"]).resolve())
+    data = registry_data(DEFAULT_REGISTRY)
     change(data)  # type: ignore[operator]
     path = tmp_path / "products.yaml"
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
@@ -125,7 +125,10 @@ def _broken(tmp_path: Path, change: object) -> Path:
         (lambda d: d["products"][0].update(colour="red"), "unknown field"),
         (lambda d: d["products"][0].update(checklist=[]), "needs a checklist"),
         (lambda d: d["products"][0].update(check_kinds=["vibes"]), "check_kinds"),
-        (lambda d: d["products"][2].update(active=True, id="lamp_post"), "skill file lamp_post"),
+        (
+            lambda d: d["products"][2].update(active=True, id="lamp_post", folder="/nowhere"),
+            "skill file lamp_post",
+        ),
         (lambda d: [p.update(active=False) for p in d["products"]], "at least one product"),
         (lambda d: d.update(version=2), "version: 1"),
         (lambda d: d["products"][0].update(words="countertop"), "`words` must be a list"),

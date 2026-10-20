@@ -195,6 +195,12 @@ def pack_ready(folder: Path | None) -> bool:
     return folder is not None and _pack_state(folder)[0] in ("ready", "ready_without_labels")
 
 
+def pack_without_labels(folder: Path | None) -> bool:
+    """Whether the pack is made but its labels step broke or ran out of time (#1768): the
+    drawings' printed numbers are missing or partial, so code's own pairs are too."""
+    return folder is not None and _pack_state(folder)[0] == "ready_without_labels"
+
+
 def wait_for_page_map(
     folder: Path | None,
     stop: threading.Event,

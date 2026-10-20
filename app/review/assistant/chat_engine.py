@@ -228,6 +228,7 @@ from app.review.assistant.full_check_plan import (
     FanOutPlan,
     HelperJob,
     pack_ready,
+    pack_without_labels,
     plan_jobs,
     rules_summary,
     wait_for_page_map,
@@ -457,6 +458,12 @@ CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
     "run_fit": "GV's site-fit rule",
     "filler_range": "GV's filler range",
 }
+
+
+#: The other steps of a roster or lead full check that may break (#1768); the simple check names
+#: its own (`simple_check.run`).
+SEEDING_STEP: Final = "GV Review's recorded results"
+LABELS_STEP: Final = "the drawings' printed numbers (the labels step did not finish)"
 
 
 def broken_steps_note(steps: Sequence[str]) -> str:
@@ -2477,10 +2484,17 @@ class ChatEngine:
                 except Exception:  # noqa: BLE001 - the answer goes on, never sendable (#1768)
                     _log.exception("assistant chat code check failed: %s", name)
                     self.code_checks_failed.append(name)
-        if self.code_checks_failed and self.settings.mode == "full_check":
+        if self.settings.mode != "full_check" or self._simple:
+            return  # the simple check names its broken steps once, with its other reasons
+        if pack_without_labels(self.tools.workspace.set_pack):
+            # The roster and the lead go on without labels; code's pairs are then missing.
+            self.code_checks_failed.append(LABELS_STEP)
+        if self.code_checks_failed:
             # A check that crashed took its reds with it: the check is not for sending (S0).
-            self.incomplete_note = self.incomplete_note or broken_steps_note(
-                self.code_checks_failed
+            self.incomplete_note = "; ".join(
+                part
+                for part in (self.incomplete_note, broken_steps_note(self.code_checks_failed))
+                if part
             )
 
     def _code_finish(self) -> None:
@@ -4103,8 +4117,9 @@ class ChatEngine:
         with self.timings.phase("seeding"):
             try:
                 seeded = self._seed_recorded()
-            except Exception:  # noqa: BLE001 - the check goes on; the trust report says it
+            except Exception:  # noqa: BLE001 - the check goes on, never sendable (#1768)
                 _log.exception("assistant chat could not seed the recorded differences")
+                self.code_checks_failed.append(SEEDING_STEP)
         try:
             self._start_markup_base()
         except Exception:  # noqa: BLE001 - the drawing makes its own copy at the end
