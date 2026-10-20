@@ -782,6 +782,21 @@ def broken_claims(result: CompareResult, item: WorkItem) -> tuple[list[str], boo
     return list(dict.fromkeys([*broken, *missing])), others
 
 
+def _fixable(result: CompareResult, item: WorkItem, labels: Sequence[str]) -> bool:
+    """Whether asking only for `labels` can make the answer pass: with their pairs taken out,
+    code's only complaint left is that those labels are not accounted for (not a pair naming
+    another drawing's label, a foreign id in unaccounted_labels, a wrong work item)."""
+    asked = set(labels)
+    rest = CompareResult(
+        work_item=result.work_item,
+        pairs=tuple(p for p in result.pairs if p.vendor_label not in asked),
+        other_items=result.other_items,
+        unaccounted_labels=result.unaccounted_labels,
+        same_drawing=result.same_drawing,
+    )
+    return all(p.startswith("vendor labels not accounted") for p in check_result(rest, item))
+
+
 def merge_repair(
     first: CompareResult, second: CompareResult, item: WorkItem, labels: Sequence[str]
 ) -> CompareResult:
@@ -992,7 +1007,7 @@ def compare_item(
             # Targeted only when every problem is a vendor label's claim: a broken item without a
             # label, or a problem only the reading step finds, asks the whole form again (a
             # targeted reply could leave such an item out and it would vanish).
-            if broken and not others and not reading:
+            if broken and not others and not reading and _fixable(result, item, broken):
                 labels = broken
                 asked = list(labels)
         text = repair_text(item, problems, labels=labels)

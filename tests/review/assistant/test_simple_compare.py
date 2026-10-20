@@ -804,3 +804,15 @@ def test_a_reading_problem_in_the_targeted_reply_fails_the_drawing() -> None:
     asked = provider.calls[1]["messages"][2]["content"][0]["text"]
     assert "only for these vendor labels" in asked
     assert outcome.status == "failed" and any("not a label id" in p for p in outcome.problems)
+
+
+def test_a_problem_the_targeted_repair_cannot_fix_asks_the_whole_form_again() -> None:
+    """A pair naming a label of another drawing (often a misread of the missing one) is kept by a
+    targeted merge, so the drawing would surely fail: the whole form is asked again instead."""
+    first = _answer(missing=True)
+    first["pairs"] = [*first["pairs"], {**first["pairs"][0], "vendor_label": "p9.D99"}]
+    provider = _Provider([_events(json.dumps(first)), _events(json.dumps(_answer()))])
+    outcome, _slept = _run(provider)
+    asked = provider.calls[1]["messages"][2]["content"][0]["text"]
+    assert "Answer again with the whole JSON form" in asked
+    assert outcome.status == "ok"
