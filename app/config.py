@@ -186,6 +186,9 @@ class Settings(BaseSettings):
     assistant_simple_parallel: int = Field(default=8, ge=1, le=32)
     assistant_simple_max_tokens: int = Field(default=64000, ge=4096, le=128000)
     assistant_simple_retries: int = Field(default=3, ge=0, le=6)
+    # The reasoning recipe's compare-prompt steps (#1775), each a switch so a paid A/B can measure
+    # it on and off: every label line gives its direction and its place on its drawing (step 1).
+    assistant_simple_label_places: bool = True
     # The simple check's blind second look (`simple_check/blind.py`): one fresh call per red
     # candidate, shown only crops of both drawings with code's marks, never the compare call's
     # answer; a different model from the compare call by default. Red needs it to agree.
