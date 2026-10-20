@@ -87,7 +87,7 @@ def test_compare_item_text_fences_every_printed_word() -> None:
 def test_compare_label_lines_say_direction_and_place() -> None:
     text = prompts.item_text(_item(), [])
     assert "= 24 in [horizontal x0.30 y0.93]" in text
-    assert "p3.D2 30\" = 24 in [vertical x0.07 y0.50]" in text
+    assert 'p3.D2 30" = 24 in [vertical x0.07 y0.50]' in text
 
 
 def test_a_fence_cannot_be_closed_from_inside() -> None:
@@ -158,3 +158,53 @@ def test_critic_fences_each_findings_words() -> None:
 
 def test_second_read_fences_the_item_name() -> None:
     _assert_fenced(second_read.question(f"upper height {PLANT}", ("architect", "vendor")))
+
+
+def test_label_places_switch_drops_only_direction_and_place() -> None:
+    """`assistant_simple_label_places` off (for a paid A/B): the same labels, still fenced, with
+    no direction or place; the system prompt stays one fixed text either way (prompt caching)."""
+    on = prompts.item_text(_item(), [])
+    off = prompts.item_text(_item(), [], places=False)
+    assert "[horizontal" in on and "[horizontal" not in off and "[vertical" not in off
+    assert 'p3.D2 30" = 24 in' in off and "x0.07" not in off
+    _assert_fenced(off)
+    assert on.replace(" [horizontal x0.30 y0.93]", "").replace(" [vertical x0.07 y0.50]", "") == off
+
+
+def test_label_places_setting_reaches_the_compare_call() -> None:
+    from types import SimpleNamespace
+
+    from app.api.assistant_chats import _simple_options
+    from app.config import Settings
+    from app.review.assistant.chat_contract import ChatMessageIn
+    from app.review.assistant.simple_check.compare import CompareSettings
+
+    assert Settings.model_fields["assistant_simple_label_places"].default is True
+    base = {
+        "assistant_full_check_mode": "simple",
+        "assistant_simple_compare_model": "claude-sonnet-5-5",
+        "assistant_simple_compare_effort": "high",
+        "assistant_simple_hard_model": "claude-opus-5-5",
+        "assistant_simple_hard_effort": "high",
+        "assistant_simple_parallel": 8,
+        "assistant_simple_max_tokens": 64000,
+        "assistant_simple_retries": 3,
+        "assistant_simple_blind_model": "claude-opus-5-5",
+        "assistant_simple_blind_effort": "high",
+        "assistant_simple_resolve": "off",
+        "assistant_simple_resolve_rounds": 1,
+        "assistant_simple_resolve_model": "claude-sonnet-5-5",
+        "assistant_simple_resolve_effort": "medium",
+        "assistant_simple_resolve_web_search": False,
+    }
+    body = ChatMessageIn.model_validate(
+        {"model": "claude-opus-5-5", "effort": "high", "thinking": True, "mode": "full_check"}
+    )
+    for value in (True, False):
+        settings = SimpleNamespace(**base, assistant_simple_label_places=value)
+        plain = _simple_options(settings, body)  # type: ignore[arg-type]
+        assert plain is not None and plain["compare"]["label_places"] is value
+        assert CompareSettings(**plain["compare"]).label_places is value
+        assert CompareSettings.from_settings(settings).label_places is value
+    # A run record saved before the switch existed reads as on.
+    assert CompareSettings().label_places is True

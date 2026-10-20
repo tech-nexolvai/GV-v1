@@ -1268,6 +1268,7 @@ def _simple_options(settings: Settings, body: ChatMessageIn) -> dict[str, Any] |
             "parallel": settings.assistant_simple_parallel,
             "max_tokens": settings.assistant_simple_max_tokens,
             "retries": settings.assistant_simple_retries,
+            "label_places": getattr(settings, "assistant_simple_label_places", True),
         },
         "blind_model": settings.assistant_simple_blind_model,
         "blind_effort": settings.assistant_simple_blind_effort,
