@@ -14,17 +14,19 @@ problem is left out. The PDF is drawn by `proof_drawing.py`, loaded by name
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import AssistantChatMessage, AssistantFindingDecision
+from app.review.assistant import not_compared
 from app.review.assistant.chat_corrections import with_corrections
 from app.review.assistant.chat_findings import (
     MarkupFile,
@@ -42,13 +44,18 @@ from app.review.assistant.send_package import (
     package_context,
 )
 
+_log = logging.getLogger(__name__)
+
 __all__ = [
+    "UNDO",
     "DecidedFiles",
     "decided_findings",
     "decided_summary",
+    "decision_counts",
     "decision_out",
     "latest_decisions",
     "latest_decisions_of",
+    "lay_decision",
     "make_decided_files",
     "record_decision",
     "resolver_settled",
@@ -67,15 +74,19 @@ def record_decision(
     decision: str,
     note: str | None,
     decided_by: str,
+    should_be: str | None = None,
 ) -> AssistantFindingDecision:
-    """One more row: the reviewer's decision now (earlier rows stay)."""
+    """One more row: the reviewer's decision now (earlier rows stay). `should_be` (an Agree only,
+    #1803): the value the reviewer says it should be."""
     text = (note or "").strip() or None
+    value = " ".join((should_be or "").split()) or None
     row = AssistantFindingDecision(
         chat_id=chat_id,
         message_id=message_id,
         finding_id=finding_id,
         decision=decision,
         note=text,
+        should_be=value if decision == "agree" else None,
         decided_by=decided_by[:200],
         decided_at=datetime.now(UTC),
     )
@@ -85,11 +96,43 @@ def record_decision(
 
 
 def decision_out(row: AssistantFindingDecision) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "decision": row.decision,
         "note": row.note,
         "by": row.decided_by,
         "at": row.decided_at,
+    }
+    if row.should_be:
+        # The reviewer's own "should be" (#1803), only where one was given.
+        out["should_be"] = row.should_be
+    return out
+
+
+def lay_decision(
+    latest: dict[UUID, dict[str, dict[str, Any]]], row: AssistantFindingDecision
+) -> None:
+    """Lay one decision row over the latest ones (rows read oldest first): an `undo` (#1803) takes
+    the finding's decision away, so it is again what code found."""
+    if row.decision == UNDO:
+        latest.get(row.message_id, {}).pop(row.finding_id, None)
+        return
+    latest.setdefault(row.message_id, {})[row.finding_id] = decision_out(row)
+
+
+#: The decision that takes the reviewer's call back (#1803).
+UNDO: Final = "undo"
+
+
+def decision_counts(session: Session, chat_id: UUID) -> dict[UUID, int]:
+    """How many decision rows each answer of the chat has (an undo too, #1803). The table is
+    append-only, so the count only grows: a package made from fewer is out of date."""
+    return {
+        message_id: int(count)
+        for message_id, count in session.execute(
+            select(AssistantFindingDecision.message_id, func.count())
+            .where(AssistantFindingDecision.chat_id == chat_id)
+            .group_by(AssistantFindingDecision.message_id)
+        )
     }
 
 
@@ -104,7 +147,7 @@ def latest_decisions(
     for row in session.scalars(
         query.order_by(AssistantFindingDecision.decided_at, AssistantFindingDecision.created_at)
     ):
-        latest.setdefault(row.message_id, {})[row.finding_id] = decision_out(row)
+        lay_decision(latest, row)
     return latest
 
 
@@ -121,7 +164,7 @@ def latest_decisions_of(
         .where(AssistantFindingDecision.message_id.in_(list(message_ids)))
         .order_by(AssistantFindingDecision.decided_at, AssistantFindingDecision.created_at)
     ):
-        latest.setdefault(row.message_id, {})[row.finding_id] = decision_out(row)
+        lay_decision(latest, row)
     return latest
 
 
@@ -231,6 +274,9 @@ class DecidedFiles:
     report: MarkupFile
     package: MarkupFile | None = None
     """The send-ready package made again (#1622), when asked for (`package_out`)."""
+    not_compared: tuple[MarkupFile, MarkupFile] | None = None
+    """The Not-compared PDF and workbook made again (#1803), when asked for
+    (`not_compared_out`)."""
 
 
 def resolver_settled(blocks: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
@@ -256,6 +302,9 @@ def make_decided_files(
     numbers: Mapping[str, str] | None = None,
     incomplete: str | None = None,
     extra: Sequence[tuple[str, Path]] = (),
+    not_compared_out: tuple[Path, Path] | None = None,
+    set_gaps: Sequence[Mapping[str, Any]] = (),
+    set_rows: Sequence[not_compared.Row] = (),
 ) -> DecidedFiles:
     """The cloud drawing and the check report made again with the reviewer's decisions as
     overrides (#1581, replacing #1521's only-agreed drawing): the same zero-click drawing as the
@@ -266,8 +315,23 @@ def make_decided_files(
     is made again too (#1622), from the same list and context (`identity`, the stable comment
     `numbers`, and whether the check finished), so the drawing's cover, the letter and the
     register say the same result and comment numbers. `extra`: the answer's other files the
-    package holds as they were made (the Not-compared list, #1619), each name and path."""
+    package holds as they were made (the Not-compared list, #1619), each name and path.
+    `not_compared_out` (#1803): the Not-compared PDF and workbook are made again instead, from the
+    decided list (an item the reviewer decided leaves it) and the set's own gaps (`set_gaps`, as
+    the check listed them, or `set_rows` read back from an older answer's workbook); the package
+    then holds these."""
     findings = by_impact(findings)
+    listed: tuple[MarkupFile, MarkupFile] | None = None
+    if not_compared_out is not None:
+        rows = _not_compared_rows(workspace, findings)
+        pdf, sheet = not_compared.make_files(
+            workspace,
+            [*rows, *not_compared.gap_rows(set_gaps), *set_rows],
+            not_compared_out[0],
+            not_compared_out[1],
+        )
+        extra = [(pdf.name, not_compared_out[0]), (sheet.name, not_compared_out[1])]
+        listed = (pdf, sheet)
     context = None
     if package_out is not None:
         context = package_context(
@@ -290,7 +354,27 @@ def make_decided_files(
             package_out,
             context,
         )
-    return DecidedFiles(drawing=drawing, report=report, package=package)
+    return DecidedFiles(
+        drawing=drawing,
+        report=report,
+        package=package,
+        not_compared=listed,
+    )
+
+
+def _not_compared_rows(
+    workspace: ChatWorkspace, findings: Sequence[Mapping[str, Any]]
+) -> list[not_compared.Row]:
+    """The Not-compared rows of the decided list, with the set's areas where the pack has them
+    (as the full check makes them, `chat_engine._not_compared_rows`)."""
+    try:
+        return not_compared.check_rows(workspace, findings, ())
+    except Exception as failed:  # noqa: BLE001 - listed from the findings alone then
+        _log.warning(
+            "not-compared rows without the set's areas (%s): listed from the findings alone",
+            type(failed).__name__,
+        )
+        return not_compared.rows(findings)
 
 
 def package_block(blocks: Sequence[Mapping[str, Any]] | None) -> Mapping[str, Any] | None:

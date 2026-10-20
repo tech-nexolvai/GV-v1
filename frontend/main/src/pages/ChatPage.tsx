@@ -749,7 +749,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     onContinue={resumeId ? () => void send(CONTINUE_TEXT, 'chat', { id: resumeId, mode: message.resume?.mode ?? 'chat' }) : undefined}
                     latest={at === messages.length - 1}
                     makeMarkupPdf={(messageId) => api.markup(chatId, messageId)}
-                    decide={api.decide ? (messageId, findingId, decision) => api.decide!(chatId, messageId, findingId, decision) : undefined}
+                    decide={api.decide ? (messageId, findingId, decision, extra) => (extra ? api.decide!(chatId, messageId, findingId, decision, extra) : api.decide!(chatId, messageId, findingId, decision)) : undefined}
                     remakeCloud={api.remakeCloud ? (messageId) => api.remakeCloud!(chatId, messageId) : undefined}
                     fullPageHref={formatRoute({ page: 'review', packageId })}
                     pagePicture={(page) => chatPaths.planPage(packageId, page)}
