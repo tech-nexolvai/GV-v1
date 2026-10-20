@@ -938,6 +938,38 @@ def _trade_check(measures: object, ends: tuple[Ends, str]) -> Check:
     return Check("trade", "pass")
 
 
+#: The check that records code's answer to the AI's own "different points" (`objection`): it
+#: passes when code's evidence contradicts it, so the pair is verified like any other.
+OBJECTION: Final = "objection"
+#: The `geometry` check's words when code's drawn extents agree (`same_extent`).
+_SAME_EXTENT: Final = "same extent: "
+
+
+def _objection(matched: tuple[Ends, str], geometry: Check, differ: bool) -> Check | None:
+    """Code's answer to the AI's "different points" (DeepSeekMath-V2: check the "no" as well as
+    the "yes"): a passed `objection` check when code's own evidence contradicts it (the AI's own
+    end words name the same two points on both drawings, or code's drawn extents agree) and code
+    reads two different values; None when nothing contradicts it (the AI's "no" stands). A pair
+    it lets through still needs every code check and the blind look to be red."""
+    if not differ:
+        return None
+    if matched[0] == "same":
+        return Check(
+            OBJECTION,
+            "pass",
+            f"the AI said {DIFFERENT_POINTS}, but its own end words name the same two points "
+            f"({matched[1]})",
+        )
+    if geometry.outcome == "pass" and geometry.why.startswith(_SAME_EXTENT):
+        return Check(
+            OBJECTION,
+            "pass",
+            f"the AI said {DIFFERENT_POINTS}, but code's geometry shows the same extent "
+            f"({geometry.why[len(_SAME_EXTENT):]})",
+        )
+    return None
+
+
 def _geometry_check(vendor: Mapping[str, Any], architect: Mapping[str, Any], pack: Pack) -> Check:
     def side(label: Mapping[str, Any], wanted: str) -> list[dict[str, Any]]:
         file = str(label.get("file") or pack.main_file)
@@ -949,7 +981,9 @@ def _geometry_check(vendor: Mapping[str, Any], architect: Mapping[str, Any], pac
     )
     if state == "different_extent":
         return Check("geometry", "fail", f"code's geometry shows different points: {why}")
-    return Check("geometry", "pass", why if state == "same_extent" else f"cannot tell: {why}")
+    if state == "same_extent":
+        return Check("geometry", "pass", f"{_SAME_EXTENT}{why}")
+    return Check("geometry", "pass", f"cannot tell: {why}")
 
 
 def _slip_check(vendor: Fraction, architect: Fraction, drawn: bool) -> Check:
@@ -1207,13 +1241,14 @@ def _verify_pair(
         return Verified(
             key, "pair", "listed", AI_UNSURE, "ai_unsure", vendor=vendor, ends=ends, about=about
         )
-    if verdict == "different_points":
-        return one.grey(DIFFERENT_POINTS, "different_reference")
-    if verdict not in ("same", "different"):
+    objected = verdict == "different_points"
+    if not objected and verdict not in ("same", "different"):
         note = str(pair.get("note") or "").strip()
         return one.grey(UNSURE + (f": {note}" if note else ""), "not_proved")
     v_in, a_in = _fraction(vendor.get("inches")), _fraction(architect.get("inches"))
     if v_in is None or a_in is None:
+        if objected:
+            return one.grey(DIFFERENT_POINTS, "different_reference")
         return one.grey("code could not read the value as a size", "unreadable")
     a_file = str(architect.get("file") or pack.main_file)
     a_page = int(architect.get("page") or 0)
@@ -1247,6 +1282,19 @@ def _verify_pair(
         Check("ends", "pass" if matched[0] == "same" else "fail", matched[1]),
         _geometry_check(vendor, architect, pack),
     ]
+    if objected:
+        objection = _objection(matched, checks[-1], _differ(v_in, a_in))
+        if objection is None:
+            return one.grey(DIFFERENT_POINTS, "different_reference", checks)
+        if matched[0] != "same":
+            # Code's drawn extent outranks the AI's own end words; the blind look names the ends.
+            checks = [
+                Check("ends", "pass", f"code's geometry shows the same extent ({matched[1]})")
+                if check.name == "ends"
+                else check
+                for check in checks
+            ]
+        checks.append(objection)
     if verdict == "same" or not _differ(v_in, a_in):
         return _right(one, checks, matched, v_in, a_in, said_different=verdict == "different")
     checks.append(_round_check(pack, item, vendor))
@@ -1254,6 +1302,10 @@ def _verify_pair(
     checks.append(_ink_check(vendor, ink))
     failed = _first_failure(checks)
     if failed is not None:
+        if objected:
+            # The AI's "different points" was not supported, but another check stops it: the
+            # AI's own reason stays the item's reason.
+            return one.grey(DIFFERENT_POINTS, "different_reference", checks)
         return _blocked(one, failed, matched, checks)
     why = (
         f"The vendor prints {_label_words(vendor)}; the architect prints "
