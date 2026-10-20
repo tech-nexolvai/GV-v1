@@ -81,5 +81,6 @@ with `source: brand_prototype`, like an architect comparison; code checks the pa
 proof says "reference: brand prototype". The prototype also governs where the ID set points to the
 brand standard ("per brand standard").
 
-**GV's own note taken as the vendor's.** A coloured value, or a callout ending "by GV", is GV's
-markup. Never report it as the vendor's value or tag.
+**GV's own note taken as the vendor's.** A callout ending "by GV" is GV's markup, and on GV's
+combined review sheets a coloured value may be GV's earlier markup. On an ordinary upload every
+colour is the drawing's own ink. Never report GV's markup as the vendor's value or tag.

@@ -128,7 +128,6 @@ def _agreeing(**changes: Any) -> dict[str, Any]:
         "vendor_to": "wall_face (right)",
         "architect_from": "wall_face (left)",
         "architect_to": "wall_face (right)",
-        "vendor_ink_black": "yes",
         "millwork": "unsure",
         "note": "",
     }
