@@ -579,11 +579,11 @@ def _stream(
                 _merge(answer.usage, event.get("usage"))
     except ProviderFailure:
         if spent is not None:
-            _add(spent, answer.usage)
+            _add(spent, _broken_usage(answer))
         raise
     except Exception as error:  # noqa: BLE001 - every failure is told plainly
         if spent is not None:
-            _add(spent, answer.usage)
+            _add(spent, _broken_usage(answer))
         raise failure_from(error) from None
     finally:
         if streams is not None:
@@ -783,6 +783,26 @@ def estimate_cost_usd(model_id: str, usage: Mapping[str, int]) -> float:
     return float(round(cost, 6))
 
 
+#: Characters of streamed words or thinking per output token, counted low so a broken stream's
+#: estimate is never under what it cost (English runs about 4 per token).
+_CHARS_PER_TOKEN: Final = 3
+
+
+def _broken_usage(answer: _Answer) -> dict[str, int]:
+    """The usage of a stream that broke or was stopped (#1769): what it reported, with its output
+    at least what it had streamed (words and thinking); the service reports the output only at
+    the end, and the words already streamed are paid for."""
+    usage = {key: int(value or 0) for key, value in answer.usage.items()}
+    streamed = sum(
+        len(str(block.get("text") or "")) + len(str(block.get("thinking") or ""))
+        for block in answer.content
+    )
+    usage["output_tokens"] = max(
+        usage.get("output_tokens", 0), -(-streamed // _CHARS_PER_TOKEN)
+    )
+    return usage
+
+
 def _add(total: dict[str, int], usage: Mapping[str, int]) -> None:
     for key in (
         "input_tokens",
@@ -937,9 +957,11 @@ def compare_item(
             finally:
                 first_event = None
         assert answer is not None
-        _add(usage, answer.usage)
+        # A stream that ended with no stop reason was cut short: its output was not reported.
+        used = answer.usage if answer.stop_reason else _broken_usage(answer)
+        _add(usage, used)
         answered_by = answer.model or model.id
-        cost += estimate_cost_usd(answered_by, answer.usage)
+        cost += estimate_cost_usd(answered_by, used)
         if answer.stop_reason == "refusal":
             return outcome(
                 status="failed",

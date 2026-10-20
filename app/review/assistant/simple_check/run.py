@@ -703,16 +703,21 @@ class _Run:
         seen, the runaway guard checked, the progress moved on."""
         engine = self.engine
         with self.lock:
-            self.reserved -= self.reservations.pop(outcome.work_item, 0)
             if outcome.work_item in self.refused:
                 outcome = outcome.model_copy(
                     update={"reason": "not started: the per-answer cap would be passed"}
                 )
             self.outcomes[outcome.work_item] = outcome
-        self._save_outcome(outcome)
-        model = _model(outcome.model) or _model(outcome.asked_model)
-        if model is not None and outcome.usage:
-            self._charge(model, outcome)
+        try:
+            self._save_outcome(outcome)
+            model = _model(outcome.model) or _model(outcome.asked_model)
+            if model is not None and outcome.usage:
+                self._charge(model, outcome)
+        finally:
+            # The hold goes only once the money is charged (#1769): in between, a call starting
+            # elsewhere sees one or the other, never neither, so two calls never pass the cap.
+            with self.lock:
+                self.reserved -= self.reservations.pop(outcome.work_item, 0)
         if outcome.status == "ok":
             seen = [
                 {

@@ -30,6 +30,7 @@ from app.review.assistant.chat_service import SIMPLE_CONTINUE_WORDS, _simple_of,
 from app.review.assistant.simple_check import blind as blind_module
 from app.review.assistant.simple_check import run as run_module
 from app.review.assistant.simple_check.compare import (
+    CompareOutcome,
     CompareSettings,
     compare_all,
     compare_item,
@@ -126,6 +127,44 @@ def test_a_stream_that_breaks_midway_is_recorded_and_charged() -> None:
     assert outcome.usage["input_tokens"] == 9000
     assert outcome.usage["cache_read_input_tokens"] == 2000
     assert outcome.cost_usd > 0
+
+
+class _BreaksAfterWords:
+    """A stream that bills its prompt, streams 3,000 characters of thinking and words, then
+    breaks: the service never reported the output, though it is paid for."""
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        yield _events("{}")[0]
+        yield {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}
+        yield {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "x" * 2000},
+        }
+        yield {"type": "content_block_start", "index": 1, "content_block": {"type": "text"}}
+        yield {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "text_delta", "text": "y" * 1000},
+        }
+        raise ConnectionError("connection reset")
+
+    def close(self) -> None:
+        pass
+
+
+def test_a_broken_stream_counts_the_words_it_had_streamed() -> None:
+    outcome = compare_item(
+        _item(),
+        provider=_OneStream(_BreaksAfterWords()),  # type: ignore[arg-type]
+        source=_pictures,
+        system=SYSTEM,
+        settings=CompareSettings(retries=0),
+        sleep=lambda _s: None,
+    )
+    assert outcome.status == "failed"
+    assert outcome.usage["input_tokens"] == 9000
+    assert outcome.usage["output_tokens"] >= 3000 // 4  # never less than what was streamed
 
 
 def test_stop_closes_the_stream_and_its_usage_is_kept() -> None:
@@ -298,6 +337,36 @@ def test_a_compare_attempt_is_held_at_its_whole_reply_room_and_each_retry_again(
     with run.lock:
         run.reserved -= run.reservations.pop(item.id, 0)
     assert run.reserved == 0
+
+
+def test_a_drawings_hold_goes_only_after_its_money_is_charged() -> None:
+    """Between letting the hold go and charging the answer, a call starting elsewhere would see
+    neither and could pass the cap with this one: the charge comes first."""
+    run = run_module._Run(_engine(3 * DOLLARS, []), run_module.SimpleOptions.of({}))  # type: ignore[arg-type]
+    item = _item()
+    run.reserved = 2 * DOLLARS
+    run.reservations[item.id] = 2 * DOLLARS
+    held_at_charge: list[int] = []
+    run._save_outcome = lambda _outcome: None  # type: ignore[method-assign]
+    run._charge = lambda _model, _outcome: held_at_charge.append(run.reserved)  # type: ignore[method-assign]
+    run._progress = lambda: None  # type: ignore[method-assign]
+    run._tell = lambda *_args: None  # type: ignore[method-assign]
+    run._on_outcome(
+        CompareOutcome(
+            work_item=item.id,
+            status="failed",
+            reason="the model call failed",
+            asked_model="claude-sonnet-5-5",
+            model="claude-sonnet-5-5",
+            effort="high",
+            attempts=1,
+            usage={"input_tokens": 9000, "output_tokens": 3000},
+            cost_usd=0.05,
+            seconds=1.0,
+        )
+    )
+    assert held_at_charge == [2 * DOLLARS]  # still held while the money is charged
+    assert run.reserved == 0 and item.id not in run.reservations
 
 
 def test_blind_looks_running_together_never_pass_the_cap(
