@@ -734,7 +734,8 @@ def settle_candidates(
 ) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
     """Decide each candidate whole-page drawing from its page's labels (#1772), in place: a page
     whose labels outside its pasted drawings (every route: printed text, AutoCAD's SHX text, the
-    vendor's pen strokes; never a derived `EQ` part) number at least `_DRAWING_DIMS` is one
+    vendor's pen strokes, and its millimetre-only values; never a derived `EQ` part) number at
+    least `_DRAWING_DIMS` is one
     whole-page drawing (its stamps are not drawings); any other stays as it was. Returns the
     pages that had a candidate (their labels' sides are set again from their drawings) and those
     that became drawings."""
@@ -742,7 +743,13 @@ def settle_candidates(
     for entry in (dims or {}).get("pages") or []:
         if isinstance(entry, Mapping):
             key = (str(entry.get("file")), int(entry.get("page") or 0))
-            by_page[key] = [x for x in entry.get("labels") or [] if isinstance(x, Mapping)]
+            # Its labels, and the millimetre-only values it prints (`metric`: never labels, but
+            # dimensions all the same).
+            by_page[key] = [
+                x
+                for x in [*(entry.get("labels") or []), *(entry.get("metric") or [])]
+                if isinstance(x, Mapping)
+            ]
     found: list[tuple[str, int]] = []
     promoted: list[tuple[str, int]] = []
     used = page_map.setdefault("upload_roles", {})

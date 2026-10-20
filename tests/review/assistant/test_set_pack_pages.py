@@ -248,3 +248,69 @@ def test_an_shx_comment_page_is_a_drawing_and_keeps_its_text(tmp_path: Path, upl
     labels = _read(folder, "dims.json")["pages"][0]["labels"]
     assert sorted(lab["text"] for lab in labels) == ['18"', '24"', '30"']
     assert {lab["side"] for lab in labels} == {"vendor"}
+
+
+def _candidate_map(halves: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "upload_roles": {},
+        "pages": [
+            {
+                "file": "shop.pdf",
+                "page": 1,
+                "role": "general",
+                "halves": halves,
+                "rounds": [],
+                "candidate": {
+                    "box": [0.0, 0.0, 600.0, 400.0],
+                    "role": "vendor",
+                    "heading": None,
+                    "round": 2,
+                    "from_upload": True,
+                    "upload": "vendor",
+                },
+            }
+        ],
+    }
+
+
+def _value(x: float, **more: Any) -> dict[str, Any]:
+    return {"box": [x, 100.0, x + 20, 110.0], **more}
+
+
+def test_settling_counts_every_route_but_never_a_derived_part_or_a_pasted_drawing() -> None:
+    stamp = {"box": [0.0, 0.0, 200.0, 400.0], "role": "general", "heading": None, "round": None}
+    page_map = _candidate_map([stamp])
+    dims = {
+        "pages": [
+            {
+                "file": "shop.pdf",
+                "page": 1,
+                "labels": [
+                    _value(50),  # inside the pasted stamp: not the page's own
+                    _value(300, route="text"),
+                    _value(350, route="drawn"),
+                    _value(400, derived=True),
+                ],
+                "metric": [_value(450, mm="794")],  # a millimetre-only value counts
+            }
+        ]
+    }
+    decided, promoted = set_pack.settle_candidates(page_map, dims)
+    assert decided == promoted == [("shop.pdf", 1)]
+    entry = page_map["pages"][0]
+    assert entry["role"] == "vendor" and entry["rounds"] == [2]
+    assert entry["halves"] == [
+        {
+            "box": [0.0, 0.0, 600.0, 400.0],
+            "role": "vendor",
+            "heading": None,
+            "round": 2,
+            "from_upload": True,
+        }
+    ]
+    assert page_map["upload_roles"] == {"shop.pdf": "vendor"}
+    # Two values of its own: it stays as it was.
+    page_map = _candidate_map([stamp])
+    dims["pages"][0]["metric"] = []
+    assert set_pack.settle_candidates(page_map, dims) == ([("shop.pdf", 1)], [])
+    assert page_map["pages"][0]["halves"] == [stamp] and "candidate" not in page_map["pages"][0]
