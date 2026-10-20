@@ -36,7 +36,7 @@ import math
 import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
 from typing import Any, Final
@@ -48,6 +48,7 @@ from app.review.assistant.plan_check import (
     read_answers,
     with_assumptions,
 )
+from app.review.assistant.simple_check.pairing import UNPAIRED
 
 __all__ = [
     "DRAWN_JOB_CAP_MICROS",
@@ -55,10 +56,12 @@ __all__ = [
     "MAX_JOB_PAGES",
     "MIN_JOB_PAGES",
     "PAGE_MAP_WAIT_SECONDS",
+    "CrossPairs",
     "FanOutPlan",
     "HelperJob",
     "drawn_job_cap",
     "pack_ready",
+    "pair_lines",
     "plan_assumptions",
     "plan_jobs",
     "read_page_map",
@@ -104,6 +107,10 @@ class HelperJob:
     """The other lens's job on the same pages (its number)."""
     cap_micros: int | None = None
     """A drawn-things helper's own money cap."""
+    pairs: tuple[tuple[int, tuple[tuple[str, int], ...]], ...] = ()
+    """Its pages paired across separate uploads (#1798): (page, the architect's (file, page)s)."""
+    unpaired: tuple[tuple[int, str], ...] = ()
+    """Its pages no architect drawing was paired with across the uploads, and why (#1798)."""
 
     @property
     def description(self) -> str:
@@ -125,6 +132,46 @@ class FanOutPlan:
     def pages(self) -> int:
         """The pages compared (each page once, whatever its lenses)."""
         return len({page for job in self.jobs for page in job.pages})
+
+
+@dataclass(frozen=True, slots=True)
+class CrossPairs:
+    """The vendor pages paired across separate uploads (#1798), from the work list
+    (`simple_check.worklist`, code and the AI page matcher agree): each page's architect
+    (file, page)s, and the pages not paired with the reason."""
+
+    pairs: Mapping[int, tuple[tuple[str, int], ...]] = field(default_factory=dict)
+    unpaired: Mapping[int, str] = field(default_factory=dict)
+    words: Mapping[int, str] = field(default_factory=dict)
+    """How each paired page was paired (plain words)."""
+
+    @classmethod
+    def of(cls, work: Any) -> CrossPairs:
+        """From a work list: its items paired across the uploads, and its vendor drawings skipped
+        as not paired (a page with any pair counts as paired)."""
+        pairs: dict[int, list[tuple[str, int]]] = {}
+        words: dict[int, str] = {}
+        for item in getattr(work, "items", ()):
+            if item.paired_by is None:
+                continue
+            page = item.vendor.own_page
+            found = pairs.setdefault(page, [])
+            for drawing in item.architect:
+                where = (drawing.file, drawing.own_page)
+                if where not in found:
+                    found.append(where)
+            words.setdefault(page, item.paired_by)
+        unpaired: dict[int, str] = {}
+        main = getattr(work, "file", None)
+        for skipped in getattr(work, "skipped", ()):
+            if (
+                skipped.file == main
+                and skipped.drawing
+                and skipped.reason.startswith(UNPAIRED)
+                and skipped.page not in pairs
+            ):
+                unpaired.setdefault(skipped.page, skipped.reason)
+        return cls({p: tuple(v) for p, v in pairs.items()}, unpaired, words)
 
 
 @dataclass(slots=True)
@@ -315,11 +362,15 @@ def plan_jobs(
     main_file: str | None,
     parallel: int,
     outside: Callable[[Sequence[int]], str | None] | None = None,
+    across: CrossPairs | None = None,
 ) -> FanOutPlan | None:
     """The full check's helper jobs (see the module's words); `None` when the page map gives no
     drawing to compare (then the lead plans, as in a chat). `outside` (a strict product scope,
     `product_scope.outside_unit`): why an area's pages hold only products the check does not
-    cover; those pages are recorded as not compared, with that reason, and get no helper."""
+    cover; those pages are recorded as not compared, with that reason, and get no helper.
+    `across` (#1798): the vendor pages paired across separate uploads (code and the AI page
+    matcher agree, `cross_pairs`): each job looks at its pages' paired architect pages, and is
+    told which of its pages are paired with which, and which are not paired."""
     if not page_map:
         return None
     entries = _entries(page_map, main_file)
@@ -385,8 +436,56 @@ def plan_jobs(
             for e in others
             if isinstance(e.get("page"), int) and (_area(e) or "").lower() in wanted
         ]
-        jobs.append(HelperJob(number, pages, file, tuple(reference), tuple(areas)))
+        paired_pages: list[tuple[int, tuple[tuple[str, int], ...]]] = []
+        unpaired: list[tuple[int, str]] = []
+        if across is not None:
+            for page in pages:
+                if page in across.pairs:
+                    paired_pages.append((page, across.pairs[page]))
+                    reference += [p for p in across.pairs[page] if p not in reference]
+                elif page in across.unpaired:
+                    unpaired.append((page, across.unpaired[page]))
+        jobs.append(
+            HelperJob(
+                number,
+                pages,
+                file,
+                tuple(dict.fromkeys(reference)),
+                tuple(areas),
+                pairs=tuple(paired_pages),
+                unpaired=tuple(unpaired),
+            )
+        )
     return FanOutPlan(tuple(jobs), skipped)
+
+
+def pair_lines(
+    pairs: Sequence[tuple[int, Sequence[tuple[str, int]]]],
+    unpaired: Sequence[tuple[int, str]],
+    uploads: str,
+) -> list[str]:
+    """A helper's brief lines for its pages paired across separate uploads (#1798), and for those
+    no architect drawing could be agreed on: empty when there are neither."""
+    lines: list[str] = []
+    if pairs:
+        paired = "; ".join(
+            f"your p.{page} with "
+            + ", ".join(f"{uploads}/{name} p.{number}" for name, number in where)
+            for page, where in pairs
+        )
+        lines.append(
+            "PAIRED ACROSS THE UPLOADS (code and the AI page matcher agree on which architect "
+            f"drawing shows the same piece): {paired}. Compare each of these pages only with its "
+            "paired architect pages."
+        )
+    if unpaired:
+        left = "; ".join(f"p.{page}: {why}" for page, why in unpaired)
+        lines.append(
+            "NOT PAIRED (no architect drawing of the same piece could be agreed on): "
+            f"{left}. Do not pick an architect drawing for these pages yourself (a wrong pair "
+            "makes false differences): record each one Not compared with that reason."
+        )
+    return lines
 
 
 def drawn_job_cap(jobs: int) -> int:
@@ -400,23 +499,9 @@ def with_lenses(plan: FanOutPlan) -> FanOutPlan:
     then a drawn-things job for each, on the same pages, with its money cap and its partner."""
     count = len(plan.jobs)
     cap = drawn_job_cap(count)
-    numbers = [
-        HelperJob(
-            job.number, job.pages, job.file, job.reference, job.areas, "numbers", count + job.number
-        )
-        for job in plan.jobs
-    ]
+    numbers = [replace(job, lens="numbers", partner=count + job.number) for job in plan.jobs]
     drawn = [
-        HelperJob(
-            count + job.number,
-            job.pages,
-            job.file,
-            job.reference,
-            job.areas,
-            "drawn",
-            job.number,
-            cap,
-        )
+        replace(job, number=count + job.number, lens="drawn", partner=job.number, cap_micros=cap)
         for job in plan.jobs
     ]
     return FanOutPlan((*numbers, *drawn), plan.skipped)

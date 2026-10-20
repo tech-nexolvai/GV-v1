@@ -218,7 +218,20 @@ def item_text(item: WorkItem, pictures: Sequence[Picture]) -> str:
         f"VENDOR LABELS ({len(vendor.labels)}; each goes in a pair or in unaccounted_labels): "
         + _labels(vendor.labels)
     )
+    if item.prototype_reference:
+        lines.append(
+            "The architect gives no elevation of this area: the brand prototype is the reference. "
+            "Compare the vendor with the brand prototype drawing(s) below as you would with the "
+            "architect's (architect_label: the prototype's label)."
+        )
     for n, drawing in enumerate(item.architect):
+        if item.prototype_reference:
+            role = "the reference brand prototype drawing" if n == 0 else "another one"
+            lines.append(
+                f"Brand prototype drawing {drawing.ref}, {role} (page {drawing.page}; images "
+                f"{_images_of(pictures, drawing.ref)}). Labels: {_labels(drawing.labels)}"
+            )
+            continue
         role = "the governing architect drawing" if n == 0 else "another architect drawing"
         about = [f"page {drawing.page}"]
         if drawing.titles:
