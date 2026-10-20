@@ -208,3 +208,9 @@ def test_label_places_setting_reaches_the_compare_call() -> None:
         assert CompareSettings.from_settings(settings).label_places is value
     # A run record saved before the switch existed reads as on.
     assert CompareSettings().label_places is True
+
+
+def test_label_places_can_be_switched_off_for_the_ab() -> None:
+    text = prompts.item_text(_item(), [], places=False)
+    assert "[horizontal" not in text and "x0." not in text
+    _assert_fenced(text)
