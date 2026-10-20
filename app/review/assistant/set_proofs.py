@@ -40,6 +40,7 @@ __all__ = [
     "PROOFS_FILE",
     "keep_ledger_entry",
     "keep_value",
+    "ledger_input",
     "load",
     "proved_at",
     "value_entry",
@@ -52,9 +53,17 @@ _VERSION: Final = 1
 #: The ledger keeps at most this many of each kind (the newest).
 MAX_VALUES: Final = 2000
 MAX_LEDGER: Final = 2000
-#: How far (points) a kept spot's centre may lie outside a finding's box and still be its spot.
+#: How far (points) a kept spot may reach outside a finding's box and still lie at its spot.
 _SLACK_PT: Final = 2.0
 _LOCK = threading.Lock()
+
+
+def _readers() -> int:
+    """The readers' version a kept value was proved with (`read_number.READER_VERSION`): a value
+    kept by older readers is never used once they change (their own cache does the same)."""
+    from app.review.assistant.read_number import READER_VERSION
+
+    return int(READER_VERSION)
 
 
 def _now() -> str:
@@ -139,6 +148,7 @@ def value_entry(proof: Mapping[str, Any], chat: str | None = None) -> dict[str, 
         "label": answer.get("label") or proof.get("label"),
         "inches": inches,
         "route": route,
+        "readers": _readers(),
         "chat": chat,
         "at": _now(),
     }
@@ -167,19 +177,35 @@ def keep_value(folder: Path | None, proof: Mapping[str, Any], chat: str | None =
     return True
 
 
-def keep_ledger_entry(folder: Path | None, tool: str, raw: object, chat: str | None = None) -> bool:
+def ledger_input(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """A `record_string` / `record_reading` input as kept: without `replaces` (a chat-local id)."""
+    given = {k: v for k, v in raw.items() if k != "replaces"}
+    return dict(json.loads(json.dumps(given)))
+
+
+def keep_ledger_entry(
+    folder: Path | None,
+    tool: str,
+    raw: object,
+    chat: str | None = None,
+    replaced: Mapping[str, Any] | None = None,
+) -> bool:
     """Keeps a `record_string` / `record_reading` a chat recorded (its tool input); True when
-    kept. Never raises."""
+    kept. `replaced`: the kept input of the entry this one re-reads (`replaces`), dropped, so a
+    misread the chat corrected never comes back in a later check. Never raises."""
     if folder is None or tool not in ("record_string", "record_reading"):
         return False
     if not isinstance(raw, Mapping):
         return False
-    given = {k: v for k, v in raw.items() if k != "replaces"}
-    entry = {"tool": tool, "input": json.loads(json.dumps(given)), "chat": chat, "at": _now()}
+    try:
+        entry = {"tool": tool, "input": ledger_input(raw), "chat": chat, "at": _now()}
+    except (TypeError, ValueError):
+        return False
+    gone = [entry["input"], *([dict(replaced)] if replaced is not None else [])]
     try:
         with _LOCK:
             data = load(folder)
-            kept = [e for e in data["ledger"] if e.get("input") != entry["input"]]
+            kept = [e for e in data["ledger"] if e.get("input") not in gone]
             data["ledger"] = [*kept, entry][-MAX_LEDGER:]
             _write(folder, data)
     except (OSError, TypeError, ValueError) as failed:
@@ -197,12 +223,17 @@ def proved_at(
     box: Sequence[float],
     inches: Decimal,
 ) -> dict[str, Any] | None:
-    """A kept value proof at this spot (its box's centre inside `box`) of these inches, on this
-    file's page and side; the newest when several. `None` when none."""
+    """A kept value proof at this spot of these inches, on this file's page and side, by today's
+    readers; the newest when several. `None` when none. The kept box (the spot the chat's tool
+    read: a `verify_value` match says only that the value is printed somewhere inside it) must
+    lie wholly inside `box`, so the value it proved is printed at the finding's own spot."""
     x0, y0, x1, y1 = (float(v) for v in box)
     found = None
+    readers = _readers()
     for entry in proofs.get("values") or []:
         if entry.get("file") != file or entry.get("page") != page or entry.get("side") != side:
+            continue
+        if entry.get("readers") != readers:
             continue
         try:
             if Decimal(str(entry.get("inches"))) != inches:
@@ -210,7 +241,11 @@ def proved_at(
             ex0, ey0, ex1, ey1 = (float(v) for v in entry.get("box") or ())
         except (InvalidOperation, TypeError, ValueError):
             continue
-        cx, cy = (ex0 + ex1) / 2, (ey0 + ey1) / 2
-        if x0 - _SLACK_PT <= cx <= x1 + _SLACK_PT and y0 - _SLACK_PT <= cy <= y1 + _SLACK_PT:
+        if (
+            ex0 >= x0 - _SLACK_PT
+            and ey0 >= y0 - _SLACK_PT
+            and ex1 <= x1 + _SLACK_PT
+            and ey1 <= y1 + _SLACK_PT
+        ):
             found = dict(entry)
     return found

@@ -124,3 +124,70 @@ def test_the_proving_step_takes_a_chat_proof_its_own_tools_could_not_read(
     assert (found["checks"].get("verify_architect") or {}).get("result") != "match"
     assert any(e["tool"] == "chat proof" for e in found["proof_tools"])
     json.dumps(found)  # stored as JSON
+
+
+def test_a_chat_match_over_a_wide_box_never_proves_a_small_spot_inside_it(tmp_path: Path) -> None:
+    """Review of #1812: a verify_value match says only that the value is somewhere in the box it
+    was asked about; a finding's smaller spot inside that box is not proved by it."""
+    wide = {**_verify("match", '24"'), "box": [100.0, 100.0, 500.0, 400.0]}
+    set_proofs.keep_value(tmp_path, wide, "chat-1")
+    proofs = set_proofs.load(tmp_path)
+    at = {"file": "a.pdf", "page": 3, "side": "vendor", "inches": Decimal(24)}
+    assert not set_proofs.proved_at(proofs, **at, box=[290, 240, 310, 260])
+    assert set_proofs.proved_at(proofs, **at, box=[99, 99, 501, 401])
+
+
+def test_a_proof_by_older_readers_is_never_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.review.assistant import read_number
+
+    set_proofs.keep_value(tmp_path, _verify("match"), "chat-1")
+    proofs = set_proofs.load(tmp_path)
+    at = {"file": "a.pdf", "page": 3, "side": "vendor", "box": [290, 95, 370, 120]}
+    assert set_proofs.proved_at(proofs, **at, inches=Decimal(46))
+    monkeypatch.setattr(read_number, "READER_VERSION", read_number.READER_VERSION + 1)
+    assert not set_proofs.proved_at(proofs, **at, inches=Decimal(46))
+
+
+def test_a_string_the_chat_re_read_replaces_its_misread_in_the_kept_ledger(
+    tmp_path: Path,
+) -> None:
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    folder = engine.tools.workspace.set_pack
+    engine.settings = dataclasses.replace(engine.settings, mode="chat")
+    misread = {"page": 3, "side": "vendor", "parts": ['12"', '24"', '12"'], "printed_total": '50"'}
+    engine._ledger_tool("record_string", misread, "lead")
+    reread = {**misread, "parts": ['13"', '24"', '13"'], "replaces": "S1"}
+    engine._ledger_tool("record_string", reread, "lead")
+    kept = [e["input"] for e in set_proofs.load(folder)["ledger"]]
+    assert kept == [{k: v for k, v in reread.items() if k != "replaces"}]
+
+
+def test_a_spot_the_readers_read_against_is_never_overridden_by_a_chat_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.review.assistant.chat_tools import ChatTools
+
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    finding_id = _typed_wrong(harness)
+    finding = next(f for f in engine.book.live() if f["id"] == finding_id)
+    box = finding["vendor_box"]
+    name = str(engine.tools.uploads[0]["name"])
+    proof = {"tool": "read_number", "file": name, "page": 3, "side": "vendor",
+             "box": [box["x0"], box["y0"], box["x1"], box["y1"]],
+             "answer": {"outcome": "read", "value": "46", "text": '46"',
+                        "agreed": ["ocr", "shape"]}}  # fmt: skip
+    assert set_proofs.keep_value(engine.tools.workspace.set_pack, proof, "chat-1")
+    unread = {"result": "cannot_read", "route": "none", "read": None, "reads": [],
+              "reason": "", "value": None, "pending": False, "words": "unread",
+              "read_again": True, "read_number_code": "readers_disagree"}  # fmt: skip
+    monkeypatch.setattr(ChatTools, "verify_answer", lambda *a, **k: dict(unread))
+
+    counts = _run(harness)._prove_values("verifier")
+
+    assert not counts.get("chat_proof")
+    found = next(f for f in engine.book.live() if f["id"] == finding_id)
+    assert (found["checks"].get("verify_vendor") or {}).get("result") != "match"

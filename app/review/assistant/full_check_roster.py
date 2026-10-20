@@ -206,6 +206,9 @@ _PROOF_SIDES: Final = (
 _PROOF_BUDGET_S: Final = 240.0
 _PROOF_ENTRIES: Final = 8
 _PROOF_WORDS: Final = 240
+#: read_number's reasons that say the spot reads against the value (or as two values): an older
+#: chat proof never overrides them (#1805).
+_READ_AGAINST: Final = frozenset({"readers_disagree", "ruler_blocks", "units_disagree", "cut_off"})
 #: Labels listed near one claimed spot for the verifier.
 _NEAR_LABELS: Final = 8
 _NEAR_PT: Final = 60.0
@@ -818,15 +821,24 @@ def keeps_numbers(code_text: str, reworded: str) -> bool:
 # ---- the pages left (P2, #1634) ------------------------------------------------------------------
 
 #: A helper's coverage note that says it never compared the page (it "skipped with a note").
-#: #1805: only words about the helper's own work count ("did not reach", "partly compared"), never
-#: about the drawing ("the vendor did not dimension the toe kick"), or a compared page was re-read.
 _UNREACHED: Final = re.compile(
-    r"not reached|not opened|budget|ran out|out of (?:money|time)|not compared in detail"
-    r"|(?:I |helper )?did not (?:get to|reach|open|zoom|compare|finish)"
-    r"|(?:partly|partially) (?:compared|checked|read|done)|only (?:the )?overview|not finished"
-    r"|unhandled",
+    r"not reached|not opened|budget|ran out|out of (?:money|time)|not compared in detail|did not"
+    r"|partly|partially|only (?:the )?(?:overview|lead|vendor)|not finished|unhandled",
     re.IGNORECASE,
 )
+#: #1805: what a note says about the drawings, not the helper's own work ("the vendor did not
+#: dimension the toe kick"), is left out before `_UNREACHED` looks: a compared page was re-read.
+#: Any other "did not" or "partly" still counts as unfinished (the safe side).
+_ABOUT_THE_DRAWING: Final = re.compile(
+    r"\b(?:vendor|architect|drawings?|elevations?|plans?|sections?|details?|it|they|which)"
+    r"(?:'s)?\s+(?:does|did|do|has|have)\s+not\b",
+    re.IGNORECASE,
+)
+
+
+def _unreached(note: str) -> bool:
+    """Whether a helper's coverage note says it did not compare (all of) the page."""
+    return _UNREACHED.search(_ABOUT_THE_DRAWING.sub(" ", note)) is not None
 
 
 _ONLY_THESE: Final = (
@@ -857,7 +869,7 @@ def unfinished_pages(planned: Sequence[int], coverage: Mapping[str, Any] | None)
         if entry.get("status") == "not_opened" or (
             entry.get("status") in ("not_comparable", "different", "same")
             and by_helper
-            and _UNREACHED.search(note)
+            and _unreached(note)
         ):
             out[page] = note or "not reached"
     return out
@@ -913,6 +925,11 @@ class _Run:
     not_done: list[str] = field(default_factory=list)
     spent: dict[str, int] = field(default_factory=dict)
     stopped_for_money: bool = False
+    #: A specialist stopped at its own cap before the price was used up (#1805): judged again at
+    #: the finish, when the later steps may have used the rest.
+    capped_early: bool = False
+    #: The pages the lead review took (`_lead_review`), to name the open ones it could not.
+    lead_taken: set[int] = field(default_factory=set)
     pairs: dict[str, str] = field(default_factory=dict)
     agents: list[Any] = field(default_factory=list)
     #: The phase whose budget the devil's advocate's blind picks are charged to: its own (P4), or
@@ -968,9 +985,15 @@ class _Run:
             self.stopped_for_money = True
             self._note(f"{description}: stopped at its cap{tail}")
         else:
-            self._note(
-                f"{description}: used its share of the price (the rest is kept for the later checks){tail}"
-            )
+            self.capped_early = True
+            self._note(f"{description}: used its share of the price{tail}")
+
+    def _stopped_for_money(self) -> bool:
+        """At the finish: whether the check stopped for money. A step that stopped at its share
+        while money was kept for later steps counts once the later steps used the rest (#1805)."""
+        if not self.stopped_for_money and self.capped_early and self._used_up():
+            self.stopped_for_money = True
+        return self.stopped_for_money
 
     def _charge(self, phase: str, cost: int) -> None:
         self.spent[phase] = self.spent.get(phase, 0) + cost
@@ -1454,7 +1477,9 @@ class _Run:
                 set_proofs.proved_at(
                     self.chat_proofs, file=name, page=page, side=side, box=coords, inches=inches
                 )
-                if answer.get("result") == "cannot_read" and inches is not None
+                if answer.get("result") == "cannot_read"
+                and inches is not None
+                and answer.get("read_number_code") not in _READ_AGAINST
                 else None
             )
             if kept is not None:
@@ -1734,11 +1759,14 @@ class _Run:
         cap = self._lead_money()
         pages, unplaced = self._lead_pages(cap, page_map)
         if not pages or cap <= 0:
+            self._note_left_open()
             return
         model = BY_SHORT["opus"]
         if not engine._fits(engine._price(model, 30_000, 4_000)):
             self._note(f"the lead review of {page_ranges_words(pages)}: not reached")
+            self._note_left_open()
             return
+        self.lead_taken = set(pages)
         brief = helper_brief(
             pages,
             file_name=f"{UPLOADS}/{engine.book.main_file}",
@@ -1774,6 +1802,29 @@ class _Run:
         self._drop_placed_salvage()
         if entries[0].get("stopped") == "cost_cap":
             self._capped(agent.description)
+        self._note_left_open()
+
+    def _note_left_open(self) -> None:
+        """#1805: a page a numbers helper compared but left checklist lines open on is never
+        re-read by a gap closer; it waits for the lead review. One the lead review did not take
+        is said so, on its coverage and in what was not done, never left silent."""
+        engine = self.engine
+        with engine._lock:
+            open_gaps: dict[int, str] = {}
+            for gaps in engine._checklist_gaps.values():
+                for page, why in gaps.items():
+                    open_gaps.setdefault(page, why)
+        left = [p for p in self.repeats_avoided if p not in self.lead_taken and p in open_gaps]
+        if not left:
+            return
+        for page in left:
+            engine._note_coverage(
+                page, f"left open by its helper ({open_gaps[page]}); not compared again"
+            )
+        self._note(
+            f"{page_ranges_words(left)}: checklist lines left open by the helpers, not compared "
+            "again within the fixed price"
+        )
 
     def _helper_notes(self, pages: Sequence[int]) -> str:
         """The page helpers' and gap closers' own reports on these pages, short (data)."""
@@ -2713,7 +2764,7 @@ class _Run:
         engine = self.engine
         from app.review.assistant.chat_engine import MessageOutcome
 
-        if stopped is None and self.stopped_for_money:
+        if stopped is None and self._stopped_for_money():
             stopped = "cost_cap"
         cap_hit = "message" if stopped == "cost_cap" else None
         try:

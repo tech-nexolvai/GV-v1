@@ -63,20 +63,17 @@ _LOCAL_LESSONS_CHARS: Final = 4_000
 #: The tools' arguments and the set pack's JSON shapes (#1805): the paid round of 2026-10-20 lost
 #: helper steps to `view` with a `box` it does not take, bash scripts that read `dims.json`'s page
 #: list as a dict, and a helper printing whole pack files instead of answering.
-PACK_SHAPES: Final = f"""\
+PACK_SHAPES: Final = """\
 TOOLS AND FILES. view takes only path, description and (for a text file) view_range: it has no box; \
-to see part of a page, zoom with crops [{{page, box}}]. Read the set pack's JSON with a short python \
+to see part of a page, zoom with crops [{page, box}]. Read the set pack's JSON with a short python \
 command that filters what you need and prints at most 40 lines; never print a whole file or folder. Its shapes (each "pages" is a LIST, one entry per file and page):
-- dims.json {{version, files, pages: [{{file, page, labels: [{{id, text, inches, box: [x0, y0, x1, \
-y1], side, orientation, route, dim_line}}]}}]}}
-- page_map.json {{version, files, pages: [{{file, page, role, halves: [{{role, round, heading, box}}], \
-rounds, section, area, headings}}]}}
-- pairs.json {{version, pairs: [{{file, page, vendor, architect, status, how, method}}], pages}}
-- notes.json {{version, pages: [{{file, page, drawings, architect_only_tags, vendor_only_tags}}]}}
-- scales.json {{version, pages: [{{file, page, scales, labels}}]}}; annotations.json is itself a \
-list [{{file, page, kind, author, text, box}}]
-Example: python3 -c "import json; d=json.load(open('{SET_PACK}/dims.json')); \
-[print(l['id'], l['text'], l['side']) for p in d['pages'] if p['page'] == 7 for l in p['labels']]" lists page 7's labels."""
+- dims.json {version, files, pages: [{file, page, labels: [{id, text, inches, box: [x0, y0, x1, \
+y1], side, orientation, route, dim_line}]}]}
+- page_map.json {version, files, pages: [{file, page, role, halves: [{role, round, heading, box}], \
+rounds, section, area, headings}]}
+- pairs.json {version, pairs: [{file, page, vendor, architect, status, how, method}], pages}
+- notes.json, scales.json {version, pages: [{file, page, ...}]}; annotations.json is a list \
+[{file, page, kind, author, text, box}]"""
 
 #: Shared by every helper kind: why the work matters, what a miss costs, the computer, the markup.
 HELPER_CORE: Final = f"""\

@@ -960,6 +960,8 @@ class ChatEngine:
         self._trust_index: int | None = None
         #: A code-planned helper's checklist pages still open after its report (#1515).
         self._checklist_gaps: dict[int, dict[int, str]] = {}
+        #: This answer's ledger entries kept in the set's proof ledger, by id (#1805).
+        self._kept_inputs: dict[str, dict[str, Any]] = {}
         #: Two-lens helpers (#1569): those reported whose partner has not yet (their findings'
         #: second reads wait for the fold), and the folds where the two disagreed.
         self._lens_reported: set[int] = set()
@@ -2086,11 +2088,20 @@ class ChatEngine:
         """`record_string`, `record_reading`: no step on the screen; code's sum (or what other
         views of the item show) goes back to the model. A chat question's entries are kept in the
         set's proof ledger for the next full check (#1805)."""
-        text, is_error = self.reading_ledger.run_tool(name, raw, by=by)
-        if not is_error and self.settings.mode != "full_check":
-            set_proofs.keep_ledger_entry(
-                self.tools.workspace.set_pack, name, raw, self._chat_name()
-            )
+        ledger = self.reading_ledger
+        before = {e.id for e in (*ledger.strings, *ledger.readings)}
+        text, is_error = ledger.run_tool(name, raw, by=by)
+        if not is_error and self.settings.mode != "full_check" and isinstance(raw, Mapping):
+            # A re-read (`replaces`) takes the place of the misread it corrects in the kept
+            # ledger too, as in this answer's own (#1805).
+            replaces = raw.get("replaces")
+            replaced = self._kept_inputs.get(replaces) if isinstance(replaces, str) else None
+            if set_proofs.keep_ledger_entry(
+                self.tools.workspace.set_pack, name, raw, self._chat_name(), replaced
+            ):
+                after = {e.id for e in (*ledger.strings, *ledger.readings)}
+                for entry_id in (after - before) or ({replaces} if replaces else set()):
+                    self._kept_inputs[str(entry_id)] = set_proofs.ledger_input(raw)
         return ToolResult(content=[{"type": "text", "text": text}], step={}, is_error=is_error)
 
     def _chat_name(self) -> str | None:

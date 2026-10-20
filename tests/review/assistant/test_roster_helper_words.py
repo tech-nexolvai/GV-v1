@@ -46,7 +46,7 @@ def test_every_helper_knows_the_tools_arguments_and_the_packs_shapes() -> None:
     for kind in KINDS:
         assert PACK_SHAPES in specialist_system(kind, local=Path("/nowhere"))
     assert "view takes only path" in PACK_SHAPES and "it has no box" in PACK_SHAPES
-    assert 'each "pages" is a LIST' in PACK_SHAPES and "annotations.json is itself a" in PACK_SHAPES
+    assert 'each "pages" is a LIST' in PACK_SHAPES and "annotations.json is a list" in PACK_SHAPES
     view = next(t for t in HELPER_TOOLS if t["name"] == "view")
     assert "It takes no box" in view["description"]
     assert "box" not in view["input_schema"]["properties"]

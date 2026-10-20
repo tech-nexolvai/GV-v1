@@ -1039,6 +1039,42 @@ def test_a_note_about_the_drawing_is_not_a_page_left_unread() -> None:
         ]
     }  # fmt: skip
     assert sorted(full_check_roster.unfinished_pages([2, 3, 4], coverage)) == [3, 4]
+    # The helper's own work said partly done, in other words, still counts (review of #1812).
+    for note in ("did not check the vendor strings", "partly; right half pending",
+                 "only the vendor elevation compared", "Compared partially",
+                 "the architect's plan does not show it, and I did not look at the section"):  # fmt: skip
+        entry = {"page": 2, "status": "same", "by": "helper:1", "note": note}
+        assert full_check_roster.unfinished_pages([2], {"pages": [entry]}) == {2: note}, note
+
+
+def test_open_lines_the_lead_review_did_not_take_are_said_so(tmp_path: Path) -> None:
+    """Review of #1812: a compared page's open checklist lines no gap closer re-reads wait for the
+    lead review; the ones it did not take are named on the coverage and in what was not done."""
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    run = _run(harness)
+    engine._checklist_gaps = {1: {2: "1 of 3 vendor dimension labels not handled: D5", 4: "x"}}
+    engine.book.set_coverage({"pages": [{"page": p, "status": "same"} for p in (2, 4)]}, "helper:1")
+    run.repeats_avoided = [2, 4]
+    run.lead_taken = {4}
+    run._note_left_open()
+    assert any("p2" in line or "page 2" in line for line in run.not_done), run.not_done
+    assert not any("4" in line for line in run.not_done)
+    notes = {e["page"]: e.get("note") for e in engine.book.coverage_map()["pages"]}
+    assert "D5" in str(notes.get(2)) and "not compared again" in str(notes.get(2))
+
+
+def test_a_step_stopped_at_its_share_counts_as_a_money_stop_once_the_price_is_used_up(
+    tmp_path: Path,
+) -> None:
+    run = _run(_roster(tmp_path, _Roster()))
+    run.plan = full_check_roster.PricePlan.balanced(5 * DOLLARS, 2, 6)
+    run.started_at = run.engine.spent
+    run._capped("Helper 1")
+    assert run.capped_early and not run.stopped_for_money
+    assert not run._stopped_for_money()  # the later steps' money is still there
+    run.engine._spent += 5 * DOLLARS  # the later steps used it
+    assert run._stopped_for_money()
 
 
 class _Lazy(_Roster):

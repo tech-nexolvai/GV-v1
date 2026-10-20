@@ -1299,8 +1299,12 @@ class ChatTools:
                 found["read_again"] = True
                 if again.outcome == "read":
                     found = {**again.as_verify(expected), "read_again": True}
-                elif again.reason:
-                    found = {**found, "words": f"{found['words']}; read_number: {again.reason}"}
+                else:
+                    # Its machine reason too (#1805): a "readers disagree" or "cut off" is never
+                    # overridden by an older proof.
+                    found["read_number_code"] = again.code
+                    if again.reason:
+                        found["words"] = f"{found['words']}; read_number: {again.reason}"
             except Exception as failed:  # noqa: BLE001 - the first answer stands
                 _log_failure(failed)
         return found
