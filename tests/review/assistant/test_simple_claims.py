@@ -8,15 +8,19 @@ Answers saved in the older form (same / different, no weak point) still read, so
 
 from __future__ import annotations
 
+import re
+
 from app.review.assistant.simple_check import prompts, resolve
 from app.review.assistant.simple_check.schema import (
     LEGACY_VERDICTS,
+    OTHER_VERDICTS,
     REPLY_SCHEMA,
     VERDICTS,
     WEAK_POINTS,
     CompareOutcome,
     Pair,
     Reply,
+    claimed_verdict,
 )
 
 _PAIR = REPLY_SCHEMA["properties"]["pairs"]["items"]
@@ -113,3 +117,34 @@ def test_resolve_reads_same_points_as_the_older_different() -> None:
     assert resolve._verdict({"verdict": "same_points"}) == "different"
     proposal = resolve.Proposal.from_dict({"kind": "ends", "verdict": "SAME_POINTS"})
     assert proposal.verdict == "same_points"
+
+
+def test_the_worked_example_never_teaches_same_points_on_a_doubtful_end() -> None:
+    """The example's same_points pairs carry no weak point: a doubtful end is `unsure`."""
+    for pair in prompts.EXAMPLE_REPLY["pairs"]:
+        if pair["verdict"] == "same_points":
+            assert pair["weak_point"] == "none" and not pair["note"], pair
+
+
+def test_same_points_on_an_end_the_ai_cannot_see_is_read_as_unsure() -> None:
+    """The weak point only adds caution: same_points with an end it cannot see is unsure."""
+    doubtful = {"verdict": "same_points", "weak_point": "end_not_visible"}
+    assert claimed_verdict(doubtful) == "unsure"
+    assert resolve._verdict(doubtful) == "unsure"
+    for weak in ("none", "views_differ", None):
+        assert claimed_verdict({"verdict": "Same_Points", "weak_point": weak}) == "same_points"
+    # A weak point never changes another verdict.
+    assert claimed_verdict({"verdict": "different_points", "weak_point": "end_not_visible"}) == (
+        "different_points"
+    )
+    assert claimed_verdict({}) == "unsure"
+
+
+def test_other_items_verdicts_are_defined_and_the_model_compares_their_values() -> None:
+    """Rule 5's other_items use same / different / no_architect_value / unsure: the prompt says
+    what each means, and that here the model does compare the values (code has no label to read)."""
+    text = prompts.SYSTEM_PROMPT
+    rule5 = text[text.index("5. other_items") : text.index("\n6. ")]
+    assert "so you compare the values" in rule5
+    for verdict in OTHER_VERDICTS:
+        assert re.search(rf"\b{verdict}\b", rule5), verdict

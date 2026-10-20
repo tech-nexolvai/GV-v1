@@ -29,11 +29,11 @@ Files in this folder (read-only):
 | GV's markup | Notes, clouds, boxes and corrected numbers a GV reviewer added. | GV's notes. Never a design value, never the vendor's value. |
 
 Also seen: **brand prototype / brand standard** sheets (a hotel or restaurant brand's typical
-design). They are a reference, not this job's architect drawing: never call them the design. But
-**do compare the vendor with them**, mostly where the architect's drawing does not show the item
-(no size, no detail): heights, widths, splashes, tags, sinks, door and drawer layout. Report those
-differences in their own group, "Differs from the brand prototype", worded "the brand prototype
-shows ..., the vendor shows ...; confirm which governs". A reviewer wants to know about them.
+design), never this job's architect drawing. Compare the vendor with them where the architect's
+drawing does not show the item. **When the architect gives no elevation of the item, the brand
+prototype elevation is the reference** (as GV's reviewer does): report it with `source:
+brand_prototype`; the proof says "reference: brand prototype". Wherever the architect gives
+information, it governs: a difference from the prototype alone is not compared.
 
 ## 2. Find which file and pages are whose
 
@@ -91,10 +91,9 @@ the pack is ready; until it is, use the uploads (and `zoom`, which works at once
 **What it is:** marks added by GV reviewers when they reviewed the set:
 - annotations: FreeText notes and the headings, Square / Circle / Polygon / PolyLine / Line / Ink
   clouds and boxes, callouts (list them with the script above; `/T` is the author);
-- on GV's combined review sheets (drawings pasted as snapshots), coloured ink baked inside the
-  pasted drawing: red, blue or green numbers beside or over the vendor's, yellow boxes painted over
-  its numbers. **Colour decides only there**: on an ordinary upload every colour is the drawing's
-  own (vendors draw in any colour); only its PDF comments and GV Review's signed marks are markup.
+- on GV's combined review sheets (pasted snapshots) only, coloured ink baked into the snapshot:
+  red, blue or green numbers, yellow boxes over the vendor's. On an ordinary upload every colour is
+  the drawing's own; only its PDF comments and GV Review's signed marks are markup.
 
 **The rule:** GV's markup is GV's reviewer comments. Never use a number from it as what the
 architect designed or what the vendor drew; the architect's own drawing is the design. You may say
@@ -153,8 +152,9 @@ numbers ("pull-out drawers", "by others"): a note the vendor does not follow is 
   dropped or changed.
 - **Construction notes** the vendor contradicts, on the architect's or brand sheet ("toe kick
   integrated with door", "door to the floor", "pull-out drawers for bins", "metal lining").
-- **ID set vs brand prototype**: the ID set governs (the prototype only where the ID set says "per
-  brand standard"); a prototype-only difference: `check`, `check_reason: which_governs`.
+- **ID set vs brand prototype**: the ID set governs wherever it gives information (a prototype-only
+  difference there: `check`, `check_reason: which_governs`); with no architect elevation of the
+  item, or "per brand standard", the prototype is the reference (`source: brand_prototype`).
 - **Scaled values**: where the architect prints no size, `measure_on_drawing` (two printed dimensions
   of the same view) gives "about X (±T)": status `check` (not compared), never `different`.
 - **Extent first**: before a height or width is Wrong, check what the architect's dimension spans
