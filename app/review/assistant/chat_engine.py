@@ -1624,6 +1624,7 @@ class ChatEngine:
             if id(call) in reply.bad_inputs:
                 bad = self._not_run(call, "its input was cut off or not valid JSON")
                 return lambda: bad
+            self.timings.tool(name)
             if name in FINDING_TOOL_NAMES:
                 return self._guarded(
                     call,
@@ -3746,6 +3747,7 @@ class ChatEngine:
             return lambda: cut
         name = str(call.get("name"))
         by = f"helper:{agent.number}"
+        self.timings.tool(name)
         if name == "set_coverage" and agent.lens == "drawn":
             skipped = self._not_run(call, "the numbers helper records these pages' coverage")
             return lambda: skipped

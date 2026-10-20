@@ -60,6 +60,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from itertools import zip_longest
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
@@ -194,6 +195,16 @@ _ADVOCATE_MAX_TOKENS: Final = 2_000
 _SUMMARY_MAX_TOKENS: Final = 800
 _SUMMARY_PROMPT_TOKENS: Final = 1_500
 _ADVOCATE_WORKERS: Final = 6
+#: Each side of a finding the proving tools read: its value, its spot and its check (#1805).
+_PROOF_SIDES: Final = (
+    ("architect", "arch_box", "verify_architect"),
+    ("vendor", "vendor_box", "verify_vendor"),
+)
+#: The proving step's time at most (seconds): drawn ink is read by two OCR engines, a few seconds a
+#: side; what it does not reach the finish's own ink pass still reads.
+_PROOF_BUDGET_S: Final = 240.0
+_PROOF_ENTRIES: Final = 8
+_PROOF_WORDS: Final = 240
 #: Labels listed near one claimed spot for the verifier.
 _NEAR_LABELS: Final = 8
 _NEAR_PT: Final = 60.0
@@ -385,7 +396,15 @@ PROVER_SCHEMA: Final[Mapping[str, Any]] = {
 }
 
 _PROVER_TOOLS: Final = frozenset(
-    {"bash_tool", "view", "zoom", "verify_value", "read_under_markup", "measure_on_drawing"}
+    {
+        "bash_tool",
+        "view",
+        "zoom",
+        "verify_value",
+        "read_number",
+        "read_under_markup",
+        "measure_on_drawing",
+    }
 )
 _TAG_TOOLS: Final = frozenset({"bash_tool", "view", "zoom"})
 
@@ -396,9 +415,9 @@ PROVER_JOB: Final = (
 
 PROVER_BRIEF: Final = """PROVE: pages {pages} of {file}. Each item below is a difference a helper reported from its own reading; code could not yet read its values on the drawing, so it cannot be clouded. For each one:
 1. zoom with marks: true on the claimed spots (both drawings); the labels code numbered near each spot are listed.
-2. If the value has a label, name it (vendor_dim, architect_dim). If not, give the tightest box round the printed number (verify_value there tells you whether code reads it); a number under GV's markup: read_under_markup first.
+2. If the value has a label, name it (vendor_dim, architect_dim). If not, give the tightest box round the printed number, and call verify_value there with the value: code tells you whether it reads it (match, mismatch with what is printed, or cannot_read). A number you cannot read (pen strokes, sideways, crossed by a line): call read_number on its label or box instead of guessing; its answer stands. A number under GV's markup: read_under_markup first.
 3. If the item turns out to compare two things that do not measure the same (different ends), or you cannot find a value, say cannot_prove and why.
-Name the label the drawing really prints, even when it differs from the claimed value: code reads it.
+Name the label the drawing really prints, even when it differs from the claimed value: code reads it. Code also runs verify_value and read_number on both values of every item after you (their answers are the proof), so a spot you name must be the value's own.
 
 ITEMS:
 {items}
@@ -902,6 +921,8 @@ class _Run:
     started_at: int = 0
     #: Pages a numbers helper compared whose open checklist lines no gap closer re-read (#1805).
     repeats_avoided: list[int] = field(default_factory=list)
+    #: The proving tools code called, per stage (`verifier`, `look_again`), by name (#1805).
+    tool_calls: dict[str, dict[str, int]] = field(default_factory=dict)
 
     # -- money --
 
@@ -1115,6 +1136,10 @@ class _Run:
             _log.exception("assistant roster escalation's free steps failed")
         if engine.cancel.is_set():
             return
+        with engine.timings.phase("provers"):
+            self._prove_values("verifier")
+        if engine.cancel.is_set():
+            return
         with engine.timings.phase("advocate"):
             self._strings(page_map)
             self._architect_guard()
@@ -1313,6 +1338,118 @@ class _Run:
         shares (P1's unspent money is not lost; the later checks' money is never theirs, #1641,
         so a P1 that spent past its share leaves the gap closers less, never the checks)."""
         return self._room("gaps")
+
+    # -- the proving tools, by design (#1805) --
+
+    def _prove_values(self, stage: str, only: Collection[str] | None = None) -> dict[str, int]:
+        """Before the devil's advocate, the verifier's step (and the look-again's, after its
+        sharper pass) runs the proving tools on BOTH values of every red candidate: `verify_value`
+        at each side's spot (the drawing's text, else its drawn ink by two OCR engines), and
+        `read_number` on a side `verify_value` could not read (#1746). The paid round of
+        2026-10-20 never called them inside a full check, so pen-stroke values waited for the
+        finish's ink pass, after the advocate, and stayed Not compared.
+
+        Each answer is kept on the finding (`proof_tools`) and, as the simple check and the chat's
+        tool do (`_confirm`), becomes the side's `verify_<side>` check when that side had no
+        reading yet (never over a match or a mismatch code already read): code's proof (the
+        witnesses, the trust level, the advocate) sees it. A mismatch says the drawing prints
+        another value there, which keeps the item off red. $0, no model. Returns the tool calls
+        made, by name."""
+        engine = self.engine
+        tools = engine.tools
+        candidates = [
+            dict(f)
+            for f in by_impact(engine.book.live())
+            if f.get("status") == "different"
+            and not _judged(f)
+            and (only is None or str(f["id"]) in only)
+        ]
+        counts: dict[str, int] = {}
+        started = monotonic()
+        for finding in candidates:
+            if engine.cancel.is_set() or monotonic() - started > _PROOF_BUDGET_S:
+                break
+            entries, reads = self._prove_one(tools, finding, stage, counts)
+            if not entries:
+                continue
+
+            def change(
+                current: dict[str, Any],
+                entries: list[dict[str, Any]] = entries,
+                reads: dict[str, Any] = reads,
+            ) -> dict[str, Any]:
+                checks = dict(current.get("checks") or {})
+                for key, answer in reads.items():
+                    side = checks.get(key)
+                    if isinstance(side, Mapping) and side.get("result") in ("match", "mismatch"):
+                        continue  # code already read this side: never read over
+                    checks[key] = answer
+                current["checks"] = checks
+                current["proof_tools"] = [*(current.get("proof_tools") or []), *entries][
+                    -_PROOF_ENTRIES:
+                ]
+                return current
+
+            engine._update_finding(str(finding["id"]), change)
+        self.tool_calls[stage] = {
+            name: self.tool_calls.get(stage, {}).get(name, 0) + n for name, n in counts.items()
+        }
+        _log.warning(
+            "assistant roster proving tools (%s): %d red candidates, %s",
+            stage,
+            len(candidates),
+            ", ".join(f"{name} {n}" for name, n in sorted(counts.items())) or "no calls",
+        )
+        return counts
+
+    def _prove_one(
+        self, tools: Any, finding: Mapping[str, Any], stage: str, counts: dict[str, int]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """One red candidate's two values through the proving tools: the entries to keep on it
+        and each side's new `verify_<side>` answer (only a side with a spot)."""
+        from app.review.assistant.finding_checks import claim_value
+
+        engine = self.engine
+        entries: list[dict[str, Any]] = []
+        reads: dict[str, Any] = {}
+        for side, box_key, key in _PROOF_SIDES:
+            value = claim_value(finding.get(side))
+            box = finding.get(box_key)
+            if value is None or not isinstance(box, Mapping):
+                continue  # no number or no spot: nothing a tool can read (it stays as it is)
+            try:
+                spot: dict[str, Any] = {
+                    "page": int(box.get("page") or finding["page"]),
+                    "box": {k: float(box[k]) for k in ("x0", "y0", "x1", "y1")},
+                }
+                if box.get("file"):
+                    spot["file"] = str(box["file"])
+                name, page, coords, _label = tools._crop_request(spot, 0)
+                engine.timings.tool("verify_value")
+                counts["verify_value"] = counts.get("verify_value", 0) + 1
+                answer = tools.verify_answer(name, page, coords, value, side)
+            except Exception as failed:  # noqa: BLE001 - one side not read never stops the rest
+                _log.info("assistant roster proving tool not run: %s", type(failed).__name__)
+                continue
+            if answer.get("read_again"):
+                engine.timings.tool("read_number")
+                counts["read_number"] = counts.get("read_number", 0) + 1
+            tools.note_proof("verify_value", name, page, coords, value, answer, side=side)
+            entries.append(
+                {
+                    "stage": stage,
+                    "side": side,
+                    "tool": "read_number" if answer.get("read_number") else "verify_value",
+                    "value": value,
+                    "result": answer.get("result"),
+                    "route": answer.get("route"),
+                    "read": answer.get("read"),
+                    "words": str(answer.get("words") or "")[:_PROOF_WORDS],
+                }
+            )
+            if answer.get("result") in ("match", "mismatch"):
+                reads[key] = {k: v for k, v in answer.items() if k != "read_again"}
+        return entries, reads
 
     # -- P3: the verifier --
 
@@ -2328,6 +2465,9 @@ class _Run:
         elif unread and not engine.cancel.is_set():
             self._sharper(plan, unread)
             engine._wait_checks()
+        if unread and not engine.cancel.is_set():
+            # The sharper pass named new spots: the proving tools read them before the advocate.
+            self._prove_values("look_again", {str(f["id"]) for f in unread})
         self.pick_phase = "escalation"
         try:
             for finding in self._unproved():

@@ -137,6 +137,7 @@ HELPER_BRIEF: Final = """OBJECTIVE: a full GV review of the vendor's drawings on
 Your instructions hold the trade knowledge for this job. products/<id>.md for each product in focus and the settings table of rules.md are in /mnt/skills/gv-review: read them before you judge a value against a GV rule (a setting nobody entered is missing: say so, never assume one).
 
 HOW: view your pages, then zoom with marks: true on what you compare, the architect's and the vendor's side by side (the app picks the sharpest dpi that fits; up to 8 crops per call). Numbers drawn as pen strokes have no label: read them from the picture and give their box. A vendor number under GV's markup is still to be found (read_under_markup on that spot, its mm against its inches) before you call it unreadable.
+PROVING TOOLS ($0, code, no AI): before you report a value you typed with a box (no label covers it), call verify_value on that box with the value: code says match, mismatch (what the drawing prints there) or cannot_read. A number you cannot read (pen strokes, sideways, crossed by a line, a fraction you are unsure of): call read_number on its label or box instead of guessing, and report what it reads; when it says unread, report the item as check with that reason. Code runs both again on every Wrong before it can be clouded.
 
 ALREADY RECORDED by GV Review on your pages (they are checked separately: do not report them again, but still compare everything around them, the strings that build them too; a recorded item never closes its area):
 {recorded}

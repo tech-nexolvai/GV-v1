@@ -826,6 +826,77 @@ def _run(harness: Harness) -> Any:
     return run
 
 
+def test_the_proving_tools_read_both_values_of_every_red_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1805: before the devil's advocate, code calls verify_value (and read_number where it
+    cannot read) on both values of every red candidate; the answers are witnesses."""
+    from app.review.assistant import witness
+
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    finding_id = _typed_wrong(harness)
+    asked: list[tuple[str, int, str, str]] = []
+
+    def verify(
+        self: Any, name: str, page: int, box: Any, expected: str, side: str = "vendor"
+    ) -> Any:
+        asked.append((name, page, expected, side))
+        if side == "vendor":  # pen strokes: verify_value could not, read_number read it
+            return {"result": "match", "route": "drawn", "read": expected, "reads": [],
+                    "reason": "", "value": expected, "pending": False, "words": "read",
+                    "read_number": "ocr_shape", "read_again": True}  # fmt: skip
+        return {"result": "match", "route": "drawn", "read": expected, "reads": [],
+                "reason": "", "value": expected, "pending": False, "words": "read"}  # fmt: skip
+
+    from app.review.assistant.chat_tools import ChatTools
+
+    monkeypatch.setattr(ChatTools, "verify_answer", verify)
+    heard: list[Mapping[str, Any]] = []
+    engine.tools.on_proof = heard.append
+    run = _run(harness)
+    with engine.timings.phase("provers"):
+        counts = run._prove_values("verifier")
+
+    assert sorted(side for *_rest, side in asked) == ["architect", "vendor"]
+    assert counts == {"verify_value": 2, "read_number": 1}
+    assert run.tool_calls["verifier"] == counts
+    found = next(f for f in engine.book.live() if f["id"] == finding_id)
+    assert found["checks"]["verify_vendor"]["result"] == "match"
+    assert "read_again" not in found["checks"]["verify_vendor"]
+    assert "ocr_ink" in witness.witnesses(found["checks"], found["status"])
+    assert [e["side"] for e in found["proof_tools"]] == ["architect", "vendor"]
+    assert found["proof_tools"][1]["tool"] == "read_number"
+    assert len(heard) == 2
+    row = next(r for r in engine.timings.as_dict(0)["phases"] if r["phase"] == "provers")
+    assert row["tools"] == {"read_number": 1, "verify_value": 2}
+
+
+def test_a_proving_tool_never_reads_over_what_code_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.review.assistant.chat_tools import ChatTools
+
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    finding_id = _typed_wrong(harness)
+    current = next(f for f in engine.book.live() if f["id"] == finding_id)
+    printed_elsewhere = {"result": "mismatch", "route": "text", "read": '45"', "value": '46"',
+                         "reads": [], "reason": "", "pending": False, "words": "45 here"}  # fmt: skip
+    assert engine.book.replace(
+        {**current, "checks": {**current["checks"], "verify_vendor": printed_elsewhere}}
+    )
+    monkeypatch.setattr(ChatTools, "verify_answer", lambda *a, **k: {
+        "result": "match", "route": "drawn", "read": '46"', "value": '46"', "reads": [],
+        "reason": "", "pending": False, "words": "read",
+    })  # fmt: skip
+    _run(harness)._prove_values("verifier")
+    found = next(f for f in engine.book.live() if f["id"] == finding_id)
+    assert found["checks"]["verify_vendor"]["result"] == "mismatch"  # kept: never red
+    assert found["checks"]["verify_architect"]["result"] == "match"
+    assert "read_number" in full_check_roster._PROVER_TOOLS
+
+
 def test_the_escalation_reads_the_labels_then_gives_one_deeper_look_within_the_price(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
