@@ -1917,6 +1917,7 @@ def make_proof_file(
         action=action,
         action_stamp=None if action is None else context.stamp(action),
         not_compared=not_compared,
+        areas=None if context is None else context.areas,
     )
     data = out.read_bytes()
     return MarkupFile(
