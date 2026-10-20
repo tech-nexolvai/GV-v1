@@ -76,6 +76,7 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 from app.review.assistant.architect_items import MIN_TEXT, tag_codes
+from app.review.assistant.classification import PROTOTYPE_REFERENCE, PROTOTYPE_REFERENCE_WORDS
 from app.review.assistant.dim_index import parse_ref
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.full_check_advocate import Check, code_pairs, is_slip, same_extent
@@ -587,6 +588,9 @@ class Item:
     """The label refs of its architect drawings (empty: each drawing's box decides)."""
     products: tuple[str, ...] = ()
     """The products the drawings' printed words name (the work list's)."""
+    prototype_reference: bool = False
+    """R1 (Anant, 2026-10-20): the area has no architect drawing, so `architect` is its brand
+    prototype, the reference (`schema.WorkItem.prototype_reference`)."""
 
     @property
     def category(self) -> str:
@@ -621,6 +625,7 @@ class Item:
                 label.ref for drawing in work.architect for label in drawing.labels
             ),
             products=tuple(getattr(work, "products", ()) or ()),
+            prototype_reference=bool(getattr(work, "prototype_reference", False)),
         )
 
     @classmethod
@@ -896,10 +901,16 @@ def _view_check(item: Item, a_file: str, a_page: int) -> Check:
     return Check("view", "pass")
 
 
-def _roles_check(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> Check:
+def _roles_check(
+    vendor: Mapping[str, Any], architect: Mapping[str, Any], prototype: bool = False
+) -> Check:
+    """A vendor label against an architect label; against the brand prototype's only for an item
+    whose area has no architect elevation (`prototype`: the prototype is the reference, R1)."""
     if vendor.get("side") != "vendor":
         return Check("roles", "fail", f"the vendor value is on the {vendor.get('side')}'s drawing")
     side = str(architect.get("side") or "unknown")
+    if side == "brand" and prototype:
+        return Check("roles", "pass", PROTOTYPE_REFERENCE_WORDS)
     if side == "brand":
         return Check("roles", "fail", "the reference is the brand prototype (reference only)")
     if side != "architect":
@@ -945,7 +956,11 @@ def _geometry_check(vendor: Mapping[str, Any], architect: Mapping[str, Any], pac
         return [x for x in on if x.get("side") == wanted]
 
     state, why = same_extent(
-        vendor, architect, side(vendor, "vendor"), side(architect, "architect")
+        vendor,
+        architect,
+        side(vendor, "vendor"),
+        # The brand prototype's own labels when it is the reference (R1).
+        side(architect, "brand" if architect.get("side") == "brand" else "architect"),
     )
     if state == "different_extent":
         return Check("geometry", "fail", f"code's geometry shows different points: {why}")
@@ -1097,6 +1112,10 @@ def _pair_finding(
             finding["vs_page"] = int(architect.get("page") or 0)
         if architect.get("side") == "brand":
             finding["source"] = "brand_prototype"
+    if item.prototype_reference:
+        # R1: no architect elevation of the area; the brand prototype is the reference.
+        finding["source"] = "brand_prototype"
+        finding["reference"] = PROTOTYPE_REFERENCE
     if status == "check" and reason_code is not None and reason_code in _KEEP:
         finding["keep_reason"] = _KEEP[reason_code]
     return finding
@@ -1270,7 +1289,7 @@ def _verify_pair(
     same_axis = vendor.get("orientation") == architect.get("orientation")
     disagree = "disagrees" in (vendor.get("units"), architect.get("units"))
     checks = [
-        _roles_check(vendor, architect),
+        _roles_check(vendor, architect, item.prototype_reference),
         _area_check(
             item,
             pack,
@@ -1304,9 +1323,16 @@ def _verify_pair(
     if failed is not None:
         return _blocked(one, failed, matched, checks)
     why = (
-        f"The vendor prints {_label_words(vendor)}; the architect prints "
-        f"{_label_words(architect)} for the same dimension ({_plain(ends['vendor_from'])} to "
-        f"{_plain(ends['vendor_to'])}). Code read both values at their labels"
+        f"The vendor prints {_label_words(vendor)}; the "
+        + ("brand prototype" if item.prototype_reference else "architect")
+        + f" prints {_label_words(architect)} for the same dimension "
+        f"({_plain(ends['vendor_from'])} to {_plain(ends['vendor_to'])}). Code read both values "
+        "at their labels"
+        + (
+            f" ({PROTOTYPE_REFERENCE_WORDS}: no architect elevation)"
+            if item.prototype_reference
+            else ""
+        )
     )
     finding = _pair_finding(item, pack, pair.get("measures"), vendor, architect, "different", why)
     return Verified(
@@ -1632,6 +1658,10 @@ def _verify_other(
         "vendor_box": _spot(_box(entry.get("vendor_box")), item.vendor.file, item.vendor.page),
         "arch_box": _spot(_box(entry.get("architect_box")), a_file, a_page),
     }
+    if item.prototype_reference:
+        # R1: no architect elevation of the area; the brand prototype is the reference.
+        base["source"] = "brand_prototype"
+        base["reference"] = PROTOTYPE_REFERENCE
     if isinstance(a_page, int) and a_page != item.vendor.page:
         base["vs_page"] = a_page
     other = _Other(key, kind, entry, base)
@@ -1673,7 +1703,7 @@ def _verify_missing(
     vendor = "not proved missing"
     if label is None and tag is None:
         return other.grey(f"not proved: {why}", "not_proved", vendor=vendor)
-    if label is not None and label.get("side") == "brand":
+    if label is not None and label.get("side") == "brand" and not item.prototype_reference:
         return other.grey(
             "the reference is the brand prototype (reference only)", "prototype", vendor=vendor
         )
@@ -1886,6 +1916,8 @@ def _verify_unlabelled(
     a_half = pack.half_at(a_file, a_page, a_box)
     if v_half is None or v_half.role != "vendor":
         roles = Check("roles", "fail", "the vendor box is not on a vendor drawing")
+    elif a_half is not None and a_half.role == "brand_prototype" and item.prototype_reference:
+        roles = Check("roles", "pass", PROTOTYPE_REFERENCE_WORDS)  # no architect elevation (R1)
     elif a_half is not None and a_half.role == "brand_prototype":
         roles = Check("roles", "fail", "the reference is the brand prototype (reference only)")
     elif a_half is None or a_half.role != "architect":

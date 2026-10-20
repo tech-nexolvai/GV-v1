@@ -55,8 +55,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
+from app.review.assistant import classification, witness
 from app.review.assistant import proof as proof_rule
-from app.review.assistant import witness
 from app.review.assistant.chat_findings import UPDATE_FINDING
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
 from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
@@ -977,6 +977,7 @@ class _Run:
         from app.review.assistant.escalation import escalate_answer
 
         engine.add_code_findings()
+        self._prototype_references(page_map)
         try:
             escalate_answer(engine)
         except Exception:  # noqa: BLE001 - the advocate judges the items as they are
@@ -990,6 +991,36 @@ class _Run:
         if not engine.cancel.is_set():
             with engine.timings.phase("escalation"):
                 self._escalate(plan, page_map)
+
+    def _prototype_references(self, page_map: Mapping[str, Any] | None) -> None:
+        """R1 (Anant, 2026-10-20): a finding compared with the brand prototype has the prototype
+        as its reference when the page map shows no architect drawing of its area
+        (`plan_check.architect_in_area`); code sets the mark, and clears one no page map backs,
+        so the architect governs wherever it gives information. Before the proof steps, so the
+        advocate and the escalation judge the marked items."""
+        from app.review.assistant.plan_check import architect_in_area
+
+        engine = self.engine
+        for finding in engine.book.live():
+            if finding.get("source") != "brand_prototype" or not finding.get("id"):
+                continue
+            box = finding.get("vendor_box")
+            file = box.get("file") if isinstance(box, Mapping) else None
+            page = finding.get("page")
+            marked = isinstance(page, int) and not architect_in_area(
+                page_map, str(file) if file else None, page
+            )
+            if marked == (finding.get("reference") == classification.PROTOTYPE_REFERENCE):
+                continue
+
+            def change(current: dict[str, Any], marked: bool = marked) -> dict[str, Any]:
+                if marked:
+                    current["reference"] = classification.PROTOTYPE_REFERENCE
+                else:
+                    current.pop("reference", None)
+                return current
+
+            engine._update_finding(str(finding["id"]), change)
 
     # -- P1: tags --
 
@@ -1691,7 +1722,13 @@ class _Run:
             # A value typed with its box (GV Review's recorded rows, a helper without labels):
             # code's label at that box printing that very value stands for it.
             vendor = vendor or self._label_at(finding, "vendor_box", "vendor")
-            architect = architect or self._label_at(finding, "arch_box", "architect")
+            architect = architect or self._label_at(
+                finding,
+                "arch_box",
+                "architect",
+                # R1: with no architect elevation, the value is on the brand prototype's drawing.
+                "brand" if classification.prototype_reference(finding) else "architect",
+            )
             code_paired = not needs_pairing(finding)
             if vendor is None and code_paired:
                 # The vendor's own string or a rule, read from boxes: only the ink and note checks
@@ -1705,6 +1742,7 @@ class _Run:
                 page_map=page_map,
                 vendor_ink=ink,
                 newer_same=self._newer_same(vendor, page_map) if vendor is not None else None,
+                prototype_reference=classification.prototype_reference(finding),
             )
             found = witness.witnesses(finding.get("checks") or {}, finding.get("status"))
             printed = "printed" in found or "ocr_ink" in found
@@ -1774,9 +1812,12 @@ class _Run:
                 {},
             )
 
-    def _label_at(self, finding: Mapping[str, Any], key: str, side: str) -> dict[str, Any] | None:
+    def _label_at(
+        self, finding: Mapping[str, Any], key: str, side: str, on: str | None = None
+    ) -> dict[str, Any] | None:
         """The label code numbered inside a finding's box whose value is the finding's value on
-        that side (the only one: two such labels in the box name nothing)."""
+        that side (the only one: two such labels in the box name nothing). `on`: the drawing's
+        side the label is on, when not `side` (`brand`: the brand prototype's)."""
         from app.review.assistant.finding_checks import to_inches
 
         box = finding.get(key)
@@ -1795,7 +1836,7 @@ class _Run:
             inside = float(box["x0"]) <= cx <= float(box["x1"]) and (
                 float(box["y0"]) <= cy <= float(box["y1"])
             )
-            if inside and label.get("side") == side and _same_inches(label, want):
+            if inside and label.get("side") == (on or side) and _same_inches(label, want):
                 hits.append(dict(label))
         return hits[0] if len(hits) == 1 else None
 

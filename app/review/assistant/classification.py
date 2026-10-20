@@ -10,9 +10,15 @@ reason and what would settle it, listed in the separate "Not compared" PDF and t
 
 The rules, in the order they are applied:
 
-- **R1, the architect's set governs.** The brand prototype is reference only, unless the
-  architect's drawing points to it ("per brand standard"); a difference from the prototype alone is
-  never a question: it is listed as information (`prototype`).
+- **R1, the architect's set governs.** Wherever the architect gives information, it governs: a
+  difference from the brand prototype alone is never a question, it is listed as information
+  (`prototype`), and code never proves it. The brand prototype is the reference (Anant,
+  2026-10-20, as GV's reviewer does: "we don't have ID set elevation, we have taken reference from
+  the brand prototype") when the architect gives **no elevation** of the item: code marks such a
+  finding `reference: "brand_prototype"` from the page map (no architect drawing of its area,
+  `plan_check.architect_in_area`), and it is then judged like an architect comparison, its words
+  saying "reference: brand prototype" (`PROTOTYPE_REFERENCE_WORDS`). The prototype also governs
+  where the architect's drawing points to it ("per brand standard").
 - **R2, printed dimensions only.** A value scaled off a drawing never decides anything; it may
   appear as context ("the drawing scales about 58\\"").
 - **R3, the architect's drawings disagree** (code's reading ledger: the architect's own views):
@@ -53,6 +59,8 @@ from typing import Any, Final, Literal
 from app.review.assistant.spot_locate import spot_words
 
 __all__ = [
+    "PROTOTYPE_REFERENCE",
+    "PROTOTYPE_REFERENCE_WORDS",
     "REASONS",
     "REASON_WORDS",
     "TRADE_WORDS",
@@ -60,6 +68,8 @@ __all__ = [
     "classify",
     "not_compared_line",
     "points_to_prototype",
+    "prototype_governs",
+    "prototype_reference",
     "rule_without_requirement",
 ]
 
@@ -287,6 +297,32 @@ def points_to_prototype(words: str) -> bool:
     return bool(_POINTS_TO_PROTOTYPE.search(words))
 
 
+#: A finding's `reference` when code found no architect elevation of its item and the brand
+#: prototype is the reference (R1, Anant 2026-10-20). Set and cleared by code only.
+PROTOTYPE_REFERENCE: Final = "brand_prototype"
+#: How the proof, the letter, the register and the Not-compared list name it.
+PROTOTYPE_REFERENCE_WORDS: Final = "reference: brand prototype"
+
+
+def prototype_reference(finding: Mapping[str, Any]) -> bool:
+    """Code marked the finding: the architect gives no elevation of the item, so the brand
+    prototype is its reference (R1)."""
+    return (
+        finding.get("source") == "brand_prototype"
+        and finding.get("reference") == PROTOTYPE_REFERENCE
+    )
+
+
+def prototype_governs(finding: Mapping[str, Any]) -> bool:
+    """Whether a finding compared with the brand prototype is judged like an architect comparison
+    (R1): the architect gives no elevation of the item (`prototype_reference`), or its drawing
+    points to the brand standard. Any other prototype comparison is reference only: the architect
+    governs wherever it gives information."""
+    if finding.get("source") != "brand_prototype":
+        return False
+    return prototype_reference(finding) or points_to_prototype(_flat(finding.get("why")))
+
+
 def _page(finding: Mapping[str, Any]) -> object:
     return finding.get("page")
 
@@ -470,10 +506,9 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
             "the same span",
             "the vendor's corrected drawing, or one dimension that governs",
         )
-    if (
-        reason == "which_governs"
-        or named == "which_governs"
-        or finding.get("source") == ("brand_prototype")
+    which_governs = reason == "which_governs" or named == "which_governs"
+    if (which_governs and not prototype_reference(finding)) or (
+        finding.get("source") == "brand_prototype" and not prototype_governs(finding)
     ):
         return _not(
             "prototype",
@@ -550,8 +585,18 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
 
 def classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
     """Where `finding` stands under R1-R10. `proved`: code proved it Wrong (`proof.code_proved`,
-    which applies D1 for a pairing). The reviewer's decisions are laid over this by `proof`."""
-    return _with_thing(_classify(finding, proved=proved), finding)
+    which applies D1 for a pairing). The reviewer's decisions are laid over this by `proof`. A
+    finding whose reference is the brand prototype (`prototype_reference`) says so in its reason."""
+    found = _with_thing(_classify(finding, proved=proved), finding)
+    if found.outcome == "not_compared" and found.why and prototype_reference(finding):
+        found = Classified(
+            found.outcome,
+            found.rule,
+            found.reason,
+            f"{found.why} ({PROTOTYPE_REFERENCE_WORDS}: the architect gives no elevation of it)",
+            found.settle,
+        )
+    return found
 
 
 def rule_without_requirement(finding: Mapping[str, Any]) -> Classified:
@@ -667,9 +712,19 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
             f"architect's parts add to {parts.get('total')}; vendor shows {parts.get('vendor')}",
             "the architect's printed overall for {thing}",
         )
+    if status == "different" and source == "brand_prototype" and not prototype_governs(finding):
+        # R1: the architect governs wherever it gives information; never Wrong by the prototype.
+        return _not(
+            "prototype",
+            "the brand prototype differs; the architect's drawing governs (the prototype is "
+            "reference only)",
+            "nothing, unless the architect's drawing points to the brand standard",
+        )
     if status == "different" and proved:
         if source in ("vendor_arithmetic", "cross_view"):
             return Classified("wrong", "R5")
+        if source == "brand_prototype":
+            return Classified("wrong", "R1")  # no architect elevation: the prototype governs
         return Classified("wrong", "R6" if source == "rules" else "R4")
     if status == "same":
         against = _code_disagrees(finding)
@@ -690,13 +745,6 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
             )
         return Classified("right", "R4")
     if status == "different":
-        if source == "brand_prototype" and not points_to_prototype(_flat(finding.get("why"))):
-            return _not(
-                "prototype",
-                "the brand prototype differs; the architect's drawing governs (the prototype is "
-                "reference only)",
-                "nothing, unless the architect's drawing points to the brand standard",
-            )
         return _unproved(finding)
     return _check_item(finding)
 
