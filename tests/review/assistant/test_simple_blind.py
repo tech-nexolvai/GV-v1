@@ -272,3 +272,50 @@ def test_the_look_always_thinks_and_saves_its_thinking_tokens() -> None:
     assert saved["thinking_tokens"] == 640
     assert BlindAnswer.from_dict(saved).thinking_tokens == 640
     assert BlindAnswer.from_dict({"pick": "D1", "verdict": "same_thing"}).thinking_tokens is None
+
+
+# ---- the zoomed re-look (#1775, recipe step 4) ----------------------------------------------------
+
+
+def test_an_unsure_look_gets_one_zoomed_re_look_when_switched_on() -> None:
+    verified, item = _candidate()
+    engine = _Engine([_Reply(_agreeing(verdict="unsure")), _Reply(_agreeing())])
+    settings = BlindSettings(zoom_relook=True)
+    done = look_all(engine, [(verified, item)], settings)  # type: ignore[arg-type]
+    assert len(engine.calls) == 2 and done[0].outcome == "red"
+    assert done[0].finding["pairing"]["advocate"]["note"].startswith("zoomed re-look")
+    # The re-look adds close views round the marked dimension's ends, never the first answer.
+    second = engine.calls[1]["messages"][0]["content"]
+    asked = " ".join(b.get("text", "") for b in second if b.get("type") == "text")
+    assert "close views of the VENDOR's drawing" in asked and "show no architect value" in asked
+    assert SECRET_WORDS not in asked
+    # Pictures 1 and 2 stay the vendor's and the architect's drawings (as the question says);
+    # the close views of the vendor's come after them.
+    crops = engine.crops[2:]
+    assert crops[1]["marks"] is True and crops[0]["crops"][0]["guides"] == ["D1"]
+    assert len(crops) > 2 and all(c["crops"][0].get("guides") == ["D1"] for c in crops[2:])
+
+
+def test_no_re_look_when_off_or_when_the_look_was_sure() -> None:
+    verified, item = _candidate()
+    engine = _Engine([_Reply(_agreeing(verdict="unsure"))])
+    done = look_all(engine, [(verified, item)], BlindSettings())  # type: ignore[arg-type]
+    assert len(engine.calls) == 1 and done[0].outcome == "not_compared"
+    engine = _Engine([_Reply(_agreeing(verdict="different_points"))])
+    look_all(engine, [(verified, item)], BlindSettings(zoom_relook=True))  # type: ignore[arg-type]
+    assert len(engine.calls) == 1
+
+
+def test_an_unsure_re_look_stays_not_compared() -> None:
+    verified, item = _candidate()
+    engine = _Engine([_Reply(_agreeing(verdict="unsure")), _Reply(_agreeing(verdict="unsure"))])
+    done = look_all(engine, [(verified, item)], BlindSettings(zoom_relook=True))  # type: ignore[arg-type]
+    assert len(engine.calls) == 2 and done[0].outcome == "not_compared"
+
+
+def test_end_boxes_follow_codes_dimension_line() -> None:
+    from app.review.assistant.simple_check.blind import end_boxes
+
+    boxes = end_boxes({"dim_line": [[100, 200], [500, 200]], "box": [290, 190, 310, 200]})
+    assert len(boxes) == 2 and boxes[0][0] < 100 < boxes[0][2] and boxes[1][0] < 500 < boxes[1][2]
+    assert len(end_boxes({"box": [290, 190, 310, 200]})) == 1 and end_boxes({}) == []

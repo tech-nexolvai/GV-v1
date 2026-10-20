@@ -43,7 +43,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
@@ -84,6 +84,8 @@ _PROMPT_TOKENS: Final = 12_000
 _WORKERS: Final = 6
 #: Room kept round a value code has no label for, in its close crop (points).
 _CLOSE_PT: Final = 48.0
+#: Half the side of a zoomed re-look's close view round one end of a dimension line (points).
+_END_PT: Final = 54.0
 
 #: Where an end lands: the compare prompt's words (`schema.END_WORDS`), then what it is.
 _END_HELP: Final = (
@@ -234,6 +236,9 @@ class BlindSettings:
     effort: str = "high"
     precedents: bool = True
     """The "looks wrong but isn't" precedents in its system prompt (`assistant_simple_precedents`)."""
+    zoom_relook: bool = False
+    """One zoomed re-look when the look is unsure (`assistant_simple_zoom_relook`): off until a
+    paid run measures it (one more Opus call per unsure candidate)."""
 
     @property
     def chat_model(self) -> ChatModel:
@@ -289,8 +294,31 @@ def _drawing_of(item: Item, page: int) -> Region | None:
     return next((r for r in item.architect if r.page == page), None)
 
 
-def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[str, Any]]:
-    """The look's pictures and its question, as the user message's content."""
+def end_boxes(label: Mapping[str, Any]) -> list[tuple[float, float, float, float]]:
+    """Close boxes round each end of a label's dimension line (`dim_line`, code's), for the
+    zoomed re-look; one box round the label itself when code found no line."""
+    line = label.get("dim_line")
+    if isinstance(line, Sequence) and len(line) == 2:
+        try:
+            return [
+                (float(x) - _END_PT, float(y) - _END_PT, float(x) + _END_PT, float(y) + _END_PT)
+                for x, y in line
+            ]
+        except (TypeError, ValueError):
+            pass
+    box = label.get("box")
+    if isinstance(box, Sequence) and len(box) == 4:
+        x0, y0, x1, y1 = (float(v) for v in box)
+        return [(x0 - 2 * _END_PT, y0 - 2 * _END_PT, x1 + 2 * _END_PT, y1 + 2 * _END_PT)]
+    return []
+
+
+def pictures(
+    engine: ChatEngine, verified: Verified, item: Item, *, zoom: bool = False
+) -> list[dict[str, Any]]:
+    """The look's pictures and its question, as the user message's content. `zoom`: the zoomed
+    re-look (recipe step 4): the same pictures plus a close view round each end of the marked
+    vendor dimension, before an end is left unseen."""
     kind = verified.blind or "pair"
     vendor = verified.vendor
     architect = verified.architect
@@ -299,13 +327,26 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
         region = _drawing_of(item, int(architect.get("page") or 0))
         if region is None:
             raise ValueError("the architect label is not on this item's drawings")
+        guides = [str(vendor.get("id"))]
         content = [
-            *_crop(engine, item.vendor, guides=[str(vendor.get("id"))]),
+            *_crop(engine, item.vendor, guides=guides),
             *_crop(engine, region, marks=True),
         ]
+        # The close views come last, so pictures 1 and 2 stay the vendor's and the architect's
+        # drawings, as the question says.
+        closes = end_boxes(vendor) if zoom else []
+        for box in closes:
+            content += _crop(engine, item.vendor, box=box, guides=guides)
         ref = f"p{vendor.get('page')}.{vendor.get('id')}"
         sheets = (item.vendor.sheet, region.sheet)
-        return [*content, {"type": "text", "text": question(kind, ref, None, sheets)}]
+        text = question(kind, ref, None, sheets)
+        if closes:
+            text += (
+                f" Pictures 3 to {2 + len(closes)} are close views of the VENDOR's drawing (picture "
+                "1, zoomed in) round the ends of its marked dimension: look there for where each "
+                "end lands. They show no architect value."
+            )
+        return [*content, {"type": "text", "text": text}]
     finding = verified.finding
     if kind == "values":
         v_box, a_box = finding.get("vendor_box"), finding.get("arch_box")
@@ -342,9 +383,15 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
 
 
 def look(
-    engine: ChatEngine, verified: Verified, item: Item, settings: BlindSettings
+    engine: ChatEngine,
+    verified: Verified,
+    item: Item,
+    settings: BlindSettings,
+    *,
+    zoom: bool = False,
 ) -> tuple[BlindAnswer | None, str]:
-    """One blind look: its answer, or None with why it could not be made."""
+    """One blind look: its answer, or None with why it could not be made. `zoom`: the zoomed
+    re-look's pictures (`pictures`)."""
     from app.review.assistant.chat_engine import HARNESS_ID
 
     model = settings.chat_model
@@ -354,7 +401,7 @@ def look(
     if engine.cancel.is_set():
         return None, "the check was stopped"
     try:
-        content = pictures(engine, verified, item)
+        content = pictures(engine, verified, item, zoom=zoom)
     except Exception as failed:  # noqa: BLE001 - not looked at: the item stays Not compared
         _log.warning("simple check blind look: pictures failed: %s", failed)
         return None, "its pictures could not be drawn"
@@ -410,6 +457,17 @@ def _fields(answer: BlindAnswer) -> dict[str, Any]:
     }
 
 
+def relook(settings: BlindSettings, verified: Verified, answer: BlindAnswer | None) -> bool:
+    """Whether a look gets its one zoomed re-look: the setting is on, the candidate is a labelled
+    pair (code knows its dimension line), and the look could not settle it (unsure)."""
+    return (
+        settings.zoom_relook
+        and answer is not None
+        and answer.verdict == "unsure"
+        and (verified.blind or "pair") in ("pair", "chain")
+    )
+
+
 def look_all(
     engine: ChatEngine,
     candidates: Sequence[tuple[Verified, Item]],
@@ -427,6 +485,14 @@ def look_all(
         # Timed and charged to the blind phase on this worker thread (the timings are per thread).
         with timings.phase("blind") if timings is not None else nullcontext():
             answer, why = look(engine, verified, item, settings)
+            if relook(settings, verified, answer):
+                # One zoomed re-look before an end is left unseen (recipe step 4): still blind,
+                # still a full look; red still needs it to agree and every code check.
+                again, again_why = look(engine, verified, item, settings, zoom=True)
+                if again is not None:
+                    answer = replace(again, note=f"zoomed re-look: {again.note}"[:300])
+                elif answer is None:
+                    why = again_why
         done = with_blind(verified, answer, why)
         if on_done is not None:
             try:

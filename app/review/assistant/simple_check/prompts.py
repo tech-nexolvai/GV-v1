@@ -356,10 +356,34 @@ def item_text(item: WorkItem, pictures: Sequence[Picture], *, places: bool = Tru
     return "\n".join(lines)
 
 
-def repair_text(item: WorkItem, problems: Sequence[str]) -> str:
-    """The one follow-up turn after code's checks reject an answer."""
+def repair_text(
+    item: WorkItem,
+    problems: Sequence[str],
+    *,
+    labels: Sequence[str] = (),
+    others: bool = False,
+) -> str:
+    """The one follow-up turn after code's checks reject an answer. With `labels` (or `others`),
+    the targeted repair (recipe step 4, DeepSeek-Prover's "fix what failed, keep what passed"):
+    only the broken claims are asked again; code keeps every pair that passed as it was."""
     listed = "\n".join(f"- {problem}" for problem in problems)
+    head = f"Code checked your answer for work item {item.id} and found these problems:\n{listed}\n"
+    if not labels and not others:
+        return (
+            head + "Answer again with the whole JSON form, fixed. Keep everything that was right."
+        )
+    asked = []
+    if labels:
+        asked.append(
+            "pairs only for these vendor labels (or put them in unaccounted_labels): "
+            + ", ".join(labels)
+        )
+    if others:
+        asked.append("other_items: only the items named above, fixed")
     return (
-        f"Code checked your answer for work item {item.id} and found these problems:\n{listed}\n"
-        "Answer again with the whole JSON form, fixed. Keep everything that was right."
+        head
+        + "Code keeps every other pair and item of your answer exactly as it was. Answer in the "
+        + "same JSON form with "
+        + "; and ".join(asked)
+        + ". Leave everything else out (empty lists)."
     )

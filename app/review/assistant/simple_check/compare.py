@@ -76,6 +76,7 @@ from app.review.assistant.chat_request import (
 from app.review.assistant.page_pictures import fitting_dpi
 from app.review.assistant.simple_check.prompts import item_text, repair_text
 from app.review.assistant.simple_check.schema import (
+    PAIRED_VERDICTS,
     REPLY_SCHEMA,
     Box,
     CompareOutcome,
@@ -166,6 +167,8 @@ class CompareSettings:
     parallel: int = 8
     max_tokens: int = 64000
     retries: int = 3
+    targeted_repair: bool = True
+    """The repair turn asks only for the broken claims and keeps the passed ones (recipe step 4)."""
     label_places: bool = True
     """Each label line gives its direction and place on its drawing (recipe step 1, #1775)."""
     precedents: bool = True
@@ -181,6 +184,7 @@ class CompareSettings:
             parallel=settings.assistant_simple_parallel,
             max_tokens=settings.assistant_simple_max_tokens,
             retries=settings.assistant_simple_retries,
+            targeted_repair=getattr(settings, "assistant_simple_targeted_repair", True),
             label_places=getattr(settings, "assistant_simple_label_places", True),
             precedents=getattr(settings, "assistant_simple_precedents", True),
         )
@@ -741,6 +745,79 @@ def _read(
     return to_result(reply, item, pictures)
 
 
+# ---- the targeted repair ($0: code only) ------------------------------------------------------
+
+
+def broken_claims(result: CompareResult, item: WorkItem) -> tuple[list[str], bool]:
+    """What a repair must ask again (recipe step 4): the vendor labels whose pair code could not
+    accept, plus those no pair or `unaccounted_labels` names; and whether any item without a label
+    is broken. Everything else is frozen."""
+    vendor, architect = set(item.vendor_refs), set(item.architect_refs)
+    named: set[str] = set(result.unaccounted_labels)
+    broken: list[str] = []
+    for pair in result.pairs:
+        named.add(pair.vendor_label)
+        bad = (
+            pair.vendor_label not in vendor
+            or (pair.architect_label is not None and pair.architect_label not in architect)
+            or (pair.verdict in PAIRED_VERDICTS and pair.architect_label is None)
+            or (pair.verdict == "no_architect_value" and pair.architect_label is not None)
+            or pair.vendor_label in result.unaccounted_labels
+        )
+        if bad and pair.vendor_label in vendor:
+            broken.append(pair.vendor_label)
+    missing = [ref for ref in item.vendor_refs if ref not in named]
+    one = CompareResult(
+        work_item=item.id,
+        pairs=(),
+        other_items=result.other_items,
+        unaccounted_labels=(),
+        same_drawing=result.same_drawing,
+    )
+    others = any(not p.startswith("vendor labels not accounted") for p in check_result(one, item))
+    return list(dict.fromkeys([*broken, *missing])), others
+
+
+def merge_repair(
+    first: CompareResult, second: CompareResult, item: WorkItem, labels: Sequence[str]
+) -> CompareResult:
+    """The first answer with only the asked claims taken from the repair: its passed pairs frozen
+    (a repair can never undo a pair that passed), the asked labels' pairs from the repair, the
+    items without a label from the repair when it fixed them (else the first's)."""
+    asked = set(labels)
+    frozen = [p for p in first.pairs if p.vendor_label not in asked]
+    fixed = [p for p in second.pairs if p.vendor_label in asked]
+    pairs = [*frozen, *fixed]
+    paired = {p.vendor_label for p in pairs}
+    unaccounted = [
+        ref
+        for ref in (*first.unaccounted_labels, *second.unaccounted_labels)
+        if ref not in paired and (ref in asked or ref in first.unaccounted_labels)
+    ]
+    # Items without a label: each of the first answer's that passes code's checks on its own is
+    # kept (frozen), and each the repair gave that passes is added; a broken one is never kept.
+    others = [
+        other
+        for other in (*first.other_items, *second.other_items)
+        if not check_result(
+            CompareResult(
+                work_item=item.id,
+                pairs=(),
+                other_items=(other,),
+                unaccounted_labels=item.vendor_refs,
+            ),
+            item,
+        )
+    ]
+    return CompareResult(
+        work_item=first.work_item,
+        pairs=tuple(pairs),
+        other_items=tuple(dict.fromkeys(others)),
+        unaccounted_labels=tuple(dict.fromkeys(unaccounted)),
+        same_drawing=first.same_drawing,
+    )
+
+
 # ---- one work item -----------------------------------------------------------------------------
 
 
@@ -835,6 +912,7 @@ def compare_item(
         before_call()
     repaired = False
     last: CompareResult | None = None
+    asked: list[str] | None = None
     problems: list[str] = []
     while True:
         if stop is not None and stop.is_set():
@@ -893,6 +971,10 @@ def compare_item(
                 repaired=repaired,
             )
         result, problems = _read(answer, item, pictures)
+        if asked is not None and result is not None and last is not None:
+            # The targeted repair's reply: only the asked claims are taken; the rest is frozen.
+            result = merge_repair(last, result, item, asked)
+            problems = check_result(result, item)
         last = result or last
         if not problems and result is not None:
             return outcome(status="ok", result=result, repaired=repaired)
@@ -905,10 +987,13 @@ def compare_item(
                 repaired=True,
             )
         repaired = True
-        follow_up = {
-            "role": "user",
-            "content": [{"type": "text", "text": repair_text(item, problems)}],
-        }
+        labels: Sequence[str] = ()
+        others = False
+        if settings.targeted_repair and result is not None:
+            labels, others = broken_claims(result, item)
+            asked = list(labels) if (labels or others) else None
+        text = repair_text(item, problems, labels=labels, others=others)
+        follow_up = {"role": "user", "content": [{"type": "text", "text": text}]}
         if answer.fell_back:
             # Another model answered: its thinking cannot be passed back; ask again from the start
             # with the problems and the earlier answer in the question.
@@ -920,7 +1005,7 @@ def compare_item(
                         *messages[0]["content"],
                         {
                             "type": "text",
-                            "text": f"An earlier answer was:\n{earlier}\n\n{repair_text(item, problems)}",
+                            "text": f"An earlier answer was:\n{earlier}\n\n{text}",
                         },
                     ],
                 }

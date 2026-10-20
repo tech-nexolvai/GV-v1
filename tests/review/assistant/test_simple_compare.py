@@ -24,10 +24,12 @@ from app.review.assistant.simple_check.compare import (
     CompareSettings,
     PictureSource,
     SentPicture,
+    broken_claims,
     compare_all,
     compare_item,
     estimate_cost_usd,
     image_tokens,
+    merge_repair,
     plan_parts,
     request_content,
     resized_size,
@@ -46,6 +48,7 @@ from app.review.assistant.simple_check.schema import (
     Picture,
     Reply,
     WorkItem,
+    check_result,
 )
 
 SYSTEM = system_prompt("- CT-1: top width = cabinets + fillers (made up)", "All products")
@@ -686,3 +689,88 @@ def test_settings_from_the_app_settings() -> None:
     model, effort = chosen.for_item(_item(hard=("dense",)))
     assert model.id == "claude-opus-5-5" and effort == "high"
     assert compare.WARM_WAIT_S > 0
+
+
+# ---- the targeted repair (#1775, recipe step 4) ---------------------------------------------------
+
+
+def test_the_repair_asks_only_the_broken_claims_and_keeps_the_rest() -> None:
+    provider = _Provider(
+        [_events(json.dumps(_answer(missing=True))), _events(json.dumps(_answer()))]
+    )
+    outcome, _slept = _run(provider)
+    asked = provider.calls[1]["messages"][2]["content"][0]["text"]
+    assert "only for these vendor labels" in asked and "p7.D5" in asked
+    assert "p7.D3" not in asked.split("problems:")[-1].split("Code keeps")[-1]
+    assert "keeps every other pair and item of your answer exactly as it was" in asked
+    assert outcome.status == "ok" and "p7.D5" in outcome.result.unaccounted_labels
+
+
+def test_a_repair_can_never_change_a_pair_that_passed() -> None:
+    drifted = _answer()
+    drifted["pairs"][0] = {**drifted["pairs"][0], "verdict": "different_points"}
+    provider = _Provider([_events(json.dumps(_answer(missing=True))), _events(json.dumps(drifted))])
+    outcome, _slept = _run(provider)
+    assert outcome.status == "ok"
+    first = next(p for p in outcome.result.pairs if p.vendor_label == "p7.D3")
+    assert first.verdict == "different"  # frozen: the first answer's, which passed
+
+
+def test_without_the_targeted_repair_the_whole_form_is_asked_again() -> None:
+    provider = _Provider(
+        [_events(json.dumps(_answer(missing=True))), _events(json.dumps(_answer()))]
+    )
+    outcome = compare_item(
+        _item(),
+        provider=provider,
+        source=_pictures,
+        system=SYSTEM,
+        settings=CompareSettings(retries=2, targeted_repair=False),
+        sleep=lambda _s: None,
+    )
+    asked = provider.calls[1]["messages"][2]["content"][0]["text"]
+    assert "Answer again with the whole JSON form" in asked and outcome.status == "ok"
+
+
+def test_broken_claims_and_merge_are_code_only() -> None:
+    item = _item()
+    reply = Reply.model_validate(_answer(missing=True))
+    first, _problems = to_result(reply, item, [p.picture for p in _pictures(item)])
+    assert first is not None
+    labels, others = broken_claims(first, item)
+    assert labels == ["p7.D5"] and not others
+    merged = merge_repair(first, first, item, labels)
+    assert [p.vendor_label for p in merged.pairs] == [p.vendor_label for p in first.pairs]
+
+
+def test_a_repair_of_one_item_without_a_label_keeps_the_others_that_passed() -> None:
+    """Review of the targeted repair: the repair is asked only for the broken item, so the first
+    answer's items that passed must stay (else they would be lost: a recall loss)."""
+    item = _item()
+    pictures = [p.picture for p in _pictures(item)]
+    outlet = {
+        "kind": "missing_on_vendor",
+        "what": "outlet right of the sink",
+        "vendor": None,
+        "architect": "duplex outlet",
+        "vendor_image": None,
+        "vendor_box_px": None,
+        "architect_image": 2,
+        "architect_box_px": None,  # broken: no box code can find it by
+        "verdict": "different",
+        "millwork": True,
+    }
+    first_answer = _answer()
+    first_answer["other_items"] = [*first_answer["other_items"], outlet]
+    first, problems = to_result(Reply.model_validate(first_answer), item, pictures)
+    assert first is not None and problems
+    labels, others = broken_claims(first, item)
+    assert labels == [] and others
+    fixed = {**_answer(), "pairs": [], "unaccounted_labels": []}
+    fixed["other_items"] = [{**outlet, "architect_box_px": [10, 10, 60, 60]}]
+    second, _ = to_result(Reply.model_validate(fixed), item, pictures)
+    assert second is not None
+    merged = merge_repair(first, second, item, labels)
+    kinds = sorted(o.kind for o in merged.other_items)
+    assert kinds == ["dimension_without_label", "missing_on_vendor"]
+    assert check_result(merged, item) == []
