@@ -1784,7 +1784,8 @@ class ChatTools:
         picture_id = str(uuid4())
         (self.workspace.pictures / f"{picture_id}.png").write_bytes(png)
         listed = shown if every else drawn
-        text = f"{title} numbered: {label_lines(listed[:_MAX_LISTED]) or 'none'}"
+        lines = label_lines(listed[:_MAX_LISTED])
+        text = f"{title} numbered: " + (fence(lines, "labels") if lines else "none")
         if len(listed) > _MAX_LISTED:
             text += f"; and {len(listed) - _MAX_LISTED} more (zoom closer)"
         for label in drawn:

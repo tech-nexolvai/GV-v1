@@ -49,7 +49,7 @@ def test_the_request_holds_both_crops_and_a_neutral_question() -> None:
     assert base64.b64decode(content[1]["source"]["data"]) == VENDOR_PNG
     assert content[0]["source"]["media_type"] == "image/png"
     text = content[2]["text"]
-    assert '"Sink base width"' in text
+    assert '<drawing_data source="item">\nSink base width\n</drawing_data>' in text
     assert "image 1 is the architect's drawing" in text
     assert "image 2 is the vendor's shop drawing" in text
     assert "whether you are sure" in text
@@ -84,7 +84,7 @@ def test_no_crops_makes_no_call() -> None:
 def test_a_long_item_name_is_cut_and_spaces_folded() -> None:
     text = question("Sink   base\nwidth " + "x" * 300, ("architect",))
     assert "Sink base width" in text and "x" * 121 not in text
-    assert '"this item"' in question("   ", ("architect",))
+    assert "\nthis item\n" in question("   ", ("architect",))
 
 
 def test_a_failing_call_raises_to_the_engine() -> None:
