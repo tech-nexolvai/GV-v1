@@ -814,7 +814,7 @@ class _Run:
     pairs: dict[str, str] = field(default_factory=dict)
     #: The drawn run's drawings and line work (`same_ends`), read once per run.
     _drawn_sides: dict[Any, Any] = field(default_factory=dict)
-    _line_work: dict[tuple[str, int], Any] = field(default_factory=dict)
+    _line_work: dict[tuple[str, int], Sequence[Any]] = field(default_factory=dict)
     agents: list[Any] = field(default_factory=list)
     #: The phase whose budget the devil's advocate's blind picks are charged to: its own (P4), or
     #: what is left under the fixed price (the escalation, #1619).

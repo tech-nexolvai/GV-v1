@@ -156,25 +156,25 @@ def _pair() -> tuple[Elevation, Elevation]:
 
 
 def test_a_moved_end_with_nothing_else_drawn_near_it_is_the_same_point() -> None:
-    """Floor to a J-box: 31" on the architect, 31 1/4" on the vendor. The floor is tied (both
-    drawings end two heights on a long floor line); nothing else is drawn near 31" on either."""
+    """Floor to a J-box: 29" on the architect, 29 1/4" on the vendor. The floor is tied (both
+    drawings end two heights on a long floor line); nothing else is drawn near 29" on either."""
     arch, vendor = _pair()
-    a_id = arch.up(31, -10, to_x_in=20)
-    v_id = vendor.up(31.25, -10, to_x_in=20)
+    a_id = arch.up(29, -10, to_x_in=20)
+    v_id = vendor.up(29.25, -10, to_x_in=20)
     state, why = se.prove(vendor.side_of(), arch.side_of(), v_id, a_id)
     assert state == "same_extent", why
     assert "the floor" in why
 
 
 def test_underside_against_top_of_a_counter_is_never_the_same_point() -> None:
-    """Rule R8's trap: the vendor's 33 1/4" runs to the underside of a 3/4" top, the architect's
-    34" to its top. Both drawings draw both edges: another feature is at the moved end."""
+    """Rule R8's trap: the vendor's 34 1/4" runs to the underside of a 3/4" top, the architect's
+    35" to its top. Both drawings draw both edges: another feature is at the moved end."""
     arch, vendor = _pair()
     for drawing in (arch, vendor):
-        drawing.shelf(33.25)
-        drawing.shelf(34)
-    a_id = arch.up(34, -10, to_x_in=10)
-    v_id = vendor.up(33.25, -10, to_x_in=10)
+        drawing.shelf(34.25)
+        drawing.shelf(35)
+    a_id = arch.up(35, -10, to_x_in=10)
+    v_id = vendor.up(34.25, -10, to_x_in=10)
     state, why = se.prove(vendor.side_of(), arch.side_of(), v_id, a_id)
     assert state == "cannot_tell"
     assert "another drawn feature" in why
@@ -190,10 +190,10 @@ def test_a_difference_too_big_to_be_one_point_is_not_proved() -> None:
 
 
 def test_a_value_not_drawn_to_its_size_is_not_proved() -> None:
-    """The vendor typed 31 1/4" over a line drawn 29" long: where its end lands proves nothing."""
+    """The vendor typed 29 1/4" over a line drawn 27" long: where its end lands proves nothing."""
     arch, vendor = _pair()
-    a_id = arch.up(31, -10)
-    v_id = vendor.up(29, -10, printed=31.25)
+    a_id = arch.up(29, -10)
+    v_id = vendor.up(27, -10, printed=29.25)
     state, _why = se.prove(vendor.side_of(), arch.side_of(), v_id, a_id)
     assert state == "cannot_tell"
 
@@ -243,7 +243,7 @@ def test_nothing_tied_proves_nothing() -> None:
 
 def test_a_width_against_a_height_is_different() -> None:
     arch, vendor = _pair()
-    a_id = arch.up(31, -10)
+    a_id = arch.up(29, -10)
     v_side = vendor.side_of()
     v_line = v_side.lines["D30"]
     v_side.lines["D30"] = se.Line("D30", "h", v_line.row, v_line.a, v_line.b, v_line.inches, "x")
@@ -253,8 +253,8 @@ def test_a_width_against_a_height_is_different() -> None:
 
 def test_prove_labels_reads_each_drawing_from_the_page_map_half() -> None:
     arch, vendor = _pair()
-    a_id = arch.up(31, -10, to_x_in=20)
-    v_id = vendor.up(31.25, -10, to_x_in=20)
+    a_id = arch.up(29, -10, to_x_in=20)
+    v_id = vendor.up(29.25, -10, to_x_in=20)
     page_map = {
         "pages": [
             {

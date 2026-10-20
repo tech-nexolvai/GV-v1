@@ -254,14 +254,14 @@ def _settle_right(item: _Item, step: StepName, how: str) -> None:
 def _equal_parts(item: _Item, ctx: EscalationContext) -> None:
     """A vendor side that prints only EQ marks: its code label is an equal part code worked out
     (`dims.json`'s derived label: the printed overall, less the chain's printed parts, shared
-    equally), so its value is that part's, said as code's ("EQ (18")"), and compared like any
+    equally), so its value is that part's, said as code's ("EQ (20")"), and compared like any
     value code read. Any other label (or none) leaves the item as it is."""
     finding = item.finding
     text = " ".join(str(finding.get("vendor") or "").split())
     if not _EQ.search(text) or _claim(text) is not None:
         return
     dims = dict(finding.get("dims") or {}) if isinstance(finding.get("dims"), Mapping) else {}
-    label = _label_of(ctx, dims.get("vendor"))
+    label: Mapping[str, Any] | None = _label_of(ctx, dims.get("vendor"))
     if label is None:
         boxed = [
             lab for lab in _labels_in(ctx, finding, "vendor_box", "vendor") if lab.get("derived")

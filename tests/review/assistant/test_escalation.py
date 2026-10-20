@@ -250,29 +250,29 @@ def _eq_label(id_: str, at: tuple[float, float], inches: str, overall: str) -> d
 
 
 def test_eq_marks_take_their_equal_parts_value_and_are_compared() -> None:
-    """The vendor's sink centre is EQ / EQ of a 36" run: code's 18" part against the
-    architect's 24" is a difference code read (its pairing still has to be proved)."""
+    """The vendor's sink centre is EQ / EQ of a 40" run: code's 20" part against the
+    architect's 26" is a difference code read (its pairing still has to be proved)."""
     labels = {
         (FILE, 3): [
-            _label("D1", "architect", "24", (100, 100)),
-            _label("D9", "vendor", "36", (300, 280)),
-            _eq_label("D10", (280, 300), "18", "D9"),
-            _eq_label("D11", (320, 300), "18", "D9"),
+            _label("D1", "architect", "26", (100, 100)),
+            _label("D9", "vendor", "40", (300, 280)),
+            _eq_label("D10", (280, 300), "20", "D9"),
+            _eq_label("D11", (320, 300), "20", "D9"),
         ]
     }
     finding = _wrong(
         status="check",
         vendor="EQ",
-        architect="2'-0\"",
-        inches={"architect": "24", "vendor": None},
+        architect="2'-2\"",
+        inches={"architect": "26", "vendor": None},
         vendor_box=_box((280, 300)) | {"x0": 272, "x1": 288},
         dims={"vendor": {"id": "D10", "page": 3, "file": FILE}},
         checks={"printed_architect": "match", "printed_vendor": "not_a_number"},
     )
     result = escalate([finding], EscalationContext(main_file=FILE, labels=labels))
     found = result.changed[0]
-    assert found["vendor"] == 'EQ (18")'
-    assert found["inches"]["vendor"] == "18"
+    assert found["vendor"] == 'EQ (20")'
+    assert found["inches"]["vendor"] == "20"
     assert found["status"] == "different"
     assert found["checks"]["printed_vendor"] == "match"
     assert found["dims"]["vendor"]["derived"]["from"] == "D9"
@@ -282,11 +282,11 @@ def test_eq_marks_take_their_equal_parts_value_and_are_compared() -> None:
 
 
 def test_eq_with_no_derived_label_is_left_as_it_is() -> None:
-    labels = {(FILE, 3): [_label("D10", "vendor", "18", (280, 300), text="EQ")]}
+    labels = {(FILE, 3): [_label("D10", "vendor", "20", (280, 300), text="EQ")]}
     finding = _wrong(
         status="check",
         vendor="EQ",
-        inches={"architect": "24", "vendor": None},
+        inches={"architect": "26", "vendor": None},
         dims={"vendor": {"id": "D10", "page": 3, "file": FILE}},
     )
     result = escalate([finding], EscalationContext(main_file=FILE, labels=labels))

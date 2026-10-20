@@ -267,8 +267,8 @@ def test_where_the_anchor_fit_cannot_tell_the_drawn_run_decides(
 ) -> None:
     """`_extent`: the anchor fit first; only its `cannot_tell` asks the drawn run (`same_ends`),
     whose answer is said as the drawn run's; a failed drawn-run proof leaves the fit's answer."""
-    vendor = _label("D30", "vendor", "31.25", (100, 212.5))
-    architect = _label("D2", "architect", "31", (400, 462))
+    vendor = _label("D30", "vendor", "29.25", (100, 205.3))
+    architect = _label("D2", "architect", "29", (400, 458))
     run = _bare_run([vendor, architect])
     asked: list[str] = []
 
@@ -290,7 +290,7 @@ def test_where_the_anchor_fit_cannot_tell_the_drawn_run_decides(
     # a width against a height: the anchor fit's own answer, the drawn run never asked
     asked.clear()
     monkeypatch.setattr(full_check_roster.same_ends, "prove_labels", proved)
-    height = _label("D3", "architect", "31", (400, 462), orientation="v")
+    height = _label("D3", "architect", "29", (400, 458), orientation="v")
     assert run._extent(vendor, height, None)[0] == "different_extent" and asked == []
 
 

@@ -28,7 +28,7 @@ same order. Ties that disagree are dropped, the weakest kind first; a run in the
   `MAX_MOVE_IN`, and **neither drawing has any other drawn feature** (a long line across the
   dimension's reach, another dimension's end, an outlet) between where its own end lands and
   where the other drawing's value would land, plus `MARGIN_IN`. A counter's top 3/4" above its
-  underside is such a feature: "33 1/4" to the underside against 34" to the top" is never proved.
+  underside is such a feature: "34 1/4" to the underside against 35" to the top" is never proved.
 - Anything else: `cannot_tell` (never a block: the existing checks decide as before).
 
 Pure code, $0, no AI, never the AI's words about the ends. The caller passes each drawing's
