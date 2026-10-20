@@ -151,9 +151,9 @@ def test_the_register_and_the_not_compared_list_give_the_same_reason() -> None:
     for finding in findings[1:]:
         row = by_item[vendor_text(finding["item"])]
         assert row[5] == "Not compared"
-        assert row[10] == not_compared.vendor_reason(listed[str(finding["id"])]), row
+        assert row[11] == not_compared.vendor_reason(listed[str(finding["id"])]), row
     # The rule result names its rule and says why plainly, the same in both files.
-    assert "GV's rule" in by_item["Countertop row on page 5"][10]
+    assert "GV's rule" in by_item["Countertop row on page 5"][11]
 
 
 def test_no_vendor_to_confirm_sentence_of_gvs_own() -> None:
@@ -168,7 +168,7 @@ def test_the_reviewers_not_a_problem_is_right_noted_reviewer() -> None:
     dismissed = _proved(decision={"decision": "not_a_problem", "by": "Ann", "note": "Fine"})
     rows = register_rows([dismissed], _context())
     assert rows[0][5] == "Right"
-    assert rows[0][10] == "Right (reviewer): Fine"
+    assert rows[0][11] == "Right (reviewer): Fine"
 
 
 # ---- round 2 ----------------------------------------------------------------------------------
