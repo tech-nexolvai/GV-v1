@@ -22,7 +22,9 @@ vendor offset on a set where the architect prints none was never caught.
   drawn length (a sanity check of which dimension it is, never of its value).
 - **Unsure, so Not compared, never red:** a second line across the cut-out drawn within 4" in front
   of the front line (a top's edge in front of the cabinet front: code cannot tell which edge the
-  offset is measured from), a value read from drawn ink, two labels by one dimension.
+  offset is measured from), or a dashed or partial line parallel to the front between the cut-out
+  and the front line or just in front of it (GV's rule measures from the cabinet's front, not the
+  top's edge), a value read from drawn ink, two labels by one dimension.
 
 **The setting in force** comes from the chat's `rules.md` (the rulebook's default, GV's company
 standard, the project's value or its sink card, a value typed for the drawing set: the highest one
@@ -131,6 +133,9 @@ _SAME_PT: Final = 0.3
 _END_PT: Final = 0.8
 _TICK_PT: Final = 3.0
 _LABEL_GAP_PT: Final = 8.0
+#: A line covering this share of the cut-out's width counts as a possible second front edge (a
+#: dashed cabinet face under the top).
+_DASHED_SHARE: Final = 0.3
 #: A corner's rounding at most this share of the cut-out's shorter side.
 _ROUND_SHARE: Final = 0.3
 #: A label that is a plain dimension: a number with inches or feet marks, nothing else.
@@ -277,8 +282,11 @@ class _Frame:
                 place = b
         return covered / (u1 - u0) if u1 > u0 else 0.0
 
-    def lines_across(self, u0: float, u1: float, lo: float, hi: float) -> list[float]:
-        """The places (v, lo < v < hi) of lines across the whole of u0..u1, nearest `lo` first."""
+    def lines_across(
+        self, u0: float, u1: float, lo: float, hi: float, share: float = COVER
+    ) -> list[float]:
+        """The places (v, lo < v < hi) of lines across `share` of u0..u1 (the whole of it by
+        default; less finds a dashed line), nearest `lo` first."""
         start, end = bisect_right(self.places, lo), bisect_left(self.places, hi)
         places = sorted({round(v, 2) for v in self.places[start:end]})
         merged: list[float] = []
@@ -286,7 +294,7 @@ class _Frame:
             if merged and v - merged[-1] <= _SAME_PT:
                 continue
             merged.append(v)
-        return [v for v in merged if self.coverage(v, u0, u1) >= COVER]
+        return [v for v in merged if self.coverage(v, u0, u1) >= share]
 
 
 # ---- the sink cut-out --------------------------------------------------------------------------
@@ -621,11 +629,27 @@ def _plan(
         return None
     unsure = None
     second = [v for v in ahead[1:] if v - front_line <= SECOND_EDGE_IN * pt_per_in]
+    # A dashed or partial line parallel to the front, between the cut-out and the front line or
+    # just in front of it (a cabinet face under the top, an overhang's edge): GV's rule measures
+    # from the cabinet's front, never the top's edge, so with two candidate edges code cannot
+    # tell which one the printed dimension stops at.
+    dashed = [
+        v
+        for v in frame.lines_across(
+            u0, u1, v1 + _SAME_PT, front_line + SECOND_EDGE_IN * pt_per_in, _DASHED_SHARE
+        )
+        if abs(v - front_line) > _SAME_PT and v not in second
+    ]
     if second:
         gap = format_inches(_sixteenths(second[0] - front_line, pt_per_in))
         unsure = (
             f"a second front edge is drawn {gap} in front of the run's front line (a top's edge "
             "in front of the cabinets?): code cannot tell which edge the offset is measured from"
+        )
+    elif dashed:
+        unsure = (
+            "another line parallel to the front is drawn near the run's front line (a cabinet "
+            "face under the top?): code cannot tell which edge the offset is measured from"
         )
     offsets, in_band = _offsets(frame, labels, side, u0, u1, v1, front_line, pt_per_in)
     for later in second:

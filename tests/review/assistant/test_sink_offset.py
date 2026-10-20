@@ -43,7 +43,11 @@ RULES_MD = """\
 
 
 def _plan_lines(
-    offset_in: float, *, dimension: bool = True, second_edge_in: float | None = None
+    offset_in: float,
+    *,
+    dimension: bool = True,
+    second_edge_in: float | None = None,
+    dashed_in: float | None = None,
 ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
     """A run's plan with a sink cut-out `offset_in` behind its front line."""
     edge = FRONT_Y - offset_in * PT_PER_IN
@@ -73,6 +77,9 @@ def _plan_lines(
     if second_edge_in is not None:
         at = FRONT_Y + second_edge_in * PT_PER_IN
         lines.append(((0.0, at), (200.0, at)))
+    if dashed_in is not None:  # a dashed line `dashed_in` behind the front line (2 pt dashes)
+        at = FRONT_Y - dashed_in * PT_PER_IN
+        lines += [((x, at), (x + 2.0, at)) for x in range(0, 200, 4)]
     return lines
 
 
@@ -201,6 +208,20 @@ def test_a_second_front_edge_makes_the_offset_unsure_never_red() -> None:
     assert so.noted_labels([{**made, "id": "S1"}]) == {(FILE, 3, "D10"): "S1"}
     # Equal to the standard while unsure: nothing to say.
     assert _findings("4", (None, False), second_edge_in=1.0) == []
+
+
+def test_a_dashed_cabinet_face_under_the_top_makes_the_offset_unsure_never_red() -> None:
+    """GV's rule measures from the cabinet's front, not the top's edge: a dashed line between the
+    cut-out and the front line (a cabinet face under the top) leaves the edge unknown."""
+    (plan,) = so.plans_on(
+        [_label("5", 5.0)], _plan_lines(5.0, dashed_in=1.0), (-10, 50, 210, 200), PT_PER_IN
+    )
+    assert plan.unsure is not None and "cabinet face" in plan.unsure
+    (offset,) = plan.offsets
+    assert offset.unsure is not None
+    vendor = _drawing(FILE, [_label("5", 5.0)])
+    (made,) = so.findings_for(vendor, [plan], [], STANDARD)
+    assert made["status"] == "check" and "settled" not in made
 
 
 def test_an_architect_code_cannot_read_never_turns_a_difference_red() -> None:
