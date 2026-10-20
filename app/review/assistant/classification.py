@@ -10,9 +10,15 @@ reason and what would settle it, listed in the separate "Not compared" PDF and t
 
 The rules, in the order they are applied:
 
-- **R1, the architect's set governs.** The brand prototype is reference only, unless the
-  architect's drawing points to it ("per brand standard"); a difference from the prototype alone is
-  never a question: it is listed as information (`prototype`).
+- **R1, the architect's set governs.** Wherever the architect gives information, it governs: a
+  difference from the brand prototype alone is never a question, it is listed as information
+  (`prototype`), and code never proves it. The brand prototype is the reference (Anant,
+  2026-10-20, as GV's reviewer does: "we don't have ID set elevation, we have taken reference from
+  the brand prototype") when the architect gives **no elevation** of the item: code marks such a
+  finding `reference: "brand_prototype"` from the page map (no architect drawing of its area,
+  `plan_check.architect_in_area`), and it is then judged like an architect comparison, its words
+  saying "reference: brand prototype" (`PROTOTYPE_REFERENCE_WORDS`). The prototype also governs
+  where the architect's drawing points to it ("per brand standard").
 - **R2, printed dimensions only.** A value scaled off a drawing never decides anything; it may
   appear as context ("the drawing scales about 58\\"").
 - **R3, the architect's drawings disagree** (code's reading ledger: the architect's own views):
@@ -25,6 +31,11 @@ The rules, in the order they are applied:
   Wrong when code proved it. A string is proved only when code verified its geometry (the parts
   touch end to end and end on the overall's extension lines, `proof.string_verified`); a string an
   AI grouped is Not compared, "Not reviewed: string not verified on the drawing" (#1639).
+  A string code's lines cannot prove complete (a filler note at an end, a part left out) is Not
+  compared, "the string could not be proved complete" (#1802).
+- **The architect guard, for every rule** (#1802, `architect_conflict`): a vendor value that
+  equals the architect's printed value for the same item is never Wrong, and a "should be" that
+  differs from the architect's printed value for the same item is never proposed: Not compared.
 - **R6, GV's rule** (from GV's rulebook) broken: Wrong.
 - **R7, the architect gives no information** (no size, no layout, no drawing of the area), or only
   parts where the vendor prints an overall: a total the architect never prints is never Wrong
@@ -48,18 +59,24 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
 from app.review.assistant.spot_locate import spot_words
 
 __all__ = [
+    "PROTOTYPE_REFERENCE",
+    "PROTOTYPE_REFERENCE_WORDS",
     "REASONS",
     "REASON_WORDS",
     "TRADE_WORDS",
     "Classified",
+    "architect_conflict",
     "classify",
     "not_compared_line",
     "points_to_prototype",
+    "prototype_governs",
+    "prototype_reference",
     "rule_without_requirement",
 ]
 
@@ -287,6 +304,32 @@ def points_to_prototype(words: str) -> bool:
     return bool(_POINTS_TO_PROTOTYPE.search(words))
 
 
+#: A finding's `reference` when code found no architect elevation of its item and the brand
+#: prototype is the reference (R1, Anant 2026-10-20). Set and cleared by code only.
+PROTOTYPE_REFERENCE: Final = "brand_prototype"
+#: How the proof, the letter, the register and the Not-compared list name it.
+PROTOTYPE_REFERENCE_WORDS: Final = "reference: brand prototype"
+
+
+def prototype_reference(finding: Mapping[str, Any]) -> bool:
+    """Code marked the finding: the architect gives no elevation of the item, so the brand
+    prototype is its reference (R1)."""
+    return (
+        finding.get("source") == "brand_prototype"
+        and finding.get("reference") == PROTOTYPE_REFERENCE
+    )
+
+
+def prototype_governs(finding: Mapping[str, Any]) -> bool:
+    """Whether a finding compared with the brand prototype is judged like an architect comparison
+    (R1): the architect gives no elevation of the item (`prototype_reference`), or its drawing
+    points to the brand standard. Any other prototype comparison is reference only: the architect
+    governs wherever it gives information."""
+    if finding.get("source") != "brand_prototype":
+        return False
+    return prototype_reference(finding) or points_to_prototype(_flat(finding.get("why")))
+
+
 def _page(finding: Mapping[str, Any]) -> object:
     return finding.get("page")
 
@@ -354,9 +397,88 @@ def _unread_detail(finding: Mapping[str, Any]) -> str:
     return ""
 
 
+#: The comparisons whose `inches.architect` is the other drawing's printed value (#1802).
+_ARCHITECT_SOURCES: Final = frozenset({"architect", "brand_prototype", "gv_review"})
+
+
+def _number(value: object) -> Decimal | None:
+    if value is None or isinstance(value, bool) or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def architect_conflict(finding: Mapping[str, Any]) -> str | None:
+    """The global guard against a false red (#1802), for every rule: why the item may not be red,
+    or `None`.
+
+    - The vendor's value EQUALS the architect's for the same pair (a comparison with the
+      architect's printed value, or the architect's printed overall code found for the same run,
+      `architect_printed`): nothing to correct.
+    - The "should be" differs from the architect's printed value for the same item: when the
+      architect prints it (`architect_printed`, code's search of the architect's runs), a sum of
+      the vendor's parts that disagrees with it is not what the vendor should print (one of the
+      parts may be the wrong number)."""
+    inches = finding.get("inches") if isinstance(finding.get("inches"), Mapping) else {}
+    vendor = _number(inches.get("vendor"))
+    if (
+        finding.get("source") in _ARCHITECT_SOURCES
+        and vendor is not None
+        and vendor == _number(inches.get("architect"))
+    ):
+        return "the vendor prints the architect's own value"
+    printed = {
+        value
+        for value in (_number(v) for v in finding.get("architect_printed") or ())
+        if value is not None
+    }
+    if not printed:
+        return None
+    if vendor is not None and vendor in printed:
+        return "the vendor prints the architect's own value for the same run"
+    settled = finding.get("settled")
+    if isinstance(settled, Mapping) and settled.get("method") == "gv_limits":
+        return None  # GV's limits are a range, not the architect's size
+    should = (
+        _number(finding.get("parts_sum"))
+        if finding.get("source") == "vendor_arithmetic"
+        else _number(inches.get("architect"))
+    )
+    if should is None or printed != {should}:
+        shown = ", ".join(f'{_trim(v)}"' for v in sorted(printed))
+        return f"the architect prints {shown} for the same run, not the value it should be"
+    return None
+
+
+def _trim(value: Decimal) -> str:
+    text = format(value.normalize(), "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
 def _unproved(finding: Mapping[str, Any]) -> Classified:
     """A difference (status different) code could not prove: the closest reason."""
     page = _page(finding)
+    conflict = architect_conflict(finding)
+    if conflict is not None:
+        return _not(
+            "not_proved",
+            f"{conflict}; which number is wrong is not proved",
+            "the architect's printed value for {thing}",
+        )
+    reads = finding.get("string_reads")
+    if (
+        finding.get("source") == "vendor_arithmetic"
+        and isinstance(reads, Mapping)
+        and reads.get("outcome") == "gap"
+        and finding.get("string_geometry") not in ("verified", "two_reads")
+    ):
+        return _not(
+            "string_not_verified",
+            _short(reads.get("why"), 240),
+            "code's check that the parts run end to end between the overall's extension lines",
+        )
     if (
         finding.get("source") == "vendor_arithmetic"
         and finding.get("created_by") != "consistency"
@@ -417,8 +539,7 @@ def _unproved(finding: Mapping[str, Any]) -> Classified:
     if _read_by_code(finding):
         return _not(
             "different_reference",
-            "code read both values but could not prove both dimensions run between the same "
-            "points",
+            "code read both values but could not prove both dimensions run between the same points",
             "a dimension of {thing} on both drawings between the same two points",
         )
     return _not(
@@ -470,10 +591,9 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
             "the same span",
             "the vendor's corrected drawing, or one dimension that governs",
         )
-    if (
-        reason == "which_governs"
-        or named == "which_governs"
-        or finding.get("source") == ("brand_prototype")
+    which_governs = reason == "which_governs" or named == "which_governs"
+    if (which_governs and not prototype_reference(finding)) or (
+        finding.get("source") == "brand_prototype" and not prototype_governs(finding)
     ):
         return _not(
             "prototype",
@@ -550,8 +670,18 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
 
 def classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
     """Where `finding` stands under R1-R10. `proved`: code proved it Wrong (`proof.code_proved`,
-    which applies D1 for a pairing). The reviewer's decisions are laid over this by `proof`."""
-    return _with_thing(_classify(finding, proved=proved), finding)
+    which applies D1 for a pairing). The reviewer's decisions are laid over this by `proof`. A
+    finding whose reference is the brand prototype (`prototype_reference`) says so in its reason."""
+    found = _with_thing(_classify(finding, proved=proved), finding)
+    if found.outcome == "not_compared" and found.why and prototype_reference(finding):
+        found = Classified(
+            found.outcome,
+            found.rule,
+            found.reason,
+            f"{found.why} ({PROTOTYPE_REFERENCE_WORDS}: the architect gives no elevation of it)",
+            found.settle,
+        )
+    return found
 
 
 def rule_without_requirement(finding: Mapping[str, Any]) -> Classified:
@@ -667,9 +797,19 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
             f"architect's parts add to {parts.get('total')}; vendor shows {parts.get('vendor')}",
             "the architect's printed overall for {thing}",
         )
+    if status == "different" and source == "brand_prototype" and not prototype_governs(finding):
+        # R1: the architect governs wherever it gives information; never Wrong by the prototype.
+        return _not(
+            "prototype",
+            "the brand prototype differs; the architect's drawing governs (the prototype is "
+            "reference only)",
+            "nothing, unless the architect's drawing points to the brand standard",
+        )
     if status == "different" and proved:
         if source in ("vendor_arithmetic", "cross_view"):
             return Classified("wrong", "R5")
+        if source == "brand_prototype":
+            return Classified("wrong", "R1")  # no architect elevation: the prototype governs
         return Classified("wrong", "R6" if source == "rules" else "R4")
     if status == "same":
         against = _code_disagrees(finding)
@@ -690,13 +830,6 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
             )
         return Classified("right", "R4")
     if status == "different":
-        if source == "brand_prototype" and not points_to_prototype(_flat(finding.get("why"))):
-            return _not(
-                "prototype",
-                "the brand prototype differs; the architect's drawing governs (the prototype is "
-                "reference only)",
-                "nothing, unless the architect's drawing points to the brand standard",
-            )
         return _unproved(finding)
     return _check_item(finding)
 

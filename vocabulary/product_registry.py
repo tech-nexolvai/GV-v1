@@ -3,8 +3,9 @@
 GV reviews more than countertops and cabinets: the client's category model has eight products
 (cabinet, countertop, lighting, seating, case goods, mirrors, accessories, artwork), each with its
 own checklist and two kinds of check (the vendor's dimensions against the architect's, and GV's own
-standards that are not in the drawing). So a product is data, not code: one entry in
-`products.yaml` beside this module, plus its skill file and its rules in the rulebook. Everything
+standards that are not in the drawing). So a product is data, not code: one **product pack**,
+`products/<id>/` beside this module (`pack.yaml`, `skill.md`, optionally `example.json`; #1776),
+listed in `products.yaml`, plus its rules in the rulebook. Everything
 that used to name "countertop" and "cabinet" (the chat's chips and checks, the skill, the full
 check's checklist, the findings' grouping, the upload picker, the package's `product_type`) reads
 the registry instead.
@@ -13,9 +14,13 @@ The file's path can be replaced with `GV_PRODUCT_REGISTRY` (tests use it to add 
 code change); `reset_registry()` makes the next read load it again.
 
 **Checked on load, loudly.** A registry that does not hold together (a repeated id, an id the
-database cannot store, an active product without a checklist or a skill file) raises
-`RegistryError` naming the problem, rather than letting a product appear that the chat could not
-review.
+database cannot store, an active product without a checklist or a skill file, a word or end word or
+attribute two packs both claim) raises `RegistryError` naming the problem, rather than letting a
+product appear that the chat could not review.
+
+`products.yaml` lists the packs in order. An entry may also be the whole product written inline (a
+mapping, with its skill file in `skills_folder` or its own `folder`): test registries use that, and
+`registry_data()` gives every product of a registry in that form.
 
 Like the rest of `vocabulary/`, this imports nothing from the project.
 """
@@ -29,6 +34,27 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from typing import Any, Final
+
+from vocabulary.product_packs import (
+    PACK_FIELDS,
+    PACK_FILE,
+    SKILL_FILE,
+    Attribute,
+    EndWord,
+    PackError,
+    PackSemanticType,
+    PartKind,
+    attributes,
+    end_words,
+    example,
+    line,
+    part_kinds,
+    patterns,
+    phrases,
+    read_pack,
+    semantic_types,
+    size_formats,
+)
 
 __all__ = [
     "CHECK_KINDS",
@@ -47,6 +73,7 @@ __all__ = [
     "RunPartKind",
     "load_registry",
     "registry",
+    "registry_data",
     "reset_registry",
 ]
 
@@ -78,8 +105,11 @@ _PRODUCT_FIELDS: Final = frozenset(
         "hints",
         "tag_families",
         "run_fit",
+        *PACK_FIELDS,
     }
 )
+#: An inline entry (a test registry) may name the folder its skill and example files are in.
+_INLINE_FIELDS: Final = frozenset({*_PRODUCT_FIELDS, "folder"})
 #: How a run's flex parts share the site difference (`run_fit.distribution`). Only `equally` so far:
 #: a new way is a new word here and its arithmetic in `app/review/assistant/run_fit.py`.
 RUN_FIT_DISTRIBUTIONS: Final = ("equally",)
@@ -173,6 +203,23 @@ class Product:
     run_fit: RunFit | None = None
     """GV's rule for fitting this product's runs to the site (`run_fit`), or `None`: no such rule
     until GV gives one."""
+    # -- the product pack's fields (#1776; `product_packs` says what each one is for) --
+    shared_words: tuple[str, ...] = ()
+    ours: str = ""
+    room_words_extra: tuple[str, ...] = ()
+    end_words: tuple[EndWord, ...] = ()
+    part_kinds: tuple[PartKind, ...] = ()
+    material_words: tuple[str, ...] = ()
+    attributes: tuple[Attribute, ...] = ()
+    size_formats: tuple[str, ...] = ()
+    semantic_types: tuple[PackSemanticType, ...] = ()
+    impact_words: tuple[str, ...] = ()
+    item_words: tuple[str, ...] = ()
+    item_codes: tuple[str, ...] = ()
+    example: Mapping[str, Any] | None = None
+    """`example.json`: one made-up worked example (`input`, `reply`) for the compare prompt."""
+    folder: Path | None = None
+    """The pack's folder; None for a product written inline in a registry."""
 
     @property
     def has_skill(self) -> bool:
@@ -312,9 +359,20 @@ def _run_fit(given: object, where: str) -> RunFit | None:
     )
 
 
-def _product(entry: object, skills_folder: Path, n: int) -> Product:
+def _product(
+    entry: object, skills_folder: Path | None, n: int, folder: Path | None = None
+) -> Product:
     if not isinstance(entry, Mapping):
         raise RegistryError(f"product {n}: must be a mapping")
+    try:
+        return _checked(entry, skills_folder, n, folder)
+    except PackError as error:
+        raise RegistryError(str(error)) from None
+
+
+def _checked(
+    entry: Mapping[str, Any], skills_folder: Path | None, n: int, folder: Path | None
+) -> Product:
     pid = entry.get("id")
     if not isinstance(pid, str) or not _ID.match(pid):
         raise RegistryError(
@@ -324,9 +382,21 @@ def _product(entry: object, skills_folder: Path, n: int) -> Product:
     if pid == OTHER_CATEGORY:
         raise RegistryError(f"product {n}: `other` is the category of no product, not an id")
     where = f"product {pid!r}"
-    unknown = sorted(set(entry) - _PRODUCT_FIELDS)
+    allowed = _PRODUCT_FIELDS if folder is not None else _INLINE_FIELDS
+    unknown = sorted(set(entry) - allowed)
     if unknown:
         raise RegistryError(f"{where}: unknown field(s) {', '.join(unknown)}")
+    if folder is None and entry.get("folder") is not None:
+        given = entry["folder"]
+        if not isinstance(given, str) or not given.strip():
+            raise RegistryError(f"{where}: `folder` must be a path")
+        folder = Path(given).expanduser().resolve()
+    if folder is not None:
+        skill_file = folder / SKILL_FILE
+    elif skills_folder is not None:
+        skill_file = skills_folder / f"{pid}.md"
+    else:
+        raise RegistryError(f"{where}: written inline, it needs `skills_folder` or its `folder`")
     kinds = entry.get("check_kinds")
     if (
         not isinstance(kinds, list)
@@ -372,12 +442,34 @@ def _product(entry: object, skills_folder: Path, n: int) -> Product:
         checklist=tuple(items),
         global_rule_hints=tuple(" ".join(h.split()) for h in hints),
         category_label=_text(entry, "category_label", where, default=plural),
-        skill_file=skills_folder / f"{pid}.md",
+        skill_file=skill_file,
         words=tuple(dict.fromkeys(" ".join(w.lower().split()) for w in words)),
         hints=tuple(dict.fromkeys(" ".join(w.lower().split()) for w in maybe)),
         tag_families=tuple(dict.fromkeys(families)),
         run_fit=_run_fit(entry.get("run_fit"), where),
+        shared_words=phrases(entry.get("shared_words"), f"{where} shared_words"),
+        ours=line(entry.get("ours"), f"{where} ours", required=False),
+        room_words_extra=phrases(entry.get("room_words_extra"), f"{where} room_words_extra"),
+        end_words=end_words(entry.get("end_words"), where),
+        part_kinds=part_kinds(entry.get("part_kinds"), where),
+        material_words=phrases(entry.get("material_words"), f"{where} material_words"),
+        attributes=attributes(entry.get("attributes"), where),
+        size_formats=size_formats(entry.get("size_formats"), where),
+        semantic_types=semantic_types(entry.get("semantic_types"), where),
+        impact_words=phrases(entry.get("impact_words"), f"{where} impact_words"),
+        item_words=phrases(entry.get("item_words"), f"{where} item_words"),
+        item_codes=patterns(entry.get("item_codes"), f"{where} item_codes"),
+        example=example(folder, where),
+        folder=folder,
     )
+    own = set(product.words)
+    for name, given in (
+        ("shared_words", product.shared_words),
+        ("room_words_extra", product.room_words_extra),
+    ):
+        mine = sorted(own & set(given))
+        if mine:
+            raise RegistryError(f"{where}: {', '.join(mine)} in `{name}` are its own words")
     if product.active:
         if not product.checklist:
             raise RegistryError(f"{where}: an active product needs a checklist")
@@ -397,25 +489,115 @@ def load_registry(path: Path) -> ProductRegistry:
         raise RegistryError(f"the product registry {path} could not be read: {error}") from None
     if not isinstance(data, Mapping) or data.get("version") != 1:
         raise RegistryError(f"{path}: needs `version: 1` and a `products` list")
-    folder = data.get("skills_folder")
-    if not isinstance(folder, str) or not folder.strip():
-        raise RegistryError(f"{path}: needs `skills_folder`")
-    skills_folder = (path.parent / folder).resolve()
+    skills_folder = _folder(data, "skills_folder", path)
+    packs_folder = _folder(data, "packs_folder", path)
     entries = data.get("products")
     if not isinstance(entries, list) or not entries:
         raise RegistryError(f"{path}: `products` must be a non-empty list")
-    products = tuple(_product(entry, skills_folder, n) for n, entry in enumerate(entries, 1))
+    products = tuple(
+        _entry(entry, skills_folder, packs_folder, n, path) for n, entry in enumerate(entries, 1)
+    )
     ids = [p.id for p in products]
     repeated = sorted({pid for pid in ids if ids.count(pid) > 1})
     if repeated:
         raise RegistryError(f"{path}: product id(s) listed twice: {', '.join(repeated)}")
+    _no_clashes(products, path)
+    if not any(p.active for p in products):
+        raise RegistryError(f"{path}: at least one product must be active")
+    return ProductRegistry(products, path, skills_folder or packs_folder or path.parent)
+
+
+def _folder(data: Mapping[str, Any], name: str, path: Path) -> Path | None:
+    given = data.get(name)
+    if given is None:
+        return None
+    if not isinstance(given, str) or not given.strip():
+        raise RegistryError(f"{path}: `{name}` must be a folder")
+    return (path.parent / given).resolve()
+
+
+def _entry(
+    entry: object,
+    skills_folder: Path | None,
+    packs_folder: Path | None,
+    n: int,
+    path: Path,
+) -> Product:
+    """One `products` entry: a pack id (its folder in `packs_folder`) or a product written inline."""
+    if not isinstance(entry, str):
+        return _product(entry, skills_folder, n)
+    if packs_folder is None:
+        raise RegistryError(f"{path}: pack {entry!r} is listed but there is no `packs_folder`")
+    if entry.startswith("_") or not _ID.match(entry):
+        raise RegistryError(f"{path}: {entry!r} is not a pack id")
+    folder = packs_folder / entry
+    if not (folder / PACK_FILE).is_file():
+        raise RegistryError(f"{path}: the pack {entry!r} has no {folder / PACK_FILE}")
+    try:
+        data = read_pack(folder)
+    except PackError as error:
+        raise RegistryError(str(error)) from None
+    if data.get("id") != entry:
+        raise RegistryError(f"{folder / PACK_FILE}: its id must be its folder's name, {entry!r}")
+    return _product(data, None, n, folder)
+
+
+def _no_clashes(products: Sequence[Product], path: Path) -> None:
+    """Refuse two packs that claim the same thing: a word, a tag family, an end word (or one of
+    its aliases), an attribute or a semantic type. Each must mean one product, or the engines would
+    file, match or check by the wrong one."""
+
+    def twice(what: str, owned: list[tuple[str, str]]) -> None:
+        owners: dict[str, set[str]] = {}
+        for value, pid in owned:
+            owners.setdefault(value, set()).add(pid)
+        clash = sorted(
+            f"{value} ({', '.join(sorted(pids))})"
+            for value, pids in owners.items()
+            if len(pids) > 1
+        )
+        if clash:
+            raise RegistryError(f"{path}: {what} given to two products: {'; '.join(clash)}")
+
+    twice("word(s)", [(w, p.id) for p in products for w in p.words])
     families = [f for p in products for f in p.tag_families]
     shared = sorted({f for f in families if families.count(f) > 1})
     if shared:
         raise RegistryError(f"{path}: tag famil(ies) given to two products: {', '.join(shared)}")
-    if not any(p.active for p in products):
-        raise RegistryError(f"{path}: at least one product must be active")
-    return ProductRegistry(products, path, skills_folder)
+    twice(
+        "end word(s)",
+        [(word, p.id) for p in products for end in p.end_words for word in end.words],
+    )
+    twice("attribute(s)", [(a.name, p.id) for p in products for a in p.attributes])
+    twice("semantic type(s)", [(t.code, p.id) for p in products for t in p.semantic_types])
+    for product in products:
+        for word in product.shared_words:
+            if not any(word in other.words or word in other.hints for other in products):
+                raise RegistryError(
+                    f"{path}: product {product.id!r} shares {word!r}, which no other product uses"
+                )
+
+
+def registry_data(path: Path | None = None) -> dict[str, Any]:
+    """A registry's file as data with every product written inline (each pack's fields plus its
+    `folder`), so a test can change or add a product and write the result anywhere."""
+    import yaml
+
+    path = Path(path or _registry_path()).expanduser().resolve()
+    data = dict(yaml.safe_load(path.read_text(encoding="utf-8")))
+    skills = _folder(data, "skills_folder", path)
+    packs = _folder(data, "packs_folder", path)
+    entries: list[Any] = []
+    for entry in data.get("products") or []:
+        if isinstance(entry, str) and packs is not None:
+            folder = packs / entry
+            entries.append({**dict(read_pack(folder)), "folder": str(folder)})
+        else:
+            entries.append(entry)
+    out: dict[str, Any] = {"version": data.get("version"), "products": entries}
+    if skills is not None:
+        out["skills_folder"] = str(skills)
+    return out
 
 
 def _registry_path() -> Path:

@@ -73,9 +73,13 @@ centre line) is not; a piece collides with a neighbour or misses its opening. Gr
 **Extent.** A section the architect draws is missing; the vendor adds pieces; an island faces the
 wrong way. Grey.
 
-**The ID set against the brand prototype.** The ID set governs (never a question of which
-governs); the prototype is reference only unless the ID set points to the brand standard. A
-prototype-only difference: not compared.
+**The ID set against the brand prototype.** The ID set governs wherever it gives information
+(never a question of which governs): where it shows the item, a difference from the prototype alone
+is not compared. **When the architect gives no elevation of the item, the brand prototype elevation
+is the reference** (as GV's reviewer does): compare the vendor with the prototype and report it
+with `source: brand_prototype`, like an architect comparison; code checks the page map and the
+proof says "reference: brand prototype". The prototype also governs where the ID set points to the
+brand standard ("per brand standard").
 
 **GV's own note taken as the vendor's.** A callout ending "by GV" is GV's markup, and on GV's
 combined review sheets a coloured value may be GV's earlier markup. On an ordinary upload every

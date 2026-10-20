@@ -392,6 +392,9 @@ def _caption(picture: Picture, item: WorkItem) -> str:
     whose = "the vendor drawing" if picture.role == "vendor" else "the architect drawing"
     if picture.role == "architect" and item.architect and picture.drawing == item.architect[0].ref:
         whose = "the governing architect drawing"
+    if picture.role == "brand_prototype" and item.prototype_reference:
+        # R1: no architect elevation of the area, the brand prototype is the reference.
+        whose = "the brand prototype drawing (the reference: no architect elevation)"
     part = "" if picture.part == "whole" else f", {picture.part}"
     if picture.file_page is not None:
         # A separate file's page (#1722): its set page names its ids; say which file it is.
