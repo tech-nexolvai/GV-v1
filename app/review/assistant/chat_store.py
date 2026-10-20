@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Any, Final
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -26,6 +26,7 @@ from app.models import (
     Package,
     PackageRevision,
 )
+from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from app.review.assistant.chat_contract import (
     ChatFileOut,
     ChatMessageOut,
@@ -57,6 +58,7 @@ __all__ = [
     "message_out",
     "package_name",
     "recorded_chat_spend",
+    "recorded_worker_spend",
     "review_results",
     "stored_chat_spend",
     "unanswered_questions",
@@ -615,6 +617,32 @@ def stored_chat_spend(session: Session, package_id: UUID) -> int:
             select(func.coalesce(func.sum(AssistantChatMessage.cost_micros), 0))
             .join(AssistantChat, AssistantChat.id == AssistantChatMessage.chat_id)
             .where(AssistantChat.package_id == package_id)
+        )
+        or 0
+    )
+
+
+def recorded_worker_spend(session: Session, package_id: UUID) -> int:
+    """What GV Review's own reading of the package cost (the worker's paid readers at upload, the
+    AI page review), from the Usage page's rows (#1770): every recorded call of the package's
+    revisions, or of their workflow runs, that is not a chat call. The chat's set budget does not
+    count it; the per-set meter shows it beside the chats' spend."""
+    revisions = select(PackageRevision.id).where(PackageRevision.package_id == package_id)
+    runs = (
+        select(ExtractionRun.id)
+        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+        .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
+        .where(WorkflowRun.package_revision_id.in_(revisions))
+    )
+    return int(
+        session.scalar(
+            select(func.coalesce(func.sum(ModelInvocation.cost_micros), 0)).where(
+                or_(
+                    ModelInvocation.extraction_run_id.in_(runs),
+                    ModelInvocation.package_revision_id.in_(revisions),
+                ),
+                ModelInvocation.prompt_id.not_like(f"{CHAT_PROMPT_PREFIX}%"),
+            )
         )
         or 0
     )

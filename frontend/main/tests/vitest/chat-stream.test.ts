@@ -117,6 +117,12 @@ describe('the chat stream', () => {
     expect(chatFailureWords(error)).toBe('Another message is still running in this chat. Wait for it to finish, or press Stop.');
     expect(chatFailureWords(new TypeError('Failed to fetch'))).toBe('The assistant could not be reached. Check the connection and try again.');
   });
+
+  it('a full check refused because another chat runs one says so in the server words (#1770)', () => {
+    const words = 'Only one full check runs at a time. Wait for it to finish, or stop it.';
+    const error = new ApiError(409, { error: 'paid_job_running', message: words, request_id: 'r' });
+    expect(chatFailureWords(error)).toBe(words);
+  });
 });
 
 describe('chat paths', () => {

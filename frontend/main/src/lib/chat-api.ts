@@ -1260,6 +1260,8 @@ async function readChatStream(response: Response, onEvent: (event: ChatEvent) =>
  */
 export function chatFailureWords(error: unknown): string {
   if (error instanceof ApiError) {
+    // Another chat's full check holds the one paid slot (#1770): the server's words say so.
+    if (error.status === 409 && error.code === 'paid_job_running' && error.message) return error.message;
     if (error.status === 409) return 'Another message is still running in this chat. Wait for it to finish, or press Stop.';
     if (error.status === 422) return 'That message could not be sent. Check it is not too long and try again.';
     if (error.status === 404 && (error.code === 'unreadable_response' || !error.message)) return 'This was not found on the server.';
