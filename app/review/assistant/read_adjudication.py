@@ -45,6 +45,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Final, Literal
 
+from app.review.assistant.colour_rule import COLOUR_RULE
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.second_read import READ_SCHEMA, SIDES, SecondRead, parse_reply
 
@@ -255,8 +256,9 @@ def question(item: str, shown: Sequence[tuple[str, bool]]) -> str:
     return (
         f"These are crops of construction drawings: {'; '.join(names)}. "
         f'What value is printed for "{label}" on each drawing? Copy it exactly as printed, with its '
-        'marks (for example 7\'-2" or 12 3/4"); a stacked fraction is written 3/4. Read only the '
-        "drawing's own black or grey ink. Use null for a drawing you were not shown or where no "
+        'marks (for example 7\'-2" or 12 3/4"); a stacked fraction is written 3/4. Read the '
+        f"drawing's own ink, never GV's markup: {COLOUR_RULE} Use null for a drawing you were not "
+        "shown or where no "
         "value for it is printed, and say whether you are sure of what you read."
     )
 
