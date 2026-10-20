@@ -67,6 +67,9 @@ from app.review.assistant.simple_check.verify import (
     Verified,
     with_blind,
 )
+from app.review.assistant.sink_offset import agrees_with_compare as sink_agrees
+from app.review.assistant.sink_offset import decided_items as sink_decided_items
+from app.review.assistant.sink_offset import noted_labels as sink_noted_labels
 from app.review.assistant.spot_locate import code_spotted
 
 if TYPE_CHECKING:
@@ -80,6 +83,7 @@ __all__ = [
     "replay",
     "replay_with_funnel",
     "run",
+    "run_of_message",
     "work_item_rows",
 ]
 
@@ -87,10 +91,11 @@ _log = logging.getLogger(__name__)
 
 #: The compare call's prompt id on the Usage page.
 COMPARE_PROMPT_ID: Final = "review-assistant-chat-simple-compare-{provider}-{harness}"
-#: What a compare call's cost is held at while it runs (`_guarded`): its pictures' tokens, the
-#: text of the request and the cached system prompt, and this much reply (thinking and the form).
+#: What a compare attempt's cost is held at while it runs (`_guarded`, `_again`): its pictures'
+#: tokens, the text of the request and the cached system prompt, and its whole reply room
+#: (`CompareSettings.max_tokens`, thinking and the form). Each retry and the repair turn hold it
+#: again before they start (#1769): the hold is a real ceiling, not a typical answer.
 _REQUEST_TEXT_TOKENS: Final = 8_000
-_REPLY_HOLD_TOKENS: Final = 16_000
 #: A chat's simple-check runs, each with its saved answers (`<chat>/simple/<run>/`).
 SIMPLE_DIR: Final = "simple"
 #: The order findings are recorded in (the finding book holds `MAX_FINDINGS`): what matters first.
@@ -118,6 +123,22 @@ _AS_IF_CHECKED: Final = re.compile(
 NOT_FINISHED_NEXT: Final = (
     "Next: finish the check (compare the drawings left) before anything is sent to the vendor."
 )
+#: The set pack's state when its labels step broke or ran out of time (`set_pack.build_pack`).
+READY_WITHOUT_LABELS: Final = "ready_without_labels"
+#: Why a check compares nothing on a set pack whose labels step broke (#1768).
+LABELS_NOT_READ: Final = (
+    "the drawings' printed numbers could not be read (the labels step did not finish), so no "
+    "drawing was compared; run the check again to read them"
+)
+#: The note on a vendor page with a drawing the work list did not cover (#1768).
+UNCOVERED_NOTE: Final = (
+    "a drawing on this page was not compared (code's work list did not cover it)"
+)
+#: The run's own steps, by name, when they break (#1768).
+SEED_STEP: Final = "GV Review's recorded results"
+FINAL_STEP: Final = "the final checks (spot guard, trust report)"
+#: The words of a blind look the runaway guard refused (`blind.look`).
+_GUARD: Final = "runaway guard"
 #: The note under the simple check's summary (the screen reads a last line "*Summary written by
 #: GV Review…*" as its note).
 SIMPLE_SUMMARY_NOTE: Final = "*Summary written by GV Review from code's own checks.*"
@@ -141,6 +162,9 @@ class SimpleOptions:
     every saved answer and look is used again at $0, so the new answer is the whole result."""
     resolve: resolve_module.ResolveSettings = field(default_factory=resolve_module.ResolveSettings)
     """The resolve loop (`assistant_simple_resolve*`): off by default."""
+    message_id: str | None = None
+    """The answer this run belongs to, written in its `run.json`: a Continue after a restart finds
+    the interrupted answer's run by it (`run_of_message`, #1769)."""
 
     @classmethod
     def of(cls, raw: object) -> SimpleOptions:
@@ -161,6 +185,7 @@ class SimpleOptions:
             replay=str(given["replay"]) if given.get("replay") else None,
             compare_missing=bool(given.get("compare_missing")) and bool(given.get("replay")),
             resolve=resolve_module.ResolveSettings.of(given.get("resolve")),
+            message_id=str(given["message_id"]) if given.get("message_id") else None,
         )
 
 
@@ -218,15 +243,20 @@ class _Run:
     cap_hit: str | None = None
     pack: Pack | None = None
     page_map: Mapping[str, Any] | None = None
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    lock: threading.Condition = field(default_factory=threading.Condition)
+    """Guards the holds; a call waiting for room is woken when a hold goes (`_release`)."""
     run_dir: Path | None = None
     """Where this run's compare answers and blind looks are saved (`<chat>/simple/<run>`)."""
     reserved: int = 0
     """What the compare calls in flight may still cost (millionths of $): the runaway guard counts
     it as spent, so the calls started never pass the cap together."""
     reservations: dict[str, int] = field(default_factory=dict)
+    attempt_holds: dict[str, int] = field(default_factory=dict)
+    """One attempt's hold per drawing started (`_guarded`): what each retry holds again."""
     refused: set[str] = field(default_factory=set)
     """Drawings not started because the runaway guard would have been passed."""
+    waiting: set[str] = field(default_factory=set)
+    """Drawings waiting for room (`_room`): their holds are not counted as calls that will end."""
     saved_blind: dict[str, dict[str, Any]] = field(default_factory=dict)
     blind_failed: int = 0
     """Red candidates whose blind look was asked for but could not be made (the call failed, the
@@ -247,6 +277,14 @@ class _Run:
     """Vendor drawings of a separate file not compared because code could not pair them with an
     architect drawing, or the compare call said the drawing code paired shows something else
     (#1723): (page, drawing id, reason). Each is a Not-compared row; the check is not complete."""
+    uncovered: list[int] = field(default_factory=list)
+    """Vendor pages with a drawing that no work item covers and no reason explains
+    (`worklist.uncovered`, #1768): each is a Not-compared row; the check is not complete."""
+    broken: list[str] = field(default_factory=list)
+    """The run's own steps that broke (the seeding of GV Review's recorded results, the final
+    checks), by name (#1768): the check is not for sending (S0), whatever else it found."""
+    blind_refused: int = 0
+    """Of `blind_failed`: the looks the runaway guard refused (#1768): counted as failed looks."""
     verifications: dict[str, Verification] = field(default_factory=dict)
     """Code's verify of each answered drawing, before the resolve loop (the funnel, #1767)."""
     final: list[Verified] = field(default_factory=list)
@@ -313,6 +351,7 @@ class _Run:
                 for s in worklist.skipped
                 if s.reason.startswith(UNPAIRED)
             ]
+            self.uncovered = sorted({int(p) for p in getattr(worklist, "uncovered", ()) or ()})
             self.no_architect = sum(
                 1
                 for s in worklist.skipped
@@ -324,8 +363,9 @@ class _Run:
         with engine.timings.phase("seeding"):
             try:
                 engine._seed_recorded()
-            except Exception:  # noqa: BLE001 - the check goes on; the trust report says it
+            except Exception:  # noqa: BLE001 - the check goes on, not for sending (#1768)
                 _log.exception("simple check could not seed the recorded differences")
+                self.broken.append(SEED_STEP)
         try:
             engine._start_markup_base()
         except Exception:  # noqa: BLE001 - the drawing makes its own copy at the end
@@ -443,6 +483,11 @@ class _Run:
                         "note": "; ".join(sorted(r for r in reasons if r)) or "not compared",
                     }
                 )
+        # A page with a drawing the work list did not cover (#1768): never quietly left out.
+        listed = {entry["page"] for entry in pages}
+        for page in self.uncovered:
+            if page not in listed and page not in compared_pages:
+                pages.append({"page": page, "status": "not_opened", "note": UNCOVERED_NOTE})
         if pages:
             try:
                 engine.book.set_coverage({"pages": pages}, "code")
@@ -657,8 +702,11 @@ class _Run:
                     source=self._guarded(source.pictures, settings),
                     system=system,
                     settings=settings,
-                    stop=self.stop,
+                    stop=_AnyStop(self.stop, getattr(engine, "cancel", None)),
                     on_outcome=self._on_outcome,
+                    # A Stop closes the calls streaming now (`ChatEngine.stop_streams`, #1769).
+                    streams=engine,
+                    before_attempt=self._again(settings),
                 )
         finally:
             self.stop.set()
@@ -667,29 +715,94 @@ class _Run:
     def _guarded(self, draw: Any, settings: Any) -> Any:
         """The compare call's picture source, guarded: a drawing starts only when what it may
         cost, with what the calls in flight may still cost, fits the per-answer cap (and the set's
-        budget). Its cost is held until its answer is charged."""
+        budget). Its cost is held until its answer is charged. When it does not fit while other
+        calls run, it waits for them to end (their holds become their real, smaller cost); it is
+        refused only when it would pass the cap with nothing else running (#1769 review)."""
         engine = self.engine
 
         def pictures(item: WorkItem) -> Any:
-            if self.stop.is_set():
+            if self._stopping():
                 raise _NotStarted("the check was stopped")
             sent = draw(item)
             model, _effort = settings.for_item(item)
             tokens = _REQUEST_TEXT_TOKENS + sum(int(one.picture.tokens) for one in sent)
-            hold = engine._price(model, tokens, _REPLY_HOLD_TOKENS) or 0
+            hold = engine._price(model, tokens, int(settings.max_tokens)) or 0
             with self.lock:
-                over = engine._over(self.reserved + hold)
-                if over is not None:
-                    self.cap_hit = self.cap_hit or over
+                why = self._room(item.id, hold)
+                if why == STOPPED_WORDS:
+                    raise _NotStarted("the check was stopped")
+                if why is not None:
                     self.refused.add(item.id)
-                    self.stop.set()
-                    raise _NotStarted("the per-answer cap would be passed")
-                self.reserved += hold
+                    raise _NotStarted(why)
                 self.reservations[item.id] = hold
+                self.attempt_holds[item.id] = hold
             self._tell("drawing_started", item.id)
             return sent
 
         return pictures
+
+    def _again(self, settings: Any) -> Any:
+        """Asked before a drawing's retry or repair turn (`compare.compare_item`): the attempt is
+        held like the first (#1769), a repair turn with the earlier reply in its prompt too; it
+        waits for room like a first attempt (`_room`), and when it would pass the cap with nothing
+        else running the drawing is not tried again and nothing new starts."""
+        engine = self.engine
+
+        def again(item: WorkItem, _attempts: int, repair: bool) -> str | None:
+            hold = self.attempt_holds.get(item.id, 0)
+            if repair:
+                model, _effort = settings.for_item(item)
+                hold += engine._price(model, int(settings.max_tokens), 0) or 0
+            with self.lock:
+                why = self._room(item.id, hold)
+                if why is not None:
+                    return why
+                self.reservations[item.id] = self.reservations.get(item.id, 0) + hold
+            return None
+
+        return again
+
+    def _stopping(self) -> bool:
+        """Stopped: the run's own flag, or the reviewer's Stop at once (the watcher only looks
+        twice a second, and no new call may start in between: #1769 review)."""
+        cancel = getattr(self.engine, "cancel", None)
+        if cancel is not None and cancel.is_set():
+            self.stop.set()
+        return self.stop.is_set()
+
+    def _room(self, item_id: str, hold: int) -> str | None:
+        """Holds `hold` for `item_id` once it fits the cap with the calls in flight (the caller
+        holds `self.lock` and records the hold in `reservations`); `STOPPED_WORDS` when the check
+        is stopped while waiting; the cap's words (and the run stopped, `cap_hit` set) when it
+        would pass the cap while no other call that will end is running."""
+        while True:
+            if self._stopping():
+                return STOPPED_WORDS
+            over = self.engine._over(self.reserved + hold)
+            if over is None:
+                self.reserved += hold
+                return None
+            running = sum(
+                held
+                for other, held in self.reservations.items()
+                if other != item_id and other not in self.waiting
+            )
+            if running <= 0:
+                self.cap_hit = self.cap_hit or over
+                self.stop.set()
+                self.lock.notify_all()
+                return "the per-answer cap would be passed"
+            self.waiting.add(item_id)
+            try:
+                self.lock.wait(0.25)
+            finally:
+                self.waiting.discard(item_id)
+
+    def _release(self, item_id: str) -> None:
+        """A drawing's holds go (its money is charged): calls waiting for room look again."""
+        with self.lock:
+            self.reserved -= self.reservations.pop(item_id, 0)
+            self.lock.notify_all()
 
     def _watch_cancel(self) -> None:
         while not self.stop.wait(0.5):
@@ -701,16 +814,20 @@ class _Run:
         seen, the runaway guard checked, the progress moved on."""
         engine = self.engine
         with self.lock:
-            self.reserved -= self.reservations.pop(outcome.work_item, 0)
             if outcome.work_item in self.refused:
                 outcome = outcome.model_copy(
                     update={"reason": "not started: the per-answer cap would be passed"}
                 )
             self.outcomes[outcome.work_item] = outcome
-        self._save_outcome(outcome)
-        model = _model(outcome.model) or _model(outcome.asked_model)
-        if model is not None and outcome.usage:
-            self._charge(model, outcome)
+        try:
+            self._save_outcome(outcome)
+            model = _model(outcome.model) or _model(outcome.asked_model)
+            if model is not None and outcome.usage:
+                self._charge(model, outcome)
+        finally:
+            # The hold goes only once the money is charged (#1769): in between, a call starting
+            # elsewhere sees one or the other, never neither, so two calls never pass the cap.
+            self._release(outcome.work_item)
         if outcome.status == "ok":
             seen = [
                 {
@@ -981,9 +1098,7 @@ class _Run:
         looked: list[Verified]
         if self.options.replay:
             looked = [_with_saved(v, self.saved_blind.get(v.key)) for v, _item in candidates]
-            self.blind_failed = sum(
-                1 for done in looked if done.outcome != "red" and _no_look(done)
-            )
+            self._tally_looks(looked)
         elif engine.cancel.is_set() or self.cap_hit is not None:
             why = (
                 "the check was stopped"
@@ -995,14 +1110,19 @@ class _Run:
         else:
             self._tell("second_looks", len(candidates))
             looked = look_all(engine, candidates, self.options.blind, on_done=self._live_look)
-            self.blind_failed = sum(
-                1 for done in looked if done.outcome != "red" and _no_look(done)
-            )
+            self._tally_looks(looked)
         for done in looked:
             self._save_blind(done)
         after = {id(old): new for (old, _item), new in zip(candidates, looked, strict=True)}
         after.update(outside)
         return [(after.get(id(v), v), item) for v, item in verified]
+
+    def _tally_looks(self, looked: Sequence[Verified]) -> None:
+        """The red candidates whose blind look was asked for but not made: each one counts like a
+        failed compare call (S0), the runaway guard's refusals too (#1768)."""
+        failed = [done for done in looked if done.outcome != "red" and _no_look(done)]
+        self.blind_failed = len(failed)
+        self.blind_refused = sum(1 for done in failed if _GUARD in done.reason)
 
     def _looks_again(
         self,
@@ -1033,7 +1153,7 @@ class _Run:
             else:
                 self._tell("second_looks", len(fresh))
                 done = look_all(engine, fresh, self.options.blind, on_done=self._live_look)
-                self.blind_failed = sum(1 for one in done if one.outcome != "red" and _no_look(one))
+                self._tally_looks(done)
             made = {id(v): one for (v, _item), one in zip(fresh, done, strict=True)}
         looked = [again.get(id(v)) or made[id(v)] for v, _item in candidates]
         for one in looked:
@@ -1091,6 +1211,10 @@ class _Run:
                         "items": [item.id for item in self.compared],
                         "skipped": self.skipped,
                         "replay_of": self.options.replay,
+                        "message_id": self.options.message_id,
+                        # The set pack its answers were read against: a Continue replays them only
+                        # on the same pack (#1769 review).
+                        "set_pack": _pack_name(self.engine.tools.workspace.set_pack),
                         "compare": dict(self.options.compare),
                         "blind": {
                             "model": self.options.blind.model,
@@ -1175,10 +1299,18 @@ class _Run:
             (pair for pair in verified if pair[0].finding),
             key=lambda pair: _ORDER.get(pair[0].outcome, 3),
         )
+        # A sink front offset code could only note (`sink_offset`, unsure: Not compared) gives way
+        # to the compare answer's own item on that label: one item per label (#1807).
+        noted = sink_noted_labels(engine.book.live(), engine.book.main_file)
         for one, _item in ordered:
             if one.outcome == "candidate":
                 continue  # never left so: the blind look ran on every candidate
             kept = self._add(one)
+            # Only once the comparison's own item is kept: a label never ends up with nothing.
+            key = self._label_key(one)
+            note = noted.pop(key, None) if kept and key in noted else None
+            if note is not None and engine.book.absorb(note):
+                engine._show_dropped(note, "Replaced by the comparison's own item on this label.")
             if kept is None:
                 # Another product than the check's (the strict scope): never listed, not even
                 # as Not compared; the finding book counted it.
@@ -1219,19 +1351,57 @@ class _Run:
                     "category": "other",
                 }
             )
+        for page in self.uncovered:
+            self.rows.append(
+                {
+                    "page": page,
+                    "what": f"Vendor page {page}: {UNCOVERED_NOTE}",
+                    "why": "not_proved",
+                    "needs": "the check run again once code covers this page",
+                    "scope": "set",
+                    "item": f"Page {page}: drawing not compared",
+                    "category": "other",
+                }
+            )
         engine.extra_gaps = list(self.rows)
 
     def _without_run_fit(
         self, verified: list[tuple[Verified, Item]]
     ) -> list[tuple[Verified, Item]]:
         """The compare answer's items less those on a vendor label GV's site-fit rule decided
-        (`run_fit`, code's own items, Right or Wrong): the rule governs that label, so a door the
-        site made narrower than designed is never red against the architect's size, and no blind
-        look is paid for it."""
-        decided = run_fit_labels(self.engine.book.live(), self.engine.book.main_file)
-        if not decided:
+        (`run_fit`, code's own items, Right or Wrong) or GV's sink front offset decided
+        (`sink_offset`): the rule governs that label, so a door the site made narrower than
+        designed is never red against the architect's size, and no blind look is paid for it."""
+        engine = self.engine
+        live, main_file = engine.book.live(), engine.book.main_file
+        decided = run_fit_labels(live, main_file)
+        # GV's sink front offset (`sink_offset`, #1807): a front offset code proved and judged is
+        # the label's one item when the comparison agrees with it; a comparison that contradicts
+        # it (a red where code says Right, an architect value code did not see) speaks instead,
+        # and code's item goes, so neither a red nor a Right is ever hidden.
+        sink = sink_decided_items(live, main_file)
+        if not decided and not sink:
             return verified
-        return [pair for pair in verified if self._label_key(pair[0]) not in decided]
+        keys = [self._label_key(pair[0]) for pair in verified]
+        # Every compare item on a label is judged before any is dropped: one that contradicts
+        # code's item keeps them all, and code's item goes.
+        contradicted = {
+            key
+            for key, pair in zip(keys, verified, strict=True)
+            if key is not None and key in sink and not sink_agrees(sink[key], pair[0])
+        }
+        for key in contradicted:
+            item = sink.pop(key)
+            if engine.book.absorb(str(item["id"])):
+                engine._show_dropped(
+                    str(item["id"]),
+                    "The comparison reads this label otherwise: its own item speaks.",
+                )
+        return [
+            pair
+            for key, pair in zip(keys, verified, strict=True)
+            if key not in decided and key not in sink
+        ]
 
     def _label_key(self, one: Verified) -> tuple[str, int, str] | None:
         vendor = one.vendor
@@ -1322,12 +1492,11 @@ class _Run:
             engine.incomplete_note = self._unpaired_words()
         elif self.blind_failed:
             # A failed second look counts like a failed compare call (orchestrator, 2026-10-19):
-            # an outage, not the drawings, left these possible differences undecided.
-            engine.incomplete_note = (
-                f"{self.blind_failed} possible "
-                f"{'difference' if self.blind_failed == 1 else 'differences'} could not get "
-                "their second check (the service did not answer); check again to settle them"
-            )
+            # an outage, not the drawings, left these possible differences undecided. A look the
+            # runaway guard refused is one too (#1768).
+            engine.incomplete_note = self._blind_words()
+        elif self.uncovered:
+            engine.incomplete_note = self._uncovered_words()
         self._cover_answered(failed)
         try:
             engine._store_scope()
@@ -1338,8 +1507,15 @@ class _Run:
         else:
             try:
                 engine._trust_phase()
-            except Exception:  # noqa: BLE001 - stored without its trust report
+            except Exception:  # noqa: BLE001 - stored without its trust report; not for sending
                 _log.exception("simple check trust report failed")
+                self.broken.append(FINAL_STEP)
+        broken = self._broken_words()
+        if broken is not None:
+            # A step that broke never ends in a sendable check (#1768): named, with what else held.
+            engine.incomplete_note = "; ".join(
+                part for part in (engine.incomplete_note, broken) if part
+            )
         engine._close_checks()
         files: list[str] = []
         if engine._progress is not None:
@@ -1489,6 +1665,45 @@ class _Run:
             except Exception:  # noqa: BLE001 - said in the summary
                 _log.warning("simple check could not record the compared pages")
 
+    def _broken_steps(self) -> list[str]:
+        """The steps that broke, by name: the run's own and code's checks (`add_code_findings`)."""
+        named = [*getattr(self.engine, "code_checks_failed", ()), *self.broken]
+        return list(dict.fromkeys(named))
+
+    def _broken_words(self) -> str | None:
+        steps = self._broken_steps()
+        if not steps:
+            return None
+        from app.review.assistant.chat_engine import broken_steps_note
+
+        return broken_steps_note(steps)
+
+    def _blind_words(self) -> str:
+        count = self.blind_failed
+        why = (
+            "the money limit for one answer was reached"
+            if self.blind_refused == count
+            else (
+                "the service did not answer"
+                if not self.blind_refused
+                else "the service did not answer, or the money limit for one answer was reached"
+            )
+        )
+        return (
+            f"{count} possible {'difference' if count == 1 else 'differences'} could not get "
+            f"their second check ({why}); check again to settle them"
+        )
+
+    def _uncovered_words(self) -> str:
+        count = len(self.uncovered)
+        pages = ", ".join(str(p) for p in self.uncovered[:12])
+        more = f" and {count - 12} more" if count > 12 else ""
+        return (
+            f"{count} vendor {'page' if count == 1 else 'pages'} with a drawing "
+            f"{'was' if count == 1 else 'were'} not compared (page{'' if count == 1 else 's'} "
+            f"{pages}{more}: code's work list did not cover {'it' if count == 1 else 'them'})"
+        )
+
     def _unpaired_words(self) -> str:
         count = len(self.unpaired)
         drawings = "vendor drawing" if count == 1 else "vendor drawings"
@@ -1562,6 +1777,8 @@ class _Run:
             or not self.compared
             or bool(self.blind_failed)
             or bool(self.unpaired)
+            or bool(self.uncovered)
+            or bool(self._broken_steps())
         )
         nothing_ran = why is not None or (not self.compared and not failed)
         kept: list[str] = []
@@ -1602,6 +1819,13 @@ class _Run:
             lines.append(
                 f"**Not compared: {self._unpaired_words()}. Not for sending until they are.**"
             )
+        if self.uncovered and why is None:
+            lines.append(
+                f"**Not compared: {self._uncovered_words()}. Not for sending until they are.**"
+            )
+        broken = self._broken_words()
+        if broken is not None:
+            lines.append(f"**Check incomplete: {broken}. Not for sending until it does.**")
         if stopped == "cancelled" and why is None:
             lines.append(
                 f"**Stopped: {answered} of {len(self.compared)} drawings were compared and "
@@ -1613,10 +1837,20 @@ class _Run:
                 f"({self.blind_skipped}): they are Not compared, never red."
             )
         if self.blind_failed:
+            why = (
+                "the call failed or its reply was unusable"
+                if not self.blind_refused
+                else (
+                    "the money limit for one answer was reached"
+                    if self.blind_refused == self.blind_failed
+                    else "the call failed, its reply was unusable, or the money limit for one answer "
+                    "was reached"
+                )
+            )
             lines.append(
                 f"{self.blind_failed} possible differences could not get their blind second look "
-                "(the call failed or its reply was unusable): they are Not compared, never red, "
-                "and the check is not for sending. Check again to settle them."
+                f"({why}): they are Not compared, never red, and the check is not for sending. "
+                "Check again to settle them."
             )
         if pilot:
             lines.append(
@@ -1672,10 +1906,45 @@ def _wait_for_pack(folder: Path, cancel: threading.Event) -> str | None:
             return None
         if state == "failed":
             return "the drawing set's pack (labels, pairs) could not be made"
+        if state == READY_WITHOUT_LABELS:
+            # The labels step broke or ran out of time (#1768): comparing would send every
+            # drawing without code's numbers, so nothing is compared.
+            return LABELS_NOT_READ
         if time.monotonic() >= ends:
             return "the drawing set's pack (labels, pairs) was still being made"
         if cancel.wait(_PACK_POLL_SECONDS):
             return None
+
+
+class _AnyStop:
+    """The compare calls' stop (`compare.compare_all`'s `stop`): set when the run's own flag is,
+    or the reviewer's Stop (the engine's cancel) at once. A Stop closes the first call's stream,
+    which wakes the calls waiting for its first event before the watcher sets the run's flag
+    (#1769 review): they must see the Stop then, or each would send its request."""
+
+    def __init__(self, own: threading.Event, cancel: threading.Event | None) -> None:
+        self.own, self.cancel = own, cancel
+
+    def is_set(self) -> bool:
+        if self.cancel is not None and self.cancel.is_set():
+            self.own.set()
+        return self.own.is_set()
+
+    def set(self) -> None:
+        self.own.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        ends = None if timeout is None else time.monotonic() + timeout
+        while not self.is_set():
+            left = 0.1 if ends is None else min(0.1, ends - time.monotonic())
+            if left <= 0:
+                return False
+            self.own.wait(left)
+        return True
+
+
+#: Why a compare call waiting for room, or about to start, does not start: the check was stopped.
+STOPPED_WORDS: Final = "the check was stopped"
 
 
 class _NotStarted(RuntimeError):
@@ -1698,6 +1967,32 @@ def _replay_dir(root: Path, run: str | None) -> Path | None:
         return None
     folder = root / SIMPLE_DIR / run
     return folder if folder.is_dir() else None
+
+
+def _pack_name(folder: Path | None) -> str | None:
+    return None if folder is None else folder.name
+
+
+def run_of_message(root: Path, message_id: object, set_pack: Path | None) -> str | None:
+    """The newest simple-check run of this chat made for that answer (`run.json`'s
+    `message_id`) on this set pack (`set_pack`'s folder, named from the uploads and the pack's
+    version), by its folder name; None when there is none (#1769: a Continue after a restart
+    replays it and compares only the drawings it has no answer for). A run read against another
+    pack (the drawings or the pack changed since) is never replayed: its answers name labels of
+    that pack, so the whole check runs again."""
+    folder = root / SIMPLE_DIR
+    if not message_id or not folder.is_dir():
+        return None
+    for run_dir in sorted(folder.iterdir(), reverse=True):
+        try:
+            record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, Mapping) and record.get("message_id") == str(message_id):
+            if record.get("set_pack") is None or record.get("set_pack") != _pack_name(set_pack):
+                return None
+            return run_dir.name
+    return None
 
 
 def load_outcomes(run_dir: Path) -> dict[str, CompareOutcome]:
@@ -1728,9 +2023,10 @@ def load_blind(run_dir: Path) -> dict[str, dict[str, Any]]:
 
 def _no_look(done: Verified) -> bool:
     """A red candidate whose blind look was asked for but could not be made (`blind.look`'s
-    reasons: the call failed, the reply was cut short or not the form, its pictures)."""
-    return "blind second look was not made" in done.reason and not any(
-        why in done.reason for why in ("the check was stopped", "runaway guard")
+    reasons: the call failed, the reply was cut short or not the form, its pictures, and the
+    runaway guard's refusal, #1768). A stop is not one: the stopped check says so itself."""
+    return "blind second look was not made" in done.reason and "the check was stopped" not in (
+        done.reason
     )
 
 

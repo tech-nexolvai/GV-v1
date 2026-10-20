@@ -1183,7 +1183,7 @@ def check_report_pdf(
     def proof_cell(f: Mapping[str, Any]) -> str:
         """The item's place on the zero-click drawing (#1581), and the check that proved it."""
         found = proof.proof_of(f)
-        words = proof.GROUP_WORDS[found["group"]]
+        words = proof.group_words(f, found["group"])
         # A Not-compared item (#1619) says why, and what would settle it.
         settle = f" Needed: {found['settle']}." if found.get("settle") else ""
         detail = found["proof"] or (f"{found['reason']}.{settle}" if found["reason"] else None)

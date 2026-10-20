@@ -120,8 +120,10 @@ __all__ = [
     "CHECKPOINT_FILE",
     "CONTINUE_TEXT",
     "FULL_CHECK_INSTRUCTION",
+    "PAID_JOB_WORDS",
     "ChatRegistry",
     "MessageJob",
+    "PaidJobRunning",
     "RunningMessage",
     "SessionChatLedger",
     "UploadSource",
@@ -199,6 +201,8 @@ class RunningMessage:
     """Stored as interrupted at shutdown: its own answer is then never stored."""
     live: LiveCheck | None = None
     """A full check's live state (#1710): drawings, phases, decided findings, stopping."""
+    paid: bool = False
+    """A paid full check (#1770): one at a time on this server, whatever the chat."""
 
     def spent(self) -> int:
         engine = self.engine
@@ -224,8 +228,25 @@ class RunningMessage:
                 _log.warning("assistant chat could not stop its sandbox commands")
 
 
+class PaidJobRunning(RuntimeError):
+    """Another paid full check runs now (`ChatRegistry.claim`, #1770): one paid job at a time."""
+
+    def __init__(self, other: RunningMessage) -> None:
+        super().__init__(PAID_JOB_WORDS)
+        self.other = other
+
+
+#: The refusal of a second paid full check (#1770, "one paid job at a time" per account).
+PAID_JOB_WORDS: Final = (
+    "Another full check is running now (in another chat). Only one full check runs at a time, "
+    "so the money it spends is never doubled: wait for it to finish, or stop it, then start this "
+    "one."
+)
+
+
 class ChatRegistry:
-    """The messages being answered in this process, one per chat at most."""
+    """The messages being answered in this process, one per chat at most, and one paid full check
+    at most across every chat (#1770: one paid job at a time per account)."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -248,21 +269,35 @@ class ChatRegistry:
         with self._lock:
             return list(self._runs.values())
 
-    def claim(self, chat_id: UUID, package_id: UUID, message_id: UUID) -> RunningMessage | None:
+    def claim(
+        self, chat_id: UUID, package_id: UUID, message_id: UUID, *, paid: bool = False
+    ) -> RunningMessage | None:
         """The chat's slot for a new message, or `None` when one is being answered (or the server
-        is stopping)."""
+        is stopping). `paid`: a full check that makes paid calls; raises `PaidJobRunning` while
+        another one runs in any chat (#1770)."""
         with self._lock:
             if self._closing:
                 return None
             current = self._runs.get(chat_id)
-            if current is not None and (
-                current.started or monotonic() - current.claimed_at < _STALE_CLAIM_SECONDS
-            ):
+            if current is not None and _holds(current):
                 return None
+            if paid:
+                other = next(
+                    (
+                        run
+                        for run in self._runs.values()
+                        if run.paid and run.chat_id != chat_id and _holds(run)
+                    ),
+                    None,
+                )
+                if other is not None:
+                    raise PaidJobRunning(other)
             if current is not None:
                 # A claim whose message never started: anything following it stops waiting.
                 current.feed.close()
-            run = RunningMessage(chat_id=chat_id, package_id=package_id, message_id=message_id)
+            run = RunningMessage(
+                chat_id=chat_id, package_id=package_id, message_id=message_id, paid=paid
+            )
             self._runs[chat_id] = run
             return run
 
@@ -288,6 +323,11 @@ class ChatRegistry:
                 r for r in self._runs.values() if r.package_id == package_id and r is not exclude
             ]
         return sum(run.spent() for run in runs)
+
+
+def _holds(run: RunningMessage) -> bool:
+    """Whether a claimed message still holds its slot: it started, or was claimed only now."""
+    return run.started or monotonic() - run.claimed_at < _STALE_CLAIM_SECONDS
 
 
 def package_spent_micros(
@@ -955,6 +995,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         "thinking": job.thinking,
         "mode": job.mode,
         "products": None if job.products is None else list(job.products),
+        # How Continue picks it up (`resume_of`): a simple check replays its saved answers.
+        "full_check_mode": job.full_check_mode if job.mode == "full_check" else None,
     }
     run.checkpoint = job.chat_root / str(job.chat_id) / CHECKPOINT_FILE
     _maybe_checkpoint(run, "message_start", force=True)
@@ -1163,7 +1205,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             roster=job.roster,
             pairing_proof=job.pairing_proof,
             full_check_mode=job.full_check_mode,
-            simple=job.simple,
+            simple=_simple_of(job, run, workspace.root, workspace.set_pack),
             page_match_model=job.page_match_model,
             identity=job.identity,
             numbering=numbering(job.factory, job.package_id, job.chat_id, run.message_id),
@@ -1193,7 +1235,9 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
     engine.live = getattr(run, "live", None)
     engine.book.earlier = dict(earlier_found)
     engine.answer_number = answer_number
-    if earlier is not None and job.mode == "full_check":
+    if earlier is not None and job.mode == "full_check" and job.full_check_mode != "simple":
+        # A simple check's Continue replays its own saved answers instead (`_simple_of`): the
+        # interrupted findings would be listed twice.
         _blocks, _question = earlier
         coverage = _last_coverage(_blocks)
         # GV Review's recorded differences are seeded again by the check itself.
@@ -1437,13 +1481,20 @@ def _done_pages(coverage: Mapping[str, Any] | None) -> tuple[list[int], list[int
 
 
 def resume_of(
-    blocks: Sequence[Mapping[str, Any]], *, mode: str, products: Sequence[str] | None
+    blocks: Sequence[Mapping[str, Any]],
+    *,
+    mode: str,
+    products: Sequence[str] | None,
+    simple: bool = False,
 ) -> dict[str, Any]:
-    """How Continue picks up an interrupted answer, and what it will do again, in plain words."""
+    """How Continue picks up an interrupted answer, and what it will do again, in plain words.
+    `simple`: a simple full check, which replays its saved answers (#1769)."""
     findings = [f for f in live_findings(blocks) if not f.get("record_id")]
     done, left = _done_pages(_last_coverage(blocks))
     steps = sum(1 for block in blocks if block.get("type") == "step")
-    if mode == "full_check":
+    if mode == "full_check" and simple:
+        redo = SIMPLE_CONTINUE_WORDS
+    elif mode == "full_check":
         one = len(findings) == 1
         kept = (
             f"The {len(findings)} finding{'' if one else 's'} already made "
@@ -1483,6 +1534,36 @@ def resume_of(
         "pages_done": len(done),
         "redo": redo,
     }
+
+
+#: What Continue does for a simple full check (#1769).
+SIMPLE_CONTINUE_WORDS: Final = (
+    "Continue uses again, at no cost, every drawing answer this check had already received, and "
+    "compares only the drawings it had no answer for; code then checks every answer again and "
+    "makes the outputs."
+)
+
+
+def _simple_of(
+    job: MessageJob, run: RunningMessage, root: Path, set_pack: Path | None
+) -> Mapping[str, Any] | None:
+    """The simple full check's options for this answer: the answer's id (its run folder keeps it),
+    and for a Continue, the interrupted answer's run replayed with the drawings it has no answer
+    for compared now (`replay` + `compare_missing`, #1769): a restart never pays twice."""
+    if job.simple is None or job.mode != "full_check" or job.full_check_mode != "simple":
+        return job.simple
+    options = {**job.simple, "message_id": str(run.message_id)}
+    if job.continue_from is not None and not options.get("replay"):
+        try:
+            earlier = import_module("app.review.assistant.simple_check.run").run_of_message(
+                root, job.continue_from, set_pack
+            )
+        except Exception:  # noqa: BLE001 - then the whole check runs again
+            _log.exception("assistant chat could not find the interrupted check's answers")
+            earlier = None
+        if earlier is not None:
+            options.update(replay=earlier, compare_missing=True)
+    return options
 
 
 def _settled(blocks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -1531,7 +1612,15 @@ def _store_interrupted(
                 thinking=bool(saved["thinking"]) if saved and "thinking" in saved else None,
                 blocks=[
                     *blocks,
-                    {"type": "resume", "resume": resume_of(blocks, mode=mode, products=products)},
+                    {
+                        "type": "resume",
+                        "resume": resume_of(
+                            blocks,
+                            mode=mode,
+                            products=products,
+                            simple=(saved or {}).get("full_check_mode") == "simple",
+                        ),
+                    },
                 ],
                 cost_micros=cost,
                 mode=mode,

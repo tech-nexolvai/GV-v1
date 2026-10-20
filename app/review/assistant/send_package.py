@@ -48,6 +48,7 @@ from app.review.assistant import not_compared, proof_words
 from app.review.assistant.impact import by_impact
 from app.review.assistant.proof import (
     NO_REQUIREMENT_REASON,
+    REVIEWER,
     governs,
     proof_group,
     proof_of,
@@ -296,6 +297,10 @@ def requires_words(finding: Mapping[str, Any]) -> str:
     parts add up to 80 1/8"". Only ever a stated requirement (`proof.stated_requirement`, through
     the guard on internal words): a comment without one is never made (`proof_group`)."""
     value = stated_requirement(finding) or "the value on the cloud drawing's note"
+    if governs(finding) == REVIEWER:
+        # A value GV's reviewer typed (#1803): never credited to the architect or to the
+        # vendor's own arithmetic.
+        return f"GV's reviewer requires {value}"
     own = vendor_own(finding)
     if own == "sum":
         return f"The vendor's own parts add up to {value}"

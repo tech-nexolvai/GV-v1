@@ -236,3 +236,108 @@ def test_items_already_settled_or_decided_are_left_alone() -> None:
     agreed = _wrong(id="A1", decision={"decision": "agree", "by": "Ann"})
     result = escalate([right, agreed], _ctx())
     assert result.tried == 0 and result.changed == []
+
+
+# ---- EQ marks and a vendor value with no spot (round 1, 2026-10-20) ---------------------------------
+
+
+def _eq_label(id_: str, at: tuple[float, float], inches: str, overall: str) -> dict[str, Any]:
+    """`dims.json`'s derived label: an EQ part code worked out from the printed overall."""
+    return {
+        **_label(id_, "vendor", inches, at, text="EQ"),
+        "derived": {"rule": "equal_parts", "from": overall, "parts": 2, "less": []},
+    }
+
+
+def test_eq_marks_take_their_equal_parts_value_and_are_compared() -> None:
+    """The vendor's sink centre is EQ / EQ of a 40" run: code's 20" part against the
+    architect's 26" is a difference code read (its pairing still has to be proved)."""
+    labels = {
+        (FILE, 3): [
+            _label("D1", "architect", "26", (100, 100)),
+            _label("D9", "vendor", "40", (300, 280)),
+            _eq_label("D10", (280, 300), "20", "D9"),
+            _eq_label("D11", (320, 300), "20", "D9"),
+        ]
+    }
+    finding = _wrong(
+        status="check",
+        vendor="EQ",
+        architect="2'-2\"",
+        inches={"architect": "26", "vendor": None},
+        vendor_box=_box((280, 300)) | {"x0": 272, "x1": 288},
+        dims={"vendor": {"id": "D10", "page": 3, "file": FILE}},
+        checks={"printed_architect": "match", "printed_vendor": "not_a_number"},
+    )
+    result = escalate([finding], EscalationContext(main_file=FILE, labels=labels))
+    found = result.changed[0]
+    assert found["vendor"] == 'EQ (20")'
+    assert found["inches"]["vendor"] == "20"
+    assert found["status"] == "different"
+    assert found["checks"]["printed_vendor"] == "match"
+    assert found["dims"]["vendor"]["derived"]["from"] == "D9"
+    steps = [s["step"] for s in found["escalation"]["steps"]]
+    assert steps[0] == "equal_parts"
+    assert not proof.code_proved(found)  # code read both, but the pairing is not proved
+
+
+def test_eq_with_no_derived_label_is_left_as_it_is() -> None:
+    labels = {(FILE, 3): [_label("D10", "vendor", "20", (280, 300), text="EQ")]}
+    finding = _wrong(
+        status="check",
+        vendor="EQ",
+        inches={"architect": "26", "vendor": None},
+        dims={"vendor": {"id": "D10", "page": 3, "file": FILE}},
+    )
+    result = escalate([finding], EscalationContext(main_file=FILE, labels=labels))
+    assert result.changed[0]["vendor"] == "EQ"
+    assert result.changed[0]["status"] == "check"
+
+
+class _Reading:
+    def __init__(self, outcome: str, box: tuple[float, ...] | None, reason: str) -> None:
+        self.outcome, self.box, self.reason, self.label = outcome, box, reason, None
+
+    def matches(self, claim: object) -> bool:
+        return self.outcome == "read"
+
+    def as_verify(self, claim: object) -> dict[str, Any]:
+        return {
+            "result": "match" if self.outcome == "read" else "cannot_read",
+            "route": "drawn",
+            "reason": self.reason,
+            "value": claim,
+            "pending": False,
+            "read_number": "ocr_shape" if self.outcome == "read" else "no_spot",
+        }
+
+
+def test_a_vendor_value_with_no_spot_is_sent_to_the_read_number_tool() -> None:
+    asked: list[Any] = []
+
+    def unread(request: Any) -> _Reading:
+        asked.append(request)
+        return _Reading("unread", None, "the value has no spot on the drawing")
+
+    finding = _wrong(vendor_box=None, dims={"architect": {"id": "D3", "page": 3, "file": FILE}})
+    result = escalate([finding], EscalationContext(main_file=FILE, reread=unread))
+    found = result.changed[0]
+    assert [(r.file, r.page, r.side, r.claim) for r in asked] == [(FILE, 3, "vendor", '46"')]
+    assert found["checks"]["verify_vendor"]["result"] == "cannot_read"
+    assert found["status"] == "different" and found.get("vendor_box") is None
+    assert proof.proof_group(found) == "not_compared"  # listed, never red
+
+    def read(request: Any) -> _Reading:
+        return _Reading("read", (290.0, 295.0, 310.0, 305.0), "read by ocr and shape")
+
+    found = escalate([finding], EscalationContext(main_file=FILE, reread=read)).changed[0]
+    assert found["vendor_box"]["x0"] == 290.0 and found["vendor_box"]["page"] == 3
+    assert found["checks"]["verify_vendor"]["result"] == "match"
+    assert not proof.code_proved(found)  # a reading is no pairing proof: still not red
+
+
+def test_a_value_that_has_its_spot_is_never_re_read() -> None:
+    def never(request: Any) -> _Reading:
+        raise AssertionError("not asked")
+
+    escalate([_wrong()], EscalationContext(main_file=FILE, reread=never))

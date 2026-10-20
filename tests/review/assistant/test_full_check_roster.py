@@ -245,6 +245,56 @@ def test_a_line_off_its_drawings_scale_is_no_proof_of_different_points() -> None
         assert same_extent(v, neighbour, labels_v, labels_a)[0] == "different_extent"
 
 
+class _Labels:
+    """The run's labels of one page (`DimLabels.on_page`), with an uploads folder."""
+
+    def __init__(self, labels: list[dict[str, Any]]) -> None:
+        self.labels = labels
+        self.uploads = Path("/nowhere")
+
+    def on_page(self, file: str, page: int, *, read_now: bool = True) -> list[dict[str, Any]]:
+        return self.labels
+
+
+def _bare_run(labels: list[dict[str, Any]]) -> Any:
+    engine = type("Engine", (), {})()
+    engine.book = type("Book", (), {})()
+    engine.book.dim_labels = _Labels(labels)
+    return full_check_roster._Run(engine)
+
+
+def test_where_the_anchor_fit_cannot_tell_the_drawn_run_decides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_extent`: the anchor fit first; only its `cannot_tell` asks the drawn run (`same_ends`),
+    whose answer is said as the drawn run's; a failed drawn-run proof leaves the fit's answer."""
+    vendor = _label("D30", "vendor", "29.25", (100, 205.3))
+    architect = _label("D2", "architect", "29", (400, 458))
+    run = _bare_run([vendor, architect])
+    asked: list[str] = []
+
+    def proved(v: Any, a: Any, **_kw: Any) -> tuple[str, str]:
+        asked.append(str(v["id"]))
+        return "same_extent", "one end is tied on both drawings (the floor)"
+
+    monkeypatch.setattr(full_check_roster.same_ends, "prove_labels", proved)
+    state, why = run._extent(vendor, architect, {"pages": []})
+    assert state == "same_extent" and why.startswith("the drawn run: ") and asked == ["D30"]
+
+    def broken(*_a: Any, **_kw: Any) -> tuple[str, str]:
+        raise RuntimeError("no line work")
+
+    monkeypatch.setattr(full_check_roster.same_ends, "prove_labels", broken)
+    state, _why = run._extent(vendor, architect, {"pages": []})
+    assert state == "cannot_tell"
+
+    # a width against a height: the anchor fit's own answer, the drawn run never asked
+    asked.clear()
+    monkeypatch.setattr(full_check_roster.same_ends, "prove_labels", proved)
+    height = _label("D3", "architect", "29", (400, 458), orientation="v")
+    assert run._extent(vendor, height, None)[0] == "different_extent" and asked == []
+
+
 def _passing() -> list[Check]:
     return [Check(name, "pass") for name in ("ink", "annotation", "roles", "axis", "round")]
 
@@ -517,7 +567,7 @@ def _clean_ink(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         full_check_roster._Run,
         "_extent",
-        lambda self, vendor, architect: ("same_extent", "the ends land together"),
+        lambda self, vendor, architect, page_map=None: ("same_extent", "the ends land together"),
     )
 
 
