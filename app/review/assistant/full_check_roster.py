@@ -949,7 +949,6 @@ class _Run:
     escalated: set[str] = field(default_factory=set)
     #: Every page's architect labels, set-wide, once read (`_architect_pages`, #1802).
     architect_labels: list[list[dict[str, Any]]] | None = None
-<<<<<<< HEAD
     #: The engine's spend when the roster started (the price counts from there).
     started_at: int = 0
     #: Pages a numbers helper compared whose open checklist lines no gap closer re-read (#1805).
@@ -958,10 +957,8 @@ class _Run:
     tool_calls: dict[str, dict[str, int]] = field(default_factory=dict)
     #: The set's chat proofs (`set_proofs`), read once.
     chat_proofs: dict[str, Any] | None = None
-=======
     #: Steps that broke (a helper's error, a tag table not readable): never a sendable check.
     failed_steps: list[str] = field(default_factory=list)
->>>>>>> origin/main
 
     # -- money --
 
@@ -1651,14 +1648,10 @@ class _Run:
             )
             pool.add(agents[-1])
             asked.append([str(f["id"]) for f in findings])
-<<<<<<< HEAD
         if cap <= 0:
             self._note("the verifier: not reached within the fixed price")
             return
-        entries = engine._launch(agents)
-=======
         entries = self._launched(agents)
->>>>>>> origin/main
         for agent, entry, ids in zip(agents, entries, asked, strict=True):
             done = apply_proofs(engine, str(entry.get("report") or ""), ids)
             if entry.get("stopped") == "cost_cap":
