@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
-from app.review.assistant.chat_request import MODELS, ChatModel, thinking_config
+from app.review.assistant.chat_request import MODELS, ChatModel, thinking_config, thinking_tokens
 from app.review.assistant.chat_tools import new_step
 from app.review.assistant.reply_json import json_of_reply, log_unreadable
 from app.review.assistant.simple_check.prompts import kinds_sentence
@@ -383,7 +383,9 @@ def look(
         reply = engine._call(
             model=model,
             effort=settings.effort,
-            thinking=thinking_config(model, False),
+            # Always adaptive thinking (#1775, C4): the gate of every red is a judgement. Opus 5.5
+            # thinks anyway; Sonnet 5.5 would otherwise answer cold.
+            thinking=thinking_config(model, True),
             system=BLIND_SYSTEM,
             tools=(),
             messages=[{"role": "user", "content": content}],
@@ -411,7 +413,8 @@ def look(
         log_unreadable(_log, "simple blind look", str(verified.key), text)
         _KEPT.reply = text
         return None, "the reply was not the form"
-    return BlindAnswer(**{**_fields(found), "model": model.id}), ""
+    spent = thinking_tokens(getattr(reply, "usage", None))
+    return BlindAnswer(**{**_fields(found), "model": model.id, "thinking_tokens": spent}), ""
 
 
 def _fields(answer: BlindAnswer) -> dict[str, Any]:

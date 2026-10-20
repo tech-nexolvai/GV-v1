@@ -715,6 +715,8 @@ class BlindAnswer:
     millwork: bool | None = None
     note: str = ""
     model: str = ""
+    thinking_tokens: int | None = None
+    """The look's thinking tokens (#1775, C4); `None` in looks saved before."""
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> BlindAnswer:
@@ -734,6 +736,9 @@ class BlindAnswer:
             millwork=millwork if isinstance(millwork, bool) else None,
             note=str(raw.get("note") or ""),
             model=str(raw.get("model") or ""),
+            thinking_tokens=(
+                raw["thinking_tokens"] if isinstance(raw.get("thinking_tokens"), int) else None
+            ),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -746,6 +751,7 @@ class BlindAnswer:
             "millwork": self.millwork,
             "note": self.note,
             "model": self.model,
+            "thinking_tokens": self.thinking_tokens,
         }
 
 

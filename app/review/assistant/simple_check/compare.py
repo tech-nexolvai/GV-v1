@@ -64,7 +64,13 @@ from typing import Any, Final, Protocol
 from pydantic import ValidationError
 
 from app.review.assistant.chat_provider import ChatProvider, ProviderFailure, failure_from
-from app.review.assistant.chat_request import MODELS, ChatModel, call_params, thinking_config
+from app.review.assistant.chat_request import (
+    MODELS,
+    ChatModel,
+    call_params,
+    thinking_config,
+    thinking_tokens,
+)
 from app.review.assistant.page_pictures import fitting_dpi
 from app.review.assistant.reply_json import json_of_reply
 from app.review.assistant.simple_check.prompts import item_text, repair_text
@@ -517,6 +523,9 @@ def _merge(usage: dict[str, int], update: object) -> None:
         for key, value in update.items():
             if isinstance(value, int) and not isinstance(value, bool):
                 usage[key] = value
+        thought = thinking_tokens(update)
+        if thought is not None:  # not reported stays absent, never a made-up 0
+            usage["thinking_tokens"] = thought
 
 
 class StreamTracker(Protocol):
@@ -812,6 +821,11 @@ def _add(total: dict[str, int], usage: Mapping[str, int]) -> None:
         "cache_creation_input_tokens",
     ):
         total[key] = total.get(key, 0) + int(usage.get(key, 0) or 0)
+    # Thinking tokens only where an attempt reported them (#1775, C4): not reported is unknown,
+    # never a made-up 0.
+    thought = usage.get("thinking_tokens")
+    if isinstance(thought, int) and not isinstance(thought, bool):
+        total["thinking_tokens"] = total.get("thinking_tokens", 0) + thought
 
 
 def compare_item(

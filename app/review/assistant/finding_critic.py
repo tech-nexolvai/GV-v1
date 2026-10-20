@@ -60,7 +60,7 @@ type Answer = Literal["yes", "no", "unsure"]
 
 CRITIC_MODEL: Final = "sonnet"
 CRITIC_EFFORT: Final = "low"
-CRITIC_MAX_TOKENS: Final = 3000
+CRITIC_MAX_TOKENS: Final = 12_000  # adaptive thinking first (#1775, C4)
 #: Findings per call, and calls per answer.
 CRITIC_BATCH: Final = 8
 CRITIC_BATCHES: Final = 4

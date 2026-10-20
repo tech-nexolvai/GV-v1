@@ -1375,7 +1375,7 @@ def _simple_options(settings: Settings, body: ChatMessageIn) -> dict[str, Any] |
             "mode": getattr(settings, "assistant_simple_resolve", "off"),
             "rounds": getattr(settings, "assistant_simple_resolve_rounds", 2),
             "model": getattr(settings, "assistant_simple_resolve_model", "claude-sonnet-5-5"),
-            "effort": getattr(settings, "assistant_simple_resolve_effort", "high"),
+            "effort": getattr(settings, "assistant_simple_resolve_effort", "medium"),
             "web_search": getattr(settings, "assistant_simple_resolve_web_search", False),
         },
         "pilot": body.pilot,

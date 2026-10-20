@@ -97,7 +97,10 @@ def _model_call(
     prompt_tokens: int,
     prompt_id: str,
     output_format: Mapping[str, Any] | None = None,
+    thinking: bool = False,
 ) -> Callable[[list[dict[str, Any]]], str]:
+    """One read-review call. `thinking`: adaptive thinking for a judgement (the critic, #1775 C4);
+    off for copying a printed value (the second and third reads)."""
     model = BY_SHORT[short]
 
     def call(content: list[dict[str, Any]]) -> str:
@@ -106,7 +109,7 @@ def _model_call(
             reply = engine._call(
                 model=model,
                 effort=effort,
-                thinking=thinking_config(model, False),
+                thinking=thinking_config(model, thinking),
                 system=system,
                 tools=(),
                 messages=[{"role": "user", "content": content}],
@@ -241,6 +244,7 @@ def critic_jobs(
         prompt_tokens=critic_module.CRITIC_PROMPT_TOKENS,
         prompt_id=_prompt_id(engine, "critic"),
         output_format=getattr(critic_module, "CRITIC_SCHEMA", None),
+        thinking=True,
     )
     jobs: list[Callable[[], None]] = []
     judged: set[str] = set()

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ from app.review.assistant.simple_check.blind import (
     look_all,
     question,
 )
-from app.review.assistant.simple_check.verify import Item, Verified, verify_answer
+from app.review.assistant.simple_check.verify import BlindAnswer, Item, Verified, verify_answer
 from tests.review.assistant.test_simple_verify import (
     ROUND_2,
     _pack,
@@ -76,6 +77,7 @@ def _candidate(kind: str = "pair") -> tuple[Verified, Item]:
 class _Reply:
     payload: Any
     stop_reason: str = "end_turn"
+    usage: dict[str, Any] | None = None
 
     def text(self) -> str:
         return self.payload if isinstance(self.payload, str) else json.dumps(self.payload)
@@ -256,6 +258,55 @@ def test_an_absence_look_agreeing_makes_it_red() -> None:
     assert done[0].outcome == "red"
     # The architect's drawing with its dimension marked, then the vendor's numbered.
     assert engine.crops[0]["crops"][0]["guides"] == ["D4"] and engine.crops[1]["marks"] is True
+
+
+def test_the_look_always_thinks_and_saves_its_thinking_tokens() -> None:
+    """#1775, C4: the gate of every red is a judgement: adaptive thinking on any model, and the
+    thinking tokens saved with the look (a red whose look did not think can be found)."""
+    verified, item = _candidate()
+    usage = {"output_tokens": 900, "output_tokens_details": {"thinking_tokens": 640}}
+    engine = _Engine([_Reply(_agreeing(), usage=usage)])
+    answer, _why = look(engine, verified, item, BlindSettings("claude-sonnet-5-5", "medium"))  # type: ignore[arg-type]
+    assert engine.calls[0]["thinking"]["type"] == "adaptive"
+    assert answer is not None and answer.thinking_tokens == 640
+    saved = answer.as_dict()
+    assert saved["thinking_tokens"] == 640
+    assert BlindAnswer.from_dict(saved).thinking_tokens == 640
+    assert BlindAnswer.from_dict({"pick": "D1", "verdict": "same_thing"}).thinking_tokens is None
+
+
+@dataclass
+class _CappedEngine(_Engine):
+    """A price cap that fits two looks' holds (each held at both attempts, 2 x 50_000, #1769):
+    each call is charged only when it ends (50_000)."""
+
+    cap: int = 220_000
+    spent: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def _fits(self, estimate: int | None) -> bool:
+        return self.spent + (estimate or 0) <= self.cap
+
+    def _call(self, **kwargs: Any) -> Any:
+        with self.lock:
+            self.calls.append(kwargs)
+        time.sleep(0.05)  # the other workers ask while this one runs
+        with self.lock:
+            self.spent += 50_000
+        return _Reply(_agreeing())
+
+
+def test_looks_started_together_hold_their_price_and_never_pass_the_cap() -> None:
+    """Six workers: each look holds its price while it runs (#1775, C4: thinking makes a call's
+    worst case bigger; #1769: held at every attempt, a look that does not fit waits), so looks
+    started together cannot pass the cap between them. Two start, a third once both have ended
+    (their holds became their real cost), the rest are refused by the guard."""
+    verified, item = _candidate()
+    engine = _CappedEngine([])
+    done = look_all(engine, [(verified, item)] * 6, BlindSettings())  # type: ignore[arg-type]
+    assert len(engine.calls) == 3 and engine.spent <= engine.cap
+    refused = [d for d in done if d.outcome == "not_compared"]
+    assert len(refused) == 3 and all("runaway guard" in d.reason for d in refused)
 
 
 # ---- a reply wrapped in a code block or after a sentence (#1811) ------------------------------

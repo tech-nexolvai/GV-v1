@@ -195,7 +195,7 @@ class ResolveSettings:
     mode: str = "off"
     rounds: int = 2
     model: str = "claude-sonnet-5-5"
-    effort: str = "high"
+    effort: str = "medium"
     web_search: bool = False
 
     @property
@@ -211,7 +211,7 @@ class ResolveSettings:
             mode=mode if mode in MODES else "off",
             rounds=max(1, min(2, rounds)) if isinstance(rounds, int) else 2,
             model=str(given.get("model") or "claude-sonnet-5-5"),
-            effort=str(given.get("effort") or "high"),
+            effort=str(given.get("effort") or "medium"),
             web_search=bool(given.get("web_search")),
         )
 
@@ -2010,7 +2010,7 @@ class EngineProposer:
         self, failure: Failure, package: Package, number: int, history: Sequence[Round]
     ) -> Asked:
         from app.review.assistant.chat_engine import CALL_ATTEMPTS, HARNESS_ID
-        from app.review.assistant.chat_request import MODELS, thinking_config
+        from app.review.assistant.chat_request import MODELS, thinking_config, thinking_tokens
 
         engine = self.engine
         if engine.cancel.is_set():
@@ -2035,7 +2035,9 @@ class EngineProposer:
             reply = engine._call(
                 model=model,
                 effort=self.settings.effort,
-                thinking=thinking_config(model, False),
+                # A judgement (where the ends land): adaptive thinking, the effort set lower
+                # instead of thinking off (#1775, C4).
+                thinking=thinking_config(model, True),
                 system=RESOLVE_SYSTEM,
                 tools=(),
                 messages=[{"role": "user", "content": content}],
@@ -2054,6 +2056,7 @@ class EngineProposer:
             with self.holds.lock:
                 self.holds.reserved -= hold
         usage = dict(reply.usage or {})
+        usage["thinking_tokens"] = thinking_tokens(usage)
         if reply.stop_reason == "refusal":
             return Asked(None, "the model declined", usage, model.id)
         if reply.stop_reason == "max_tokens":
