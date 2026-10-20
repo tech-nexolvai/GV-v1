@@ -55,6 +55,7 @@ from sqlalchemy.orm import Session
 from app.models.package import Package, PackageRevision, package_product
 from app.models.project_sinks import ProjectSink
 from app.review.assistant.internal_refs import without_internal_refs
+from app.review.assistant.product_scope import SINK_CUTOUT_RULES
 from app.review.settings_in_force import SINK_SETTINGS, InForce, settings_in_force
 from app.verdicts.rulebook import snapshot_store
 from rules.derivations import Derivation
@@ -319,7 +320,7 @@ def rules_markdown(
             for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
             if snapshot is not None
             and (
-                snapshot.rule.product_type in picked
+                _picked_rule(snapshot.rule, picked)
                 if picked is not None
                 else product is None or snapshot.rule.product_type is product
             )
@@ -341,6 +342,13 @@ def rules_markdown(
             f"Products picked for this chat: {names}. Only their checks are listed: the other "
             "products are not checked in this chat.\n"
         )
+        borrowed = [rule.id for rule in rules if rule.product_type not in picked]
+        if borrowed:
+            lines.append(
+                f"Also listed: {', '.join(borrowed)}, GV's sink cut-out check. A sink cut-out sits "
+                "on the sink cabinet's plan, so it is checked on a drawing that shows one; GV "
+                "Review's code checks it, only where it proves the cut-out and the dimension.\n"
+            )
         covered = {rule.product_type for rule in rules}
         bare = registry().ordered(item.value for item in picked if item not in covered)
         if bare:
@@ -371,6 +379,19 @@ def rules_markdown(
         lines.extend(_rule_section(rule, in_force))
     # The rulebook's notes carry the team's ticket numbers; the agent must never quote one (#1520).
     return without_internal_refs("\n".join(lines))
+
+
+def _picked_rule(rule: Rule, picked: set[ProductType]) -> bool:
+    """A rule of a picked product; on a Cabinet pick without countertops, also GV's sink cut-out
+    rules (`SINK_CUTOUT_RULES`, #1807): a sink cut-out sits on the sink cabinet's plan, and code
+    runs them only on a drawing it proves shows one (`sink_offset`)."""
+    if rule.product_type in picked:
+        return True
+    return (
+        rule.id in SINK_CUTOUT_RULES
+        and ProductType.CABINET in picked
+        and ProductType.COUNTERTOP not in picked
+    )
 
 
 def _settings_section(

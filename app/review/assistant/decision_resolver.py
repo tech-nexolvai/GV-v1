@@ -1263,6 +1263,8 @@ def resolve(findings: Sequence[Mapping[str, Any]], ctx: ResolverContext) -> Reso
             continue  # GV's reviewer only (#1652): no rule or reading ever settles it
         if finding.get("created_by") == "filler_range":
             continue  # GV's filler range already decided it, the architect first (`filler_range`)
+        if finding.get("created_by") == "sink_offset":
+            continue  # GV's sink front offset: code's own note, the architect first (#1807)
         current = changed.get(finding_id) or dict(finding)
         settle, reason, read_words = _settle_one(current, ctx)
         if settle is not None and settle.outcome == "right" and not _backs_right(current, settle):

@@ -2,8 +2,10 @@
  * #1581, #1619: the zero-click cloud drawing's rule, as the screen counts it. The architect's drawings
  * govern (Anant's rules R1-R10, `classification.py`): an item is Wrong (red, proved by code: clouded),
  * Right, or Not compared, with its reason and what is needed, listed apart in the Not-compared PDF and
- * workbook and never a question to anyone. The reviewer's Agree / Not a problem stay as optional
- * overrides on Wrong items, and "Make it Wrong" (the same Agree route) on a Not-compared one.
+ * workbook and never a question to anyone. The reviewer's decisions are optional overrides (#1803):
+ * on a Not-compared item "It's a mistake: add a red mark" (an Agree, with the value it should be)
+ * or "It's fine: mark Right" (Not a problem); on a Wrong item "Not a mistake: remove the red mark"
+ * (Not a problem). Marked Right shows as "Right (reviewer)".
  *
  * The server sends each stored finding's group (`finding.proof`, worked out by `proof.py`); this
  * file only lays the reviewer's newest click over it, and mirrors the rule for a finding still
@@ -28,7 +30,9 @@ const INTERNAL = /GV Review'?s record|recorded check/i;
  * read, or the governing value with a number and no internal words (or a finish code read from the
  * drawing's text). A comment without one is never sent, whoever agreed it.
  */
-function statedRequirement(finding: ChatFinding): boolean {
+function statedRequirement(finding: ChatFinding, decision: FindingDecision | null = null): boolean {
+  // #1803: the reviewer said what it should be (the reviewer is the witness).
+  if (decision?.decision === 'agree' && decision.should_be?.trim() && !INTERNAL.test(decision.should_be)) return true;
   if (finding.inches?.architect != null || finding.settled?.method === 'gv_limits' || finding.source === 'vendor_arithmetic') return true;
   const value = finding.architect ?? '';
   if (!value || INTERNAL.test(value)) return false;
@@ -55,12 +59,21 @@ function codeProved(finding: ChatFinding): boolean {
 export function proofGroup(finding: ChatFinding, decision: FindingDecision | null = finding.decision ?? null): ProofGroup {
   // #1652: an item for GV's reviewer only (read by the AI, never at its spot) is never clouded.
   if (isInternal(finding)) return 'not_compared';
-  if (finding.status === 'different' || finding.status === 'check') {
-    if (decision?.decision === 'agree' && statedRequirement(finding)) return 'clouded';
-    if (decision?.decision === 'not_a_problem') return 'dismissed';
-  }
-  // With no click to lay over, the server's group stands.
-  if (finding.proof?.group) return finding.proof.group;
+  const base = codeGroup(finding);
+  // A compared Right has nothing to override.
+  if (base === 'right') return 'right';
+  // The reviewer's decision on any other item (#1803: a Not-compared "same" too). An Agree is
+  // clouded when the vendor can be told what it should be (the architect's value, or the reviewer's).
+  if (decision?.decision === 'agree' && statedRequirement(finding, decision)) return 'clouded';
+  if (decision?.decision === 'not_a_problem') return 'dismissed';
+  return base;
+}
+
+/** Where code puts the item, before any decision: the server's group (with its own decision taken off), else the rule. */
+function codeGroup(finding: ChatFinding): ProofGroup {
+  const server = finding.proof?.group;
+  // The server's group already holds the stored decision: an overridden item goes back to what code found.
+  if (server && server !== 'dismissed' && !(server === 'clouded' && finding.decision)) return server;
   if (finding.status === 'different' && codeProved(finding)) return 'clouded';
   // What code could not prove or compare is Not compared (#1619): listed apart, never asked.
   if (finding.status === 'different' || finding.status === 'check') return 'not_compared';
@@ -115,5 +128,5 @@ export const PROOF_WORDS: Record<ProofGroup, string> = {
   clouded: 'Wrong, proved by code (clouded)',
   right: 'Right',
   not_compared: 'Not compared',
-  dismissed: 'Not a problem (reviewer)',
+  dismissed: 'Right (reviewer)',
 };

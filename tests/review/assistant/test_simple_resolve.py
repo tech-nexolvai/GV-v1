@@ -784,7 +784,8 @@ def test_one_call_per_round_in_the_form_with_its_cost_held_while_it_runs() -> No
     )
     text = call["messages"][0]["content"][-1]["text"]
     assert "What code could not verify" in text and "verdict:unsure" in text
-    assert engine.held == [400_000] and proposer.holds.reserved == 0
+    # Held for both attempts the engine's call may make (#1769), let go when it answers.
+    assert engine.held == [2 * 400_000] and proposer.holds.reserved == 0
     assert done.rounds[0].usage["input_tokens"] == 9000
 
 

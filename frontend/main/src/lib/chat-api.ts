@@ -142,6 +142,8 @@ export interface ChatMessage {
   /** The assistant's: thinking, words and tool steps in the order they happened. */
   blocks?: ChatBlock[] | null;
   files?: ChatFile[] | null;
+  /** #1803: the package was made before the reviewer's newest decision: never handed out, made again. */
+  package_outdated?: boolean | null;
   /** What the message cost, in dollars ("1.72"). */
   cost_usd?: string | null;
   stopped?: ChatStopped | null;
@@ -272,12 +274,22 @@ export interface ChatTaskEdit {
 
 /** The reviewer's answer on one finding (PATH step 5), recorded append-only by the server. */
 export type FindingDecisionValue = 'agree' | 'not_a_problem';
+/** #1803: what the reviewer can send: a decision, or `undo` (take the call back: the item is again what code found). */
+export type FindingDecisionChoice = FindingDecisionValue | 'undo';
 
 export interface FindingDecision {
   decision: FindingDecisionValue;
   note?: string | null;
+  /** #1803: with an Agree, what the reviewer says the vendor's value should be (the green "should be"). */
+  should_be?: string | null;
   by?: string | null;
   at?: string | null;
+}
+
+/** #1803: what the reviewer adds to a decision: a note (the vendor reads it) and, with an Agree, the value it should be. */
+export interface FindingDecisionExtra {
+  note?: string | null;
+  should_be?: string | null;
 }
 
 export type ChatBlock =
@@ -1072,9 +1084,14 @@ export const chatPaths = {
     `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/findings/${id(findingId)}/decision`,
 };
 
-/** Record the reviewer's Agree / Not a problem on one finding; the server answers with who and when. */
-export function decideFinding(chatId: string, messageId: string, findingId: string, decision: FindingDecisionValue, note?: string): Promise<FindingDecision> {
-  return json<FindingDecision>(chatPaths.decision(chatId, messageId, findingId), { method: 'POST', body: JSON.stringify(note ? { decision, note } : { decision }) });
+/** Record the reviewer's Agree / Not a problem on one finding (with its note and, for an Agree, the value it should be); the server answers with who and when. */
+export function decideFinding(chatId: string, messageId: string, findingId: string, decision: FindingDecisionChoice, extra?: FindingDecisionExtra): Promise<FindingDecision> {
+  const note = extra?.note?.trim();
+  const shouldBe = decision === 'agree' ? extra?.should_be?.trim() : '';
+  return json<FindingDecision>(chatPaths.decision(chatId, messageId, findingId), {
+    method: 'POST',
+    body: JSON.stringify({ decision, ...(note ? { note } : {}), ...(shouldBe ? { should_be: shouldBe } : {}) }),
+  });
 }
 
 // ── Requests ────────────────────────────────────────────────
@@ -1135,9 +1152,12 @@ export function makeMarkupPdf(chatId: string, messageId: string): Promise<ChatFi
   return json<ChatFile>(chatPaths.markupPdf(chatId, messageId), { method: 'POST', body: '{}' });
 }
 
-/** #1525: make the cloud drawing (and report) again from the reviewer's decisions; returns the new drawing. */
-export function remakeCloudDrawing(chatId: string, messageId: string): Promise<ChatFile> {
-  return json<ChatFile>(chatPaths.cloudDrawing(chatId, messageId), { method: 'POST', body: '{}' });
+/** #1803: the remade cloud drawing, and every file made with it (the report, the Not-compared list, the package). */
+export type RemadeFiles = ChatFile & { made?: ChatFile[] };
+
+/** #1525: make the cloud drawing (and report) again from the reviewer's decisions; returns the new drawing and (#1803) every file made with it. */
+export function remakeCloudDrawing(chatId: string, messageId: string): Promise<RemadeFiles> {
+  return json<RemadeFiles>(chatPaths.cloudDrawing(chatId, messageId), { method: 'POST', body: '{}' });
 }
 
 /** #1584: the "model" of an answer code wrote alone (the vendor consistency check): no AI. */
@@ -1240,6 +1260,8 @@ async function readChatStream(response: Response, onEvent: (event: ChatEvent) =>
  */
 export function chatFailureWords(error: unknown): string {
   if (error instanceof ApiError) {
+    // Another chat's full check holds the one paid slot (#1770): the server's words say so.
+    if (error.status === 409 && error.code === 'paid_job_running' && error.message) return error.message;
     if (error.status === 409) return 'Another message is still running in this chat. Wait for it to finish, or press Stop.';
     if (error.status === 422) return 'That message could not be sent. Check it is not too long and try again.';
     if (error.status === 404 && (error.code === 'unreadable_response' || !error.message)) return 'This was not found on the server.';
