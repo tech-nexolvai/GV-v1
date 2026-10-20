@@ -243,9 +243,11 @@ def pack_ready(folder: Path | None) -> bool:
 
 
 def pack_without_labels(folder: Path | None) -> bool:
-    """Whether the pack is made but its labels step broke or ran out of time (#1768): the
-    drawings' printed numbers are missing or partial, so code's own pairs are too."""
-    return folder is not None and _pack_state(folder)[0] == "ready_without_labels"
+    """Whether the pack's labels may be missing or partial (#1768), so code's own pairs are too:
+    any state but `ready` (its labels step broke or ran out of time, or the pack is being made
+    again: a labels time-out is rebuilt by the full check's own message, `ensure_pack`). False
+    when the set has no pack folder at all."""
+    return folder is not None and folder.is_dir() and _pack_state(folder)[0] != "ready"
 
 
 def wait_for_page_map(

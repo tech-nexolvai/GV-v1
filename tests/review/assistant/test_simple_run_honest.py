@@ -204,6 +204,26 @@ def test_a_roster_check_without_labels_or_with_a_crash_is_not_for_sending(
     assert note.count(CODE_CHECK_NAMES["run_fit"]) == 1
 
 
+@pytest.mark.parametrize("state", ["building", "failed", None])
+def test_a_roster_check_on_a_pack_still_being_made_is_not_for_sending(
+    tmp_path: Path, state: str | None
+) -> None:
+    """A labels time-out is rebuilt by the full check's own message (`ensure_pack`), so at the
+    roster's end the pack can be `building` again with partial labels (#1768 review): any state
+    but `ready` means code's pairs may be missing, so the check is S0."""
+    run = _Run(tmp_path)
+    run.engine.settings = dataclasses.replace(run.engine.settings, full_check_mode="roster")
+    status = json.loads((run.pack / "status.json").read_text())
+    if state is None:
+        (run.pack / "status.json").unlink()
+    else:
+        status["state"] = state
+        (run.pack / "status.json").write_text(json.dumps(status), encoding="utf-8")
+    run.engine.add_code_findings()
+    assert run.engine.code_checks_failed == [engine_module.LABELS_STEP]
+    assert engine_module.LABELS_STEP in str(run.engine.incomplete_note)
+
+
 def test_a_whole_roster_check_gets_no_note(tmp_path: Path) -> None:
     run = _Run(tmp_path)
     run.engine.settings = dataclasses.replace(run.engine.settings, full_check_mode="roster")
