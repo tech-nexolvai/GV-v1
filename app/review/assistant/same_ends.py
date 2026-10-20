@@ -39,6 +39,7 @@ Verification: `tests/review/assistant/test_same_ends.py` (hand-made line work).
 from __future__ import annotations
 
 import math
+import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -64,6 +65,11 @@ type Segment = tuple[tuple[float, float], tuple[float, float]]
 
 #: Two ends closer than this (points) are one place.
 _SAME_PT: Final = 1.0
+#: Guards `dim_anchors._match_outlets`, which writes outlet ids onto shared drawings (`_ties`).
+_OUTLETS_LOCK: Final = threading.Lock()
+#: The least a moved end must move on both drawings (points) for `_features` to see a feature at
+#: the other value apart from the end itself (#1808 review): twice `_SAME_PT`.
+_SEEN_GAP_PT: Final = 2 * _SAME_PT
 #: A moved end may be at most this far from the other drawing's value (inches).
 MAX_MOVE_IN: Final = 3.0
 #: The band beyond both candidate places that must hold no other feature (inches).
@@ -209,23 +215,16 @@ def _long_perpendicular(found: Side, axis: str, at: float, length: float) -> boo
 
 
 def _base(found: Side, axis: str) -> float | None:
-    """The floor (heights): `dim_anchors`' floor, or the lowest level where two heights end on a
-    long solid line. `None` for widths (the walls are ties of their own) or when not found."""
+    """The floor (heights): `dim_anchors`' checked floor only. `None` for widths (the walls are
+    ties of their own) or when not found. The lowest level where two heights end on a long line is
+    not enough (#1808 review): on a drawing of the upper zone only it is the counter top, and
+    tying it to the other drawing's floor proves a backsplash the same as a toe kick."""
     if axis != "v":
         return None
     drawing = found.drawing
     if drawing.floor is not None and drawing.floor_ok:
         return drawing.floor
-    heights = [line for line in found.lines.values() if line.axis == "v"]
-    if not heights:
-        return None
-    bottom = max(line.b for line in heights)
-    ending = [line for line in heights if abs(line.b - bottom) <= _SAME_PT]
-    if len(ending) < 2:
-        return None
-    if not _long_perpendicular(found, axis, bottom, 24 * found.ppi):
-        return None
-    return bottom
+    return None
 
 
 def _intervals(
@@ -262,12 +261,18 @@ def _ties(vendor: Side, architect: Side, axis: str, pair: tuple[Line, Line]) -> 
             if v_at is not None and a_at is not None:
                 ties.append(_Tie(v_at, a_at, "base", words))
     notes: list[str] = []
-    dim_anchors._match_outlets(architect.drawing, vendor.drawing, notes)
-    a_outlets = {o.id: o for o in architect.drawing.outlets if o.id}
-    for outlet in vendor.drawing.outlets:
-        other = a_outlets.get(outlet.id) if outlet.id else None
-        if other is None:
-            continue
+    # `_match_outlets` writes the ids onto the drawings, which the roster's judges share across
+    # threads (#1808 review): match and read the pairs under one lock, so another pair's match
+    # never lends this one its ids.
+    with _OUTLETS_LOCK:
+        dim_anchors._match_outlets(architect.drawing, vendor.drawing, notes)
+        a_outlets = {o.id: o for o in architect.drawing.outlets if o.id}
+        matched = [
+            (outlet, a_outlets[outlet.id], outlet.id)
+            for outlet in vendor.drawing.outlets
+            if outlet.id and outlet.id in a_outlets
+        ]
+    for outlet, other, outlet_id in matched:
         index = 1 if axis == "v" else 0
         v_low, v_high = outlet.box[index], outlet.box[index + 2]
         a_low, a_high = other.box[index], other.box[index + 2]
@@ -276,7 +281,7 @@ def _ties(vendor: Side, architect: Side, axis: str, pair: tuple[Line, Line]) -> 
                 (v_low + v_high) / 2,
                 (a_low + a_high) / 2,
                 "outlet",
-                f"the same outlet ({outlet.id}) at its centre",
+                f"the same outlet ({outlet_id}) at its centre",
                 # An end on its middle half is on its centre (as `dim_anchors` pairs them).
                 max(_SAME_PT, 0.25 * (v_high - v_low)),
                 max(_SAME_PT, 0.25 * (a_high - a_low)),
@@ -297,10 +302,15 @@ def _ties(vendor: Side, architect: Side, axis: str, pair: tuple[Line, Line]) -> 
 
 
 def _placed(ties: list[_Tie], vendor: Side, architect: Side, axis: str) -> list[_Tie]:
-    """Neighbour ties in about the same place on both drawings, counted from a base tie."""
+    """Neighbour ties in about the same place on both drawings, counted from a base tie. With no
+    floor or wall, neighbour ties count only when at least two different values tie (one value
+    printed once on each drawing may be a coincidence: #1808 review), or an outlet ties too."""
     bases = [tie for tie in ties if tie.kind == "base"]
     if not bases:
-        return ties
+        values = {tie.why for tie in ties if tie.kind == "neighbour"}
+        if len(values) >= 2 or any(tie.kind == "outlet" for tie in ties):
+            return ties
+        return [tie for tie in ties if tie.kind != "neighbour"]
     base = bases[0]
     kept = []
     for tie in ties:
@@ -410,6 +420,10 @@ def _moved(
     if (mv - tv) * (ma - ta) <= 0:
         return "cannot_tell", "the two dimensions run the other way from the shared end"
     gap = abs(v_line.inches - a_line.inches)
+    if min(vendor.ppi, architect.ppi) * float(gap) < _SEEN_GAP_PT:
+        # The other edge would sit within a point or two of the end itself: `_features` could not
+        # tell it from the end (#1808 review), so a thin top against its underside looks clear.
+        return "cannot_tell", "the difference is too small to see at the drawings' scale"
     if gap > MAX_MOVE_IN:
         return (
             "cannot_tell",

@@ -103,3 +103,21 @@ def test_a_found_difference_is_kept_when_only_the_vendors_number_has_no_spot() -
     copy = finding(source="completeness", vendor='49 1/4"', arch_box=BOX)
     assert unbacked(copy, labels) is not None
     assert unbacked(finding(vendor='49 1/4"'), labels) is not None
+
+
+def test_a_found_difference_kept_without_the_vendors_spot_is_never_code_proved() -> None:
+    """The kept item above is listed, never red (#1808 review): with every other proof in place,
+    a difference between two drawings with no vendor spot (no box, no label) is not code-proved,
+    so it cannot be clouded."""
+    from app.review.assistant import proof
+    from tests.review.assistant.test_prototype_reference import _finding
+
+    for witness in ("units", "ledger"):
+        # a witness that read the value but did not locate it, and code's own pairing
+        located = _finding(source="architect", witnesses=[witness], paired_by="code")
+        assert proof.code_proved(located), witness
+        for source in ("architect", "gv_review", "brand_prototype"):
+            unlocated = {**located, "source": source, "vendor_box": None}
+            unlocated.pop("dims", None)
+            assert not proof.code_proved(unlocated), (witness, source)
+            assert proof.proof_group(unlocated) != "clouded"

@@ -144,37 +144,32 @@ class Elevation:
 
 
 def _pair() -> tuple[Elevation, Elevation]:
-    """Two elevations of one wall: heights of 36" and 46" from the floor on both."""
-    arch = Elevation("architect", 100, 300, 2.0, 1)
-    vendor = Elevation("vendor", 400, 760, 3.6, 30)
-    for drawing in (arch, vendor):
-        drawing.room()
-        drawing.up(HEIGHT_IN, -40)
-        drawing.up(46, -30)
-        drawing.up(36, -20)
-    return arch, vendor
+    """Two elevations of one wall: heights of 36" and 46" from the floor on both, and the wall's
+    width under the floor (so `dim_anchors` checks the floor line against the run)."""
+    return _scaled(2.0, 3.6)
 
 
 def test_a_moved_end_with_nothing_else_drawn_near_it_is_the_same_point() -> None:
-    """Floor to a J-box: 29" on the architect, 29 1/4" on the vendor. The floor is tied (both
-    drawings end two heights on a long floor line); nothing else is drawn near 29" on either."""
+    """Floor to a J-box: 29" on the architect, 30" on the vendor. The floor is tied (both
+    drawings end two heights on a floor line that runs the wall's width); nothing else is drawn
+    near 29" or 30" on either."""
     arch, vendor = _pair()
     a_id = arch.up(29, -10, to_x_in=20)
-    v_id = vendor.up(29.25, -10, to_x_in=20)
+    v_id = vendor.up(30, -10, to_x_in=20)
     state, why = se.prove(vendor.side_of(), arch.side_of(), v_id, a_id)
     assert state == "same_extent", why
     assert "the floor" in why
 
 
 def test_underside_against_top_of_a_counter_is_never_the_same_point() -> None:
-    """Rule R8's trap: the vendor's 34 1/4" runs to the underside of a 3/4" top, the architect's
-    35" to its top. Both drawings draw both edges: another feature is at the moved end."""
+    """Rule R8's trap: the vendor's 34" runs to the underside of a 1" top, the architect's 35" to
+    its top. Both drawings draw both edges: another feature is at the moved end."""
     arch, vendor = _pair()
     for drawing in (arch, vendor):
-        drawing.shelf(34.25)
+        drawing.shelf(34)
         drawing.shelf(35)
     a_id = arch.up(35, -10, to_x_in=10)
-    v_id = vendor.up(34.25, -10, to_x_in=10)
+    v_id = vendor.up(34, -10, to_x_in=10)
     state, why = se.prove(vendor.side_of(), arch.side_of(), v_id, a_id)
     assert state == "cannot_tell"
     assert "another drawn feature" in why
@@ -190,12 +185,13 @@ def test_a_difference_too_big_to_be_one_point_is_not_proved() -> None:
 
 
 def test_a_value_not_drawn_to_its_size_is_not_proved() -> None:
-    """The vendor typed 29 1/4" over a line drawn 27" long: where its end lands proves nothing."""
+    """The vendor typed 28" over a line drawn 27" long: where its end lands proves nothing."""
     arch, vendor = _pair()
     a_id = arch.up(29, -10)
-    v_id = vendor.up(27, -10, printed=29.25)
-    state, _why = se.prove(vendor.side_of(), arch.side_of(), v_id, a_id)
+    v_id = vendor.up(27, -10, printed=28)
+    state, why = se.prove(vendor.side_of(), arch.side_of(), v_id, a_id)
     assert state == "cannot_tell"
+    assert "not drawn to its value" in why
 
 
 def test_an_end_on_another_tied_place_is_a_different_point() -> None:
@@ -255,7 +251,7 @@ def test_a_width_against_a_height_is_different() -> None:
 def test_prove_labels_reads_each_drawing_from_the_page_map_half() -> None:
     arch, vendor = _pair()
     a_id = arch.up(29, -10, to_x_in=20)
-    v_id = vendor.up(29.25, -10, to_x_in=20)
+    v_id = vendor.up(30, -10, to_x_in=20)
     page_map = {
         "pages": [
             {
@@ -294,3 +290,80 @@ def test_prove_labels_reads_each_drawing_from_the_page_map_half() -> None:
         page_map=page_map,
     )
     assert state == "cannot_tell" and "page map" in why
+
+
+def _scaled(a_scale: float, v_scale: float) -> tuple[Elevation, Elevation]:
+    arch = Elevation("architect", 100, 300, a_scale, 1)
+    vendor = Elevation("vendor", 400, 760, v_scale, 30)
+    for drawing in (arch, vendor):
+        drawing.room()
+        drawing.up(HEIGHT_IN, -40)
+        drawing.up(46, -30)
+        drawing.up(36, -20)
+        drawing.across(0, WIDTH_IN, 10)
+    return arch, vendor
+
+
+def test_an_edge_too_thin_to_see_at_the_drawings_scale_is_never_the_same_point() -> None:
+    """Rule R8's trap on a small drawing (#1808 review): a 1/2" edge at 1/4"=1'-0" (1.5 pt per
+    inch) or a 1/4" edge at 2 pt per inch is under a point or two apart, so the other edge cannot
+    be told from the end itself: code cannot tell."""
+    for a_scale, v_scale, low in ((2.0, 3.6, 34.75), (1.5, 1.5, 34.5)):
+        arch, vendor = _scaled(a_scale, v_scale)
+        for drawing in (arch, vendor):
+            drawing.shelf(low)
+            drawing.shelf(35)
+        a_id = arch.up(35, -10, to_x_in=10)
+        v_id = vendor.up(low, -10, to_x_in=10)
+        state, why = se.prove(vendor.side_of(), arch.side_of(), v_id, a_id)
+        assert state == "cannot_tell", (a_scale, low, why)
+
+
+def test_a_counter_line_is_never_taken_for_the_floor() -> None:
+    """A vendor drawing of the upper zone only, measured from the counter top: its lowest long
+    line is the counter, not the floor, so a backsplash is not tied to the architect's toe kick."""
+    arch = Elevation("architect", 100, 300, 2.0, 1)
+    arch.room()
+    arch.up(HEIGHT_IN, -40)
+    arch.up(46, -30)
+    arch.up(36, -20)
+    a_id = arch.up(4.5, -10, to_x_in=10)
+    vendor = Elevation("vendor", 400, 760, 3.6, 30)
+    vendor.shelf(0, 0, 60)
+    vendor.up(54, -40)
+    vendor.up(18, -30)
+    v_id = vendor.up(4, -10, to_x_in=10)
+    state, why = se.prove(vendor.side_of(), arch.side_of(), v_id, a_id)
+    assert state != "same_extent", why
+
+
+def test_one_value_printed_once_on_each_drawing_is_not_enough_without_a_floor_or_wall() -> None:
+    """Widths with no wall: a 24" printed once on each drawing, at different places, does not tie
+    the two drawings by itself."""
+    vendor = Elevation("vendor", 400, 760, 3.6, 30)
+    vendor.across(0, 24, 10)
+    vendor.across(24, 54, 10)
+    arch = Elevation("architect", 100, 300, 2.0, 1)
+    arch.across(0, 18, 10)
+    arch.across(18, 42, 10)
+    arch.across(42, 73, 10)
+    state, why = se.prove(vendor.side_of(), arch.side_of(), "D31", "D3")
+    assert state != "same_extent", why
+
+
+def test_outlets_are_matched_under_the_lock(monkeypatch: Any) -> None:
+    """The roster's judges share the drawings across threads, and matching writes the outlets'
+    ids onto them (#1808 review): each match, and reading its pairs, holds one lock."""
+    held: list[bool] = []
+    real = se.dim_anchors._match_outlets
+
+    def match(*args: Any) -> None:
+        held.append(se._OUTLETS_LOCK.locked())
+        real(*args)
+
+    monkeypatch.setattr(se.dim_anchors, "_match_outlets", match)
+    arch, vendor = _pair()
+    a_id = arch.up(29, -10, to_x_in=20)
+    v_id = vendor.up(30, -10, to_x_in=20)
+    se.prove(vendor.side_of(), arch.side_of(), v_id, a_id)
+    assert held == [True]

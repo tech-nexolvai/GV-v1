@@ -125,6 +125,22 @@ def _found_difference(finding: Mapping[str, Any]) -> bool:
     return bool(finding.get("arch_box") or (dims or {}).get("architect"))
 
 
+def listed_only(finding: Mapping[str, Any]) -> bool:
+    """Whether `unbacked` keeps `finding` only to be listed (#1808): a difference between two
+    drawings whose vendor size has no spot (no box, no label) and no code witness that located
+    it. Such an item is never red (`proof.code_proved`)."""
+    if not _found_difference(finding):
+        return False
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    if finding.get("vendor_box") or (dims or {}).get("vendor"):
+        return False
+    witnesses = finding.get("witnesses")
+    found = {str(w) for w in witnesses} if isinstance(witnesses, list) else set()
+    if _LOCATED & found:
+        return False
+    return _size(_flat(finding.get("vendor"))) is not None
+
+
 def unbacked(finding: Mapping[str, Any], labels: Labels) -> str | None:
     """Why `finding` cannot be shown to the vendor (a plain line), or None when it can."""
     if finding.get("status") not in _SHOWN:
