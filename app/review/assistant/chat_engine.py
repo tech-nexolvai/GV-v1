@@ -88,7 +88,7 @@ from time import monotonic, monotonic_ns
 from typing import Any, Final, Protocol
 from uuid import uuid4
 
-from app.review.assistant import not_compared
+from app.review.assistant import not_compared, set_proofs
 from app.review.assistant.agent import (
     HELPER_PICTURE_EDGE_PX,
     billed_input_tokens,
@@ -2084,9 +2084,40 @@ class ChatEngine:
 
     def _ledger_tool(self, name: str, raw: object, by: str) -> ToolResult:
         """`record_string`, `record_reading`: no step on the screen; code's sum (or what other
-        views of the item show) goes back to the model."""
+        views of the item show) goes back to the model. A chat question's entries are kept in the
+        set's proof ledger for the next full check (#1805)."""
         text, is_error = self.reading_ledger.run_tool(name, raw, by=by)
+        if not is_error and self.settings.mode != "full_check":
+            set_proofs.keep_ledger_entry(
+                self.tools.workspace.set_pack, name, raw, self._chat_name()
+            )
         return ToolResult(content=[{"type": "text", "text": text}], step={}, is_error=is_error)
+
+    def _chat_name(self) -> str | None:
+        root = getattr(self.tools.workspace, "root", None)
+        return None if root is None else Path(root).name
+
+    def _keep_chat_proof(self, proof: Mapping[str, Any]) -> None:
+        """A chat question's `verify_value` / `read_number` answer, kept in the set's proof
+        ledger when it proved a value (#1805)."""
+        set_proofs.keep_value(self.tools.workspace.set_pack, proof, self._chat_name())
+
+    def replay_chat_proofs(self) -> int:
+        """A full check's start (#1805): the strings and readings the set's chat questions
+        recorded, replayed into this message's reading ledger (code adds them up again), so its
+        sums and cross-view checks see them. Returns the entries replayed."""
+        replayed = 0
+        for entry in set_proofs.load(self.tools.workspace.set_pack)["ledger"]:
+            tool = str(entry.get("tool") or "")
+            try:
+                _text, is_error = self.reading_ledger.run_tool(tool, entry.get("input"), by="chat")
+            except Exception:  # noqa: BLE001 - one old entry never stops the check
+                _log.info("assistant chat proof not replayed")
+                continue
+            replayed += 0 if is_error else 1
+        if replayed:
+            _log.warning("assistant full check: %d chat proofs replayed into the ledger", replayed)
+        return replayed
 
     def _string_label(self, ref: object, page: int, side: str) -> Mapping[str, Any]:
         """A numbered label for `record_string` (part_dims, total_dim): on the vendor's file for
@@ -4071,6 +4102,9 @@ class ChatEngine:
 
     def run(self) -> MessageOutcome:
         """The lead's loop. Never raises: every way it ends is a stored outcome."""
+        if self.settings.mode != "full_check":
+            # A chat question's proofs are kept for the set's next full check (#1805).
+            self.tools.on_proof = self._keep_chat_proof
         if self.settings.mode == "full_check":
             book = self.book
             self._progress = FullCheckProgress(

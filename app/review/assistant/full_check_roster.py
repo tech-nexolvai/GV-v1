@@ -923,6 +923,8 @@ class _Run:
     repeats_avoided: list[int] = field(default_factory=list)
     #: The proving tools code called, per stage (`verifier`, `look_again`), by name (#1805).
     tool_calls: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: The set's chat proofs (`set_proofs`), read once.
+    chat_proofs: dict[str, Any] | None = None
 
     # -- money --
 
@@ -1027,6 +1029,10 @@ class _Run:
                 engine._seed_recorded()
             except Exception:  # noqa: BLE001 - the check goes on; the trust report says it
                 _log.exception("assistant roster could not seed the recorded differences")
+            try:
+                engine.replay_chat_proofs()  # what the set's chat questions proved (#1805)
+            except Exception:  # noqa: BLE001 - the check goes on without them
+                _log.exception("assistant roster could not replay the chat proofs")
         try:
             engine._start_markup_base()
         except Exception:  # noqa: BLE001 - the drawing makes its own copy at the end
@@ -1407,11 +1413,14 @@ class _Run:
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """One red candidate's two values through the proving tools: the entries to keep on it
         and each side's new `verify_<side>` answer (only a side with a spot)."""
-        from app.review.assistant.finding_checks import claim_value
+        from app.review.assistant import set_proofs
+        from app.review.assistant.finding_checks import claim_value, to_inches
 
         engine = self.engine
         entries: list[dict[str, Any]] = []
         reads: dict[str, Any] = {}
+        if self.chat_proofs is None:
+            self.chat_proofs = set_proofs.load(engine.tools.workspace.set_pack)
         for side, box_key, key in _PROOF_SIDES:
             value = claim_value(finding.get(side))
             box = finding.get(box_key)
@@ -1434,12 +1443,40 @@ class _Run:
             if answer.get("read_again"):
                 engine.timings.tool("read_number")
                 counts["read_number"] = counts.get("read_number", 0) + 1
+            inches = to_inches(value)
+            kept = (
+                set_proofs.proved_at(
+                    self.chat_proofs, file=name, page=page, side=side, box=coords, inches=inches
+                )
+                if answer.get("result") == "cannot_read" and inches is not None
+                else None
+            )
+            if kept is not None:
+                # A chat question proved this value at this spot with the same tools (#1805).
+                counts["chat_proof"] = counts.get("chat_proof", 0) + 1
+                answer = {
+                    "result": "match",
+                    "route": "text" if kept.get("route") == "text" else "drawn",
+                    "read": value,
+                    "reads": [f"chat proof: {kept.get('tool')} {kept.get('route')}"],
+                    "reason": "",
+                    "value": value,
+                    "pending": False,
+                    "words": f"Proved in a chat question by {kept.get('tool')}: {value}",
+                    "chat_proof": kept.get("chat"),
+                }
             tools.note_proof("verify_value", name, page, coords, value, answer, side=side)
             entries.append(
                 {
                     "stage": stage,
                     "side": side,
-                    "tool": "read_number" if answer.get("read_number") else "verify_value",
+                    "tool": (
+                        "chat proof"
+                        if answer.get("chat_proof") is not None
+                        else "read_number"
+                        if answer.get("read_number")
+                        else "verify_value"
+                    ),
                     "value": value,
                     "result": answer.get("result"),
                     "route": answer.get("route"),
