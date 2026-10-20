@@ -648,6 +648,12 @@ def worklist_from(
             drawings[h.ref] for h in same_area if h.role == "brand_prototype" and h.ref
         )
         vendor = drawings[half.ref]
+        prototype = False
+        if not architect and reference and not half.from_upload:
+            # R1 (Anant, 2026-10-20): the architect gives no elevation of this area, so its brand
+            # prototype elevation is the reference (as GV's reviewer does). Wherever the architect
+            # gives a drawing, the architect governs and the prototype stays reference only.
+            architect, reference, prototype = _governing_first(reference, half.page), (), True
         if not architect:
             skip(
                 half.page,
@@ -699,7 +705,10 @@ def worklist_from(
         if not vendor.labels:
             hard.append("the vendor drawing has no numbered labels (code read none of its numbers)")
         if any(not d.labels for d in architect):
-            hard.append("an architect drawing has no numbered labels (hand lettering)")
+            hard.append(
+                ("the brand prototype drawing" if prototype else "an architect drawing")
+                + " has no numbered labels (hand lettering)"
+            )
         if len(vendor.labels) > DENSE_LABELS:
             hard.append(f"a dense drawing: {len(vendor.labels)} vendor labels")
         items.append(
@@ -720,15 +729,16 @@ def worklist_from(
                 architect_only_tags=tuple(t for t in only_tags if t),
                 hard=tuple(hard),
                 paired_by=pairing,
+                prototype_reference=prototype,
             )
         )
         if half.ref in group_of and len(groups[group_of[half.ref]]) > 1:
             round_groups.append(
                 (half.file, half.file_page or half.page, half.page, group_of[half.ref])
             )
-        for drawing in architect:
+        for drawing in () if prototype else architect:
             used_architect.setdefault(drawing.page, []).append(half.ref)
-        for drawing in reference:
+        for drawing in (*reference, *(architect if prototype else ())):
             used_reference.setdefault(drawing.page, []).append(half.ref)
 
     # Architect and prototype drawings no item looks at: the vendor did not submit that area.

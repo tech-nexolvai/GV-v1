@@ -289,6 +289,10 @@ class WorkItem(_Frozen):
     reference: tuple[Drawing, ...] = ()
     """The area's brand prototype drawings: reference only unless the architect points to them
     (R1). Listed, not sent."""
+    prototype_reference: bool = False
+    """R1 (Anant, 2026-10-20): the area has no architect drawing, so `architect` holds its brand
+    prototype drawings, the reference the vendor is compared with (as GV's reviewer does); its
+    findings say `source: brand_prototype`, `reference: brand_prototype`."""
     round: int | None = None
     newest_round: bool = True
     """No later round of the same area exists in the set."""

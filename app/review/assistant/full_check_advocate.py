@@ -318,12 +318,15 @@ def code_checks(
     page_map: Mapping[str, Any] | None = None,
     vendor_ink: tuple[int, float] | None = None,
     newer_same: str | None = None,
+    prototype_reference: bool = False,
 ) -> list[Check]:
     """The advocate's code checks (7a, $0) on a candidate's two labels (`architect` None: a
     vendor-only item such as the vendor's own string). `vendor_ink`: `ink_colour` of the vendor
     value's spot, when its picture could be drawn. `newer_same`: a label of the vendor's newest
     round of the area that prints the same value the same way (`p5.D7`), when there is one: the
-    difference is still on the vendor's current drawing (#1641)."""
+    difference is still on the vendor's current drawing (#1641). `prototype_reference`: code found
+    no architect elevation of the item, so the brand prototype is the reference (R1, Anant
+    2026-10-20) and its drawing's label passes the roles check."""
     checks: list[Check] = []
     if vendor is None:
         return [Check("labels", "fail", "the vendor's value has no label code read")]
@@ -355,11 +358,13 @@ def code_checks(
         if notes
         else Check("annotation", "pass")
     )
-    # 3. Roles: a vendor half and an architect half, never a brand prototype.
+    # 3. Roles: a vendor half and an architect half; a brand prototype only when it is the
+    # reference (no architect elevation of the item, R1).
     vendor_side = str(vendor.get("side") or "unknown")
+    reference_sides = {"architect", "brand"} if prototype_reference else {"architect"}
     if vendor_side != "vendor":
         checks.append(Check("roles", "fail", f"the vendor value is on the {vendor_side}'s drawing"))
-    elif architect is not None and str(architect.get("side") or "unknown") != "architect":
+    elif architect is not None and str(architect.get("side") or "unknown") not in reference_sides:
         checks.append(
             Check("roles", "fail", f"the reference is on the {architect.get('side')}'s drawing")
         )
