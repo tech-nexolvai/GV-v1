@@ -191,6 +191,11 @@ class Settings(BaseSettings):
     assistant_simple_label_places: bool = True
     # The "looks wrong but isn't" precedents in the compare and blind prompts (step 6).
     assistant_simple_precedents: bool = True
+    # The compare repair turn asks only for the claims code rejected, the passed ones frozen
+    # (step 4); and the blind look gets one zoomed re-look (close crops round the marked
+    # dimension) before an end is left unseen: one more paid call, so off until measured.
+    assistant_simple_targeted_repair: bool = True
+    assistant_simple_zoom_relook: bool = False
     # The simple check's blind second look (`simple_check/blind.py`): one fresh call per red
     # candidate, shown only crops of both drawings with code's marks, never the compare call's
     # answer; a different model from the compare call by default. Red needs it to agree.

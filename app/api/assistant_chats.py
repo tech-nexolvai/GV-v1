@@ -1369,10 +1369,12 @@ def _simple_options(settings: Settings, body: ChatMessageIn) -> dict[str, Any] |
             "retries": settings.assistant_simple_retries,
             "label_places": getattr(settings, "assistant_simple_label_places", True),
             "precedents": getattr(settings, "assistant_simple_precedents", True),
+            "targeted_repair": getattr(settings, "assistant_simple_targeted_repair", True),
         },
         "blind_model": settings.assistant_simple_blind_model,
         "blind_effort": settings.assistant_simple_blind_effort,
         "blind_precedents": getattr(settings, "assistant_simple_precedents", True),
+        "blind_zoom_relook": getattr(settings, "assistant_simple_zoom_relook", False),
         "resolve": {
             "mode": getattr(settings, "assistant_simple_resolve", "off"),
             "rounds": getattr(settings, "assistant_simple_resolve_rounds", 2),

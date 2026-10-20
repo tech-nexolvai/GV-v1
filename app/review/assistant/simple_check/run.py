@@ -180,6 +180,7 @@ class SimpleOptions:
                 str(given.get("blind_model") or "claude-opus-5-5"),
                 str(given.get("blind_effort") or "high"),
                 bool(given.get("blind_precedents", True)),
+                bool(given.get("blind_zoom_relook", False)),
             ),
             pilot=int(pilot) if isinstance(pilot, int) and pilot > 0 else None,
             replay=str(given["replay"]) if given.get("replay") else None,

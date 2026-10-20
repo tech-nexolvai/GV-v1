@@ -45,6 +45,7 @@ __all__ = [
     "LEGACY_VERDICTS",
     "OTHER_KINDS",
     "OTHER_VERDICTS",
+    "PAIRED_VERDICTS",
     "REPLY_SCHEMA",
     "SCHEMA_VERSION",
     "VERDICTS",
@@ -130,6 +131,8 @@ OTHER_KINDS: Final[tuple[str, ...]] = (
 )
 #: Verdicts that say two labels were compared, so they need an architect label.
 _PAIRED: Final = frozenset({"same_points", "same", "different", "different_points"})
+#: The same, for other modules (the targeted repair's checks).
+PAIRED_VERDICTS: Final = _PAIRED
 
 #: The words a dimension's end is written with ("centre_line (fridge outlet)"): the prompt asks for
 #: one of them first, so code can compare ends without reading prose (`end_word`).
