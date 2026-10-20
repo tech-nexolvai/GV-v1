@@ -91,10 +91,9 @@ the pack is ready; until it is, use the uploads (and `zoom`, which works at once
 **What it is:** marks added by GV reviewers when they reviewed the set:
 - annotations: FreeText notes and the headings, Square / Circle / Polygon / PolyLine / Line / Ink
   clouds and boxes, callouts (list them with the script above; `/T` is the author);
-- on GV's combined review sheets (drawings pasted as snapshots), coloured ink baked inside the
-  pasted drawing: red, blue or green numbers beside or over the vendor's, yellow boxes painted over
-  its numbers. **Colour decides only there**: on an ordinary upload every colour is the drawing's
-  own (vendors draw in any colour); only its PDF comments and GV Review's signed marks are markup.
+- on GV's combined review sheets (pasted snapshots) only, coloured ink baked into the snapshot:
+  red, blue or green numbers, yellow boxes over the vendor's. On an ordinary upload every colour is
+  the drawing's own; only its PDF comments and GV Review's signed marks are markup.
 
 **The rule:** GV's markup is GV's reviewer comments. Never use a number from it as what the
 architect designed or what the vendor drew; the architect's own drawing is the design. You may say
