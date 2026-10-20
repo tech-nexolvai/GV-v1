@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from app.review.assistant import agent as review_agent
 from app.review.assistant import (
     chat_tools,
     finding_critic,
@@ -23,7 +24,6 @@ from app.review.assistant import (
     read_adjudication,
     second_read,
 )
-from app.review.assistant import agent as review_agent
 from app.review.assistant.colour_rule import COLOUR_RULE
 from app.review.assistant.simple_check import blind, prompts, resolve
 from app.review.assistant.simple_check.schema import Drawing, Label, WorkItem

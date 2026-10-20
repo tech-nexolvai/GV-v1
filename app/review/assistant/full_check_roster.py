@@ -58,11 +58,11 @@ from uuid import uuid4
 from app.review.assistant import proof as proof_rule
 from app.review.assistant import witness
 from app.review.assistant.chat_findings import UPDATE_FINDING
-from app.review.assistant.colour_rule import COLOUR_RULE
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
 from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
 from app.review.assistant.chat_tools import HELPER_TOOLS, new_step
 from app.review.assistant.chat_trust import judged
+from app.review.assistant.colour_rule import COLOUR_RULE
 from app.review.assistant.escalation import label_provenance
 from app.review.assistant.full_check_advocate import (
     ADVOCATE_SCHEMA,
