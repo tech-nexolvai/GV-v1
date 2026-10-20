@@ -228,10 +228,10 @@ describe('counts once (#1126)', () => {
     dashboard(rows);
     const legend = await screen.findByRole('list', { name: 'Countertop outcomes' }, { timeout: 10_000 });
     const shown = [...legend.querySelectorAll('li')].filter((li) => [...li.querySelectorAll('span.num')].some((n) => !n.classList.contains('sr-only'))).map((li) => li.textContent);
-    // "Needs your decision" keeps its number for a screen reader only: the "Countertops need you" card
+    // "Not compared" keeps its number for a screen reader only: the "Countertops need you" card
     // is the one count of countertops waiting for the reviewer (#1179).
     expect(shown).toEqual(['Not checkable1']);
-    expect(legend.textContent).toMatch(/Needs your decision\s*1/);
+    expect(legend.textContent).toMatch(/Not compared\s*1/);
     // Every count is still there for a screen reader, since the ring is hidden from it.
     expect(legend.textContent).toMatch(/FAIL\s*1/);
     expect(legend.textContent).toMatch(/PASS\s*1/);

@@ -143,7 +143,7 @@ describe('results dashboard', () => {
     // The legend is inside the lazily loaded chart; on a cold CI runner fetching the chart library
     // can take longer than the default one-second wait.
     const legend = await screen.findByRole('list', { name: 'Countertop outcomes' }, { timeout: 10_000 });
-    expect(legend.textContent).toMatch(/Needs your decision\s*1/);
+    expect(legend.textContent).toMatch(/Not compared\s*1/);
     expect(legend.textContent).toMatch(/Not checked\s*1/);
     expect(legend.textContent).toMatch(/Not checkable\s*1/);
   }, 15_000);

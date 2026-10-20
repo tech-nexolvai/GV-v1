@@ -105,7 +105,7 @@ export function resultBucket(row: RowFacts): Bucket {
 
 /** The donut's words: its undecided slice holds only rows without a PASS or FAIL. */
 export const RESULT_LABEL: Record<Bucket, string> = {
-  'needs-you': 'Needs your decision',
+  'needs-you': 'Not compared',
   'not-checked': 'Not checked',
   fail: 'FAIL',
   pass: 'PASS',

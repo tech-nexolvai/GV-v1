@@ -488,7 +488,7 @@ describe('Usage page', () => {
       [fullDayLabel('2026-10-09'), '10', '10', '0', '$0.02'],
     ]);
     const totalsList = await screen.findByRole('list', { name: 'Recorded results in all' }, { timeout: 10_000 });
-    expect(within(totalsList).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['Looks right 1', 'Needs correction 1', 'Needs your decision 8', 'Waiting on a value 6', 'Not applicable 0']);
+    expect(within(totalsList).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['Looks right 1', 'Needs correction 1', 'Not compared 8', 'Waiting on a value 6', 'Not applicable 0']);
     expect(document.querySelectorAll('[data-slot="outcomes-chart"] [data-outcome-icon]')).toHaveLength(5);
     // No invisible keyboard stops inside the hidden charts.
     expect(document.querySelectorAll('[data-slot="chart"] [tabindex="0"]')).toHaveLength(0);

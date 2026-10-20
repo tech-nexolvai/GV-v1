@@ -231,7 +231,7 @@ function LargePicture({ src, label, page, box, tone, onOpen }: {
               data-slot="chat-finding-spot"
               aria-hidden="true"
               style={insets}
-              className={cn('pointer-events-none absolute rounded-[3px] border-2', tone === 'different' ? 'border-outcome-fail shadow-[0_0_0_3px_rgb(220_38_38/0.15)]' : 'border-outcome-review shadow-[0_0_0_3px_rgb(217_119_6/0.15)]')}
+              className={cn('pointer-events-none absolute rounded-[3px] border-2', tone === 'different' ? 'border-outcome-fail shadow-[0_0_0_3px_rgb(220_38_38/0.15)]' : 'border-foreground/70 shadow-[0_0_0_3px_rgb(115_115_115/0.18)]')}
             />
           )}
         </button>

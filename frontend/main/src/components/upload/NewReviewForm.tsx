@@ -1,6 +1,8 @@
 /**
- * Start a review: who sent the drawings, what product they are for, the architect's set, and the
- * vendor's shop drawings.
+ * Start a review: who sent the drawings, the architect's set, and the vendor's shop drawings.
+ *
+ * #1765: the form no longer asks what the drawing set is for (decided 2026-10-19). A new set is
+ * checked for every active product (All); the reviewer narrows with the chat's product chips.
  *
  * The first thing on the start screen. It replaced a modal that opened with a made-up vendor already
  * typed in ("Apex Glass & Stone"), which is how a sample name ends up on a real package. Since #1125
@@ -14,25 +16,15 @@
 
 import { useId, useRef, useState } from 'react';
 import { ArrowRight, FileText, Upload, X } from 'lucide-react';
-import { listProducts } from '@/api/client';
 import { createPackage } from '@/api/upload';
 import type { UploadProgress } from '@/api/upload';
-import { useAsync } from '@/api/useAsync';
-import {
-  canUploadFor,
-  defaultProductType,
-  describeUploadFailure,
-  looksLikeTheSameFile,
-} from '@/api/uploadState';
-import type { ProductType } from '@/api/uploadState';
+import { describeUploadFailure, looksLikeTheSameFile } from '@/api/uploadState';
 import { projectId } from '@/api/config';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 import { applyProgress, initialUploadView, type UploadView } from '@/lib/upload-progress';
-import { ProductTypeField } from './ProductTypeField';
-import type { ProductChoicesState } from './ProductTypeField';
 import { UploadProgressPanel } from './upload-progress';
 
 interface NewReviewFormProps {
@@ -63,8 +55,6 @@ function formatSize(bytes: number): string {
 
 export function NewReviewForm({ onCreated, onOpenSaved = onCreated }: NewReviewFormProps) {
   const [vendor, setVendor] = useState('');
-  const products = useAsync(() => listProducts(), []);
-  const [chosenProduct, setChosenProduct] = useState<ProductType | null>(null);
   const [files, setFiles] = useState<Record<Slot, File | null>>({ architectural: null, shop: null });
   const [slotError, setSlotError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<Slot | null>(null);
@@ -80,29 +70,10 @@ export function NewReviewForm({ onCreated, onOpenSaved = onCreated }: NewReviewF
   const vendorId = useId();
   const needId = useId();
 
-  const productState: ProductChoicesState =
-    products.status === 'ready'
-      ? { status: 'ready', choices: products.data }
-      : products.status === 'error'
-      ? { status: 'error', message: products.error.message }
-      : { status: 'loading' };
-  // The reviewer's choice, or Countertop until they make one (#994). Only a product the API offered.
-  const productType =
-    products.status === 'ready'
-      ? (products.data.some((choice) => choice.id === chosenProduct && canUploadFor(choice))
-          ? chosenProduct
-          : defaultProductType(products.data))
-      : null;
-
-  const ready =
-    vendor.trim() !== '' &&
-    productType !== null &&
-    files.architectural !== null &&
-    files.shop !== null;
+  const ready = vendor.trim() !== '' && files.architectural !== null && files.shop !== null;
   const sameFile = looksLikeTheSameFile(files.architectural, files.shop);
   const missing = [
     vendor.trim() === '' ? 'the vendor' : null,
-    productType === null ? 'what the drawing set is for' : null,
     files.architectural === null ? "the architect's drawings" : null,
     files.shop === null ? 'the shop drawings' : null,
   ].filter(Boolean) as string[];
@@ -118,7 +89,7 @@ export function NewReviewForm({ onCreated, onOpenSaved = onCreated }: NewReviewF
   }
 
   async function start() {
-    if (!ready || running || productType === null) return;
+    if (!ready || running) return;
     setRunning(true);
     setError(null);
     setSavedPackageId(null);
@@ -128,7 +99,6 @@ export function NewReviewForm({ onCreated, onOpenSaved = onCreated }: NewReviewF
         projectId(),
         {
           vendor: vendor.trim(),
-          productType,
           architectural: files.architectural,
           shop: files.shop,
         },
@@ -182,8 +152,6 @@ export function NewReviewForm({ onCreated, onOpenSaved = onCreated }: NewReviewF
         />
         <p id={`${vendorId}-note`} className="text-xs text-muted-foreground">Goes on the comment letter.</p>
       </div>
-
-      <ProductTypeField state={productState} value={productType} onChange={setChosenProduct} />
 
       <fieldset className="flex min-w-0 flex-col gap-2">
         <legend className="mb-2 text-sm font-medium">

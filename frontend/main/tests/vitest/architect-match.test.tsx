@@ -232,7 +232,7 @@ describe('the drawing', () => {
   it('a "Matches the architect?" item looks like the architect result, never like the width', () => {
     const widthPass = row('w', 3, { outcome: 'PASS', architect: ONE_JUDGMENT_CODE });
     expect(targetFromRow(widthPass)).toMatchObject({ glyph: 'PASS' });
-    expect(targetFromArchitect(widthPass)).toMatchObject({ tone: 'review', glyph: 'REVIEW_REQUIRED', word: 'Needs your decision', needsYou: true, findingId: 'arch-code' });
+    expect(targetFromArchitect(widthPass)).toMatchObject({ tone: 'review', glyph: 'REVIEW_REQUIRED', word: 'Not compared', needsYou: true, findingId: 'arch-code' });
     expect(targetFromArchitect(row('x', 3, { outcome: 'PASS', architect: compared('x') }))).toMatchObject({ tone: 'fail', glyph: 'FAIL' });
   });
 });

@@ -79,7 +79,7 @@ interface Expect {
 const WORDS: Record<string, string> = {
   PASS: 'Looks right',
   FAIL: 'Needs correction',
-  REVIEW_REQUIRED: 'Needs your decision',
+  REVIEW_REQUIRED: 'Not compared',
   NOT_FOUND: 'Waiting on a value',
   NO_APPLICABLE_RULE: 'Not applicable',
 };
@@ -216,11 +216,11 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
     await expect(card('FAIL'), `${when}: FAIL card`).toHaveText(String(answer.items.filter(hasFail).length));
     await expect(card('PASS'), `${when}: PASS card`).toHaveText(String(answer.items.filter(allPass).length));
     const legend = page.getByRole('list', { name: 'Countertop outcomes' });
-    const slices = { 'Needs your decision': 0, 'Not checked': 0, FAIL: 0, PASS: 0, 'Not checkable': 0 };
+    const slices = { 'Not compared': 0, 'Not checked': 0, FAIL: 0, PASS: 0, 'Not checkable': 0 };
     for (const i of answer.items) {
       if (hasFail(i)) slices.FAIL += 1;
       else if (allPass(i)) slices.PASS += 1;
-      else if (needsYou(i)) slices['Needs your decision'] += 1;
+      else if (needsYou(i)) slices['Not compared'] += 1;
       else if (hasNoResult(i)) slices['Not checked'] += 1;
       else slices['Not checkable'] += 1;
     }

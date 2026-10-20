@@ -616,6 +616,10 @@ export interface paths {
          *     value outside the `ProductType` vocabulary; this refuses a vocabulary value no published rule is
          *     for. Such a set would be checked against nothing, and an empty findings list reads as a clean
          *     one — so it is a `422` naming the problem, not a package that quietly runs no checks.
+         *
+         *     **No product named = every active product (#1765).** The start page no longer asks; the set is
+         *     stored with no product, which every consumer already reads as "every product" (`package_product`),
+         *     and the reviewer narrows in the chat. It is still refused when no product has a published check.
          */
         post: operations["create_package_api_v1_projects__project_id__packages_post"];
         delete?: never;
@@ -9185,9 +9189,9 @@ export interface components {
         PackageCreate: {
             /**
              * Product Type
-             * @description What product this drawing set is for, chosen by the reviewer (#994): an active product id from `GET /products` (the product registry, #1547). Only the published checks for this product are run, and the readers are told it. A product with no published check is refused, because a set checked against nothing would look exactly like a clean one.
+             * @description What product this drawing set is for (#994): an active product id from `GET /products` (the product registry, #1547), or left out for **every active product** (All, the default since the start page lost its product question, #1765: a set stated "countertop" often holds cabinets too; the reviewer narrows in the chat). With a product, only its published checks are run and the readers are told it. A product with no published check is refused, because a set checked against nothing would look exactly like a clean one; left out, at least one product must have a published check.
              */
-            product_type: string;
+            product_type?: string | null;
             /**
              * Vendor
              * @description Who supplied the drawings, if it is known. Left null rather than guessed — an invented vendor name is worse than an absent one, because it reads as a fact.

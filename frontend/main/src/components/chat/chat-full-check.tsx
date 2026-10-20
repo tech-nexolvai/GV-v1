@@ -204,7 +204,7 @@ export interface CloudReview {
   failed: boolean;
 }
 
-export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page = 1, totalPages = null, counts = null, proof = null, review = null, packaged = false, unsent = false }: {
+export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page = 1, totalPages = null, proof = null, review = null, packaged = false, unsent = false }: {
   cloud: ChatFile | null;
   report: ChatFile | null;
   /** #1619: the Not-compared list, as a PDF and a workbook. */
@@ -213,7 +213,6 @@ export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page =
   /** The page the preview shows (the biggest clouded item's, the vendor's own page number). */
   page?: number;
   totalPages?: number | null;
-  counts?: Pick<FindingCounts, 'different' | 'check'> | null;
   /** #1581, #1619: the drawing's own groups (clouded / right / not compared), as its cover counts them. */
   proof?: ProofCounts | null;
   /** #1525: the reviewer's answers so far, and "Update cloud drawing" (optional overrides since #1581). */
@@ -268,12 +267,7 @@ export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page =
               <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-outcome-fail" /><span className="font-medium text-foreground">{proof.clouded}</span> clouded, proved by code</span>
               {proof.not_compared > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full ring-[1.5px] ring-inset ring-muted-foreground/60" />{proof.not_compared} not compared</span>}
             </p>
-          ) : counts && (counts.different > 0 || counts.check > 0) && (
-            <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
-              {counts.different > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-outcome-fail" />{counts.different} wrong</span>}
-              {counts.check > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="size-2 rounded-full bg-outcome-review" />{counts.check} to decide</span>}
-            </p>
-          )}
+          ) : null}
           <p className="text-xs text-muted-foreground"><span className="break-all">{cloud.name}</span> · {[fileKind(cloud), fileSize(cloud.size)].filter(Boolean).join(' · ')}</p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -326,7 +320,7 @@ export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page =
 const ACTION_LOOK: Record<ChatReviewAction['action'], { Icon: typeof RotateCcw; tone: string }> = {
   revise_resubmit: { Icon: RotateCcw, tone: 'text-outcome-fail-fg' },
   rejected: { Icon: CircleX, tone: 'text-outcome-fail-fg' },
-  approved_as_noted: { Icon: PencilLine, tone: 'text-outcome-review-fg' },
+  approved_as_noted: { Icon: PencilLine, tone: 'text-foreground' },
   approved: { Icon: CircleCheck, tone: 'text-outcome-pass-fg' },
   not_for_sending: { Icon: CircleAlert, tone: 'text-muted-foreground' },
 };

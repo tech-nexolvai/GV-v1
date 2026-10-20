@@ -159,7 +159,7 @@ export function OtherChecks({
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Mark {eligible.length} {eligible.length === 1 ? 'check' : 'checks'} not checkable</DialogTitle>
-            <DialogDescription>The same note is recorded on each one, as your decision.</DialogDescription>
+            <DialogDescription>The same note is recorded on each one, in your name.</DialogDescription>
           </DialogHeader>
           <ul className="max-h-40 overflow-y-auto rounded-md border text-sm" aria-label="Checks to mark">
             {eligible.map((f) => (

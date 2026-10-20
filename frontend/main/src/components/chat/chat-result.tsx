@@ -152,7 +152,7 @@ export function FullCheckResult(props: FullCheckResultProps) {
         ))}
         {tab === 'wrong' && shown.some((finding) => groups.dismissed.includes(finding)) && (
           <>
-            <GroupHead words="Not a problem (your call)" count={shown.filter((finding) => groups.dismissed.includes(finding)).length} />
+            <GroupHead words="Marked not a problem" count={shown.filter((finding) => groups.dismissed.includes(finding)).length} />
             {shown.filter((finding) => groups.dismissed.includes(finding)).map((finding) => <CompactRow key={finding.id} kind="dismissed" finding={finding} onOpen={onOpen} />)}
           </>
         )}

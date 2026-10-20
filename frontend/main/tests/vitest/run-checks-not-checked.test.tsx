@@ -246,7 +246,7 @@ describe('every blocking count carries its noun (#1179)', () => {
     expect(cards.textContent).toMatch(/Countertops need you\s*2/);
     expect(within(cards).getByRole('button', { name: '2 countertops need you: review them one at a time' })).toBeTruthy();
     expect(within(screen.getByRole('region', { name: 'Other checks' })).getByRole('button', { name: /Other checks/ }).textContent).toContain('1 check needs you');
-    // The donut's "Needs your decision" number is the card's: shown once, on the card.
+    // The donut's "Not compared" number is the card's: shown once, on the card.
     const legend = await screen.findByRole('list', { name: 'Countertop outcomes' }, { timeout: 10_000 });
     expect(legend.querySelector('[data-bucket="needs-you"] .num')?.classList.contains('sr-only')).toBe(true);
   }, 15_000);

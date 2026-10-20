@@ -105,7 +105,7 @@ describe("the words of the architect line: always its row's own result (#1273, #
     );
     // Decided by the reviewer: said as recorded, not as waiting.
     expect(itemArchitectWords(block({ finding_id: 'f', outcome: 'REVIEW_REQUIRED', needs_decision: false, pairing_source: 'code+ais' }))).toBe(
-      'Architect: Needs your decision',
+      'Architect: Not compared',
     );
   });
 });

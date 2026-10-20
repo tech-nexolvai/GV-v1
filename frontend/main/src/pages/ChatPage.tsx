@@ -58,11 +58,6 @@ const NO_MESSAGES: ViewMessage[] = [];
 const FOLLOW_GAP = 80;
 /** claude.ai's words under the composer. */
 
-/** "$5.00" → "$5", "$3.10" stays: the money line in the model menu. */
-function money(value: string | null | undefined): string | null {
-  return dollars(value)?.replace(/\.00$/, '') ?? null;
-}
-
 type ModelsState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; data: ChatModels };
 
 /** The message this page is reading (sent from here, or followed): `left` once the reviewer moved away. */
@@ -556,14 +551,6 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   }
 
   const reload = useCallback(() => setLoadAsk((n) => n + 1), []);
-  // What a message may cost, in the model menu's footer.
-  const footnote =
-    models.status === 'ready' && models.data.available
-      ? [
-          money(models.data.message_cap_usd) && `Up to ${money(models.data.message_cap_usd)} per answer`,
-          money(models.data.package_spent_usd) && money(models.data.package_cap_usd) && `${money(models.data.package_spent_usd)} of ${money(models.data.package_cap_usd)} used on this set`,
-        ].filter(Boolean).join(' · ')
-      : '';
   const cap = models.status === 'ready' ? models.data.message_cap_usd : null;
   const showScrollDown = !centred && !atBottom && messages.length > 0;
 
@@ -635,7 +622,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   // ── Full check (chat v4): one button, confirmed with what it will use ──
   const pickedModel = choice ? modelList.find((model) => model.id === choice.model) ?? null : null;
   const fullCheckScope = scopeSentence(products, catalog);
-  const fullCheckSummary = confirmWords(products, pickedModel ? shortModelLabel(pickedModel) : null, choice ? EFFORT_WORDS[choice.effort] : null, money(cap));
+  const fullCheckSummary = confirmWords(products, pickedModel ? shortModelLabel(pickedModel) : null, choice ? EFFORT_WORDS[choice.effort] : null);
   const fullCheckBlocked = blocked ?? (running ? 'A message is still running in this chat.' : null);
   const runFullCheck = (answers?: ChatPlanAnswer[]) => void send(FULL_CHECK_TEXT, 'full_check', undefined, undefined, answers);
   // #1569: the plan check before a paid full check (a fake API may leave it out: no questions).
@@ -825,7 +812,6 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                 onChoice={changeChoice}
                 // #1744: the server refuses a second message while a check runs (409 message_running).
                 placeholder={runningCheck ? COMPOSER_RUNNING_PLACEHOLDER : COMPOSER_PLACEHOLDER}
-                menuFootnote={footnote}
                 textareaRef={textareaRef}
                 modelInMenu
                 leading={<ProductChips products={products} onToggle={toggle} onAll={() => setProducts(pickable(catalog))} disabled={running} />}
@@ -843,7 +829,6 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     models={modelList}
                     choice={choice}
                     onChoice={changeChoice}
-                    messageCap={money(cap)}
                     areas={knownAreas(messages)}
                     onNotice={setNotice}
                     running={running}

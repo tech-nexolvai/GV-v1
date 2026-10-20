@@ -67,7 +67,7 @@ const PAGE_4: AssistantAnswer = {
 };
 
 const LEFT: AssistantAnswer = {
-  text: 'Three countertops need your decision before you can sign off. [[0]] and [[1]] are listed only.',
+  text: 'Three countertops are not compared yet, so sign-off waits. [[0]] and [[1]] are listed only.',
   citations: [
     { kind: 'page', page_number: 2, record_id: null, label: 'page 2' },
     { kind: 'page', page_number: 9, record_id: null, label: 'page 9' },

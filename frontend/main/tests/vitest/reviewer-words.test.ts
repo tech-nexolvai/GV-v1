@@ -14,17 +14,14 @@ import { BANNED_WORDS, COMPOSER_NOTE, COMPOSER_PLACEHOLDER, OUTCOME_WORDS, round
 
 const SRC = resolve(__dirname, '../../src');
 
-/** The reviewer-facing code: the chat, the shell, the tracker. The words module itself holds the list. */
+/**
+ * The reviewer-facing code: every screen (#1765: the older review screens too, not only the chat, the
+ * shell and the tracker). The words module holds the list; the generated API types quote the
+ * server's own descriptions and are not screen text.
+ */
 function reviewerFiles(): string[] {
-  const inDir = (dir: string, test: (name: string) => boolean) =>
-    readdirSync(join(SRC, dir)).filter(test).map((name) => join(SRC, dir, name));
-  return [
-    ...inDir('components/chat', (name) => name.endsWith('.tsx')),
-    ...inDir('components/shell', (name) => name.endsWith('.tsx')),
-    ...inDir('lib', (name) => /^chat-.*\.ts$/.test(name) || name === 'tracker.ts'),
-    join(SRC, 'pages/ChatPage.tsx'),
-    join(SRC, 'pages/TrackerPage.tsx'),
-  ];
+  const skip = new Set([join(SRC, 'lib/words.ts'), join(SRC, 'api/schema.d.ts')]);
+  return allSourceFiles().filter((file) => !skip.has(file));
 }
 
 /** Every source file under src (#1756: no screen anywhere names the model maker's assistant). */
@@ -45,6 +42,15 @@ function withoutComments(code: string): string {
 }
 
 describe('reviewer words (#1712)', () => {
+  it('scans every screen, the older review screens included (#1765)', () => {
+    const files = reviewerFiles().map((file) => file.replace(`${SRC}/`, ''));
+    for (const screen of ['components/chat/chat-result.tsx', 'components/documents/documents-table.tsx', 'components/queue/needs-you-queue.tsx', 'components/results/other-checks.tsx', 'data/outcomeLabels.ts', 'lib/assistant.ts', 'pages/ChatPage.tsx']) {
+      expect(files).toContain(screen);
+    }
+    expect(BANNED_WORDS.some((banned) => banned.pattern.test('Not a problem (your call)'))).toBe(true);
+    expect(BANNED_WORDS.some((banned) => banned.pattern.test('`${live.wrong_so_far} wrong · ${live.decision_so_far} to decide`'))).toBe(true);
+  });
+
   it('no reviewer screen writes a retired word', () => {
     const found: string[] = [];
     for (const file of reviewerFiles()) {
@@ -53,6 +59,15 @@ describe('reviewer words (#1712)', () => {
         const match = banned.pattern.exec(code);
         if (match) found.push(`${file.replace(SRC, 'src')}: "${match[0]}" (${banned.instead})`);
       }
+    }
+    expect(found).toEqual([]);
+  });
+
+  it('no screen paints amber (#1765: Wrong / Right / Not compared and greys only)', () => {
+    const found: string[] = [];
+    for (const file of reviewerFiles()) {
+      const match = /\b(?:amber|yellow|orange)-\d{2,3}\b|#(?:d97706|f59e0b|fbbf24)\b/i.exec(withoutComments(readFileSync(file, 'utf8')));
+      if (match) found.push(`${file.replace(SRC, 'src')}: "${match[0]}"`);
     }
     expect(found).toEqual([]);
   });

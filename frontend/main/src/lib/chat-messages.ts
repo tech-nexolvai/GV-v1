@@ -708,6 +708,31 @@ export function chatRunWords(chat: Pick<ChatSummary, 'id' | 'running' | 'mode' |
   return { running, count: total ? `${done ?? 0}/${total}` : null };
 }
 
+/** #1765: the full checks this page saw running, and those it then saw end (the sidebar's "done" mark). */
+export interface CheckMarks {
+  running: ReadonlySet<string>;
+  done: ReadonlySet<string>;
+}
+
+export const NO_CHECK_MARKS: CheckMarks = { running: new Set(), done: new Set() };
+
+/**
+ * "Check finished" in the sidebar (owner decision 7, 2026-10-19: tab title + sidebar + toast, no
+ * browser prompt): a full check's row seen running here and now not running gets a small done mark
+ * until the page is reloaded. Returns `seen` itself when nothing changed, so a render can call it.
+ */
+export function checkMarks(
+  seen: CheckMarks,
+  chats: readonly Pick<ChatSummary, 'id' | 'title' | 'created_at' | 'last_message_at' | 'mode' | 'running' | 'drawings_done' | 'drawings_total'>[],
+  live?: ChatRunLive | null,
+): CheckMarks {
+  const isCheck = (chat: (typeof chats)[number]) => chat.mode === 'full_check' || chatListWords(chat).kind === 'check';
+  const running = new Set(chats.filter((chat) => isCheck(chat) && chatRunWords(chat, live).running).map((chat) => chat.id));
+  const ended = [...seen.running].filter((id) => !running.has(id) && chats.some((chat) => chat.id === id));
+  if (!ended.length && running.size === seen.running.size && [...running].every((id) => seen.running.has(id))) return seen;
+  return { running, done: ended.length ? new Set([...seen.done, ...ended]) : seen.done };
+}
+
 /**
  * A model in words, by its short name (#1756: the product is GV Review, a model is "Opus 5.5"): the
  * server's label, else made from the id ("claude-opus-5-5" → "Opus 5.5"); empty when not known.

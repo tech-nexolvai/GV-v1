@@ -100,10 +100,10 @@ GLOSSARY: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
         ),
     ),
     (
-        re.compile(r"needs? (?:your|my) decision|review required"),
+        re.compile(r"needs? (?:your|my) decision|review required|not compared"),
         (
-            "Needs your decision means the app could not settle the check by itself, so it waits "
-            "for you in the queue. Nothing about it was judged."
+            "Not compared means the app could not settle the check by itself, so nothing about it "
+            "was judged. It waits in the queue for you to look at it."
         ),
     ),
     (

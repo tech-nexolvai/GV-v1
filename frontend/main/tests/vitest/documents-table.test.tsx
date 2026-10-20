@@ -50,7 +50,7 @@ describe('documents table arithmetic', () => {
       { outcome: 'NO_APPLICABLE_RULE', count: 1, label: 'Not applicable' },
     ]);
     expect(resultTotal({ ...zero, pass: 1, review: 2, not_found: 3 })).toBe(6);
-    expect(outcomeSentence({ ...zero, pass: 1, review: 1 })).toBe('2 recorded results: 1 Looks right, 1 Needs your decision');
+    expect(outcomeSentence({ ...zero, pass: 1, review: 1 })).toBe('2 recorded results: 1 Looks right, 1 Not compared');
   });
 
   it('says zero results in words, never as an empty all-clear', () => {
@@ -76,8 +76,8 @@ describe('DocumentsTable', () => {
   it('opens newest-updated first, with every column for each review', () => {
     render(<DocumentsTable rows={ROWS} onOpen={() => {}} morePages={false} />);
     expect(vendorsInOrder()).toEqual(['alpha works', 'Untitled document set', 'Beta Stone']);
-    expect(screen.getByRole('img', { name: '11 recorded results: 8 Looks right, 2 Needs correction, 1 Needs your decision' })).toBeTruthy();
-    expect(screen.getByText('results need your decision', { exact: false })).toBeTruthy();
+    expect(screen.getByRole('img', { name: '11 recorded results: 8 Looks right, 2 Needs correction, 1 Not compared' })).toBeTruthy();
+    expect(screen.getByText('results still open', { exact: false })).toBeTruthy();
     expect(screen.getAllByText('Signed off', { selector: '.sr-only' })).toHaveLength(1);
     expect(screen.getAllByText('Signed files ready', { selector: '.sr-only' })).toHaveLength(1);
     expect(screen.getByText('3 reviews.')).toBeTruthy();
@@ -89,7 +89,7 @@ describe('DocumentsTable', () => {
     render(<DocumentsTable rows={[lapsed]} onOpen={() => {}} morePages={false} />);
     const row = screen.getAllByRole('row')[1];
     expect(within(row).getByText('Not under review')).toBeTruthy();
-    expect(within(row).queryByText(/need your decision|needs your decision/)).toBeNull();
+    expect(within(row).queryByText(/still open/)).toBeNull();
   });
 
   it('shows a review with nothing recorded as "No results yet", not as a zero', () => {

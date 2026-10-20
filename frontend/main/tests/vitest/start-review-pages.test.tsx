@@ -6,7 +6,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PackageSummary } from '@/api/client';
 import type { Page } from '@/app/route';
-import { PRODUCTS } from './fixtures/products';
 
 // Synthetic data only: nothing here comes from a client drawing.
 vi.mock('@/api/config', () => ({ projectId: () => 'p' }));
@@ -108,9 +107,7 @@ describe('Start a review (#1125)', () => {
   }
 
   it('keeps Start review disabled, saying what is missing, until the vendor and both drawings are set', async () => {
-    routes['GET /products'] = () => json(PRODUCTS);
     const { user, architect, shop, start } = await setUp();
-    await screen.findByRole('option', { name: 'Countertops' });
 
     expect(start.hasAttribute('disabled')).toBe(true);
     const reason = document.getElementById(start.getAttribute('aria-describedby') ?? '');
@@ -134,20 +131,28 @@ describe('Start a review (#1125)', () => {
     expect(start.hasAttribute('disabled')).toBe(true);
   });
 
-  it('stays disabled when no product can be chosen, even with everything else set', async () => {
-    // #1547: every product listed, none that can be chosen (nothing published; the rest coming later).
-    routes['GET /products'] = () => json(PRODUCTS.map((product) => ({ ...product, published_checks: 0 })));
+  it('asks nothing about the product: the set is checked for every product (#1765)', async () => {
+    let body: unknown = null;
+    routes['POST /projects/p/packages'] = () => json({ error: 'http_error', message: 'Synthetic stop', request_id: 'r' }, 422);
+    const fetcher = vi.mocked(fetch);
     const { user, architect, shop, start } = await setUp();
-    await screen.findByRole('option', { name: 'No checks are published yet' });
+    expect(screen.queryByText(/What is this drawing set for/)).toBeNull();
+    expect(screen.queryByRole('combobox')).toBeNull();
     await user.type(screen.getByLabelText('Vendor'), 'Synthetic vendor');
     fireEvent.change(architect, { target: { files: [pdf('architect.pdf')] } });
     fireEvent.change(shop, { target: { files: [pdf('shop.pdf')] } });
-    expect(start.hasAttribute('disabled')).toBe(true);
-    expect(document.getElementById(start.getAttribute('aria-describedby') ?? '')?.textContent).toBe('Add what the drawing set is for.');
+    await waitFor(() => expect(start.hasAttribute('disabled')).toBe(false));
+    await userEvent.setup().click(start);
+    await waitFor(() => {
+      const call = fetcher.mock.calls.find(([input, init]) => String(input).endsWith('/projects/p/packages') && init?.method === 'POST');
+      body = call ? JSON.parse(String(call[1]?.body)) : null;
+      expect(body).toEqual({ vendor: 'Synthetic vendor' });
+    });
+    // No call for the product list either: nothing on the page uses it.
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes('/products'))).toBe(false);
   });
 
   it('refuses a file that is not a PDF, naming it', async () => {
-    routes['GET /products'] = () => json(PRODUCTS);
     const { architect } = await setUp();
     fireEvent.change(architect, { target: { files: [new window.File(['x'], 'notes.txt', { type: 'text/plain' })] } });
     expect(screen.getByRole('alert').textContent).toBe('notes.txt is not a PDF. Only PDF drawings can be reviewed.');
@@ -167,7 +172,7 @@ describe('Documents legend (#1125)', () => {
     const legend = screen.getByRole('list', { name: 'Result shapes' });
     const items = within(legend).getAllByRole('listitem');
     expect(items.map((li) => li.textContent)).toEqual([
-      'Looks right', 'Needs correction', 'Needs your decision', 'Waiting on a value', 'Not applicable',
+      'Looks right', 'Needs correction', 'Not compared', 'Waiting on a value', 'Not applicable',
     ]);
     for (const item of items) expect(item.querySelector('[data-outcome-icon]')).not.toBeNull();
   });

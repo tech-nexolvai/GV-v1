@@ -125,23 +125,26 @@ const PROMPTS = {
   summary: 'Summarise this drawing set in two lines: what it covers, and the most important problems found so far.',
 } as const;
 
-/** Every option, in the menu's order. Estimates come from the measured runs (2026-10-17) and are rough. */
+/**
+ * Every option, in the menu's order. Estimates come from the measured runs (2026-10-17) and are rough:
+ * time only (#1765: cost has one quiet place, the answer's footer and the live card's "so far").
+ */
 export const PLUS_ACTIONS: readonly PlusAction[] = [
   // Checks
   { id: 'full_check', group: 'checks', label: 'Full check', hint: 'Every page, with the cloud drawing', icon: 'full_check', keywords: ['whole set', 'everything', 'review', 'run'], run: { kind: 'full_check' } },
-  { id: 'check_page', group: 'checks', label: 'Check one page…', hint: 'One vendor page against the architect', estimate: '~2 min · ~$0.50', icon: 'page', keywords: ['sheet', 'page number'], run: { kind: 'prompt', text: PROMPTS.page } },
-  { id: 'compare_area', group: 'checks', label: 'Compare an area…', hint: 'One room or unit on both drawings', estimate: '~2 min · ~$0.50', icon: 'area', keywords: ['room', 'unit', 'elevation', 'vanity', 'kitchen'], run: { kind: 'prompt', text: PROMPTS.area } },
-  { id: 'gv_rules', group: 'checks', label: 'Check GV rules', hint: 'GV’s standards for the selected products', estimate: '~5 min · ~$1.50', icon: 'rules', keywords: ['rulebook', 'standards', 'filler', 'sink', 'cut-out', 'overhang', 'field cut'], run: { kind: 'prompt', text: PROMPTS.rules } },
-  { id: 'consistency', group: 'checks', label: 'Vendor consistency check', hint: 'The vendor’s numbers against each other', estimate: '$0', icon: 'consistency', keywords: ['contradiction', 'add up', 'strings', 'sum', 'missing sheet', 'round', 'index', 'self-check', 'free'], run: { kind: 'consistency' } },
-  { id: 'strings', group: 'checks', label: 'Do the dimension strings add up?', hint: 'The vendor’s own sums', estimate: '~5 min · ~$1.50', icon: 'strings', keywords: ['sum', 'arithmetic', 'total', 'overall', 'math'], run: { kind: 'prompt', text: PROMPTS.strings } },
-  { id: 'missing', group: 'checks', label: 'What’s missing on either side?', hint: 'Items on one drawing only', estimate: '~5 min · ~$1.50', icon: 'missing', keywords: ['completeness', 'left out', 'extra', 'added'], run: { kind: 'prompt', text: PROMPTS.missing } },
-  { id: 'rounds', group: 'checks', label: 'What changed between rounds?', hint: 'Closed, previous comments not addressed, or new', estimate: '~3 min · ~$1', icon: 'rounds', keywords: ['diff', 'revision', 'round 1', 'round 2', 'resubmittal', 'compare'], run: { kind: 'prompt', text: PROMPTS.rounds } },
+  { id: 'check_page', group: 'checks', label: 'Check one page…', hint: 'One vendor page against the architect', estimate: '~2 min', icon: 'page', keywords: ['sheet', 'page number'], run: { kind: 'prompt', text: PROMPTS.page } },
+  { id: 'compare_area', group: 'checks', label: 'Compare an area…', hint: 'One room or unit on both drawings', estimate: '~2 min', icon: 'area', keywords: ['room', 'unit', 'elevation', 'vanity', 'kitchen'], run: { kind: 'prompt', text: PROMPTS.area } },
+  { id: 'gv_rules', group: 'checks', label: 'Check GV rules', hint: 'GV’s standards for the selected products', estimate: '~5 min', icon: 'rules', keywords: ['rulebook', 'standards', 'filler', 'sink', 'cut-out', 'overhang', 'field cut'], run: { kind: 'prompt', text: PROMPTS.rules } },
+  { id: 'consistency', group: 'checks', label: 'Vendor consistency check', hint: 'The vendor’s numbers against each other', icon: 'consistency', keywords: ['contradiction', 'add up', 'strings', 'sum', 'missing sheet', 'round', 'index', 'self-check', 'free'], run: { kind: 'consistency' } },
+  { id: 'strings', group: 'checks', label: 'Do the dimension strings add up?', hint: 'The vendor’s own sums', estimate: '~5 min', icon: 'strings', keywords: ['sum', 'arithmetic', 'total', 'overall', 'math'], run: { kind: 'prompt', text: PROMPTS.strings } },
+  { id: 'missing', group: 'checks', label: 'What’s missing on either side?', hint: 'Items on one drawing only', estimate: '~5 min', icon: 'missing', keywords: ['completeness', 'left out', 'extra', 'added'], run: { kind: 'prompt', text: PROMPTS.missing } },
+  { id: 'rounds', group: 'checks', label: 'What changed between rounds?', hint: 'Closed, previous comments not addressed, or new', estimate: '~3 min', icon: 'rounds', keywords: ['diff', 'revision', 'round 1', 'round 2', 'resubmittal', 'compare'], run: { kind: 'prompt', text: PROMPTS.rounds } },
   // Outputs
-  { id: 'cloud', group: 'outputs', label: 'Cloud drawing', hint: 'The last answer’s findings, marked up by code', estimate: '$0', icon: 'cloud', keywords: ['marked-up', 'markup', 'pdf', 'redline', 'clouds'], run: { kind: 'cloud' } },
-  { id: 'csv', group: 'outputs', label: 'Excel (CSV) of findings', hint: 'The last answer’s findings, for Excel', estimate: '$0', icon: 'csv', keywords: ['spreadsheet', 'table', 'export', 'download'], run: { kind: 'csv' } },
-  { id: 'letter', group: 'outputs', label: 'Comments letter to the vendor', hint: 'Page, item, what to change', estimate: '~1 min · ~$0.30', icon: 'letter', keywords: ['email', 'comments', 'vendor', 'corrections'], run: { kind: 'prompt', text: PROMPTS.letter } },
-  { id: 'rfi', group: 'outputs', label: 'Questions for the architect', hint: 'An RFI list', estimate: '~1 min · ~$0.30', icon: 'rfi', keywords: ['rfi', 'questions', 'architect', 'clarify', 'confirm'], run: { kind: 'prompt', text: PROMPTS.rfi } },
-  { id: 'summary', group: 'outputs', label: 'Two-line summary', hint: 'What the set covers and its main problems', estimate: '~30 s · ~$0.10', icon: 'summary', keywords: ['short', 'overview', 'tl;dr'], run: { kind: 'prompt', text: PROMPTS.summary } },
+  { id: 'cloud', group: 'outputs', label: 'Cloud drawing', hint: 'The last answer’s findings, marked up by code', icon: 'cloud', keywords: ['marked-up', 'markup', 'pdf', 'redline', 'clouds'], run: { kind: 'cloud' } },
+  { id: 'csv', group: 'outputs', label: 'Excel (CSV) of findings', hint: 'The last answer’s findings, for Excel', icon: 'csv', keywords: ['spreadsheet', 'table', 'export', 'download'], run: { kind: 'csv' } },
+  { id: 'letter', group: 'outputs', label: 'Comments letter to the vendor', hint: 'Page, item, what to change', estimate: '~1 min', icon: 'letter', keywords: ['email', 'comments', 'vendor', 'corrections'], run: { kind: 'prompt', text: PROMPTS.letter } },
+  { id: 'rfi', group: 'outputs', label: 'Questions for the architect', hint: 'An RFI list', estimate: '~1 min', icon: 'rfi', keywords: ['rfi', 'questions', 'architect', 'clarify', 'confirm'], run: { kind: 'prompt', text: PROMPTS.rfi } },
+  { id: 'summary', group: 'outputs', label: 'Two-line summary', hint: 'What the set covers and its main problems', estimate: '~30 s', icon: 'summary', keywords: ['short', 'overview', 'tl;dr'], run: { kind: 'prompt', text: PROMPTS.summary } },
   // Focus
   // Focus: the products come from the registry (`focusProducts`), then the efforts.
   { id: 'quick', group: 'focus', label: 'Quick', hint: 'Low effort: faster and cheaper', icon: 'quick', keywords: ['effort', 'fast', 'cheap', 'low'], run: { kind: 'effort', level: 'quick' } },
@@ -214,12 +217,10 @@ export function plusAction(id: string, catalog: ProductCatalog = productCatalog(
 export const FULL_CHECK_MINUTES = 15;
 
 /**
- * The full check's estimate: its time, and up to the per-answer cap the server states
- * (`message_cap_usd` from GET /assistant/models, e.g. "$15").
+ * The full check's estimate: its time only (#1765: no price in the menu; cost has one quiet place).
  */
-export function fullCheckEstimate(cap: string | null): string {
-  const time = `~${FULL_CHECK_MINUTES} min`;
-  return cap ? `${time} · up to ${cap}` : time;
+export function fullCheckEstimate(): string {
+  return `~${FULL_CHECK_MINUTES} min`;
 }
 
 // ── Focus ───────────────────────────────────────────────────

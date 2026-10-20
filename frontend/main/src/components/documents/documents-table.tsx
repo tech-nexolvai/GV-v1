@@ -88,7 +88,7 @@ function columns(onOpen: (packageId: string) => void): ColumnDef<PackageSummary>
           Results
           <InfoTip label="About these results">
             <p>Each check&apos;s <strong>recorded result</strong>: what it found when it ran. These count checks, not drawings or individual dimensions.</p>
-            <p>A decision does not change a recorded result. &ldquo;Needs your decision&rdquo; here counts the checks that could not decide on their own, decided since or not. <strong>Needs you</strong> counts what still needs a decision.</p>
+            <p>A reviewer&apos;s note does not change a recorded result. &ldquo;Not compared&rdquo; here counts the checks the app could not settle on its own, looked at since or not. <strong>Needs you</strong> counts what is still open.</p>
           </InfoTip>
         </span>
       ),
@@ -110,10 +110,10 @@ function columns(onOpen: (packageId: string) => void): ColumnDef<PackageSummary>
         }
         if (count > 0) {
           return (
-            <span className="num inline-flex items-center gap-1 rounded-full border border-outcome-review-fg/60 bg-outcome-review-bg px-2 py-0.5 text-xs font-medium text-outcome-review-fg">
+            <span className="num inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
               <AlertCircle className="size-3.5" aria-hidden="true" />
               {count}
-              <span className="sr-only">{count === 1 ? ' result needs' : ' results need'} your decision</span>
+              <span className="sr-only">{count === 1 ? ' result still open' : ' results still open'}</span>
             </span>
           );
         }

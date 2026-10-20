@@ -47,13 +47,15 @@ describe('timings in words', () => {
 
   it('lists each phase, then the whole answer; each helper with why it stopped', () => {
     const rows = timingRows(TIMINGS)!;
-    expect(rows.map((row) => [row.label, row.time, row.cost, row.calls])).toEqual([
-      ['Waiting for the set pack’s page map', '0.2 s', '$0.00', 0],
-      ['Helpers', '3 min 22 s', '$2.80', 93],
-      ['Lead checks and notes', '1 min 36 s', '$0.95', 4],
-      ['Critic', '31 s', '$0.21', 4],
-      ['Whole answer', '6 min 12 s', '$4.12', null],
+    // #1765: time only; the answer's cost has one quiet place (its footer).
+    expect(rows.map((row) => [row.label, row.time, row.calls])).toEqual([
+      ['Waiting for the set pack’s page map', '0.2 s', 0],
+      ['Helpers', '3 min 22 s', 93],
+      ['Lead checks and notes', '1 min 36 s', 4],
+      ['Critic', '31 s', 4],
+      ['Whole answer', '6 min 12 s', null],
     ]);
+    expect(rows.some((row) => 'cost' in row)).toBe(false);
     expect(helperTimingRows(TIMINGS).map((row) => row.label)).toEqual([
       'Helper 1: Pages 3-7 · 1. Area one',
       'Helper 2: Pages 8-12 · 2. Area two (stopped: turn limit)',
@@ -69,16 +71,18 @@ describe('the table under "How this was checked"', () => {
     const node = screen.getByRole('article', { name: 'Answer' });
     await user.click(within(node).getByRole('button', { name: 'How this was checked' }));
 
-    const phases = within(node).getByRole('table', { name: 'Time and cost by phase' });
+    const phases = within(node).getByRole('table', { name: 'Time by phase' });
     const rows = within(phases).getAllByRole('row').slice(1);
     expect(rows.map((row) => row.textContent)).toEqual([
-      'Waiting for the set pack’s page map0.2 s$0.000',
-      'Helpers3 min 22 s$2.8093',
-      'Lead checks and notes1 min 36 s$0.954',
-      'Critic31 s$0.214',
-      'Whole answer6 min 12 s$4.12',
+      'Waiting for the set pack’s page map0.2 s0',
+      'Helpers3 min 22 s93',
+      'Lead checks and notes1 min 36 s4',
+      'Critic31 s4',
+      'Whole answer6 min 12 s',
     ]);
-    const helpers = within(node).getByRole('table', { name: 'Time and cost by helper' });
+    // No second cost total: the cost is in the answer's footer only.
+    expect(phases.textContent).not.toContain('$');
+    const helpers = within(node).getByRole('table', { name: 'Time by helper' });
     expect(within(helpers).getAllByRole('row')).toHaveLength(3);
     expect(within(helpers).getByText('Helper 2: Pages 8-12 · 2. Area two (stopped: turn limit)')).toBeTruthy();
   });

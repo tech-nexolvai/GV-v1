@@ -505,32 +505,30 @@ export interface TimingRow {
   key: string;
   label: string;
   time: string;
-  cost: string;
   calls: number | null;
 }
 
 /** The "How this was checked" timings table: each phase that ran, in order, then the total; null
- *  on an answer from before timings were recorded. */
+ *  on an answer from before timings were recorded. #1765: time only; the answer's cost has one
+ *  quiet place (its footer, and "$x so far" in the live card). */
 export function timingRows(timings: ChatTimings | null | undefined): TimingRow[] | null {
   if (!timings || !Array.isArray(timings.phases)) return null;
   const rows: TimingRow[] = timings.phases.map((phase) => ({
     key: phase.phase,
     label: phase.label,
     time: secondsWords(phase.seconds),
-    cost: `$${phase.cost_usd}`,
     calls: phase.calls,
   }));
-  rows.push({ key: 'total', label: 'Whole answer', time: secondsWords(timings.total_seconds), cost: `$${timings.cost_usd}`, calls: null });
+  rows.push({ key: 'total', label: 'Whole answer', time: secondsWords(timings.total_seconds), calls: null });
   return rows;
 }
 
-/** One helper's row: "p.3-7 · 1. Connection Centre", its time, cost, calls and why it stopped. */
+/** One helper's row: "p.3-7 · 1. Connection Centre", its time, calls and why it stopped. */
 export function helperTimingRows(timings: ChatTimings | null | undefined): TimingRow[] {
   return (timings?.helpers ?? []).map((helper) => ({
     key: `helper-${helper.number}`,
     label: `Helper ${helper.number}: ${helper.description}${helper.stopped ? ` (stopped: ${helper.stopped.replace(/_/g, ' ')})` : ''}`,
     time: secondsWords(helper.seconds),
-    cost: `$${helper.cost_usd}`,
     calls: helper.calls,
   }));
 }

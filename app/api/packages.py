@@ -251,12 +251,26 @@ def create_package(
     value outside the `ProductType` vocabulary; this refuses a vocabulary value no published rule is
     for. Such a set would be checked against nothing, and an empty findings list reads as a clean
     one — so it is a `422` naming the problem, not a package that quietly runs no checks.
+
+    **No product named = every active product (#1765).** The start page no longer asks; the set is
+    stored with no product, which every consumer already reads as "every product" (`package_product`),
+    and the reviewer narrows in the chat. It is still refused when no product has a published check.
     """
     if session.scalar(select(Project.id).where(Project.id == project_id)) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
 
-    product = ProductType(body.product_type)
-    if product not in published_products(session):
+    published = published_products(session)
+    product = None if body.product_type is None else ProductType(body.product_type)
+    if product is None and not published:
+        # All (no product named, #1765): still never a set checked against nothing.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "No checks are published yet, so a drawing set could not be checked. Publish the "
+                "rulebook first."
+            ),
+        )
+    if product is not None and product not in published:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
@@ -266,7 +280,11 @@ def create_package(
             ),
         )
 
-    package = Package(project_id=project_id, vendor=body.vendor, product_type=product.value)
+    package = Package(
+        project_id=project_id,
+        vendor=body.vendor,
+        product_type=None if product is None else product.value,
+    )
     session.add(package)
     revision = PackageRevision(
         package_id=package.id, revision_number=FIRST_REVISION, state=PackageState.CREATED

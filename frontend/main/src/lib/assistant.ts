@@ -252,7 +252,7 @@ function blockerOf(item: QueueItem, records: AssistantRecords): Blocker {
   }
   const look = row ? rowOutcome(row) : { outcome: 'REVIEW_REQUIRED' as Outcome, word: OUTCOME_LABELS.REVIEW_REQUIRED };
   const reason = row?.hold?.reason
-    ?? (look.outcome === 'FAIL' ? 'A fail with no decision yet' : look.outcome === 'PASS' ? 'A pass waiting for your decision' : 'Waiting for your decision');
+    ?? (look.outcome === 'FAIL' ? 'A fail not looked at yet' : look.outcome === 'PASS' ? 'A pass not confirmed yet' : 'Not compared: waiting for a look');
   return { key: item.key, title, page: item.page, detail: shortReason(reason), ...look, count: 1 };
 }
 
