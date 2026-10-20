@@ -1165,7 +1165,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             roster=job.roster,
             pairing_proof=job.pairing_proof,
             full_check_mode=job.full_check_mode,
-            simple=_simple_of(job, run, workspace.root),
+            simple=_simple_of(job, run, workspace.root, workspace.set_pack),
             page_match_model=job.page_match_model,
             identity=job.identity,
             numbering=numbering(job.factory, job.package_id, job.chat_id, run.message_id),
@@ -1504,7 +1504,9 @@ SIMPLE_CONTINUE_WORDS: Final = (
 )
 
 
-def _simple_of(job: MessageJob, run: RunningMessage, root: Path) -> Mapping[str, Any] | None:
+def _simple_of(
+    job: MessageJob, run: RunningMessage, root: Path, set_pack: Path | None
+) -> Mapping[str, Any] | None:
     """The simple full check's options for this answer: the answer's id (its run folder keeps it),
     and for a Continue, the interrupted answer's run replayed with the drawings it has no answer
     for compared now (`replay` + `compare_missing`, #1769): a restart never pays twice."""
@@ -1514,7 +1516,7 @@ def _simple_of(job: MessageJob, run: RunningMessage, root: Path) -> Mapping[str,
     if job.continue_from is not None and not options.get("replay"):
         try:
             earlier = import_module("app.review.assistant.simple_check.run").run_of_message(
-                root, job.continue_from
+                root, job.continue_from, set_pack
             )
         except Exception:  # noqa: BLE001 - then the whole check runs again
             _log.exception("assistant chat could not find the interrupted check's answers")

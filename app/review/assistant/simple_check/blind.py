@@ -331,6 +331,8 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
 
 #: Why a look was not made when the runaway guard would be passed (counted as a failed look).
 GUARD_WORDS: Final = "the answer's runaway guard was reached"
+#: Why a look waiting for room did not start: the reviewer pressed Stop.
+STOPPED_WORDS: Final = "the check was stopped"
 
 
 @dataclass
@@ -338,7 +340,7 @@ class _Holds:
     """What the looks running now may still cost (millionths of $), shared by the workers."""
 
     reserved: int = 0
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    lock: threading.Condition = field(default_factory=threading.Condition)
 
 
 def look_hold(engine: ChatEngine, settings: BlindSettings) -> int:
@@ -432,13 +434,24 @@ def look_all(
     def one(pair: tuple[Verified, Item]) -> Verified:
         verified, item = pair
         # Reserved before the look starts (#1769): the looks running together never pass the cap
-        # (each checked it alone before, so six could pass it at once).
+        # (each checked it alone before, so six could pass it at once). A look that does not fit
+        # while others run waits for them to end (their holds become their real, smaller cost);
+        # it is refused only when it would pass the cap with no other look running.
+        cancel = getattr(engine, "cancel", None)
+        refused: str | None = None
         with holds.lock:
-            refused = not engine._fits(holds.reserved + hold)
-            if not refused:
+            while not engine._fits(holds.reserved + hold):
+                if cancel is not None and cancel.is_set():
+                    refused = STOPPED_WORDS
+                    break
+                if holds.reserved <= 0:
+                    refused = GUARD_WORDS
+                    break
+                holds.lock.wait(0.25)
+            if refused is None:
                 holds.reserved += hold
-        if refused:
-            answer, why = None, GUARD_WORDS
+        if refused is not None:
+            answer, why = None, refused
         else:
             try:
                 # Timed and charged to the blind phase on this worker thread (per thread).
@@ -447,6 +460,7 @@ def look_all(
             finally:
                 with holds.lock:
                     holds.reserved -= hold
+                    holds.lock.notify_all()
         done = with_blind(verified, answer, why)
         if on_done is not None:
             try:

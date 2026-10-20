@@ -369,48 +369,111 @@ def test_a_drawings_hold_goes_only_after_its_money_is_charged() -> None:
     assert run.reserved == 0 and item.id not in run.reservations
 
 
-def test_blind_looks_running_together_never_pass_the_cap(
+def test_blind_looks_running_together_never_pass_the_cap_and_wait_for_room(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Each look is reserved before it starts (both attempts at the whole reply room): with room
-    for two, two looks run together and the third is refused by the guard, never made."""
+    for two, never more than two run together, and the others wait for one to end instead of
+    being refused while most of the money is unspent (#1769 review)."""
     one = 2 * DOLLARS  # CALL_ATTEMPTS x the price below
+    spent = [0]
     engine = SimpleNamespace(
         _price=lambda *_a: DOLLARS,
-        _fits=lambda estimate: estimate <= 2 * one,
+        _fits=lambda estimate: spent[0] + estimate <= 2 * one + DOLLARS // 2,
     )
-    decided: list[str] = []
     lock = threading.Lock()
-    every = threading.Event()  # each of the three has been started or refused
+    running = [0]
+    most = [0]
     made: list[str] = []
 
-    def count(name: str) -> None:
-        with lock:
-            decided.append(name)
-            if len(decided) == 3:
-                every.set()
-
     def look(_engine: Any, verified: Any, _item: Any, _settings: Any) -> tuple[Any, str]:
-        made.append(verified)
-        count(verified)
-        every.wait(5)  # the looks still run when the third is decided
+        with lock:
+            running[0] += 1
+            most[0] = max(most[0], running[0])
+            made.append(verified)
+        time.sleep(0.05)
+        with lock:
+            running[0] -= 1
+            spent[0] += DOLLARS // 20  # a look really costs far less than its hold
         return "agreed", ""
 
-    def with_blind(v: Any, answer: Any, why: str) -> Any:
-        if why == blind_module.GUARD_WORDS:
-            count(v)
-        return (v, answer, why)
-
     monkeypatch.setattr(blind_module, "look", look)
-    monkeypatch.setattr(blind_module, "with_blind", with_blind)
+    monkeypatch.setattr(blind_module, "with_blind", lambda v, answer, why: (v, answer, why))
+    names = [f"c{n}" for n in range(6)]
     done = blind_module.look_all(
         engine,  # type: ignore[arg-type]
-        [("a", None), ("b", None), ("c", None)],  # type: ignore[list-item]
+        [(name, None) for name in names],  # type: ignore[misc]
         blind_module.BlindSettings(),
     )
-    refused = [d for d in done if d[2] == blind_module.GUARD_WORDS]
-    assert len(made) == 2 and len(refused) == 1
+    assert sorted(made) == names and all(d[2] == "" for d in done)
+    assert most[0] == 2
     assert blind_module.look_hold(engine, blind_module.BlindSettings()) == one  # type: ignore[arg-type]
+
+
+def test_a_blind_look_that_would_pass_the_cap_alone_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = SimpleNamespace(_price=lambda *_a: DOLLARS, _fits=lambda estimate: estimate <= 0)
+    monkeypatch.setattr(blind_module, "look", lambda *_a: pytest.fail("no look is made"))
+    monkeypatch.setattr(blind_module, "with_blind", lambda v, answer, why: (v, answer, why))
+    done = blind_module.look_all(
+        engine,  # type: ignore[arg-type]
+        [("a", None), ("b", None)],  # type: ignore[list-item]
+        blind_module.BlindSettings(),
+    )
+    assert [d[2] for d in done] == [blind_module.GUARD_WORDS] * 2
+
+
+def test_a_drawing_that_does_not_fit_waits_for_a_call_to_end_instead_of_stopping_the_check() -> (
+    None
+):
+    """With room for two holds, a third drawing waits while two calls run, and starts once one of
+    them is charged (its hold goes): the check is not stopped with most of the money unspent."""
+    run = run_module._Run(_engine(2 * DOLLARS, []), run_module.SimpleOptions.of({}))  # type: ignore[arg-type]
+    settings = CompareSettings(max_tokens=64000)
+    draw = run._guarded(
+        lambda _item: [SimpleNamespace(picture=SimpleNamespace(tokens=1000))], settings
+    )
+    run._tell = lambda *_args: None  # type: ignore[method-assign]
+    first, second, third = (_item(item_id=f"p{n}.v1") for n in range(3))
+    draw(first)
+    draw(second)
+    threading.Timer(0.3, run._release, args=(first.id,)).start()
+    started = time.monotonic()
+    draw(third)
+    assert time.monotonic() - started >= 0.25
+    assert not run.stop.is_set() and run.cap_hit is None and not run.refused
+    assert run.reserved == 2 * DOLLARS
+
+
+def test_a_drawing_that_would_pass_the_cap_with_nothing_running_is_refused() -> None:
+    run = run_module._Run(_engine(DOLLARS // 2, []), run_module.SimpleOptions.of({}))  # type: ignore[arg-type]
+    settings = CompareSettings(max_tokens=64000)
+    draw = run._guarded(
+        lambda _item: [SimpleNamespace(picture=SimpleNamespace(tokens=1000))], settings
+    )
+    item = _item()
+    with pytest.raises(run_module._NotStarted, match="per-answer cap"):
+        draw(item)
+    assert run.stop.is_set() and run.cap_hit == "message" and item.id in run.refused
+
+
+def test_the_reviewers_stop_starts_no_new_call_before_the_watcher_sees_it() -> None:
+    """Stop sets the engine's cancel; the run's own flag follows twice a second. A drawing taken
+    from the queue in between, or a retry, never starts a call (#1769 review)."""
+    engine = _engine(10 * DOLLARS, [])
+    engine.cancel = threading.Event()
+    run = run_module._Run(engine, run_module.SimpleOptions.of({}))  # type: ignore[arg-type]
+    settings = CompareSettings(max_tokens=64000)
+    drawn: list[str] = []
+    draw = run._guarded(lambda item: drawn.append(item.id) or [], settings)
+    run._tell = lambda *_args: None  # type: ignore[method-assign]
+    engine.cancel.set()
+    with pytest.raises(run_module._NotStarted, match="stopped"):
+        draw(_item())
+    assert drawn == [] and run.stop.is_set()
+    assert run._again(settings)(_item(), 1, False) == run_module.STOPPED_WORDS
+    assert run.reserved == 0
 
 
 # ---- Continue -------------------------------------------------------------------------------------
@@ -430,15 +493,16 @@ def test_continue_replays_the_saved_answers_and_compares_only_the_rest(
     assert left
 
     # The server restarted; the reviewer pressed Continue on the interrupted answer m-1.
-    assert run_module.run_of_message(first.workspace.root, "m-1") == folder.name
-    assert run_module.run_of_message(first.workspace.root, "m-2") is None
+    pack = first.workspace.set_pack
+    assert run_module.run_of_message(first.workspace.root, "m-1", pack) == folder.name
+    assert run_module.run_of_message(first.workspace.root, "m-2", pack) is None
     job = SimpleNamespace(
         simple={"pilot": None},
         mode="full_check",
         full_check_mode="simple",
         continue_from="m-1",
     )
-    options = _simple_of(job, SimpleNamespace(message_id="m-2"), first.workspace.root)  # type: ignore[arg-type]
+    options = _simple_of(job, SimpleNamespace(message_id="m-2"), first.workspace.root, pack)  # type: ignore[arg-type]
     assert options == {
         "pilot": None,
         "message_id": "m-2",
@@ -455,9 +519,30 @@ def test_continue_replays_the_saved_answers_and_compares_only_the_rest(
     assert whole.stopped is None
 
 
+def test_continue_on_a_changed_set_pack_runs_the_whole_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The saved answers name labels of the pack they were read against: when the drawings or the
+    pack changed before Continue (its folder is named from both), they are never replayed."""
+    first = _Run(tmp_path, {"message_id": "m-1"})
+    _fake_compare(monkeypatch, stop_after=1, cancel=first.cancel)
+    monkeypatch.setattr(blind_module, "look", _agreeing)
+    first.engine.run()
+    root = first.workspace.root
+    assert run_module.run_of_message(root, "m-1", first.workspace.set_pack) is not None
+    other = Path(str(first.workspace.set_pack) + "-other")
+    assert run_module.run_of_message(root, "m-1", other) is None
+    assert run_module.run_of_message(root, "m-1", None) is None
+    job = SimpleNamespace(
+        simple={"pilot": None}, mode="full_check", full_check_mode="simple", continue_from="m-1"
+    )
+    options = _simple_of(job, SimpleNamespace(message_id="m-2"), root, other)  # type: ignore[arg-type]
+    assert options == {"pilot": None, "message_id": "m-2"}
+
+
 def test_a_roster_or_chat_message_keeps_its_options() -> None:
     job = SimpleNamespace(simple=None, mode="chat", full_check_mode="simple", continue_from=None)
-    assert _simple_of(job, SimpleNamespace(message_id="m"), Path("/nowhere")) is None  # type: ignore[arg-type]
+    assert _simple_of(job, SimpleNamespace(message_id="m"), Path("/nowhere"), None) is None  # type: ignore[arg-type]
 
 
 def test_the_resume_words_say_what_a_simple_continue_does() -> None:
