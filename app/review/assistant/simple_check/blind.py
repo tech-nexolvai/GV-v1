@@ -49,6 +49,7 @@ from uuid import uuid4
 
 from app.review.assistant.chat_request import MODELS, ChatModel, thinking_config, thinking_tokens
 from app.review.assistant.chat_tools import new_step
+from app.review.assistant.simple_check import precedents as precedents_module
 from app.review.assistant.simple_check.prompts import kinds_sentence
 from app.review.assistant.simple_check.verify import (
     BlindAnswer,
@@ -66,6 +67,7 @@ __all__ = [
     "BLIND_SYSTEM",
     "BlindSettings",
     "answer_of",
+    "blind_system",
     "look",
     "look_all",
     "question",
@@ -98,28 +100,29 @@ BLIND_SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
     "additionalProperties": False,
     "required": [
-        "pick",
-        "verdict",
         "vendor_from",
         "vendor_to",
+        "pick",
         "architect_from",
         "architect_to",
+        "verdict",
         "millwork",
         "note",
     ],
     "properties": {
+        "vendor_from": _END,
+        "vendor_to": _END,
         "pick": {
             "type": "string",
             "description": "The numbered dimension's id you chose (D12), or none",
         },
+        "architect_from": _END,
+        "architect_to": _END,
         "verdict": {
             "type": "string",
             "enum": ["same_thing", "different_points", "unsure", "absent", "shown"],
+            "description": "Only after the ends: they decide it",
         },
-        "vendor_from": _END,
-        "vendor_to": _END,
-        "architect_from": _END,
-        "architect_to": _END,
         "millwork": _THREE,
         "note": {"type": "string", "description": "One short line, or empty"},
     },
@@ -139,6 +142,14 @@ BLIND_SYSTEM: Final = (
 )
 
 
+def blind_system(products: Sequence[str] = (), precedents: bool = True) -> str:
+    """The blind look's system prompt: `BLIND_SYSTEM`, then the "looks wrong but isn't"
+    precedents for the item's products (recipe step 6; off for a paid A/B)."""
+    if not precedents:
+        return BLIND_SYSTEM
+    return f"{BLIND_SYSTEM}\n\n{precedents_module.render(products)}"
+
+
 def question(
     kind: str,
     vendor_ref: str | None,
@@ -154,45 +165,44 @@ def question(
         return (
             "Picture 1 is part of the vendor's shop drawing; the dimension marked on it (code drew "
             f"its extension lines) is {vendor_ref}. The next picture is the architect's drawing "
-            "with every printed dimension numbered. Which numbered architect dimension measures "
-            "the same thing as the marked vendor dimension? pick its id, or none. Say where each "
-            "end of the marked vendor dimension lands (vendor_from, vendor_to) and each end of the "
-            "one you picked (architect_from, architect_to). verdict: same_thing when both run "
-            "between the same two points, different_points when they do not, unsure when the "
-            "pictures do not show it. millwork: unsure." + kinds
+            "with every printed dimension numbered. First say where each end of the marked "
+            "vendor dimension lands (vendor_from, vendor_to). Then pick the numbered architect "
+            "dimension that measures the same thing (its id, or none) and say where each of its "
+            "ends lands (architect_from, architect_to). Only then the verdict: same_thing when "
+            "both run between the same two points, different_points when they do not, unsure "
+            "when the pictures do not show it. millwork: unsure." + kinds
         )
     if kind == "chain":
         return (
             "Picture 1 is part of the vendor's shop drawing; the dimension marked on it (code drew "
             f"its extension lines) is {vendor_ref}. The next picture is the architect's drawing "
             "with every printed dimension numbered. The architect may print this size only as a "
-            "string of parts. Which numbered architect dimensions, end to end, together measure "
-            "the same thing as the marked vendor dimension? pick their ids joined by + (D3+D4+D5), "
-            "or none. Say where each end of the marked vendor dimension lands (vendor_from, "
-            "vendor_to) and where the string you picked starts and ends (architect_from, "
-            "architect_to). verdict: same_thing when both run between the same two points, "
-            "different_points when they do not, unsure when the pictures do not show it. "
-            "millwork: unsure." + kinds
+            "string of parts. First say where each end of the marked vendor dimension lands "
+            "(vendor_from, vendor_to). Then pick the numbered architect dimensions that, end to "
+            "end, together measure the same thing (their ids joined by + (D3+D4+D5), or none) and "
+            "say where the string starts and ends (architect_from, architect_to). Only then the "
+            "verdict: same_thing when both run between the same two points, different_points "
+            "when they do not, unsure when the pictures do not show it. millwork: unsure." + kinds
         )
     if kind == "values":
         return (
             "Picture 1 is the vendor's shop drawing and picture 2 a close view of one value on it "
             "(the value in the middle of picture 2). Picture 3 is the architect's drawing and "
-            "picture 4 a close view of one value on it (in its middle). Do the two values measure "
-            "the same thing? pick: none. Say where each end of the vendor's dimension lands "
-            "(vendor_from, vendor_to) and each end of the architect's (architect_from, "
-            "architect_to). verdict: same_thing, different_points or unsure. millwork: unsure."
-            + kinds
+            "picture 4 a close view of one value on it (in its middle). First say where each end "
+            "of the vendor's dimension lands (vendor_from, vendor_to), then each end of the "
+            "architect's (architect_from, architect_to); pick: none. Only then the verdict: do "
+            "the two measure the same thing? same_thing, different_points or unsure. millwork: "
+            "unsure." + kinds
         )
     return (
         "Picture 1 is the architect's drawing; the dimension marked on it (code drew its extension "
         f"lines) is {architect_ref}. The next picture is the vendor's shop drawing of the same "
-        "area with every printed dimension numbered. Does the vendor's drawing show the thing the "
-        "marked architect dimension locates? pick the numbered vendor dimension that measures the "
-        "same thing, or none. verdict: shown when the vendor's drawing shows it, absent when it "
-        "does not, unsure when the pictures do not tell. Say where each end of the marked "
-        "architect dimension lands (architect_from, architect_to); vendor_from and vendor_to: "
-        "other. millwork: is the thing it locates part of the millwork (in or on a cabinet, "
+        "area with every printed dimension numbered. vendor_from and vendor_to: other. Pick the "
+        "numbered vendor dimension that measures the same thing as the marked architect "
+        "dimension, or none, and say where each end of the marked architect dimension lands "
+        "(architect_from, architect_to). Only then the verdict: shown when the vendor's drawing "
+        "shows the thing it locates, absent when it does not, unsure when the pictures do not "
+        "tell. millwork: is the thing it locates part of the millwork (in or on a cabinet, "
         "counter, splash or vanity), not a room feature?" + kinds
     )
 
@@ -222,6 +232,8 @@ class BlindSettings:
 
     model: str = "claude-opus-5-5"
     effort: str = "high"
+    precedents: bool = True
+    """The "looks wrong but isn't" precedents in its system prompt (`assistant_simple_precedents`)."""
 
     @property
     def chat_model(self) -> ChatModel:
@@ -353,7 +365,7 @@ def look(
             # Always adaptive thinking (#1775, C4): the gate of every red is a judgement. Opus 5.5
             # thinks anyway; Sonnet 5.5 would otherwise answer cold.
             thinking=thinking_config(model, True),
-            system=BLIND_SYSTEM,
+            system=blind_system(item.products, settings.precedents),
             tools=(),
             messages=[{"role": "user", "content": content}],
             final=False,
