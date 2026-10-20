@@ -205,6 +205,8 @@ JOB_CAPS: Final[Mapping[str, int]] = {
 PAGE_KINDS: Final = frozenset({"numbers", "drawn", "gaps"})
 #: The passes after the lead review that send on the pages still not compared (#1817, #1819).
 AGAIN_PASSES: Final = 2
+#: How a page the passes after the lead still did not compare is said (`_after_lead`).
+_MORE_LOOKS: Final = "more looks"
 #: What the finishing steps need is kept before any extra pass spends (#1821), worked out from the
 #: red candidates there are: a blind pick as a rule (the paid run of 2026-10-21 spent $0.11 on five,
 #: $0.022 each; kept at twice that), a look-again group (the paid runs spent about $0.05 a group),
@@ -1312,6 +1314,9 @@ class _Run:
             why = "the check was stopped before the end"
         elif short:
             why = "out of money"
+        elif any(_MORE_LOOKS in line for line in self.not_done):
+            # #1825: the passes after the lead took these pages and still did not compare them.
+            why = f"still not compared after {AGAIN_PASSES} more looks"
         else:
             why = "not reached"
         return pages, items, why
@@ -1815,7 +1820,8 @@ class _Run:
 
     def _after_lead(self, page_map: Mapping[str, Any] | None) -> None:
         """#1817: after the lead review, every planned page still not compared (no helper set
-        it, "not opened", a note that says it was not reached, the lead's own "Budget") and every
+        it, "not opened", a note that says it was not reached, the lead's own "Budget", or any
+        page the check would call not compared, such as one marked not comparable: #1825) and every
         page left open by its helper that the lead did not take goes to another closer pass,
         while the money really left covers it (the later steps' shares kept), at most
         `AGAIN_PASSES` times. Code decides, not an AI's guess about money: the paid run of
@@ -1855,7 +1861,7 @@ class _Run:
             short = self._room("lead") < MIN_GAP_RUN_MICROS
             self._left_unchecked(
                 left,
-                OUT_OF_MONEY if short else f"still not compared after {AGAIN_PASSES} more looks",
+                OUT_OF_MONEY if short else f"still not compared after {AGAIN_PASSES} {_MORE_LOOKS}",
             )
 
     def _still_open(self) -> dict[int, list[str]]:
@@ -1877,10 +1883,47 @@ class _Run:
                 f"page not compared yet ({why}): compare the whole page, every dimension and "
                 "string against the architect's"
             )
+        # #1825: every other planned page the check would call not compared (`_pages_left`:
+        # marked not comparable, whatever its note says), so the pass fires whatever the reason.
+        # The paid runs of 2026-10-21 left 5 of 5 pages "not comparable" with $4 of $5 unspent.
+        entries = {
+            int(e["page"]): e
+            for e in (coverage or {}).get("pages") or []
+            if isinstance(e, Mapping) and isinstance(e.get("page"), int)
+        }
+        for page in self._pages_left():
+            if page not in planned or page in pages:
+                continue
+            entry = entries.get(page) or {}
+            note = " ".join(str(entry.get("note") or "").split())
+            marked = f"marked {entry.get('status') or 'not opened'}" + (f": {note}" if note else "")
+            pages[page] = [
+                (
+                    f"page not compared yet ({marked}): compare the whole page, every dimension "
+                    f"and string against the architect's{self._same_sheet(page)}"
+                )
+            ]
         for page in self.repeats_avoided:
             if page not in self.lead_taken and page in open_gaps:
                 pages.setdefault(page, []).append(f"left open by its helper: {open_gaps[page]}")
         return pages
+
+    def _same_sheet(self, page: int) -> str:
+        """`; the architect's drawing is on this same sheet …` when the page map puts an architect
+        drawing on the page itself (a combined sheet, #1825), else nothing."""
+        page_map = self._stored_page_map()
+        for entry in (page_map or {}).get("pages") or []:
+            if not isinstance(entry, Mapping) or entry.get("page") != page:
+                continue
+            if any(
+                isinstance(h, Mapping) and h.get("role") == "architect"
+                for h in entry.get("halves") or []
+            ):
+                return (
+                    "; the architect's drawing is on this same sheet (page_map.json halves): "
+                    "compare it with the vendor's drawing beside it"
+                )
+        return ""
 
     def _left_unchecked(self, pages: Mapping[int, Any], why: str) -> None:
         """Each page code stops sending on says why on its coverage (a page never recorded gets

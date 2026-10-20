@@ -115,14 +115,18 @@ SOURCES: Final = ("architect", "brand_prototype", "rules", "vendor_arithmetic", 
 CODE_SOURCES: Final = ("cross_view", "completeness")
 COVERAGE_STATUSES: Final = ("same", "different", "not_comparable", "not_opened")
 MAX_FINDINGS: Final = 300
-#: The room code's own findings have beyond the AI's `MAX_FINDINGS` (#1827): code's checks run last
+#: A big set's answer may hold this many findings a page of the vendor's file, when that is more
+#: than `MAX_FINDINGS` (#1825): the 60-page full check of 2026-10-21 hit 300 during its pass after
+#: the lead, so its closers could record nothing and the pages stayed open with money left.
+FINDINGS_PER_PAGE: Final = 12
+#: The room code's own findings have beyond the AI's `finding_cap` (#1827): code's checks run last
 #: (the vendor's strings that don't add up, code's own pairs, the consistency and finish checks), so
 #: a book the helpers filled must never leave them out. On a 60-page set the helpers filled all 300
 #: and every code finding was skipped without a word.
 CODE_FINDINGS_ROOM: Final = 300
 #: Who makes code's own findings (`add_code_finding`): their room is `CODE_FINDINGS_ROOM` beyond the
 #: AI's. Every other maker (helpers, the lead, the tag reader, the simple check's compare call, an
-#: earlier answer's findings carried over) shares the AI's `MAX_FINDINGS`.
+#: earlier answer's findings carried over) shares the AI's `finding_cap`.
 CODE_ROOM_MAKERS: Final = frozenset(
     {
         "ledger",
@@ -984,6 +988,12 @@ class FindingBook:
     # ---- files and boxes ---------------------------------------------------------------------------
 
     @property
+    def finding_cap(self) -> int:
+        """The most findings this answer may hold: `MAX_FINDINGS`, or `FINDINGS_PER_PAGE` a page
+        of the vendor's file when that is more (#1825)."""
+        return max(MAX_FINDINGS, FINDINGS_PER_PAGE * max(0, int(self.page_count or 0)))
+
+    @property
     def main_file(self) -> str | None:
         item = main_upload(self.listing)
         return None if item is None else str(item["name"])
@@ -1190,7 +1200,7 @@ class FindingBook:
         changed = _status_rules(fields, list(self.extents))
         with self._lock:
             if not self._room_for("ai"):
-                raise SandboxRefused(f"at most {MAX_FINDINGS} findings in one answer")
+                raise SandboxRefused(f"at most {self.finding_cap} findings in one answer")
             self._count += 1
             finding_id = f"F{self._count}"
         arch_picture, arch_why = self._picture(fields.get("arch_box"))
@@ -1237,16 +1247,17 @@ class FindingBook:
         return dict(finding), notes
 
     def _room_for(self, room: str) -> bool:
-        """Whether one more finding fits (under the lock): the AI's findings share
-        `MAX_FINDINGS`; code's own may use `CODE_FINDINGS_ROOM` more, so they never compete with
-        the AI's (#1827). A finding refused for room is counted (`left_out_for_room`)."""
+        """Whether one more finding fits (under the lock): the AI's findings share `finding_cap`
+        (#1825); code's own may use `CODE_FINDINGS_ROOM` more, so they never compete with the
+        AI's (#1827). A finding refused for room is counted (`left_out_for_room`)."""
+        cap = self.finding_cap
         if room == "code":
-            fits = len(self.findings) < MAX_FINDINGS + CODE_FINDINGS_ROOM
+            fits = len(self.findings) < cap + CODE_FINDINGS_ROOM
         else:
             held = sum(
                 1 for f in self.findings.values() if f.get("created_by") not in CODE_ROOM_MAKERS
             )
-            fits = held < MAX_FINDINGS
+            fits = held < cap
         if not fits:
             self.left_out_for_room[room] = self.left_out_for_room.get(room, 0) + 1
         return fits
@@ -1304,9 +1315,10 @@ class FindingBook:
         with self._lock:
             if not self._room_for(room):
                 _log.warning(
-                    "assistant chat finding left out: the book is full (%s, by %s)",
+                    "assistant chat finding left out: the book is full (%s, by %s, %d findings)",
                     room,
                     created_by,
+                    len(self.findings),
                 )
                 return None
             self._count += 1

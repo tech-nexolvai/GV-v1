@@ -277,6 +277,60 @@ def test_pages_left_with_money_left_go_to_another_pass_and_get_compared(
     assert {pages[p]["status"] for p in (2, 3, 4, 5)} == {"same"}
 
 
+class _NotComparable(_Lazy):
+    """#1825: every numbers helper marks its pages "not comparable" with a plain note (no "not
+    reached" words), as the paid runs of 2026-10-21 did on a combined sheet with no heading; the
+    pass after the lead compares them."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.again: dict[int, str] = {}
+
+    def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
+        if brief.startswith(full_check_roster.GAP_SCHEMA_NOTE):
+            self._seen("gap", params)
+            page = int(brief.split(" on page", 1)[1].lstrip("s ").split()[0].rstrip(",:"))
+            if "marked not_comparable" not in brief or any(
+                m["role"] == "assistant" for m in params["messages"]
+            ):
+                return reply(text("Closed."), model=SONNET)
+            with self.lock:
+                self.again[page] = brief
+            return reply(
+                tool("cov", "set_coverage", {"pages": [{"page": page, "status": "same"}]}),
+                stop="tool_use",
+                model=SONNET,
+            )
+        drawn = brief.startswith("OBJECTIVE: the drawn things")
+        if drawn or brief.startswith(("TAGS:", "PROVE:")):
+            return super().helper(params, brief)
+        self._seen("numbers", params)
+        pages = [int(n) for n in brief.split("on pages ", 1)[1].split(" of ", 1)[0].split(", ")]
+        if any(m["role"] == "assistant" for m in params["messages"]):
+            lines = [
+                f"CHECKLIST p{p}: architect 0/0; strings 0/0; not compared: none" for p in pages
+            ]
+            return reply(text("\n".join(lines)), model=SONNET)
+        entries = [
+            {"page": p, "status": "not_comparable", "note": "vendor sheet only, pairing uncertain"}
+            for p in pages
+        ]
+        return reply(tool("cov", "set_coverage", {"pages": entries}), stop="tool_use", model=SONNET)
+
+
+def test_pages_marked_not_comparable_with_money_left_go_to_another_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clean_ink(monkeypatch)
+    script = _NotComparable()
+    harness = _roster(tmp_path, script)
+    outcome = harness.run()
+    assert set(script.again) == {2, 3, 4, 5}, sorted(script.again)
+    assert all("vendor sheet only, pairing uncertain" in b for b in script.again.values())
+    pages = _coverage(outcome)
+    assert {pages[p]["status"] for p in (2, 3, 4, 5)} == {"same"}
+
+
 def test_a_page_left_unchecked_for_money_says_out_of_money(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

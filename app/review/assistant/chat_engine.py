@@ -108,7 +108,6 @@ from app.review.assistant.chat_findings import (
     COVERAGE_CHECK_PREFIX,
     FINDING_TOOL_NAMES,
     HELPER_FINDING_TOOL_NAMES,
-    MAX_FINDINGS,
     FindingBook,
     MarkupFile,
     boxless_findings,
@@ -2851,7 +2850,7 @@ class ChatEngine:
                 *(report.get("not_checked") or []),
                 (
                     f"{refused} findings the AI found were not recorded: one answer holds at "
-                    f"most {MAX_FINDINGS} AI findings."
+                    f"most {self.book.finding_cap} AI findings."
                 ),
             ]
         self._ledger_trust(report)
