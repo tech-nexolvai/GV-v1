@@ -138,6 +138,7 @@ from app.review.assistant.chat_service import (
     RunningMessage,
     SkillBuilder,
     UploadSource,
+    continuable,
     default_skill_builder,
     full_check_plan,
     package_spent_micros,
@@ -1544,13 +1545,14 @@ def _message(
 
 
 def _resume_of(session: Session, chat_id: UUID, message_id: UUID) -> dict[str, Any]:
-    """The interrupted answer's `resume` block; 422 when it is not an interrupted answer here."""
+    """The `resume` block of the answer Continue goes on from: an interrupted answer, or a full
+    check that did not finish (#1821, `continuable`); 422 when it is neither, here."""
     row = session.get(AssistantChatMessage, message_id)
-    if row is None or row.chat_id != chat_id or row.stopped != "interrupted":
+    if row is None or row.chat_id != chat_id or not continuable(row):
         raise CodedHTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "invalid_request",
-            "continue_from is not an interrupted answer of this chat.",
+            "continue_from is not an answer of this chat that can be continued.",
         )
     return next(
         (

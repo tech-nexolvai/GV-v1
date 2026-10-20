@@ -708,19 +708,15 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
             <span>{stopped}</span>
           </span>
           {message.resume?.redo && <p data-slot="chat-resume-redo" className="text-muted-foreground">{message.resume.redo}</p>}
-          {!running && onContinue && (
-            <div>
-              <button
-                type="button"
-                data-slot="chat-continue"
-                onClick={onContinue}
-                className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-              >
-                <Play className="size-3.5" aria-hidden="true" />
-                Continue
-              </button>
-            </div>
-          )}
+          {!running && onContinue && <ContinueButton onContinue={onContinue} />}
+        </div>
+      )}
+
+      {/* #1821: a full check that did not finish (stopped, or out of money) says how Continue finishes it. */}
+      {message.stopped !== 'interrupted' && message.resume?.mode === 'full_check' && !running && onContinue && (
+        <div data-slot="chat-unfinished" className="grid min-w-0 gap-2 text-sm">
+          {message.resume.redo && <p data-slot="chat-resume-redo" className="text-muted-foreground">{message.resume.redo}</p>}
+          <ContinueButton onContinue={onContinue} />
         </div>
       )}
 
@@ -798,4 +794,21 @@ const REMAKE_DELAY_MS = 1200;
 /** "14:32": the time the draft was made again, on the reviewer's clock. */
 function clockWords(at: Date): string {
   return at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/** Continue (#1514, #1821): goes on from an answer that did not finish. */
+function ContinueButton({ onContinue }: { onContinue: () => void }) {
+  return (
+    <div>
+      <button
+        type="button"
+        data-slot="chat-continue"
+        onClick={onContinue}
+        className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      >
+        <Play className="size-3.5" aria-hidden="true" />
+        Continue
+      </button>
+    </div>
+  );
 }

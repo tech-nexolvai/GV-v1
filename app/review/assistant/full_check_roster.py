@@ -44,6 +44,16 @@ come in under the cap. **Nothing is dropped silently:** a phase or item the pric
 did not reach is listed under "Not done within the fixed price" in the summary, and each red
 candidate the advocate could not check stays grey with that reason.
 
+**The finishing steps first (#1821).** A later step keeps the larger of its share and what it
+needs (`finish_needs`, from the red candidates there are: a blind pick each, the picks that run
+at once held at their worst case, a look-again per page group), worked out again before each phase
+spends; so the extra closer pass after the lead review spends only what the devil's advocate and
+the escalation leave, and a late step is never the one short. A check that still ends short (or is
+stopped) says which pages and how many red candidates are left and why, keeps all it did, and its
+answer carries a `resume` block: Continue keeps the findings and compared pages, plans helpers only
+on the pages left (`carried_done`, `remaining_plan`), and is priced for those pages plus what the
+finishing steps need.
+
 Most of the work is the engine's own (helpers, second reads, the finish); this module plans the
 phases, briefs the new specialists and applies their structured replies. Source: the prompts and
 specialists design (local), decision D1 (vault, 2026-10-18).
@@ -191,6 +201,18 @@ JOB_CAPS: Final[Mapping[str, int]] = {
 PAGE_KINDS: Final = frozenset({"numbers", "drawn", "gaps"})
 #: The passes after the lead review that send on the pages still not compared (#1817, #1819).
 AGAIN_PASSES: Final = 2
+#: What the finishing steps need is kept before any extra pass spends (#1821), worked out from the
+#: red candidates there are: a blind pick as a rule (the paid run of 2026-10-21 spent $0.11 on five,
+#: $0.022 each; kept at twice that), a look-again group (the paid runs spent about $0.05 a group),
+#: and the blind picks that run at once each held at their worst case while they run (#1775: a
+#: call is charged only when it ends), so six picks together are never refused for a hold.
+PICK_MICROS: Final = 45_000
+SHARPER_GROUP_MICROS: Final = 80_000
+#: The finishing steps' needs at most, as a share of the price: the pages still come first after
+#: that (a page never compared is worse than an item not proved).
+FINISH_MOST_SHARE: Final = 0.35
+#: The steps whose need is worked out from the red candidates (the rest keep their shares).
+NEED_STEPS: Final = ("advocate", "escalation")
 #: Why a page code stopped sending on was left unchecked when the money was really short.
 OUT_OF_MONEY: Final = "out of money (the fixed price left too little for another look)"
 #: The most gap closers at once (one per run of pages; the engine's parallel agents bound it too).
@@ -968,6 +990,66 @@ def page_ranges_words(pages: Sequence[int]) -> str:
     return f"pages {', '.join(map(str, ordered[:-1]))} and {ordered[-1]}"
 
 
+# ---- Continue of a check that did not finish (#1821) ---------------------------------------------------
+
+#: Who set a page's coverage in the answer a Continue goes on from (`ChatEngine.carry_over`).
+CARRIED_BY: Final = "earlier"
+#: The coverage statuses that say a page was compared (or has nothing to compare).
+_DONE_STATUSES: Final = frozenset({"same", "different", "not_comparable"})
+
+
+def carried_done(coverage: Mapping[str, Any] | None) -> frozenset[int]:
+    """The pages the earlier answer compared (`CARRIED_BY` coverage that is same, different or
+    not comparable, with no note saying it was not reached or not compared): a Continue never
+    opens them again."""
+    done: set[int] = set()
+    for entry in (coverage or {}).get("pages") or []:
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("page"), int):
+            continue
+        if entry.get("by") != CARRIED_BY or entry.get("status") not in _DONE_STATUSES:
+            continue
+        note = " ".join(str(entry.get("note") or "").split())
+        if _unreached(note) or note.lower().startswith("not compared"):
+            continue
+        done.add(int(entry["page"]))
+    return frozenset(done)
+
+
+def remaining_plan(plan: Any, done: Collection[int]) -> Any:
+    """`plan` with the pages in `done` taken out of every job, the jobs left with no page dropped
+    and numbered again from 1 (before `with_lenses`, which pairs the lenses by number)."""
+    from dataclasses import replace
+
+    from app.review.assistant.full_check_plan import FanOutPlan
+
+    jobs: list[Any] = []
+    for job in plan.jobs:
+        pages = tuple(page for page in job.pages if page not in done)
+        if not pages:
+            continue
+        jobs.append(
+            replace(
+                job,
+                number=len(jobs) + 1,
+                pages=pages,
+                pairs=tuple(pair for pair in job.pairs if pair[0] in pages),
+                unpaired=tuple(item for item in job.unpaired if item[0] in pages),
+            )
+        )
+    return FanOutPlan(tuple(jobs), plan.skipped)
+
+
+#: What Continue does for a roster full check that did not finish (#1821), in plain words.
+CONTINUE_WORDS: Final = (
+    "Continue keeps the {findings} and the {done} already compared, compares only {left}, and "
+    "runs the proof steps on {items}. It has its own fixed price for that work."
+)
+
+
+def _count(number: int, one: str, many: str) -> str:
+    return f"{number} {one if number == 1 else many}"
+
+
 # ---- the run ------------------------------------------------------------------------------------------
 
 
@@ -1016,6 +1098,9 @@ class _Run:
     held_lock: threading.Lock = field(default_factory=threading.Lock)
     #: Steps that broke (a helper's error, a tag table not readable): never a sendable check.
     failed_steps: list[str] = field(default_factory=list)
+    #: What the finishing steps need (#1821), by step (`NEED_STEPS`), from the red candidates when
+    #: last worked out (`_refresh_needs`): kept before any extra pass spends.
+    needs: dict[str, int] = field(default_factory=dict)
 
     # -- money --
 
@@ -1036,9 +1121,83 @@ class _Run:
         return max(0, left)
 
     def _room(self, phase: str) -> int:
-        """All that is left under the price less the shares kept for the steps after `phase`."""
+        """All that is left under the price less the money kept for the steps after `phase`: each
+        step's share, or what it needs when that is more (#1821, `_kept_after`)."""
         assert self.plan is not None
-        return max(0, self._left() - self.plan.after(phase))
+        return max(0, self._left() - self._kept_after(phase))
+
+    def _kept_after(self, phase: str) -> int:
+        """The money kept for the steps after `phase` (`LATER_ORDER`) and to the end: the larger of
+        each step's share and its need (`needs`), so a late step is never the one short."""
+        assert self.plan is not None
+        later = LATER_ORDER[LATER_ORDER.index(phase) + 1 :] if phase in LATER_ORDER else ()
+        return sum(
+            max(self.plan.budgets.get(name, 0), self.needs.get(name, 0))
+            for name in (*later, *_KEPT_TO_THE_END)
+        )
+
+    def finish_needs(self) -> dict[str, int]:
+        """What the finishing steps need now (#1821), from the red candidates (millionths of $):
+        the devil's advocate a blind pick per candidate a code witness backs (and its string
+        readings), at least the holds of the picks that run at once; the escalation a look-again
+        per page group with candidates code cannot read. Together at most `FINISH_MOST_SHARE` of
+        the price."""
+        engine = self.engine
+        assert self.plan is not None
+        candidates = [
+            f for f in engine.book.live() if f.get("status") == "different" and not _judged(f)
+        ]
+        backed = [
+            f for f in candidates if witness.witnesses(f.get("checks") or {}, f.get("status"))
+        ]
+        strings = [
+            f
+            for f in candidates
+            if f.get("source") == "vendor_arithmetic" and f.get("parts") and f.get("printed_total")
+        ]
+        unread = [f for f in candidates if not self._read_by_code(f)]
+        strong = engine._price(BY_SHORT["opus"], _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS) or 0
+        reading = engine._price(BY_SHORT["sonnet"], _STRING_PROMPT_TOKENS, _STRING_MAX_TOKENS) or 0
+        advocate = (
+            max(len(backed) * PICK_MICROS, min(_ADVOCATE_WORKERS, len(backed)) * strong)
+            + len(strings) * reading
+        )
+        jobs = getattr(engine._plan, "jobs", ()) or ()
+        groups = {
+            next(
+                (
+                    tuple(job.pages)
+                    for job in jobs
+                    if job.lens != "drawn" and f.get("page") in job.pages
+                ),
+                (f.get("page"),),
+            )
+            for f in unread
+        }
+        needs = {"advocate": advocate, "escalation": len(groups) * SHARPER_GROUP_MICROS}
+        most = int(self.plan.price * FINISH_MOST_SHARE)
+        total = sum(needs.values())
+        if total > most:
+            needs = {name: need * most // total for name, need in needs.items()}
+        return needs
+
+    def _refresh_needs(self, before: str) -> None:
+        """`needs` worked out again (`finish_needs`) before `before` spends, and logged."""
+        if self.plan is None:
+            return
+        try:
+            self.needs = self.finish_needs()
+        except Exception:  # noqa: BLE001 - the shares alone are then kept, as before
+            _log.exception("assistant roster could not work out the finishing steps' needs")
+            return
+        _log.warning(
+            "assistant roster money kept before %s: $%.2f for the steps after it "
+            "(needs: advocate $%.2f, escalation $%.2f)",
+            before,
+            self._kept_after(before if before in LATER_ORDER else "gaps") / _MICROS,
+            self.needs.get("advocate", 0) / _MICROS,
+            self.needs.get("escalation", 0) / _MICROS,
+        )
 
     def _used_up(self, kept: int = 0) -> bool:
         """The price is really used up (#1805): only then may a step "stop at its cap". `kept`:
@@ -1104,18 +1263,7 @@ class _Run:
             return None
         if not self.engine.book.coverage_used:
             return "no page's comparison was recorded"
-        skipped = {int(page) for page, _why in getattr(plan, "skipped", ())}
-        coverage = self.engine.book.coverage_map()
-        planned = [int(e["page"]) for e in coverage["pages"] if int(e["page"]) not in skipped]
-        # A page still "same"/"different" whose note says it was not reached or only partly
-        # compared is not compared either (#1654's pattern).
-        unfinished = set(unfinished_pages(planned, coverage))
-        left = sorted(
-            int(entry["page"])
-            for entry in coverage["pages"]
-            if int(entry["page"]) not in skipped
-            and (entry.get("status") not in ("same", "different") or entry["page"] in unfinished)
-        )
+        left = self._pages_left()
         if not left:
             return None
         pages = ", ".join(f"p{page}" for page in left[:8]) + (" …" if len(left) > 8 else "")
@@ -1123,6 +1271,78 @@ class _Run:
             f"{len(left)} vendor {'page was' if len(left) == 1 else 'pages were'} not compared "
             f"({pages})"
         )
+
+    def _pages_left(self) -> list[int]:
+        """The vendor pages not compared (`_not_for_sending`'s pages): code's own skipped pages
+        (dividers, products out of scope) do not count; a page still "same"/"different" whose
+        note says it was not reached or only partly compared does (#1654's pattern)."""
+        plan = getattr(self.engine, "_plan", None)
+        if plan is None or not self.engine.book.coverage_used:
+            return []
+        skipped = {int(page) for page, _why in getattr(plan, "skipped", ())}
+        coverage = self.engine.book.coverage_map()
+        planned = [int(e["page"]) for e in coverage["pages"] if int(e["page"]) not in skipped]
+        unfinished = set(unfinished_pages(planned, coverage))
+        return sorted(
+            int(entry["page"])
+            for entry in coverage["pages"]
+            if int(entry["page"]) not in skipped
+            and (entry.get("status") not in ("same", "different") or entry["page"] in unfinished)
+        )
+
+    def _unfinished(self, stopped: str | None) -> tuple[list[int], list[dict[str, Any]], str]:
+        """What this check did not finish (#1821): the vendor pages not compared, the red
+        candidates that never got their proof steps (only when it stopped or ran out of money:
+        a check that ran to its end gave each its one look), and why, in plain words."""
+        pages = self._pages_left()
+        short = (
+            stopped == "cost_cap"
+            or self.stopped_for_money
+            or any(OUT_OF_MONEY in line for line in self.not_done)
+        )
+        items = self._unproved() if stopped in ("cancelled", "cost_cap") or short else []
+        if stopped == "cancelled":
+            why = "the check was stopped before the end"
+        elif short:
+            why = "out of money"
+        else:
+            why = "not reached"
+        return pages, items, why
+
+    def _resume_block(
+        self, pages: Sequence[int], items: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        """The `resume` block that lets Continue finish this check (#1821, as a restart's)."""
+        engine = self.engine
+        live = engine.book.live()
+        findings = [f for f in live if not f.get("record_id")]
+        coverage = engine.book.coverage_map() if engine.book.coverage_used else {"pages": []}
+        done = [
+            int(e["page"])
+            for e in coverage["pages"]
+            if e.get("status") in _DONE_STATUSES and int(e["page"]) not in set(pages)
+        ]
+        words = CONTINUE_WORDS.format(
+            findings=_count(len(findings), "finding", "findings"),
+            done=_count(len(done), "page", "pages"),
+            left=page_ranges_words(list(pages)) if pages else "no page (every page is compared)",
+            items=(
+                _count(len(items), "red candidate not proved yet", "red candidates not proved yet")
+                if items
+                else "every red candidate"
+            ),
+        )
+        products = engine.settings.products
+        return {
+            "type": "resume",
+            "resume": {
+                "mode": "full_check",
+                "products": None if products is None else list(products),
+                "findings": len(findings),
+                "pages_done": len(done),
+                "redo": words,
+            },
+        }
 
     # -- specialists --
 
@@ -1193,6 +1413,15 @@ class _Run:
             _log.warning("assistant roster could not start the markup copy")
         if engine.cancel.is_set():
             return self._finish("cancelled")
+        carried = (
+            carried_done(engine.book.coverage_map() if engine.book.coverage_used else None)
+            if engine.continuing
+            else frozenset()
+        )
+        if carried:
+            # Continue (#1821): the pages the earlier answer compared are never opened again.
+            pages_all = pages_all or plan.pages
+            plan = remaining_plan(plan, carried)
         if settings.drawn_helpers:
             plan = with_lenses(plan)
         engine._plan = plan
@@ -1200,6 +1429,19 @@ class _Run:
         # The fixed price shrinks with the pages the product scope leaves to compare (never grows).
         price = scaled_price(settings.message_cap_micros, plan.pages, pages_all)
         self.plan = PricePlan.balanced(price, groups, plan.pages)
+        if engine.continuing:
+            # A Continue's price: the pages left, plus what the finishing steps need for every red
+            # candidate it carried over, never more than the message's cap (#1821).
+            needs = sum(self.finish_needs().values())
+            price = min(settings.message_cap_micros, price + needs)
+            self.plan = PricePlan.balanced(price, groups, plan.pages)
+            _log.warning(
+                "assistant roster Continue: %d pages kept from the earlier answer, %d to compare; "
+                "price $%.2f",
+                len(carried),
+                plan.pages,
+                price / _MICROS,
+            )
         self.started_at = engine.spent
         for timing, names in TIMINGS_PHASES.items():
             engine.timings.set_budget(timing, sum(self.plan.budgets[n] for n in names))
@@ -1251,8 +1493,11 @@ class _Run:
         for agent in agents:
             pool.add(agent)
         self.agents = list(agents)
-        # The page helpers and the gap closers never spend the later checks' money (#1641).
-        engine.helper_ceiling = engine.spent + max(0, price - self.plan.protected())
+        # The page helpers and the gap closers never spend the later checks' money (#1641), nor
+        # what the finishing steps need for the red candidates already there (#1821).
+        self._refresh_needs("helpers")
+        protected = sum(max(self.plan.budgets[name], self.needs.get(name, 0)) for name in PROTECTED)
+        engine.helper_ceiling = engine.spent + max(0, price - protected)
         try:
             entries = self._launched(agents, on_done=engine._helper_done)
             tag_reports: list[tuple[Any, str]] = []
@@ -1307,6 +1552,8 @@ class _Run:
             return
         with engine.timings.phase("provers"):
             self._prove_values("verifier")
+        # The final red candidates: what the advocate and the escalation need, kept in that order.
+        self._refresh_needs("advocate")
         if engine.cancel.is_set():
             return
         with engine.timings.phase("advocate"):
@@ -1456,6 +1703,8 @@ class _Run:
                 "string against the architect's"
             )
         for finding in unboxed:
+            if engine.continuing and int(finding["page"]) not in planned:
+                continue  # a page a Continue kept from its earlier answer (#1821): not re-read
             pages.setdefault(int(finding["page"]), []).append(
                 f"GV Review recorded {finding['id']} ({finding.get('item')}: architect "
                 f"{finding.get('architect')}, vendor {finding.get('vendor')}); find both spots "
@@ -1473,6 +1722,7 @@ class _Run:
         )
         if not pages:
             return
+        self._refresh_needs("gaps")
         self._close(pages, self._gap_budget(), {int(f["page"]) for f in unboxed}, page_map)
         del rules, pictures
 
@@ -1567,6 +1817,8 @@ class _Run:
             pages = self._still_open()
             if not pages or engine.cancel.is_set():
                 return
+            # The finishing steps' needs first (#1821): this pass spends only what is left after.
+            self._refresh_needs("lead")
             budget = self._room("lead")
             _log.warning(
                 "assistant roster look-again after the lead: %d pages still open; $%.2f left",
@@ -1813,7 +2065,9 @@ class _Run:
             PROVER_JOB,
             [("what-dimensions-measure.md", None), ("reading-drawings.md", None)],
         )
-        # Its own share plus what the earlier phases left (#1805), split over its groups.
+        # Its own share plus what the earlier phases left (#1805), split over its groups; the
+        # finishing steps' needs kept (#1821).
+        self._refresh_needs("provers")
         pool = _Pool(self._room("provers"))
         cap = pool.limit // max(1, len(groups))
         for pages, findings in groups.items():
@@ -2021,6 +2275,7 @@ class _Run:
         from app.review.assistant.full_check_brief import helper_brief
         from app.review.assistant.sandbox import UPLOADS
 
+        self._refresh_needs("lead")
         cap = self._lead_money()
         pages, unplaced = self._lead_pages(cap, page_map)
         if not pages or cap <= 0:
@@ -2986,6 +3241,9 @@ class _Run:
         entries = self._launched(agents)
         for agent, entry, ids in zip(agents, entries, asked, strict=True):
             done = apply_proofs(engine, str(entry.get("report") or ""), ids)
+            if entry.get("stopped") in ("cancelled", "cost_cap"):
+                # Not given its look (#1821): still waiting, so a Continue gives it one.
+                self.escalated.difference_update(ids)
             if entry.get("stopped") == "cost_cap":
                 self._capped(agent.description, " (the rest stay not compared)")
             engine._queue_second_reads(
@@ -3065,6 +3323,21 @@ class _Run:
                 + "; ".join(self.not_done)
                 + "."
             )
+        pages, items, why = self._unfinished(stopped)
+        if pages or items:
+            parts = []
+            if pages:
+                parts.append(f"{page_ranges_words(pages)} not compared")
+            if items:
+                parts.append(
+                    _count(len(items), "red candidate", "red candidates") + " not proved yet"
+                )
+            # #1821: exactly what is left and why; what is done stays valid, Continue does the rest.
+            lines.append(
+                f"Not finished ({why}): {'; '.join(parts)}. Everything above stands; Continue "
+                "finishes the rest from this check's saved work, without paying again for what "
+                "is done."
+            )
         return "\n\n".join(lines)
 
     def _reword(self, text: str) -> str | None:
@@ -3140,6 +3413,13 @@ class _Run:
         text = self._summary(stopped, cap_hit, files)
         index = engine._add_block({"type": "text", "text": text, "by": "code"})
         engine.emit("text_delta", {"index": index, "text": text, "by": "code"})
+        try:
+            pages, items, _why = self._unfinished(stopped)
+            if pages or items:
+                # Continue finishes it (#1821): the stored answer says how, as a restart's does.
+                engine._add_block(self._resume_block(pages, items))
+        except Exception:  # noqa: BLE001 - stored without its Continue
+            _log.exception("assistant roster could not say how to continue")
         try:
             engine._accuracy()
         except Exception:  # noqa: BLE001 - stored without its score

@@ -112,8 +112,9 @@ export interface Chat {
 export type ChatStopped = 'cost_cap' | 'cancelled' | 'error' | 'turn_limit' | 'interrupted';
 
 /**
- * With `stopped: "interrupted"` (#1514): a server restart cut the answer off. How Continue picks it
- * up, and what it will do again, in plain words.
+ * With `stopped: "interrupted"` (#1514): a server restart cut the answer off. On a full check that
+ * did not finish (stopped, or out of money, #1821) too. How Continue picks it up, and what it will
+ * do again, in plain words.
  */
 export interface ChatResume {
   mode: ChatMode;

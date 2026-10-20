@@ -82,6 +82,7 @@ from app.review.assistant.tool_schema import box_schema, point_schema
 from app.review.assistant.untrusted import fence
 
 __all__ = [
+    "BATCH_LISTS",
     "COMPARE_ROUNDS",
     "FABLE_NOTE",
     "HELPERS_PER_TURN",
@@ -93,9 +94,11 @@ __all__ = [
     "LEAD_SYSTEM_PROMPT",
     "LEAD_TOOLS",
     "MAX_AGENTS",
+    "MAX_BATCH_ITEMS",
     "MAX_ZOOM_CROPS",
     "PARALLEL_TOOLS",
     "READ_UNDER_MARKUP",
+    "RECORD_ITEMS",
     "TOOL_FAILED_WORDS",
     "ChatTools",
     "TaskList",
@@ -136,6 +139,8 @@ PARALLEL_TOOLS: Final = frozenset(
         # The reading ledger is thread-safe (`ledger.ReadingLedger` locks each record).
         "record_string",
         "record_reading",
+        # Many records in one call: each entry goes through its own (thread-safe) tool.
+        "record_items",
         # Code's ruler: reads the page and adds its extent check to a locked list.
         "measure_on_drawing",
         # Code reads a number ($0); its readings are cached in the set pack under a lock.
@@ -171,6 +176,7 @@ HELPER_TOOL_NAMES: Final = (
     "set_coverage",
     "record_string",
     "record_reading",
+    "record_items",
     "verify_value",
     "read_number",
     "measure_on_drawing",
@@ -191,6 +197,7 @@ HELPER_KITS: Final[Mapping[str, tuple[str, ...]]] = {
         "set_coverage",
         "record_string",
         "record_reading",
+        "record_items",
         "verify_value",
         "read_under_markup",
         "drawing_facts",
@@ -864,6 +871,51 @@ LEAD_LOADED: Final = frozenset(
 )
 
 
+#: The most items one `record_items` call carries (#1821): more go in another call.
+MAX_BATCH_ITEMS: Final = 40
+#: The lists `record_items` takes, each with the one-item tool whose input every entry is.
+BATCH_LISTS: Final[tuple[tuple[str, str], ...]] = (
+    ("findings", "report_finding"),
+    ("strings", "record_string"),
+    ("readings", "record_reading"),
+)
+#: Many items recorded in one call (#1821): the paid run of 2026-10-20 made 247 one-item
+#: recording calls in one phase, each its own tool call and result in the helper's conversation.
+RECORD_ITEMS: Final[Mapping[str, Any]] = {
+    "name": "record_items",
+    "description": (
+        "Record several items in one call: findings (each entry is exactly what report_finding "
+        "takes), dimension strings (each what record_string takes) and readings (each what "
+        "record_reading takes). Use it whenever you have read more than one item, instead of "
+        "one call per item: code checks every entry exactly as its own tool does, and nothing "
+        "is lost when one entry is refused. Returns one line per entry in the order given "
+        "('findings 1: Finding F3 recorded.', 'strings 2: Not recorded: <why>'); send a refused "
+        "entry again, fixed. "
+        'Example: {"findings": [{"page": 7, "item": "Vanity: top depth", "category": '
+        '"countertop", "status": "different", "verified": false, "source": "architect", '
+        '"vendor_dim": "D4", "architect_dim": "p6.D2", "vs_page": 6}], "strings": [{"page": 7, '
+        '"side": "vendor", "part_dims": ["D12", "D13", "D14"], "total_dim": "D15"}]}'
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [],
+        "properties": {
+            name: {
+                "type": "array",
+                # Each entry is the one-item tool's own input, checked by that tool when it runs
+                # (its schema is not repeated here: about 3,000 tokens more in every helper's
+                # prompt for no check the API makes, as these tools are not strict).
+                "items": {"type": "object", "description": f"One entry, as {tool} takes it"},
+                "maxItems": MAX_BATCH_ITEMS,
+                "description": f"Entries for {tool}, each with exactly its fields",
+            }
+            for name, tool in BATCH_LISTS
+        },
+    },
+}
+
+
 def _deferred(tool: Mapping[str, Any]) -> Mapping[str, Any]:
     return tool if tool["name"] in LEAD_LOADED else {**tool, "defer_loading": True}
 
@@ -890,6 +942,7 @@ LEAD_TOOLS: Final[tuple[Mapping[str, Any], ...]] = tuple(
         DISMISS_RECORDED,
         CITE,
         *LEDGER_TOOLS,
+        RECORD_ITEMS,
         COMPARE_ROUNDS,
         VERIFY_VALUE,
         READ_NUMBER,
@@ -908,6 +961,7 @@ HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     REPORT_FINDING,
     SET_COVERAGE,
     *LEDGER_TOOLS,
+    RECORD_ITEMS,
     VERIFY_VALUE,
     # #1805: the helper and verifier briefs say to call it on a number they cannot read ($0, code).
     READ_NUMBER,
