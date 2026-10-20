@@ -94,7 +94,7 @@ from app.review.assistant.chat_tools import (
     named_pages,
 )
 from app.review.assistant.chat_unknowns import asks_for_the_rest, last_unknowns, work_list_note
-from app.review.assistant.full_check_plan import read_page_map
+from app.review.assistant.full_check_plan import MAX_JOB_PAGES, read_page_map, scoped_plan
 from app.review.assistant.live_check import LiveCheck
 from app.review.assistant.package_store import numbering
 from app.review.assistant.plan_check import (
@@ -106,6 +106,7 @@ from app.review.assistant.plan_check import (
     record_answers,
 )
 from app.review.assistant.product_scope import (
+    PriceRule,
     ProductScope,
     final_blocks,
     no_rules_note,
@@ -114,6 +115,7 @@ from app.review.assistant.product_scope import (
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, Sandbox, safe_file_name
 from app.review.assistant.send_package import PackageIdentity
 from app.review.assistant.sharpen import apply_sharpen
+from app.review.assistant.vendor_consistency import page_texts
 from app.runs.rates import ModelRates
 
 __all__ = [
@@ -548,12 +550,17 @@ def full_check_plan(
     package_id: UUID,
     uploads: Callable[[], Sequence[UploadSource]],
     picture_url: Callable[[int], str],
+    products: Sequence[str] | None = None,
+    price: Callable[[int], int] | None = None,
 ) -> dict[str, Any]:
     """The plan check before a full check (#1569): code's plan in one line and the 0-3 questions
     where it is unsure of the page map (`plan_check.doubts`), each with its page's picture and the
-    drawing marked. The set's latest PDFs are copied to the set's plan-check folder (only when
-    they changed) and the set pack is started when it is not made yet, so it works before the
-    set's first chat; `building` until the page map is made. Never an AI call."""
+    drawing marked; with `price` (content pages in scope -> millionths of $, #1823), the full
+    check's fixed price for `products` (`None`: every active product) and the pages it counts:
+    the same count the full check plans (`full_check_plan.scoped_plan`). The set's latest PDFs
+    are copied to the set's plan-check folder (only when they changed) and the set pack is started
+    when it is not made yet, so it works before the set's first chat; `building` until the page
+    map is made. Never an AI call."""
     workspace = ChatWorkspace.open(_plan_root(chat_root, package_id))
     listing, _changed = sync_uploads(workspace, uploads())
     if not listing:
@@ -588,12 +595,24 @@ def full_check_plan(
             ]
         del out["file"]
         shown.append(out)
-    return {
+    answer: dict[str, Any] = {
         "state": "ready",
         "summary": plan_summary(page_map, main_file),
         "doubts": shown,
         "more": max(0, len(found) - MAX_DOUBTS),
     }
+    if price is not None:
+        plan, _all = scoped_plan(
+            page_map,
+            main_file,
+            MAX_AGENTS,
+            ProductScope.of(products),
+            lambda files: page_texts(folder, files),
+        )
+        if plan is not None:
+            answer["price_pages"] = plan.pages
+            answer["price_usd"] = cost_text(price(plan.pages))
+    return answer
 
 
 def read_status_state(folder: Path | None) -> str | None:
@@ -766,7 +785,16 @@ class MessageJob:
     roster: bool = False
     """A full check as a fixed-price roster of specialists, no lead (`full_check_roster`)."""
     full_check_cap_micros: int | None = None
-    """The roster full check's fixed price (its whole cap); `None`: the message cap."""
+    """The roster full check's upper bound until its price is known (the set's budget, or a lower
+    `cap_usd`): the per-answer message cap never cuts a full check below its own price (#1823).
+    `None`: the message cap."""
+    price_rule: PriceRule = field(default_factory=PriceRule)
+    """The full check's fixed price: base + per content page in scope, at least a minimum
+    (#1823)."""
+    numbers_effort: str = "low"
+    """The roster's numbers page helpers' effort (`GV_ASSISTANT_NUMBERS_HELPER_EFFORT`)."""
+    numbers_pages: int = MAX_JOB_PAGES
+    """The roster's numbers page helpers' most pages each (`GV_ASSISTANT_NUMBERS_HELPER_PAGES`)."""
     pairing_proof: str = "ai_pair_plus_code"
     """What proves a pairing for a red cloud (`full_check_roster`)."""
     full_check_mode: str = "roster"
@@ -1188,8 +1216,9 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             lead_max_turns=job.lead_max_turns,
             helper_max_turns=job.helper_max_turns,
             max_parallel_agents=job.max_parallel_agents,
-            # The roster's fixed price is its whole cap; the simple check has no fixed price, only
-            # the per-answer runaway guard (Anant, 2026-10-19).
+            # The roster's cap is the set's budget until it has planned the pages, then its own
+            # fixed price (#1823); the simple check has no fixed price, only the per-answer
+            # runaway guard (Anant, 2026-10-19).
             message_cap_micros=(
                 job.full_check_cap_micros
                 if job.mode == "full_check"
@@ -1204,6 +1233,9 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             products=job.products or (),
             drawn_helpers=job.drawn_helpers,
             roster=job.roster,
+            price_rule=job.price_rule,
+            numbers_effort=job.numbers_effort,
+            numbers_pages=job.numbers_pages,
             pairing_proof=job.pairing_proof,
             full_check_mode=job.full_check_mode,
             simple=_simple_of(job, run, workspace.root, workspace.set_pack),
@@ -1264,6 +1296,9 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         stop_with("", "cancelled")
         return
     outcome = engine.run()
+    if job.mode == "full_check" and engine.settings.roster and job.full_check_mode != "simple":
+        # A roster full check's own price is its cap (#1823): stored as the answer's cap.
+        outcome.cap_micros = engine.settings.message_cap_micros
     if outcome.stopped == "cancelled":
         sandbox.kill_all()
     _say_service_stop(job.provider, outcome)
@@ -1342,7 +1377,9 @@ def _store_answer(
                 cost_micros=outcome.cost_micros,
                 stopped=outcome.stopped,
                 error=outcome.error,
-                message_cap_micros=job.message_cap_micros,
+                message_cap_micros=(
+                    job.message_cap_micros if outcome.cap_micros is None else outcome.cap_micros
+                ),
                 package_cap_micros=job.package_cap_micros,
                 cap_hit=outcome.cap_hit if outcome.stopped == "cost_cap" else None,
                 mode=job.mode,

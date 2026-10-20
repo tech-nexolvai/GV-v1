@@ -28,6 +28,7 @@ from app.review.assistant.chat_trust import recorded_from
 from app.review.assistant.full_check_brief import product_checklist
 from app.review.assistant.full_check_plan import plan_jobs
 from app.review.assistant.product_scope import (
+    PriceRule,
     ProductScope,
     category_for,
     final_blocks,
@@ -35,7 +36,6 @@ from app.review.assistant.product_scope import (
     no_rules_note,
     outside_unit,
     refiled,
-    scaled_price,
     scoped_document,
     scoped_loader,
 )
@@ -250,9 +250,10 @@ def test_an_area_of_only_other_products_gets_no_helper() -> None:
     assert cabinet.pages == 6 and {7, 8} == {p for p, _why in cabinet.skipped}
     assert every.pages == whole.pages == 8
     assert len(counter.jobs) < len(whole.jobs)
-    assert scaled_price(5_000_000, counter.pages, whole.pages) == 3_750_000
-    assert scaled_price(5_000_000, whole.pages, whole.pages) == 5_000_000
-    assert scaled_price(5_000_000, 9, 3) == 5_000_000  # never more than the price
+    # The price counts the content pages in scope (#1823): $2 + $0.35 a page, at least $5.
+    rule = PriceRule(base=2_000_000, per_page=350_000, minimum=1_000_000)
+    assert rule.price(counter.pages) == 4_100_000
+    assert rule.price(whole.pages) == 4_800_000
 
 
 def test_a_hint_of_a_product_in_scope_keeps_its_page() -> None:

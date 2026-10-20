@@ -628,6 +628,12 @@ def test_the_models_offered_and_the_caps(postgres_engine, tmp_path) -> None:  # 
     assert models["available"] is True and models["provider"] == "anthropic"
     assert models["message_cap_usd"] == "5.00" and models["package_cap_usd"] == "40.00"
     assert models["package_spent_usd"] == "0.00"
+    # The full check's price rule (#1823): base + per content page, at least the minimum.
+    assert (
+        models["full_check_base_usd"],
+        models["full_check_per_page_usd"],
+        models["full_check_min_usd"],
+    ) == ("2.00", "0.35", "5.00")
     assert models["models"][0] == {
         "id": "claude-opus-5-5",
         "label": "Opus 5.5",

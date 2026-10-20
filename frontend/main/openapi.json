@@ -2535,6 +2535,17 @@
             "title": "Available",
             "type": "boolean"
           },
+          "full_check_base_usd": {
+            "default": "2.00",
+            "description": "The full check's price rule (#1823, `GV_ASSISTANT_FULL_CHECK_BASE_USD`): this plus `full_check_per_page_usd` per content page in scope, at least `full_check_min_usd`, never above the set's budget left.",
+            "title": "Full Check Base Usd",
+            "type": "string"
+          },
+          "full_check_min_usd": {
+            "default": "5.00",
+            "title": "Full Check Min Usd",
+            "type": "string"
+          },
           "full_check_mode": {
             "default": "roster",
             "description": "Which full check runs (`GV_ASSISTANT_FULL_CHECK_MODE`): the roster of specialists, or the simple check (one compare call per vendor drawing, #1665).",
@@ -2543,6 +2554,11 @@
               "simple"
             ],
             "title": "Full Check Mode",
+            "type": "string"
+          },
+          "full_check_per_page_usd": {
+            "default": "0.35",
+            "title": "Full Check Per Page Usd",
             "type": "string"
           },
           "message_cap_usd": {
@@ -5855,6 +5871,30 @@
             "title": "More",
             "type": "integer"
           },
+          "price_pages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The content pages in scope the price counts: the pages the plan compares (drawings of the products asked; title and divider pages left out).",
+            "title": "Price Pages"
+          },
+          "price_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The full check's fixed price for the products asked (`products`), when the page map is read (#1823): base + per content page in scope, at least the minimum, never above the set's budget left. A roster full check's own cap; `null` until then.",
+            "title": "Price Usd"
+          },
           "state": {
             "description": "ready: the page map is read; building: ask again in a moment; none: no page map can be made (no PDFs): run without questions.",
             "enum": [
@@ -7069,7 +7109,7 @@
                 "type": "null"
               }
             ],
-            "description": "This answer's per-answer cap in dollars, when lower than the server's (`GV_ASSISTANT_MESSAGE_CAP_USD`, and a roster full check's fixed price); it never raises them. The runaway guard holds what the calls in flight may cost against it, so a paid run's money stop is kept before calls start (harness audit 2026-10-19).",
+            "description": "This answer's per-answer cap in dollars, when lower than the server's (`GV_ASSISTANT_MESSAGE_CAP_USD` for a question; a roster full check's fixed price, #1823); it never raises them. The runaway guard holds what the calls in flight may cost against it, so a paid run's money stop is kept before calls start (harness audit 2026-10-19).",
             "title": "Cap Usd"
           },
           "compare_effort": {
@@ -24386,7 +24426,7 @@
     },
     "/api/v1/packages/{package_id}/full-check-plan": {
       "get": {
-        "description": "Copies the set's latest PDFs aside and starts its set pack when it is not made yet, then\nreads the page map: `building` until it is made (ask again in a moment).",
+        "description": "Copies the set's latest PDFs aside and starts its set pack when it is not made yet, then\nreads the page map: `building` until it is made (ask again in a moment). With the page map,\nthe full check's fixed price for `products` (none: every active product, #1823): base + per\ncontent page in scope, at least the minimum, never above the set's budget left.",
         "operationId": "get_full_check_plan_api_v1_packages__package_id__full_check_plan_get",
         "parameters": [
           {
@@ -24397,6 +24437,25 @@
               "format": "uuid",
               "title": "Package Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "products",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Products"
             }
           }
         ],

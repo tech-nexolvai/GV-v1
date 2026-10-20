@@ -138,7 +138,8 @@ class Settings(BaseSettings):
     assistant_chat_root: Path = Field(
         default_factory=lambda: Path.home() / "gv-local" / "assistant-chats"
     )
-    # What one message may spend, and what all the chats of one drawing set may spend together.
+    # What one chat question may spend (a roster full check's cap is its own price, below), and
+    # what all the chats of one drawing set may spend together.
     assistant_message_cap_usd: Decimal = Field(default=Decimal(5), gt=0, allow_inf_nan=False)
     assistant_package_cap_usd: Decimal = Field(default=Decimal(40), gt=0, allow_inf_nan=False)
     # Tool turns: the lead's per message, and each helper's.
@@ -155,7 +156,19 @@ class Settings(BaseSettings):
     # verifier and a devil's advocate, and no lead. The fixed price is the full check's whole cap;
     # what does not fit in it is listed as not done, never dropped. Off: the lead verifies (#1512).
     assistant_full_check_roster: bool = True
-    assistant_full_check_cap_usd: Decimal = Field(default=Decimal(5), gt=0, allow_inf_nan=False)
+    # The full check's fixed price (owner, 2026-10-21, #1823): base + per content page in scope,
+    # at least the minimum, never above the drawing set's budget left. It is the full check's own
+    # cap: the message cap above is for chat questions only.
+    assistant_full_check_base_usd: Decimal = Field(default=Decimal(2), ge=0, allow_inf_nan=False)
+    assistant_full_check_per_page_usd: Decimal = Field(
+        default=Decimal("0.35"), ge=0, allow_inf_nan=False
+    )
+    assistant_full_check_min_usd: Decimal = Field(default=Decimal(5), gt=0, allow_inf_nan=False)
+    # The roster's first numbers page helpers (owner, 2026-10-21, for a paid A/B): their effort
+    # and their most pages each (the drawn-things helpers keep the plan's groups of 3-5 pages; an
+    # area stays together unless it is longer than a group). The defaults are today's plan.
+    assistant_numbers_helper_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    assistant_numbers_helper_pages: int = Field(default=5, ge=1, le=5)
     # What proves that a vendor number and an architect number measure the same thing, for a red
     # cloud (orchestrator's decision D1, provisional): `ai_pair_plus_code` = two blind AI picks of
     # the same label plus code's checks (printed at both spots, the drawn extents agree, every

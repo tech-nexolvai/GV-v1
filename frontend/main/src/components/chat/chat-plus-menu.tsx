@@ -26,10 +26,12 @@ import {
 } from 'lucide-react';
 import { Command as CommandPrimitive } from 'cmdk';
 
+import { FullCheckPrice } from '@/components/chat/chat-full-check';
 import { PlanCheck } from '@/components/chat/chat-plan-check';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import type { ChatFile, ChatFinding, ChatFullCheckPlan, ChatModel, ChatPlanAnswer, ChatProduct } from '@/lib/chat-api';
 import { downloadFile, downloadFindingsCsv, markupFailureWords } from '@/lib/chat-exports';
+import { fullCheckPrice } from '@/lib/chat-full-check';
 import {
   AREA_PROMPT,
   areaPrompt,
@@ -87,9 +89,11 @@ export interface PlusMenuProps {
   onPrompt: (text: string) => void;
   /** The composer's box: focused after a prompt, with its first blank selected. */
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
-  /** The full check: its confirm line ("Full check · Countertops · Opus 5.5 · High · up to $5"), why it cannot run, and how to run it. */
+  /** The full check: its confirm line ("Full check · Countertops · Opus 5.5 · High"), why it cannot run, and how to run it. */
   fullCheck: {
     summary: string;
+    /** #1823: the price rule in words ("$2 + $0.35 a content page, at least $5"), said until the plan counts the pages. */
+    priceRule?: string | null;
     blocked: string | null;
     onRun: (answers?: ChatPlanAnswer[]) => void;
     /** #1569: code's plan and its 0-3 questions, read when the confirm view opens. */
@@ -110,8 +114,8 @@ export interface PlusMenuProps {
   models: readonly ChatModel[];
   choice: ChatChoice | null;
   onChoice: (choice: ChatChoice) => void;
-  /** "$5": the most one answer may cost, for the full check's estimate. */
-  messageCap: string | null;
+  /** #1823: the full check's price rule in a row's few words ("$2 + $0.35/page"), for its estimate. */
+  fullCheckPrice: string | null;
   /** Areas the chat's answers named, offered by "Compare an area…". */
   areas: readonly string[];
   /** Something went wrong or cannot be done, in plain words (shown above the composer). */
@@ -283,7 +287,7 @@ export function PlusMenu(props: PlusMenuProps) {
     const Icon = ICONS[action.icon];
     const why = disabledWhy(action);
     const on = picked(action);
-    const estimate = action.run.kind === 'full_check' ? fullCheckEstimate(props.messageCap) : action.estimate;
+    const estimate = action.run.kind === 'full_check' ? fullCheckEstimate(props.fullCheckPrice) : action.estimate;
     // Focus rows say what they set; the effort rows name the effort they will pick.
     const hint =
       action.run.kind === 'effort' && choice && !why
@@ -362,6 +366,7 @@ export function PlusMenu(props: PlusMenuProps) {
           {view === 'confirm' ? (
             <div data-slot="chat-plus-confirm" className="grid gap-3 p-3">
               <p data-slot="chat-full-check-summary" className="text-sm font-medium tabular-nums">{fullCheck.summary}</p>
+              <FullCheckPrice parts={fullCheckPrice(plan.status === 'ready' ? plan.plan : null, fullCheck.priceRule ?? null)} />
               <p className="text-xs text-muted-foreground">
                 Checks every page against the architect and GV’s rules, then code draws the cloud drawing and the check report. About {FULL_CHECK_MINUTES} minutes.
               </p>

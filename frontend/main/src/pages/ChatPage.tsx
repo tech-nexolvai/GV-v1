@@ -40,7 +40,7 @@ import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { UnderstoodLine } from '@/components/chat/chat-understood';
 import { ApiError } from '@/api/client';
 import { CHECK_MODEL, chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatPlanAnswer, type ChatProduct, type ChatTaskEdit } from '@/lib/chat-api';
-import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, lastProducts, pickable, scopeSentence, toggleProduct } from '@/lib/chat-full-check';
+import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, lastProducts, pickable, priceRuleShort, priceRuleWords, scopeSentence, toggleProduct } from '@/lib/chat-full-check';
 import { useProductCatalog } from '@/lib/products';
 import { knownAreas, lastFindings, withPrompt } from '@/lib/chat-plus-actions';
 import { applyChatEvent, applyCorrection, CHAT_STARTERS, chatTitle, dollars, followedAnswer, fromSaved, localAnswer, localQuestion, previousQuestion, settle, shownLive, type ViewMessage } from '@/lib/chat-messages';
@@ -635,12 +635,17 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   // ── Full check (chat v4): one button, confirmed with what it will use ──
   const pickedModel = choice ? modelList.find((model) => model.id === choice.model) ?? null : null;
   const fullCheckScope = scopeSentence(products, catalog);
-  const fullCheckSummary = confirmWords(products, pickedModel ? shortModelLabel(pickedModel) : null, choice ? EFFORT_WORDS[choice.effort] : null, money(cap));
+  // #1823: a full check's own price is its cap (not the per-answer cap): said on its own line.
+  const fullCheckSummary = confirmWords(products, pickedModel ? shortModelLabel(pickedModel) : null, choice ? EFFORT_WORDS[choice.effort] : null, null);
+  const fullCheckRule = models.status === 'ready' ? priceRuleWords(models.data) : null;
   const fullCheckBlocked = blocked ?? (running ? 'A message is still running in this chat.' : null);
   const runFullCheck = (answers?: ChatPlanAnswer[]) => void send(FULL_CHECK_TEXT, 'full_check', undefined, undefined, answers);
   // #1569: the plan check before a paid full check (a fake API may leave it out: no questions).
   const planApi = api.plan;
-  const loadPlan = useMemo(() => (planApi ? () => planApi(packageId) : undefined), [planApi, packageId]);
+  // With the products picked, so the plan says the price for them (#1823); asked again only when
+  // the pick changes (the products are worked out again on every render).
+  const pickedKey = (products ?? []).join(',');
+  const loadPlan = useMemo(() => (planApi ? () => planApi(packageId, pickedKey ? pickedKey.split(',') : null) : undefined), [planApi, packageId, pickedKey]);
 
   // #1685: a link to a drawing set that is not there (deleted, mistyped, another project's) says so,
   // instead of an empty chat whose only complaint is that the models could not be loaded.
@@ -658,7 +663,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
     <TooltipProvider delayDuration={300}>
       <div data-tw data-slot="chat-page" className="flex min-h-0 w-full min-w-0 flex-1 font-sans text-sm text-foreground antialiased">
         <HeaderActions>
-          {!centred && <FullCheckButton variant="bar" summary={fullCheckSummary} scope={fullCheckScope} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} />}
+          {!centred && <FullCheckButton variant="bar" summary={fullCheckSummary} scope={fullCheckScope} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} priceRule={fullCheckRule} />}
           <Button variant="ghost" size="sm" asChild>
             <a href={formatRoute({ page: 'review', packageId })} aria-label="Review list">
               <ListChecks /> <span className="hidden sm:inline">Review list</span>
@@ -798,7 +803,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
             {centred && <Greeting name={name} />}
             {centred && (
               <div className="mb-4 flex flex-col items-center gap-1.5">
-                <FullCheckButton summary={fullCheckSummary} scope={fullCheckScope} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} />
+                <FullCheckButton summary={fullCheckSummary} scope={fullCheckScope} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} priceRule={fullCheckRule} />
                 <p className="text-center text-xs text-muted-foreground">Every vendor drawing against the architect’s: Wrong, Right and Not compared, with the cloud drawing</p>
               </div>
             )}
@@ -835,7 +840,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                   <PlusMenu
                     onPrompt={(text) => setDraft((now) => withPrompt(now, text))}
                     textareaRef={textareaRef}
-                    fullCheck={{ summary: fullCheckSummary, blocked: fullCheckBlocked, onRun: runFullCheck, loadPlan }}
+                    fullCheck={{ summary: fullCheckSummary, priceRule: fullCheckRule, blocked: fullCheckBlocked, onRun: runFullCheck, loadPlan }}
                     consistency={api.consistency ? { onRun: runConsistency } : null}
                     lastFindings={lastFindings(messages)}
                     makeMarkupPdf={chatId ? (messageId) => api.markup(chatId, messageId) : null}
@@ -845,7 +850,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     models={modelList}
                     choice={choice}
                     onChoice={changeChoice}
-                    messageCap={money(cap)}
+                    fullCheckPrice={models.status === 'ready' ? priceRuleShort(models.data) : null}
                     areas={knownAreas(messages)}
                     onNotice={setNotice}
                     running={running}

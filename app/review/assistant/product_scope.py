@@ -33,8 +33,11 @@ ruled, counted and drawn, for a full check and for a typed question alike:
   phrase, so the "vanity" inside it does not also name a cabinet (`named_products`).
 - **Cost.** An area whose every page names only out-of-scope products (by the registry's `words`,
   read from the pages' printed text) is not sent to a helper (`outside_unit`); a page that names
-  no product, or even hints at one in scope (its `hints`: "sink" for countertops), still goes. The
-  full check's fixed price shrinks with the pages left to compare (`scaled_price`).
+  no product, or even hints at one in scope (its `hints`: "sink" for countertops), still goes.
+- **Price** (owner, 2026-10-21, #1823). The full check's fixed price is $2 + $0.35 per content page
+  in scope (the pages the plan compares: drawings of the picked products, not title or divider
+  pages), at least $5, never above the drawing set's budget left (`PriceRule`; the three numbers
+  are settings).
 
 Pure code: no AI call, no database. Verification: `tests/review/assistant/test_product_scope.py`.
 """
@@ -52,6 +55,7 @@ from vocabulary.product_registry import OTHER_CATEGORY, registry
 __all__ = [
     "CODE_MADE",
     "SINK_CUTOUT_RULES",
+    "PriceRule",
     "ProductScope",
     "category_for",
     "filed_under",
@@ -61,7 +65,6 @@ __all__ = [
     "no_rules_note",
     "outside_unit",
     "refiled",
-    "scaled_price",
     "scoped_document",
     "scoped_gaps",
     "scoped_loader",
@@ -510,12 +513,22 @@ def outside_unit(pages: Sequence[int], texts: Mapping[int, str], scope: ProductS
     )
 
 
-def scaled_price(price: int, pages: int, pages_all: int) -> int:
-    """The full check's fixed price for the pages left to compare (millionths of $): the whole
-    price over the set's pages, times the pages in scope; never more than the price."""
-    if pages_all <= 0 or pages >= pages_all:
-        return price
-    return max(0, price * pages // pages_all)
+@dataclass(frozen=True, slots=True)
+class PriceRule:
+    """The full check's fixed price (owner, 2026-10-21, #1823), in millionths of $: `base` (the
+    finishing steps) plus `per_page` for each content page in scope, at least `minimum`, never
+    above `bound` (the drawing set's budget left, or a lower cap asked with the message). The
+    defaults are the owner's: $2 + $0.35 a page, at least $5 (`GV_ASSISTANT_FULL_CHECK_BASE_USD`,
+    `..._PER_PAGE_USD`, `..._MIN_USD`)."""
+
+    base: int = 2_000_000
+    per_page: int = 350_000
+    minimum: int = 5_000_000
+
+    def price(self, pages: int, bound: int | None = None) -> int:
+        """The price for `pages` content pages in scope; never above `bound` (nor below $0)."""
+        price = max(self.minimum, self.base + self.per_page * max(0, pages))
+        return price if bound is None else max(0, min(price, bound))
 
 
 def sink_cutout_category(scope: ProductScope | None) -> str | None:

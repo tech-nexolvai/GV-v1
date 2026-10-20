@@ -32,6 +32,7 @@ Everything here is plain code on the page map: no PDF is opened, nothing is draw
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import threading
@@ -48,6 +49,7 @@ from app.review.assistant.plan_check import (
     read_answers,
     with_assumptions,
 )
+from app.review.assistant.product_scope import ProductScope, outside_unit
 from app.review.assistant.simple_check.pairing import UNPAIRED
 
 __all__ = [
@@ -66,9 +68,12 @@ __all__ = [
     "plan_jobs",
     "read_page_map",
     "rules_summary",
+    "scoped_plan",
     "wait_for_page_map",
     "with_lenses",
 ]
+
+_log = logging.getLogger(__name__)
 
 MIN_JOB_PAGES: Final = 3
 MAX_JOB_PAGES: Final = 5
@@ -105,6 +110,11 @@ class HelperJob:
     """`both` (one helper per group), or `numbers` / `drawn` (#1569)."""
     partner: int | None = None
     """The other lens's job on the same pages (its number)."""
+    fold: tuple[int, ...] = ()
+    """When the numbers helpers have smaller page groups than the drawn-things helper
+    (`GV_ASSISTANT_NUMBERS_HELPER_PAGES` below 5): the other jobs of its fold group, the
+    drawn-things job and the numbers jobs on its pages, whose duplicates are folded once all have
+    reported. Empty: one partner, as before."""
     cap_micros: int | None = None
     """A drawn-things helper's own money cap."""
     pairs: tuple[tuple[int, tuple[tuple[str, int], ...]], ...] = ()
@@ -313,16 +323,16 @@ def _units(content: Sequence[Mapping[str, Any]]) -> list[_Unit]:
     return units
 
 
-def _split_long(units: Sequence[_Unit]) -> list[tuple[_Unit, list[int]]]:
-    """Units of at most `MAX_JOB_PAGES` pages, each with the pages it looks at only: a long unit
-    is cut, and its later parts look at its architect pages."""
+def _split_long(units: Sequence[_Unit], most: int = MAX_JOB_PAGES) -> list[tuple[_Unit, list[int]]]:
+    """Units of at most `most` pages (`MAX_JOB_PAGES`), each with the pages it looks at only: a
+    long unit is cut, and its later parts look at its architect pages."""
     out: list[tuple[_Unit, list[int]]] = []
     for unit in units:
-        if len(unit.pages) <= MAX_JOB_PAGES:
+        if len(unit.pages) <= most:
             out.append((unit, []))
             continue
-        for start in range(0, len(unit.pages), MAX_JOB_PAGES):
-            part = unit.pages[start : start + MAX_JOB_PAGES]
+        for start in range(0, len(unit.pages), most):
+            part = unit.pages[start : start + most]
             looks = [] if start == 0 else [p for p in unit.architect if p not in part]
             out.append((_Unit(part, unit.area, unit.key, []), looks))
     return out
@@ -461,6 +471,41 @@ def plan_jobs(
     return FanOutPlan(tuple(jobs), skipped)
 
 
+def scoped_plan(
+    page_map: Mapping[str, Any] | None,
+    main_file: str | None,
+    parallel: int,
+    scope: ProductScope,
+    texts: Callable[[Sequence[str]], Mapping[tuple[str, int], str]] | None,
+    across: CrossPairs | None = None,
+) -> tuple[FanOutPlan | None, int]:
+    """A full check's helper jobs for the products in scope, and the pages the whole set would
+    have compared: an area whose every page names only out-of-scope products gets no helper
+    (`product_scope.outside_unit`, read from the pages' printed words by `texts(files)`, $0). The
+    plan's `pages` are the content pages in scope the price counts (#1823); the full check and the
+    plan check before it both count them here."""
+    plan = plan_jobs(page_map, main_file, parallel, across=across)
+    if plan is None or scope.every or texts is None:
+        return plan, 0 if plan is None else plan.pages
+    files = [str(name) for name in (page_map or {}).get("files") or [] if name]
+    if not files and main_file:
+        files = [main_file]
+    try:
+        read = texts(files)
+    except Exception as failed:  # noqa: BLE001 - every area is then checked
+        _log.warning("assistant chat page words not read: %s", type(failed).__name__)
+        return plan, plan.pages
+    words = {page: text for (name, page), text in read.items() if name == main_file}
+    scoped = plan_jobs(
+        page_map,
+        main_file,
+        parallel,
+        outside=lambda pages: outside_unit(pages, words, scope),
+        across=across,
+    )
+    return scoped, plan.pages
+
+
 def pair_lines(
     pairs: Sequence[tuple[int, Sequence[tuple[str, int]]]],
     unpaired: Sequence[tuple[int, str]],
@@ -496,17 +541,101 @@ def drawn_job_cap(jobs: int) -> int:
     return min(DRAWN_JOB_CAP_MICROS, DRAWN_TOTAL_CAP_MICROS // max(1, jobs))
 
 
-def with_lenses(plan: FanOutPlan) -> FanOutPlan:
+def with_lenses(
+    plan: FanOutPlan,
+    numbers_pages: int = MAX_JOB_PAGES,
+    page_map: Mapping[str, Any] | None = None,
+) -> FanOutPlan:
     """The plan with two helpers per job (#1569): the numbers jobs first (numbered as before),
-    then a drawn-things job for each, on the same pages, with its money cap and its partner."""
+    then a drawn-things job for each, on the same pages, with its money cap and its partner.
+
+    `numbers_pages` below `MAX_JOB_PAGES` (`GV_ASSISTANT_NUMBERS_HELPER_PAGES`, with the page map):
+    only the numbers jobs are cut smaller, inside each job and by the same rule (an area stays
+    together unless it is longer than a group), so a drawn-things job keeps its pages, its money
+    cap and its count; it folds with the numbers jobs on its pages once all have reported (`fold`).
+    The default gives today's plan exactly."""
     count = len(plan.jobs)
     cap = drawn_job_cap(count)
-    numbers = [replace(job, lens="numbers", partner=count + job.number) for job in plan.jobs]
-    drawn = [
-        replace(job, number=count + job.number, lens="drawn", partner=job.number, cap_micros=cap)
-        for job in plan.jobs
-    ]
+    if numbers_pages >= MAX_JOB_PAGES or page_map is None:
+        numbers = [replace(job, lens="numbers", partner=count + job.number) for job in plan.jobs]
+        drawn = [
+            replace(
+                job, number=count + job.number, lens="drawn", partner=job.number, cap_micros=cap
+            )
+            for job in plan.jobs
+        ]
+        return FanOutPlan((*numbers, *drawn), plan.skipped)
+    parts = [_smaller(job, max(1, numbers_pages), page_map) for job in plan.jobs]
+    total = sum(len(subs) for subs in parts)
+    numbers = []
+    drawn = []
+    for job, subs in zip(plan.jobs, parts, strict=True):
+        own = total + job.number
+        first = len(numbers) + 1
+        mine = tuple(range(first, first + len(subs)))
+        for number, sub in zip(mine, subs, strict=True):
+            fold = () if len(subs) == 1 else tuple(n for n in (*mine, own) if n != number)
+            numbers.append(replace(sub, number=number, lens="numbers", partner=own, fold=fold))
+        drawn.append(
+            replace(
+                job,
+                number=own,
+                lens="drawn",
+                partner=mine[0],
+                cap_micros=cap,
+                fold=() if len(subs) == 1 else mine,
+            )
+        )
     return FanOutPlan((*numbers, *drawn), plan.skipped)
+
+
+def _smaller(job: HelperJob, most: int, page_map: Mapping[str, Any]) -> list[HelperJob]:
+    """One job's pages cut into numbers jobs of at most `most` pages, by the planner's own rule:
+    its areas (`_units`) stay whole unless longer than `most` (`_split_long`), cut where the
+    largest group is smallest and the groups most even (`_partition`). Each part looks at the
+    job's own references, its paired architect pages and its long area's architect pages."""
+    if len(job.pages) <= most:
+        return [job]
+    wanted = set(job.pages)
+    entries = [e for e in _entries(page_map, job.file) if int(e["page"]) in wanted]
+    if len(entries) != len(job.pages):
+        return [job]  # the page map no longer matches the job: it is kept whole
+    paired = {
+        int(e["page"]): int(e["pair_page"]) for e in entries if isinstance(e.get("pair_page"), int)
+    }
+    pieces = _split_long(_units(entries), most)
+    sizes = [len(unit.pages) for unit, _looks in pieces]
+    groups = max(1, math.ceil(sum(sizes) / most))
+    while True:
+        ends = _partition(sizes, groups)
+        starts = [0, *ends[:-1]]
+        largest = max(sum(sizes[a:b]) for a, b in zip(starts, ends, strict=True))
+        if largest <= most or groups >= len(sizes):
+            break
+        groups += 1
+    out: list[HelperJob] = []
+    for start, end in zip(starts, ends, strict=True):
+        chosen = pieces[start:end]
+        pages = tuple(p for unit, _looks in chosen for p in unit.pages)
+        areas = tuple(dict.fromkeys(unit.area for unit, _looks in chosen if unit.area))
+        looks = sorted(
+            (
+                {p for _unit, extra in chosen for p in extra}
+                | {paired[p] for p in pages if p in paired}
+            )
+            - set(pages)
+        )
+        out.append(
+            replace(
+                job,
+                pages=pages,
+                areas=areas,
+                reference=tuple(dict.fromkeys((*job.reference, *((job.file, p) for p in looks)))),
+                pairs=tuple(pair for pair in job.pairs if pair[0] in pages),
+                unpaired=tuple(item for item in job.unpaired if item[0] in pages),
+            )
+        )
+    return out
 
 
 # ---- the rules summary ----------------------------------------------------------------------------

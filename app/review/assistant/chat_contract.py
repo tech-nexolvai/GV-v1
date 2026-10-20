@@ -223,9 +223,10 @@ class ChatMessageIn(BaseModel):
         le=1000,
         allow_inf_nan=False,
         description="This answer's per-answer cap in dollars, when lower than the server's "
-        "(`GV_ASSISTANT_MESSAGE_CAP_USD`, and a roster full check's fixed price); it never raises "
-        "them. The runaway guard holds what the calls in flight may cost against it, so a paid "
-        "run's money stop is kept before calls start (harness audit 2026-10-19).",
+        "(`GV_ASSISTANT_MESSAGE_CAP_USD` for a question; a roster full check's fixed price, "
+        "#1823); it never raises them. The runaway guard holds what the calls in flight may cost "
+        "against it, so a paid run's money stop is kept before calls start (harness audit "
+        "2026-10-19).",
     )
     replay: str | None = Field(
         default=None,
@@ -2088,6 +2089,17 @@ class ChatFullCheckPlanOut(BaseModel):
     )
     doubts: list[ChatPlanDoubtOut] = Field(default_factory=list)
     more: int = Field(default=0, description="Further unsure places, compared as read.")
+    price_usd: str | None = Field(
+        default=None,
+        description="The full check's fixed price for the products asked (`products`), when the "
+        "page map is read (#1823): base + per content page in scope, at least the minimum, never "
+        "above the set's budget left. A roster full check's own cap; `null` until then.",
+    )
+    price_pages: int | None = Field(
+        default=None,
+        description="The content pages in scope the price counts: the pages the plan compares "
+        "(drawings of the products asked; title and divider pages left out).",
+    )
 
 
 class ChatListOut(BaseModel):
@@ -2170,6 +2182,14 @@ class AssistantModelsOut(BaseModel):
         description="Which full check runs (`GV_ASSISTANT_FULL_CHECK_MODE`): the roster of "
         "specialists, or the simple check (one compare call per vendor drawing, #1665).",
     )
+    full_check_base_usd: str = Field(
+        default="2.00",
+        description="The full check's price rule (#1823, `GV_ASSISTANT_FULL_CHECK_BASE_USD`): this "
+        "plus `full_check_per_page_usd` per content page in scope, at least "
+        "`full_check_min_usd`, never above the set's budget left.",
+    )
+    full_check_per_page_usd: str = Field(default="0.35")
+    full_check_min_usd: str = Field(default="5.00")
 
 
 class ChatCancelOut(BaseModel):

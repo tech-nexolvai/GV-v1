@@ -214,12 +214,12 @@ export function plusAction(id: string, catalog: ProductCatalog = productCatalog(
 export const FULL_CHECK_MINUTES = 15;
 
 /**
- * The full check's estimate: its time, and up to the per-answer cap the server states
- * (`message_cap_usd` from GET /assistant/models, e.g. "$15").
+ * The full check's estimate: its time, and its price rule (#1823: the price grows with the set's
+ * content pages, e.g. "$2 + $0.35/page"; not the per-answer cap, which is for questions).
  */
-export function fullCheckEstimate(cap: string | null): string {
+export function fullCheckEstimate(price: string | null): string {
   const time = `~${FULL_CHECK_MINUTES} min`;
-  return cap ? `${time} · up to ${cap}` : time;
+  return price ? `${time} · ${price}` : time;
 }
 
 // ── Focus ───────────────────────────────────────────────────

@@ -12,8 +12,8 @@
  * `@/lib/products`), never a list here; a product added to the registry gets its chip with no change.
  */
 
-import type { ChatFile, ChatFinding, ChatProduct, FindingSource } from '@/lib/chat-api';
-import type { ViewMessage } from '@/lib/chat-messages';
+import type { ChatFile, ChatFinding, ChatFullCheckPlan, ChatModels, ChatProduct, FindingSource } from '@/lib/chat-api';
+import { dollars, type ViewMessage } from '@/lib/chat-messages';
 import { proofGroup } from '@/lib/chat-proof';
 import { activeProducts, inRegistryOrder, productCatalog, productPlural, type ProductCatalog } from '@/lib/products';
 
@@ -106,7 +106,61 @@ export function fullCheckBubble(products: readonly ChatProduct[] | null | undefi
   return ['Full check', productsWords(products), effortWords ? `${effortWords} effort` : null].filter(Boolean).join(' · ');
 }
 
-/** The confirm line: "Full check · Countertops · Opus 5.5 · High · up to $15". */
+// ── Price (#1823) ───────────────────────────────────────────
+
+/** "$5.00" → "$5", "$0.35" stays. */
+function plainDollars(value: string | null | undefined): string | null {
+  return dollars(value)?.replace(/\.00$/, '') ?? null;
+}
+
+/**
+ * The full check's price rule from GET /assistant/models: "$2 + $0.35 a content page, at least $5"
+ * (the owner's, 2026-10-21); null when the server does not say it.
+ */
+export function priceRuleWords(models: Pick<ChatModels, 'full_check_base_usd' | 'full_check_per_page_usd' | 'full_check_min_usd'> | null | undefined): string | null {
+  const base = plainDollars(models?.full_check_base_usd);
+  const perPage = plainDollars(models?.full_check_per_page_usd);
+  const minimum = plainDollars(models?.full_check_min_usd);
+  if (!base || !perPage) return null;
+  return `${base} + ${perPage} a content page${minimum ? `, at least ${minimum}` : ''}`;
+}
+
+/** The rule in a menu row's few words: "$2 + $0.35/page"; null when the server does not say it. */
+export function priceRuleShort(models: Pick<ChatModels, 'full_check_base_usd' | 'full_check_per_page_usd'> | null | undefined): string | null {
+  const base = plainDollars(models?.full_check_base_usd);
+  const perPage = plainDollars(models?.full_check_per_page_usd);
+  return base && perPage ? `${base} + ${perPage}/page` : null;
+}
+
+/** The full check's price before it runs, in parts: the amount ("$16") and what it counts ("40 content pages"), or the rule. */
+export interface FullCheckPriceParts {
+  price: string | null;
+  detail: string | null;
+}
+
+/**
+ * The full check's price before it runs: "$16" for "40 content pages" once code's plan has counted
+ * the pages of the products picked, else the rule ("$2 + $0.35 a content page, at least $5");
+ * null when neither is known.
+ */
+export function fullCheckPrice(plan: Pick<ChatFullCheckPlan, 'price_usd' | 'price_pages'> | null | undefined, rule: string | null): FullCheckPriceParts | null {
+  const price = plainDollars(plan?.price_usd);
+  if (price) {
+    const pages = plan?.price_pages;
+    return { price, detail: typeof pages === 'number' ? `${pages} content page${pages === 1 ? '' : 's'}` : null };
+  }
+  return rule ? { price: null, detail: rule } : null;
+}
+
+/** The same in one line: "Fixed price $16 · 40 content pages", or "Fixed price: $2 + $0.35 a content page, at least $5". */
+export function fullCheckPriceWords(plan: Pick<ChatFullCheckPlan, 'price_usd' | 'price_pages'> | null | undefined, rule: string | null): string | null {
+  const parts = fullCheckPrice(plan, rule);
+  if (!parts) return null;
+  if (!parts.price) return `Fixed price: ${parts.detail}`;
+  return parts.detail ? `Fixed price ${parts.price} · ${parts.detail}` : `Fixed price ${parts.price}`;
+}
+
+/** The confirm line: "Full check · Countertops · Opus 5.5 · High" (the price is its own line, #1823). */
 export function confirmWords(products: readonly ChatProduct[] | null, model: string | null, effortWords: string | null, cap: string | null): string {
   return ['Full check', productsWords(products) ?? 'this set’s product', model, effortWords, cap ? `up to ${cap}` : null].filter(Boolean).join(' · ');
 }
