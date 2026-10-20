@@ -240,7 +240,9 @@ def test_the_csv_carries_the_decisions(postgres_engine, tmp_path) -> None:  # ty
         assert by_id["F3"]["Decision"] == ""
         # Where the zero-click cloud drawing puts each item (#1581).
         assert by_id["F1"]["Should be"] == '37" (architect, page 1)'
-        assert by_id["F1"]["Proof"].startswith("Wrong, proved by code (clouded): Agreed by")
+        assert by_id["F1"]["Proof"].startswith(
+            "Wrong, decided by GV's reviewer (clouded): Decided by GV's reviewer: =SUM(A1)"
+        )
         assert by_id["F2"]["Proof"].startswith(
             "Not compared: could not read the vendor's value on page 3. Needed:"
         )

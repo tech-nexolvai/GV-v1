@@ -2009,7 +2009,7 @@ class EngineProposer:
     def __call__(
         self, failure: Failure, package: Package, number: int, history: Sequence[Round]
     ) -> Asked:
-        from app.review.assistant.chat_engine import HARNESS_ID
+        from app.review.assistant.chat_engine import CALL_ATTEMPTS, HARNESS_ID
         from app.review.assistant.chat_request import MODELS, thinking_config, thinking_tokens
 
         engine = self.engine
@@ -2017,7 +2017,10 @@ class EngineProposer:
             return Asked(None, "the check was stopped")
         model = MODELS[self.settings.model]
         pictures = sum(1 for block in package.pictures if block.get("type") == "image")
-        hold = engine._price(model, _PROMPT_TOKENS + 1_600 * pictures, _MAX_TOKENS) or 0
+        # Held for every attempt the call may make (#1769), not just the first.
+        hold = CALL_ATTEMPTS * (
+            engine._price(model, _PROMPT_TOKENS + 1_600 * pictures, _MAX_TOKENS) or 0
+        )
         with self.holds.lock:
             if engine._over(self.holds.reserved + hold) is not None:
                 self.holds.refused += 1
@@ -2133,7 +2136,7 @@ def web_proposals(
     topics only (never a drawing's text or values: client data stays local), standards bodies'
     domains only, at most 2 searches. The answer is saved as proposals for the conventions library
     (a person reviews them); nothing in it decides or explains any item of this check."""
-    from app.review.assistant.chat_engine import HARNESS_ID
+    from app.review.assistant.chat_engine import CALL_ATTEMPTS, HARNESS_ID
     from app.review.assistant.chat_request import MODELS, thinking_config
 
     if not settings.web_search or engine.cancel.is_set():
@@ -2142,7 +2145,7 @@ def web_proposals(
     if not topics:
         return None
     model = MODELS[settings.model]
-    hold = engine._price(model, 30_000, 4_000) or 0
+    hold = CALL_ATTEMPTS * (engine._price(model, 30_000, 4_000) or 0)
     with holds.lock:
         if engine._over(holds.reserved + hold) is not None:
             return {

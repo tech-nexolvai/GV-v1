@@ -479,16 +479,33 @@ class ChatFindingCriticOut(BaseModel):
     model: str | None = None
 
 
-type ChatDecision = Literal["agree", "not_a_problem"]
+type ChatDecision = Literal["agree", "not_a_problem", "undo"]
+"""`undo` (#1803): the reviewer takes the call back; the item is again what code found."""
 
 
 class ChatFindingDecisionIn(BaseModel):
-    """The reviewer's ✓ Agree / ✗ Not a problem on one finding (#1521)."""
+    """The reviewer's ✓ Agree / ✗ Not a problem on one finding (#1521). On the screen (#1803): an
+    Agree is "It's a mistake: add a red mark", a Not a problem is "It's fine: mark Right" or "Not
+    a mistake: remove the red mark" (the item is Right, noted "(reviewer)"), and an Undo takes the
+    reviewer's call back (the item is again what code found)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     decision: ChatDecision
     note: str | None = Field(default=None, max_length=2000)
+    should_be: str | None = Field(
+        default=None,
+        max_length=80,
+        description="With an Agree only: what the vendor's value should be, as the reviewer "
+        'gives it (the green "should be" on the cloud drawing, the letter and the register). '
+        "Empty or left out: what code knows (the architect's value).",
+    )
+
+    @model_validator(mode="after")
+    def _should_be_with_agree(self) -> ChatFindingDecisionIn:
+        if self.should_be is not None and self.should_be.strip() and self.decision != "agree":
+            raise ValueError("should_be goes with an agree only")
+        return self
 
 
 class ChatFindingDecisionOut(BaseModel):
@@ -498,6 +515,7 @@ class ChatFindingDecisionOut(BaseModel):
 
     decision: ChatDecision
     note: str | None = None
+    should_be: str | None = None
     by: str
     at: datetime
 
@@ -619,7 +637,7 @@ class ChatFindingProofOut(BaseModel):
         description="clouded: Wrong, proved by code (red cloud); right; not_compared: could not be "
         "compared under the architect-first rules (#1619: listed with its reason in the "
         "Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer "
-        "marked it not a problem."
+        "marked it Right (Not a problem; the vendor's files say 'Right (reviewer)')."
     )
     should_be: str | None = Field(
         default=None,
@@ -1713,6 +1731,14 @@ class ChatFileOut(BaseModel):
     url: str
 
 
+class ChatRemadeOut(ChatFileOut):
+    """The cloud drawing made again from the reviewer's decisions (its fields, as before), and
+    every file made with it (#1803: the check report, the Not-compared PDF and workbook, the
+    send-ready package), so the screen offers the new package at once, never the old one."""
+
+    made: list[ChatFileOut] = Field(default_factory=list)
+
+
 class ChatReviewActionOut(BaseModel):
     """A full check's review result (#1622, `review_action.review_action`, rules S0 to S7),
     decided by code on read from its findings with the reviewer's latest decisions and the state
@@ -1750,6 +1776,12 @@ class ChatMessageOut(BaseModel):
     thinking: bool | None = None
     blocks: list[ChatBlock] | None = None
     files: list[ChatFileOut] | None = None
+    package_outdated: bool | None = Field(
+        default=None,
+        description="A full check's send-ready package was made before the reviewer's newest "
+        "decision (#1803): the screen never hands it out, and makes it again. `null`: no package "
+        "or no decision.",
+    )
     cost_usd: str | None = None
     stopped: ChatStopped | None = None
     error: str | None = None
@@ -2123,6 +2155,16 @@ class AssistantModelsOut(BaseModel):
     message_cap_usd: str
     package_cap_usd: str
     package_spent_usd: str
+    worker_spent_usd: str = Field(
+        default="0.00",
+        description="What GV Review's own reading of the set at upload cost (the worker's paid "
+        "readers and page review), from the Usage page's rows (#1770). Not counted in the chats' "
+        "set budget.",
+    )
+    set_spent_usd: str = Field(
+        default="0.00",
+        description="The set's one meter (#1770): the chats' spend plus the worker's.",
+    )
     full_check_mode: Literal["roster", "simple"] = Field(
         default="roster",
         description="Which full check runs (`GV_ASSISTANT_FULL_CHECK_MODE`): the roster of "

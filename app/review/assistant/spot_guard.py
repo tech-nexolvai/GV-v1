@@ -15,6 +15,10 @@ states something is backed:
 - or it says the thing is not there ("not shown", "none"): an absence has no spot;
 - or it is a size code finds printed on that page, on that side's drawing (`dims.json`'s labels;
   a page whose labels are not known yet is never held against it);
+- or it is the vendor's value of a difference between two drawings whose architect side has its
+  spot or label: the item stays listed (Not compared: "no spot", with the read-number tool's
+  reason), never red, so a found difference is not lost because the page scan missed the
+  vendor's number (round 1, 2026-10-20);
 - or code made it: a GV rule result that states its requirement (GV's rule engine read the vendor's
   value itself), the vendor's own sum (a string's should-be), or a code witness that located the
   values (printed at both spots, the drawn-ink reading, a finish code read from the text, code's
@@ -108,6 +112,35 @@ def _note(finding: Mapping[str, Any], why: str) -> str:
     return note if len(note) <= MAX_NOTE else note[: MAX_NOTE - 1].rstrip() + "…"
 
 
+#: Findings that compare a vendor value with another drawing's (the AI found the difference).
+_BETWEEN_DRAWINGS: Final = frozenset({"architect", "gv_review", "brand_prototype"})
+
+
+def _found_difference(finding: Mapping[str, Any]) -> bool:
+    """A difference between two drawings whose architect side is backed (its spot, its label, or
+    a value printed on its page): the item is real; only the vendor's spot is unknown."""
+    if finding.get("source") not in _BETWEEN_DRAWINGS:
+        return False
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    return bool(finding.get("arch_box") or (dims or {}).get("architect"))
+
+
+def listed_only(finding: Mapping[str, Any]) -> bool:
+    """Whether `unbacked` keeps `finding` only to be listed (#1808): a difference between two
+    drawings whose vendor size has no spot (no box, no label) and no code witness that located
+    it. Such an item is never red (`proof.code_proved`)."""
+    if not _found_difference(finding):
+        return False
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    if finding.get("vendor_box") or (dims or {}).get("vendor"):
+        return False
+    witnesses = finding.get("witnesses")
+    found = {str(w) for w in witnesses} if isinstance(witnesses, list) else set()
+    if _LOCATED & found:
+        return False
+    return _size(_flat(finding.get("vendor"))) is not None
+
+
 def unbacked(finding: Mapping[str, Any], labels: Labels) -> str | None:
     """Why `finding` cannot be shown to the vendor (a plain line), or None when it can."""
     if finding.get("status") not in _SHOWN:
@@ -137,6 +170,11 @@ def unbacked(finding: Mapping[str, Any], labels: Labels) -> str | None:
             where = (vs_page, page) if side == "architect" else (page,)
             pages = [p for p in where if isinstance(p, int)]
             if _printed(labels, _box_file(finding), pages, _SIDES[side], size) is not False:
+                continue
+            if side == "vendor" and _found_difference(finding):
+                # A difference found between two drawings whose vendor value code cannot find
+                # (pen strokes the page scan missed): kept, listed as Not compared with the
+                # read-number tool's reason, never red (no spot, no code reading), never dropped.
                 continue
             return _note(
                 finding,

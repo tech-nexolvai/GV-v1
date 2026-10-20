@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Any, Final
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -26,6 +26,7 @@ from app.models import (
     Package,
     PackageRevision,
 )
+from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from app.review.assistant.chat_contract import (
     ChatFileOut,
     ChatMessageOut,
@@ -57,6 +58,7 @@ __all__ = [
     "message_out",
     "package_name",
     "recorded_chat_spend",
+    "recorded_worker_spend",
     "review_results",
     "stored_chat_spend",
     "unanswered_questions",
@@ -258,7 +260,10 @@ def add_file(
     size: int,
     mime: str,
     sha256: str,
+    decisions_held: int | None = None,
 ) -> AssistantChatFile:
+    """One file of a message. `decisions_held` (#1803): for the files made again from the
+    reviewer's decisions, how many decision rows they were made from (`package_outdated`)."""
     row = AssistantChatFile(
         id=file_id,
         chat_id=chat_id,
@@ -267,6 +272,7 @@ def add_file(
         size=size,
         mime=mime[:127],
         sha256=sha256,
+        decisions_held=decisions_held,
     )
     session.add(row)
     session.flush()
@@ -351,6 +357,20 @@ def file_out(row: AssistantChatFile) -> ChatFileOut:
     )
 
 
+def package_outdated(
+    message: AssistantChatMessage,
+    files: Iterable[AssistantChatFile],
+    decisions: int | None,
+) -> bool | None:
+    """Whether the answer's newest send-ready package (#1622) was made from fewer decision rows
+    than the answer has now (#1803); `None` without a package or a decision."""
+    made = [row for row in files if row.message_id == message.id and row.mime == "application/zip"]
+    if not decisions or not made:
+        return None
+    newest = max(made, key=lambda row: (row.created_at, str(row.id)))
+    return (newest.decisions_held or 0) < decisions
+
+
 def _usd(micros: int | None) -> str | None:
     if micros is None:
         return None
@@ -362,12 +382,14 @@ def message_out(
     files: Iterable[AssistantChatFile],
     decisions: Mapping[str, Mapping[str, Any]] | None = None,
     corrections: Mapping[str, Mapping[str, Any]] | None = None,
+    decisions_count: int | None = None,
 ) -> ChatMessageOut:
     """A stored message for the screen. An answer's accuracy is scored again from its stored
     findings with today's calibration (#1513; nothing is written). `decisions`: the answer's
     latest decision per finding id (#1521), added to its findings. `corrections`: later messages'
     newest correction per finding id (#1548, `chat_corrections`): each such finding is shown at its
-    newest version, marked as updated (or dropped) in a later message."""
+    newest version, marked as updated (or dropped) in a later message. `decisions_count`: how
+    many decision rows the answer has (#1803): a package made from fewer is out of date."""
     if message.role == "user":
         return ChatMessageOut.model_validate(
             {
@@ -393,6 +415,7 @@ def message_out(
             "thinking": message.thinking,
             "blocks": blocks,
             "files": [file_out(row) for row in files if row.message_id == message.id],
+            "package_outdated": package_outdated(message, files, decisions_count),
             "cost_usd": _usd(message.cost_micros),
             "stopped": message.stopped,
             "error": message.error,
@@ -594,6 +617,32 @@ def stored_chat_spend(session: Session, package_id: UUID) -> int:
             select(func.coalesce(func.sum(AssistantChatMessage.cost_micros), 0))
             .join(AssistantChat, AssistantChat.id == AssistantChatMessage.chat_id)
             .where(AssistantChat.package_id == package_id)
+        )
+        or 0
+    )
+
+
+def recorded_worker_spend(session: Session, package_id: UUID) -> int:
+    """What GV Review's own reading of the package cost (the worker's paid readers at upload, the
+    AI page review), from the Usage page's rows (#1770): every recorded call of the package's
+    revisions, or of their workflow runs, that is not a chat call. The chat's set budget does not
+    count it; the per-set meter shows it beside the chats' spend."""
+    revisions = select(PackageRevision.id).where(PackageRevision.package_id == package_id)
+    runs = (
+        select(ExtractionRun.id)
+        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+        .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
+        .where(WorkflowRun.package_revision_id.in_(revisions))
+    )
+    return int(
+        session.scalar(
+            select(func.coalesce(func.sum(ModelInvocation.cost_micros), 0)).where(
+                or_(
+                    ModelInvocation.extraction_run_id.in_(runs),
+                    ModelInvocation.package_revision_id.in_(revisions),
+                ),
+                ModelInvocation.prompt_id.not_like(f"{CHAT_PROMPT_PREFIX}%"),
+            )
         )
         or 0
     )

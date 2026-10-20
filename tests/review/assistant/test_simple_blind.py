@@ -324,9 +324,10 @@ def test_end_boxes_follow_codes_dimension_line() -> None:
 
 @dataclass
 class _CappedEngine(_Engine):
-    """A price cap that fits two looks: each call is charged only when it ends."""
+    """A price cap that fits two looks' holds (each held at both attempts, 2 x 50_000, #1769):
+    each call is charged only when it ends (50_000)."""
 
-    cap: int = 120_000
+    cap: int = 220_000
     spent: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -344,13 +345,15 @@ class _CappedEngine(_Engine):
 
 def test_looks_started_together_hold_their_price_and_never_pass_the_cap() -> None:
     """Six workers: each look holds its price while it runs (#1775, C4: thinking makes a call's
-    worst case bigger), so looks started together cannot pass the cap between them."""
+    worst case bigger; #1769: held at every attempt, a look that does not fit waits), so looks
+    started together cannot pass the cap between them. Two start, a third once both have ended
+    (their holds became their real cost), the rest are refused by the guard."""
     verified, item = _candidate()
     engine = _CappedEngine([])
     done = look_all(engine, [(verified, item)] * 6, BlindSettings())  # type: ignore[arg-type]
-    assert len(engine.calls) == 2 and engine.spent <= engine.cap
+    assert len(engine.calls) == 3 and engine.spent <= engine.cap
     refused = [d for d in done if d.outcome == "not_compared"]
-    assert len(refused) == 4 and all("runaway guard" in d.reason for d in refused)
+    assert len(refused) == 3 and all("runaway guard" in d.reason for d in refused)
 
 
 @pytest.mark.parametrize(("repair", "relook"), [(True, False), (False, True)])

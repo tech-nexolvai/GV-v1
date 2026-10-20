@@ -207,13 +207,20 @@ def notes_block(
 _DECIDED: Final[Mapping[str, str]] = {
     "agree": "agreed it is wrong",
     "not_a_problem": "marked it not a problem",
+    "undo": "took back their call (it is again what code found)",
 }
 
 
 def decision_note(
-    finding: Mapping[str, Any], decision: str, decided_by: str, note: str | None = None
+    finding: Mapping[str, Any],
+    decision: str,
+    decided_by: str,
+    note: str | None = None,
+    *,
+    should_be: str | None = None,
 ) -> tuple[str, int | None]:
-    """The set note a reviewer's decision adds: (text, page)."""
+    """The set note a reviewer's decision adds: (text, page). `should_be`: the value the reviewer
+    gave with an Agree (#1803)."""
     item = " ".join(str(finding.get("item") or "an item").split())
     values = []
     if finding.get("vendor"):
@@ -222,6 +229,8 @@ def decision_note(
         values.append(f"architect {finding['architect']}")
     shown = f" ({'; '.join(values)})" if values else ""
     text = f"{item}{shown}: {decided_by} {_DECIDED.get(decision, decision)}"
+    if should_be:
+        text += f", should be {' '.join(should_be.split())}"
     if note:
         text += f": {' '.join(note.split())}"
     page = finding.get("page")

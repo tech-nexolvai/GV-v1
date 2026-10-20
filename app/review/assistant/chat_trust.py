@@ -1336,7 +1336,7 @@ def _proof_cells(finding: Mapping[str, Any]) -> list[str]:
     check that proved it, or why it is not clouded (#1581, `proof.py`)."""
     proof = import_module("app.review.assistant.proof")
     found = proof.proof_of(finding)
-    words = proof.GROUP_WORDS[found["group"]]
+    words = proof.group_words(finding, found["group"])
     # A Not-compared item (#1619) says why, and what would settle it.
     settle = f" Needed: {found['settle']}." if found.get("settle") else ""
     detail = found["proof"] or (f"{found['reason']}.{settle}" if found["reason"] else None)

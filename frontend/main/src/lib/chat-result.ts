@@ -139,11 +139,31 @@ export function vendorValue(finding: Pick<ChatFinding, 'vendor'>): ValueWords {
 }
 
 /** What it should be (green): the server's "12" (architect 1' - 0")" split into the value and where it comes from. */
-export function shouldBeValue(finding: Pick<ChatFinding, 'proof' | 'architect'>): ValueWords | null {
+export function shouldBeValue(finding: Pick<ChatFinding, 'proof' | 'architect'> & Partial<Pick<ChatFinding, 'inches' | 'decision'>>, decision: FindingDecision | null | undefined = finding.decision): ValueWords | null {
+  // #1803: the value the reviewer gave with "It's a mistake: add a red mark", unless it is the one code knows.
+  const given = decision?.decision === 'agree' ? decision.should_be?.trim() : '';
+  if (given && sameValue(given) !== sameValue(suggestedShouldBe(finding))) return { main: quoteMarks(given), note: 'the reviewer' };
   const words = finding.proof?.should_be?.trim() || finding.architect?.trim() || '';
   if (!words) return null;
   const from = /^(.*?)\s*\((.*)\)\s*$/.exec(words);
   return from ? { main: quoteMarks(from[1]), note: quoteMarks(from[2]) } : { main: quoteMarks(words), note: null };
+}
+
+/** A value as compared with another: no spaces, one kind of inch and foot mark (`proof._same_value`). */
+const sameValue = (text: string) => text.replace(/\s+/g, '').replace(/[″”]/g, '"').replace(/′/g, "'").toLowerCase();
+
+/**
+ * #1803: the value "It's a mistake: add a red mark" starts with: what code knows the vendor's value
+ * should be (the architect's size, as code writes it: `37"`), else the architect's words when they
+ * hold a number; "" when the architect gives none.
+ */
+export function suggestedShouldBe(finding: Pick<ChatFinding, 'proof' | 'architect'> & Partial<Pick<ChatFinding, 'inches'>>): string {
+  const inches = inchNumber(finding.inches?.architect);
+  if (inches !== null) return `${inchWords(inches)}"`;
+  const proof = finding.proof?.should_be?.trim();
+  if (proof && !/\(reviewer\)\s*$/.test(proof)) return proof.replace(/\s*\(.*\)\s*$/, '');
+  const architect = finding.architect?.trim() ?? '';
+  return /\d/.test(architect) && !/GV Review'?s record|recorded check/i.test(architect) ? architect : '';
 }
 
 /** "5″ short" / "2″ over": the vendor's value against what it should be, from code's numbers. */
@@ -268,4 +288,9 @@ export function boxOnPicture(box: { x0: number; y0: number; x1: number; y1: numb
   if (!box) return null;
   const px = (points: number) => (points * dpi) / 72;
   return { left: px(box.x0), top: px(box.y0), width: Math.max(1, px(box.x1 - box.x0)), height: Math.max(1, px(box.y1 - box.y0)) };
+}
+
+/** #1803: "1 decision", "3 decisions" ("Package updated with your 2 decisions"). */
+export function decisionsWords(count: number): string {
+  return `${count} ${count === 1 ? 'decision' : 'decisions'}`;
 }
