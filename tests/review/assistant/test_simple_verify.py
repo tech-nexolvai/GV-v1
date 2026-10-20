@@ -945,3 +945,29 @@ def test_same_points_never_passes_a_failed_code_check() -> None:
     assert found.outcome == "not_compared" and found.reason_code == "different_reference"
     unsure = _one(_pair("p2.D1", "p1.D1", "unsure"))
     assert unsure.outcome == "not_compared"
+
+
+def test_same_points_on_an_end_the_ai_cannot_see_is_never_a_candidate() -> None:
+    """The weak point only adds caution (C3): an end the AI says it cannot see makes it unsure."""
+    doubtful = {
+        **_pair("p2.D1", "p1.D1", "same_points"),
+        "weak_point": "end_not_visible",
+        "note": "the left end is faint",
+    }
+    found = _one(doubtful)
+    assert found.outcome == "not_compared" and found.reason_code == "not_proved", found.reason
+    assert "faint" in found.reason
+    # Any other weak point leaves code's checks to decide, as before.
+    assert _one({**doubtful, "weak_point": "views_differ"}).outcome == "candidate"
+
+
+def test_same_points_naming_no_architect_label_is_grey() -> None:
+    found = _one(_pair("p2.D1", None, "same_points"))
+    assert found.outcome == "not_compared" and "names no architect label" in found.reason
+
+
+def test_same_points_with_a_value_code_cannot_read_is_grey() -> None:
+    docs = _documents()
+    docs["dims"]["pages"][1]["labels"][0]["inches"] = None
+    found = _one(_pair("p2.D1", "p1.D1", "same_points"), pack=_pack(dims=docs["dims"]))
+    assert found.outcome == "not_compared" and found.reason_code == "unreadable", found.reason

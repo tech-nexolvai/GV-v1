@@ -349,3 +349,40 @@ def test_a_funnel_that_cannot_be_made_never_stops_the_check(
     work = next(b for b in outcome.blocks if b.get("type") == "work_items")
     assert "funnel" not in work and outcome.stopped is None
     assert not (check.run_dir() / "funnel.json").exists()
+
+
+def test_same_points_is_counted_and_on_the_trail_unless_code_ends_it_right() -> None:
+    """C3: the AI says only "same points"; it is counted (the older names too), and a same_points
+    pair code did not end Right is a possible difference, so it is on the trail."""
+    item = Item(id="x", vendor=Region(FILE, 1, BOX))
+    pairs = (
+        _pair(1, 1, 11, "same_points"),
+        _pair(1, 2, 12, "same_points"),
+        _pair(1, 3, 12, "same_points"),
+    )
+    first = [
+        _v("p1.v1:p1.D1", "right", (PASS,)),
+        _v("p1.v1:p1.D2", "not_compared", (PASS, ROUND_FAILS), reason_code="not_proved"),
+        _v("p1.v1:p1.D3", "candidate", (PASS,)),
+    ]
+    final = [
+        _v("p1.v1:p1.D1", "right", (PASS,)),
+        _v("p1.v1:p1.D2", "not_compared", (PASS, ROUND_FAILS), reason_code="not_proved"),
+        _v("p1.v1:p1.D3", "red", (PASS, Check("blind", "pass"))),
+    ]
+    funnel = funnel_module.build(
+        [_item(1)],
+        compared=["p1.v1"],
+        skipped={},
+        outcomes={"p1.v1": _answered(1, pairs, ())},
+        verifications={"p1.v1": Verification(item, first)},
+        final=final,
+        meta={"run": "r1"},
+    )
+    verdicts = funnel["drawings"]["p1.v1"]["ai"]["verdicts"]
+    assert verdicts["same_points"] == 3
+    assert verdicts["same"] == 0 and verdicts["different"] == 0
+    trail = {row["key"]: row for row in funnel["trail"]}
+    assert set(trail) == {"p1.v1:p1.D2", "p1.v1:p1.D3"}
+    assert trail["p1.v1:p1.D2"]["ai"] == "same_points"
+    assert trail["p1.v1:p1.D3"]["final"] == "red"

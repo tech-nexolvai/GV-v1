@@ -35,6 +35,9 @@ SCHEMA: Final = "gv-simple-funnel/1"
 FILE: Final = "funnel.json"
 #: The AI verdicts that put an item on the trail (it, or code, saw a possible difference).
 _TRAIL_VERDICTS: Final = frozenset({"different", "different_points", "unsure"})
+#: `same_points` (C3: the AI says only that the two run between the same two points; code compares
+#: the numbers) is on the trail whenever code did not end it Right.
+_SAME_POINTS: Final = "same_points"
 _NOT_MADE: Final = "blind second look was not made ("
 _SKIPPED: Final = ("the check was stopped", "per-answer cap", "runaway guard", "product scope")
 
@@ -128,7 +131,14 @@ def _answer(outcome: CompareOutcome | None, check: Verification | None) -> dict[
         "paired_with_architect": sum(1 for p in result.pairs if p.architect_label),
         "verdicts": {
             name: verdicts.get(name, 0)
-            for name in ("same", "different", "different_points", "unsure", "no_architect_value")
+            for name in (
+                "same_points",
+                "different_points",
+                "unsure",
+                "no_architect_value",
+                "same",
+                "different",
+            )
         },
         "other_items": len(result.other_items),
         "other_kinds": dict(kinds),
@@ -221,6 +231,7 @@ def _trail(
         on_trail = (
             v.kind != "pair"
             or said in _TRAIL_VERDICTS
+            or (said == _SAME_POINTS and (end is None or end.outcome != "right"))
             or v.outcome == "candidate"
             or (end is not None and end.outcome == "red")
         )

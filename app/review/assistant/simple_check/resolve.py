@@ -66,7 +66,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.review.assistant.full_check_advocate import Check
 from app.review.assistant.simple_check.prompts import kinds_sentence
-from app.review.assistant.simple_check.schema import END_WORDS, canonical_ref
+from app.review.assistant.simple_check.schema import END_WORDS, canonical_ref, claimed_verdict
 from app.review.assistant.simple_check.verify import (
     DIFFERENT_POINTS,
     TOLERANCE,
@@ -383,8 +383,9 @@ _KIND_WORDS: Final[Mapping[str, str]] = {
 def _verdict(raw: Mapping[str, Any] | None) -> str:
     """The compare answer's verdict; `same_points` (recipe step 2: the AI says only that the two
     run between the same two points) is the older form's `different` here, since an item enters
-    the loop only when code reads the two values as different."""
-    said = str((raw or {}).get("verdict") or "unsure").strip().lower()
+    the loop only when code reads the two values as different; same_points of an end the AI
+    cannot see is `unsure` (`claimed_verdict`)."""
+    said = claimed_verdict(raw)
     return "different" if said == "same_points" else said
 
 
@@ -454,7 +455,10 @@ def _pair_entry(
         )
     v_in, a_in = _fraction(v.vendor.get("inches")), _fraction(v.architect.get("inches"))
     if v_in is None or a_in is None:
-        return Refusal("unreadable_label", "code could not read a label's value as a size")
+        return Refusal(
+            "unreadable_label",
+            "code could not read a label's value as a size, nor could the read-number tool",
+        )
     if abs(v_in - a_in) <= TOLERANCE:
         return Refusal("values_equal", "code reads the two values as equal")
     if verdict == "different":
@@ -1192,6 +1196,8 @@ def _check_ends(
             )
         ),
         "verdict": proposal.verdict,
+        # The repair's own claim is checked: the first answer's weak point is not carried over.
+        "weak_point": None,
     }
     result = replace(verify_pair(amended, item, pack, ink), key=v.key)
     return _judge(result, item, proposal.ends, facts)
@@ -1334,6 +1340,8 @@ def _check_eq_part(
             )
         ),
         "verdict": proposal.verdict,
+        # The repair's own claim is checked: the first answer's weak point is not carried over.
+        "weak_point": None,
     }
     result = replace(verify_pair(amended, item, pack, ink), key=v.key)
     return _judge(result, item, proposal.ends, {**facts, "eq_part": _ref(part), "of": _ref(vendor)})
@@ -1370,11 +1378,10 @@ def _check_newer_round(
         vendor_labels=(),
     )
     ends = proposal.ends if _known_ends(proposal) else _ends(raw)
-    verdict = (
-        proposal.verdict
-        if proposal.verdict in ("same_points", "same", "different")
-        else _verdict(raw)
-    )
+    own = proposal.verdict in ("same_points", "same", "different")
+    # Not sure this round: the first answer's own verdict as it said it (a same_points stays
+    # same_points, so code compares the numbers and never writes "the answer said different").
+    verdict = proposal.verdict if own else claimed_verdict(raw)
     amended = {
         **raw,
         "vendor_label": _ref(newer),
@@ -1382,6 +1389,7 @@ def _check_newer_round(
             zip(("vendor_from", "vendor_to", "architect_from", "architect_to"), ends, strict=True)
         ),
         "verdict": verdict,
+        **({"weak_point": None} if own else {}),
     }
     result = replace(verify_pair(amended, newest_item, pack, ink), key=v.key)
     return _judge(
