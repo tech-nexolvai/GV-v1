@@ -387,8 +387,8 @@ def build_worklist(folder: Path, main_file: str | None = None) -> WorkList:
 
 def combined_files(page_map: Mapping[str, Any], annotations: Any) -> Mapping[str, bool] | None:
     """Each file of the pack: whether it is one of GV's combined review sheets (the colour rule,
-    decided 2026-10-19). The set pack's own test of a plain file (`set_pack._page_entries`): a file
-    with a pasted drawing (a PDF stamp with a box) is a combined sheet; a file with none is an
+    decided 2026-10-19). As the label reader's test (`gv_marks.gv_combined`): a file with a pasted
+    drawing (a PDF stamp, its box readable or not) is a combined sheet; a file with none is an
     ordinary upload, read in every colour. `None` when the pack has no annotations list (unknown:
     the prompts then use the strict words).
 
@@ -405,7 +405,7 @@ def combined_files(page_map: Mapping[str, Any], annotations: Any) -> Mapping[str
     for entry in annotations:
         if not isinstance(entry, Mapping):
             continue
-        if entry.get("kind") == "Stamp" and entry.get("box"):
+        if entry.get("kind") == "Stamp":  # with or without a readable box (`gv_combined`)
             stamped.add(str(entry.get("file")))
         elif entry.get("kind") == "Square":
             boxed.add(str(entry.get("file")))

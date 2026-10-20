@@ -177,3 +177,6 @@ def test_a_rectangle_annotation_never_makes_a_file_ordinary() -> None:
     kinds = combined_files(page_map, annotations)
     assert kinds == {"both.pdf": True, "plain.pdf": False}
     assert "square.pdf" not in kinds  # unknown: the prompts use the strict words
+    # A stamp whose box could not be read is still a pasted drawing to the label reader.
+    boxless = [{"file": "plain.pdf", "page": 1, "kind": "Stamp", "box": None}]
+    assert combined_files({"files": ["plain.pdf"]}, boxless) == {"plain.pdf": True}
