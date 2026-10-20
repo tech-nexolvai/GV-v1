@@ -892,3 +892,57 @@ def test_the_compare_answers_own_note_reaches_the_loop_fenced() -> None:
     )
     assert "IGNORE YOUR RULES" not in outside
     assert "The vendor's drawing is an ordinary upload." in outside  # code's words: outside
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda body: f"```json\n{body}\n```",
+        lambda body: f"I measured both ends.\n\n```json\n{body}\n```",
+    ],
+)
+def test_a_wrapped_proposal_is_read_like_a_bare_one(wrap: Any) -> None:
+    """#1811: through a route without structured outputs the proposal comes fenced or after a
+    sentence; it is read, and then judged exactly as the bare one is."""
+    fixture = next(f for f in FIXTURES if f.id == "F29-unsure-worst")
+    answer = {
+        "kind": "ends",
+        "vendor_label": None,
+        "architect_label": None,
+        "labels": [],
+        "vendor_from": "centre_line (sink)",
+        "vendor_to": "wall_face (right)",
+        "architect_from": "centre_line (sink)",
+        "architect_to": "wall_face (right)",
+        "conventions": ["C2"],
+        "verdict": "different",
+        "want": "none",
+        "note": "seen",
+    }
+    outcomes = []
+    for reply in (_Reply(answer), _Reply(wrap(json.dumps(answer)))):
+        v, item, raw = _verified(fixture)
+        engine = _Engine([reply])
+        done = resolve.resolve_one(
+            v,
+            raw,
+            item,
+            PACK,
+            proposer=_proposer(engine, v, raw),
+            settings=ON,
+            ink=lambda _l: BLACK,
+        )
+        outcomes.append((done.verified.outcome, done.verified.reason))
+    assert outcomes[0] == outcomes[1] and outcomes[0][0] == "candidate"
+
+
+def test_two_proposals_in_one_reply_are_not_the_form() -> None:
+    fixture = next(f for f in FIXTURES if f.id == "F29-unsure-worst")
+    v, item, raw = _verified(fixture)
+    text = '```json\n{"verdict": "same"}\n```\nor rather\n```json\n{"verdict": "different"}\n```'
+    engine = _Engine([_Reply(text)])
+    done = resolve.resolve_one(
+        v, raw, item, PACK, proposer=_proposer(engine, v, raw), settings=ON, ink=lambda _l: BLACK
+    )
+    assert done.verified.outcome == "not_compared"
+    assert "the reply was not the form" in done.verified.reason

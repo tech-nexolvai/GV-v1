@@ -65,6 +65,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.review.assistant.full_check_advocate import Check
+from app.review.assistant.reply_json import json_of_reply, log_unreadable
 from app.review.assistant.simple_check.prompts import kinds_sentence
 from app.review.assistant.simple_check.schema import END_WORDS, canonical_ref
 from app.review.assistant.simple_check.verify import (
@@ -2041,11 +2042,13 @@ class EngineProposer:
             return Asked(None, "the model declined", usage, model.id)
         if reply.stop_reason == "max_tokens":
             return Asked(None, "the reply was cut short", usage, model.id)
+        text = reply.text()
         try:
-            parsed = json.loads(reply.text())
+            parsed = json_of_reply(text)
         except ValueError:
             parsed = None
         if not isinstance(parsed, Mapping):
+            log_unreadable(_log, "simple resolve", str(failure.key), text)
             return Asked(None, "the reply was not the form", usage, model.id)
         page = (v.vendor or {}).get("page") if failure.kind == "pair" else None
         return Asked(
