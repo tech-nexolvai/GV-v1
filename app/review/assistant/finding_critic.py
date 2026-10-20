@@ -33,6 +33,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
+from app.review.assistant.colour_rule import COLOUR_RULE
+
 __all__ = [
     "CRITIC_BATCH",
     "CRITIC_BATCHES",
@@ -88,15 +90,14 @@ SYSTEM: Final = (
 
 _INSTRUCTIONS: Final = (
     "Each finding above came with two crops: first the reference drawing (the architect's "
-    "drawing, or a brand prototype when the source says so), then the vendor's shop drawing. GV's "
-    "reviewers have drawn coloured markup (red, yellow, blue or green notes, clouds and numbers) on "
-    "top of the drawings; the drawings' own ink is black or grey.\n"
+    "drawing, or a brand prototype when the source says so), then the vendor's shop drawing. "
+    f"{COLOUR_RULE}\n"
     'For each finding, answer four questions, each "yes", "no" or "unsure":\n'
     "- same_item: is the item the same thing on both crops?\n"
     "- right_dimension: is the claimed reference value the dimension of that item, not a "
     "neighbouring dimension?\n"
-    "- vendor_ink: is the claimed vendor value printed in the vendor's own black or grey ink, not "
-    "a coloured GV note?\n"
+    "- vendor_ink: is the claimed vendor value printed in the vendor's own ink, not a GV markup "
+    "note?\n"
     "- architect_side: is the reference crop what the source says (for source architect, the "
     "architect's drawing and not a brand prototype)?\n"
     'note: one short sentence saying what is wrong when any answer is no, else "".\n'

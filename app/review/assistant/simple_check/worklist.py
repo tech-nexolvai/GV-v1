@@ -55,6 +55,7 @@ from app.review.assistant.simple_check.schema import (
     Drawing,
     Label,
     PageCover,
+    Sheet,
     Skipped,
     WorkItem,
     WorkList,
@@ -70,6 +71,7 @@ __all__ = [
     "MATCH_FILE",
     "MIN_DRAWING_PT",
     "build_worklist",
+    "combined_files",
     "worklist_from",
 ]
 
@@ -105,6 +107,13 @@ def _read(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+def _sheet(combined: Mapping[str, bool] | None, file: str) -> Sheet | None:
+    """A file's kind for its drawings (`schema.Drawing.sheet`), `None` when not known."""
+    if combined is None or file not in combined:
+        return None
+    return "combined" if combined[file] else "ordinary"
 
 
 def _by_page(document: Any, key: str = "pages") -> dict[tuple[str, int], Mapping[str, Any]]:
@@ -405,15 +414,44 @@ def build_worklist(folder: Path, main_file: str | None = None) -> WorkList:
     page_map = read_page_map(folder, assume=True, main_file=main_file)
     if page_map is None:
         raise FileNotFoundError(f"no page map in {folder}")
+    annotations = _read(folder / "annotations.json")
     return worklist_from(
         page_map,
         dims=_read(folder / "dims.json"),
         scales=_read(folder / "scales.json"),
         notes=_read(folder / "notes.json"),
-        annotations=_read(folder / "annotations.json"),
+        annotations=annotations,
         matches=_read(folder / MATCH_FILE),
         main_file=main_file,
+        combined=combined_files(page_map, annotations),
     )
+
+
+def combined_files(page_map: Mapping[str, Any], annotations: Any) -> Mapping[str, bool] | None:
+    """Each file of the pack: whether it is one of GV's combined review sheets (the colour rule,
+    decided 2026-10-19). As the label reader's test (`gv_marks.gv_combined`): a file with a pasted
+    drawing (a PDF stamp, its box readable or not) is a combined sheet; a file with none is an
+    ordinary upload, read in every colour. `None` when the pack has no annotations list (unknown:
+    the prompts then use the strict words).
+
+    A file with a rectangle annotation (`/Square`) and no stamp is left out (unknown, the strict
+    words): the label reader's own test (`gv_marks.gv_combined`, via `stamp_text.carries_drawing`)
+    counts a snapshot pasted as a rectangle with the drawing inside it, and this list cannot tell
+    one from a reviewer's rectangle, so it never calls such a file ordinary."""
+    if not isinstance(annotations, list):
+        return None
+    files = page_map.get("files") if isinstance(page_map, Mapping) else None
+    names = [str(name) for name in files] if isinstance(files, list) else []
+    stamped: set[str] = set()
+    boxed: set[str] = set()
+    for entry in annotations:
+        if not isinstance(entry, Mapping):
+            continue
+        if entry.get("kind") == "Stamp":  # with or without a readable box (`gv_combined`)
+            stamped.add(str(entry.get("file")))
+        elif entry.get("kind") == "Square":
+            boxed.add(str(entry.get("file")))
+    return {name: name in stamped for name in names if name in stamped or name not in boxed}
 
 
 def worklist_from(
@@ -425,11 +463,13 @@ def worklist_from(
     annotations: Any = None,
     matches: Any = None,
     main_file: str | None = None,
+    combined: Mapping[str, bool] | None = None,
 ) -> WorkList:
     """The work list from the pack's documents (pure: `build_worklist` reads them). `annotations`
     (the pack's `annotations.json`): GV's typed item titles are read from it, only where one is
     exactly an architect item's title (never a review comment). `matches`: the AI page
-    matcher's saved answers (`page_match.MATCH_FILE`)."""
+    matcher's saved answers (`page_match.MATCH_FILE`). `combined`: each file's kind
+    (`combined_files`); a file it does not name is of unknown kind."""
     file = _main_file(page_map, main_file)
     if file is None:
         return WorkList(file="", items=(), skipped=(), pages=())
@@ -604,6 +644,7 @@ def worklist_from(
                 scale_in_per_pt=in_per_pt,
                 scale_note=note,
                 detail=any(_DETAIL.search(t) for t in titles),
+                sheet=_sheet(combined, entry_file),
             )
             drawings[half.ref] = drawing
             if half.role == "architect" and (separate or half.from_upload):
