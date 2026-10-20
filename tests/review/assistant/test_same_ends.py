@@ -200,7 +200,8 @@ def test_a_value_not_drawn_to_its_size_is_not_proved() -> None:
 
 def test_an_end_on_another_tied_place_is_a_different_point() -> None:
     """The vendor's 36" ends on the level a 10" piece starts from on both drawings; the
-    architect's 30" does not end there: the two dimensions end at different places (only ever a block)."""
+    architect's 30" does not end there: the two dimensions end at different places (only ever a block).
+    """
     arch, vendor = _pair()
     for drawing in (arch, vendor):
         drawing.up(46, -25, bottom_in=36)  # a 10" piece from the 36" level up: ties that level
