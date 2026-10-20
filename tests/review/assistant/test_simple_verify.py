@@ -524,22 +524,22 @@ def test_a_different_points_its_own_ends_contradict_goes_to_the_blind_look() -> 
     assert with_blind(found, disagrees).outcome == "not_compared"
 
 
-def test_a_different_points_code_geometry_contradicts_goes_to_the_blind_look(
+def test_a_different_points_code_geometry_never_overrules_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Code's drawn extents agreeing outrank the AI's own end words: the blind look names the
-    ends (and must name the same ones on both drawings for red)."""
-    ends = ("floor", "top of counter", "floor", "underside of counter")
+    """Code's drawn geometry is no evidence against the AI's "different points": `same_extent`
+    lets two lines' ends differ by the values' own difference, which is what a top against an
+    underside looks like. With end words naming different points, it stays grey whatever the
+    geometry says, for "different points" and for vague end words alike."""
     monkeypatch.setattr(v, "same_extent", lambda *a: ("same_extent", "both ends on one line"))
-    found = _one(_pair("p2.D1", "p1.D1", "different_points", ends))
-    assert found.outcome == "candidate"
-    assert "code's geometry shows the same extent" in next(
-        c.why for c in found.checks if c.name == v.OBJECTION
-    )
-    seen = replace(_agrees(found), vendor_to="top of counter", architect_to="underside of counter")
-    assert with_blind(found, seen).outcome == "not_compared"
-    agreed = replace(_agrees(found), vendor_to="top of counter", architect_to="top of counter")
-    assert with_blind(found, agreed).outcome == "red"
+    for ends in (
+        ("floor", "top of counter", "floor", "underside of counter"),
+        ("", "", "", ""),
+    ):
+        found = _one(_pair("p2.D1", "p1.D1", "different_points", ends))
+        assert found.outcome == "not_compared" and not found.needs_blind
+        assert found.reason == v.DIFFERENT_POINTS
+        assert all(c.name != v.OBJECTION for c in found.checks)
 
 
 @pytest.mark.parametrize(

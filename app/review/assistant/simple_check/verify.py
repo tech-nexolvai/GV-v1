@@ -941,33 +941,25 @@ def _trade_check(measures: object, ends: tuple[Ends, str]) -> Check:
 #: The check that records code's answer to the AI's own "different points" (`objection`): it
 #: passes when code's evidence contradicts it, so the pair is verified like any other.
 OBJECTION: Final = "objection"
-#: The `geometry` check's words when code's drawn extents agree (`same_extent`).
-_SAME_EXTENT: Final = "same extent: "
 
 
-def _objection(matched: tuple[Ends, str], geometry: Check, differ: bool) -> Check | None:
+def _objection(matched: tuple[Ends, str], differ: bool) -> Check | None:
     """Code's answer to the AI's "different points" (DeepSeekMath-V2: check the "no" as well as
-    the "yes"): a passed `objection` check when code's own evidence contradicts it (the AI's own
-    end words name the same two points on both drawings, or code's drawn extents agree) and code
-    reads two different values; None when nothing contradicts it (the AI's "no" stands). A pair
-    it lets through still needs every code check and the blind look to be red."""
-    if not differ:
+    the "yes"): a passed `objection` check when the AI's own end words name the same two points on
+    both drawings and code reads two different values; None otherwise (the AI's "no" stands). A
+    pair it lets through still needs every code check and the blind look to be red.
+
+    Code's drawn geometry (`same_extent`) is never evidence against the "no": it allows the two
+    lines' ends to differ by the values' own difference, which is exactly what two dimensions to
+    different points look like (a top against an underside), so it only ever blocks."""
+    if not differ or matched[0] != "same":
         return None
-    if matched[0] == "same":
-        return Check(
-            OBJECTION,
-            "pass",
-            f"the AI said {DIFFERENT_POINTS}, but its own end words name the same two points "
-            f"({matched[1]})",
-        )
-    if geometry.outcome == "pass" and geometry.why.startswith(_SAME_EXTENT):
-        return Check(
-            OBJECTION,
-            "pass",
-            f"the AI said {DIFFERENT_POINTS}, but code's geometry shows the same extent "
-            f"({geometry.why[len(_SAME_EXTENT):]})",
-        )
-    return None
+    return Check(
+        OBJECTION,
+        "pass",
+        f"the AI said {DIFFERENT_POINTS}, but its own end words name the same two points "
+        f"({matched[1]})",
+    )
 
 
 def _geometry_check(vendor: Mapping[str, Any], architect: Mapping[str, Any], pack: Pack) -> Check:
@@ -981,9 +973,7 @@ def _geometry_check(vendor: Mapping[str, Any], architect: Mapping[str, Any], pac
     )
     if state == "different_extent":
         return Check("geometry", "fail", f"code's geometry shows different points: {why}")
-    if state == "same_extent":
-        return Check("geometry", "pass", f"{_SAME_EXTENT}{why}")
-    return Check("geometry", "pass", f"cannot tell: {why}")
+    return Check("geometry", "pass", why if state == "same_extent" else f"cannot tell: {why}")
 
 
 def _slip_check(vendor: Fraction, architect: Fraction, drawn: bool) -> Check:
@@ -1283,19 +1273,9 @@ def _verify_pair(
         _geometry_check(vendor, architect, pack),
     ]
     if objected:
-        objection = _objection(matched, checks[-1], _differ(v_in, a_in))
+        objection = _objection(matched, _differ(v_in, a_in))
         if objection is None:
             return one.grey(DIFFERENT_POINTS, "different_reference", checks)
-        if matched[0] != "same":
-            # Code's drawn extent outranks the AI's own end words; the blind look names the ends.
-            checks = [
-                (
-                    Check("ends", "pass", f"code's geometry shows the same extent; {matched[1]}")
-                    if check.name == "ends"
-                    else check
-                )
-                for check in checks
-            ]
         checks.append(objection)
     if verdict == "same" or not _differ(v_in, a_in):
         return _right(one, checks, matched, v_in, a_in, said_different=verdict == "different")
