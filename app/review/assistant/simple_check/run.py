@@ -1243,23 +1243,26 @@ class _Run:
         sink = sink_decided_items(live, main_file)
         if not decided and not sink:
             return verified
-        kept: list[tuple[Verified, Item]] = []
-        for pair in verified:
-            key = self._label_key(pair[0])
-            if key in decided:
-                continue
-            item = sink.get(key) if key is not None else None
-            if key is not None and item is not None:
-                if sink_agrees(item, pair[0]):
-                    continue
-                if engine.book.absorb(str(item["id"])):
-                    engine._show_dropped(
-                        str(item["id"]),
-                        "The comparison reads this label otherwise: its own item speaks.",
-                    )
-                sink.pop(key, None)
-            kept.append(pair)
-        return kept
+        keys = [self._label_key(pair[0]) for pair in verified]
+        # Every compare item on a label is judged before any is dropped: one that contradicts
+        # code's item keeps them all, and code's item goes.
+        contradicted = {
+            key
+            for key, pair in zip(keys, verified, strict=True)
+            if key is not None and key in sink and not sink_agrees(sink[key], pair[0])
+        }
+        for key in contradicted:
+            item = sink.pop(key)
+            if engine.book.absorb(str(item["id"])):
+                engine._show_dropped(
+                    str(item["id"]),
+                    "The comparison reads this label otherwise: its own item speaks.",
+                )
+        return [
+            pair
+            for key, pair in zip(keys, verified, strict=True)
+            if key not in decided and key not in sink
+        ]
 
     def _label_key(self, one: Verified) -> tuple[str, int, str] | None:
         vendor = one.vendor

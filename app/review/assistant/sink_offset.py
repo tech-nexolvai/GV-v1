@@ -704,6 +704,8 @@ def _cabinet_face(frame: _Frame, u0: float, u1: float, front: float, pt_per_in: 
         if abs(v1 - front) <= _END_PT
         and front - v0 >= CABINET_SIDE_IN * pt_per_in
         and first + inside <= u <= last - inside
+        # a dimension line (a tick or arrow at an end) is never a cabinet side
+        and not (_ticked(frame, (u, v0)) or _ticked(frame, (u, v1)))
     ]
     left = any(u0 - reach <= u < u0 - _SAME_PT for u in sides)
     right = any(u1 + _SAME_PT < u <= u1 + reach for u in sides)
@@ -803,7 +805,14 @@ def _architect_for(
             "unknown", drawing=drawing, why="a label in front of the architect's cut-out"
         )
     if vendor_value is not None:
+        written = _inches(vendor_value)
         for other, _plans in architects:
+            if written in " ".join(other.words.split()):
+                return _Architect(
+                    "unknown",
+                    drawing=drawing,
+                    why=f"the architect's page words give {written}: code cannot tell it is not this offset",
+                )
             for label in other.labels:
                 value = _fraction(label.get("inches"))
                 if value is not None and _same(value, vendor_value):
@@ -1178,11 +1187,13 @@ def agrees(
         if mine == "check" and theirs == "different":
             return False  # the vendor follows the architect here; the other found a difference
     if str(source or "architect") != "architect":
-        return True
+        return theirs == mine  # another reference (a prototype, the vendor's own sums) speaks
+    if architect in (None, ""):
+        return True  # the architect prints nothing there: the same as this check found
     to_inches = import_module("app.review.assistant.finding_checks").to_inches
-    given = to_inches(str(architect)) if architect not in (None, "") else None
+    given = to_inches(str(architect))
     if given is None:
-        return True
+        return False  # an architect's words code cannot read as one value ("see detail")
     expected = to_inches(str(finding.get("architect") or ""))
     return expected is not None and _same(Fraction(given), Fraction(expected))
 

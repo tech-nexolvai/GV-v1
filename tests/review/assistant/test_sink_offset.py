@@ -510,3 +510,72 @@ def test_the_simple_check_keeps_a_contradicting_compare_item_and_drops_codes() -
     kept = run_module._Run._without_run_fit(fake, [(right, "a")])
     assert kept == [(right, "a")] and fake.dropped == ["P1"]
     assert fake.engine.book.live() == []
+
+
+def _depth_dimension(x: float) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """A ticked 24" depth dimension drawn inside a top's plan (never a cabinet side)."""
+    return [
+        ((x, BACK_Y), (x, FRONT_Y)),
+        ((x - 2, BACK_Y + 2), (x + 2, BACK_Y - 2)),
+        ((x - 2, FRONT_Y + 2), (x + 2, FRONT_Y - 2)),
+    ]
+
+
+def test_depth_dimensions_on_a_top_plan_are_not_cabinet_sides() -> None:
+    lines = _plan_lines(3.0, cabinets=False) + _depth_dimension(50.0) + _depth_dimension(150.0)
+    vendor = _drawing(FILE, [_label("3", 3.0)])
+    (plan,) = so.drawing_plans(vendor, lambda _f, _p: lines) or []
+    assert plan.unsure is not None and "cabinets' front" in plan.unsure
+    (made,) = so.findings_for(vendor, [plan], [], STANDARD)
+    assert made["status"] == "check"
+
+
+def test_the_vendors_value_in_the_architects_page_words_is_not_silent() -> None:
+    lines = {FILE: _plan_lines(3.0), ARCH: _plan_lines(4.0, dimension=False)}
+    vendor = _drawing(FILE, [_label("3", 3.0)])
+    noted = so.Drawing(ARCH, 1, (-10.0, 50.0, 210.0, 200.0), (), PT_PER_IN, 'SINK 3" FROM CAB')
+    plans = so.drawing_plans(vendor, lambda f, _p: lines[f]) or []
+    architects = [(noted, so.drawing_plans(noted, lambda f, _p: lines[f]))]
+    (made,) = so.findings_for(vendor, plans, architects, STANDARD)
+    assert made["status"] == "check" and "page words" in made["why"]
+
+
+def test_other_references_and_unreadable_architect_words_are_never_hidden() -> None:
+    (right,) = _findings("4", (None, False))
+    assert not so.agrees(right, "check", "24", "brand_prototype")
+    assert not so.agrees(right, "check", "see detail", "architect")
+    assert so.agrees(right, "check", "", "architect")
+    assert so.agrees(right, "same", '4"', "architect")
+    assert not so.agrees(right, "different", '4"', "architect")
+
+
+def test_the_simple_check_judges_every_compare_item_on_a_label_first() -> None:
+    """A compare item agreeing with code's red and another saying Right on the same label: the
+    Right contradicts it, so both compare items stay and code's red goes (never one red lost)."""
+    from app.review.assistant.simple_check import run as run_module
+
+    (red,) = _findings("3", (None, False), vendor_offset=3.0)
+    fake = _simple([{**red, "id": "P1", "created_by": so.CREATED_BY}])
+    vendor = {"id": "D10", "page": 3, "file": FILE}
+    agreeing = SimpleNamespace(vendor=vendor, outcome="red", finding={"architect": '4"'})
+    right = SimpleNamespace(vendor=vendor, outcome="right", finding={"architect": '3"'})
+    kept = run_module._Run._without_run_fit(fake, [(agreeing, "a"), (right, "b")])
+    assert kept == [(agreeing, "a"), (right, "b")] and fake.dropped == ["P1"]
+
+
+def test_the_simple_check_keeps_the_note_when_the_comparisons_item_is_not_kept() -> None:
+    """On a Cabinet-only pick the compare item may be out of scope (`_add` gives None): the
+    sink's Not-compared note then stays, so the label never ends up with nothing."""
+    from app.review.assistant.simple_check import run as run_module
+
+    (note,) = _findings("3", None, vendor_offset=3.0)
+    fake = _simple([{**note, "id": "N1", "created_by": so.CREATED_BY}])
+    fake.out_of_scope, fake.not_listed, fake.rows, fake.unpaired = 0, 0, [], []
+    vendor = {"id": "D10", "page": 3, "file": FILE}
+    one = SimpleNamespace(vendor=vendor, outcome="red", finding={"architect": '5"'})
+    fake._add = lambda _one: None
+    run_module._Run._record(fake, [(one, SimpleNamespace(id="I1"))])
+    assert [f["id"] for f in fake.engine.book.live()] == ["N1"] and fake.out_of_scope == 1
+    fake._add = lambda _one: True
+    run_module._Run._record(fake, [(one, SimpleNamespace(id="I1"))])
+    assert fake.engine.book.live() == [] and fake.dropped == ["N1"]
