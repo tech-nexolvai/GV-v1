@@ -32,8 +32,14 @@ present), with where it comes from: "GV standard", "project value" or "drawing s
 
 **The architect** is looked at the same way, on the work item's architect drawings (one sink
 cut-out each side, paired by order along the run): the architect **prints** that span (a proved
-label), is **silent** (code proved the architect's sink plan and no label stands between its
-cut-out and front line) or **unknown** (anything else: no sink plan code could read, two values).
+label), is **silent** (one vendor sink; every architect drawing of the item read; one proved sink
+plan with no label anywhere in the strip between its cut-out and front line; and the vendor's value
+printed nowhere on the architect's drawings) or **unknown** (anything else: no sink plan code could
+read, two values, an unreadable drawing, the vendor's value printed elsewhere).
+
+**The cabinets' front.** GV's rule measures from the cabinet's front, never the top's edge (the
+overhang is its own value). The front line counts only when a cabinet side meets it on each side
+of the cut-out (a cabinet plan); a top's plan with only its outline is unsure.
 
 | Vendor | Architect | Item |
 |---|---|---|
@@ -49,7 +55,10 @@ cut-out and front line) or **unknown** (anything else: no sink plan code could r
 The first four, and the fifth when the vendor prints the architect's value, **decide** the vendor's
 label: the answer's other items on it (the compare call's, a helper's) are replaced, so there is
 one item and no blind look is paid for it (a vendor value that differs from the architect's other
-value stays the architect comparison's: never red from GV's standard, never hidden from it). A Not-compared
+value stays the architect comparison's: never red from GV's standard, never hidden from it). An
+item on the label that **contradicts** this check (a Right where it says Wrong or the other way
+round, an architect value other than this item's) is never replaced: it speaks, and this check
+stands aside (`agrees`; in the simple check, code's item goes). A Not-compared
 note of the last kind is only added where the answer has no other item on the label (the
 architect comparison then speaks for it).
 
@@ -87,7 +96,10 @@ __all__ = [
     "Setting",
     "SinkPlan",
     "add_to_answer",
+    "agrees",
+    "agrees_with_compare",
     "check_pack",
+    "decided_items",
     "decided_labels",
     "findings_for",
     "noted_labels",
@@ -121,10 +133,15 @@ HOLE_REACH_IN: Final = 8.0
 LINE_REACH_IN: Final = 12.0
 DEPTH_MIN_IN: Final = 12.0
 DEPTH_MAX_IN: Final = 42.0
+#: A cabinet side runs back at least this far from the front line, within this reach of the
+#: cut-out, and at least this far inside the front line's ends (`_cabinet_face`).
+CABINET_SIDE_IN: Final = 6.0
+CABINET_REACH_IN: Final = 30.0
+CABINET_END_IN: Final = 1.0
 #: A second front edge this close in front of the front line makes the front unsure.
 SECOND_EDGE_IN: Final = 4.0
 #: The printed value within this share of the drawn length (or `DRAWN_SLACK_IN`).
-DRAWN_SHARE: Final = 0.35
+DRAWN_SHARE: Final = 0.2
 DRAWN_SLACK_IN: Final = 0.75
 #: A line "across the cut-out" covers this share of its width.
 COVER: Final = 0.9
@@ -521,12 +538,13 @@ def _offsets(
 ) -> tuple[list[Offset], int]:
     """The offsets printed in front of the cut-out, and how many labels stand in that strip."""
     boxes = [(label, _turn_box(label["box"], side)) for label in labels if _box_ok(label)]
-    width = u1 - u0
+    # Any label in the strip between the cut-out's front edge and the front line, anywhere along
+    # the drawing (a dimension placed off to the side still counts): an architect is silent only
+    # when there is none.
     in_band = sum(
         1
-        for _label, (bu0, bv0, bu1, bv1) in boxes
-        if u0 - width / 2 <= (bu0 + bu1) / 2 <= u1 + width / 2
-        and edge - _END_PT <= (bv0 + bv1) / 2 <= front + _END_PT
+        for _label, (_bu0, bv0, _bu1, bv1) in boxes
+        if edge - _END_PT <= (bv0 + bv1) / 2 <= front + _END_PT
     )
     found: list[Offset] = []
     span = front - edge
@@ -651,6 +669,12 @@ def _plan(
             "another line parallel to the front is drawn near the run's front line (a cabinet "
             "face under the top?): code cannot tell which edge the offset is measured from"
         )
+    elif not _cabinet_face(frame, u0, u1, front_line, pt_per_in):
+        unsure = (
+            "code could not prove the front line is the cabinets' front (no cabinet side meets it "
+            "on each side of the sink; a top's edge would add the overhang): the offset is "
+            "measured from the cabinet's front"
+        )
     offsets, in_band = _offsets(frame, labels, side, u0, u1, v1, front_line, pt_per_in)
     for later in second:
         more, extra = _offsets(frame, labels, side, u0, u1, v1, later, pt_per_in)
@@ -661,6 +685,29 @@ def _plan(
     centre = ((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2)
     order = centre[0] if side in ("top", "bottom") else centre[1]
     return SinkPlan(rect, side, v1, front_line, (u0, u1), tuple(offsets), in_band, unsure, order)
+
+
+def _cabinet_face(frame: _Frame, u0: float, u1: float, front: float, pt_per_in: float) -> bool:
+    """The front line is the cabinets' front, not a top's edge (GV's rule measures from the
+    cabinet's front): a cabinet side, a line at right angles to it running back at least
+    `CABINET_SIDE_IN` from it, meets it on each side of the cut-out, within `CABINET_REACH_IN` of
+    the cut-out and not at the front line's own ends (a top's outline has only its two ends)."""
+    pieces = [(a, b) for a, b, _v in frame._at(front)]
+    if not pieces:
+        return False
+    first, last = min(a for a, _b in pieces), max(b for _a, b in pieces)
+    inside = CABINET_END_IN * pt_per_in
+    reach = CABINET_REACH_IN * pt_per_in
+    sides = [
+        u
+        for v0, v1, u in frame.along
+        if abs(v1 - front) <= _END_PT
+        and front - v0 >= CABINET_SIDE_IN * pt_per_in
+        and first + inside <= u <= last - inside
+    ]
+    left = any(u0 - reach <= u < u0 - _SAME_PT for u in sides)
+    right = any(u1 + _SAME_PT < u <= u1 + reach for u in sides)
+    return left and right
 
 
 def _sixteenths(points: float, pt_per_in: float) -> Fraction:
@@ -712,9 +759,23 @@ class _Architect:
 
 
 def _architect_for(
-    index: int, count: int, architects: Sequence[tuple[Drawing, list[SinkPlan] | None]]
+    index: int,
+    count: int,
+    architects: Sequence[tuple[Drawing, list[SinkPlan] | None]],
+    vendor_value: Fraction | None = None,
 ) -> _Architect:
-    """What the architect gives for the vendor's `index`-th of `count` sink cut-outs."""
+    """What the architect gives for the vendor's `index`-th of `count` sink cut-outs. Silent only
+    when everything says so: one vendor sink, every architect drawing of the item read, one
+    proved sink plan with no label in front of its cut-out, and the vendor's value printed nowhere
+    on the architect's drawings (an enlarged detail or a note may give it)."""
+    if count != 1:
+        return _Architect(
+            "unknown", why="the vendor draws more than one sink: code does not pair them"
+        )
+    if any(plans is None for _drawing, plans in architects):
+        return _Architect(
+            "unknown", why="code could not read the line work of an architect drawing"
+        )
     shown = [(drawing, plans) for drawing, plans in architects if plans]
     if not shown:
         return _Architect("unknown", why="code found no sink plan on the architect's drawings")
@@ -741,6 +802,19 @@ def _architect_for(
         return _Architect(
             "unknown", drawing=drawing, why="a label in front of the architect's cut-out"
         )
+    if vendor_value is not None:
+        for other, _plans in architects:
+            for label in other.labels:
+                value = _fraction(label.get("inches"))
+                if value is not None and _same(value, vendor_value):
+                    return _Architect(
+                        "unknown",
+                        drawing=drawing,
+                        why=(
+                            f"the architect prints {_inches(vendor_value)} elsewhere on the "
+                            "drawing: code cannot tell it is not this offset"
+                        ),
+                    )
     return _Architect("silent", drawing=drawing)
 
 
@@ -788,8 +862,8 @@ def findings_for(
     out: list[dict[str, Any]] = []
     place = f"{area}: " if area else ""
     for index, plan in enumerate(plans):
-        architect = _architect_for(index, len(plans), architects)
         for offset in plan.offsets:
+            architect = _architect_for(index, len(plans), architects, offset.value)
             made = _judge(vendor, offset, architect, setting)
             if made is None:
                 continue
@@ -1055,6 +1129,18 @@ def decided_labels(
     }
 
 
+def decided_items(
+    live: Sequence[Mapping[str, Any]], main_file: str | None = None
+) -> dict[tuple[str, int, str], Mapping[str, Any]]:
+    """The items this check decided, by their vendor label `(file, own page, label id)`."""
+    return {
+        key: finding
+        for finding in live
+        if own_item(finding) and _decides(finding) and finding.get("id")
+        if (key := _label_key(finding, main_file)) is not None
+    }
+
+
 def noted_labels(
     live: Sequence[Mapping[str, Any]], main_file: str | None = None
 ) -> dict[tuple[str, int, str], str]:
@@ -1065,6 +1151,48 @@ def noted_labels(
         if own_item(finding) and not _decides(finding) and finding.get("id")
         if (key := _label_key(finding, main_file)) is not None
     }
+
+
+#: A simple check compare outcome as the finding status it stands for (`agrees`).
+_OUTCOME_STATUS: Final[Mapping[str, str]] = {
+    "red": "different",
+    "candidate": "different",
+    "right": "same",
+}
+
+
+def agrees(
+    finding: Mapping[str, Any], status: object, architect: object = None, source: object = None
+) -> bool:
+    """Whether another item on the label (its status, its architect-side value and source) agrees
+    with this check's decided item, so it may be replaced: one item per label, never a red or a
+    Right hidden by a contradicting one. It disagrees when it says Right where this says Wrong (or
+    the other way round), or when it names an architect value other than this item's own (the
+    setting, or the architect's printed value): the architect then gives another value code did not
+    see, so this check stands aside and the other item speaks."""
+    mine = str(finding.get("status") or "")
+    theirs = str(status or "")
+    if theirs in ("same", "different"):
+        if mine in ("same", "different") and theirs != mine:
+            return False
+        if mine == "check" and theirs == "different":
+            return False  # the vendor follows the architect here; the other found a difference
+    if str(source or "architect") != "architect":
+        return True
+    to_inches = import_module("app.review.assistant.finding_checks").to_inches
+    given = to_inches(str(architect)) if architect not in (None, "") else None
+    if given is None:
+        return True
+    expected = to_inches(str(finding.get("architect") or ""))
+    return expected is not None and _same(Fraction(given), Fraction(expected))
+
+
+def agrees_with_compare(finding: Mapping[str, Any], one: Any) -> bool:
+    """`agrees` for a simple check compare item (`Verified`): its outcome and its finding's
+    architect value and source."""
+    found = getattr(one, "finding", None) or {}
+    status = _OUTCOME_STATUS.get(str(getattr(one, "outcome", "")), found.get("status"))
+    return agrees(finding, status, found.get("architect"), found.get("source"))
 
 
 def _decided_by_reviewer(finding: Mapping[str, Any]) -> bool:
@@ -1118,6 +1246,15 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
             else:
                 if any(_decided_by_reviewer(other) for other in others):
                     continue  # the reviewer decided that label: left as it is
+                if not all(
+                    agrees(finding, o.get("status"), o.get("architect"), o.get("source"))
+                    for o in others
+                ):
+                    continue  # another item contradicts it: that one speaks, never hidden
+            added = book.add_code_finding(finding, created_by=CREATED_BY)
+            if added is None:
+                continue
+            if _decides(finding):
                 reason = (
                     "Settled by GV Review: the sink front offset, "
                     f"{(finding.get('gv_standard') or {}).get('origin', 'GV standard')} "
@@ -1127,9 +1264,6 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
                     if book.absorb(str(other["id"])):
                         engine._show_dropped(str(other["id"]), reason)
                         counts["replaced"] += 1
-            added = book.add_code_finding(finding, created_by=CREATED_BY)
-            if added is None:
-                continue
             extra: dict[str, Any] = {k: finding[k] for k in _EXTRA if k in finding}
             if finding.get("checks"):
                 extra["checks"] = {**(added.get("checks") or {}), **finding["checks"]}

@@ -67,7 +67,8 @@ from app.review.assistant.simple_check.verify import (
     Verified,
     with_blind,
 )
-from app.review.assistant.sink_offset import decided_labels as sink_decided_labels
+from app.review.assistant.sink_offset import agrees_with_compare as sink_agrees
+from app.review.assistant.sink_offset import decided_items as sink_decided_items
 from app.review.assistant.sink_offset import noted_labels as sink_noted_labels
 from app.review.assistant.spot_locate import code_spotted
 
@@ -1177,10 +1178,12 @@ class _Run:
         for one, _item in ordered:
             if one.outcome == "candidate":
                 continue  # never left so: the blind look ran on every candidate
-            note = noted.pop(key, None) if (key := self._label_key(one)) in noted else None
+            kept = self._add(one)
+            # Only once the comparison's own item is kept: a label never ends up with nothing.
+            key = self._label_key(one)
+            note = noted.pop(key, None) if kept and key in noted else None
             if note is not None and engine.book.absorb(note):
                 engine._show_dropped(note, "Replaced by the comparison's own item on this label.")
-            kept = self._add(one)
             if kept is None:
                 # Another product than the check's (the strict scope): never listed, not even
                 # as Not compared; the finding book counted it.
@@ -1230,14 +1233,33 @@ class _Run:
         (`run_fit`, code's own items, Right or Wrong) or GV's sink front offset decided
         (`sink_offset`): the rule governs that label, so a door the site made narrower than
         designed is never red against the architect's size, and no blind look is paid for it."""
-        live, main_file = self.engine.book.live(), self.engine.book.main_file
+        engine = self.engine
+        live, main_file = engine.book.live(), engine.book.main_file
         decided = run_fit_labels(live, main_file)
-        # GV's sink front offset (`sink_offset`, #1807) the same: a front offset code proved and
-        # judged (Right, Wrong, or the architect's other value for the reviewer) is its one item.
-        decided |= sink_decided_labels(live, main_file)
-        if not decided:
+        # GV's sink front offset (`sink_offset`, #1807): a front offset code proved and judged is
+        # the label's one item when the comparison agrees with it; a comparison that contradicts
+        # it (a red where code says Right, an architect value code did not see) speaks instead,
+        # and code's item goes, so neither a red nor a Right is ever hidden.
+        sink = sink_decided_items(live, main_file)
+        if not decided and not sink:
             return verified
-        return [pair for pair in verified if self._label_key(pair[0]) not in decided]
+        kept: list[tuple[Verified, Item]] = []
+        for pair in verified:
+            key = self._label_key(pair[0])
+            if key in decided:
+                continue
+            item = sink.get(key) if key is not None else None
+            if key is not None and item is not None:
+                if sink_agrees(item, pair[0]):
+                    continue
+                if engine.book.absorb(str(item["id"])):
+                    engine._show_dropped(
+                        str(item["id"]),
+                        "The comparison reads this label otherwise: its own item speaks.",
+                    )
+                sink.pop(key, None)
+            kept.append(pair)
+        return kept
 
     def _label_key(self, one: Verified) -> tuple[str, int, str] | None:
         vendor = one.vendor

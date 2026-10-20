@@ -48,8 +48,11 @@ def _plan_lines(
     dimension: bool = True,
     second_edge_in: float | None = None,
     dashed_in: float | None = None,
+    cabinets: bool = True,
 ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
-    """A run's plan with a sink cut-out `offset_in` behind its front line."""
+    """A run's plan with a sink cut-out `offset_in` behind its front line; with `cabinets`, the
+    sink cabinet's sides meet the front line on each side of the cut-out (a cabinet plan), else
+    only the run's outline is drawn (a top's plan: its front line may be the top's edge)."""
     edge = FRONT_Y - offset_in * PT_PER_IN
     top = edge - 16 * PT_PER_IN
     lines = [
@@ -74,6 +77,8 @@ def _plan_lines(
             ((DIM_X - 2, edge + 2), (DIM_X + 2, edge - 2)),  # ticks at both ends
             ((DIM_X - 2, FRONT_Y + 2), (DIM_X + 2, FRONT_Y - 2)),
         ]
+    if cabinets:
+        lines += [((60.0, BACK_Y), (60.0, FRONT_Y)), ((140.0, BACK_Y), (140.0, FRONT_Y))]
     if second_edge_in is not None:
         at = FRONT_Y + second_edge_in * PT_PER_IN
         lines.append(((0.0, at), (200.0, at)))
@@ -109,6 +114,7 @@ def _findings(
     *,
     vendor_offset: float = 4.0,
     second_edge_in: float | None = None,
+    architect_extra: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """The vendor's front offset items: the vendor prints `vendor_value` on a cut-out drawn
     `vendor_offset` inches back; the architect (`(value, dimension drawn)`, or `None` for no
@@ -120,7 +126,8 @@ def _findings(
     if architect is not None:
         value, drawn = architect
         lines[ARCH] = _plan_lines(4.0, dimension=drawn)
-        theirs = _drawing(ARCH, [] if value is None else [_label(value, 4.0, "A5")], page=1)
+        given = [] if value is None else [_label(value, 4.0, "A5")]
+        theirs = _drawing(ARCH, given + (architect_extra or []), page=1)
         architects.append((theirs, so.drawing_plans(theirs, lambda f, _p: lines[f])))
     plans = so.drawing_plans(vendor, lambda f, _p: lines[f])
     assert plans is not None
@@ -222,6 +229,46 @@ def test_a_dashed_cabinet_face_under_the_top_makes_the_offset_unsure_never_red()
     vendor = _drawing(FILE, [_label("5", 5.0)])
     (made,) = so.findings_for(vendor, [plan], [], STANDARD)
     assert made["status"] == "check" and "settled" not in made
+
+
+def test_a_top_plan_with_no_cabinet_sides_is_unsure_never_red_nor_right() -> None:
+    """GV's rule measures from the cabinet's front: on a top's plan the only front line may be
+    the top's edge (a correct 4" plus the overhang reads 5 1/2"), so nothing is decided."""
+    lines = _plan_lines(5.5, cabinets=False)
+    vendor = _drawing(FILE, [_label("5.5", 5.5)])
+    (plan,) = so.drawing_plans(vendor, lambda _f, _p: lines) or []
+    assert plan.unsure is not None and "cabinets' front" in plan.unsure
+    (made,) = so.findings_for(vendor, [plan], [], STANDARD)
+    assert made["status"] == "check" and "settled" not in made
+    lines = _plan_lines(4.0, cabinets=False)
+    vendor = _drawing(FILE, [_label("4", 4.0)])
+    assert (
+        so.findings_for(vendor, so.drawing_plans(vendor, lambda _f, _p: lines) or [], [], STANDARD)
+        == []
+    )
+
+
+def test_the_architect_printing_the_vendors_value_anywhere_is_not_silent() -> None:
+    """An enlarged detail or a dimension placed off to the side may give the architect's offset:
+    the vendor's value printed anywhere on the architect's drawing means code cannot call it
+    silent, so never red."""
+    elsewhere = {**_label("3", 4.0, "A9"), "box": [150.0, 60.0, 158.0, 65.0]}
+    (made,) = _findings("3", (None, False), vendor_offset=3.0, architect_extra=[elsewhere])
+    assert made["status"] == "check" and "elsewhere on the drawing" in made["why"]
+    beside = {**_label("2", 4.0, "A7"), "box": [180.0, 142.0, 186.0, 146.0]}
+    (made,) = _findings("3", (None, False), vendor_offset=3.0, architect_extra=[beside])
+    assert made["status"] == "check" and "label in front" in made["why"]
+
+
+def test_an_unreadable_architect_drawing_or_two_sinks_never_turn_red() -> None:
+    lines = _plan_lines(3.0)
+    vendor = _drawing(FILE, [_label("3", 3.0)])
+    plans = so.drawing_plans(vendor, lambda _f, _p: lines) or []
+    unread = _drawing(ARCH, [], page=1)
+    (made,) = so.findings_for(vendor, plans, [(unread, None)], STANDARD)
+    assert made["status"] == "check" and "line work" in made["why"]
+    made, _again = so.findings_for(vendor, plans * 2, [], STANDARD)
+    assert made["status"] == "check" and "more than one sink" in made["why"]
 
 
 def test_an_architect_code_cannot_read_never_turns_a_difference_red() -> None:
@@ -361,17 +408,45 @@ def hooked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, list[
     return tmp_path, found
 
 
-def test_the_hook_replaces_the_answers_item_on_a_label_it_decided(
+def test_the_hook_replaces_an_agreeing_item_on_a_label_it_decided(
     hooked: tuple[Path, list[dict[str, Any]]],
 ) -> None:
     hooked[1].extend(_findings("3", (None, False), vendor_offset=3.0))
-    engine = _Engine(hooked[0], [_other("same")])
+    engine = _Engine(hooked[0], [{**_other("check"), "architect": ""}])
     assert so.add_to_answer(engine) == {"added": 1, "replaced": 1}
     (recorded,) = engine.book.live()
     assert recorded["status"] == "different" and recorded["settled"]["method"] == so.METHOD
     assert recorded["gv_standard"]["value"] == '4"' and recorded["category"] == "cabinet"
     assert engine.dropped[0][0] == "F1" and "sink front offset" in engine.dropped[0][1]
     assert so.add_to_answer(_Engine(hooked[0], [], mode="chat")) is None
+
+
+def test_the_hook_never_hides_an_item_that_contradicts_it(
+    hooked: tuple[Path, list[dict[str, Any]]],
+) -> None:
+    """A Right of the architect comparison (vendor 3" = architect 3") is never turned red, and a
+    red the comparison found (vendor 4" vs architect 3") is never turned Right: the other item
+    speaks and this check adds nothing."""
+    hooked[1].extend(_findings("3", (None, False), vendor_offset=3.0))
+    right = {**_other("same"), "architect": '3"', "source": "architect"}
+    engine = _Engine(hooked[0], [right])
+    assert so.add_to_answer(engine) == {"added": 0, "replaced": 0}
+    assert engine.book.live() == [right]
+    hooked[1].clear()
+    hooked[1].extend(_findings("4", (None, False)))
+    red = {**_other("different"), "architect": '3"', "source": "architect"}
+    engine = _Engine(hooked[0], [red])
+    assert so.add_to_answer(engine) == {"added": 0, "replaced": 0}
+    assert engine.book.live() == [red]
+    consistency = {**_other("different"), "architect": '9"', "source": "vendor_arithmetic"}
+    engine = _Engine(hooked[0], [consistency])
+    assert so.add_to_answer(engine) == {"added": 0, "replaced": 0}
+    # The same red from the comparison (architect 4", the standard): one item, this check's.
+    hooked[1].clear()
+    hooked[1].extend(_findings("3", (None, False), vendor_offset=3.0))
+    same_red = {**_other("different"), "architect": '4"', "source": "architect"}
+    engine = _Engine(hooked[0], [same_red])
+    assert so.add_to_answer(engine) == {"added": 1, "replaced": 1}
 
 
 def test_the_hook_adds_an_unsure_note_only_where_the_answer_has_none(
@@ -400,14 +475,38 @@ def test_no_setting_in_rules_md_means_no_check(tmp_path: Path) -> None:
     assert so.add_to_answer(_Engine(tmp_path, [])) is None
 
 
-def test_the_simple_check_drops_compare_items_on_a_label_it_decided() -> None:
+def _simple(live: list[dict[str, Any]]) -> Any:
+    from app.review.assistant.simple_check import run as run_module
+
+    book = _Book(live)
+    dropped: list[str] = []
+    engine = SimpleNamespace(book=book, _show_dropped=lambda i, _r: dropped.append(i))
+    fake = SimpleNamespace(engine=engine, dropped=dropped)
+    fake._label_key = lambda one: run_module._Run._label_key(fake, one)
+    return fake
+
+
+def test_the_simple_check_drops_agreeing_compare_items_on_a_label_it_decided() -> None:
     from app.review.assistant.simple_check import run as run_module
 
     (red,) = _findings("3", (None, False), vendor_offset=3.0)
-    book = _Book([{**red, "id": "P1", "created_by": so.CREATED_BY}])
-    fake = SimpleNamespace(engine=SimpleNamespace(book=book))
-    fake._label_key = lambda one: run_module._Run._label_key(fake, one)
-    decided = SimpleNamespace(vendor={"id": "D10", "page": 3, "file": FILE})
-    other = SimpleNamespace(vendor={"id": "D99", "page": 3, "file": FILE})
-    kept = run_module._Run._without_run_fit(fake, [(decided, "a"), (other, "b")])
-    assert kept == [(other, "b")]
+    fake = _simple([{**red, "id": "P1", "created_by": so.CREATED_BY}])
+    vendor = {"id": "D10", "page": 3, "file": FILE}
+    agreeing = SimpleNamespace(vendor=vendor, outcome="candidate", finding={"architect": '4"'})
+    other = SimpleNamespace(vendor={"id": "D99", "page": 3, "file": FILE}, outcome="red")
+    kept = run_module._Run._without_run_fit(fake, [(agreeing, "a"), (other, "b")])
+    assert kept == [(other, "b")] and fake.dropped == []
+
+
+def test_the_simple_check_keeps_a_contradicting_compare_item_and_drops_codes() -> None:
+    """The comparison reads vendor 3" = architect 3" (Right) where code said red from the
+    standard: the Right speaks, code's red goes (never a red over the architect's own value)."""
+    from app.review.assistant.simple_check import run as run_module
+
+    (red,) = _findings("3", (None, False), vendor_offset=3.0)
+    fake = _simple([{**red, "id": "P1", "created_by": so.CREATED_BY}])
+    vendor = {"id": "D10", "page": 3, "file": FILE}
+    right = SimpleNamespace(vendor=vendor, outcome="right", finding={"architect": '3"'})
+    kept = run_module._Run._without_run_fit(fake, [(right, "a")])
+    assert kept == [(right, "a")] and fake.dropped == ["P1"]
+    assert fake.engine.book.live() == []
