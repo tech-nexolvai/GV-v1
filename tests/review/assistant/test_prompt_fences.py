@@ -214,3 +214,23 @@ def test_label_places_can_be_switched_off_for_the_ab() -> None:
     text = prompts.item_text(_item(), [], places=False)
     assert "[horizontal" not in text and "x0." not in text
     _assert_fenced(text)
+
+
+def test_a_prototype_reference_item_fences_the_prototypes_labels_too() -> None:
+    """An area the architect gives no elevation of is compared with the brand prototype (merged
+    with C6): code says so outside the fence; the prototype's titles and labels are inside it."""
+    item = _item().model_copy(update={"prototype_reference": True})
+    text = prompts.item_text(item, [])
+    _assert_fenced(text)
+    outside = _outside(text)
+    assert "the brand prototype is the reference" in outside
+    assert "Brand prototype drawing p2.a1, the reference brand prototype drawing" in outside
+    assert "Labels:" not in outside
+    assert "Brand prototype drawing p2.a1 (titled" in text
+
+
+def test_third_read_fences_the_item_name() -> None:
+    from app.review.assistant import read_adjudication
+
+    text = read_adjudication.question(f"upper height {PLANT}", (("architect", False),))
+    _assert_fenced(text)

@@ -347,7 +347,12 @@ class _Script:
         return [gate.arrive(), *events] if gate is not None else events
 
     def read(self, params: Mapping[str, Any], asked: str) -> list[dict[str, Any]]:
-        item = asked.split('printed for "', 1)[1].split('"', 1)[0]
+        # Both reads fence the item's name as data (#1775, C6); an older question quoted it.
+        fenced = '<drawing_data source="item">\n'
+        if fenced in asked:
+            item = asked.split(fenced, 1)[1].split("\n</drawing_data>", 1)[0]
+        else:
+            item = asked.split('printed for "', 1)[1].split('"', 1)[0]
         third = params["model"] == SONNET
         with self.lock:
             self.calls.append(("third" if third else "second", item, ""))

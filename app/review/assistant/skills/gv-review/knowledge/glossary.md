@@ -5,8 +5,9 @@ Plain words for what millwork drawings say. Background only.
 ## The drawings
 - **Architect's drawing, ID set, arch set**: the design the work must match.
 - **Shop drawing**: the vendor's (fabricator's) build drawing. What GV checks.
-- **Brand prototype, brand standard**: a brand's typical design copied onto a sheet. A reference,
-  never this job's design; compare with it only as its own group.
+- **Brand prototype, brand standard**: a brand's typical design copied onto a sheet. Never this
+  job's architect drawing; compare with it as its own group (`source: brand_prototype`). When the
+  architect gives no elevation of an item, the brand prototype elevation is the reference for it.
 - **Plan / elevation / section / detail**: seen from above / from the front / cut through / a
   close-up of one joint or edge.
 - **Rev 1, rev 2 (round 1, round 2)**: the vendor's first and later submittal of the same item;

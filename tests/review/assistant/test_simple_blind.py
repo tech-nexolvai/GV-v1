@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -319,3 +320,34 @@ def test_end_boxes_follow_codes_dimension_line() -> None:
     boxes = end_boxes({"dim_line": [[100, 200], [500, 200]], "box": [290, 190, 310, 200]})
     assert len(boxes) == 2 and boxes[0][0] < 100 < boxes[0][2] and boxes[1][0] < 500 < boxes[1][2]
     assert len(end_boxes({"box": [290, 190, 310, 200]})) == 1 and end_boxes({}) == []
+
+
+@dataclass
+class _CappedEngine(_Engine):
+    """A price cap that fits two looks: each call is charged only when it ends."""
+
+    cap: int = 120_000
+    spent: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def _fits(self, estimate: int | None) -> bool:
+        return self.spent + (estimate or 0) <= self.cap
+
+    def _call(self, **kwargs: Any) -> Any:
+        with self.lock:
+            self.calls.append(kwargs)
+        time.sleep(0.05)  # the other workers ask while this one runs
+        with self.lock:
+            self.spent += 50_000
+        return _Reply(_agreeing())
+
+
+def test_looks_started_together_hold_their_price_and_never_pass_the_cap() -> None:
+    """Six workers: each look holds its price while it runs (#1775, C4: thinking makes a call's
+    worst case bigger), so looks started together cannot pass the cap between them."""
+    verified, item = _candidate()
+    engine = _CappedEngine([])
+    done = look_all(engine, [(verified, item)] * 6, BlindSettings())  # type: ignore[arg-type]
+    assert len(engine.calls) == 2 and engine.spent <= engine.cap
+    refused = [d for d in done if d.outcome == "not_compared"]
+    assert len(refused) == 4 and all("runaway guard" in d.reason for d in refused)

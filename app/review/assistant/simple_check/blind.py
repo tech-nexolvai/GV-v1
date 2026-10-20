@@ -40,10 +40,11 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
@@ -144,12 +145,17 @@ BLIND_SYSTEM: Final = (
 )
 
 
-def blind_system(products: Sequence[str] = (), precedents: bool = True) -> str:
+def blind_system(
+    products: Sequence[str] = (), precedents: bool = True, *, kind: str = "pair"
+) -> str:
     """The blind look's system prompt: `BLIND_SYSTEM`, then the "looks wrong but isn't"
-    precedents for the item's products (recipe step 6; off for a paid A/B)."""
+    precedents for the item's products (recipe step 6; off for a paid A/B). A `chain` look is
+    asked to pick a string of parts code adds up, so P6 (a sum the model made is not a value) is
+    left out of it."""
     if not precedents:
         return BLIND_SYSTEM
-    return f"{BLIND_SYSTEM}\n\n{precedents_module.render(products)}"
+    leave_out = ("P6",) if kind == "chain" else ()
+    return f"{BLIND_SYSTEM}\n\n{precedents_module.render(products, leave_out=leave_out)}"
 
 
 def question(
@@ -382,6 +388,16 @@ def pictures(
 # ---- the call ------------------------------------------------------------------------------------
 
 
+@dataclass
+class Held:
+    """What the looks in flight may still cost (millionths of $), shared by `look_all`'s workers:
+    the runaway guard counts it as spent, so looks started together never pass the cap between
+    them (a look is charged only when its call ends; with thinking on its worst case is big)."""
+
+    reserved: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
 def look(
     engine: ChatEngine,
     verified: Verified,
@@ -412,7 +428,7 @@ def look(
             # Always adaptive thinking (#1775, C4): the gate of every red is a judgement. Opus 5.5
             # thinks anyway; Sonnet 5.5 would otherwise answer cold.
             thinking=thinking_config(model, True),
-            system=blind_system(item.products, settings.precedents),
+            system=blind_system(item.products, settings.precedents, kind=verified.blind or "pair"),
             tools=(),
             messages=[{"role": "user", "content": content}],
             final=False,
@@ -468,6 +484,30 @@ def relook(settings: BlindSettings, verified: Verified, answer: BlindAnswer | No
     )
 
 
+def _held_look(
+    engine: ChatEngine,
+    verified: Verified,
+    item: Item,
+    settings: BlindSettings,
+    held: Held,
+    *,
+    zoom: bool = False,
+) -> tuple[BlindAnswer | None, str]:
+    """`look`, its price held in `held` while it runs: the guard counts the looks in flight."""
+    estimate = engine._price(settings.chat_model, _PROMPT_TOKENS, _MAX_TOKENS) or 0
+    with held.lock:
+        if not engine._fits(held.reserved + estimate):
+            return None, "the answer's runaway guard was reached"
+        held.reserved += estimate
+    try:
+        if zoom:
+            return look(engine, verified, item, settings, zoom=True)
+        return look(engine, verified, item, settings)
+    finally:
+        with held.lock:
+            held.reserved -= estimate
+
+
 def look_all(
     engine: ChatEngine,
     candidates: Sequence[tuple[Verified, Item]],
@@ -479,16 +519,18 @@ def look_all(
     at once. A candidate the look could not reach stays Not compared with the reason."""
 
     timings = getattr(engine, "timings", None)
+    held = Held()
 
     def one(pair: tuple[Verified, Item]) -> Verified:
         verified, item = pair
         # Timed and charged to the blind phase on this worker thread (the timings are per thread).
         with timings.phase("blind") if timings is not None else nullcontext():
-            answer, why = look(engine, verified, item, settings)
+            answer, why = _held_look(engine, verified, item, settings, held)
             if relook(settings, verified, answer):
                 # One zoomed re-look before an end is left unseen (recipe step 4): still blind,
-                # still a full look; red still needs it to agree and every code check.
-                again, again_why = look(engine, verified, item, settings, zoom=True)
+                # still a full look, its price held too; red still needs it to agree and every
+                # code check.
+                again, again_why = _held_look(engine, verified, item, settings, held, zoom=True)
                 if again is not None:
                     answer = replace(again, note=f"zoomed re-look: {again.note}"[:300])
                 elif answer is None:

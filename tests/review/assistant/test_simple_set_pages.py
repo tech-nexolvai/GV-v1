@@ -15,7 +15,7 @@ import pytest
 from app.review.assistant.simple_check import worklist as worklist_module
 from app.review.assistant.simple_check.compare import _caption
 from app.review.assistant.simple_check.run import own_pages
-from app.review.assistant.simple_check.schema import Picture
+from app.review.assistant.simple_check.schema import AcrossPair, Picture
 from app.review.assistant.simple_check.set_pages import set_pages
 from app.review.assistant.simple_check.verify import Item, Pack, _architect_label
 
@@ -108,15 +108,25 @@ def test_a_combined_set_keeps_its_own_page_numbers() -> None:
     assert not set_pages(page_map, "set.pdf").joined("copy.pdf")
 
 
+def _pair_first(why: str) -> Any:
+    """`worklist._pair_across` for a test: every vendor drawing paired with the first architect
+    item (#1798's contract: the candidates are architect items, the answer an `AcrossPair`)."""
+
+    def pair(vendor: Any, candidates: Any, *_: Any) -> AcrossPair:
+        first = candidates[0].id
+        return AcrossPair(
+            vendor=vendor, candidates=tuple(candidates), asked=(first,), chosen=(first,), why=why
+        )
+
+    return pair
+
+
 def test_the_architect_files_drawings_and_labels_get_set_page_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     page_map, dims = separate_set()
 
-    def pair_first(vendor: Any, candidates: Any, *_: Any) -> tuple[list[Any], str]:
-        return list(candidates[:1]), "paired for the test"
-
-    monkeypatch.setattr(worklist_module, "_pair_across", pair_first)
+    monkeypatch.setattr(worklist_module, "_pair_across", _pair_first("paired for the test"))
     work = worklist_module.worklist_from(page_map, dims=dims, main_file=VENDOR)
     assert [item.id for item in work.items] == ["p1.v0", "p2.v0"]
     architect = work.items[0].architect[0]
@@ -220,9 +230,7 @@ def test_a_separate_files_picture_says_which_file_and_page_it_is(
         labels=("p1002.D1",),
     )
     page_map, dims = separate_set()
-    monkeypatch.setattr(
-        worklist_module, "_pair_across", lambda vendor, found, *_: (list(found[:1]), "test")
-    )
+    monkeypatch.setattr(worklist_module, "_pair_across", _pair_first("test"))
     item = worklist_module.worklist_from(page_map, dims=dims, main_file=VENDOR).items[0]
     words = _caption(picture, item)
     assert "page 1002 (the separate file arch.pdf, its page 2)" in words

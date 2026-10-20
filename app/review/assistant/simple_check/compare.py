@@ -408,6 +408,9 @@ def _caption(picture: Picture, item: WorkItem) -> str:
     whose = "the vendor drawing" if picture.role == "vendor" else "the architect drawing"
     if picture.role == "architect" and item.architect and picture.drawing == item.architect[0].ref:
         whose = "the governing architect drawing"
+    if picture.role == "brand_prototype" and item.prototype_reference:
+        # R1: no architect elevation of the area, the brand prototype is the reference.
+        whose = "the brand prototype drawing (the reference: no architect elevation)"
     part = "" if picture.part == "whole" else f", {picture.part}"
     if picture.file_page is not None:
         # A separate file's page (#1722): its set page names its ids; say which file it is.
@@ -526,8 +529,9 @@ def _merge(usage: dict[str, int], update: object) -> None:
         for key, value in update.items():
             if isinstance(value, int) and not isinstance(value, bool):
                 usage[key] = value
-        if isinstance(update.get("output_tokens_details"), Mapping):
-            usage["thinking_tokens"] = thinking_tokens(update)
+        thought = thinking_tokens(update)
+        if thought is not None:  # not reported stays absent, never a made-up 0
+            usage["thinking_tokens"] = thought
 
 
 def _stream(

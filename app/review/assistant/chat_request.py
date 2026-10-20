@@ -239,18 +239,19 @@ def check_choice(
     return model
 
 
-def thinking_tokens(usage: Mapping[str, Any] | None) -> int:
+def thinking_tokens(usage: Mapping[str, Any] | None) -> int | None:
     """The thinking tokens a call reports (`usage.output_tokens_details.thinking_tokens`; a flat
-    `thinking_tokens` already summed by code), 0 when none: saved with every judgement call so a
-    red whose checker did not think at all can be found (#1775, C4)."""
+    `thinking_tokens` already summed by code); `None` when the usage does not say (not reported is
+    not "did not think"): saved with every judgement call so a red whose checker did not think at
+    all can be found (#1775, C4)."""
     if not isinstance(usage, Mapping):
-        return 0
+        return None
     flat = usage.get("thinking_tokens")
     if isinstance(flat, int) and not isinstance(flat, bool):
         return flat
     details = usage.get("output_tokens_details")
     found = details.get("thinking_tokens") if isinstance(details, Mapping) else None
-    return found if isinstance(found, int) and not isinstance(found, bool) else 0
+    return found if isinstance(found, int) and not isinstance(found, bool) else None
 
 
 def thinking_config(model: ChatModel, thinking: bool) -> dict[str, str]:

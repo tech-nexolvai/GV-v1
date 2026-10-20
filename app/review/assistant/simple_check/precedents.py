@@ -4,8 +4,10 @@ recipe step 6; Anthropic's security-review filter carries the same kind of list)
 GV's eval kit holds 78 known false or risky reds. Their patterns, in generic words (no drawing
 numbers, no client values), are written here as precedents: settled cases where two dimensions or
 an item look like a difference but are not the same thing. Each is worded as "these are not the
-same points" (or "this is not the vendor's"), never as "never report X", so a real difference
-between the same two points is still found (a precedent too broad would hide a true red).
+same points" (or "this is not the vendor's"), never as an instruction to leave something out
+("never report X", "ignore X", "is a GV note", "not a vendor error"), so a real difference between
+the same two points is still found (a precedent too broad would hide a true red). The one thing
+never to report is a sum the model made itself (P6): every printed number is still compared.
 
 The list is pluggable: `precedents(products)` returns the general ones plus each in-scope
 product's, and a product pack can add its own through `add_source` (Builder D's product packs:
@@ -41,9 +43,9 @@ class Precedent:
 _GENERAL: Final[tuple[Precedent, ...]] = (
     Precedent(
         "P1",
-        "A run to another trade's work (a wall panel or covering above the unit, a bulkhead, box "
-        "or soffit above it, the ceiling) is not the unit's own run, even when both start at the "
-        "floor or the same wall.",
+        "A run to another trade's work (a wall finish or covering by another trade, a bulkhead, "
+        "box or soffit above the unit, the ceiling) is not the unit's own run, even when both "
+        "start at the floor or the same wall. Millwork wall panels are millwork: compare them.",
         "different points: another trade's end",
     ),
     Precedent(
@@ -61,21 +63,25 @@ _GENERAL: Final[tuple[Precedent, ...]] = (
     Precedent(
         "P4",
         "Room features are not millwork: ceilings, soffits, door heads, artwork, light switches, "
-        "columns, light fixtures and wall outlets outside the unit. The vendor leaving them off "
-        "its drawing is not a vendor error.",
+        "columns, light fixtures and wall outlets outside the unit. A room feature absent from "
+        "the vendor's drawing is not missing millwork; anything that is millwork is still "
+        "compared.",
         "room context absent on the vendor's drawing",
     ),
     Precedent(
         "P5",
-        "GV's own notes and numbers (review markup) are never the design value, and a brand "
-        "prototype is reference only: neither is the architect's dimension.",
+        "GV's own notes and numbers (review markup) are never the design value. A brand "
+        "prototype is reference only, not the architect's dimension, except where code's text "
+        "says the architect gives no elevation of the area: there the brand prototype is the "
+        "reference, and you compare the vendor with it.",
         "GV's markup or the prototype used as the design",
     ),
     Precedent(
         "P6",
         "A sum you make yourself from parts (a string that seems not to add up) is not a printed "
         "dimension: a part may be cut off the picture or belong to the next string. Code adds up "
-        "strings; report the printed labels only.",
+        "strings: never report a sum you made as a value. Every printed number, with or without "
+        "a tag, is still compared.",
         "AI-made strings",
     ),
     Precedent(
@@ -102,8 +108,9 @@ _BY_PRODUCT: Final[tuple[Precedent, ...]] = (
     ),
     Precedent(
         "C3",
-        "A filler width outside GV's usual range is a GV note, not a difference from the "
-        "architect, unless the architect prints that filler's own size.",
+        "A filler width outside GV's usual range is not by itself a difference from the "
+        "architect (code applies GV's filler rule); where the architect prints that filler's own "
+        "size, compare the two.",
         "GV's filler rule as a red",
         ("cabinet",),
     ),
@@ -139,9 +146,11 @@ def precedents(products: Sequence[str] = ()) -> tuple[Precedent, ...]:
     return tuple(out)
 
 
-def render(products: Sequence[str] = ()) -> str:
-    """The precedents as the prompts show them: a heading and one numbered line each."""
-    lines = [f"{p.id}. {p.rule}" for p in precedents(products)]
+def render(products: Sequence[str] = (), *, leave_out: Iterable[str] = ()) -> str:
+    """The precedents as the prompts show them: a heading and one numbered line each (those in
+    `leave_out` left out: P6 for a blind look asked to pick a string of parts)."""
+    skip = set(leave_out)
+    lines = [f"{p.id}. {p.rule}" for p in precedents(products) if p.id not in skip]
     return (
         "Looks wrong but isn't (settled cases from GV's known false alarms; each says what is "
         "not the same thing, never that a real difference between the same two points should be "
