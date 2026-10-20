@@ -13,8 +13,9 @@ What the vendor gets, with no human step (the rule is `proof.py`):
    architect's crop with the governing value boxed in green beside the vendor's crop with the
    wrong value boxed in red, one line naming the check that proved it, and the pages. Crops are cut
    from the hi-res page cache (#1557); a page already drawn is never drawn again.
-4. **Notes pages**: a short green list of what is right; what the reviewer marked not a problem,
-   and what code settled by itself. What could not be compared (#1619, the architect-first rules
+4. **Notes pages**: a short green list of what is right (an item the reviewer marked not a problem
+   is Right there, noted "(reviewer)": the vendor's files have three outcomes only, #1766), and what
+   code settled by itself. What could not be compared (#1619, the architect-first rules
    R1-R10, `classification.py`) is NOT on this drawing: it is the separate "Not compared" PDF
    (`not_compared_pdf`), grouped by reason, each row with why and what would settle it.
 
@@ -88,7 +89,6 @@ from app.review.assistant.chat_drawing import (
 )
 from app.review.assistant.cloud_layout import NOTE_WIDTH_PT, InkMap, marker_spot, place_notes
 from app.review.assistant.proof import (
-    GROUP_WORDS,
     LEFT_CAPTIONS,
     RULE_LINE,
     architect_file,
@@ -101,7 +101,7 @@ from app.review.assistant.proof import (
     vendor_own,
     vendor_value,
 )
-from app.review.assistant.vendor_text import item_name, vendor_text
+from app.review.assistant.vendor_text import internal, item_name, reviewer_right, vendor_text
 
 __all__ = [
     "GREEN",
@@ -234,9 +234,9 @@ def _grown(box: Box, pad: float = 2.0) -> Box:
 
 def note_lines(mark: Mark) -> list[list[_Run]]:
     """A clouded item's note: its item, "Vendor: 46"" in red, "Should be: 37" (architect …)" in
-    green, one line each (cut with "…"; the proof page has the whole words). On round 2 (#1603):
-    "Fixed in round 2: was 46", now 37"" in green, "Still wrong in round 2: now 46"" in red, or
-    the item headed "NEW" in red."""
+    green, one line each (cut with "…"; the proof page has the whole words). On round 2 (#1603), in
+    the comment letter's words (#1766): "Closed in round 2: was 46", now 37"" in green, "Previous
+    comment not addressed: now 46"" in red, or the item headed "New" in red."""
     finding = mark.finding
     vendor = vendor_text(vendor_value(finding), "") or ""
     value = vendor_text(should_be_value(finding), "") or ""
@@ -250,22 +250,22 @@ def note_lines(mark: Mark) -> list[list[_Run]]:
             _fit(head, room),
             _fit(
                 [
-                    ("Fixed in round 2: ", _NOTE_FONT, GREEN),
+                    ("Closed in round 2: ", _NOTE_FONT, GREEN),
                     ("was ", _NOTE_FONT, GREEN),
-                    (rounds.was, _NOTE_BOLD, GREEN),
+                    (_vendor(rounds.was), _NOTE_BOLD, GREEN),
                     (", now ", _NOTE_FONT, GREEN),
-                    (str(rounds.now), _NOTE_BOLD, GREEN),
+                    (_vendor(rounds.now), _NOTE_BOLD, GREEN),
                 ],
                 room,
             ),
         ]
     if rounds is not None and rounds.status == "still_wrong":
         middle = [
-            ("Still wrong in round 2: now ", _NOTE_FONT, RED),
-            (str(rounds.now), _NOTE_BOLD, RED),
+            ("Previous comment not addressed: now ", _NOTE_FONT, RED),
+            (_vendor(rounds.now), _NOTE_BOLD, RED),
         ]
         if rounds.now != rounds.was:
-            middle.append((f" (was {rounds.was})", _NOTE_FONT, RED))
+            middle.append((f" (was {_vendor(rounds.was)})", _NOTE_FONT, RED))
         return [
             _fit(head, room),
             _fit(middle, room),
@@ -276,7 +276,7 @@ def note_lines(mark: Mark) -> list[list[_Run]]:
             ),
         ]
     if rounds is not None and rounds.status == "new":
-        head = [("NEW ", _NOTE_BOLD, RED), (item, _NOTE_BOLD, _DARK)]
+        head = [("New ", _NOTE_BOLD, RED), (item, _NOTE_BOLD, _DARK)]
     return [
         _fit(head, room),
         _fit([("Vendor: ", _NOTE_FONT, RED), (vendor, _NOTE_BOLD, RED)], room),
@@ -629,7 +629,15 @@ def _hex(colour: Color) -> str:
     return str(colour.hexval()).replace("0x", "#")
 
 
+def _vendor(value: object) -> str:
+    """A value or line as the vendor may read it: as written, unless it holds GV's own words
+    (`vendor_text.internal`), then what the guard leaves (#1766)."""
+    words = "" if value is None else str(value)
+    return words if not internal(words) else (vendor_text(words, "") or "")
+
+
 def _coloured(label: str, value: str, colour: Color) -> str:
+    value = _vendor(value)
     return (
         f'<font color="{_hex(colour)}">{escape(label)}<b>{escape(value)}</b></font>'
         if value
@@ -676,7 +684,8 @@ def _cover(
         ]
     tiles = [
         ("Wrong", counts["clouded"], RED, "proved by code, clouded"),
-        ("Right", counts["right"], GREEN, "matches the architect"),
+        # The reviewer's "Not a problem" is Right on the vendor's files (#1766).
+        ("Right", counts["right"] + counts["dismissed"], GREEN, "matches the architect"),
         ("Not compared", counts["not_compared"], _LIST_GREY, "listed apart, with the reason"),
     ]
     cells = [
@@ -702,11 +711,6 @@ def _cover(
         )
     )
     story += [grid, Spacer(1, 14)]
-    extra = []
-    if counts["dismissed"]:
-        extra.append(f"{counts['dismissed']} marked not a problem by the reviewer")
-    if extra:
-        story.append(Paragraph(escape("Also: " + "; ".join(extra) + "."), grey))
     story.append(Paragraph(f"<b>The rule:</b> {escape(RULE_LINE)}", body))
     story.append(Spacer(1, 4))
     legend = [
@@ -763,12 +767,13 @@ def _cover(
     return story
 
 
-#: A round-2 status as the cover says it, and its colour (#1603).
+#: A round-2 status as the cover says it, and its colour (#1603), in the comment letter's words:
+#: Closed / Previous comment not addressed / New (#1766).
 _ROUND_WORDS: Final[Mapping[str, tuple[str, Color]]] = {
-    "fixed": ("Fixed", GREEN),
-    "still_wrong": ("Still wrong", RED),
-    "new": ("NEW", RED),
-    "also_in_round_1": ("Still wrong (also in round 1)", RED),
+    "fixed": ("Closed", GREEN),
+    "still_wrong": ("Previous comment not addressed", RED),
+    "new": ("New", RED),
+    "also_in_round_1": ("Previous comment not addressed (also in round 1)", RED),
     "now_right": ("Now right (was not compared)", GREEN),
     "still_not_compared": ("Still not compared", _LIST_GREY),
 }
@@ -787,7 +792,7 @@ def _round_section(
     body = styles["body"]
     story: list[Any] = [
         Paragraph("Round 2: what the vendor did", styles["section"]),
-        Paragraph(escape(line), body),
+        Paragraph(escape(_vendor(line)), body),
         Paragraph(
             escape(
                 "Code lines round 2 up with round 1 by the values printed in both and compares "
@@ -806,7 +811,7 @@ def _round_section(
             [
                 Paragraph(f"<b>{numbers.get(item.finding_id, '')}</b>", body),
                 Paragraph(escape(str(item.page or "")), body),
-                Paragraph(escape(item.item), body),
+                Paragraph(escape(_vendor(item.item)), body),
                 Paragraph(_coloured("", words, colour), body),
                 Paragraph(_coloured("", item.was, RED), body),
                 Paragraph(
@@ -877,10 +882,12 @@ def _proof_entries(
             left.insert(
                 0,
                 Paragraph(
-                    escape(f"{parts} = " if parts else "The parts add up to ")
+                    escape(f"{_vendor(parts)} = " if parts else "The parts add up to ")
                     + _coloured("", summed, GREEN)
                     + "<br/>"
-                    + escape(f"The vendor prints {vendor_value(finding)} for their total."),
+                    + escape(
+                        f"The vendor prints {_vendor(vendor_value(finding))} for their total."
+                    ),
                     body,
                 ),
             )
@@ -965,7 +972,7 @@ def _list_entries(
         story.append(
             Paragraph(
                 f"<b>p.{escape(str(finding.get('page')))}&nbsp;&nbsp;"
-                f"{escape(str(finding.get('item') or ''))}</b>: {escape(line(finding))}",
+                f"{escape(item_words(finding))}</b>: {escape(_vendor(line(finding)))}",
                 style,
             )
         )
@@ -978,13 +985,19 @@ def _right_line(finding: Mapping[str, Any]) -> str:
     return f"{finding.get('vendor')} matches {source} {finding.get('architect')}"
 
 
-def _dismissed_line(finding: Mapping[str, Any]) -> str:
-    decision = finding.get("decision") or {}
-    by = decision.get("by") if isinstance(decision, Mapping) else None
-    note = decision.get("note") if isinstance(decision, Mapping) else None
-    words = f"vendor {finding.get('vendor')}; architect {finding.get('architect')}. "
-    words += f"Not a problem ({by})" if by else "Not a problem"
-    return words + (f": {note}" if note else ".")
+def _reviewer_right_line(finding: Mapping[str, Any]) -> str:
+    """An item the reviewer marked not a problem, in the Right list (#1766): "vendor 46";
+    architect 3'-1". Right (reviewer): <note>"."""
+    words = (
+        f"vendor {_vendor(finding.get('vendor'))}; architect {_vendor(finding.get('architect'))}. "
+    )
+    return words + reviewer_right(dict(finding)) + "."
+
+
+def _right_or_reviewer_line(finding: Mapping[str, Any]) -> str:
+    if proof_group(finding) == "dismissed":
+        return _reviewer_right_line(finding)
+    return _right_line(finding)
 
 
 def _pages_pdf(size: tuple[float, float], parts: Sequence[tuple[str, list[Any]]]) -> list[bytes]:
@@ -1226,11 +1239,9 @@ def proof_markup_pdf(
             styles["grey"],
         )
     )
-    notes += _list_entries(styles, "Right", groups.get("right", []), _right_line, GREEN)
-    if groups.get("dismissed"):
-        notes += _list_entries(
-            styles, GROUP_WORDS["dismissed"], groups["dismissed"], _dismissed_line, _LIST_GREY
-        )
+    # The reviewer's "Not a problem" is Right on the vendor's files, noted "(reviewer)" (#1766).
+    right = [*groups.get("right", []), *groups.get("dismissed", [])]
+    notes += _list_entries(styles, "Right", right, _right_or_reviewer_line, GREEN)
     unmatched = [
         i for i in (rounds.items if rounds is not None else []) if i.status == "not_compared"
     ]
@@ -1243,8 +1254,9 @@ def proof_markup_pdf(
         )
         notes += [
             Paragraph(
-                f"<b>{escape(item.item)}</b>: was {escape(item.was)}; should be "
-                f"{escape(item.should_be)}. Why: {escape(item.reason or '')}",
+                f"<b>{escape(_vendor(item.item))}</b>: was {escape(_vendor(item.was))}; should be "
+                f"{escape(_vendor(item.should_be))}. Why: "
+                f"{escape(vendor_text(item.reason, 'the drawings do not settle it') or '')}",
                 styles["grey"],
             )
             for item in unmatched
@@ -1255,8 +1267,8 @@ def proof_markup_pdf(
         )
         notes += [
             Paragraph(
-                f"<b>p.{escape(str(e.get('page')))}&nbsp;&nbsp;{escape(str(e.get('item') or ''))}"
-                f"</b>: {escape(' '.join(settled_entry_lines(e)))}",
+                f"<b>p.{escape(str(e.get('page')))}&nbsp;&nbsp;{escape(_vendor(e.get('item')))}"
+                f"</b>: {escape(_vendor(' '.join(settled_entry_lines(e))))}",
                 styles["grey"],
             )
             for e in folded

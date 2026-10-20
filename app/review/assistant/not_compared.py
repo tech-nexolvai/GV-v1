@@ -6,7 +6,9 @@ compared.pdf" and "… - Not compared.xlsx", grouped and sorted by reason then p
 what the vendor shows, what the architect shows, why it could not be compared and what is needed
 to compare it, with the vendor's page reference. The rows here are the one source: the PDF
 (`proof_drawing.not_compared_pdf`), the workbook (`xlsx`), its CSV fallback and the screen's count
-all come from `rows`, so every count agrees.
+all come from `rows`, so every count agrees. Every cell goes through the vendor-text guard
+(`vendor_text`, #1766): the list is sent to the vendor. The register says the same reason for the
+same item (`vendor_reason`), so the two files never disagree on why.
 
 Only items of the check's products are listed: the full check's product scope (#1621,
 `product_scope`) already keeps out-of-scope findings out of the answer, and `rows` can also be
@@ -27,7 +29,7 @@ from typing import Any, Final
 
 from app.review.assistant.classification import REASON_WORDS, REASONS, TRADE_WORDS
 from app.review.assistant.proof import classified, proof_group, vendor_value
-from app.review.assistant.vendor_text import internal
+from app.review.assistant.vendor_text import internal, item_name, vendor_text
 from app.review.assistant.workbook import write_xlsx
 
 __all__ = [
@@ -37,6 +39,7 @@ __all__ = [
     "csv_text",
     "rows",
     "summary_rows",
+    "vendor_reason",
     "vendor_why",
     "xlsx",
 ]
@@ -109,6 +112,22 @@ class Row:
         return TRADE_WORDS.get(self.reason, self.reason_words)
 
 
+def vendor_reason(row: Row) -> str:
+    """Why a row could not be compared, as the list's "Why not compared" column and the issue
+    register both say it: the trade's words, then the detail ("Illegible: could not read …")."""
+    return f"{row.label}: {row.why}" if row.why else row.label
+
+
+def _guarded(text: object, limit: int = 160) -> str:
+    """A cell as the vendor may read it (`vendor_text`): GV's own words never printed. (Only the
+    guard: a value's own words, like a "blind corner" cabinet, are the drawings', not GV's.)"""
+    return vendor_text(_flat(text, limit), "") or ""
+
+
+#: Code's own label ids ("p23.D17"): never the vendor's page reference.
+_LABEL_ID: Final = re.compile(r"^p\d+\.D\d+$")
+
+
 def _flat(text: object, limit: int = 160) -> str:
     words = " ".join(str(text or "").split())
     return words if len(words) <= limit else words[: limit - 1].rstrip() + "…"
@@ -141,11 +160,11 @@ def _reference(finding: Mapping[str, Any], file: str | None) -> str:
     page = finding.get("page")
     dims = finding.get("dims") or {}
     vendor = dims.get("vendor") if isinstance(dims, Mapping) else None
-    label = (
-        f", label {vendor.get('id')}" if isinstance(vendor, Mapping) and vendor.get("id") else ""
-    )
+    named = str(vendor.get("id") or "") if isinstance(vendor, Mapping) else ""
+    # Code's own label ids ("p23.D17") are GV's working words: never the vendor's reference.
+    label = f", label {named}" if named and not _LABEL_ID.match(named) else ""
     where = f" of {file}" if file else ""
-    return f"page {page}{where}{label}" if page is not None else ""
+    return vendor_text(f"page {page}{where}{label}", "") or "" if page is not None else ""
 
 
 def in_scope(category: object, products: Sequence[str], known: Sequence[str]) -> bool:
@@ -178,18 +197,19 @@ def rows(
         file = where[0] if where is not None else None
         page = finding.get("page") if isinstance(finding.get("page"), int) else None
         category = str(finding.get("category") or "other")
+        named = item_name(dict(finding))
         out.append(
             Row(
                 finding_id=str(finding.get("id") or ""),
                 page=page,
-                area=(areas or {}).get(page or 0, ""),
-                product=str(product_label(category)) if product_label else category,
-                item=_flat(finding.get("item"), 120),
-                vendor=_flat(vendor_value(finding), 120),
-                architect=_architect_shows(finding, reason),
+                area=_guarded((areas or {}).get(page or 0, "")),
+                product=_guarded(product_label(category) if product_label else category),
+                item=_flat(named, 120) if named else f"Item on page {page}" if page else "Item",
+                vendor=_guarded(vendor_value(finding), 120),
+                architect=_guarded(_architect_shows(finding, reason)),
                 reason=reason,
                 why=vendor_why(found.why),
-                needed=found.settle or "",
+                needed=_guarded(found.settle, 200),
                 reference=_reference(finding, file),
                 file=file,
                 box=where[1] if where is not None else None,
@@ -233,14 +253,14 @@ def gap_rows(
             Row(
                 finding_id="",
                 page=page,
-                area=(areas or {}).get(page or 0, ""),
+                area=_guarded((areas or {}).get(page or 0, "")),
                 product="",
-                item=what,
+                item=vendor_text(what, _PLAIN_WHY) or _PLAIN_WHY,
                 vendor="",
                 architect="",
                 reason=reason,
                 why=REASON_WORDS.get(reason, reason),
-                needed=_flat(gap.get("needs"), 200),
+                needed=_guarded(gap.get("needs"), 200),
                 reference="" if page is None else f"page {page}",
                 file=None,
                 box=None,
@@ -262,7 +282,7 @@ def _table(found: Sequence[Row]) -> list[list[str]]:
             row.item,
             row.vendor,
             row.architect,
-            f"{row.label}: {row.why}",
+            vendor_reason(row),
             row.needed,
             row.reference,
         ]

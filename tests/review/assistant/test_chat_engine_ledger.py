@@ -369,7 +369,8 @@ def test_compare_rounds_sets_round_status_and_the_rounds_line(
     assert status["F4"]["trust_level"] == "to_check"
     rounds = _blocks(outcome, "trust")[0]["rounds"]
     assert rounds["line"] == (
-        "Vendor fixed 1 of 3 round-1 items · 2 still wrong · 2 changes nobody asked for"
+        "Round 1 comments: 1 of 3 closed · 2 previous comments not addressed · 2 changes nobody "
+        "asked for"
     )
     assert rounds["unrequested"] == 2 and rounds["pairs"][0]["round2_page"] == 3
     adapter = TypeAdapter(list[ChatBlock])
