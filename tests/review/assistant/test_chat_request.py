@@ -566,6 +566,7 @@ def test_the_system_prompt_is_short_and_names_the_skill_and_the_three_facts() ->
         "cite",
         "record_string",
         "record_reading",
+        "record_items",
         "compare_rounds",
         "verify_value",
         "read_number",
