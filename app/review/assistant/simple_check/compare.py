@@ -169,6 +169,8 @@ class CompareSettings:
     retries: int = 3
     label_places: bool = True
     """Each label line gives its direction and place on its drawing (recipe step 1, #1775)."""
+    precedents: bool = True
+    """The system prompt carries the "looks wrong but isn't" precedents (recipe step 6, #1775)."""
 
     @classmethod
     def from_settings(cls, settings: Any) -> CompareSettings:
@@ -181,6 +183,7 @@ class CompareSettings:
             max_tokens=settings.assistant_simple_max_tokens,
             retries=settings.assistant_simple_retries,
             label_places=getattr(settings, "assistant_simple_label_places", True),
+            precedents=getattr(settings, "assistant_simple_precedents", True),
         )
 
     def for_item(self, item: WorkItem) -> tuple[ChatModel, str]:

@@ -189,6 +189,8 @@ class Settings(BaseSettings):
     # The reasoning recipe's compare-prompt steps (#1775), each a switch so a paid A/B can measure
     # it on and off: every label line gives its direction and its place on its drawing (step 1).
     assistant_simple_label_places: bool = True
+    # The "looks wrong but isn't" precedents in the compare and blind prompts (step 6).
+    assistant_simple_precedents: bool = True
     # The simple check's blind second look (`simple_check/blind.py`): one fresh call per red
     # candidate, shown only crops of both drawings with code's marks, never the compare call's
     # answer; a different model from the compare call by default. Red needs it to agree.

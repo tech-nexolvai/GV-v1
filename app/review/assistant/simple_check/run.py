@@ -179,6 +179,7 @@ class SimpleOptions:
             blind=BlindSettings(
                 str(given.get("blind_model") or "claude-opus-5-5"),
                 str(given.get("blind_effort") or "high"),
+                bool(given.get("blind_precedents", True)),
             ),
             pilot=int(pilot) if isinstance(pilot, int) and pilot > 0 else None,
             replay=str(given["replay"]) if given.get("replay") else None,
@@ -680,7 +681,12 @@ class _Run:
         compare = _compare()
         prompts = import_module("app.review.assistant.simple_check.prompts")
         settings = compare.CompareSettings(**self.options.compare)
-        system = prompts.system_prompt(engine._rules_summary(), engine.product_scope.label)
+        system = prompts.system_prompt(
+            engine._rules_summary(),
+            engine.product_scope.label,
+            products=getattr(engine.product_scope, "products", ()),
+            precedents=settings.precedents,
+        )
         source = compare.PictureSource(folder, engine.tools.workspace.uploads)
         try:
             source.prefetch(items)

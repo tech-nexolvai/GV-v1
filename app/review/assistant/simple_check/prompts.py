@@ -36,6 +36,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Final
 
+from app.review.assistant.simple_check import precedents as precedents_module
 from app.review.assistant.simple_check.schema import (
     END_WORDS,
     Drawing,
@@ -196,12 +197,21 @@ Answer:
 {json.dumps(EXAMPLE_REPLY, separators=(",", ":"))}"""
 
 
-def system_prompt(rules_summary: str = "", scope_words: str = "All products") -> str:
-    """The run's system prompt: `SYSTEM_PROMPT`, the products in scope and GV's rules for them.
-    The same bytes for every drawing of a run (the prompt cache keys on them)."""
+def system_prompt(
+    rules_summary: str = "",
+    scope_words: str = "All products",
+    *,
+    products: Sequence[str] = (),
+    precedents: bool = True,
+) -> str:
+    """The run's system prompt: `SYSTEM_PROMPT`, the "looks wrong but isn't" precedents for the
+    products in scope (`precedents.render`, recipe step 6; off for a paid A/B), the products in
+    scope and GV's rules for them. The same bytes for every drawing of a run (the prompt cache
+    keys on them)."""
     rules = rules_summary.strip() or "- none given for this run"
+    settled = f"\n\n{precedents_module.render(products)}" if precedents else ""
     return (
-        f"{SYSTEM_PROMPT}\n\nProducts in scope for this review: {scope_words}. Compare every "
+        f"{SYSTEM_PROMPT}{settled}\n\nProducts in scope for this review: {scope_words}. Compare every "
         "dimension and item of the drawing; code files each under its product.\n\nGV's own rules "
         "for these products (standards the vendor must follow even where the architect is "
         f"silent; code applies them to the values):\n{rules}"

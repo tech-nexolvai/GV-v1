@@ -184,11 +184,11 @@ def test_the_question_never_carries_the_first_answer(kind: str) -> None:
 
 
 def test_each_kind_of_question_is_its_own() -> None:
-    assert "measures the same thing as the marked vendor dimension" in question(
+    assert "pick the numbered architect dimension that measures the same thing" in question(
         "pair", "p2.D1", None
     )
     assert "close view" in question("values", None, None)
-    assert "Does the vendor's drawing show" in question("absence", None, "p1.D4")
+    assert "shown when the vendor's drawing shows" in question("absence", None, "p1.D4")
 
 
 # ---- outcomes -------------------------------------------------------------------------------------

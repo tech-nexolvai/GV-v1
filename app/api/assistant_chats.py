@@ -1368,9 +1368,11 @@ def _simple_options(settings: Settings, body: ChatMessageIn) -> dict[str, Any] |
             "max_tokens": settings.assistant_simple_max_tokens,
             "retries": settings.assistant_simple_retries,
             "label_places": getattr(settings, "assistant_simple_label_places", True),
+            "precedents": getattr(settings, "assistant_simple_precedents", True),
         },
         "blind_model": settings.assistant_simple_blind_model,
         "blind_effort": settings.assistant_simple_blind_effort,
+        "blind_precedents": getattr(settings, "assistant_simple_precedents", True),
         "resolve": {
             "mode": getattr(settings, "assistant_simple_resolve", "off"),
             "rounds": getattr(settings, "assistant_simple_resolve_rounds", 2),
