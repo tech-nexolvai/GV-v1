@@ -23,7 +23,7 @@ checked", and logs it.
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
@@ -68,6 +68,8 @@ PHASE_LABELS: Final = {
     "package": "Send-ready package",
 }
 _MICROS: Final = Decimal(1_000_000)
+#: A phase's keys only the log line shows, never stored (the published `ChatTimingsOut`).
+_LOG_ONLY: Final = frozenset({"budget_usd", "tools"})
 
 
 def _dollars(micros: int) -> str:
@@ -226,6 +228,18 @@ class Timings:
             "cost_usd": _dollars(total_micros),
             "phases": phases,
             "helpers": helpers,
+        }
+
+    @staticmethod
+    def stored(timings: Mapping[str, Any]) -> dict[str, Any]:
+        """The timings as the trust block stores them (`ChatTimingsOut`): each phase without its
+        share and tool counts (#1805), which only the log line shows, so the live event and the
+        reloaded message are the same."""
+        return {
+            **timings,
+            "phases": [
+                {k: v for k, v in p.items() if k not in _LOG_ONLY} for p in timings["phases"]
+            ],
         }
 
     @staticmethod

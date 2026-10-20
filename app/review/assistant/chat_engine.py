@@ -4276,7 +4276,7 @@ class ChatEngine:
                 **self.product_scope.as_dict(),
                 "dropped_out_of_scope": self.book.out_of_scope,
             }
-            trust = {**block["trust"], "timings": timings, "product_scope": scope}
+            trust = {**block["trust"], "timings": Timings.stored(timings), "product_scope": scope}
             self.blocks[index] = {"type": "trust", "trust": trust}
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(trust))})
 

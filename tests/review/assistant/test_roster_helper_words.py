@@ -94,3 +94,33 @@ def test_the_same_string_read_twice_on_a_page_is_one_item(
     ]
     assert len(sums) == 1
     assert [a["vendor_box"]["x0"] for a in sums[0]["also_on"]] == [660]
+
+
+def test_every_tool_a_brief_names_is_one_the_helper_and_the_verifier_have() -> None:
+    """#1805: the helper brief and the verifier's brief say to call read_number, so both have it
+    (the verifier's tools are picked from the helpers' list)."""
+    names = {t["name"] for t in HELPER_TOOLS}
+    assert {"verify_value", "read_number"} <= names
+    from app.review.assistant.chat_tools import HELPER_TOOL_NAMES
+
+    assert names == set(HELPER_TOOL_NAMES)
+    prover = {t["name"] for t in HELPER_TOOLS if t["name"] in full_check_roster._PROVER_TOOLS}
+    assert prover == set(full_check_roster._PROVER_TOOLS)
+
+
+def test_the_stored_timings_keep_the_contract_and_the_log_line_has_shares_and_tools() -> None:
+    """#1805: the per-phase share and tool counts go in the log line; the stored trust block
+    keeps only the published timings shape (the live event and the reloaded message agree)."""
+    from app.review.assistant.chat_contract import ChatTimingsOut
+    from app.review.assistant.chat_timings import Timings
+
+    timings = Timings()
+    timings.set_budget("helpers", 2_600_000)
+    with timings.phase("helpers"):
+        timings.tool("verify_value", 2)
+    full = timings.as_dict(0)
+    line = Timings.log_line(full)
+    assert "of $2.60" in line and "[verify_value 2]" in line
+    stored = Timings.stored(full)
+    assert stored == ChatTimingsOut.model_validate(stored).model_dump()
+    assert "tools" in full["phases"][0] and "tools" not in stored["phases"][0]

@@ -174,6 +174,7 @@ HELPER_TOOL_NAMES: Final = (
     "record_string",
     "record_reading",
     "verify_value",
+    "read_number",
     "measure_on_drawing",
     "read_under_markup",
     "drawing_facts",
@@ -910,6 +911,8 @@ HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     SET_COVERAGE,
     *LEDGER_TOOLS,
     VERIFY_VALUE,
+    # #1805: the helper and verifier briefs say to call it on a number they cannot read ($0, code).
+    READ_NUMBER,
     MEASURE_ON_DRAWING,
     READ_UNDER_MARKUP,
     DRAWING_FACTS,

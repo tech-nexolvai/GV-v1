@@ -446,6 +446,7 @@ def test_helpers_run_together_and_their_reports_go_back_to_the_lead(tmp_path: Pa
         "record_string",
         "record_reading",
         "verify_value",
+        "read_number",
         "measure_on_drawing",
         "read_under_markup",
         "drawing_facts",
