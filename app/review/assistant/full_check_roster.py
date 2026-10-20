@@ -863,6 +863,10 @@ class _Run:
             warm = warm_pool.submit(engine._prewarm)
             with engine.timings.phase("set_pack"):
                 page_map = wait_for_page_map(workspace.set_pack, engine.cancel)
+            with engine.timings.phase("page_match"):
+                # Separate uploads: each vendor page's architect pages, agreed by code and the AI
+                # page matcher (#1798); the helpers are handed them with their pages.
+                engine.cross_file_pairs(page_map)
             with engine.timings.phase("planning"):
                 # Only the areas of the products in scope get helpers (`product_scope`).
                 plan, pages_all = engine.scoped_jobs(page_map)
@@ -1069,6 +1073,7 @@ class _Run:
         engine = self.engine
         assert self.plan is not None
         from app.review.assistant.full_check_brief import helper_brief
+        from app.review.assistant.full_check_plan import pair_lines
         from app.review.assistant.sandbox import UPLOADS
 
         with engine._lock:
@@ -1121,6 +1126,12 @@ class _Run:
                 products=engine.settings.products,
             )
             gaps = "\n".join(f"- p{page}: {line}" for page in run for line in pages[page])
+            across = engine._cross
+            if across is not None:
+                # Separate uploads (#1798): the run's pages' agreed architect pages, or why none.
+                paired = [(p, across.pairs[p]) for p in run if p in across.pairs]
+                unpaired = [(p, across.unpaired[p]) for p in run if p in across.unpaired]
+                brief = "\n\n".join([brief, *pair_lines(paired, unpaired, UPLOADS)])
             where = page_ranges_words(run)
             agents.append(
                 self._agent(
