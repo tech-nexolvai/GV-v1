@@ -32,7 +32,7 @@ from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models import AssistantChat, AssistantChatMessage, AssistantFindingDecision, Package
 from app.review.assistant.chat_corrections import corrections_by_answer, with_corrections
-from app.review.assistant.chat_decisions import decision_out, with_decisions
+from app.review.assistant.chat_decisions import lay_decision, with_decisions
 from app.review.assistant.chat_findings import live_findings
 from app.review.assistant.chat_store import package_name
 from app.review.assistant.job_tracker import TrackerAnswer, TrackerSet, build_tracker
@@ -160,7 +160,7 @@ def _decisions(session: Session, chat_ids: Sequence[UUID]) -> dict[UUID, dict[st
         .where(AssistantFindingDecision.chat_id.in_(list(chat_ids)))
         .order_by(AssistantFindingDecision.decided_at, AssistantFindingDecision.created_at)
     ):
-        latest.setdefault(row.message_id, {})[row.finding_id] = decision_out(row)
+        lay_decision(latest, row)
     return latest
 
 

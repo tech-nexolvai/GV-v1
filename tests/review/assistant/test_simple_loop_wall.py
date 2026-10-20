@@ -22,7 +22,7 @@ No client values: every number and word below is made up. No PDF, no model call.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from typing import Any
 
@@ -974,12 +974,13 @@ def _runs(refs: Sequence[str]) -> Iterator[tuple[str, ...]]:
 def worst_proposals(item: Item) -> Iterator[resolve.Proposal]:
     """Every proposal a model could make on this item that might turn it red: every kind the loop
     knows, every label of the area as the new label, band, part or chain, the worst ends, every
-    convention the library holds and one it does not, both verdicts."""
+    convention the library holds and one it does not, every verdict that names the same points
+    (the older `different` and `same`, and C3's `same_points`)."""
     pages = _area_pages(item)
     vendor = [ref for page in pages for ref in _refs(page, "vendor")]
     architect = [ref for page in pages for ref in _refs(page, "architect")] + _refs(11)
     cited = (*(c.id for c in resolve.conventions()), "C99")
-    for verdict in ("different", "same"):
+    for verdict in ("different", "same", "same_points"):
         for ends in _WORST_ENDS:
             common = {
                 "vendor_from": ends[0],
@@ -1057,6 +1058,52 @@ def test_without_the_loop_none_is_red(fixture: Fixture) -> None:
         assert v.outcome == "candidate", v.reason
     else:
         assert v.outcome != "candidate", (v.reason, v.checks)
+
+
+def _as(fixture: Fixture, verdict: str) -> Fixture:
+    return replace(fixture, item={**fixture.item, "verdict": verdict})
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [f for f in FIXTURES if f.kind == "pair" and f.item["verdict"] == "different"],
+    ids=lambda f: f.id,
+)
+def test_same_points_holds_every_guard_the_older_different_held(fixture: Fixture) -> None:
+    """C3: an answer that says only "same points" is checked like the older "different": the
+    same outcome, the same reason and the same guard keeps it out of the loop."""
+    old, item, raw = _verified(fixture)
+    new, _item, new_raw = _verified(_as(fixture, "same_points"))
+    assert (new.outcome, new.reason_code) == (old.outcome, old.reason_code), (
+        new.reason,
+        old.reason,
+    )
+    assert new.outcome != "red"
+    before = resolve.eligible(old, raw, item, PACK)
+    after = resolve.eligible(new, new_raw, item, PACK)
+    assert type(after) is type(before)
+    if isinstance(before, resolve.Refusal):
+        assert isinstance(after, resolve.Refusal) and after.guard == before.guard
+    else:
+        assert isinstance(after, resolve.Failure) and after.route == before.route
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [f for f in FIXTURES if f.kind == "pair" and f.item["verdict"] in ("same", "unsure")],
+    ids=lambda f: f.id,
+)
+def test_same_points_for_an_older_same_or_unsure_is_never_red_without_the_blind_look(
+    fixture: Fixture,
+) -> None:
+    """The older "same" with values that differ stayed grey; as same_points, code compares the
+    numbers, so it may become a candidate, which still needs the blind look to agree."""
+    new, item, raw = _verified(_as(fixture, "same_points"))
+    assert new.outcome != "red"
+    if new.outcome == "candidate":
+        assert new.needs_blind
+    done, _proposer = _loop(new, item, raw, [resolve.Proposal(kind="none")])
+    assert done.verified.outcome != "red"
 
 
 @pytest.mark.parametrize("fixture", FIXTURES, ids=lambda f: f.id)

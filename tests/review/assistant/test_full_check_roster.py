@@ -19,6 +19,7 @@ import io
 import json
 import threading
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -305,6 +306,56 @@ def test_a_line_off_its_drawings_scale_is_no_proof_of_different_points() -> None
         assert same_extent(v, neighbour, labels_v, labels_a)[0] == "different_extent"
 
 
+class _Labels:
+    """The run's labels of one page (`DimLabels.on_page`), with an uploads folder."""
+
+    def __init__(self, labels: list[dict[str, Any]]) -> None:
+        self.labels = labels
+        self.uploads = Path("/nowhere")
+
+    def on_page(self, file: str, page: int, *, read_now: bool = True) -> list[dict[str, Any]]:
+        return self.labels
+
+
+def _bare_run(labels: list[dict[str, Any]]) -> Any:
+    engine = type("Engine", (), {})()
+    engine.book = type("Book", (), {})()
+    engine.book.dim_labels = _Labels(labels)
+    return full_check_roster._Run(engine)
+
+
+def test_where_the_anchor_fit_cannot_tell_the_drawn_run_decides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_extent`: the anchor fit first; only its `cannot_tell` asks the drawn run (`same_ends`),
+    whose answer is said as the drawn run's; a failed drawn-run proof leaves the fit's answer."""
+    vendor = _label("D30", "vendor", "29.25", (100, 205.3))
+    architect = _label("D2", "architect", "29", (400, 458))
+    run = _bare_run([vendor, architect])
+    asked: list[str] = []
+
+    def proved(v: Any, a: Any, **_kw: Any) -> tuple[str, str]:
+        asked.append(str(v["id"]))
+        return "same_extent", "one end is tied on both drawings (the floor)"
+
+    monkeypatch.setattr(full_check_roster.same_ends, "prove_labels", proved)
+    state, why = run._extent(vendor, architect, {"pages": []})
+    assert state == "same_extent" and why.startswith("the drawn run: ") and asked == ["D30"]
+
+    def broken(*_a: Any, **_kw: Any) -> tuple[str, str]:
+        raise RuntimeError("no line work")
+
+    monkeypatch.setattr(full_check_roster.same_ends, "prove_labels", broken)
+    state, _why = run._extent(vendor, architect, {"pages": []})
+    assert state == "cannot_tell"
+
+    # a width against a height: the anchor fit's own answer, the drawn run never asked
+    asked.clear()
+    monkeypatch.setattr(full_check_roster.same_ends, "prove_labels", proved)
+    height = _label("D3", "architect", "29", (400, 458), orientation="v")
+    assert run._extent(vendor, height, None)[0] == "different_extent" and asked == []
+
+
 def _passing() -> list[Check]:
     return [Check(name, "pass") for name in ("ink", "annotation", "roles", "axis", "round")]
 
@@ -589,7 +640,7 @@ def _clean_ink(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         full_check_roster._Run,
         "_extent",
-        lambda self, vendor, architect: ("same_extent", "the ends land together"),
+        lambda self, vendor, architect, page_map=None: ("same_extent", "the ends land together"),
     )
 
 
@@ -643,6 +694,9 @@ def test_a_roster_full_check_runs_its_specialists_with_no_lead(
     listed = [b["text"] for b in blocks if b["type"] == "text" and "numbered:" in b["text"]]
     assert any("D2" in words for words in listed)  # every label of the architect's drawing
     assert advocate["output_config"]["format"]["schema"]["required"][0] == "architect_pick"
+    # A judgement: adaptive thinking at a lower effort, never thinking off (#1775, C4).
+    assert advocate["thinking"]["type"] == "adaptive"
+    assert advocate["output_config"]["effort"] == "medium"
     # The tag table compared by code: ST-1 vs ST-2.
     assert any(f["item"] == "Area 1: top: tag" and f["status"] == "different" for f in findings)
     # The summary: code's words (the reworded one dropped a number) and the fixed price.
@@ -1169,6 +1223,45 @@ def test_a_reply_cut_at_the_smaller_allowance_is_sent_on(
     _roster(tmp_path, script).run()
     later = [p for p in script.params["numbers"] if _steps(p) > 0]
     assert later and all("cut at its length limit" in json.dumps(p) for p in later)
+
+
+def test_blind_picks_started_together_hold_their_price_within_the_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The advocate's six workers: each blind pick holds its price while its call runs, so picks
+    started together never pass the phase's budget between them (#1775, C4)."""
+    import time
+    from types import SimpleNamespace
+
+    made: list[str] = []
+    lock = threading.Lock()
+
+    def held_pick(self: Any, finding: Any, *_rest: Any) -> dict[str, Any]:
+        with lock:
+            made.append(str(finding["id"]))
+        time.sleep(0.05)  # the other workers ask while this one runs
+        with lock:
+            self._charge(self.pick_phase, 50_000)
+            self.engine.spent += 50_000  # a call is charged only when it ends
+        return {"pick": "none"}
+
+    monkeypatch.setattr(full_check_roster._Run, "_held_pick", held_pick)
+    engine = SimpleNamespace(
+        _price=lambda *a: 50_000,
+        _fits=lambda estimate: True,
+        settings=SimpleNamespace(message_cap_micros=10_000_000),
+        spent=0,
+    )
+    run = full_check_roster._Run(engine=engine)  # type: ignore[arg-type]
+    # The price is the phase's budget, nothing kept for later steps (#1805: what a phase leaves
+    # rolls forward, so the price, not only the share, is what the picks must not pass).
+    run.plan = SimpleNamespace(  # type: ignore[assignment]
+        budgets={"advocate": 120_000}, price=120_000, after=lambda phase: 0
+    )
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        replies = list(pool.map(lambda n: run._blind_pick({"id": f"F{n}"}, {}, {}, None), range(6)))
+    assert len(made) == 2 and run.spent["advocate"] <= 120_000 and run.held == 0
+    assert replies.count(None) == 4
 
 
 # ---- answers wrapped in a code block; the not-for-sending rule (#1811) --------------------------

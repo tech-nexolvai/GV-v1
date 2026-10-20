@@ -251,6 +251,7 @@ from app.review.assistant.send_package import (
     package_context,
 )
 from app.review.assistant.sharpen import helper_lines
+from app.review.assistant.sink_offset import add_to_answer as add_sink_offset
 from app.review.assistant.spot_guard import dropped as spot_dropped
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
@@ -450,6 +451,11 @@ def second_read_prompt_id(provider: str) -> str:
     return f"review-assistant-chat-check-{provider}-{HARNESS_ID}"
 
 
+#: The most attempts one `ChatEngine._call` makes (asked once more after a failure worth
+#: retrying): a call's money is held for all of them (#1769).
+CALL_ATTEMPTS: Final = 2
+
+
 #: Code's own checks of a full check (`ChatEngine.add_code_findings`), by the name a reviewer
 #: reads when one could not run (#1768).
 CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
@@ -459,6 +465,7 @@ CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
     "code_pairs": "code's own pairs",
     "run_fit": "GV's site-fit rule",
     "filler_range": "GV's filler range",
+    "sink_offset": "GV's sink front offset",
 }
 
 
@@ -1029,6 +1036,8 @@ class ChatEngine:
         #: full check "not for sending" (S0), never a quiet log line.
         self.code_checks_failed: list[str] = []
         self.extra_gaps: list[dict[str, Any]] = []
+        #: The set's gaps the Not-compared list named, once it is made (#1803).
+        self._set_gaps: list[Any] | None = None
         #: A full check's live state for the live screen (`live_check.LiveCheck`, #1710), set by
         #: `chat_service`; the simple check reports its drawings, phases and decisions to it.
         self.live: Any = None
@@ -1417,6 +1426,21 @@ class ChatEngine:
         """A call stopped by cancel: recorded and charged for what it used so far."""
         self._record(model, prompt_id, started, _Reply([], None, None, usage, None), None)
         self._charge(model, usage)
+
+    def track_stream(self, stream: Any) -> None:
+        """A stream opened outside `_call` (the simple check's compare calls, #1769), kept so a
+        Stop closes it; one opened after the Stop is closed at once."""
+        with self._lock:
+            self._streams.add(stream)
+        if self.cancel.is_set():
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001 - closing is best effort
+                _log.debug("assistant chat stream did not close on cancel")
+
+    def untrack_stream(self, stream: Any) -> None:
+        with self._lock:
+            self._streams.discard(stream)
 
     def stop_streams(self) -> None:
         """Close the calls streaming now, so a cancel does not wait for the next event."""
@@ -2549,8 +2573,8 @@ class ChatEngine:
     def add_code_findings(self) -> None:
         """The finish's code findings, $0, once per answer: the reading ledger's, the vendor
         consistency check's (#1584), the finish check's (#1623), code's own pairs, GV's site-fit rule
-        on the vendor's runs (`run_fit`) and GV's filler range on the vendor's fillers
-        (`filler_range`). A roster
+        on the vendor's runs (`run_fit`), GV's filler range on the vendor's fillers
+        (`filler_range`) and GV's sink front offset on the vendor's plans (`sink_offset`). A roster
         full check adds them before its proof steps (#1641), so its blind reads and devil's
         advocate see them; the trust phase then does not add them again."""
         if self._code_findings_added:
@@ -2568,6 +2592,8 @@ class ChatEngine:
             (CODE_CHECK_NAMES["run_fit"], lambda: add_run_fit(self)),
             # GV's filler range on the vendor's fillers.
             (CODE_CHECK_NAMES["filler_range"], lambda: add_filler_range(self)),
+            # GV's sink front offset on the vendor's plans (#1807).
+            (CODE_CHECK_NAMES["sink_offset"], lambda: add_sink_offset(self)),
         )
         # The pack's state before the checks read its labels counts too: it may turn `ready` while
         # they run on partial labels (#1768 review).
@@ -3029,6 +3055,10 @@ class ChatEngine:
             _log.info("assistant chat: %d set gaps outside the product scope left out", left_out)
         listed = self._not_compared_files([*nothing, *not_compared.gap_rows(set_gaps)])
         names += [name for name, _path in listed]
+        if listed:
+            # Kept with the package block, so the list can be made again after the reviewer's
+            # decisions with the same set-level rows (#1803).
+            self._set_gaps = json.loads(json.dumps(list(set_gaps), default=str))
         # The send-ready package (#1622) holds every file just made, the Not-compared list too.
         context = worked.get("context")
         if context is not None and any(what == "cloud drawing" for what, _name, _path in kept):
@@ -3099,7 +3129,10 @@ class ChatEngine:
                 )
             register(file_id, made.name, made.size, ZIP_MIME, made.sha256)
             # What the screen (the review result) and a remade package read again.
-            self._add_block({"type": "package", "package": context.block()})
+            stored = context.block()
+            if self._set_gaps is not None:
+                stored = {**stored, "set_gaps": self._set_gaps}
+            self._add_block({"type": "package", "package": stored})
         except Exception as failed:  # noqa: BLE001 - told plainly in the answer
             _log.warning("assistant chat package failed: %s", type(failed).__name__)
             out.unlink(missing_ok=True)

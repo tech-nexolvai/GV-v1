@@ -189,6 +189,13 @@ class Settings(BaseSettings):
     # The reasoning recipe's compare-prompt steps (#1775), each a switch so a paid A/B can measure
     # it on and off: every label line gives its direction and its place on its drawing (step 1).
     assistant_simple_label_places: bool = True
+    # The "looks wrong but isn't" precedents in the compare and blind prompts (step 6).
+    assistant_simple_precedents: bool = True
+    # The compare repair turn asks only for the claims code rejected, the passed ones frozen
+    # (step 4); and the blind look gets one zoomed re-look (close crops round the marked
+    # dimension) before an end is left unseen: one more paid call, so off until measured.
+    assistant_simple_targeted_repair: bool = True
+    assistant_simple_zoom_relook: bool = False
     # The simple check's blind second look (`simple_check/blind.py`): one fresh call per red
     # candidate, shown only crops of both drawings with code's marks, never the compare call's
     # answer; a different model from the compare call by default. Red needs it to agree.
@@ -207,7 +214,9 @@ class Settings(BaseSettings):
     assistant_simple_resolve_model: Literal["claude-sonnet-5-5", "claude-opus-5-5"] = (
         "claude-sonnet-5-5"
     )
-    assistant_simple_resolve_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    # Medium with adaptive thinking (#1775, C4): a judgement is never made with thinking off; the
+    # effort is lowered instead to keep its cost.
+    assistant_simple_resolve_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     assistant_simple_resolve_web_search: bool = False
     # One sandbox command's time limit, and which sandbox runs it (`auto` and `docker`: the Docker
     # image `gv-assistant-sandbox` when built and Docker answers, else no shell: the chat says the

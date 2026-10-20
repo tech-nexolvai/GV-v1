@@ -6,7 +6,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { previewPage } from '@/lib/chat-full-check';
-import { asShown, notComparedWords, proofCounts, proofGroup } from '@/lib/chat-proof';
+import { asShown, notComparedWords, PROOF_WORDS, proofCounts, proofGroup } from '@/lib/chat-proof';
+import { shouldBeValue, suggestedShouldBe } from '@/lib/chat-result';
 import { CSV_HEADER, findingsCsv } from '@/lib/chat-trust';
 import { finding } from './fixtures/chat';
 
@@ -71,5 +72,25 @@ describe('a full check shows each item where its cloud drawing puts it (#1619)',
     expect(asShown(finding('w2', { status: 'different', proof: { group: 'clouded' } })).status).toBe('different');
     expect(asShown(finding('r1', { status: 'same', proof: { group: 'right' } })).status).toBe('same');
     expect(notComparedWords(finding('r2', { status: 'same', proof: { group: 'right' } }))).toBeNull();
+  });
+});
+
+describe('the reviewer’s overrides (#1803)', () => {
+  it('a red mark needs a value it should be; the reviewer can give one; a compared Right is never overridden', () => {
+    const none = finding('k1', { status: 'check', architect: 'no size printed', inches: null, proof: { group: 'not_compared' } });
+    expect(proofGroup(none, { decision: 'agree' })).toBe('not_compared');
+    expect(proofGroup(none, { decision: 'agree', should_be: '12"' })).toBe('clouded');
+    expect(shouldBeValue(none, { decision: 'agree', should_be: '12"' })).toEqual({ main: '12″', note: 'the reviewer' });
+    expect(suggestedShouldBe(none)).toBe('');
+    // A "same" seen on one side only is Not compared: it can be marked Right or made Wrong.
+    const unseen = finding('s1', { status: 'same', compared: false, architect: '22"', vendor: '22"', proof: { group: 'not_compared' } });
+    expect(proofGroup(unseen, { decision: 'not_a_problem' })).toBe('dismissed');
+    expect(proofGroup(unseen, { decision: 'agree', should_be: '24"' })).toBe('clouded');
+    expect(proofGroup(finding('r1', { status: 'same', proof: { group: 'right' } }), { decision: 'not_a_problem' })).toBe('right');
+    // The architect's value starts the form, as code writes it; kept as it is, it is the architect's.
+    const architect = finding('a1', { status: 'different', architect: '3\'-1"', inches: { architect: '37', vendor: '46', difference: '9' }, proof: { group: 'not_compared' } });
+    expect(suggestedShouldBe(architect)).toBe('37"');
+    expect(shouldBeValue(architect, { decision: 'agree', should_be: '37 ″' })?.note).not.toBe('the reviewer');
+    expect(PROOF_WORDS.dismissed).toBe('Right (reviewer)');
   });
 });

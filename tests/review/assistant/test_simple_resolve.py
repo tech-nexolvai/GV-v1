@@ -11,7 +11,7 @@ import json
 import re
 import threading
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -85,7 +85,7 @@ def _label(
     }
 
 
-def _mini() -> Pack:
+def _mini(newest: str = "42") -> Pack:
     """Page 1: the architect's elevation (a 44" overall width, and a string of parts 20 + 24 = 44
     touching end to end) over the vendor's round 1 (40"); page 2: the vendor's round 2 (42")."""
     page1 = [
@@ -100,7 +100,7 @@ def _mini() -> Pack:
         _label("D5", '18"', "18", (20, 600, 30, 630), "vendor", "v"),
     ]
     page2 = [
-        _label("D1", '42"', "42", (100, 100, 130, 110), "vendor"),
+        _label("D1", f'{newest}"', newest, (100, 100, 130, 110), "vendor"),
         _label("D2", '42"', "42", (20, 100, 30, 130), "vendor", "v"),
     ]
     words = [
@@ -236,6 +236,65 @@ def test_an_older_round_label_is_moved_to_the_newest_rounds_same_dimension() -> 
     )
     assert other.verified.outcome == "not_compared"
     assert "not one of code's candidates" in other.rounds[0].why
+
+
+def test_a_same_points_answer_enters_and_leaves_the_loop_like_the_older_different() -> None:
+    """C3: the AI says only "same points"; code compares the numbers. Blocked by the round, it is
+    routed to the newest round, and a same_points proposal there reaches a candidate."""
+    raw = _pair("p1.D4", "p1.D1", "same_points")
+    v = _one(raw)
+    assert v.outcome == "not_compared" and "round 1" in v.reason
+    entry = resolve.eligible(v, raw, ROUND_1, MINI)
+    assert isinstance(entry, resolve.Failure) and entry.route == "round"
+    done = _run(
+        v,
+        raw,
+        [
+            resolve.Proposal(
+                kind="newer_round", vendor_label="p2.D1", verdict="same_points", **WALLS
+            )
+        ],
+    )
+    assert done.verified.outcome == "candidate", done.verified.reason
+    # Values code reads as equal never enter.
+    equal = replace(v, vendor={**(v.vendor or {}), "inches": "44"})
+    refused = resolve.eligible(equal, raw, ROUND_1, MINI)
+    assert isinstance(refused, resolve.Refusal) and refused.guard == "values_equal"
+
+
+def test_a_same_points_answer_on_the_newest_round_never_says_the_answer_said_different() -> None:
+    """The newest round's value equals the architect's: Right, and since the AI said only "same
+    points", the note "(the answer said different...)" is not written."""
+    pack = _mini(newest="44")
+    raw = _pair("p1.D4", "p1.D1", "same_points")
+    v = _one(raw, pack=pack)
+    for verdict in ("same_points", "unsure"):
+        done = _run(
+            v,
+            raw,
+            [resolve.Proposal(kind="newer_round", vendor_label="p2.D1", verdict=verdict, **WALLS)],
+            pack=pack,
+        )
+        assert done.verified.outcome == "right", (verdict, done.verified.reason)
+        assert "answer said different" not in done.verified.finding["why"], verdict
+
+
+def test_a_repair_that_names_the_ends_is_judged_on_its_own_claim() -> None:
+    """The first answer's weak point (an end it could not see) made it unsure; the repair round's
+    own same_points with all four ends is what code checks then (still every code check)."""
+    raw = {**_pair("p1.D4", "p1.D1", "same_points"), "weak_point": "end_not_visible"}
+    v = _one(raw)
+    assert v.outcome == "not_compared"
+    done = _run(
+        v,
+        raw,
+        [
+            resolve.Proposal(
+                kind="newer_round", vendor_label="p2.D1", verdict="same_points", **WALLS
+            )
+        ],
+    )
+    assert done.verified.outcome == "candidate", done.verified.reason
 
 
 def test_an_equal_part_of_the_vendors_span_is_code_proved() -> None:
@@ -725,7 +784,8 @@ def test_one_call_per_round_in_the_form_with_its_cost_held_while_it_runs() -> No
     )
     text = call["messages"][0]["content"][-1]["text"]
     assert "What code could not verify" in text and "verdict:unsure" in text
-    assert engine.held == [400_000] and proposer.holds.reserved == 0
+    # Held for both attempts the engine's call may make (#1769), let go when it answers.
+    assert engine.held == [2 * 400_000] and proposer.holds.reserved == 0
     assert done.rounds[0].usage["input_tokens"] == 9000
 
 

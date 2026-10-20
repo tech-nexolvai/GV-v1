@@ -304,7 +304,8 @@ def test_saved_answers_and_blind_looks_replay_to_the_same_items_at_no_cost(
 
 def test_the_calls_in_flight_are_held_against_the_cap() -> None:
     """A drawing starts only when its cost, with what the calls in flight may still cost, fits
-    the cap: with room for two, the third waits; each hold is let go when its answer comes."""
+    the cap: with room for two, the third waits until an answer comes and its hold goes (#1769
+    review: waiting, not refusing, while calls run); once stopped, nothing more starts."""
     hold = 2 * DOLLARS
     cap = 5 * DOLLARS
     spent = [0]
@@ -313,15 +314,24 @@ def test_the_calls_in_flight_are_held_against_the_cap() -> None:
         _over=lambda estimate: "message" if spent[0] + estimate > cap else None,
     )
     run = run_module._Run(engine, run_module.SimpleOptions.of({}))  # type: ignore[arg-type]
-    settings = SimpleNamespace(for_item=lambda _item: (MODELS["claude-sonnet-5-5"], "high"))
+    settings = SimpleNamespace(
+        for_item=lambda _item: (MODELS["claude-sonnet-5-5"], "high"), max_tokens=64000
+    )
     draw = run._guarded(
         lambda _item: [SimpleNamespace(picture=SimpleNamespace(tokens=1000))], settings
     )
     for name in ("a", "b"):
         draw(SimpleNamespace(id=name))
     assert run.reserved == 2 * hold
-    with pytest.raises(run_module._NotStarted):
-        draw(SimpleNamespace(id="c"))
-    assert run.stop.is_set() and run.cap_hit == "message" and run.refused == {"c"}
+
+    def answered() -> None:
+        spent[0] += DOLLARS // 2  # its real cost is charged, then its hold goes
+        run._release("a")
+
+    threading.Timer(0.2, answered).start()
+    draw(SimpleNamespace(id="c"))
+    assert not run.stop.is_set() and run.cap_hit is None and not run.refused
+    assert run.reserved == 2 * hold
+    run.stop.set()
     with pytest.raises(run_module._NotStarted):
         draw(SimpleNamespace(id="d"))  # once stopped, nothing more starts

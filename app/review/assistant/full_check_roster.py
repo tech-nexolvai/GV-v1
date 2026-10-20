@@ -54,6 +54,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from collections.abc import Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -64,7 +65,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
-from app.review.assistant import classification, witness
+from app.review.assistant import classification, dim_anchors, same_ends, witness
 from app.review.assistant import proof as proof_rule
 from app.review.assistant.chat_findings import UPDATE_FINDING
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
@@ -198,7 +199,7 @@ MIN_GAP_PAGE_MICROS: Final = 80_000
 MIN_GAP_RUN_MICROS: Final = 250_000
 #: Code's estimate of one advocate call's prompt (two crops and the question) and its reply.
 _ADVOCATE_PROMPT_TOKENS: Final = 7_000
-_ADVOCATE_MAX_TOKENS: Final = 2_000
+_ADVOCATE_MAX_TOKENS: Final = 12_000  # adaptive thinking first (#1775, C4)
 _SUMMARY_MAX_TOKENS: Final = 800
 _SUMMARY_PROMPT_TOKENS: Final = 1_500
 _ADVOCATE_WORKERS: Final = 6
@@ -941,6 +942,9 @@ class _Run:
     #: The pages the lead review took (`_lead_review`), to name the open ones it could not.
     lead_taken: set[int] = field(default_factory=set)
     pairs: dict[str, str] = field(default_factory=dict)
+    #: The drawn run's drawings and line work (`same_ends`), read once per run.
+    _drawn_sides: dict[Any, Any] = field(default_factory=dict)
+    _line_work: dict[tuple[str, int], Sequence[Any]] = field(default_factory=dict)
     agents: list[Any] = field(default_factory=list)
     #: The phase whose budget the devil's advocate's blind picks are charged to: its own (P4), or
     #: what is left under the fixed price (the escalation, #1619).
@@ -957,6 +961,11 @@ class _Run:
     tool_calls: dict[str, dict[str, int]] = field(default_factory=dict)
     #: The set's chat proofs (`set_proofs`), read once.
     chat_proofs: dict[str, Any] | None = None
+    #: What the blind picks in flight may still cost (millionths of $): counted as spent by the
+    #: phase's room, so picks started together on the advocate's workers never pass its budget
+    #: (a call is charged only when it ends; with thinking on its worst case is big, #1775 C4).
+    held: int = 0
+    held_lock: threading.Lock = field(default_factory=threading.Lock)
     #: Steps that broke (a helper's error, a tag table not readable): never a sendable check.
     failed_steps: list[str] = field(default_factory=list)
 
@@ -2412,7 +2421,7 @@ class _Run:
                 and architect is not None
                 and mode != "code_only"
             ):
-                extent = self._extent(vendor, architect)
+                extent = self._extent(vendor, architect, page_map)
                 if extent[0] == "same_extent":
                     # Only an item code's geometry backs is worth the blind pick's call (#1641).
                     reply = self._blind_pick(finding, vendor, architect, page_map)
@@ -2502,8 +2511,14 @@ class _Run:
             return None
 
     def _extent(
-        self, vendor: Mapping[str, Any], architect: Mapping[str, Any]
+        self,
+        vendor: Mapping[str, Any],
+        architect: Mapping[str, Any],
+        page_map: Mapping[str, Any] | None = None,
     ) -> tuple[Extent, str]:
+        """Code's geometry for a pair: the anchor fit (`same_extent`); where it cannot tell, the
+        drawn run (`same_ends`: ties on both drawings and nothing else drawn near a moved end).
+        A failure of the second proof leaves the first's answer."""
         labels = self.engine.book.dim_labels
 
         def side(label: Mapping[str, Any], wanted: str) -> list[dict[str, Any]]:
@@ -2513,7 +2528,31 @@ class _Run:
         state, why = same_extent(
             vendor, architect, side(vendor, "vendor"), side(architect, "architect")
         )
-        return state, why
+        if state != "cannot_tell":
+            return state, why
+        try:
+            proved, said = same_ends.prove_labels(
+                vendor,
+                architect,
+                labels_of=lambda file, page: labels.on_page(file, page, read_now=False) or [],
+                segments_of=self._segments,
+                page_map=page_map,
+                cache=self._drawn_sides,
+            )
+        except Exception:  # noqa: BLE001 - the drawn run is extra proof; the anchor fit stands
+            _log.exception("assistant roster same-ends proof failed")
+            return state, why
+        if proved == "cannot_tell":
+            return state, why
+        return proved, f"the drawn run: {said}"
+
+    def _segments(self, file: str, page: int) -> Sequence[Any]:
+        """A page's line work as `dim_labels` reads it, read once per run."""
+        key = (file, page)
+        if key not in self._line_work:
+            pdf = self.engine.book.dim_labels.uploads / file
+            self._line_work[key] = dim_anchors.page_segments(pdf, page - 1)
+        return self._line_work[key]
 
     def _half_box(
         self, page_map: Mapping[str, Any] | None, label: Mapping[str, Any]
@@ -2536,11 +2575,28 @@ class _Run:
     ) -> dict[str, Any] | None:
         """One blind call: the vendor's drawing with its label marked, the architect's whole
         drawing with every label numbered; `None` when the price leaves no room."""
-        engine = self.engine
         model = BY_SHORT["sonnet"]
-        estimate = engine._price(model, _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS) or 0
-        if not self._phase_room(self.pick_phase, estimate):
-            return None
+        estimate = self.engine._price(model, _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS) or 0
+        with self.held_lock:
+            if not self._phase_room(self.pick_phase, self.held + estimate):
+                return None
+            self.held += estimate
+        try:
+            return self._held_pick(finding, vendor, architect, page_map, model)
+        finally:
+            with self.held_lock:
+                self.held -= estimate
+
+    def _held_pick(
+        self,
+        finding: Mapping[str, Any],
+        vendor: Mapping[str, Any],
+        architect: Mapping[str, Any],
+        page_map: Mapping[str, Any] | None,
+        model: Any,
+    ) -> dict[str, Any] | None:
+        """The blind pick's crops and call, its price already held (`_blind_pick`)."""
+        engine = self.engine
         tools = engine.tools
 
         def crop(label: Mapping[str, Any], marks: bool) -> list[dict[str, Any]]:
@@ -2574,10 +2630,12 @@ class _Run:
 
         before = engine.spent
         try:
+            # A judgement (do the two measure the same points?): adaptive thinking at a lower
+            # effort, never thinking off (#1775, C4).
             reply = engine._call(
                 model=model,
-                effort="low",
-                thinking=thinking_config(model, False),
+                effort="medium",
+                thinking=thinking_config(model, True),
                 system=ADVOCATE_SYSTEM,
                 tools=(),
                 messages=[{"role": "user", "content": content}],

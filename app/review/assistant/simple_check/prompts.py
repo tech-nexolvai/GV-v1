@@ -9,8 +9,14 @@ What the prompt insists on (CONTRACT-SIMPLE, 2026-10-19):
 
 - the architect's drawings are the truth; the vendor's drawing is what is checked;
 - every vendor label is accounted for (a pair or `unaccounted_labels`);
+- the verdict says only whether two dimensions run between the same two points
+  (`same_points` / `different_points` / `unsure` / `no_architect_value`), written after where each
+  end lands, then a `weak_point`; the model never says whether the values are equal: code compares
+  the numbers (recipe step 2, C3); code reads `same_points` with `weak_point: end_not_visible` as
+  `unsure`. Answers saved with the older `same` / `different` still read. other_items have no label
+  for code to read, so there the model does compare the values (same / different / unsure);
 - two dimensions that do not measure the same two points are `different_points`, never
-  `different` (underside against top of a counter, a run to a soffit against the top of a unit, a
+  `same_points` (underside against top of a counter, a run to a soffit against the top of a unit, a
   splash band inside one of them, an overall against a part);
 - room features (ceilings, soffits, doors, artwork, switches, lights) are `millwork: false`;
 - coloured ink means what the drawing's kind of file says (the colour rule, decided 2026-10-19):
@@ -30,6 +36,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Final
 
+from app.review.assistant.simple_check import precedents as precedents_module
 from app.review.assistant.simple_check.schema import (
     END_WORDS,
     Drawing,
@@ -62,7 +69,8 @@ EXAMPLE_REPLY: Final = {
             "vendor_to": "wall_face (right)",
             "architect_from": "wall_face (left)",
             "architect_to": "wall_face (right)",
-            "verdict": "same",
+            "verdict": "same_points",
+            "weak_point": "none",
             "note": "",
         },
         {
@@ -74,6 +82,7 @@ EXAMPLE_REPLY: Final = {
             "architect_from": "floor",
             "architect_to": "top_of_counter",
             "verdict": "different_points",
+            "weak_point": "none",
             "note": "vendor to the stone's underside, architect to its top",
         },
         {
@@ -84,7 +93,8 @@ EXAMPLE_REPLY: Final = {
             "vendor_to": "centre_line (sink)",
             "architect_from": "wall_face (left)",
             "architect_to": "centre_line (sink)",
-            "verdict": "different",
+            "verdict": "same_points",
+            "weak_point": "none",
             "note": "",
         },
         {
@@ -96,6 +106,7 @@ EXAMPLE_REPLY: Final = {
             "architect_from": "",
             "architect_to": "",
             "verdict": "no_architect_value",
+            "weak_point": "none",
             "note": "",
         },
     ],
@@ -155,14 +166,13 @@ You get pictures cut by code: the vendor drawing and the architect drawing(s), t
 Rules:
 1. Account for EVERY vendor label in the list: put it in pairs (with the architect label that measures the same thing, or null), or, only when you cannot tell what it measures, in unaccounted_labels. Never leave one out.
 2. Use the label ids exactly as listed (p23.D17). Never type a value for a labelled dimension: code reads it.
-3. For each pair, say what it measures and where each end lands on each drawing. Start each end with one of: {", ".join(END_WORDS)}; then a few words in brackets, e.g. "centre_line (fridge outlet)".
-4. Verdicts:
-   - same: both dimensions run between the same two points and the values are equal;
-   - different: the same two points, and the values differ;
-   - different_points: the two dimensions do not measure the same thing (underside against top of a counter, a run to a soffit or ceiling against the top of a unit, a splash band inside one of them, an overall against a part of it, two different outlets);
+3. For each pair, in this order: the vendor label, the architect label, what it measures, then where each end lands on each drawing (vendor_from, vendor_to, architect_from, architect_to), and only then the verdict. Start each end with one of: {", ".join(END_WORDS)}; then a few words in brackets, e.g. "centre_line (fridge outlet)".
+4. The verdict says only whether the two dimensions run between the same two points. Never judge whether the values are equal: code reads both values and compares them.
+   - same_points: both run between the same two points (whatever their values);
+   - different_points: they do not measure the same thing (underside against top of a counter, a run to a soffit or ceiling against the top of a unit, a splash band inside one of them, an overall against a part of it, two different outlets);
    - no_architect_value: the architect gives no dimension for it;
-   - unsure: the drawings do not settle it (an end you cannot see, a value you cannot read).
-   Say different only when you are sure both ends are the same points.
+   - unsure: the drawings do not settle it (an end you cannot see).
+   Say same_points only when you are sure of all four ends. Then weak_point: what makes this pair least certain: none, end_not_visible, value_hard_to_read, views_differ (plan against elevation, section against elevation), scale_or_units, or other.
 5. other_items, for what has no label:
    - dimension_without_label: a number with no blue tag (drawn in pen strokes, hand-lettered, an EQ mark): the value as you read it on each side, and its box on each picture. Compare these as carefully as labelled ones;
    - missing_on_vendor: something the architect shows (an outlet, a sink, an opening, a tag, a dimension) that the vendor drawing leaves out: the architect's value or tag and its box;
@@ -170,6 +180,7 @@ Rules:
    - layout_count: doors against drawers, the number of bays, shelves or fronts;
    - tag: a finish, material or fixture code that differs or is missing;
    - note: a written note the other drawing contradicts.
+   Here code has no label to read, so you compare the values: same (they agree), different, no_architect_value or unsure.
    Boxes are [x0, y0, x1, y1] in pixels on the picture you name (vendor_image, architect_image: the image numbers). Every item has at least one box.
    millwork is true for the millwork itself (cabinets, tops, splashes, panels, shelves, fronts, sinks, appliance openings, and outlets or cut-outs in the millwork); false for room features (ceilings, soffits, walls, doors, artwork, switches, lights, fixtures outside the unit).
 6. The blue tags are code's. What other coloured ink means depends on the kind of file a drawing is on; the text says it for every drawing:
@@ -186,12 +197,21 @@ Answer:
 {json.dumps(EXAMPLE_REPLY, separators=(",", ":"))}"""
 
 
-def system_prompt(rules_summary: str = "", scope_words: str = "All products") -> str:
-    """The run's system prompt: `SYSTEM_PROMPT`, the products in scope and GV's rules for them.
-    The same bytes for every drawing of a run (the prompt cache keys on them)."""
+def system_prompt(
+    rules_summary: str = "",
+    scope_words: str = "All products",
+    *,
+    products: Sequence[str] = (),
+    precedents: bool = True,
+) -> str:
+    """The run's system prompt: `SYSTEM_PROMPT`, the "looks wrong but isn't" precedents for the
+    products in scope (`precedents.render`, recipe step 6; off for a paid A/B), the products in
+    scope and GV's rules for them. The same bytes for every drawing of a run (the prompt cache
+    keys on them)."""
     rules = rules_summary.strip() or "- none given for this run"
+    settled = f"\n\n{precedents_module.render(products)}" if precedents else ""
     return (
-        f"{SYSTEM_PROMPT}\n\nProducts in scope for this review: {scope_words}. Compare every "
+        f"{SYSTEM_PROMPT}{settled}\n\nProducts in scope for this review: {scope_words}. Compare every "
         "dimension and item of the drawing; code files each under its product.\n\nGV's own rules "
         "for these products (standards the vendor must follow even where the architect is "
         f"silent; code applies them to the values):\n{rules}"
@@ -353,10 +373,21 @@ def item_text(item: WorkItem, pictures: Sequence[Picture], *, places: bool = Tru
     return "\n".join(lines)
 
 
-def repair_text(item: WorkItem, problems: Sequence[str]) -> str:
-    """The one follow-up turn after code's checks reject an answer."""
+def repair_text(item: WorkItem, problems: Sequence[str], *, labels: Sequence[str] = ()) -> str:
+    """The one follow-up turn after code's checks reject an answer. With `labels`, the targeted
+    repair (recipe step 4, DeepSeek-Prover's "fix what failed, keep what passed"): only those
+    vendor labels' pairs are asked again; code keeps every other pair and item as it was."""
     listed = "\n".join(f"- {problem}" for problem in problems)
+    head = f"Code checked your answer for work item {item.id} and found these problems:\n{listed}\n"
+    if not labels:
+        return (
+            head + "Answer again with the whole JSON form, fixed. Keep everything that was right."
+        )
     return (
-        f"Code checked your answer for work item {item.id} and found these problems:\n{listed}\n"
-        "Answer again with the whole JSON form, fixed. Keep everything that was right."
+        head
+        + "Code keeps every other pair and item of your answer exactly as it was. Answer in the "
+        + "same JSON form with pairs only for these vendor labels (or put them in "
+        + "unaccounted_labels): "
+        + ", ".join(labels)
+        + ". Leave everything else out (empty lists)."
     )

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ from app.review.assistant.simple_check.blind import (
     look_all,
     question,
 )
-from app.review.assistant.simple_check.verify import Item, Verified, verify_answer
+from app.review.assistant.simple_check.verify import BlindAnswer, Item, Verified, verify_answer
 from tests.review.assistant.test_simple_verify import (
     ROUND_2,
     _pack,
@@ -76,6 +77,7 @@ def _candidate(kind: str = "pair") -> tuple[Verified, Item]:
 class _Reply:
     payload: Any
     stop_reason: str = "end_turn"
+    usage: dict[str, Any] | None = None
 
     def text(self) -> str:
         return self.payload if isinstance(self.payload, str) else json.dumps(self.payload)
@@ -182,11 +184,11 @@ def test_the_question_never_carries_the_first_answer(kind: str) -> None:
 
 
 def test_each_kind_of_question_is_its_own() -> None:
-    assert "measures the same thing as the marked vendor dimension" in question(
+    assert "pick the numbered architect dimension that measures the same thing" in question(
         "pair", "p2.D1", None
     )
     assert "close view" in question("values", None, None)
-    assert "Does the vendor's drawing show" in question("absence", None, "p1.D4")
+    assert "shown when the vendor's drawing shows" in question("absence", None, "p1.D4")
 
 
 # ---- outcomes -------------------------------------------------------------------------------------
@@ -256,6 +258,139 @@ def test_an_absence_look_agreeing_makes_it_red() -> None:
     assert done[0].outcome == "red"
     # The architect's drawing with its dimension marked, then the vendor's numbered.
     assert engine.crops[0]["crops"][0]["guides"] == ["D4"] and engine.crops[1]["marks"] is True
+
+
+def test_the_look_always_thinks_and_saves_its_thinking_tokens() -> None:
+    """#1775, C4: the gate of every red is a judgement: adaptive thinking on any model, and the
+    thinking tokens saved with the look (a red whose look did not think can be found)."""
+    verified, item = _candidate()
+    usage = {"output_tokens": 900, "output_tokens_details": {"thinking_tokens": 640}}
+    engine = _Engine([_Reply(_agreeing(), usage=usage)])
+    answer, _why = look(engine, verified, item, BlindSettings("claude-sonnet-5-5", "medium"))  # type: ignore[arg-type]
+    assert engine.calls[0]["thinking"]["type"] == "adaptive"
+    assert answer is not None and answer.thinking_tokens == 640
+    saved = answer.as_dict()
+    assert saved["thinking_tokens"] == 640
+    assert BlindAnswer.from_dict(saved).thinking_tokens == 640
+    assert BlindAnswer.from_dict({"pick": "D1", "verdict": "same_thing"}).thinking_tokens is None
+
+
+# ---- the zoomed re-look (#1775, recipe step 4) ----------------------------------------------------
+
+
+def test_an_unsure_look_gets_one_zoomed_re_look_when_switched_on() -> None:
+    verified, item = _candidate()
+    engine = _Engine([_Reply(_agreeing(verdict="unsure")), _Reply(_agreeing())])
+    settings = BlindSettings(zoom_relook=True)
+    done = look_all(engine, [(verified, item)], settings)  # type: ignore[arg-type]
+    assert len(engine.calls) == 2 and done[0].outcome == "red"
+    assert done[0].finding["pairing"]["advocate"]["note"].startswith("zoomed re-look")
+    # The re-look adds close views round the marked dimension's ends, never the first answer.
+    second = engine.calls[1]["messages"][0]["content"]
+    asked = " ".join(b.get("text", "") for b in second if b.get("type") == "text")
+    assert "close views of the VENDOR's drawing" in asked and "show no architect value" in asked
+    assert SECRET_WORDS not in asked
+    # Pictures 1 and 2 stay the vendor's and the architect's drawings (as the question says);
+    # the close views of the vendor's come after them.
+    crops = engine.crops[2:]
+    assert crops[1]["marks"] is True and crops[0]["crops"][0]["guides"] == ["D1"]
+    assert len(crops) > 2 and all(c["crops"][0].get("guides") == ["D1"] for c in crops[2:])
+
+
+def test_no_re_look_when_off_or_when_the_look_was_sure() -> None:
+    verified, item = _candidate()
+    engine = _Engine([_Reply(_agreeing(verdict="unsure"))])
+    done = look_all(engine, [(verified, item)], BlindSettings())  # type: ignore[arg-type]
+    assert len(engine.calls) == 1 and done[0].outcome == "not_compared"
+    engine = _Engine([_Reply(_agreeing(verdict="different_points"))])
+    look_all(engine, [(verified, item)], BlindSettings(zoom_relook=True))  # type: ignore[arg-type]
+    assert len(engine.calls) == 1
+
+
+def test_an_unsure_re_look_stays_not_compared() -> None:
+    verified, item = _candidate()
+    engine = _Engine([_Reply(_agreeing(verdict="unsure")), _Reply(_agreeing(verdict="unsure"))])
+    done = look_all(engine, [(verified, item)], BlindSettings(zoom_relook=True))  # type: ignore[arg-type]
+    assert len(engine.calls) == 2 and done[0].outcome == "not_compared"
+
+
+def test_end_boxes_follow_codes_dimension_line() -> None:
+    from app.review.assistant.simple_check.blind import end_boxes
+
+    boxes = end_boxes({"dim_line": [[100, 200], [500, 200]], "box": [290, 190, 310, 200]})
+    assert len(boxes) == 2 and boxes[0][0] < 100 < boxes[0][2] and boxes[1][0] < 500 < boxes[1][2]
+    assert len(end_boxes({"box": [290, 190, 310, 200]})) == 1 and end_boxes({}) == []
+
+
+@dataclass
+class _CappedEngine(_Engine):
+    """A price cap that fits two looks' holds (each held at both attempts, 2 x 50_000, #1769):
+    each call is charged only when it ends (50_000)."""
+
+    cap: int = 220_000
+    spent: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def _fits(self, estimate: int | None) -> bool:
+        return self.spent + (estimate or 0) <= self.cap
+
+    def _call(self, **kwargs: Any) -> Any:
+        with self.lock:
+            self.calls.append(kwargs)
+        time.sleep(0.05)  # the other workers ask while this one runs
+        with self.lock:
+            self.spent += 50_000
+        return _Reply(_agreeing())
+
+
+def test_looks_started_together_hold_their_price_and_never_pass_the_cap() -> None:
+    """Six workers: each look holds its price while it runs (#1775, C4: thinking makes a call's
+    worst case bigger; #1769: held at every attempt, a look that does not fit waits), so looks
+    started together cannot pass the cap between them. Two start, a third once both have ended
+    (their holds became their real cost), the rest are refused by the guard."""
+    verified, item = _candidate()
+    engine = _CappedEngine([])
+    done = look_all(engine, [(verified, item)] * 6, BlindSettings())  # type: ignore[arg-type]
+    assert len(engine.calls) == 3 and engine.spent <= engine.cap
+    refused = [d for d in done if d.outcome == "not_compared"]
+    assert len(refused) == 3 and all("runaway guard" in d.reason for d in refused)
+
+
+@pytest.mark.parametrize(("repair", "relook"), [(True, False), (False, True)])
+def test_the_repair_and_re_look_switches_reach_the_run(repair: bool, relook: bool) -> None:
+    from app.api.assistant_chats import _simple_options
+    from app.config import Settings
+    from app.review.assistant.chat_contract import ChatMessageIn
+    from app.review.assistant.simple_check.compare import CompareSettings
+    from app.review.assistant.simple_check.run import SimpleOptions
+
+    assert Settings.model_fields["assistant_simple_targeted_repair"].default is True
+    assert Settings.model_fields["assistant_simple_zoom_relook"].default is False
+    settings = SimpleNamespace(
+        assistant_full_check_mode="simple",
+        assistant_simple_compare_model="claude-sonnet-5-5",
+        assistant_simple_compare_effort="high",
+        assistant_simple_hard_model="claude-opus-5-5",
+        assistant_simple_hard_effort="high",
+        assistant_simple_parallel=8,
+        assistant_simple_max_tokens=64000,
+        assistant_simple_retries=3,
+        assistant_simple_blind_model="claude-opus-5-5",
+        assistant_simple_blind_effort="high",
+        assistant_simple_resolve="off",
+        assistant_simple_resolve_rounds=1,
+        assistant_simple_resolve_model="claude-sonnet-5-5",
+        assistant_simple_resolve_effort="medium",
+        assistant_simple_resolve_web_search=False,
+        assistant_simple_targeted_repair=repair,
+        assistant_simple_zoom_relook=relook,
+    )
+    body = ChatMessageIn.model_validate(
+        {"model": "claude-opus-5-5", "effort": "high", "thinking": True, "mode": "full_check"}
+    )
+    options = SimpleOptions.of(_simple_options(settings, body))  # type: ignore[arg-type]
+    assert CompareSettings(**options.compare).targeted_repair is repair
+    assert options.blind.zoom_relook is relook
 
 
 # ---- a reply wrapped in a code block or after a sentence (#1811) ------------------------------

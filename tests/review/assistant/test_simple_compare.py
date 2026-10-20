@@ -24,10 +24,12 @@ from app.review.assistant.simple_check.compare import (
     CompareSettings,
     PictureSource,
     SentPicture,
+    broken_claims,
     compare_all,
     compare_item,
     estimate_cost_usd,
     image_tokens,
+    merge_repair,
     plan_parts,
     request_content,
     resized_size,
@@ -686,3 +688,131 @@ def test_settings_from_the_app_settings() -> None:
     model, effort = chosen.for_item(_item(hard=("dense",)))
     assert model.id == "claude-opus-5-5" and effort == "high"
     assert compare.WARM_WAIT_S > 0
+
+
+# ---- the targeted repair (#1775, recipe step 4) ---------------------------------------------------
+
+
+def test_the_repair_asks_only_the_broken_claims_and_keeps_the_rest() -> None:
+    provider = _Provider(
+        [_events(json.dumps(_answer(missing=True))), _events(json.dumps(_answer()))]
+    )
+    outcome, _slept = _run(provider)
+    asked = provider.calls[1]["messages"][2]["content"][0]["text"]
+    assert "only for these vendor labels" in asked and "p7.D5" in asked
+    assert "p7.D3" not in asked.split("problems:")[-1].split("Code keeps")[-1]
+    assert "keeps every other pair and item of your answer exactly as it was" in asked
+    assert outcome.status == "ok" and "p7.D5" in outcome.result.unaccounted_labels
+
+
+def test_a_repair_can_never_change_a_pair_that_passed() -> None:
+    drifted = _answer()
+    drifted["pairs"][0] = {**drifted["pairs"][0], "verdict": "different_points"}
+    provider = _Provider([_events(json.dumps(_answer(missing=True))), _events(json.dumps(drifted))])
+    outcome, _slept = _run(provider)
+    assert outcome.status == "ok"
+    first = next(p for p in outcome.result.pairs if p.vendor_label == "p7.D3")
+    assert first.verdict == "different"  # frozen: the first answer's, which passed
+
+
+def test_without_the_targeted_repair_the_whole_form_is_asked_again() -> None:
+    provider = _Provider(
+        [_events(json.dumps(_answer(missing=True))), _events(json.dumps(_answer()))]
+    )
+    outcome = compare_item(
+        _item(),
+        provider=provider,
+        source=_pictures,
+        system=SYSTEM,
+        settings=CompareSettings(retries=2, targeted_repair=False),
+        sleep=lambda _s: None,
+    )
+    asked = provider.calls[1]["messages"][2]["content"][0]["text"]
+    assert "Answer again with the whole JSON form" in asked and outcome.status == "ok"
+
+
+def test_broken_claims_and_merge_are_code_only() -> None:
+    item = _item()
+    reply = Reply.model_validate(_answer(missing=True))
+    first, _problems = to_result(reply, item, [p.picture for p in _pictures(item)])
+    assert first is not None
+    labels, others = broken_claims(first, item)
+    assert labels == ["p7.D5"] and not others
+    merged = merge_repair(first, first, item, labels)
+    assert [p.vendor_label for p in merged.pairs] == [p.vendor_label for p in first.pairs]
+
+
+_OUTLET = {
+    "kind": "missing_on_vendor",
+    "what": "outlet right of the sink",
+    "vendor": None,
+    "architect": "duplex outlet",
+    "vendor_image": None,
+    "vendor_box_px": None,
+    "architect_image": 2,
+    "architect_box_px": None,  # broken: no box code can find it by
+    "verdict": "different",
+    "millwork": True,
+}
+
+
+def test_a_broken_item_without_a_label_asks_the_whole_form_again() -> None:
+    """Review of the targeted repair: an item without a label that failed code's checks could be
+    left out of a targeted reply and vanish; so the whole form is asked again, as before."""
+    first = _answer(missing=True)
+    first["other_items"] = [*first["other_items"], _OUTLET]
+    provider = _Provider([_events(json.dumps(first)), _events(json.dumps(_answer()))])
+    outcome, _slept = _run(provider)
+    asked = provider.calls[1]["messages"][2]["content"][0]["text"]
+    assert "Answer again with the whole JSON form" in asked
+    assert "only for these vendor labels" not in asked
+    assert outcome.status == "ok"
+
+
+def test_a_labels_only_repair_never_takes_new_or_changed_items() -> None:
+    """Only the asked labels are taken from the reply: an item it changes or adds is not."""
+    reply = _answer()
+    reply["other_items"] = [
+        {**reply["other_items"][0], "verdict": "different", "vendor": '61"'},
+        {**_OUTLET, "architect_box_px": [10, 10, 60, 60]},
+    ]
+    provider = _Provider([_events(json.dumps(_answer(missing=True))), _events(json.dumps(reply))])
+    outcome, _slept = _run(provider)
+    assert outcome.status == "ok"
+    (kept,) = outcome.result.other_items
+    assert kept.verdict == "same" and kept.vendor == '60"'
+
+
+def test_a_reading_problem_in_the_first_answer_asks_the_whole_form_again() -> None:
+    """A problem only the reading step finds (here an unaccounted entry that is not a label id)
+    is not a claim `broken_claims` can name: the whole form is asked again."""
+    first = _answer(missing=True)
+    first["unaccounted_labels"] = ["the shelf"]
+    provider = _Provider([_events(json.dumps(first)), _events(json.dumps(_answer()))])
+    _run(provider)
+    asked = provider.calls[1]["messages"][2]["content"][0]["text"]
+    assert "Answer again with the whole JSON form" in asked
+
+
+def test_a_reading_problem_in_the_targeted_reply_fails_the_drawing() -> None:
+    """The repair reply's own reading problems survive the merge: the drawing fails (Not
+    compared), never ok on half its evidence."""
+    reply = _answer()
+    reply["unaccounted_labels"] = ["p7.D5", "the shelf"]
+    provider = _Provider([_events(json.dumps(_answer(missing=True))), _events(json.dumps(reply))])
+    outcome, _slept = _run(provider)
+    asked = provider.calls[1]["messages"][2]["content"][0]["text"]
+    assert "only for these vendor labels" in asked
+    assert outcome.status == "failed" and any("not a label id" in p for p in outcome.problems)
+
+
+def test_a_problem_the_targeted_repair_cannot_fix_asks_the_whole_form_again() -> None:
+    """A pair naming a label of another drawing (often a misread of the missing one) is kept by a
+    targeted merge, so the drawing would surely fail: the whole form is asked again instead."""
+    first = _answer(missing=True)
+    first["pairs"] = [*first["pairs"], {**first["pairs"][0], "vendor_label": "p9.D99"}]
+    provider = _Provider([_events(json.dumps(first)), _events(json.dumps(_answer()))])
+    outcome, _slept = _run(provider)
+    asked = provider.calls[1]["messages"][2]["content"][0]["text"]
+    assert "Answer again with the whole JSON form" in asked
+    assert outcome.status == "ok"

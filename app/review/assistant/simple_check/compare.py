@@ -59,16 +59,23 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from pydantic import ValidationError
 
 from app.review.assistant.chat_provider import ChatProvider, ProviderFailure, failure_from
-from app.review.assistant.chat_request import MODELS, ChatModel, call_params, thinking_config
+from app.review.assistant.chat_request import (
+    MODELS,
+    ChatModel,
+    call_params,
+    thinking_config,
+    thinking_tokens,
+)
 from app.review.assistant.page_pictures import fitting_dpi
 from app.review.assistant.reply_json import json_of_reply
 from app.review.assistant.simple_check.prompts import item_text, repair_text
 from app.review.assistant.simple_check.schema import (
+    PAIRED_VERDICTS,
     REPLY_SCHEMA,
     Box,
     CompareOutcome,
@@ -125,6 +132,8 @@ MAX_IMAGES: Final = 20
 MAX_REQUEST_BYTES: Final = 28_000_000
 #: How long the other calls wait for the first call's first event (the prompt cache's write).
 WARM_WAIT_S: Final = 90.0
+#: How often that wait looks at a Stop.
+_WARM_POLL_S: Final = 0.25
 _RETRY_BASE_S: Final = 4.0
 _RATE_LIMIT_BASE_S: Final = 20.0
 _RETRY_STATUSES: Final = frozenset({408, 409, 429, 500, 502, 503, 504, 520, 522, 524, 529})
@@ -159,8 +168,12 @@ class CompareSettings:
     parallel: int = 8
     max_tokens: int = 64000
     retries: int = 3
+    targeted_repair: bool = True
+    """The repair turn asks only for the broken claims and keeps the passed ones (recipe step 4)."""
     label_places: bool = True
     """Each label line gives its direction and place on its drawing (recipe step 1, #1775)."""
+    precedents: bool = True
+    """The system prompt carries the "looks wrong but isn't" precedents (recipe step 6, #1775)."""
 
     @classmethod
     def from_settings(cls, settings: Any) -> CompareSettings:
@@ -172,7 +185,9 @@ class CompareSettings:
             parallel=settings.assistant_simple_parallel,
             max_tokens=settings.assistant_simple_max_tokens,
             retries=settings.assistant_simple_retries,
+            targeted_repair=getattr(settings, "assistant_simple_targeted_repair", True),
             label_places=getattr(settings, "assistant_simple_label_places", True),
+            precedents=getattr(settings, "assistant_simple_precedents", True),
         )
 
     def for_item(self, item: WorkItem) -> tuple[ChatModel, str]:
@@ -515,14 +530,39 @@ def _merge(usage: dict[str, int], update: object) -> None:
         for key, value in update.items():
             if isinstance(value, int) and not isinstance(value, bool):
                 usage[key] = value
+        thought = thinking_tokens(update)
+        if thought is not None:  # not reported stays absent, never a made-up 0
+            usage["thinking_tokens"] = thought
+
+
+class StreamTracker(Protocol):
+    """Where the compare calls' open streams are kept while they run (`ChatEngine`: its
+    `stop_streams` closes them on a Stop, #1769)."""
+
+    def track_stream(self, stream: Any) -> None: ...
+
+    def untrack_stream(self, stream: Any) -> None: ...
+
+
+#: Why a drawing is not tried again (`compare_item`'s `before_attempt` says why, or None to go on).
+AttemptGuard = Callable[[WorkItem, int, bool], str | None]
 
 
 def _stream(
-    provider: ChatProvider, params: Mapping[str, Any], first_event: Callable[[], None] | None
+    provider: ChatProvider,
+    params: Mapping[str, Any],
+    first_event: Callable[[], None] | None,
+    *,
+    streams: StreamTracker | None = None,
+    spent: dict[str, int] | None = None,
 ) -> _Answer:
-    """One streamed call, its events gathered. Raises `ProviderFailure`."""
+    """One streamed call, its events gathered. Raises `ProviderFailure`. `streams`: its stream is
+    kept there while it runs (a Stop closes it); `spent`: on a failure, the usage the stream had
+    already reported is added there (its prompt is billed already, #1769)."""
     answer = _Answer()
     stream = provider.open_stream(params)
+    if streams is not None:
+        streams.track_stream(stream)
     try:
         for event in stream:
             if first_event is not None:
@@ -565,13 +605,33 @@ def _stream(
                 answer.stop_reason = delta.get("stop_reason") or answer.stop_reason
                 _merge(answer.usage, event.get("usage"))
     except ProviderFailure:
+        if spent is not None:
+            _add(spent, _broken_usage(answer))
         raise
     except Exception as error:  # noqa: BLE001 - every failure is told plainly
+        if spent is not None:
+            _add(spent, _broken_usage(answer))
         raise failure_from(error) from None
     finally:
+        if streams is not None:
+            streams.untrack_stream(stream)
         stream.close()
     answer.content = [block for block in answer.content if block]
     return answer
+
+
+def _pause(
+    seconds: float, stop: threading.Event | None, sleep: Callable[[float], None] | None
+) -> bool:
+    """Waits before a retry; True when the run was stopped meanwhile. A Stop ends the wait at once
+    (#1769); a given `sleep` (tests) is used as it is, and the stop looked at after it."""
+    if sleep is not None:
+        sleep(seconds)
+    elif stop is not None:
+        return stop.wait(seconds)
+    else:
+        time.sleep(seconds)
+    return stop is not None and stop.is_set()
 
 
 def _retryable(failure: ProviderFailure) -> bool:
@@ -724,6 +784,81 @@ def _read(
     return to_result(reply, item, pictures)
 
 
+# ---- the targeted repair ($0: code only) ------------------------------------------------------
+
+
+def broken_claims(result: CompareResult, item: WorkItem) -> tuple[list[str], bool]:
+    """What a repair must ask again (recipe step 4): the vendor labels whose pair code could not
+    accept, plus those no pair or `unaccounted_labels` names; and whether any item without a label
+    is broken. Everything else is frozen."""
+    vendor, architect = set(item.vendor_refs), set(item.architect_refs)
+    named: set[str] = set(result.unaccounted_labels)
+    broken: list[str] = []
+    for pair in result.pairs:
+        named.add(pair.vendor_label)
+        bad = (
+            pair.vendor_label not in vendor
+            or (pair.architect_label is not None and pair.architect_label not in architect)
+            or (pair.verdict in PAIRED_VERDICTS and pair.architect_label is None)
+            or (pair.verdict == "no_architect_value" and pair.architect_label is not None)
+            or pair.vendor_label in result.unaccounted_labels
+        )
+        if bad and pair.vendor_label in vendor:
+            broken.append(pair.vendor_label)
+    missing = [ref for ref in item.vendor_refs if ref not in named]
+    one = CompareResult(
+        work_item=item.id,
+        pairs=(),
+        other_items=result.other_items,
+        unaccounted_labels=(),
+        same_drawing=result.same_drawing,
+    )
+    others = any(not p.startswith("vendor labels not accounted") for p in check_result(one, item))
+    return list(dict.fromkeys([*broken, *missing])), others
+
+
+def _fixable(result: CompareResult, item: WorkItem, labels: Sequence[str]) -> bool:
+    """Whether asking only for `labels` can make the answer pass: with their pairs taken out,
+    code's only complaint left is that those labels are not accounted for (not a pair naming
+    another drawing's label, a foreign id in unaccounted_labels, a wrong work item)."""
+    asked = set(labels)
+    rest = CompareResult(
+        work_item=result.work_item,
+        pairs=tuple(p for p in result.pairs if p.vendor_label not in asked),
+        other_items=result.other_items,
+        unaccounted_labels=result.unaccounted_labels,
+        same_drawing=result.same_drawing,
+    )
+    return all(p.startswith("vendor labels not accounted") for p in check_result(rest, item))
+
+
+def merge_repair(
+    first: CompareResult, second: CompareResult, item: WorkItem, labels: Sequence[str]
+) -> CompareResult:
+    """The first answer with only the asked labels' claims taken from the repair: its passed pairs
+    frozen (a repair can never undo a pair that passed), the asked labels' pairs from the repair.
+    Items without a label are never asked in a targeted repair (`compare_item` asks the whole form
+    when one is broken), so they are the first answer's, as they were: an item the reply adds or
+    changes is not taken."""
+    asked = set(labels)
+    frozen = [p for p in first.pairs if p.vendor_label not in asked]
+    fixed = [p for p in second.pairs if p.vendor_label in asked]
+    pairs = [*frozen, *fixed]
+    paired = {p.vendor_label for p in pairs}
+    unaccounted = [
+        ref
+        for ref in (*first.unaccounted_labels, *second.unaccounted_labels)
+        if ref not in paired and (ref in asked or ref in first.unaccounted_labels)
+    ]
+    return CompareResult(
+        work_item=first.work_item,
+        pairs=tuple(pairs),
+        other_items=first.other_items,
+        unaccounted_labels=tuple(dict.fromkeys(unaccounted)),
+        same_drawing=first.same_drawing,
+    )
+
+
 # ---- one work item -----------------------------------------------------------------------------
 
 
@@ -742,6 +877,24 @@ def estimate_cost_usd(model_id: str, usage: Mapping[str, int]) -> float:
     return float(round(cost, 6))
 
 
+#: Characters of streamed words or thinking per output token, counted low so a broken stream's
+#: estimate is never under what it cost (English runs about 4 per token).
+_CHARS_PER_TOKEN: Final = 3
+
+
+def _broken_usage(answer: _Answer) -> dict[str, int]:
+    """The usage of a stream that broke or was stopped (#1769): what it reported, with its output
+    at least what it had streamed (words and thinking); the service reports the output only at
+    the end, and the words already streamed are paid for."""
+    usage = {key: int(value or 0) for key, value in answer.usage.items()}
+    streamed = sum(
+        len(str(block.get("text") or "")) + len(str(block.get("thinking") or ""))
+        for block in answer.content
+    )
+    usage["output_tokens"] = max(usage.get("output_tokens", 0), -(-streamed // _CHARS_PER_TOKEN))
+    return usage
+
+
 def _add(total: dict[str, int], usage: Mapping[str, int]) -> None:
     for key in (
         "input_tokens",
@@ -750,6 +903,11 @@ def _add(total: dict[str, int], usage: Mapping[str, int]) -> None:
         "cache_creation_input_tokens",
     ):
         total[key] = total.get(key, 0) + int(usage.get(key, 0) or 0)
+    # Thinking tokens only where an attempt reported them (#1775, C4): not reported is unknown,
+    # never a made-up 0.
+    thought = usage.get("thinking_tokens")
+    if isinstance(thought, int) and not isinstance(thought, bool):
+        total["thinking_tokens"] = total.get("thinking_tokens", 0) + thought
 
 
 def compare_item(
@@ -762,11 +920,16 @@ def compare_item(
     first_event: Callable[[], None] | None = None,
     before_call: Callable[[], None] | None = None,
     stop: threading.Event | None = None,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] | None = None,
     down: threading.Event | None = None,
+    streams: StreamTracker | None = None,
+    before_attempt: AttemptGuard | None = None,
 ) -> CompareOutcome:
     """One work item's compare call, its retries and its one repair turn. `down`: set when the AI
-    service is taken as down (`compare_all`): no more tries."""
+    service is taken as down (`compare_all`): no more tries. `streams`: where its open stream is
+    kept (a Stop closes it). `before_attempt(item, attempts so far, repair)`: asked before every
+    attempt after the first (a retry or the repair turn), so its cost is held too; a reason ends
+    the drawing (failed, never dropped) (#1769). A failed attempt's usage is kept and charged."""
     started = time.monotonic()
     model, effort = settings.for_item(item)
     usage: dict[str, int] = {}
@@ -817,6 +980,7 @@ def compare_item(
         before_call()
     repaired = False
     last: CompareResult | None = None
+    asked: list[str] | None = None
     problems: list[str] = []
     while True:
         if stop is not None and stop.is_set():
@@ -837,13 +1001,38 @@ def compare_item(
         )
         answer: _Answer | None = None
         for attempt in range(settings.retries + 1):
+            if attempts and before_attempt is not None:
+                why = before_attempt(item, attempts, repaired)
+                if why is not None:
+                    if first_event is not None:
+                        first_event()
+                    return outcome(
+                        status="failed",
+                        reason=f"not tried again: {why}",
+                        problems=tuple(problems),
+                        partial=last,
+                        repaired=repaired,
+                    )
             attempts += 1
+            partial: dict[str, int] = {}
             try:
-                answer = _stream(provider, params, first_event)
+                answer = _stream(provider, params, first_event, streams=streams, spent=partial)
                 break
             except ProviderFailure as failure:
+                if partial:
+                    # Paid, though no answer came: recorded and charged (#1769).
+                    _add(usage, partial)
+                    cost += estimate_cost_usd(model.id, partial)
                 if first_event is not None:
                     first_event()  # the other calls need not wait for this one any more
+                if stop is not None and stop.is_set():
+                    return outcome(
+                        status="failed",
+                        reason="the run was stopped before this drawing's answer came",
+                        problems=tuple(problems),
+                        partial=last,
+                        repaired=repaired,
+                    )
                 gone = down is not None and down.is_set()
                 if not _retryable(failure) or attempt >= settings.retries or gone:
                     return outcome(
@@ -860,13 +1049,22 @@ def compare_item(
                     failure.status,
                     wait,
                 )
-                sleep(wait)
+                if _pause(wait, stop, sleep):
+                    return outcome(
+                        status="failed",
+                        reason="the run was stopped before this drawing's answer came",
+                        problems=tuple(problems),
+                        partial=last,
+                        repaired=repaired,
+                    )
             finally:
                 first_event = None
         assert answer is not None
-        _add(usage, answer.usage)
+        # A stream that ended with no stop reason was cut short: its output was not reported.
+        used = answer.usage if answer.stop_reason else _broken_usage(answer)
+        _add(usage, used)
         answered_by = answer.model or model.id
-        cost += estimate_cost_usd(answered_by, answer.usage)
+        cost += estimate_cost_usd(answered_by, used)
         if answer.stop_reason == "refusal":
             return outcome(
                 status="failed",
@@ -875,6 +1073,13 @@ def compare_item(
                 repaired=repaired,
             )
         result, problems = _read(answer, item, pictures)
+        if asked is not None and result is not None and last is not None:
+            # The targeted repair's reply: only the asked claims are taken; the rest is frozen.
+            # Its own reading problems (a box on the wrong picture, an id that is not a label)
+            # stay: they fail the drawing, never pass on half its evidence.
+            reading = [p for p in problems if p not in check_result(result, item)]
+            result = merge_repair(last, result, item, asked)
+            problems = [*reading, *check_result(result, item)]
         last = result or last
         if not problems and result is not None:
             return outcome(status="ok", result=result, repaired=repaired)
@@ -887,10 +1092,18 @@ def compare_item(
                 repaired=True,
             )
         repaired = True
-        follow_up = {
-            "role": "user",
-            "content": [{"type": "text", "text": repair_text(item, problems)}],
-        }
+        labels: Sequence[str] = ()
+        if settings.targeted_repair and result is not None:
+            broken, others = broken_claims(result, item)
+            reading = [p for p in problems if p not in check_result(result, item)]
+            # Targeted only when every problem is a vendor label's claim: a broken item without a
+            # label, or a problem only the reading step finds, asks the whole form again (a
+            # targeted reply could leave such an item out and it would vanish).
+            if broken and not others and not reading and _fixable(result, item, broken):
+                labels = broken
+                asked = list(labels)
+        text = repair_text(item, problems, labels=labels)
+        follow_up = {"role": "user", "content": [{"type": "text", "text": text}]}
         if answer.fell_back:
             # Another model answered: its thinking cannot be passed back; ask again from the start
             # with the problems and the earlier answer in the question.
@@ -902,7 +1115,7 @@ def compare_item(
                         *messages[0]["content"],
                         {
                             "type": "text",
-                            "text": f"An earlier answer was:\n{earlier}\n\n{repair_text(item, problems)}",
+                            "text": f"An earlier answer was:\n{earlier}\n\n{text}",
                         },
                     ],
                 }
@@ -927,13 +1140,15 @@ def compare_all(
     settings: CompareSettings,
     stop: threading.Event | None = None,
     on_outcome: Callable[[CompareOutcome], None] | None = None,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] | None = None,
     warm_wait_s: float = WARM_WAIT_S,
+    streams: StreamTracker | None = None,
+    before_attempt: AttemptGuard | None = None,
 ) -> list[CompareOutcome]:
     """Every item's outcome, in the items' order, `settings.parallel` calls at a time. The first
     call starts alone; the others start once its first event has come (its prompt cache entry is
-    then readable) or `warm_wait_s` has passed. An item left when `stop` is set is `failed`
-    ("stopped"), never dropped."""
+    then readable), `warm_wait_s` has passed or `stop` is set. An item left when `stop` is set is
+    `failed` ("stopped"), never dropped. `streams` and `before_attempt`: `compare_item`'s."""
     warmed = threading.Event()
     results: list[CompareOutcome | None] = [None] * len(items)
     lock = threading.Lock()
@@ -941,7 +1156,13 @@ def compare_all(
     failed_in_row = [0]
 
     def wait_for_warm() -> None:
-        warmed.wait(warm_wait_s)
+        # A Stop ends the wait (#1769): the drawing then ends "stopped" before its call.
+        ends = time.monotonic() + warm_wait_s
+        while not warmed.is_set():
+            left = ends - time.monotonic()
+            if left <= 0 or (stop is not None and stop.is_set()):
+                return
+            warmed.wait(min(_WARM_POLL_S, left))
 
     def run(index: int) -> None:
         item = items[index]
@@ -975,6 +1196,8 @@ def compare_all(
                 stop=stop,
                 sleep=sleep,
                 down=down,
+                streams=streams,
+                before_attempt=before_attempt,
             )
             if first:
                 warmed.set()

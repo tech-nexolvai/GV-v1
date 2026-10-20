@@ -43,13 +43,14 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
-from app.review.assistant.chat_request import MODELS, ChatModel, thinking_config
+from app.review.assistant.chat_request import MODELS, ChatModel, thinking_config, thinking_tokens
 from app.review.assistant.chat_tools import new_step
 from app.review.assistant.reply_json import json_of_reply, log_unreadable
+from app.review.assistant.simple_check import precedents as precedents_module
 from app.review.assistant.simple_check.prompts import kinds_sentence
 from app.review.assistant.simple_check.verify import (
     BlindAnswer,
@@ -67,6 +68,7 @@ __all__ = [
     "BLIND_SYSTEM",
     "BlindSettings",
     "answer_of",
+    "blind_system",
     "look",
     "look_all",
     "question",
@@ -93,6 +95,8 @@ _PROMPT_TOKENS: Final = 12_000
 _WORKERS: Final = 6
 #: Room kept round a value code has no label for, in its close crop (points).
 _CLOSE_PT: Final = 48.0
+#: Half the side of a zoomed re-look's close view round one end of a dimension line (points).
+_END_PT: Final = 54.0
 
 #: Where an end lands: the compare prompt's words (`schema.END_WORDS`), then what it is.
 _END_HELP: Final = (
@@ -109,28 +113,29 @@ BLIND_SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
     "additionalProperties": False,
     "required": [
-        "pick",
-        "verdict",
         "vendor_from",
         "vendor_to",
+        "pick",
         "architect_from",
         "architect_to",
+        "verdict",
         "millwork",
         "note",
     ],
     "properties": {
+        "vendor_from": _END,
+        "vendor_to": _END,
         "pick": {
             "type": "string",
             "description": "The numbered dimension's id you chose (D12), or none",
         },
+        "architect_from": _END,
+        "architect_to": _END,
         "verdict": {
             "type": "string",
             "enum": ["same_thing", "different_points", "unsure", "absent", "shown"],
+            "description": "Only after the ends: they decide it",
         },
-        "vendor_from": _END,
-        "vendor_to": _END,
-        "architect_from": _END,
-        "architect_to": _END,
         "millwork": _THREE,
         "note": {"type": "string", "description": "One short line, or empty"},
     },
@@ -150,6 +155,25 @@ BLIND_SYSTEM: Final = (
 )
 
 
+def blind_system(
+    products: Sequence[str] = (),
+    precedents: bool = True,
+    *,
+    kind: str = "pair",
+    prototype_reference: bool = False,
+) -> str:
+    """The blind look's system prompt: `BLIND_SYSTEM`, then the "looks wrong but isn't"
+    precedents for the item's products (recipe step 6; off for a paid A/B). A `chain` look is
+    asked to pick a string of parts code adds up, so P6 (a sum the model made is not a value) is
+    left out of it. Where the brand prototype is the reference (R1: the architect gives no
+    elevation) the blind question does not say so, so P5 ("a prototype is reference only") is
+    left out too: it could make the look reject a real difference from the reference."""
+    if not precedents:
+        return BLIND_SYSTEM
+    leave_out = (*(("P6",) if kind == "chain" else ()), *(("P5",) if prototype_reference else ()))
+    return f"{BLIND_SYSTEM}\n\n{precedents_module.render(products, leave_out=leave_out)}"
+
+
 def question(
     kind: str,
     vendor_ref: str | None,
@@ -165,45 +189,44 @@ def question(
         return (
             "Picture 1 is part of the vendor's shop drawing; the dimension marked on it (code drew "
             f"its extension lines) is {vendor_ref}. The next picture is the architect's drawing "
-            "with every printed dimension numbered. Which numbered architect dimension measures "
-            "the same thing as the marked vendor dimension? pick its id, or none. Say where each "
-            "end of the marked vendor dimension lands (vendor_from, vendor_to) and each end of the "
-            "one you picked (architect_from, architect_to). verdict: same_thing when both run "
-            "between the same two points, different_points when they do not, unsure when the "
-            "pictures do not show it. millwork: unsure." + kinds
+            "with every printed dimension numbered. First say where each end of the marked "
+            "vendor dimension lands (vendor_from, vendor_to). Then pick the numbered architect "
+            "dimension that measures the same thing (its id, or none) and say where each of its "
+            "ends lands (architect_from, architect_to). Only then the verdict: same_thing when "
+            "both run between the same two points, different_points when they do not, unsure "
+            "when the pictures do not show it. millwork: unsure." + kinds
         )
     if kind == "chain":
         return (
             "Picture 1 is part of the vendor's shop drawing; the dimension marked on it (code drew "
             f"its extension lines) is {vendor_ref}. The next picture is the architect's drawing "
             "with every printed dimension numbered. The architect may print this size only as a "
-            "string of parts. Which numbered architect dimensions, end to end, together measure "
-            "the same thing as the marked vendor dimension? pick their ids joined by + (D3+D4+D5), "
-            "or none. Say where each end of the marked vendor dimension lands (vendor_from, "
-            "vendor_to) and where the string you picked starts and ends (architect_from, "
-            "architect_to). verdict: same_thing when both run between the same two points, "
-            "different_points when they do not, unsure when the pictures do not show it. "
-            "millwork: unsure." + kinds
+            "string of parts. First say where each end of the marked vendor dimension lands "
+            "(vendor_from, vendor_to). Then pick the numbered architect dimensions that, end to "
+            "end, together measure the same thing (their ids joined by + (D3+D4+D5), or none) and "
+            "say where the string starts and ends (architect_from, architect_to). Only then the "
+            "verdict: same_thing when both run between the same two points, different_points "
+            "when they do not, unsure when the pictures do not show it. millwork: unsure." + kinds
         )
     if kind == "values":
         return (
             "Picture 1 is the vendor's shop drawing and picture 2 a close view of one value on it "
             "(the value in the middle of picture 2). Picture 3 is the architect's drawing and "
-            "picture 4 a close view of one value on it (in its middle). Do the two values measure "
-            "the same thing? pick: none. Say where each end of the vendor's dimension lands "
-            "(vendor_from, vendor_to) and each end of the architect's (architect_from, "
-            "architect_to). verdict: same_thing, different_points or unsure. millwork: unsure."
-            + kinds
+            "picture 4 a close view of one value on it (in its middle). First say where each end "
+            "of the vendor's dimension lands (vendor_from, vendor_to), then each end of the "
+            "architect's (architect_from, architect_to); pick: none. Only then the verdict: do "
+            "the two measure the same thing? same_thing, different_points or unsure. millwork: "
+            "unsure." + kinds
         )
     return (
         "Picture 1 is the architect's drawing; the dimension marked on it (code drew its extension "
         f"lines) is {architect_ref}. The next picture is the vendor's shop drawing of the same "
-        "area with every printed dimension numbered. Does the vendor's drawing show the thing the "
-        "marked architect dimension locates? pick the numbered vendor dimension that measures the "
-        "same thing, or none. verdict: shown when the vendor's drawing shows it, absent when it "
-        "does not, unsure when the pictures do not tell. Say where each end of the marked "
-        "architect dimension lands (architect_from, architect_to); vendor_from and vendor_to: "
-        "other. millwork: is the thing it locates part of the millwork (in or on a cabinet, "
+        "area with every printed dimension numbered. vendor_from and vendor_to: other. Pick the "
+        "numbered vendor dimension that measures the same thing as the marked architect "
+        "dimension, or none, and say where each end of the marked architect dimension lands "
+        "(architect_from, architect_to). Only then the verdict: shown when the vendor's drawing "
+        "shows the thing it locates, absent when it does not, unsure when the pictures do not "
+        "tell. millwork: is the thing it locates part of the millwork (in or on a cabinet, "
         "counter, splash or vanity), not a room feature?" + kinds
     )
 
@@ -233,6 +256,11 @@ class BlindSettings:
 
     model: str = "claude-opus-5-5"
     effort: str = "high"
+    precedents: bool = True
+    """The "looks wrong but isn't" precedents in its system prompt (`assistant_simple_precedents`)."""
+    zoom_relook: bool = False
+    """One zoomed re-look when the look is unsure (`assistant_simple_zoom_relook`): off until a
+    paid run measures it (one more Opus call per unsure candidate)."""
 
     @property
     def chat_model(self) -> ChatModel:
@@ -288,8 +316,31 @@ def _drawing_of(item: Item, page: int) -> Region | None:
     return next((r for r in item.architect if r.page == page), None)
 
 
-def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[str, Any]]:
-    """The look's pictures and its question, as the user message's content."""
+def end_boxes(label: Mapping[str, Any]) -> list[tuple[float, float, float, float]]:
+    """Close boxes round each end of a label's dimension line (`dim_line`, code's), for the
+    zoomed re-look; one box round the label itself when code found no line."""
+    line = label.get("dim_line")
+    if isinstance(line, Sequence) and len(line) == 2:
+        try:
+            return [
+                (float(x) - _END_PT, float(y) - _END_PT, float(x) + _END_PT, float(y) + _END_PT)
+                for x, y in line
+            ]
+        except (TypeError, ValueError):
+            pass
+    box = label.get("box")
+    if isinstance(box, Sequence) and len(box) == 4:
+        x0, y0, x1, y1 = (float(v) for v in box)
+        return [(x0 - 2 * _END_PT, y0 - 2 * _END_PT, x1 + 2 * _END_PT, y1 + 2 * _END_PT)]
+    return []
+
+
+def pictures(
+    engine: ChatEngine, verified: Verified, item: Item, *, zoom: bool = False
+) -> list[dict[str, Any]]:
+    """The look's pictures and its question, as the user message's content. `zoom`: the zoomed
+    re-look (recipe step 4): the same pictures plus a close view round each end of the marked
+    vendor dimension, before an end is left unseen."""
     kind = verified.blind or "pair"
     vendor = verified.vendor
     architect = verified.architect
@@ -298,13 +349,26 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
         region = _drawing_of(item, int(architect.get("page") or 0))
         if region is None:
             raise ValueError("the architect label is not on this item's drawings")
+        guides = [str(vendor.get("id"))]
         content = [
-            *_crop(engine, item.vendor, guides=[str(vendor.get("id"))]),
+            *_crop(engine, item.vendor, guides=guides),
             *_crop(engine, region, marks=True),
         ]
+        # The close views come last, so pictures 1 and 2 stay the vendor's and the architect's
+        # drawings, as the question says.
+        closes = end_boxes(vendor) if zoom else []
+        for box in closes:
+            content += _crop(engine, item.vendor, box=box, guides=guides)
         ref = f"p{vendor.get('page')}.{vendor.get('id')}"
         sheets = (item.vendor.sheet, region.sheet)
-        return [*content, {"type": "text", "text": question(kind, ref, None, sheets)}]
+        text = question(kind, ref, None, sheets)
+        if closes:
+            text += (
+                f" Pictures 3 to {2 + len(closes)} are close views of the VENDOR's drawing (picture "
+                "1, zoomed in) round the ends of its marked dimension: look there for where each "
+                "end lands. They show no architect value."
+            )
+        return [*content, {"type": "text", "text": text}]
     finding = verified.finding
     if kind == "values":
         v_box, a_box = finding.get("vendor_box"), finding.get("arch_box")
@@ -339,22 +403,49 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
 
 # ---- the call ------------------------------------------------------------------------------------
 
+#: Why a look was not made when the runaway guard would be passed (counted as a failed look).
+GUARD_WORDS: Final = "the answer's runaway guard was reached"
+#: Why a look waiting for room did not start: the reviewer pressed Stop.
+STOPPED_WORDS: Final = "the check was stopped"
+
+
+@dataclass
+class _Holds:
+    """What the looks running now may still cost (millionths of $), shared by the workers."""
+
+    reserved: int = 0
+    lock: threading.Condition = field(default_factory=threading.Condition)
+
+
+def look_hold(engine: ChatEngine, settings: BlindSettings) -> int:
+    """What one look is held at while it runs (#1769): every attempt the call may make
+    (`CALL_ATTEMPTS`), each at its prompt and its whole reply room."""
+    from app.review.assistant.chat_engine import CALL_ATTEMPTS
+
+    return CALL_ATTEMPTS * (engine._price(settings.chat_model, _PROMPT_TOKENS, _MAX_TOKENS) or 0)
+
 
 def look(
-    engine: ChatEngine, verified: Verified, item: Item, settings: BlindSettings
+    engine: ChatEngine,
+    verified: Verified,
+    item: Item,
+    settings: BlindSettings,
+    *,
+    zoom: bool = False,
 ) -> tuple[BlindAnswer | None, str]:
-    """One blind look: its answer, or None with why it could not be made. A reply that was not
-    the form is kept for this thread (`_kept_reply`) for the look's record (#1811)."""
+    """One blind look: its answer, or None with why it could not be made. `zoom`: the zoomed
+    re-look's pictures (`pictures`). A reply that was not the form is kept for this thread
+    (`_kept_reply`) for the look's record (#1811)."""
     from app.review.assistant.chat_engine import HARNESS_ID
 
     model = settings.chat_model
     estimate = engine._price(model, _PROMPT_TOKENS, _MAX_TOKENS) or 0
     if not engine._fits(estimate):
-        return None, "the answer's runaway guard was reached"
+        return None, GUARD_WORDS
     if engine.cancel.is_set():
         return None, "the check was stopped"
     try:
-        content = pictures(engine, verified, item)
+        content = pictures(engine, verified, item, zoom=zoom)
     except Exception as failed:  # noqa: BLE001 - not looked at: the item stays Not compared
         _log.warning("simple check blind look: pictures failed: %s", failed)
         return None, "its pictures could not be drawn"
@@ -362,8 +453,15 @@ def look(
         reply = engine._call(
             model=model,
             effort=settings.effort,
-            thinking=thinking_config(model, False),
-            system=BLIND_SYSTEM,
+            # Always adaptive thinking (#1775, C4): the gate of every red is a judgement. Opus 5.5
+            # thinks anyway; Sonnet 5.5 would otherwise answer cold.
+            thinking=thinking_config(model, True),
+            system=blind_system(
+                item.products,
+                settings.precedents,
+                kind=verified.blind or "pair",
+                prototype_reference=item.prototype_reference,
+            ),
             tools=(),
             messages=[{"role": "user", "content": content}],
             final=False,
@@ -390,7 +488,8 @@ def look(
         log_unreadable(_log, "simple blind look", str(verified.key), text)
         _KEPT.reply = text
         return None, "the reply was not the form"
-    return BlindAnswer(**{**_fields(found), "model": model.id}), ""
+    spent = thinking_tokens(getattr(reply, "usage", None))
+    return BlindAnswer(**{**_fields(found), "model": model.id, "thinking_tokens": spent}), ""
 
 
 def _fields(answer: BlindAnswer) -> dict[str, Any]:
@@ -410,6 +509,61 @@ def _fields(answer: BlindAnswer) -> dict[str, Any]:
     }
 
 
+def relook(settings: BlindSettings, verified: Verified, answer: BlindAnswer | None) -> bool:
+    """Whether a look gets its one zoomed re-look: the setting is on, the candidate is a labelled
+    pair (code knows its dimension line), and the look could not settle it (unsure)."""
+    return (
+        settings.zoom_relook
+        and answer is not None
+        and answer.verdict == "unsure"
+        and (verified.blind or "pair") in ("pair", "chain")
+    )
+
+
+def _held_look(
+    engine: ChatEngine,
+    verified: Verified,
+    item: Item,
+    settings: BlindSettings,
+    holds: _Holds,
+    hold: int,
+    *,
+    zoom: bool = False,
+) -> tuple[BlindAnswer | None, str]:
+    """`look`, its price reserved in `holds` before it starts and let go when it ends (#1769):
+    the looks running together never pass the cap (each checked it alone before, so six could
+    pass it at once). A look that does not fit while others run waits for them to end (their
+    holds become their real, smaller cost); it is refused only when it would pass the cap with
+    no other look running, or when the reviewer pressed Stop while it waited."""
+    cancel = getattr(engine, "cancel", None)
+    refused: str | None = None
+    with holds.lock:
+        while not engine._fits(holds.reserved + hold):
+            if cancel is not None and cancel.is_set():
+                refused = STOPPED_WORDS
+                break
+            if holds.reserved <= 0:
+                refused = GUARD_WORDS
+                break
+            holds.lock.wait(0.25)
+        if refused is None:
+            holds.reserved += hold
+    if refused is not None:
+        return None, refused
+    timings = getattr(engine, "timings", None)
+    try:
+        # Timed and charged to the blind phase on this worker thread (per thread); the wait
+        # for room above is not.
+        with timings.phase("blind") if timings is not None else nullcontext():
+            if zoom:
+                return look(engine, verified, item, settings, zoom=True)
+            return look(engine, verified, item, settings)
+    finally:
+        with holds.lock:
+            holds.reserved -= hold
+            holds.lock.notify_all()
+
+
 def look_all(
     engine: ChatEngine,
     candidates: Sequence[tuple[Verified, Item]],
@@ -420,14 +574,22 @@ def look_all(
     """Every red candidate after its blind look (`verify.with_blind`), in the order given; a few
     at once. A candidate the look could not reach stays Not compared with the reason."""
 
-    timings = getattr(engine, "timings", None)
+    holds = _Holds()
+    hold = look_hold(engine, settings)
 
     def one(pair: tuple[Verified, Item]) -> Verified:
         verified, item = pair
-        # Timed and charged to the blind phase on this worker thread (the timings are per thread).
-        with timings.phase("blind") if timings is not None else nullcontext():
-            _KEPT.reply = ""
-            answer, why = look(engine, verified, item, settings)
+        _KEPT.reply = ""
+        answer, why = _held_look(engine, verified, item, settings, holds, hold)
+        if relook(settings, verified, answer):
+            # One zoomed re-look before an end is left unseen (recipe step 4): still blind, still
+            # a full look, its price held too (#1769); red still needs it to agree and every
+            # code check.
+            again, again_why = _held_look(engine, verified, item, settings, holds, hold, zoom=True)
+            if again is not None:
+                answer = replace(again, note=f"zoomed re-look: {again.note}"[:300])
+            else:  # the re-look could not be made: the first (unsure) look stands
+                _log.info("simple check zoomed re-look not made: %s", again_why)
         done = with_blind(verified, answer, why, reply=_kept_reply())
         if on_done is not None:
             try:

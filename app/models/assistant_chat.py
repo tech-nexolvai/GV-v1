@@ -32,6 +32,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     ForeignKey,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -135,14 +136,23 @@ class AssistantChatFile(Base, TimestampedUUID, Immutable):
     size: Mapped[int] = mapped_column(BigInteger)
     mime: Mapped[str] = mapped_column(String(127))
     sha256: Mapped[str] = mapped_column(String(64))
+    decisions_held: Mapped[int | None] = mapped_column(Integer, default=None)
+    """For a file made again from the reviewer's decisions (#1803): how many decision rows of its
+    answer it was made from (the table is append-only, an undo is a row too). A package is out of
+    date when the answer has more. `NULL`: made by the check, before any decision."""
 
     __table_args__ = (
         CheckConstraint("size >= 0 AND name <> ''", name="assistant_chat_file_shape"),
+        CheckConstraint(
+            "decisions_held IS NULL OR decisions_held >= 0",
+            name="assistant_chat_file_decisions_held",
+        ),
     )
 
 
-#: The reviewer's decision on one finding (#1521).
-FINDING_DECISIONS: tuple[str, ...] = ("agree", "not_a_problem")
+#: The reviewer's decision on one finding (#1521). `undo` (#1803) takes the reviewer's call back:
+#: the item is again what code found, and the files made again say so.
+FINDING_DECISIONS: tuple[str, ...] = ("agree", "not_a_problem", "undo")
 
 
 class AssistantFindingDecision(Base, TimestampedUUID, Immutable):
@@ -160,6 +170,9 @@ class AssistantFindingDecision(Base, TimestampedUUID, Immutable):
     finding_id: Mapped[str] = mapped_column(String(64))
     decision: Mapped[str] = mapped_column(String(16))
     note: Mapped[str | None] = mapped_column(Text, default=None)
+    should_be: Mapped[str | None] = mapped_column(Text, default=None)
+    """What the vendor's value should be, as the reviewer gave it with an Agree (#1803): the item's
+    green "should be" on every file, also where the architect prints no value."""
     decided_by: Mapped[str] = mapped_column(String(200))
     """The principal who decided."""
     decided_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now)
@@ -169,6 +182,10 @@ class AssistantFindingDecision(Base, TimestampedUUID, Immutable):
             f"decision IN ({_listed(FINDING_DECISIONS)})", name="assistant_finding_decision_value"
         ),
         CheckConstraint("finding_id <> ''", name="assistant_finding_decision_finding"),
+        CheckConstraint(
+            "should_be IS NULL OR (decision = 'agree' AND should_be <> '')",
+            name="assistant_finding_decision_should_be",
+        ),
     )
 
 

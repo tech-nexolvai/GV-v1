@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
-import { Check, ChevronLeft, ChevronRight, CircleSlash, ExternalLink, ImageOff, Minus, Plus, RotateCcw, X } from 'lucide-react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { Check, ChevronLeft, ChevronRight, Download, ExternalLink, ImageOff, Minus, Plus, RotateCcw, X } from 'lucide-react';
 
 import { StatusMark, type DecisionProps } from '@/components/chat/chat-findings';
+import { Spinner } from '@/components/chat/chat-motion';
+import { OutcomeGlyph } from '@/components/chat/chat-result';
 import { RoundChip } from '@/components/chat/chat-trust';
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
-import type { ChatFinding } from '@/lib/chat-api';
+import type { ChatFile, ChatFinding, FindingDecisionExtra, FindingDecisionValue } from '@/lib/chat-api';
 import { architectPage, decisionHelpRows, pageWords, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
-import { proofGroup } from '@/lib/chat-proof';
-import { boxOnPicture, itemParts, shouldBeValue, vendorValue } from '@/lib/chat-result';
+import { isInternal, proofGroup } from '@/lib/chat-proof';
+import { boxOnPicture, decisionsWords, itemParts, shouldBeValue, suggestedShouldBe, vendorValue } from '@/lib/chat-result';
 import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { cn } from '@/lib/utils';
@@ -175,6 +177,25 @@ export interface EvidenceViewerProps {
   numberOf?: ((finding: ChatFinding) => string | null) | null;
   /** #1717: why the override was not saved, said in the panel (the page behind it is hidden while it is open). */
   notice?: string | null;
+  /** #1803: the draft made again after each decision: its state, and the updated package to download. */
+  draft?: DraftState | null;
+}
+
+/** #1803: the draft (cloud drawing, letter, register, Not-compared list, package) after the reviewer's decisions. */
+export interface DraftState {
+  updating: boolean;
+  failed: boolean;
+  /** "14:32" once made again; null before. */
+  updatedAt: string | null | undefined;
+  /** The package does not hold every decision yet: its download is not offered. */
+  stale: boolean;
+  /** Why the server would not make it again, in its own words. */
+  refusal?: string | null;
+  /** How many items the reviewer decided ("Package updated with your 2 decisions"). */
+  decided: number;
+  pkg: ChatFile | null;
+  href: string | null;
+  onRetry: (() => void) | null;
 }
 
 /**
@@ -183,17 +204,18 @@ export interface EvidenceViewerProps {
  * plain words), the comment for the vendor, and the optional override. J / K or ← / → step through
  * the result's items, Esc closes and focus goes back to the row.
  */
-export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageHref, pagePicture = null, cloudAt = null, decisionFor = null, numberOf = null, notice = null }: EvidenceViewerProps) {
+export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageHref, pagePicture = null, cloudAt = null, decisionFor = null, numberOf = null, notice = null, draft = null }: EvidenceViewerProps) {
   const at = openId === null ? -1 : findings.findIndex((finding) => finding.id === openId);
   const finding = at >= 0 ? findings[at] : null;
   const previous = at > 0 ? findings[at - 1] : null;
   const next = at >= 0 && at < findings.length - 1 ? findings[at + 1] : null;
   const decision = finding && decisionFor ? decisionFor(finding) : null;
-  const group = finding ? proofGroup(finding, decision ? (decision.decision ? { decision: decision.decision } : null) : finding.decision ?? null) : null;
+  const laid = decision ? (decision.saved ?? (decision.decision ? { decision: decision.decision } : null)) : finding?.decision ?? null;
+  const group = finding ? proofGroup(finding, laid) : null;
   const number = finding && numberOf ? numberOf(finding) : null;
   const parts = finding ? itemParts(finding.item) : null;
   const vendor = finding ? vendorValue(finding) : null;
-  const should = finding && group === 'clouded' ? shouldBeValue(finding) : null;
+  const should = finding && group === 'clouded' ? shouldBeValue(finding, laid) : null;
   // J / K and the arrows step while the panel is open, wherever focus is (a button that becomes
   // disabled at the end of the list drops focus out of the panel).
   const previousId = previous?.id ?? null;
@@ -250,7 +272,7 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
             {pagePicture && (finding.vendor_box || finding.arch_box) && <PageSpot finding={finding} src={pagePicture((finding.vendor_box ?? finding.arch_box)!.page)} />}
 
             <section aria-label="Why" className="grid min-w-0 gap-2">
-              <h3 className="text-xs font-semibold text-muted-foreground">{group === 'clouded' ? 'Why it is Wrong' : group === 'right' ? 'Why it is Right' : 'Why it was not compared'}</h3>
+              <h3 className="text-xs font-semibold text-muted-foreground">{group === 'clouded' ? 'Why it is Wrong' : group === 'right' ? 'Why it is Right' : group === 'dismissed' ? 'What code found' : 'Why it was not compared'}</h3>
               <ViewerWords finding={finding} />
               {sumWords(finding) && (
                 <p data-slot="chat-evidence-sum" className="text-sm tabular-nums">
@@ -266,33 +288,194 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
             </section>
           </div>
 
-          <div className="flex min-w-0 flex-wrap items-center gap-2 border-t px-5 py-3 max-md:px-4">
-            {notice && <p role="alert" data-slot="chat-evidence-notice" className="w-full text-[13px] text-muted-foreground">{notice}</p>}
-            <span className="text-xs text-muted-foreground max-md:hidden"><kbd className="num rounded border px-1">J</kbd> <kbd className="num rounded border px-1">K</kbd> to step · <kbd className="num rounded border px-1">Esc</kbd></span>
-            <span className="flex-1" />
-            {decision && (group === 'clouded' || decision.decision === 'not_a_problem') && (
-              <button type="button" data-slot="chat-evidence-not-a-problem" aria-pressed={decision.decision === 'not_a_problem'} disabled={decision.busy} onClick={() => decision.onDecide('not_a_problem')} className={SMALL_BUTTON}>
-                <CircleSlash className="size-3.5" aria-hidden="true" />
-                {decision.decision === 'not_a_problem' ? 'Marked not a problem' : 'Not a problem'}
-              </button>
+          <div className="grid min-w-0 gap-3 border-t px-5 py-3 max-md:px-4">
+            {notice && <p role="alert" data-slot="chat-evidence-notice" className="text-[13px] text-muted-foreground">{notice}</p>}
+            {decision && group && group !== 'right' && !isInternal(finding) && (
+              <ReviewerCall key={finding.id} finding={finding} group={group} decision={decision} />
             )}
-            {decision && group === 'not_compared' && (
-              <button type="button" data-slot="chat-evidence-make-wrong" disabled={decision.busy} onClick={() => decision.onDecide('agree')} className={SMALL_BUTTON}>
-                Make it Wrong
-              </button>
-            )}
-            {cloudAt && group === 'clouded' && (
-              <a href={cloudAt(finding.vendor_box?.page ?? finding.page)} target="_blank" rel="noopener noreferrer" className={SMALL_BUTTON}><ExternalLink className="size-3.5" aria-hidden="true" />Open on the cloud drawing</a>
-            )}
-            {fullPageHref && (
-              <a href={fullPageHref} className={SMALL_BUTTON}><ExternalLink className="size-3.5" aria-hidden="true" />Open in review screen</a>
-            )}
+            {/* An item for GV's reviewer only is never decided; a call saved on it before can still be taken back. */}
+            {decision?.saved && isInternal(finding) && <UndoCall decision={decision} />}
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {draft ? <DraftLine draft={draft} /> : <span className="text-xs text-muted-foreground max-md:hidden"><kbd className="num rounded border px-1">J</kbd> <kbd className="num rounded border px-1">K</kbd> to step · <kbd className="num rounded border px-1">Esc</kbd></span>}
+              <span className="flex-1" />
+              {cloudAt && group === 'clouded' && !draft?.stale && (
+                <a href={cloudAt(finding.vendor_box?.page ?? finding.page)} target="_blank" rel="noopener noreferrer" className={SMALL_BUTTON}><ExternalLink className="size-3.5" aria-hidden="true" />Open on the cloud drawing</a>
+              )}
+              {fullPageHref && (
+                <a href={fullPageHref} className={SMALL_BUTTON}><ExternalLink className="size-3.5" aria-hidden="true" />Open in review screen</a>
+              )}
+            </div>
           </div>
         </SheetContent>
       )}
     </Sheet>
   );
 }
+
+// ── #1803: the reviewer's own call on the item ──────────────
+
+type CallMode = 'choose' | 'wrong' | 'right' | 'remove';
+
+/** The lines under each choice: what happens, in plain words. */
+const CALL_WORDS = {
+  wrong: 'You checked this yourself. It goes on the cloud drawing and the letter, marked “(reviewer)”.',
+  right: 'You checked this yourself. It leaves the Not-compared list and shows as Right (reviewer).',
+  remove: 'The red cloud and its comment come off. It shows as Right (reviewer) in the vendor’s files.',
+} as const;
+
+/**
+ * #1803: what the reviewer can decide here, each choice with one line saying what happens. A
+ * Not-compared item: "It's a mistake: add a red mark" (asks what it should be) or "It's fine: mark
+ * Right". A Wrong item: "Not a mistake: remove the red mark". Nothing is saved until the small form's
+ * own button; the note goes to the vendor.
+ */
+function ReviewerCall({ finding, group, decision }: { finding: ChatFinding; group: string; decision: DecisionProps }) {
+  const [mode, setMode] = useState<CallMode>('choose');
+  const undoHint = useId();
+  const saved = decision.saved ?? null;
+  const decide = (value: FindingDecisionValue, extra: FindingDecisionExtra) => { decision.onDecide(value, extra); setMode('choose'); };
+  if (mode === 'wrong') return <CallForm kind="wrong" finding={finding} busy={decision.busy} onCancel={() => setMode('choose')} onSave={(extra) => decide('agree', extra)} />;
+  if (mode === 'right') return <CallForm kind="right" finding={finding} busy={decision.busy} onCancel={() => setMode('choose')} onSave={(extra) => decide('not_a_problem', extra)} />;
+  if (mode === 'remove') return <CallForm kind="remove" finding={finding} busy={decision.busy} onCancel={() => setMode('choose')} onSave={(extra) => decide('not_a_problem', extra)} />;
+  const mine = saved?.decision === 'agree' && group === 'clouded' ? 'wrong' : saved?.decision === 'not_a_problem' && group === 'dismissed' ? 'right' : null;
+  return (
+    <section aria-label="Your call" data-slot="chat-evidence-call" data-group={group} className="grid min-w-0 gap-2">
+      <p className="text-xs font-medium text-muted-foreground">{mine ? 'Your call' : 'Your call · optional'}</p>
+      {mine && (
+        <p data-slot="chat-evidence-call-saved" className="flex min-w-0 items-start gap-2 text-[13px]">
+          <OutcomeGlyph kind={mine} className="mt-px size-4 [&_svg]:size-2.5" />
+          <span className="min-w-0 break-words">
+            <span className="font-medium">{mine === 'wrong' ? 'Wrong (reviewer).' : 'Right (reviewer).'}</span>{' '}
+            <span className="text-muted-foreground">{mine === 'wrong' ? 'You added this red mark.' : 'You marked this Right.'}{saved?.note ? <> Note: “{saved.note}”</> : null}</span>
+          </span>
+        </p>
+      )}
+      {saved && (
+        <div className="grid min-w-0 content-start gap-1">
+          <button type="button" data-slot="chat-evidence-call-undo" aria-describedby={undoHint} disabled={decision.busy} onClick={() => decision.onDecide('undo')} className={cn(SMALL_BUTTON, 'w-fit')}>
+            <RotateCcw className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            Undo your call
+          </button>
+          <p id={undoHint} className="text-xs leading-[17px] text-muted-foreground">{UNDO_WORDS}</p>
+        </div>
+      )}
+      <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+        {group === 'clouded' && <CallChoice kind="remove" onClick={() => setMode('remove')} busy={decision.busy} />}
+        {(group === 'not_compared' || group === 'dismissed') && <CallChoice kind="wrong" onClick={() => setMode('wrong')} busy={decision.busy} />}
+        {group === 'not_compared' && <CallChoice kind="right" onClick={() => setMode('right')} busy={decision.busy} />}
+      </div>
+    </section>
+  );
+}
+
+/** #1803: only the Undo, for a call saved on an item for GV's reviewer only. */
+function UndoCall({ decision }: { decision: DecisionProps }) {
+  const hint = useId();
+  return (
+    <section aria-label="Your call" data-slot="chat-evidence-call" data-group="internal" className="grid min-w-0 content-start gap-1">
+      <button type="button" data-slot="chat-evidence-call-undo" aria-describedby={hint} disabled={decision.busy} onClick={() => decision.onDecide('undo')} className={cn(SMALL_BUTTON, 'w-fit')}>
+        <RotateCcw className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        Undo your call
+      </button>
+      <p id={hint} className="text-xs leading-[17px] text-muted-foreground">{UNDO_WORDS}</p>
+    </section>
+  );
+}
+
+/** #1803: what Undo does, under its button. */
+const UNDO_WORDS = 'Takes your call back: the item is again what code found, and the package is made again without it.';
+
+const CHOICE_WORDS = {
+  wrong: 'It’s a mistake: add a red mark',
+  right: 'It’s fine: mark Right',
+  remove: 'Not a mistake: remove the red mark',
+} as const;
+
+function CallChoice({ kind, onClick, busy }: { kind: 'wrong' | 'right' | 'remove'; onClick: () => void; busy?: boolean }) {
+  const hint = useId();
+  return (
+    <div className="grid min-w-0 content-start gap-1">
+      <button type="button" data-slot={`chat-evidence-call-${kind}`} aria-describedby={hint} disabled={busy} onClick={onClick} className={cn(SMALL_BUTTON, 'w-full justify-start text-left')}>
+        {kind === 'remove' ? <X className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" /> : <OutcomeGlyph kind={kind} className="size-4 [&_svg]:size-2.5" />}
+        <span className="min-w-0 truncate">{CHOICE_WORDS[kind]}</span>
+      </button>
+      <p id={hint} className="text-xs leading-[17px] text-muted-foreground">{CALL_WORDS[kind]}</p>
+    </div>
+  );
+}
+
+/** The small form behind a choice: what it should be (a red mark only), a note, and its own Save. */
+function CallForm({ kind, finding, busy, onCancel, onSave }: { kind: 'wrong' | 'right' | 'remove'; finding: ChatFinding; busy?: boolean; onCancel: () => void; onSave: (extra: FindingDecisionExtra) => void }) {
+  const suggested = kind === 'wrong' ? suggestedShouldBe(finding) : '';
+  const [value, setValue] = useState(suggested);
+  const [note, setNote] = useState('');
+  const valueId = useId();
+  const noteId = useId();
+  const hint = useId();
+  const missing = kind === 'wrong' && !value.trim();
+  const save = kind === 'wrong' ? 'Add the red mark' : kind === 'right' ? 'Mark Right' : 'Remove the red mark';
+  return (
+    <form
+      aria-label={CHOICE_WORDS[kind]}
+      data-slot={`chat-evidence-form-${kind}`}
+      className="grid min-w-0 gap-2.5"
+      onSubmit={(event) => { event.preventDefault(); if (!missing) onSave(kind === 'wrong' ? { should_be: value.trim(), note } : { note }); }}
+      onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); event.preventDefault(); onCancel(); } }}
+    >
+      <p className="flex items-center gap-2 text-[13.5px] font-medium">
+        {kind === 'remove' ? <X className="size-3.5 text-muted-foreground" aria-hidden="true" /> : <OutcomeGlyph kind={kind} className="size-4 [&_svg]:size-2.5" />}
+        {CHOICE_WORDS[kind]}
+      </p>
+      <div className={cn('grid min-w-0 gap-2.5', kind === 'wrong' && 'sm:grid-cols-[minmax(0,10rem)_minmax(0,1fr)]')}>
+        {kind === 'wrong' && (
+          <label htmlFor={valueId} className="grid min-w-0 gap-1">
+            <span className="text-xs text-muted-foreground">Should be</span>
+            <input id={valueId} autoFocus value={value} onChange={(event) => setValue(event.target.value)} maxLength={80} placeholder='e.g. 34 1/2"' aria-describedby={hint} aria-invalid={missing || undefined} className={INPUT + ' num'} />
+          </label>
+        )}
+        <label htmlFor={noteId} className="grid min-w-0 gap-1">
+          <span className="text-xs text-muted-foreground">{kind === 'remove' ? 'Reason (optional, the vendor reads it)' : 'Note (optional, the vendor reads it)'}</span>
+          <input id={noteId} autoFocus={kind !== 'wrong'} value={note} onChange={(event) => setNote(event.target.value)} maxLength={300} className={INPUT} />
+        </label>
+      </div>
+      <p id={hint} className="text-xs leading-[17px] text-muted-foreground">
+        {kind === 'wrong' && (suggested ? 'Filled in with the architect’s value; change it if it should be something else. ' : 'The architect gives no value here: type what it should be. ')}
+        {CALL_WORDS[kind]}
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="submit" data-slot="chat-evidence-form-save" disabled={busy || missing} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none disabled:opacity-50">{save}</button>
+        <button type="button" onClick={onCancel} className={SMALL_BUTTON}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+/** #1803: the package made again after each decision: "Making the package again…", then "Package updated with your 2 decisions" and its download. */
+function DraftLine({ draft }: { draft: DraftState }) {
+  const words = decisionsWords(draft.decided);
+  if (draft.updating) {
+    return <p role="status" data-slot="chat-evidence-draft" data-state="updating" className="inline-flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3.5" />Making the package again with your {words}…</p>;
+  }
+  if (draft.failed || draft.stale) {
+    return (
+      <p role="alert" data-slot="chat-evidence-draft" data-state={draft.failed ? 'failed' : 'outdated'} className="inline-flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        {draft.failed ? draft.refusal ?? 'The package could not be made again.' : 'The package does not hold your newest decisions yet.'}
+        {draft.onRetry && <button type="button" data-slot="chat-evidence-remake" onClick={draft.onRetry} className="rounded font-medium text-foreground underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">Re-make the package</button>}
+      </p>
+    );
+  }
+  if (draft.decided > 0) {
+    return (
+      <p role="status" data-slot="chat-evidence-draft" data-state="updated" className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+        <span>Package updated with your {words}{draft.updatedAt ? <> · <span className="num">{draft.updatedAt}</span></> : null}</span>
+        {draft.pkg && draft.href && <a href={draft.href} download={draft.pkg.name} className="inline-flex items-center gap-1 rounded font-medium text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"><Download className="size-3.5" aria-hidden="true" />Download package</a>}
+      </p>
+    );
+  }
+  return <span className="text-xs text-muted-foreground max-md:hidden"><kbd className="num rounded border px-1">J</kbd> <kbd className="num rounded border px-1">K</kbd> to step · <kbd className="num rounded border px-1">Esc</kbd></span>;
+}
+
+const INPUT = 'h-8 w-full min-w-0 rounded-lg border bg-background px-2.5 text-[13px] text-foreground placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none aria-invalid:border-outcome-fail-fg/50';
 
 const ICON_BUTTON = 'grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-40';
 const SMALL_BUTTON = 'inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-2.5 text-[13px] font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-60 aria-pressed:bg-muted';

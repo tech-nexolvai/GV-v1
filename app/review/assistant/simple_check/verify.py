@@ -9,8 +9,12 @@ outputs read (the cloud drawing, the package, the Not-compared PDF and workbook,
 
 **A pair is a red candidate** only when ALL of these hold (each one a named `Check`):
 
-- the model says `different`, both labels exist and code read their values (`dims.json`: printed
-  text, or the vendor's drawn ink read by two OCR engines), and they differ by more than 1/16";
+- the model says the two run between the same two points (`same_points`; the older form's
+  `different`), both labels exist and code read their values (`dims.json`: printed text, or the
+  vendor's drawn ink read by two OCR engines), and code finds they differ by more than 1/16": the
+  model never judges the values (recipe step 2, C3). `same_points` with `weak_point:
+  end_not_visible` (an end the model says it cannot see) is read as `unsure`: the weak point only
+  adds caution;
 - `roles`: the vendor label is on a vendor drawing, the architect label on the architect's (a brand
   prototype is reference only, R1);
 - `area`: the architect label is on one of the work item's architect drawings, in the same area of
@@ -43,7 +47,8 @@ drawings.
   "architect gives no size";
 - `no_architect_value` -> a row of the Not-compared list ("architect gives no size", R7), not a
   finding (a set has hundreds);
-- `same` with both values verified equal -> Right; `same` with values that differ -> Not compared,
+- `same_points` -> code compares the values: equal -> Right (every check above but the value),
+  different -> a red candidate. The older form's `same` with values that differ -> Not compared,
   never Right; `different` with values code reads as equal -> Right;
 - a vendor label code paired by itself (`pairs.json`) -> covered: code's own finding decides it;
 - `missing_on_vendor` -> a red candidate only when code finds the architect's value or tag printed
@@ -84,6 +89,7 @@ from app.review.assistant.full_check_advocate import Check, code_pairs, is_slip,
 from app.review.assistant.full_check_plan import read_page_map
 from app.review.assistant.product_scope import ProductScope, named_products
 from app.review.assistant.read_number import Reading, Request
+from app.review.assistant.simple_check.schema import claimed_verdict
 from app.review.assistant.simple_check.set_pages import SetPages, set_pages
 
 __all__ = [
@@ -709,6 +715,8 @@ class BlindAnswer:
     millwork: bool | None = None
     note: str = ""
     model: str = ""
+    thinking_tokens: int | None = None
+    """The look's thinking tokens (#1775, C4); `None` in looks saved before."""
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> BlindAnswer:
@@ -728,6 +736,9 @@ class BlindAnswer:
             millwork=millwork if isinstance(millwork, bool) else None,
             note=str(raw.get("note") or ""),
             model=str(raw.get("model") or ""),
+            thinking_tokens=(
+                raw["thinking_tokens"] if isinstance(raw.get("thinking_tokens"), int) else None
+            ),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -740,6 +751,7 @@ class BlindAnswer:
             "millwork": self.millwork,
             "note": self.note,
             "model": self.model,
+            "thinking_tokens": self.thinking_tokens,
         }
 
 
@@ -1268,7 +1280,8 @@ def _verify_pair(
     vref = str(pair.get("vendor_label") or "")
     key = f"{item.id}:{vref}"
     vendor = pack.label(vref, item.vendor.file, item.vendor.page)
-    verdict = str(pair.get("verdict") or "unsure").strip().lower()
+    # same_points of an end the AI says it cannot see is unsure (C3: the weak point adds caution).
+    verdict = claimed_verdict(pair)
     ends = {
         name: str(pair.get(name) or "")
         for name in ("vendor_from", "vendor_to", "architect_from", "architect_to")
@@ -1301,7 +1314,7 @@ def _verify_pair(
         return Verified(key, "pair", "covered", why, vendor=vendor, architect=architect, ends=ends)
     one = _Pair(key, item, pack, pair, vendor, architect, ends)
     if architect is None:
-        if verdict in ("same", "different", "different_points"):
+        if verdict in ("same_points", "same", "different", "different_points"):
             return one.grey(
                 f"not proved: the answer names no architect label code knows ({aref or 'none'})",
                 "not_proved",
@@ -1311,7 +1324,7 @@ def _verify_pair(
             key, "pair", "listed", AI_UNSURE, "ai_unsure", vendor=vendor, ends=ends, about=about
         )
     objected = verdict == "different_points"
-    if not objected and verdict not in ("same", "different"):
+    if not objected and verdict not in ("same_points", "same", "different"):
         note = str(pair.get("note") or "").strip()
         return one.grey(UNSURE + (f": {note}" if note else ""), "not_proved")
     if objected and not _contradicts(pair, ends):
@@ -1333,6 +1346,10 @@ def _verify_pair(
         ]
         said = f" (the read-number tool: {tool[0]})" if tool and tool[0] else ""
         return one.grey(f"code could not read the value as a size{said}", "unreadable")
+    if verdict == "same_points":
+        # The AI said only that both run between the same two points (recipe step 2): code
+        # compares the numbers and takes the older form's path for what it reads.
+        verdict = "different" if _differ(v_in, a_in) else "same"
     a_file = str(architect.get("file") or pack.main_file)
     a_page = int(architect.get("page") or 0)
     matched = ends_match(

@@ -52,7 +52,7 @@ import os
 import signal
 import threading
 import uuid
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
@@ -65,6 +65,7 @@ from fastapi import Path as Path_
 from fastapi.responses import FileResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from sqlalchemy import select
+from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -82,6 +83,7 @@ from app.models import (
     PackageRevision,
 )
 from app.models.document import Document, DocumentVersion, PackageRevisionDocument
+from app.review.assistant import classification, not_compared
 from app.review.assistant.chat_contract import (
     AssistantModelOut,
     AssistantModelsOut,
@@ -97,11 +99,14 @@ from app.review.assistant.chat_contract import (
     ChatMessageIn,
     ChatMessageOut,
     ChatOut,
+    ChatRemadeOut,
 )
 from app.review.assistant.chat_corrections import corrections_by_answer, with_corrections
 from app.review.assistant.chat_decisions import (
+    UNDO,
     decided_findings,
     decided_summary,
+    decision_counts,
     decision_out,
     latest_decisions,
     make_decided_files,
@@ -167,9 +172,11 @@ from app.review.assistant.consistency_answer import (
     PackNotReady,
     run_check,
 )
+from app.review.assistant.not_compared import XLSX_MIME
 from app.review.assistant.package_store import identity as package_identity
 from app.review.assistant.package_store import stored_numbers
 from app.review.assistant.product_scope import ProductScope
+from app.review.assistant.proof import reviewer_value_refusal
 from app.review.assistant.review_action import CheckState
 from app.review.assistant.sandbox import ChatWorkspace, Sandbox, open_sandbox
 from app.review.assistant.send_package import ZIP_MIME
@@ -534,6 +541,7 @@ def read_chat(
     first = first_question(messages)
     run = registry.get(chat_id)
     decisions = latest_decisions(session, chat_id)
+    counts = decision_counts(session, chat_id)
     corrections = corrections_by_answer(messages)
     return ChatOut(
         id=chat.id,
@@ -542,7 +550,13 @@ def read_chat(
         title=chat.title or (chat_title(first) if first else None),
         created_at=chat.created_at,
         messages=[
-            message_out(message, files, decisions.get(message.id), corrections.get(str(message.id)))
+            message_out(
+                message,
+                files,
+                decisions.get(message.id),
+                corrections.get(str(message.id)),
+                decisions_count=counts.get(message.id),
+            )
             for message in messages
         ],
         running=run is not None,
@@ -942,6 +956,19 @@ def decide_finding(
     finding = next((f for f in corrected if str(f.get("id")) == finding_id), None)
     if finding is None:
         raise _not_found()
+    if body.decision != UNDO and classification.internal(finding):
+        # An item for GV's reviewer only (#1652) is never clouded or marked Right (#1803).
+        raise CodedHTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "internal_item",
+            "This item is for GV's reviewer only. It is never on the vendor's files.",
+        )
+    if body.decision == "agree":
+        refused = reviewer_value_refusal(finding, body.should_be)
+        if refused is not None:
+            raise CodedHTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "should_be_refused", refused
+            )
     decided = record_decision(
         session,
         chat_id=chat_id,
@@ -950,9 +977,12 @@ def decide_finding(
         decision=body.decision,
         note=body.note,
         decided_by=principal.id,
+        should_be=body.should_be,
     )
     # The set's memory (#1548): every later chat on the set knows what the reviewer decided.
-    text, page = decision_note(finding, body.decision, principal.id, body.note)
+    text, page = decision_note(
+        finding, body.decision, principal.id, body.note, should_be=decided.should_be
+    )
     chat = session.get(AssistantChat, chat_id)
     if chat is not None:
         add_note(
@@ -971,7 +1001,7 @@ def decide_finding(
 
 @router.post(
     "/chats/{chat_id}/messages/{message_id}/cloud-drawing",
-    response_model=ChatFileOut,
+    response_model=ChatRemadeOut,
     summary="The cloud drawing (and check report) made again from the reviewer's decisions",
     responses={
         404: {"description": "No such stored answer in this chat (or no access)."},
@@ -989,15 +1019,26 @@ def cloud_drawing(
     principal: Authenticated,
     session: Annotated[Session, Depends(get_session)],
     registry: Annotated[ChatRegistry, Depends(chat_registry)],
-) -> ChatFileOut:
+) -> ChatRemadeOut:
     """The zero-click cloud drawing made again with the reviewer's decisions as overrides (#1581):
     red clouds at the Wrong items code proved and at every agreed item, none at an item marked not
     a problem; the rest listed in grey; stamped "Checked automatically by GV Review: <date>, and
     reviewed by <name>". A new cloud drawing and check report each time (older files are kept),
-    and for a full check a new send-ready package (#1622); returns the cloud drawing."""
+    and for a full check a new send-ready package (#1622) and Not-compared list (#1803: the items
+    the reviewer decided leave it); returns the cloud drawing and every file made with it.
+
+    #1803: remakes of one answer run one at a time (a lock held to the end), and the files made
+    keep how many decision rows they were made from, counted before the decisions are read: a
+    decision saved while this runs leaves the package out of date (`package_outdated`)."""
     chat, package = _chat(session, chat_id, principal)
     _not_running(registry, chat_id, message_id)
     row = _answer(session, chat_id, message_id)
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(
+            sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"gv-remake:{message_id}"},
+        )
+    held = decision_counts(session, chat_id).get(message_id, 0)
     findings = decided_findings(
         row,
         latest_decisions(session, chat_id, message_id).get(message_id),
@@ -1029,6 +1070,44 @@ def cloud_drawing(
     # A full check's send-ready package is made again too (#1622), from the same list.
     if row.mode == "full_check":
         scratch[package_id] = workspace.files / f"{package_id}.partial"
+    # And its Not-compared PDF and workbook (#1803: an item the reviewer decided leaves the
+    # list), when the check kept the set's own gaps to list again; an older answer keeps its list.
+    stored = package_block(row.blocks) or {}
+    set_gaps = stored.get("set_gaps") if row.mode == "full_check" else None
+    old_list = _not_compared_files(session, workspace, message_id)
+    set_rows: list[not_compared.Row] = []
+    if row.mode == "full_check" and not isinstance(set_gaps, list):
+        # An answer stored before its set gaps were kept (#1803): the set's rows are read back
+        # from its own workbook (or CSV), so the decided items still leave the list. A list that
+        # cannot be read is never handed out again as it was: the check is run again instead.
+        old_sheet = next(
+            ((name, path) for name, path in old_list if name.endswith((".xlsx", ".csv"))),
+            None,
+        )
+        read: list[not_compared.Row] | None = []
+        if old_list:
+            read = (
+                None
+                if old_sheet is None
+                else not_compared.set_rows_of(
+                    old_sheet[1].read_bytes(), csv=old_sheet[0].endswith(".csv")
+                )
+            )
+        if read is None:
+            _log.warning(
+                "cloud drawing: the older Not-compared list of %s cannot be read", message_id
+            )
+            raise CodedHTTPException(
+                status.HTTP_409_CONFLICT,
+                "list_not_remade",
+                "This check's Not-compared list cannot be made again with your decisions. "
+                "Run the check again.",
+            )
+        set_gaps, set_rows = [], read
+    list_ids = (uuid4(), uuid4())
+    if isinstance(set_gaps, list):
+        for file_id in list_ids:
+            scratch[file_id] = workspace.files / f"{file_id}.partial"
     try:
         made = make_decided_files(
             workspace,
@@ -1039,12 +1118,15 @@ def cloud_drawing(
             scratch[report_id],
             settled=resolver_settled(row.blocks),
             package_out=scratch.get(package_id),
-            extra=_not_compared_files(session, workspace, message_id),
+            extra=[] if isinstance(set_gaps, list) else old_list,
             identity=package_identity(session, package, tuple(row.products or ())),
             numbers=stored_numbers(session, package.id, message_id),
-            incomplete=CheckState.from_dict(
-                (package_block(row.blocks) or {}).get("state")
-            ).incomplete,
+            incomplete=CheckState.from_dict(stored.get("state")).incomplete,
+            not_compared_out=(
+                (scratch[list_ids[0]], scratch[list_ids[1]]) if isinstance(set_gaps, list) else None
+            ),
+            set_gaps=[gap for gap in set_gaps or [] if isinstance(gap, Mapping)],
+            set_rows=set_rows,
         )
     except LookupError:
         raise CodedHTTPException(
@@ -1061,6 +1143,10 @@ def cloud_drawing(
         (drawing_id, made.drawing, "application/pdf"),
         (report_id, made.report, "application/pdf"),
     ]
+    if made.not_compared is not None:
+        pdf, sheet = made.not_compared
+        kept.append((list_ids[0], pdf, "application/pdf"))
+        kept.append((list_ids[1], sheet, XLSX_MIME if sheet.name.endswith(".xlsx") else "text/csv"))
     if made.package is not None:
         kept.append((package_id, made.package, ZIP_MIME))
     for file_id, file, mime in kept:
@@ -1075,10 +1161,12 @@ def cloud_drawing(
                 size=file.size,
                 mime=mime,
                 sha256=file.sha256,
+                decisions_held=held,
             )
         )
     session.commit()
-    return file_out(rows[0])
+    made_files = [file_out(file_row) for file_row in rows]
+    return ChatRemadeOut(**made_files[0].model_dump(), made=made_files)
 
 
 # ---- one message ---------------------------------------------------------------------------------
@@ -1280,14 +1368,18 @@ def _simple_options(settings: Settings, body: ChatMessageIn) -> dict[str, Any] |
             "max_tokens": settings.assistant_simple_max_tokens,
             "retries": settings.assistant_simple_retries,
             "label_places": getattr(settings, "assistant_simple_label_places", True),
+            "precedents": getattr(settings, "assistant_simple_precedents", True),
+            "targeted_repair": getattr(settings, "assistant_simple_targeted_repair", True),
         },
         "blind_model": settings.assistant_simple_blind_model,
         "blind_effort": settings.assistant_simple_blind_effort,
+        "blind_precedents": getattr(settings, "assistant_simple_precedents", True),
+        "blind_zoom_relook": getattr(settings, "assistant_simple_zoom_relook", False),
         "resolve": {
             "mode": getattr(settings, "assistant_simple_resolve", "off"),
             "rounds": getattr(settings, "assistant_simple_resolve_rounds", 2),
             "model": getattr(settings, "assistant_simple_resolve_model", "claude-sonnet-5-5"),
-            "effort": getattr(settings, "assistant_simple_resolve_effort", "high"),
+            "effort": getattr(settings, "assistant_simple_resolve_effort", "medium"),
             "web_search": getattr(settings, "assistant_simple_resolve_web_search", False),
         },
         "pilot": body.pilot,
@@ -1538,7 +1630,12 @@ def _followed(
     if row is None or row.chat_id != chat_id or row.role != "assistant":
         raise _not_found()
     decided = latest_decisions(session, chat_id, message_id).get(message_id)
-    stored = message_out(row, files_of(session, chat_id), decided).model_dump(mode="json")
+    stored = message_out(
+        row,
+        files_of(session, chat_id),
+        decided,
+        decisions_count=decision_counts(session, chat_id).get(message_id),
+    ).model_dump(mode="json")
     return _Followed(feed=None, stored=stored)
 
 
