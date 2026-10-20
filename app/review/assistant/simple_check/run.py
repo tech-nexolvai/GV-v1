@@ -1447,9 +1447,11 @@ class _Run:
         why = (
             "the money limit for one answer was reached"
             if self.blind_refused == count
-            else "the service did not answer"
-            if not self.blind_refused
-            else "the service did not answer, or the money limit for one answer was reached"
+            else (
+                "the service did not answer"
+                if not self.blind_refused
+                else "the service did not answer, or the money limit for one answer was reached"
+            )
         )
         return (
             f"{count} possible {'difference' if count == 1 else 'differences'} could not get "
@@ -1602,10 +1604,12 @@ class _Run:
             why = (
                 "the call failed or its reply was unusable"
                 if not self.blind_refused
-                else "the money limit for one answer was reached"
-                if self.blind_refused == self.blind_failed
-                else "the call failed, its reply was unusable, or the money limit for one answer "
-                "was reached"
+                else (
+                    "the money limit for one answer was reached"
+                    if self.blind_refused == self.blind_failed
+                    else "the call failed, its reply was unusable, or the money limit for one answer "
+                    "was reached"
+                )
             )
             lines.append(
                 f"{self.blind_failed} possible differences could not get their blind second look "
