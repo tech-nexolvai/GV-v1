@@ -52,6 +52,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
+from app.review.assistant.reply_json import json_of_reply
 from app.review.assistant.simple_check.pairing import MatchAnswer
 from app.review.assistant.simple_check.schema import AcrossCandidate, AcrossPair, Drawing
 from app.review.assistant.simple_check.worklist import MATCH_FILE
@@ -95,7 +96,6 @@ _TEXT_TOKENS: Final = 2_500
 PARALLEL: Final = 4
 _MAX_REASON: Final = 200
 _DPI_RANGE: Final = (18, 200)
-_FENCE: Final = re.compile(r"^```(?:json)?\s*|\s*```$")
 _LABEL: Final = re.compile(r"^A\d{1,3}$")
 
 SYSTEM: Final = """You match millwork drawings for GV Review, a shop-drawing checker.
@@ -136,14 +136,9 @@ def reply_schema(labels: Sequence[str]) -> dict[str, Any]:
 
 
 def _json_of(text: str) -> object:
-    plain = _FENCE.sub("", text.strip())
-    try:
-        return json.loads(plain)
-    except ValueError:
-        start, end = plain.find("{"), plain.rfind("}")
-        if 0 <= start < end:
-            return json.loads(plain[start : end + 1])
-        raise
+    """The answer's JSON (structured outputs return it bare; a route without them may fence it or
+    put a sentence first): the shared reader (`reply_json`, #1811)."""
+    return json_of_reply(text)
 
 
 def parse(text: str, labels: Sequence[str]) -> tuple[MatchAnswer | None, str | None]:

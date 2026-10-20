@@ -23,6 +23,7 @@ the SDK client; it never reaches the sandbox, the browser, a log or an event.
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import threading
 from collections.abc import Iterator, Mapping
@@ -229,6 +230,10 @@ class ServiceBreaker:
             self._misses = 0
 
 
+#: A refusal that is a spending limit, not a bad key (OpenRouter: "Key limit exceeded").
+_SPEND_LIMIT: Final = re.compile(r"\blimit\b|\bcredits?\b", re.IGNORECASE)
+
+
 def failure_from(error: BaseException) -> ProviderFailure:
     """A provider error as a plain sentence: never the provider's words, the request or the key."""
     if isinstance(error, ProviderFailure):
@@ -253,6 +258,19 @@ def failure_from(error: BaseException) -> ProviderFailure:
             status=None,
             retryable=True,
             kind="unreachable",
+        )
+    if isinstance(error, anthropic.PermissionDeniedError) and _SPEND_LIMIT.search(
+        str(getattr(error, "message", "") or error)
+    ):
+        # OpenRouter answers a key past its spending limit with a 403 (log forensics,
+        # 2026-10-20): the key is fine, the account's limit was reached (#1811). The provider's
+        # words are only looked at, never shown.
+        return ProviderFailure(
+            "The AI service account reached its spending limit, so the AI did not answer. Tell "
+            "your admin.",
+            status=status,
+            retryable=False,
+            kind="key",
         )
     if isinstance(error, anthropic.AuthenticationError | anthropic.PermissionDeniedError):
         return ProviderFailure(
