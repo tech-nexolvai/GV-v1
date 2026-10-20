@@ -88,7 +88,7 @@ from time import monotonic, monotonic_ns
 from typing import Any, Final, Protocol
 from uuid import uuid4
 
-from app.review.assistant import not_compared
+from app.review.assistant import not_compared, set_proofs
 from app.review.assistant.agent import (
     HELPER_PICTURE_EDGE_PX,
     billed_input_tokens,
@@ -853,6 +853,12 @@ class _Agent:
     phase: str = "helpers"
     """The timings phase its calls are charged to (#1652: a roster's gap closers, verifiers, lead
     review and deeper look each show apart from the page helpers)."""
+    top_up: Callable[[_Agent], int] | None = None
+    """A roster specialist's top-up (#1805): at its soft cap it asks for more of its phase's money
+    (what the phase's other specialists left unspent); more than 0 raises its cap and it goes on,
+    so it stops at its cap only when its phase's money is really used up."""
+    done: bool = False
+    """It has reported (a phase's top-up counts only what a finished specialist really spent)."""
 
 
 @dataclass(slots=True)
@@ -990,6 +996,8 @@ class ChatEngine:
         self._trust_index: int | None = None
         #: A code-planned helper's checklist pages still open after its report (#1515).
         self._checklist_gaps: dict[int, dict[int, str]] = {}
+        #: This answer's ledger entries kept in the set's proof ledger, by id (#1805).
+        self._kept_inputs: dict[str, dict[str, Any]] = {}
         #: Two-lens helpers (#1569): those reported whose partner has not yet (their findings'
         #: second reads wait for the fold), and the folds where the two disagreed.
         self._lens_reported: set[int] = set()
@@ -1674,6 +1682,7 @@ class ChatEngine:
             if id(call) in reply.bad_inputs:
                 bad = self._not_run(call, "its input was cut off or not valid JSON")
                 return lambda: bad
+            self.timings.tool(name)
             if name in FINDING_TOOL_NAMES:
                 return self._guarded(
                     call,
@@ -2133,9 +2142,49 @@ class ChatEngine:
 
     def _ledger_tool(self, name: str, raw: object, by: str) -> ToolResult:
         """`record_string`, `record_reading`: no step on the screen; code's sum (or what other
-        views of the item show) goes back to the model."""
-        text, is_error = self.reading_ledger.run_tool(name, raw, by=by)
+        views of the item show) goes back to the model. A chat question's entries are kept in the
+        set's proof ledger for the next full check (#1805)."""
+        ledger = self.reading_ledger
+        before = {e.id for e in (*ledger.strings, *ledger.readings)}
+        text, is_error = ledger.run_tool(name, raw, by=by)
+        if not is_error and self.settings.mode != "full_check" and isinstance(raw, Mapping):
+            # A re-read (`replaces`) takes the place of the misread it corrects in the kept
+            # ledger too, as in this answer's own (#1805).
+            replaces = raw.get("replaces")
+            replaced = self._kept_inputs.get(replaces) if isinstance(replaces, str) else None
+            if set_proofs.keep_ledger_entry(
+                self.tools.workspace.set_pack, name, raw, self._chat_name(), replaced
+            ):
+                after = {e.id for e in (*ledger.strings, *ledger.readings)}
+                for entry_id in (after - before) or ({replaces} if replaces else set()):
+                    self._kept_inputs[str(entry_id)] = set_proofs.ledger_input(raw)
         return ToolResult(content=[{"type": "text", "text": text}], step={}, is_error=is_error)
+
+    def _chat_name(self) -> str | None:
+        root = getattr(self.tools.workspace, "root", None)
+        return None if root is None else Path(root).name
+
+    def _keep_chat_proof(self, proof: Mapping[str, Any]) -> None:
+        """A chat question's `verify_value` / `read_number` answer, kept in the set's proof
+        ledger when it proved a value (#1805)."""
+        set_proofs.keep_value(self.tools.workspace.set_pack, proof, self._chat_name())
+
+    def replay_chat_proofs(self) -> int:
+        """A full check's start (#1805): the strings and readings the set's chat questions
+        recorded, replayed into this message's reading ledger (code adds them up again), so its
+        sums and cross-view checks see them. Returns the entries replayed."""
+        replayed = 0
+        for entry in set_proofs.load(self.tools.workspace.set_pack)["ledger"]:
+            tool = str(entry.get("tool") or "")
+            try:
+                _text, is_error = self.reading_ledger.run_tool(tool, entry.get("input"), by="chat")
+            except Exception:  # noqa: BLE001 - one old entry never stops the check
+                _log.info("assistant chat proof not replayed")
+                continue
+            replayed += 0 if is_error else 1
+        if replayed:
+            _log.warning("assistant full check: %d chat proofs replayed into the ledger", replayed)
+        return replayed
 
     def _string_label(self, ref: object, page: int, side: str) -> Mapping[str, Any]:
         """A numbered label for `record_string` (part_dims, total_dim): on the vendor's file for
@@ -2164,6 +2213,7 @@ class ChatEngine:
             for f in live
             if f.get("source") == "vendor_arithmetic"
         }
+        made: dict[Any, str] = {}
         for extra in self.reading_ledger.ledger_findings(live, coverage):
             entry = None
             if extra.get("source") == "vendor_arithmetic":
@@ -2188,8 +2238,42 @@ class ChatEngine:
                             self._show_finding(backed)
                     continue
             added = book.add_code_finding(extra)
-            if added is not None:
-                self._show_finding(added)
+            if added is None:
+                continue
+            if extra.get("source") == "vendor_arithmetic" and self._fold_same_string(added, made):
+                continue
+            self._show_finding(added)
+
+    def _fold_same_string(self, added: Mapping[str, Any], made: dict[Any, str]) -> bool:
+        """#1805: the same vendor string read twice on one page (the left and the right copy of
+        one elevation's height string: the same parts and the same overall) is one item. The
+        second is folded into the first, listed on it (`also_on`, so the drawing marks both
+        spots); True when folded. `made`: the strings added so far, by their key."""
+        from app.review.assistant.decision_resolver import _also
+
+        book = self.book
+        key = (
+            added.get("page"),
+            str(added.get("printed_total") or "").strip(),
+            tuple(str(p).strip() for p in added.get("parts") or ()),
+        )
+        first_id = made.get(key)
+        if first_id is None:
+            made[key] = str(added["id"])
+            return False
+        with self.finding_lock:
+            first = next((f for f in book.live() if f["id"] == first_id), None)
+            if first is None or not book.absorb(str(added["id"])):
+                made[key] = str(added["id"])
+                return False
+            joined = {**first, "also_on": [*(first.get("also_on") or []), _also(added)]}
+            book.replace(joined)
+        self._show_finding(joined)
+        self._show_dropped(
+            str(added["id"]),
+            f"The same string as {first_id} (the same parts and overall on this page): one item.",
+        )
+        return True
 
     def _ledger_trust(self, report: dict[str, Any]) -> None:
         """The ledger's counts (and everything it recorded, for a reload) in the trust report."""
@@ -3107,7 +3191,11 @@ class ChatEngine:
         if not needs_code_summary(text, stopped):
             # The vendor consistency check's line (#1584), the finish check's (#1623) and what
             # could not be compared (#1619), one line each, after the AI's own summary.
-            nothing = not_compared_line(Counter(row.reason for row in self.not_compared))
+            counts = self.book.coverage_map()["counts"] if self.book.coverage_used else {}
+            nothing = not_compared_line(
+                Counter(row.reason for row in self.not_compared),
+                int(counts.get("not_opened") or 0),
+            )
             for words in (*lines, nothing.replace("list.", "list (PDF / Excel).")):
                 if words:
                     index = self._add_block({"type": "text", "text": words, "by": "code"})
@@ -3268,6 +3356,7 @@ class ChatEngine:
                     report = _report_from_steps(entry["steps"], "it failed unexpectedly")
                     ok, stopped = False, "error"
             self.timings.helper_ended(agent.number, stopped)
+            agent.done = True
             with self._lock:
                 entry.update({"ok": ok, "report": report, "stopped": stopped})
                 summary = {
@@ -3814,6 +3903,7 @@ class ChatEngine:
             return lambda: cut
         name = str(call.get("name"))
         by = f"helper:{agent.number}"
+        self.timings.tool(name)
         if name == "set_coverage" and agent.lens == "drawn":
             skipped = self._not_run(call, "the numbers helper records these pages' coverage")
             return lambda: skipped
@@ -3839,6 +3929,21 @@ class ChatEngine:
             return self._result(call, outcome)
 
         return work
+
+    @staticmethod
+    def _topped_up(agent: _Agent) -> bool:
+        """A soft-capped specialist at its cap got more of its phase's money (#1805)."""
+        if not agent.soft_cap or agent.top_up is None:
+            return False
+        try:
+            more = int(agent.top_up(agent))
+        except Exception:  # noqa: BLE001 - no top-up: it wraps up at its cap, as before
+            _log.warning("assistant chat helper top-up failed")
+            return False
+        if more <= 0:
+            return False
+        agent.cap_micros = (agent.cap_micros or 0) + more
+        return True
 
     def _helper(
         self, agent: _Agent, step_index: int, entry: dict[str, Any], share: _Share
@@ -3937,10 +4042,14 @@ class ChatEngine:
                     wrap, why = "turn_limit", "you have used your tool calls"
                 elif not self._fits(estimate):
                     wrap, why = "cost_cap", "this message is near its money cap"
-                elif agent.cap_micros is not None and (
-                    agent.spent >= agent.cap_micros * 4 // 5
-                    if agent.soft_cap
-                    else agent.spent + (estimate or 0) > agent.cap_micros
+                elif (
+                    agent.cap_micros is not None
+                    and (
+                        agent.spent >= agent.cap_micros * 4 // 5
+                        if agent.soft_cap
+                        else agent.spent + (estimate or 0) > agent.cap_micros
+                    )
+                    and not self._topped_up(agent)
                 ):
                     wrap, why = "cost_cap", "you have used your part of the money"
                 elif not self._hold(share, estimate):
@@ -4146,6 +4255,9 @@ class ChatEngine:
 
     def run(self) -> MessageOutcome:
         """The lead's loop. Never raises: every way it ends is a stored outcome."""
+        if self.settings.mode != "full_check":
+            # A chat question's proofs are kept for the set's next full check (#1805).
+            self.tools.on_proof = self._keep_chat_proof
         if self.settings.mode == "full_check":
             book = self.book
             self._progress = FullCheckProgress(
@@ -4279,7 +4391,7 @@ class ChatEngine:
                 **self.product_scope.as_dict(),
                 "dropped_out_of_scope": self.book.out_of_scope,
             }
-            trust = {**block["trust"], "timings": timings, "product_scope": scope}
+            trust = {**block["trust"], "timings": Timings.stored(timings), "product_scope": scope}
             self.blocks[index] = {"type": "trust", "trust": trust}
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(trust))})
 

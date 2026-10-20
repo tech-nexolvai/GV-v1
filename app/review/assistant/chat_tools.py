@@ -174,6 +174,7 @@ HELPER_TOOL_NAMES: Final = (
     "record_string",
     "record_reading",
     "verify_value",
+    "read_number",
     "measure_on_drawing",
     "read_under_markup",
     "drawing_facts",
@@ -314,7 +315,8 @@ _VIEW: Final[Mapping[str, Any]] = {
         "with numbered lines (view_range for part of it), a folder is listed two levels deep. Use "
         "it for the set pack's page pictures (pages/<upload name without .pdf>/p-NNN.png, 100 dpi, "
         "e.g. /mnt/user-data/set/pages/Set_A/p-003.png) and contact sheets, the skill's files and "
-        "your own files; use zoom instead to read numbers. Returns the picture, the text or the "
+        "your own files; use zoom instead to read numbers. It takes no box: to see part of a page, "
+        "zoom with crops [{page, box}]. Returns the picture, the text or the "
         "listing, or 'Refused: <why>' with where the files really are. "
         'Example: {"path": "/mnt/user-data/set/page_map.json", "description": "Whose drawing is '
         'on each page"}'
@@ -909,6 +911,8 @@ HELPER_TOOLS: Final[tuple[Mapping[str, Any], ...]] = (
     SET_COVERAGE,
     *LEDGER_TOOLS,
     VERIFY_VALUE,
+    # #1805: the helper and verifier briefs say to call it on a number they cannot read ($0, code).
+    READ_NUMBER,
     MEASURE_ON_DRAWING,
     READ_UNDER_MARKUP,
     DRAWING_FACTS,
@@ -1134,6 +1138,8 @@ class ChatTools:
     extents: list[dict[str, Any]] = field(default_factory=list)
     """Every extent check of this message (`measure_on_drawing` with a `dimension`): the finding
     book reads it (a dimension spanning more than the unit is Not compared, never Wrong)."""
+    on_proof: Callable[[Mapping[str, Any]], None] | None = None
+    """Hears every proving tool's answer (`verify_value`, `read_number`): `note_proof` (#1805)."""
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _notes_kept: int = 0
     _commands: threading.Semaphore = field(
@@ -1241,30 +1247,11 @@ class ChatTools:
         except SandboxRefused as refused:
             return _refused(step, started, str(refused).replace("crops[0].", ""))
         try:
-            module = import_module("app.review.assistant.verify_value")
-            found = module.verify_value(
-                self.workspace.uploads / name,
-                page,
-                dict(zip(("x0", "y0", "x1", "y1"), box, strict=True)),
-                expected,
-                page_cache=self._hires(),
-            ).as_dict()
+            found = self.verify_answer(name, page, box, expected)
         except Exception as failed:  # noqa: BLE001 - told plainly, never a crash
             _log_failure(failed)
             return _refused(step, started, "the spot could not be read just now")
-        if found["result"] == "cannot_read":
-            # Code could not read it: `read_number` reads it again by itself (#1746).
-            try:
-                module = import_module("app.review.assistant.read_number")
-                again = module.reader_for_pack(self.workspace.set_pack, self.workspace.uploads)(
-                    module.Request(name, page, "vendor", box=tuple(box), claim=expected)
-                )
-                if again.outcome == "read":
-                    found = again.as_verify(expected)
-                elif again.reason:
-                    found = {**found, "words": f"{found['words']}; read_number: {again.reason}"}
-            except Exception as failed:  # noqa: BLE001 - the first answer stands
-                _log_failure(failed)
+        self.note_proof("verify_value", name, page, box, expected, found)
         how = {"text": "the drawing's text", "drawn": "the vendor's drawn ink (two OCR engines)"}
         text = f"{found['result']}: {found['words']}."
         if found["result"] == "match":
@@ -1282,6 +1269,93 @@ class ChatTools:
                 output=_shown(text),
             ),
         )
+
+    def verify_answer(
+        self,
+        name: str,
+        page: int,
+        box: Sequence[float],
+        expected: str,
+        side: str = "vendor",
+    ) -> dict[str, Any]:
+        """`verify_value`'s answer in its shape (a finding's `verify_<side>` check), for the tool
+        and for code (#1805: the roster's proving step runs it on every red candidate): the
+        drawing's text, else its drawn ink; a spot it cannot read is read again by `read_number`
+        (#1746), whose answer replaces it only when it reads the number. Raises when the spot
+        cannot be read at all."""
+        module = import_module("app.review.assistant.verify_value")
+        found = dict(
+            module.verify_value(
+                self.workspace.uploads / name,
+                page,
+                dict(zip(("x0", "y0", "x1", "y1"), box, strict=True)),
+                expected,
+                page_cache=self._hires(),
+            ).as_dict()
+        )
+        if found["result"] == "cannot_read":
+            try:
+                again = self.read_answer(name, page, side, box=tuple(box), claim=expected)
+                found["read_again"] = True
+                if again.outcome == "read":
+                    found = {**again.as_verify(expected), "read_again": True}
+                else:
+                    # Its machine reason too (#1805): a "readers disagree" or "cut off" is never
+                    # overridden by an older proof.
+                    found["read_number_code"] = again.code
+                    if again.reason:
+                        found["words"] = f"{found['words']}; read_number: {again.reason}"
+            except Exception as failed:  # noqa: BLE001 - the first answer stands
+                _log_failure(failed)
+        return found
+
+    def read_answer(
+        self,
+        name: str,
+        page: int,
+        side: str = "vendor",
+        *,
+        label: str | None = None,
+        box: tuple[float, ...] | None = None,
+        claim: str | None = None,
+    ) -> Any:
+        """`read_number`'s `Reading` for one spot (the tool's and code's, #1805)."""
+        module = import_module("app.review.assistant.read_number")
+        request = module.Request(name, page, side, label=label, box=box, claim=claim)
+        return module.reader_for_pack(self.workspace.set_pack, self.workspace.uploads)(request)
+
+    def note_proof(
+        self,
+        tool: str,
+        name: str,
+        page: int,
+        box: Sequence[float] | None,
+        claim: str | None,
+        answer: Mapping[str, Any],
+        *,
+        side: str = "vendor",
+        label: str | None = None,
+    ) -> None:
+        """What a proving tool answered, for whoever listens (`on_proof`): the engine counts it
+        and a chat keeps what it proved for the set's next full check (#1805). Never raises."""
+        listener = self.on_proof
+        if listener is None:
+            return
+        try:
+            listener(
+                {
+                    "tool": tool,
+                    "file": name,
+                    "page": page,
+                    "box": None if box is None else [round(float(v), 2) for v in box],
+                    "claim": claim,
+                    "side": side,
+                    "label": label,
+                    "answer": dict(answer),
+                }
+            )
+        except Exception as failed:  # noqa: BLE001 - the tool's answer stands
+            _log_failure(failed)
 
     # ---- read_number (#1746) -----------------------------------------------------------------------
 
@@ -1324,6 +1398,16 @@ class ChatTools:
         except Exception as failed:  # noqa: BLE001 - told plainly, never a crash
             _log_failure(failed)
             return _refused(step, started, "the number could not be read just now")
+        self.note_proof(
+            "read_number",
+            name,
+            page,
+            request.box,
+            request.claim,
+            found.as_dict(),
+            side=side,
+            label=request.label,
+        )
         if found.outcome == "read":
             text = f"read: {found.text} ({found.reason})."
             if request.claim is not None and not found.matches(request.claim):

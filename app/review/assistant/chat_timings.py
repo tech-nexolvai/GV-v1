@@ -11,6 +11,10 @@ every message records, per phase, the seconds it took and what its model calls c
   helper's calls, a second read and the lead's turns are told apart even when they overlap.
 - **Helpers** get a row each: the pages they had, their model calls, seconds and cost, and why they
   stopped.
+- **Tool calls** (#1805): each phase counts the tools its agents (and code's own proving step)
+  called, by name, so a phase that never proved a value is seen at once.
+- **Shares** (#1805): a full check's fixed price gives each phase a share; a phase with one shows
+  what it spent against it ("$4.47 of $4.95"), so a phase stopped by its share is seen at once.
 
 The engine stores the result in the trust block (`timings`), shows it under "How this was
 checked", and logs it.
@@ -19,7 +23,7 @@ checked", and logs it.
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
@@ -64,6 +68,8 @@ PHASE_LABELS: Final = {
     "package": "Send-ready package",
 }
 _MICROS: Final = Decimal(1_000_000)
+#: A phase's keys only the log line shows, never stored (the published `ChatTimingsOut`).
+_LOG_ONLY: Final = frozenset({"budget_usd", "tools"})
 
 
 def _dollars(micros: int) -> str:
@@ -89,6 +95,7 @@ class _Phase:
     open: dict[int, float] = field(default_factory=dict)
     micros: int = 0
     calls: int = 0
+    tools: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -114,6 +121,7 @@ class Timings:
         self._phases: dict[str, _Phase] = {}
         self._helpers: dict[int, _Helper] = {}
         self._entries = 0
+        self._budgets: dict[str, int] = {}
 
     @contextmanager
     def phase(self, name: str, helper: int | None = None) -> Iterator[None]:
@@ -149,6 +157,19 @@ class Timings:
                 self._helpers[helper].micros += micros
                 self._helpers[helper].calls += 1
 
+    def tool(self, name: str, count: int = 1) -> None:
+        """One tool call (or `count`), to this thread's phase."""
+        where = self.current()
+        phase_name = where[0] if where is not None else "other"
+        with self._lock:
+            tools = self._phases.setdefault(phase_name, _Phase()).tools
+            tools[name] = tools.get(name, 0) + count
+
+    def set_budget(self, name: str, micros: int) -> None:
+        """A phase's share of the fixed price (millionths of $), shown next to what it spent."""
+        with self._lock:
+            self._budgets[name] = max(0, int(micros))
+
     def helper_started(self, number: int, description: str, pages: list[int]) -> None:
         with self._lock:
             self._helpers[number] = _Helper(number, description, list(pages), self._clock())
@@ -178,15 +199,18 @@ class Timings:
             for name in names:
                 phase = self._phases[name]
                 intervals = [*phase.intervals, *((s, now) for s in phase.open.values())]
-                phases.append(
-                    {
-                        "phase": name,
-                        "label": PHASE_LABELS.get(name, name.replace("_", " ").capitalize()),
-                        "seconds": round(_union(intervals), 1),
-                        "cost_usd": _dollars(phase.micros),
-                        "calls": phase.calls,
-                    }
-                )
+                row: dict[str, Any] = {
+                    "phase": name,
+                    "label": PHASE_LABELS.get(name, name.replace("_", " ").capitalize()),
+                    "seconds": round(_union(intervals), 1),
+                    "cost_usd": _dollars(phase.micros),
+                    "calls": phase.calls,
+                }
+                if name in self._budgets:
+                    row["budget_usd"] = _dollars(self._budgets[name])
+                if phase.tools:
+                    row["tools"] = dict(sorted(phase.tools.items()))
+                phases.append(row)
             helpers = [
                 {
                     "number": h.number,
@@ -207,11 +231,30 @@ class Timings:
         }
 
     @staticmethod
+    def stored(timings: Mapping[str, Any]) -> dict[str, Any]:
+        """The timings as the trust block stores them (`ChatTimingsOut`): each phase without its
+        share and tool counts (#1805), which only the log line shows, so the live event and the
+        reloaded message are the same."""
+        return {
+            **timings,
+            "phases": [
+                {k: v for k, v in p.items() if k not in _LOG_ONLY} for p in timings["phases"]
+            ],
+        }
+
+    @staticmethod
     def log_line(timings: dict[str, Any]) -> str:
         """The timings in one log line: "total 312.4 s $4.12 · helpers 201.0 s $2.80 (93) · …"."""
         parts = [f"total {timings['total_seconds']} s ${timings['cost_usd']}"]
         parts += [
-            f"{p['phase']} {p['seconds']} s ${p['cost_usd']} ({p['calls']})"
+            f"{p['phase']} {p['seconds']} s ${p['cost_usd']}"
+            + (f" of ${p['budget_usd']}" if p.get("budget_usd") is not None else "")
+            + f" ({p['calls']})"
+            + (
+                " [" + ", ".join(f"{k} {v}" for k, v in p["tools"].items()) + "]"
+                if p.get("tools")
+                else ""
+            )
             for p in timings["phases"]
         ]
         parts += [

@@ -31,9 +31,16 @@ checkers decide what may be red:
   reworded by Haiku only when every number survives.
 
 **The fixed price.** `assistant_full_check_cap_usd` (default $5) is the message's whole cap. Each
-phase has its share of it and each specialist its own cap within that share (`PricePlan`); at 80%
-of its cap a helper gets the wrap-up note, at its cap it stops and code keeps what it recorded. The
-price can only come in under the cap. **Nothing is dropped silently:** a phase or item the price
+phase has its share of it and each specialist its own cap within that share (`PricePlan`); every
+share and cap is proportional to the price (#1805: a cap made for $5 stopped "look again" at $1.69
+of a $15 price). Money a phase leaves rolls forward: each later step (the gap closers, the verifier,
+the lead review, the devil's advocate, the look-again) may take all that is left under the price
+except the later steps' own shares. A specialist at its cap first takes what its phase's other
+specialists left unspent (`_Pool`); only when that is used up does it get the wrap-up note and stop,
+and code keeps what it recorded. "Stopped at its cap" (and the message's `cost_cap`) is said only
+when the price is really used up; a step that used its share while the later steps' money waits is
+listed as such. Each phase's spend against its share is in the timings line. The price can only
+come in under the cap. **Nothing is dropped silently:** a phase or item the price
 did not reach is listed under "Not done within the fixed price" in the summary, and each red
 candidate the advocate could not check stays grey with that reason.
 
@@ -54,6 +61,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from itertools import zip_longest
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
@@ -93,7 +101,7 @@ from app.review.assistant.full_check_advocate import (
     string_extent,
     string_extras,
 )
-from app.review.assistant.full_check_specialists import HELPER_CORE, knowledge_text
+from app.review.assistant.full_check_specialists import HELPER_CORE, PACK_SHAPES, knowledge_text
 from app.review.assistant.impact import by_impact
 from app.review.assistant.product_scope import scaled_price
 from app.review.assistant.reply_json import json_of_reply, log_unreadable, object_of_reply
@@ -128,6 +136,7 @@ _MICROS: Final = 1_000_000
 #: helpers stopped at small fixed caps with half the content pages unread while a fifth of the price
 #: was never spent, so the numbers pickers (where the red clouds come from) and the gap closers that
 #: finish what they leave get more, the drawn-things readers about the same per page.
+#: #1805: the escalation's look-again is a share of its own (it was 4% carved out of the lead's).
 SHARES: Final[Mapping[str, float]] = {
     "numbers": 0.33,
     "drawn": 0.16,
@@ -135,17 +144,41 @@ SHARES: Final[Mapping[str, float]] = {
     "gaps": 0.18,
     "provers": 0.05,
     "advocate": 0.07,
-    "lead": 0.14,
+    "lead": 0.10,
+    "escalation": 0.04,
     "summary": 0.005,
     "reads": 0.035,
 }
 #: The phases whose money the page helpers and gap closers may never spend (#1641): the paid run
 #: of 2026-10-19 let its helpers take $5.31 of a $5 price, so the devil's advocate made no call
 #: and no AI-found difference could be proved. The engine's `helper_ceiling` keeps them.
-PROTECTED: Final = ("provers", "advocate", "lead", "summary", "reads")
-#: A specialist's own cap at most, whatever its phase's share. The page-group helpers (numbers,
-#: drawn) and the gap closers have none: their cap is their phase's money in proportion to their
-#: pages (`PricePlan.cap_for`).
+PROTECTED: Final = ("provers", "advocate", "lead", "escalation", "summary", "reads")
+#: The later steps in the order they run (#1805): each may take all that is left under the price
+#: except the shares of the steps after it. The second reads run alongside everything, so their
+#: share (and the summary's) is kept to the end.
+LATER_ORDER: Final = ("gaps", "provers", "lead", "advocate", "escalation", "summary")
+_KEPT_TO_THE_END: Final = ("reads",)
+#: The timings phase each share is shown on (`Timings.set_budget`).
+TIMINGS_PHASES: Final[Mapping[str, tuple[str, ...]]] = {
+    "helpers": ("numbers", "drawn", "tags"),
+    "gap_closers": ("gaps",),
+    "provers": ("provers",),
+    "lead_review": ("lead",),
+    "advocate": ("advocate",),
+    "escalation": ("escalation",),
+    "second_reads": ("reads",),
+}
+#: The price the fixed caps below were set for (#1805): at another price every cap scales with it.
+REFERENCE_PRICE: Final = 5_000_000
+#: The price is used up when less than this share of it is left (or less than one small call).
+_USED_UP_SHARE: Final = 0.02
+_USED_UP_MICROS: Final = 50_000
+#: A top-up is worth making only above this (millionths of $): about one Sonnet call.
+_MIN_TOP_UP: Final = 20_000
+#: A specialist's own cap at most at the $5 `REFERENCE_PRICE`, whatever its phase's share; at another
+#: price it scales with the price (`scaled_cap`). The page-group helpers (numbers, drawn) and the gap
+#: closers have none: their cap is their phase's money in proportion to their pages
+#: (`PricePlan.cap_for`).
 JOB_CAPS: Final[Mapping[str, int]] = {
     "tags": 200_000,
     "provers": 100_000,
@@ -164,14 +197,25 @@ MIN_GAP_PAGE_MICROS: Final = 80_000
 #: (about $0.15 with its crops), so the paid run of 2026-10-19's closers at $0.08 each never made a
 #: call (4 of 10 stopped at once).
 MIN_GAP_RUN_MICROS: Final = 250_000
-#: The later phases' money, kept back when the gap closers take what P1 left.
-_LATER_PHASES: Final = PROTECTED
 #: Code's estimate of one advocate call's prompt (two crops and the question) and its reply.
 _ADVOCATE_PROMPT_TOKENS: Final = 7_000
 _ADVOCATE_MAX_TOKENS: Final = 12_000  # adaptive thinking first (#1775, C4)
 _SUMMARY_MAX_TOKENS: Final = 800
 _SUMMARY_PROMPT_TOKENS: Final = 1_500
 _ADVOCATE_WORKERS: Final = 6
+#: Each side of a finding the proving tools read: its value, its spot and its check (#1805).
+_PROOF_SIDES: Final = (
+    ("architect", "arch_box", "verify_architect"),
+    ("vendor", "vendor_box", "verify_vendor"),
+)
+#: The proving step's time at most (seconds): drawn ink is read by two OCR engines, a few seconds a
+#: side; what it does not reach the finish's own ink pass still reads.
+_PROOF_BUDGET_S: Final = 240.0
+_PROOF_ENTRIES: Final = 8
+_PROOF_WORDS: Final = 240
+#: read_number's reasons that say the spot reads against the value (or as two values): an older
+#: chat proof never overrides them (#1805).
+_READ_AGAINST: Final = frozenset({"readers_disagree", "ruler_blocks", "units_disagree", "cut_off"})
 #: Labels listed near one claimed spot for the verifier.
 _NEAR_LABELS: Final = 8
 _NEAR_PT: Final = 60.0
@@ -186,8 +230,6 @@ _STRING_PAD_PT: Final = 24.0
 _STRING_ROUNDING: Final = Decimal(1) / Decimal(16)
 #: The lead review's pages at most (#1641): about $0.10 of Opus 5.5 a page.
 LEAD_MAX_PAGES: Final = 16
-#: The escalation's deeper look after the lead review, kept from the lead's money (#1654).
-_ESCALATION_SHARE: Final = 0.04
 #: An architect drawing with no code labels counts as this many labels still to read (#1654).
 _BARE_ARCHITECT: Final = 10
 #: The lead review's money per page it takes (#1652): with tight zooms at low effort, about two
@@ -236,11 +278,16 @@ class PricePlan:
             name: (
                 budgets[name] // counts[name]
                 if name in PAGE_KINDS
-                else min(JOB_CAPS[name], budgets[name] // counts[name])
+                else min(scaled_cap(name, price), budgets[name] // counts[name])
             )
             for name in counts
         }
         return cls(price=price, groups=groups, budgets=budgets, caps=caps, pages=pages)
+
+    def after(self, phase: str) -> int:
+        """The shares kept for the steps after `phase` (`LATER_ORDER`) and to the end (#1805)."""
+        later = LATER_ORDER[LATER_ORDER.index(phase) + 1 :] if phase in LATER_ORDER else ()
+        return sum(self.budgets[name] for name in (*later, *_KEPT_TO_THE_END))
 
     def cap_for(self, kind: str, pages: int) -> int:
         """A specialist's cap: for a page-group helper its phase's budget over the set's pages,
@@ -256,6 +303,41 @@ class PricePlan:
     def protected(self) -> int:
         """The money the page helpers and gap closers may never spend (`PROTECTED`)."""
         return sum(self.budgets[name] for name in PROTECTED)
+
+
+def scaled_cap(name: str, price: int) -> int:
+    """A specialist's fixed cap (`JOB_CAPS`, set for the $5 `REFERENCE_PRICE`) at `price`."""
+    return JOB_CAPS[name] * max(0, price) // REFERENCE_PRICE
+
+
+@dataclass(slots=True)
+class _Pool:
+    """One phase's money shared by its specialists (#1805): a specialist at its own cap takes more
+    from what the others left (a finished one counts what it spent, a running one its cap), at most
+    its first cap again each time, so one cheap helper's savings reach a busy one before anybody
+    stops at a cap while the phase's money is unspent."""
+
+    limit: int
+    agents: list[Any] = field(default_factory=list)
+    first: dict[int, int] = field(default_factory=dict)
+
+    def add(self, agent: Any) -> Any:
+        self.agents.append(agent)
+        self.first[id(agent)] = int(agent.cap_micros or 0)
+        agent.top_up = self.top_up
+        return agent
+
+    def committed(self, skip: Any = None) -> int:
+        return sum(
+            a.spent if a.done else max(a.spent, int(a.cap_micros or 0))
+            for a in self.agents
+            if a is not skip
+        )
+
+    def top_up(self, agent: Any) -> int:
+        free = self.limit - self.committed(agent) - int(agent.cap_micros or 0)
+        more = min(free, max(self.first.get(id(agent), 0), _MIN_TOP_UP))
+        return more if more >= _MIN_TOP_UP else 0
 
 
 def _dollars(micros: int) -> str:
@@ -325,7 +407,15 @@ PROVER_SCHEMA: Final[Mapping[str, Any]] = {
 }
 
 _PROVER_TOOLS: Final = frozenset(
-    {"bash_tool", "view", "zoom", "verify_value", "read_under_markup", "measure_on_drawing"}
+    {
+        "bash_tool",
+        "view",
+        "zoom",
+        "verify_value",
+        "read_number",
+        "read_under_markup",
+        "measure_on_drawing",
+    }
 )
 _TAG_TOOLS: Final = frozenset({"bash_tool", "view", "zoom"})
 
@@ -336,9 +426,9 @@ PROVER_JOB: Final = (
 
 PROVER_BRIEF: Final = """PROVE: pages {pages} of {file}. Each item below is a difference a helper reported from its own reading; code could not yet read its values on the drawing, so it cannot be clouded. For each one:
 1. zoom with marks: true on the claimed spots (both drawings); the labels code numbered near each spot are listed.
-2. If the value has a label, name it (vendor_dim, architect_dim). If not, give the tightest box round the printed number (verify_value there tells you whether code reads it); a number under GV's markup: read_under_markup first.
+2. If the value has a label, name it (vendor_dim, architect_dim). If not, give the tightest box round the printed number, and call verify_value there with the value: code tells you whether it reads it (match, mismatch with what is printed, or cannot_read). A number you cannot read (pen strokes, sideways, crossed by a line): call read_number on its label or box instead of guessing; its answer stands. A number under GV's markup: read_under_markup first.
 3. If the item turns out to compare two things that do not measure the same (different ends), or you cannot find a value, say cannot_prove and why.
-Name the label the drawing really prints, even when it differs from the claimed value: code reads it.
+Name the label the drawing really prints, even when it differs from the claimed value: code reads it. Code also runs verify_value and read_number on both values of every item after you (their answers are the proof), so a spot you name must be the value's own.
 
 ITEMS:
 {items}
@@ -618,7 +708,7 @@ TAG_BRIEF: Final = (
 {page_lines}
 For each page, list every tag printed in the drawing's own ink on the architect's drawing and on the vendor's, with the piece it labels (start with the page's area, and name the same piece the same way on both sides) and the tightest box round the tag. GV's notes (callouts ending "by GV", GV's markup) are not tags: leave them out. """
     + COLOUR_RULE
-    + """ Use pdftotext -bbox on the drawings-only copy for text tags; zoom to see what each labels.
+    + """ Use pdftotext -bbox on the drawings-only copy for text tags, filtered (grep or python) to the tag-like words, at most 40 lines a print; never print the set pack's JSON, a folder listing or a whole page's text. Zoom to see what each tag labels.
 Reply with the whole tag table."""
 )
 
@@ -742,8 +832,29 @@ def keeps_numbers(code_text: str, reworded: str) -> bool:
 #: A helper's coverage note that says it never compared the page (it "skipped with a note").
 _UNREACHED: Final = re.compile(
     r"not reached|not opened|budget|ran out|out of (?:money|time)|not compared in detail|did not"
-    r"|partly|partially|only (?:the )?(?:overview|lead|vendor)|not finished|unhandled",
+    r"|partly|partially|only (?:the )?(?:overview|lead|vendor)|not finished|unhandled"
+    r"|not (?:yet )?been (?:compared|checked|read|reviewed|reached|opened)",
     re.IGNORECASE,
+)
+#: #1805: what a note says about the drawings, not the helper's own work ("the vendor did not
+#: dimension the toe kick"), is left out before `_UNREACHED` looks: a compared page was re-read.
+#: Any other "did not" or "partly" still counts as unfinished (the safe side).
+_ABOUT_THE_DRAWING: Final = re.compile(
+    r"\b(?:vendor|architect)(?:'s)?(?:\s+(?:drawings?|elevations?|plans?|sections?|details?))?"
+    r"\s+(?:does|did|do|has|have)\s+not\s+"
+    r"(?!(?:get|be|been|compar|check|review|read|reach|open|load|fit|zoom|finish)\w*)",
+    re.IGNORECASE,
+)
+
+
+def _unreached(note: str) -> bool:
+    """Whether a helper's coverage note says it did not compare (all of) the page."""
+    return _UNREACHED.search(_ABOUT_THE_DRAWING.sub(" ", note)) is not None
+
+
+_ONLY_THESE: Final = (
+    "Close only what is listed for each page: a page the numbers helper reached is not compared "
+    "again."
 )
 
 
@@ -769,7 +880,7 @@ def unfinished_pages(planned: Sequence[int], coverage: Mapping[str, Any] | None)
         if entry.get("status") == "not_opened" or (
             entry.get("status") in ("not_comparable", "different", "same")
             and by_helper
-            and _UNREACHED.search(note)
+            and _unreached(note)
         ):
             out[page] = note or "not reached"
     return out
@@ -825,6 +936,11 @@ class _Run:
     not_done: list[str] = field(default_factory=list)
     spent: dict[str, int] = field(default_factory=dict)
     stopped_for_money: bool = False
+    #: A specialist stopped at its own cap before the price was used up (#1805): judged again at
+    #: the finish, when the later steps may have used the rest.
+    capped_early: bool = False
+    #: The pages the lead review took (`_lead_review`), to name the open ones it could not.
+    lead_taken: set[int] = field(default_factory=set)
     pairs: dict[str, str] = field(default_factory=dict)
     #: The drawn run's drawings and line work (`same_ends`), read once per run.
     _drawn_sides: dict[Any, Any] = field(default_factory=dict)
@@ -837,6 +953,14 @@ class _Run:
     escalated: set[str] = field(default_factory=set)
     #: Every page's architect labels, set-wide, once read (`_architect_pages`, #1802).
     architect_labels: list[list[dict[str, Any]]] | None = None
+    #: The engine's spend when the roster started (the price counts from there).
+    started_at: int = 0
+    #: Pages a numbers helper compared whose open checklist lines no gap closer re-read (#1805).
+    repeats_avoided: list[int] = field(default_factory=list)
+    #: The proving tools code called, per stage (`verifier`, `look_again`), by name (#1805).
+    tool_calls: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: The set's chat proofs (`set_proofs`), read once.
+    chat_proofs: dict[str, Any] | None = None
     #: What the blind picks in flight may still cost (millionths of $): counted as spent by the
     #: phase's room, so picks started together on the advocate's workers never pass its budget
     #: (a call is charged only when it ends; with thinking on its worst case is big, #1775 C4).
@@ -848,16 +972,56 @@ class _Run:
     # -- money --
 
     def _phase_room(self, phase: str, estimate: int) -> bool:
+        """`estimate` fits the phase: its own share, or all that is left under the price less the
+        later steps' shares, whichever is more (#1805: money a phase leaves rolls forward)."""
         assert self.plan is not None
-        if phase == "escalation":
-            # The escalation spends only what is left under the fixed price.
-            return self._left() >= estimate and self.engine._fits(estimate)
         used = self.spent.get(phase, 0)
-        return used + estimate <= self.plan.budgets[phase] and self.engine._fits(estimate)
+        fits = used + estimate <= self.plan.budgets[phase] or estimate <= self._room(phase)
+        return fits and estimate <= self._left() and self.engine._fits(estimate)
 
     def _left(self) -> int:
-        """What is left under the fixed price (millionths of $)."""
-        return max(0, self.engine.settings.message_cap_micros - self.engine.spent)
+        """What is left under the fixed price (millionths of $): the message's cap, and the price
+        for the products in scope when that is less."""
+        left = self.engine.settings.message_cap_micros - self.engine.spent
+        if self.plan is not None:
+            left = min(left, self.plan.price - (self.engine.spent - self.started_at))
+        return max(0, left)
+
+    def _room(self, phase: str) -> int:
+        """All that is left under the price less the shares kept for the steps after `phase`."""
+        assert self.plan is not None
+        return max(0, self._left() - self.plan.after(phase))
+
+    def _used_up(self, kept: int = 0) -> bool:
+        """The price is really used up (#1805): only then may a step "stop at its cap". `kept`:
+        money still held back for steps no specialist spends (at the finish: the summary's and
+        the second reads' shares, kept whole to the end)."""
+        if self.plan is None:
+            return True
+        margin = max(_USED_UP_MICROS, int(self.plan.price * _USED_UP_SHARE))
+        return self._left() < margin + max(0, kept)
+
+    def _capped(self, description: str, tail: str = "") -> None:
+        """A specialist stopped at its cap: a stop for money only when the price is used up;
+        otherwise it used its phase's share while the later steps' money is kept (said so)."""
+        if self._used_up():
+            self.stopped_for_money = True
+            self._note(f"{description}: stopped at its cap{tail}")
+        else:
+            self.capped_early = True
+            self._note(f"{description}: used its share of the price{tail}")
+
+    def _stopped_for_money(self) -> bool:
+        """At the finish: whether the check stopped for money. A step that stopped at its share
+        while money was kept for later steps counts once the later steps used the rest (#1805)."""
+        if (
+            not self.stopped_for_money
+            and self.capped_early
+            and self.plan is not None
+            and self._used_up(kept=self.plan.after("escalation"))
+        ):
+            self.stopped_for_money = True
+        return self.stopped_for_money
 
     def _charge(self, phase: str, cost: int) -> None:
         self.spent[phase] = self.spent.get(phase, 0) + cost
@@ -926,6 +1090,7 @@ class _Run:
         return "\n\n".join(
             [
                 HELPER_CORE,
+                PACK_SHAPES,
                 f"YOUR JOB: {job}",
                 "What a senior millwork reviewer knows, for this job:",
                 knowledge_text(knowledge),
@@ -970,6 +1135,10 @@ class _Run:
                 from app.review.assistant.chat_engine import SEEDING_STEP
 
                 engine.code_checks_failed.append(SEEDING_STEP)
+            try:
+                engine.replay_chat_proofs()  # what the set's chat questions proved (#1805)
+            except Exception:  # noqa: BLE001 - the check goes on without them
+                _log.exception("assistant roster could not replay the chat proofs")
         try:
             engine._start_markup_base()
         except Exception:  # noqa: BLE001 - the drawing makes its own copy at the end
@@ -983,6 +1152,9 @@ class _Run:
         # The fixed price shrinks with the pages the product scope leaves to compare (never grows).
         price = scaled_price(settings.message_cap_micros, plan.pages, pages_all)
         self.plan = PricePlan.balanced(price, groups, plan.pages)
+        self.started_at = engine.spent
+        for timing, names in TIMINGS_PHASES.items():
+            engine.timings.set_budget(timing, sum(self.plan.budgets[n] for n in names))
         engine._started_scope = engine.scope()
         engine.emit(
             "scope", {"index": None, "scope": json.loads(json.dumps(engine._started_scope))}
@@ -1001,8 +1173,9 @@ class _Run:
                 engine._show_coverage()
             except Exception:  # noqa: BLE001 - recorded as unknown pages instead
                 _log.warning("assistant roster could not record the divider pages")
-        # P1: pickers and readers per group, the tag reader for the set.
+        # P1: pickers and readers per group, the tag reader for the set; one pool for their money.
         model = engine._helper_model()
+        pool = _Pool(sum(self.plan.budgets[name] for name in ("numbers", "drawn", "tags")))
         agents = []
         for job in plan.jobs:
             kind = "drawn" if job.lens == "drawn" else "numbers"
@@ -1026,6 +1199,8 @@ class _Run:
         tag_pages = sorted({page for job in plan.jobs for page in job.pages})
         if tag_pages:
             agents.append(self._tag_agent(tag_pages, page_map))
+        for agent in agents:
+            pool.add(agent)
         self.agents = list(agents)
         # The page helpers and the gap closers never spend the later checks' money (#1641).
         engine.helper_ceiling = engine.spent + max(0, price - self.plan.protected())
@@ -1037,10 +1212,7 @@ class _Run:
                     continue
                 self._salvage(agent, entry)
                 if entry.get("stopped") == "cost_cap":
-                    self.stopped_for_money = True
-                    self._note(
-                        f"{agent.description}: stopped at its cap; the pages it left are listed"
-                    )
+                    self._capped(agent.description, "; the pages it left are listed")
             engine._queue_second_reads(engine.book.live())
             if not engine.cancel.is_set():
                 self._gap_closers(page_map, rules, pictures)
@@ -1074,6 +1246,10 @@ class _Run:
             escalate_answer(engine)
         except Exception:  # noqa: BLE001 - the advocate judges the items as they are
             _log.exception("assistant roster escalation's free steps failed")
+        if engine.cancel.is_set():
+            return
+        with engine.timings.phase("provers"):
+            self._prove_values("verifier")
         if engine.cancel.is_set():
             return
         with engine.timings.phase("advocate"):
@@ -1163,19 +1339,32 @@ class _Run:
     # -- P2: gap closers --
 
     def _gap_closers(self, page_map: Mapping[str, Any] | None, rules: str, pictures: bool) -> None:
-        """P2 (#1634): every page a P1 helper left (not reached, stopped at its cap, an open
-        checklist) and every recorded difference no helper placed goes to a gap closer, several
-        pages each, with the gap phase's money plus all P1 left unspent (the later phases' shares
-        kept back). A page the price cannot reach is said so on its coverage, never dropped."""
+        """P2 (#1634): every page the numbers helpers left (not reached, stopped at its cap) and
+        every recorded difference no helper placed goes to a gap closer, several pages each, with
+        the gap phase's money plus all P1 left unspent (the later phases' shares kept back). A page
+        the price cannot reach is said so on its coverage, never dropped.
+
+        **One pass per kind (#1805).** A gap closer is a numbers pass, so it never takes a page a
+        numbers helper compared: what that helper left there (the vendor labels nobody handled, a
+        count not all done) was sent back to the same helper once, in its own pass, and what is
+        still open waits for the lead review (which takes pages with open checklists) or stays Not
+        compared, said so. The drawn-things helpers' checklists are theirs alone. The open lines
+        are listed for a closer only on a page it takes anyway. The paid run of 2026-10-20 re-read
+        39 pages in 4-page groups after both helpers had compared them."""
         engine = self.engine
         assert self.plan is not None
         from app.review.assistant.full_check_brief import helper_brief
         from app.review.assistant.full_check_plan import pair_lines
         from app.review.assistant.sandbox import UPLOADS
 
+        numbers = {agent.number for agent in self.agents if agent.lens not in ("drawn", "tags")}
         with engine._lock:
+            any_open = {page for gaps in engine._checklist_gaps.values() for page in gaps}
             open_gaps = {
-                page: why for gaps in engine._checklist_gaps.values() for page, why in gaps.items()
+                page: why
+                for number, gaps in engine._checklist_gaps.items()
+                if number in numbers
+                for page, why in gaps.items()
             }
         unboxed = [
             f for f in engine.book.live() if f.get("created_by") == "gv_review" and code_spotted(f)
@@ -1190,8 +1379,6 @@ class _Run:
                 f"page not compared yet ({why}): compare the whole page, every dimension and "
                 "string against the architect's"
             )
-        for page, why in open_gaps.items():
-            pages.setdefault(page, []).append(f"checklist: {why}")
         for finding in unboxed:
             pages.setdefault(int(finding["page"]), []).append(
                 f"GV Review recorded {finding['id']} ({finding.get('item')}: architect "
@@ -1199,6 +1386,15 @@ class _Run:
                 "and report it with record_id "
                 f"{finding.get('record_id')}"
             )
+        for page, why in open_gaps.items():
+            if page in pages:  # taken anyway (not reached, or a record to place)
+                pages[page].append(f"left open by the numbers helper: {why}")
+        self.repeats_avoided = sorted(any_open - set(pages))
+        _log.warning(
+            "assistant roster gap closers: %d pages to close; %d compared pages not read again",
+            len(pages),
+            len(self.repeats_avoided),
+        )
         if not pages:
             return
         budget = self._gap_budget()
@@ -1211,6 +1407,7 @@ class _Run:
             return
         closers = min(MAX_GAP_CLOSERS, engine._max_agents, max(1, budget // MIN_GAP_RUN_MICROS))
         runs = page_runs(chosen, closers)
+        pool = _Pool(budget)
         agents = []
         for run in runs:
             brief = helper_brief(
@@ -1231,36 +1428,179 @@ class _Run:
                 brief = "\n\n".join([brief, *pair_lines(paired, unpaired, UPLOADS)])
             where = page_ranges_words(run)
             agents.append(
-                self._agent(
-                    call_id=f"gap-{run[0]}",
-                    description=f"Close the gaps on {where}",
-                    prompt=f"{GAP_SCHEMA_NOTE} on {where} (only these):\n{gaps}\n\n{brief}",
-                    model=BY_SHORT["sonnet"],
-                    pages=tuple(run),
-                    lens="gap",
-                    effort="medium",
-                    phase="gap_closers",
-                    cap_micros=budget * len(run) // len(chosen),
-                    soft_cap=True,
-                    system=engine._kind_system("numbers"),
+                pool.add(
+                    self._agent(
+                        call_id=f"gap-{run[0]}",
+                        description=f"Close the gaps on {where}",
+                        prompt=f"{GAP_SCHEMA_NOTE} on {where} (only these):\n{gaps}\n{_ONLY_THESE}"
+                        f"\n\n{brief}",
+                        model=BY_SHORT["sonnet"],
+                        pages=tuple(run),
+                        lens="gap",
+                        effort="medium",
+                        phase="gap_closers",
+                        cap_micros=budget * len(run) // len(chosen),
+                        soft_cap=True,
+                        system=engine._kind_system("numbers"),
+                    )
                 )
             )
         entries = self._launched(agents, on_done=engine._helper_done)
         for agent, entry in zip(agents, entries, strict=True):
             self._salvage(agent, entry)
             if entry.get("stopped") == "cost_cap":
-                self.stopped_for_money = True
-                self._note(f"{agent.description}: stopped at its cap")
+                self._capped(agent.description)
         self.agents.extend(agents)
         del rules, pictures
 
     def _gap_budget(self) -> int:
-        """The gap closers' money: all that is left under the fixed price less the protected
-        phases' shares (P1's unspent money is not lost; the later checks' money is never theirs,
-        #1641, so a P1 that spent past its share leaves the gap closers less, never the checks)."""
-        assert self.plan is not None
-        later = sum(self.plan.budgets[name] for name in _LATER_PHASES)
-        return max(0, self._left() - later)
+        """The gap closers' money: all that is left under the fixed price less the later phases'
+        shares (P1's unspent money is not lost; the later checks' money is never theirs, #1641,
+        so a P1 that spent past its share leaves the gap closers less, never the checks)."""
+        return self._room("gaps")
+
+    # -- the proving tools, by design (#1805) --
+
+    def _prove_values(self, stage: str, only: Collection[str] | None = None) -> dict[str, int]:
+        """Before the devil's advocate, the verifier's step (and the look-again's, after its
+        sharper pass) runs the proving tools on BOTH values of every red candidate: `verify_value`
+        at each side's spot (the drawing's text, else its drawn ink by two OCR engines), and
+        `read_number` on a side `verify_value` could not read (#1746). The paid round of
+        2026-10-20 never called them inside a full check, so pen-stroke values waited for the
+        finish's ink pass, after the advocate, and stayed Not compared.
+
+        Each answer is kept on the finding (`proof_tools`) and, as the simple check and the chat's
+        tool do (`_confirm`), becomes the side's `verify_<side>` check when that side had no
+        reading yet (never over a match or a mismatch code already read): code's proof (the
+        witnesses, the trust level, the advocate) sees it. A mismatch says the drawing prints
+        another value there, which keeps the item off red. $0, no model. Returns the tool calls
+        made, by name."""
+        engine = self.engine
+        tools = engine.tools
+        candidates = [
+            dict(f)
+            for f in by_impact(engine.book.live())
+            if f.get("status") == "different"
+            and not _judged(f)
+            and (only is None or str(f["id"]) in only)
+        ]
+        counts: dict[str, int] = {}
+        started = monotonic()
+        for finding in candidates:
+            if engine.cancel.is_set() or monotonic() - started > _PROOF_BUDGET_S:
+                break
+            entries, reads = self._prove_one(tools, finding, stage, counts)
+            if not entries:
+                continue
+
+            def change(
+                current: dict[str, Any],
+                entries: list[dict[str, Any]] = entries,
+                reads: dict[str, Any] = reads,
+            ) -> dict[str, Any]:
+                checks = dict(current.get("checks") or {})
+                for key, answer in reads.items():
+                    side = checks.get(key)
+                    if isinstance(side, Mapping) and side.get("result") in ("match", "mismatch"):
+                        continue  # code already read this side: never read over
+                    checks[key] = answer
+                current["checks"] = checks
+                current["proof_tools"] = [*(current.get("proof_tools") or []), *entries][
+                    -_PROOF_ENTRIES:
+                ]
+                return current
+
+            engine._update_finding(str(finding["id"]), change)
+        self.tool_calls[stage] = {
+            name: self.tool_calls.get(stage, {}).get(name, 0) + n for name, n in counts.items()
+        }
+        _log.warning(
+            "assistant roster proving tools (%s): %d red candidates, %s",
+            stage,
+            len(candidates),
+            ", ".join(f"{name} {n}" for name, n in sorted(counts.items())) or "no calls",
+        )
+        return counts
+
+    def _prove_one(
+        self, tools: Any, finding: Mapping[str, Any], stage: str, counts: dict[str, int]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """One red candidate's two values through the proving tools: the entries to keep on it
+        and each side's new `verify_<side>` answer (only a side with a spot)."""
+        from app.review.assistant import set_proofs
+        from app.review.assistant.finding_checks import claim_value, to_inches
+
+        engine = self.engine
+        entries: list[dict[str, Any]] = []
+        reads: dict[str, Any] = {}
+        if self.chat_proofs is None:
+            self.chat_proofs = set_proofs.load(engine.tools.workspace.set_pack)
+        for side, box_key, key in _PROOF_SIDES:
+            value = claim_value(finding.get(side))
+            box = finding.get(box_key)
+            if value is None or not isinstance(box, Mapping):
+                continue  # no number or no spot: nothing a tool can read (it stays as it is)
+            try:
+                spot: dict[str, Any] = {
+                    "page": int(box.get("page") or finding["page"]),
+                    "box": {k: float(box[k]) for k in ("x0", "y0", "x1", "y1")},
+                }
+                if box.get("file"):
+                    spot["file"] = str(box["file"])
+                name, page, coords, _label = tools._crop_request(spot, 0)
+                engine.timings.tool("verify_value")
+                counts["verify_value"] = counts.get("verify_value", 0) + 1
+                answer = tools.verify_answer(name, page, coords, value, side)
+            except Exception as failed:  # noqa: BLE001 - one side not read never stops the rest
+                _log.info("assistant roster proving tool not run: %s", type(failed).__name__)
+                continue
+            if answer.get("read_again"):
+                engine.timings.tool("read_number")
+                counts["read_number"] = counts.get("read_number", 0) + 1
+            inches = to_inches(value)
+            kept = (
+                set_proofs.proved_at(
+                    self.chat_proofs, file=name, page=page, side=side, box=coords, inches=inches
+                )
+                if answer.get("result") == "cannot_read"
+                and inches is not None
+                and answer.get("read_number_code") not in _READ_AGAINST
+                else None
+            )
+            if kept is not None:
+                # A chat question proved this value at this spot with the same tools (#1805).
+                counts["chat_proof"] = counts.get("chat_proof", 0) + 1
+                answer = {
+                    "result": "match",
+                    "route": "text" if kept.get("route") == "text" else "drawn",
+                    "read": value,
+                    "reads": [f"chat proof: {kept.get('tool')} {kept.get('route')}"],
+                    "reason": "",
+                    "value": value,
+                    "pending": False,
+                    "words": f"Proved in a chat question by {kept.get('tool')}: {value}",
+                    "chat_proof": kept.get("chat"),
+                }
+            tools.note_proof("verify_value", name, page, coords, value, answer, side=side)
+            entries.append(
+                {
+                    "stage": stage,
+                    "side": side,
+                    "tool": (
+                        "chat proof"
+                        if answer.get("chat_proof") is not None
+                        else "read_number" if answer.get("read_number") else "verify_value"
+                    ),
+                    "value": value,
+                    "result": answer.get("result"),
+                    "route": answer.get("route"),
+                    "read": answer.get("read"),
+                    "words": str(answer.get("words") or "")[:_PROOF_WORDS],
+                }
+            )
+            if answer.get("result") in ("match", "mismatch"):
+                reads[key] = {k: v for k, v in answer.items() if k != "read_again"}
+        return entries, reads
 
     # -- P3: the verifier --
 
@@ -1293,6 +1633,9 @@ class _Run:
             PROVER_JOB,
             [("what-dimensions-measure.md", None), ("reading-drawings.md", None)],
         )
+        # Its own share plus what the earlier phases left (#1805), split over its groups.
+        pool = _Pool(self._room("provers"))
+        cap = pool.limit // max(1, len(groups))
         for pages, findings in groups.items():
             agents.append(
                 self._agent(
@@ -1308,20 +1651,23 @@ class _Run:
                     pages=pages,
                     lens="prover",
                     effort="medium",
-                    cap_micros=self.plan.caps["provers"],
+                    cap_micros=cap,
                     soft_cap=True,
                     system=system,
                     tools=self._tools(_PROVER_TOOLS),
                     output_format=PROVER_SCHEMA,
                 )
             )
+            pool.add(agents[-1])
             asked.append([str(f["id"]) for f in findings])
+        if cap <= 0:
+            self._note("the verifier: not reached within the fixed price")
+            return
         entries = self._launched(agents)
         for agent, entry, ids in zip(agents, entries, asked, strict=True):
             done = apply_proofs(engine, str(entry.get("report") or ""), ids)
             if entry.get("stopped") == "cost_cap":
-                self.stopped_for_money = True
-                self._note(f"{agent.description}: stopped at its cap")
+                self._capped(agent.description)
             engine._queue_second_reads(
                 [f for f in engine.book.live() if f["id"] in done and f.get("status") != "same"]
             )
@@ -1476,17 +1822,14 @@ class _Run:
         return chosen, [f for f in unplaced if int(f["page"]) in chosen]
 
     def _lead_money(self) -> int:
-        """The lead review's cap (#1654): its own share, or all that is left under the fixed price
-        less what the steps after it need (the devil's advocate and the string readings, the
-        escalation's look, the summary), whichever is more. The paid run of 2026-10-19 ended
-        with $1.23 of $6 unspent while 25 content pages were never compared."""
+        """The lead review's cap (#1654, #1805): all that is left under the fixed price less the
+        shares of the steps after it (the devil's advocate and the string readings, the
+        escalation's look, the summary, the second reads), at most its own cap scaled to the
+        price. The paid run of 2026-10-19 ended with $1.23 of $6 unspent while 25 content pages
+        were never compared; the one of 2026-10-20 stopped the lead at its $2.50 fixed cap with
+        a third of a $15 price unspent."""
         assert self.plan is not None
-        after = (
-            self.plan.budgets["advocate"]
-            + self.plan.budgets["summary"]
-            + int(self.plan.price * _ESCALATION_SHARE)
-        )
-        return min(JOB_CAPS["lead"], max(self.plan.caps["lead"], self._left() - after))
+        return min(scaled_cap("lead", self.plan.price), self._room("lead"))
 
     def _lead_review(self, page_map: Mapping[str, Any] | None) -> None:
         """One capped lead (Opus 5.5) after the page helpers, as Anthropic's long-running agent
@@ -1501,11 +1844,14 @@ class _Run:
         cap = self._lead_money()
         pages, unplaced = self._lead_pages(cap, page_map)
         if not pages or cap <= 0:
+            self._note_left_open()
             return
         model = BY_SHORT["opus"]
         if not engine._fits(engine._price(model, 30_000, 4_000)):
             self._note(f"the lead review of {page_ranges_words(pages)}: not reached")
+            self._note_left_open()
             return
+        self.lead_taken = set(pages)
         brief = helper_brief(
             pages,
             file_name=f"{UPLOADS}/{engine.book.main_file}",
@@ -1540,7 +1886,30 @@ class _Run:
         self._salvage(agent, entries[0])
         self._drop_placed_salvage()
         if entries[0].get("stopped") == "cost_cap":
-            self._note(f"{agent.description}: stopped at its cap")
+            self._capped(agent.description)
+        self._note_left_open()
+
+    def _note_left_open(self) -> None:
+        """#1805: a page a numbers helper compared but left checklist lines open on is never
+        re-read by a gap closer; it waits for the lead review. One the lead review did not take
+        is said so, on its coverage and in what was not done, never left silent."""
+        engine = self.engine
+        with engine._lock:
+            open_gaps: dict[int, str] = {}
+            for gaps in engine._checklist_gaps.values():
+                for page, why in gaps.items():
+                    open_gaps.setdefault(page, why)
+        left = [p for p in self.repeats_avoided if p not in self.lead_taken and p in open_gaps]
+        if not left:
+            return
+        for page in left:
+            engine._note_coverage(
+                page, f"left open by its helper ({open_gaps[page]}); not compared again"
+            )
+        self._note(
+            f"{page_ranges_words(left)}: checklist lines left open by the helpers, not compared "
+            "again within the fixed price"
+        )
 
     def _helper_notes(self, pages: Sequence[int]) -> str:
         """The page helpers' and gap closers' own reports on these pages, short (data)."""
@@ -2326,6 +2695,9 @@ class _Run:
         elif unread and not engine.cancel.is_set():
             self._sharper(plan, unread)
             engine._wait_checks()
+        if unread and not engine.cancel.is_set():
+            # The sharper pass named new spots: the proving tools read them before the advocate.
+            self._prove_values("look_again", {str(f["id"]) for f in unread})
         self.pick_phase = "escalation"
         try:
             for finding in self._unproved():
@@ -2381,8 +2753,15 @@ class _Run:
             PROVER_JOB, [("what-dimensions-measure.md", None), ("reading-drawings.md", None)]
         )
         agents, asked = [], []
-        cap = min(self.plan.caps["provers"], self._left() // max(1, len(groups)))
+        # All that is left under the price less the summary's and second reads' shares (#1805:
+        # the old $0.10 fixed cap stopped every look-again with most of a $15 price unspent).
+        pool = _Pool(self._room("escalation"))
+        cap = pool.limit // max(1, len(groups))
         if cap <= 0:
+            self._note(
+                f"the escalation's deeper look: {len(findings)} items not verified within the "
+                "fixed price"
+            )
             return
         for pages, items in groups.items():
             self.escalated.update(str(f["id"]) for f in items)
@@ -2409,12 +2788,13 @@ class _Run:
                     output_format=PROVER_SCHEMA,
                 )
             )
+            pool.add(agents[-1])
             asked.append([str(f["id"]) for f in items])
         entries = self._launched(agents)
         for agent, entry, ids in zip(agents, entries, asked, strict=True):
             done = apply_proofs(engine, str(entry.get("report") or ""), ids)
             if entry.get("stopped") == "cost_cap":
-                self._note(f"{agent.description}: stopped at its cap (the rest stay not compared)")
+                self._capped(agent.description, " (the rest stay not compared)")
             engine._queue_second_reads(
                 [f for f in engine.book.live() if f["id"] in done and f.get("status") != "same"]
             )
@@ -2536,7 +2916,7 @@ class _Run:
         engine = self.engine
         from app.review.assistant.chat_engine import MessageOutcome
 
-        if stopped is None and self.stopped_for_money:
+        if stopped is None and self._stopped_for_money():
             stopped = "cost_cap"
         cap_hit = "message" if stopped == "cost_cap" else None
         try:

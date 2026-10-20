@@ -113,7 +113,8 @@ def test_each_lens_has_its_own_short_brief_and_checklist_line() -> None:
     assert numbers.endswith(NUMBERS_NOTE) and "LENS: numbers." in numbers
     assert "CHECKLIST p<N>: architect a/b; strings a/b; not compared" in numbers
     assert drawn.startswith("OBJECTIVE: the drawn things on pages 2, 3 of ")
-    assert "CHECKLIST p<N>: notes a/b; counts a/b; hardware a/b; not compared" in drawn
+    # Tags and models are counted on their own (#1805).
+    assert "CHECKLIST p<N>: notes a/b; tags a/b; counts a/b; hardware a/b; not compared" in drawn
     assert "do not call set_coverage" in drawn and "Never report a dimension" in drawn
     assert "LEADS from GV's own page review" not in drawn
     # The prompt audit's style (#1562): no shouting, the reviewer's round words, reasons given.
@@ -126,10 +127,12 @@ def test_each_lens_has_its_own_short_brief_and_checklist_line() -> None:
 
 
 def test_each_lens_checklist_is_read_back_with_its_own_counts() -> None:
-    drawn_line = "CHECKLIST p2: notes 2/2; counts 3/3; hardware 1/1; not compared: none"
+    drawn_line = "CHECKLIST p2: notes 2/2; tags 1/1; counts 3/3; hardware 1/1; not compared: none"
     assert checklist_gaps(drawn_line, [2], "drawn") == {}
+    untagged = "CHECKLIST p2: notes 2/2; counts 3/3; hardware 1/1; not compared: none"
+    assert checklist_gaps(untagged, [2], "drawn") == {2: "no count for tags"}
     assert checklist_gaps(drawn_line, [2], "numbers") == {2: "no count for architect, strings"}
-    short = "CHECKLIST p2: notes 1/2; counts 3/3; hardware 0/1; not compared: none"
+    short = "CHECKLIST p2: notes 1/2; tags 1/1; counts 3/3; hardware 0/1; not compared: none"
     assert "notes, hardware not all done" in checklist_gaps(short, [2], "drawn")[2]
     numbers_line = "CHECKLIST p2: architect 4/4; strings 2/2; not compared: none"
     assert checklist_gaps(numbers_line, [2], "numbers") == {}

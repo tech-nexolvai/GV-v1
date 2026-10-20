@@ -231,8 +231,9 @@ def test_the_prompts_stay_within_their_budgets() -> None:
     loaded = [tool for tool in LEAD_TOOLS if not tool.get("defer_loading")]
     assert len(json.dumps(loaded)) <= 30_000
     assert len(json.dumps(list(LEAD_TOOLS))) <= 90_000
-    # The helpers' full list grew by drawing_facts (#1606); a kit is smaller (#1608).
-    assert len(json.dumps(list(HELPER_TOOLS))) <= 30_000
+    # The helpers' full list grew by drawing_facts (#1606) and read_number (#1805: the helper and
+    # verifier briefs say to call it on a number they cannot read); a kit is smaller (#1608).
+    assert len(json.dumps(list(HELPER_TOOLS))) <= 32_500
     assert len(json.dumps(list(helper_tools("compare")))) <= 25_000
     assert len(json.dumps(list(helper_tools("rounds")))) <= 20_000
     assert len(json.dumps(list(helper_tools("notes")))) <= 20_000

@@ -169,7 +169,8 @@ def code_summary(
         if issues
         else "No wrong value was proved by code so far."
     )
-    line = not_compared_line(Counter(reasons))
+    unopened = int(coverage.get("not_opened") or 0) if coverage is not None else 0
+    line = not_compared_line(Counter(reasons), unopened)
     lines.append(
         line.replace("See the Not-compared list.", "See the Not-compared list (PDF / Excel).")
     )

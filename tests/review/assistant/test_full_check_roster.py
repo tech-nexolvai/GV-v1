@@ -98,6 +98,67 @@ def test_the_caps_never_add_up_to_more_than_the_price() -> None:
     assert plan.cap_for("tags", 45) == plan.caps["tags"] <= full_check_roster.JOB_CAPS["tags"]
 
 
+def test_every_share_and_cap_follows_the_price() -> None:
+    """#1805: caps made for a $5 price stopped "look again" at $1.69 of a $15 price."""
+    five, fifteen = PricePlan.balanced(5 * DOLLARS, 2), PricePlan.balanced(15 * DOLLARS, 2)
+    assert abs(sum(full_check_roster.SHARES.values()) - 1) < 1e-9
+    for name in full_check_roster.SHARES:
+        assert abs(fifteen.budgets[name] - 3 * five.budgets[name]) <= 3
+    for name in ("tags", "provers", "advocate", "lead", "summary"):
+        assert abs(fifteen.caps[name] - 3 * five.caps[name]) <= 3
+    assert (
+        full_check_roster.scaled_cap("lead", 15 * DOLLARS) == 3 * full_check_roster.JOB_CAPS["lead"]
+    )
+    # The steps after the verifier keep their shares; the second reads' share is kept to the end.
+    after = fifteen.after("provers")
+    assert after == sum(
+        fifteen.budgets[n] for n in ("lead", "advocate", "escalation", "summary", "reads")
+    )
+    assert fifteen.after("summary") == fifteen.budgets["reads"]
+
+
+def test_a_phase_pool_lets_a_busy_specialist_take_what_the_others_left() -> None:
+    from types import SimpleNamespace
+
+    def agent(cap: int) -> Any:
+        return SimpleNamespace(cap_micros=cap, spent=0, done=False, top_up=None)
+
+    pool = full_check_roster._Pool(1_000_000)
+    cheap, busy = pool.add(agent(500_000)), pool.add(agent(500_000))
+    assert busy.top_up == pool.top_up
+    busy.spent = 450_000
+    assert pool.top_up(busy) == 0  # the other one may still spend its cap
+    cheap.spent, cheap.done = 100_000, True
+    assert pool.top_up(busy) == 400_000  # what the finished one left, never more
+    busy.cap_micros += 400_000
+    assert pool.top_up(busy) == 0
+
+
+def test_stopped_at_its_cap_only_when_the_price_is_used_up(tmp_path: Path) -> None:
+    harness = _roster(tmp_path, _Roster())
+    run = _run(harness)
+    run._capped("Look again, pages 3-7")
+    assert not run.stopped_for_money
+    assert "used its share of the price" in run.not_done[-1]
+    harness.engine._spent = 5 * DOLLARS - 10_000
+    run._capped("Look again, pages 8-9")
+    assert run.stopped_for_money and run.not_done[-1].endswith("stopped at its cap")
+
+
+def test_the_timings_line_shows_each_phase_against_its_share() -> None:
+    from app.review.assistant.chat_timings import Timings
+
+    timings = Timings()
+    timings.set_budget("helpers", 2_500_000)
+    with timings.phase("helpers"):
+        timings.charge(1_250_000)
+    with timings.phase("lead_review"):
+        timings.charge(10_000)
+    line = Timings.log_line(timings.as_dict(1_260_000))
+    assert "helpers" in line and "$1.25 of $2.50 (1)" in line
+    assert "lead_review" in line and "$0.01 (1)" in line
+
+
 # ---- the advocate's code checks -------------------------------------------------------------------------
 
 
@@ -321,13 +382,19 @@ def test_decision_d1_needs_every_condition_and_code_only_needs_code() -> None:
         verdict = decide(mode="ai_pair_plus_code", advocate=advocate, extent=extent, **common)  # type: ignore[arg-type]
         assert verdict.result == "objects" and words in verdict.reason, (words, verdict.reason)
     not_printed = decide(
-        mode="ai_pair_plus_code", advocate=agree, extent=same, **{**common, "printed": False}  # type: ignore[arg-type]
+        mode="ai_pair_plus_code",
+        advocate=agree,
+        extent=same,
+        **{**common, "printed": False},  # type: ignore[arg-type]
     )
     assert not_printed.result == "objects"
     code_only = decide(mode="code_only", advocate=agree, extent=same, **common)  # type: ignore[arg-type]
     assert code_only.result == "objects" and "code_only" in code_only.reason
     vendor_sum = decide(
-        mode="code_only", advocate=None, extent=None, **{**common, "code_paired": True}  # type: ignore[arg-type]
+        mode="code_only",
+        advocate=None,
+        extent=None,
+        **{**common, "code_paired": True},  # type: ignore[arg-type]
     )
     assert vendor_sum.result == "passed" and vendor_sum.answers["pairing"] == "code"
     failed = decide(
@@ -501,23 +568,29 @@ class _Roster:
         self._seen("drawn" if drawn else "numbers", params)
         page = pages[0]
         if step == 0 and not drawn:
-            found = {
-                "page": page,
-                "item": f"Top on page {page}",
-                "category": "countertop",
-                "status": "different",
-                "verified": False,
-                "source": "architect",
-                "vendor_dim": "D1",
-                "architect_dim": "D2",
-            }
+            # One top on each of its pages: one pass per kind (#1805), so no gap closer re-reads
+            # a page this helper compared.
+            found = [
+                {
+                    "page": p,
+                    "item": f"Top on page {p}",
+                    "category": "countertop",
+                    "status": "different",
+                    "verified": False,
+                    "source": "architect",
+                    "vendor_dim": "D1",
+                    "architect_dim": "D2",
+                }
+                for p in pages
+                if p != self.unpaired
+            ]
             covered = {"pages": [
                 {"page": p, "status": "not_comparable", "note": "no architect drawing in the set"}
                 if p == self.unpaired else {"page": p, "status": "different"}
                 for p in pages
             ]}  # fmt: skip
             return reply(
-                tool(f"f{page}", "report_finding", found),
+                *(tool(f"f{f['page']}", "report_finding", f) for f in found),
                 tool(f"c{page}", "set_coverage", covered),
                 stop="tool_use",
                 model=SONNET,
@@ -834,6 +907,77 @@ def _run(harness: Harness) -> Any:
     return run
 
 
+def test_the_proving_tools_read_both_values_of_every_red_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1805: before the devil's advocate, code calls verify_value (and read_number where it
+    cannot read) on both values of every red candidate; the answers are witnesses."""
+    from app.review.assistant import witness
+
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    finding_id = _typed_wrong(harness)
+    asked: list[tuple[str, int, str, str]] = []
+
+    def verify(
+        self: Any, name: str, page: int, box: Any, expected: str, side: str = "vendor"
+    ) -> Any:
+        asked.append((name, page, expected, side))
+        if side == "vendor":  # pen strokes: verify_value could not, read_number read it
+            return {"result": "match", "route": "drawn", "read": expected, "reads": [],
+                    "reason": "", "value": expected, "pending": False, "words": "read",
+                    "read_number": "ocr_shape", "read_again": True}  # fmt: skip
+        return {"result": "match", "route": "drawn", "read": expected, "reads": [],
+                "reason": "", "value": expected, "pending": False, "words": "read"}  # fmt: skip
+
+    from app.review.assistant.chat_tools import ChatTools
+
+    monkeypatch.setattr(ChatTools, "verify_answer", verify)
+    heard: list[Mapping[str, Any]] = []
+    engine.tools.on_proof = heard.append
+    run = _run(harness)
+    with engine.timings.phase("provers"):
+        counts = run._prove_values("verifier")
+
+    assert sorted(side for *_rest, side in asked) == ["architect", "vendor"]
+    assert counts == {"verify_value": 2, "read_number": 1}
+    assert run.tool_calls["verifier"] == counts
+    found = next(f for f in engine.book.live() if f["id"] == finding_id)
+    assert found["checks"]["verify_vendor"]["result"] == "match"
+    assert "read_again" not in found["checks"]["verify_vendor"]
+    assert "ocr_ink" in witness.witnesses(found["checks"], found["status"])
+    assert [e["side"] for e in found["proof_tools"]] == ["architect", "vendor"]
+    assert found["proof_tools"][1]["tool"] == "read_number"
+    assert len(heard) == 2
+    row = next(r for r in engine.timings.as_dict(0)["phases"] if r["phase"] == "provers")
+    assert row["tools"] == {"read_number": 1, "verify_value": 2}
+
+
+def test_a_proving_tool_never_reads_over_what_code_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.review.assistant.chat_tools import ChatTools
+
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    finding_id = _typed_wrong(harness)
+    current = next(f for f in engine.book.live() if f["id"] == finding_id)
+    printed_elsewhere = {"result": "mismatch", "route": "text", "read": '45"', "value": '46"',
+                         "reads": [], "reason": "", "pending": False, "words": "45 here"}  # fmt: skip
+    assert engine.book.replace(
+        {**current, "checks": {**current["checks"], "verify_vendor": printed_elsewhere}}
+    )
+    monkeypatch.setattr(ChatTools, "verify_answer", lambda *a, **k: {
+        "result": "match", "route": "drawn", "read": '46"', "value": '46"', "reads": [],
+        "reason": "", "pending": False, "words": "read",
+    })  # fmt: skip
+    _run(harness)._prove_values("verifier")
+    found = next(f for f in engine.book.live() if f["id"] == finding_id)
+    assert found["checks"]["verify_vendor"]["result"] == "mismatch"  # kept: never red
+    assert found["checks"]["verify_architect"]["result"] == "match"
+    assert "read_number" in full_check_roster._PROVER_TOOLS
+
+
 def test_the_escalation_reads_the_labels_then_gives_one_deeper_look_within_the_price(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -927,6 +1071,97 @@ def test_the_gap_closers_get_what_p1_left_less_the_later_phases(tmp_path: Path) 
     assert run._gap_budget() == 0
 
 
+def test_a_gap_closer_never_re_does_a_page_its_kind_compared(tmp_path: Path) -> None:
+    """#1805: one pass per kind. A numbers gap closer never takes a page a numbers helper compared,
+    whatever its checklist (or a drawn helper's) left open: that waits for the lead review."""
+    from types import SimpleNamespace
+
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    run = _run(harness)
+    run.agents = [
+        SimpleNamespace(number=1, lens="numbers"),
+        SimpleNamespace(number=2, lens="drawn"),
+    ]
+    engine._checklist_gaps = {
+        1: {2: "no CHECKLIST line", 4: "1 of 3 vendor dimension labels not handled: D5"},
+        2: {3: "notes not all done, and 'not compared' says none", 5: "no CHECKLIST line"},
+    }
+    asked: list[Any] = []
+
+    def launch(agents: Any, on_done: Any = None) -> list[dict[str, Any]]:
+        asked.extend(agents)
+        return [{"report": "", "stopped": None} for _ in agents]
+
+    engine._launch = launch  # type: ignore[method-assign]
+    engine._plan = None
+    run._gap_closers(None, "", False)
+
+    assert asked == []
+    assert run.repeats_avoided == [2, 3, 4, 5]
+    # A page the helper never reached is taken, with its open lines named.
+    engine.book.set_coverage(
+        {"pages": [{"page": p, "status": "same"} for p in (2, 3, 5)]}, "helper:1"
+    )
+    engine._plan = SimpleNamespace(jobs=[SimpleNamespace(pages=(2, 3, 4, 5))])
+    run._gap_closers(None, "", False)
+    assert [agent.pages for agent in asked] == [(4,)]
+    assert "left open by the numbers helper" in asked[0].prompt and "D5" in asked[0].prompt
+    assert run.repeats_avoided == [2, 3, 5]
+
+
+def test_a_note_about_the_drawing_is_not_a_page_left_unread() -> None:
+    coverage = {
+        "pages": [
+            {"page": 2, "status": "different", "by": "helper:1",
+             "note": "vendor did not dimension the toe kick"},
+            {"page": 3, "status": "different", "by": "helper:1", "note": "partly compared"},
+            {"page": 4, "status": "different", "by": "helper:1", "note": "did not reach the end"},
+        ]
+    }  # fmt: skip
+    assert sorted(full_check_roster.unfinished_pages([2, 3, 4], coverage)) == [3, 4]
+    # The helper's own work said partly done, in other words, still counts (review of #1812).
+    for note in ("did not check the vendor strings", "partly; right half pending",
+                 "only the vendor elevation compared", "Compared partially",
+                 "the architect's plan does not show it, and I did not look at the section",
+                 "the sections did not get compared", "it did not get compared",
+                 "which did not fit in my turns", "drawing did not load, not compared",
+                 "the vendor's elevation did not load", "the plan has not been read"):  # fmt: skip
+        entry = {"page": 2, "status": "same", "by": "helper:1", "note": note}
+        assert full_check_roster.unfinished_pages([2], {"pages": [entry]}) == {2: note}, note
+
+
+def test_open_lines_the_lead_review_did_not_take_are_said_so(tmp_path: Path) -> None:
+    """Review of #1812: a compared page's open checklist lines no gap closer re-reads wait for the
+    lead review; the ones it did not take are named on the coverage and in what was not done."""
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    run = _run(harness)
+    engine._checklist_gaps = {1: {2: "1 of 3 vendor dimension labels not handled: D5", 4: "x"}}
+    engine.book.set_coverage({"pages": [{"page": p, "status": "same"} for p in (2, 4)]}, "helper:1")
+    run.repeats_avoided = [2, 4]
+    run.lead_taken = {4}
+    run._note_left_open()
+    assert any("p2" in line or "page 2" in line for line in run.not_done), run.not_done
+    assert not any("4" in line for line in run.not_done)
+    notes = {e["page"]: e.get("note") for e in engine.book.coverage_map()["pages"]}
+    assert "D5" in str(notes.get(2)) and "not compared again" in str(notes.get(2))
+
+
+def test_a_step_stopped_at_its_share_counts_as_a_money_stop_once_the_price_is_used_up(
+    tmp_path: Path,
+) -> None:
+    run = _run(_roster(tmp_path, _Roster()))
+    run.plan = full_check_roster.PricePlan.balanced(5 * DOLLARS, 2, 6)
+    run.started_at = run.engine.spent
+    run._capped("Helper 1")
+    assert run.capped_early and not run.stopped_for_money
+    assert not run._stopped_for_money()  # the later steps' money is still there
+    # The later steps used all they could: only the summary's and second reads' shares are left.
+    run.engine._spent += run.plan.price - run.plan.after("escalation")
+    assert run._stopped_for_money()
+
+
 class _Lazy(_Roster):
     """A numbers helper that says its last page was not reached, with money left, twice."""
 
@@ -1005,13 +1240,24 @@ def test_blind_picks_started_together_hold_their_price_within_the_phase(
         with lock:
             made.append(str(finding["id"]))
         time.sleep(0.05)  # the other workers ask while this one runs
-        self._charge(self.pick_phase, 50_000)
+        with lock:
+            self._charge(self.pick_phase, 50_000)
+            self.engine.spent += 50_000  # a call is charged only when it ends
         return {"pick": "none"}
 
     monkeypatch.setattr(full_check_roster._Run, "_held_pick", held_pick)
-    engine = SimpleNamespace(_price=lambda *a: 50_000, _fits=lambda estimate: True)
+    engine = SimpleNamespace(
+        _price=lambda *a: 50_000,
+        _fits=lambda estimate: True,
+        settings=SimpleNamespace(message_cap_micros=10_000_000),
+        spent=0,
+    )
     run = full_check_roster._Run(engine=engine)  # type: ignore[arg-type]
-    run.plan = SimpleNamespace(budgets={"advocate": 120_000})  # type: ignore[assignment]
+    # The price is the phase's budget, nothing kept for later steps (#1805: what a phase leaves
+    # rolls forward, so the price, not only the share, is what the picks must not pass).
+    run.plan = SimpleNamespace(  # type: ignore[assignment]
+        budgets={"advocate": 120_000}, price=120_000, after=lambda phase: 0
+    )
     with ThreadPoolExecutor(max_workers=6) as pool:
         replies = list(pool.map(lambda n: run._blind_pick({"id": f"F{n}"}, {}, {}, None), range(6)))
     assert len(made) == 2 and run.spent["advocate"] <= 120_000 and run.held == 0
