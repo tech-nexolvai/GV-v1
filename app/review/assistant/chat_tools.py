@@ -146,8 +146,6 @@ PARALLEL_TOOLS: Final = frozenset(
 _MAX_LISTED: Final = 60
 #: Guides one crop draws.
 _MAX_GUIDES: Final = 4
-#: What a helper is told to spend, in tool calls (its real limit is the helper turn limit).
-HELPER_CALL_BUDGET: Final = 12
 #: What a step shows of a tool's output; the model gets up to the sandbox's 20 KB.
 SHOWN_OUTPUT_CHARS: Final = 4000
 _RESULTS_CHARS: Final = 40_000
@@ -2221,7 +2219,8 @@ def helper_footer(
     return (a report of at most `report_words` words). `calls`: a full check's roster helper's own
     reading-call allowance, which code enforces and tells it when it ends (#1817: the lead review
     of 16 pages read "about 12 tool calls" and marked pages "not opened: Budget" with most of its
-    money unspent); else the chat helpers' `HELPER_CALL_BUDGET`."""
+    money unspent). No brief carries a number code does not enforce (#1819): a chat helper is told
+    only that the app says when its turns or money run out."""
     folder = workspace.set_folder
     try:
         status = json.loads((folder / "status.json").read_text(encoding="utf-8"))
@@ -2272,7 +2271,8 @@ def helper_footer(
             "markup hidden. Ask for all the crops you need in one call."
         ),
         (
-            f"- Budget: about {HELPER_CALL_BUDGET} tool calls; report before then."
+            "- Tool turns and money: the app tells you when they run out. Until then do your whole "
+            "task; never stop early to save them."
             if calls is None
             else f"- Tool calls: about {calls} reading calls for your pages (recording a finding "
             "or a string does not count). The app tells you when your calls or your money run "

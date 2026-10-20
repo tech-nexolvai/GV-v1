@@ -189,6 +189,10 @@ JOB_CAPS: Final[Mapping[str, int]] = {
 }
 #: The kinds whose cap follows their pages.
 PAGE_KINDS: Final = frozenset({"numbers", "drawn", "gaps"})
+#: The passes after the lead review that send on the pages still not compared (#1817, #1819).
+AGAIN_PASSES: Final = 2
+#: Why a page code stopped sending on was left unchecked when the money was really short.
+OUT_OF_MONEY: Final = "out of money (the fixed price left too little for another look)"
 #: The most gap closers at once (one per run of pages; the engine's parallel agents bound it too).
 MAX_GAP_CLOSERS: Final = 10
 #: The least money a gap closer gets per page (millionths of $): about three Sonnet calls with
@@ -1491,9 +1495,7 @@ class _Run:
 
         chosen, left = gap_pages(pages, budget, has_record=has_record)
         if left:
-            self._note(f"pages {', '.join(map(str, left))}: not reached within the fixed price")
-            for page in left:
-                engine._note_coverage(page, "not reached within the fixed price")
+            self._left_unchecked(dict.fromkeys(left), OUT_OF_MONEY)
         if not chosen:
             return []
         closers = min(MAX_GAP_CLOSERS, engine._max_agents, max(1, budget // MIN_GAP_RUN_MICROS))
@@ -1551,13 +1553,50 @@ class _Run:
     def _after_lead(self, page_map: Mapping[str, Any] | None) -> None:
         """#1817: after the lead review, every planned page still not compared (no helper set
         it, "not opened", a note that says it was not reached, the lead's own "Budget") and every
-        page left open by its helper that the lead did not take goes to one more closer pass,
-        while the money really left covers it (the later steps' shares kept). Code decides, not
-        an AI's guess about money: the paid run of 2026-10-20 ended with pages "not opened:
-        Budget" and seven open pages never taken, with $8 of a $15 price unspent."""
+        page left open by its helper that the lead did not take goes to another closer pass,
+        while the money really left covers it (the later steps' shares kept), at most
+        `AGAIN_PASSES` times. Code decides, not an AI's guess about money: the paid run of
+        2026-10-20 ended with pages "not opened: Budget" and seven open pages never taken, with $8
+        of a $15 price unspent. A page left unchecked says why on its coverage (#1819): out of
+        money, or the passes that still did not compare it."""
         engine = self.engine
         if self.plan is None:
             return
+        pages: dict[int, list[str]] = {}
+        for _pass in range(AGAIN_PASSES):
+            pages = self._still_open()
+            if not pages or engine.cancel.is_set():
+                return
+            budget = self._room("lead")
+            _log.warning(
+                "assistant roster look-again after the lead: %d pages still open; $%.2f left",
+                len(pages),
+                budget / _MICROS,
+            )
+            if budget < MIN_GAP_RUN_MICROS:
+                self._left_unchecked(pages, OUT_OF_MONEY)
+                return
+            engine.helper_ceiling = engine.spent + budget
+            try:
+                with engine.timings.phase("gap_closers"):
+                    taken = self._close(pages, budget, (), page_map, again=True)
+            finally:
+                engine.helper_ceiling = None
+            # A page a closer took is not "left open, not compared again": its closer said what it
+            # did on its coverage.
+            self.lead_taken |= set(taken)
+        left = self._still_open()
+        if left:
+            short = self._room("lead") < MIN_GAP_RUN_MICROS
+            self._left_unchecked(
+                left,
+                OUT_OF_MONEY if short else f"still not compared after {AGAIN_PASSES} more looks",
+            )
+
+    def _still_open(self) -> dict[int, list[str]]:
+        """The planned pages still not compared, and the pages left open by their helper that no
+        later look took, each with what to close there (`_after_lead`)."""
+        engine = self.engine
         planned = sorted(
             {page for job in (engine._plan.jobs if engine._plan else ()) for page in job.pages}
         )
@@ -1576,25 +1615,23 @@ class _Run:
         for page in self.repeats_avoided:
             if page not in self.lead_taken and page in open_gaps:
                 pages.setdefault(page, []).append(f"left open by its helper: {open_gaps[page]}")
-        if not pages:
-            return
-        budget = self._room("lead")
-        _log.warning(
-            "assistant roster look-again after the lead: %d pages still open; $%.2f left for it",
-            len(pages),
-            budget / _MICROS,
-        )
-        if budget < MIN_GAP_RUN_MICROS:
-            return  # the price is really short: the pages stay noted (`_note_left_open`)
-        engine.helper_ceiling = engine.spent + budget
-        try:
-            with engine.timings.phase("gap_closers"):
-                taken = self._close(pages, budget, (), page_map, again=True)
-        finally:
-            engine.helper_ceiling = None
-        # A page a closer took is not "left open, not compared again": its closer said what it
-        # did on its coverage.
-        self.lead_taken |= set(taken)
+        return pages
+
+    def _left_unchecked(self, pages: Mapping[int, Any], why: str) -> None:
+        """Each page code stops sending on says why on its coverage (a page never recorded gets
+        an entry), and in what was not done (#1819)."""
+        engine = self.engine
+        for page in sorted(pages):
+            note = f"not compared: {why}"
+            try:
+                if engine.book.note_coverage(page, note) is None:
+                    engine.book.set_coverage(
+                        {"pages": [{"page": page, "status": "not_opened", "note": note}]}, "code"
+                    )
+                engine._show_coverage()
+            except Exception:  # noqa: BLE001 - still said in what was not done
+                _log.warning("assistant roster could not note page %s", page)
+        self._note(f"{page_ranges_words(sorted(pages))}: not compared, {why}")
 
     def _gap_budget(self) -> int:
         """The gap closers' money: all that is left under the fixed price less the later phases'
@@ -1732,9 +1769,7 @@ class _Run:
                     "tool": (
                         "chat proof"
                         if answer.get("chat_proof") is not None
-                        else "read_number"
-                        if answer.get("read_number")
-                        else "verify_value"
+                        else "read_number" if answer.get("read_number") else "verify_value"
                     ),
                     "value": value,
                     "result": answer.get("result"),
