@@ -2,7 +2,7 @@
 
 - which items code clouds by itself (only Wrong items code proved), and where the rest go;
 - the colours: red and green legible on white and in greyscale print;
-- the words: "Vendor: 46"" in red, "Should be: 37" (architect 3'-1", page 2)" in green;
+- the words: the sheet note `46"  should be  37"` (red, grey, green) and one proof sentence per mark;
 - the rendered PDF: cover counts (Wrong / Right / Not compared), stamp, assumptions, the
   sheet's note, the proof entry, the page labels; the reviewer's decisions as overrides; what could
   not be compared is never on the drawing (#1619): it is the separate Not-compared list;
