@@ -25,7 +25,8 @@ a false red cloud goes straight to the vendor, so **only what code proved is clo
 
 The reviewer's Agree / Not a problem stay as optional overrides: an agreed item is clouded
 whatever code proved (the reviewer is the witness), and an item marked not a problem is never
-clouded (`dismissed`). Nobody has to click.
+clouded (`dismissed`, for GV's screen; the vendor's files show it as Right, noted "(reviewer)",
+#1766). Nobody has to click.
 
 Pure code (no PDF, no I/O): the drawing (`proof_drawing.py`), the check report, the CSV and the
 screen (each finding's `proof`, added on read) all group and count from here, so every count
@@ -62,6 +63,7 @@ __all__ = [
     "could_not_compare_reason",
     "governs",
     "needs_pairing",
+    "no_stated_requirement",
     "pairing_proved",
     "proof_counts",
     "proof_group",
@@ -110,7 +112,7 @@ AI_ONLY_REASON: Final = "Not clouded: code could not read both values at their s
 _ADVOCATE: Final = "devil's advocate"
 #: Trust levels a clouded item may have (with a code witness).
 _PROVED_LEVELS: Final = frozenset({"confirmed", "likely"})
-#: Why a person must decide (`decision_resolver.keep_reason`), in one plain line.
+#: Why code could not settle an item (`decision_resolver.keep_reason`), in one plain line.
 KEEP_WORDS: Final[Mapping[str, str]] = {
     "architect_prints_nothing": "the architect prints no size here",
     "measures_something_else": "the two dimensions measure different things",
@@ -292,8 +294,8 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
 
 
 def vendor_facing(finding: Mapping[str, Any]) -> bool:
-    """Whether an item may reach the vendor (the cloud drawing, the check report, the letter, the
-    register, the Not-compared list): never one for GV's reviewer only
+    """Whether an item may reach the vendor (the cloud drawing, the letter, the register, the
+    Not-compared list): never one for GV's reviewer only
     (`classification.internal`, #1652)."""
     return not classification.internal(finding)
 
@@ -363,9 +365,22 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
 
 
 def classified(finding: Mapping[str, Any]) -> classification.Classified:
-    """The item under the architect-first rules (R1-R10), with code's proof (`code_proved`)."""
-    return classification.classify(
-        finding, proved=finding.get("status") == "different" and code_proved(finding)
+    """The item under the architect-first rules (R1-R10), with code's proof (`code_proved`). A GV
+    rule result with no stated requirement is Not compared under R6 (`no_stated_requirement`)."""
+    proved = finding.get("status") == "different" and code_proved(finding)
+    if not proved and no_stated_requirement(finding):
+        return classification.rule_without_requirement(finding)
+    return classification.classify(finding, proved=proved)
+
+
+def no_stated_requirement(finding: Mapping[str, Any]) -> bool:
+    """A GV rule result (a Wrong by GV's rule) that states no requirement the vendor can act on
+    (#1622): never a numbered comment, Not compared."""
+    return (
+        finding.get("status") == "different"
+        and not classification.internal(finding)
+        and "rule" in _witnesses(finding)
+        and stated_requirement(finding) is None
     )
 
 
@@ -539,7 +554,7 @@ def proof_line(finding: Mapping[str, Any]) -> str:
 
 
 def could_not_compare_reason(finding: Mapping[str, Any]) -> str:
-    """Why a "Your decision" item could not be settled by code, in one line ("the architect prints
+    """Why an item code could not settle could not be compared, in one line ("the architect prints
     no size here"): the resolver's reason, else the check reason, else its question or why."""
     reason = finding.get("keep_reason")
     if isinstance(reason, str) and reason in KEEP_WORDS and reason != "other":

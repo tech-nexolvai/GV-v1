@@ -806,9 +806,11 @@ def _rounds_summary(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any] | N
         for status in ("fixed_in_later_round", "still_wrong", "not_in_later_round")
     }
     new = sum(1 for f in findings if f.get("round_status") == "new_in_later_round")
+    # The comment letter's words (Closed / Previous comment not addressed / New, #1766).
     line = (
-        f"Vendor fixed {counts['fixed_in_later_round']} of {len(earlier)} items from round "
-        f"{first}; {counts['still_wrong']} still wrong"
+        f"Round {first} comments: {counts['fixed_in_later_round']} of {len(earlier)} closed; "
+        f"{counts['still_wrong']} previous "
+        f"{'comment' if counts['still_wrong'] == 1 else 'comments'} not addressed"
     )
     if counts["not_in_later_round"]:
         line += f"; {counts['not_in_later_round']} not found in a later round"
