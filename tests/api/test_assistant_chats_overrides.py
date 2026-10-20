@@ -141,8 +141,8 @@ def test_a_not_compared_item_made_wrong_with_the_reviewers_value_and_one_marked_
         assert len(files) == 2 * len(answer["files"])
         drawing = world.client.get(remade.json()["url"]).content
         words = _pdf_text(drawing)
-        assert 'Should be: 34 1/2" (reviewer)' in words
-        assert "Decided by GV's reviewer: should be 34 1/2\". Hinge side" in words
+        assert 'Should be 34 1/2"' in words and "GV's reviewer requires 34 1/2\"" in words
+        assert "Decided by GV's reviewer: Hinge side" in words
         assert "reviewer-one" in words  # the stamp names who reviewed it
         assert "Agreed by" not in words
         assert _red_near(drawing, 4, PAGE3_BOX) > 5  # page 1 is the cover
@@ -250,7 +250,9 @@ def test_each_decision_updates_every_file_of_the_package_and_an_undo_restores_it
         assert after["package"]["id"] != before["package"]["id"]
         drawing = after["GV cloud drawing.pdf"]
         assert "1 Wrong" in drawing and "1 Not compared" in drawing  # the cover's counts
-        assert "Decided by GV's reviewer: should be 34 1/2\". Hinge side" in drawing  # proof card
+        # The proof card (#1804's layout): the reviewer's value and note, never the login.
+        assert "GV's reviewer requires 34 1/2\"" in drawing
+        assert "Decided by GV's reviewer: Hinge side" in drawing
         assert "reviewer-one" not in drawing.split("Proof", 1)[1]  # never the login on the card
         assert _red_near(after["GV cloud drawing.pdf bytes"], 4, PAGE3_BOX) > 5  # the new red cloud
         letter = after["Comment letter.pdf"]

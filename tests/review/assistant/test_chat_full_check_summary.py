@@ -162,7 +162,7 @@ def _summary(stopped: str | None, cap_hit: str | None = None) -> str:
     ]
     return code_summary(
         findings,
-        coverage={"total": 60, "not_opened": 0},
+        coverage={"total": 60, "same": 52, "different": 8, "not_comparable": 0, "not_opened": 0},
         page_count=60,
         products=("countertop", "cabinet"),
         stopped=stopped,
@@ -449,3 +449,28 @@ def test_a_full_check_streams_progress_and_stores_the_last_one(
     assert len(stored) == 1 and stored[0]["progress"] == events[-1]["progress"]
     assert outcome.blocks.index(stored[0]) == events[-1]["index"]
     assert stored[0]["progress"]["pages_total"] == 3
+
+
+@pytest.mark.parametrize(
+    ("counts", "first"),
+    [
+        # #1811: pages never compared (no architect drawing, not reached, open differences) are
+        # never counted as checked; a run that compared nothing says 0, not the unpaired pages.
+        ({"total": 9, "same": 0, "different": 0, "not_comparable": 4, "not_opened": 5},
+         ("Checked 0 of 9 pages (countertops, 1 round); 9 pages were not compared (title or "
+         "divider sheets, pages with no drawing to compare, or not reached).")),
+        ({"total": 60, "same": 20, "different": 12, "not_comparable": 28, "not_opened": 0},
+         ("Checked 32 of 60 pages (countertops, 1 round); 28 pages were not compared (title or "
+         "divider sheets, pages with no drawing to compare, or not reached).")),
+        ({"total": 5, "same": 3, "different": 1, "not_comparable": 1, "not_opened": 0},
+         ("Checked 4 of 5 pages (countertops, 1 round); 1 page was not compared (title or "
+         "divider sheets, pages with no drawing to compare, or not reached).")),
+        ({"total": 5, "same": 3, "different": 2, "not_comparable": 0, "not_opened": 0},
+         "Checked 5 of 5 pages (countertops, 1 round)."),
+    ],
+)  # fmt: skip
+def test_only_compared_pages_count_as_checked(counts: dict[str, int], first: str) -> None:
+    summary = code_summary(
+        [], coverage=counts, page_count=counts["total"], products=("countertop",), stopped=None
+    )
+    assert summary.split("\n")[0] == first

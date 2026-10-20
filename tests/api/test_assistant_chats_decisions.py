@@ -177,11 +177,11 @@ def test_the_cloud_drawing_follows_the_decisions_and_keeps_older_files(postgres_
         # clouded, not on the drawing: the separate Not-compared list.
         assert "1\nWrong" in cover and "2\nNot compared" in cover
         sheet = " ".join(pages[2].split())
-        assert "Vendor: 3'-10\"" in sheet and 'Should be: 37"' in sheet
+        assert '3\'-10" should be 37"' in sheet  # the sheet note (#1804)
         assert _red_near(pdf, 3, VENDOR_BOX) > 5
         assert _red_near(pdf, 4, PAGE3_BOX) == 0
-        # The reviewer's Wrong says it is the reviewer's decision, never the login (#1803).
-        assert "Decided by GV's reviewer: should be" in pages[4] and "reviewer-one" not in pages[4]
+        # The proof card names the reviewer's decision, not their login (#1804).
+        assert "Decided by GV's reviewer" in pages[4] and "reviewer-one" not in pages[4]
         notes = " ".join(pages[5].split())
         assert "Not compared (2)" in notes and "Sink base width" not in notes
 

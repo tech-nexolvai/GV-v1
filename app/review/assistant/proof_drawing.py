@@ -6,13 +6,17 @@ What the vendor gets, with no human step (the rule is `proof.py`):
    reviewer decided anything), every assumption code made about the page map, and the list of the
    clouded items.
 2. **The vendor's sheets**: a tight red cloud round each wrong value code proved, a numbered red
-   marker, and a short note in clear space: the item, "Vendor: 46"" in red and "Should be: 37"
-   (architect 3'-1", page 28)" in green. The tight-cloud and clear-space layout is the cloud
-   drawing's own (`chat_drawing`, `cloud_layout`).
-3. **Proof pages**: one entry per clouded item, in the clouded order (biggest first): the
-   architect's crop with the governing value boxed in green beside the vendor's crop with the
-   wrong value boxed in red, one line naming the check that proved it, and the pages. Crops are cut
-   from the hi-res page cache (#1557); a page already drawn is never drawn again.
+   marker, and a short note in clear space, never cut and kept off the sheet's printed numbers
+   (#1804): the C-number and the item, then `46"  should be  37"` (red, grey, green). The
+   tight-cloud and clear-space layout is the cloud drawing's own (`chat_drawing`, `cloud_layout`).
+3. **Proof pages** (#1804): one card per red mark, two to a page, in the clouded order (biggest
+   first): the C-number and a plain title; one sentence (`proof_words.sentence`, the letter's and
+   the register's too); the vendor's snippet with its value ringed red beside the reference's
+   (architect, brand prototype, the vendor's other span) ringed green, each zoomed by the value's
+   own printed size so it reads on any sheet; a worked sum, GV's rule or GV's reviewer's value
+   where there is no reference spot; then the sum written out, the reference and how it was
+   checked, in the vendor's words. Snippets are rendered from the copy without earlier review
+   markup.
 4. **Notes pages**: a short green list of what is right (an item the reviewer marked not a problem
    is Right there, noted "(reviewer)": the vendor's files have three outcomes only, #1766), and what
    code settled by itself. What could not be compared (#1619, the architect-first rules
@@ -30,6 +34,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -47,6 +52,7 @@ from reportlab.lib.styles import ParagraphStyle  # type: ignore[import-untyped]
 from reportlab.pdfgen import canvas  # type: ignore[import-untyped]
 from reportlab.platypus import (  # type: ignore[import-untyped]
     BaseDocTemplate,
+    Flowable,
     Frame,
     Image,
     KeepTogether,
@@ -57,6 +63,7 @@ from reportlab.platypus import (  # type: ignore[import-untyped]
     TableStyle,
 )
 
+from app.review.assistant import proof_words
 from app.review.assistant.chat_drawing import (
     _CLOUD_PAD,
     _DARK,
@@ -87,20 +94,20 @@ from app.review.assistant.chat_drawing import (
     crop_png,
     settled_entry_lines,
 )
-from app.review.assistant.cloud_layout import NOTE_WIDTH_PT, InkMap, marker_spot, place_notes
+from app.review.assistant.cloud_layout import (
+    NOTE_WIDTH_PT,
+    InkMap,
+    marker_spot,
+    place_notes,
+    snapped,
+)
 from app.review.assistant.proof import (
-    LEFT_CAPTIONS,
-    REVIEWER,
     RULE_LINE,
     architect_file,
     governs,
     proof_counts,
     proof_group,
-    proof_line,
-    reviewer_decided,
-    should_be,
     should_be_value,
-    vendor_own,
     vendor_value,
 )
 from app.review.assistant.vendor_text import internal, item_name, reviewer_right, vendor_text
@@ -111,11 +118,16 @@ __all__ = [
     "NOT_COMPARED_TITLE",
     "RED",
     "STAMP_WORDS",
+    "Legend",
     "ProofCounts",
+    "Shot",
     "contrast",
     "item_words",
     "not_compared_pdf",
+    "number_boxes",
+    "panel_size",
     "proof_markup_pdf",
+    "snippet",
     "stamp_line",
     "tag",
 ]
@@ -279,15 +291,53 @@ def note_lines(mark: Mark) -> list[list[_Run]]:
         ]
     if rounds is not None and rounds.status == "new":
         head = [("New ", _NOTE_BOLD, RED), (item, _NOTE_BOLD, _DARK)]
-    return [
-        _fit(head, room),
-        _fit([("Vendor: ", _NOTE_FONT, RED), (vendor, _NOTE_BOLD, RED)], room),
-        _fit(
-            [("Should be: ", _NOTE_FONT, GREEN), (value, _NOTE_BOLD, GREEN)]
-            + ([(f" ({source})", _NOTE_FONT, GREEN)] if source else []),
-            room,
-        ),
+    # The note says only what is wrong and what it should be, never cut (#1804): the item (up to
+    # two lines), then `98"  should be  97 1/2"`. The reference and the proof are on the card.
+    value = proof_words.should_text(finding) or value
+    shown = "missing" if proof_words.missing(vendor) else vendor
+    pair: list[_Run] = [
+        (shown, _NOTE_BOLD, RED),
+        ("  should be  ", _NOTE_FONT, _GREY),
+        (value, _NOTE_BOLD, GREEN),
     ]
+    lines = _wrapped(head, room, rows=2)
+    if sum(_measure(t, f) for t, f, _c in pair) <= room:
+        return [*lines, pair]
+    return [
+        *lines,
+        _fit([pair[0]], room),
+        _fit([("should be  ", _NOTE_FONT, _GREY), pair[2]], room),
+    ]
+
+
+def _wrapped(runs: Sequence[_Run], room: float, rows: int) -> list[list[_Run]]:
+    """A heading's pieces on at most `rows` lines of `room` points (word by word; the last line cut
+    with "…" only when even `rows` lines cannot hold it)."""
+    words: list[_Run] = [
+        (word, font, colour) for text, font, colour in runs for word in text.split()
+    ]
+    lines: list[list[_Run]] = []
+    current: list[_Run] = []
+    used = 0.0
+    for word, font, colour in words:
+        width = _measure(word + " ", font)
+        if current and used + width > room:
+            lines.append(current)
+            current, used = [], 0.0
+            if len(lines) == rows:
+                break
+        current.append((word + " ", font, colour))
+        used += width
+    else:
+        if current:
+            lines.append(current)
+        return [_fit(line, room) for line in lines]
+    # Words left over: the last line is cut with "…".
+    rest = [w for w, _f, _c in words][sum(len(line) for line in lines) :]
+    last = lines[-1]
+    tail_font, tail_colour = last[-1][1], last[-1][2]
+    lines[-1] = _fit([*last, (" ".join(rest), tail_font, tail_colour)], room)
+    return [_fit(line, room) for line in lines]
 
 
 def item_words(finding: Mapping[str, Any]) -> str:
@@ -342,8 +392,54 @@ def _sheet_stamp_words(count: int) -> str:
     return f"GV Review: {items} on this page (red: the vendor's value; green: what it should be)"
 
 
-def _layout(size: tuple[float, float], placed: list[_Placed], ink: InkMap | None) -> None:
-    """Markers, then notes, for one sheet's clouds (in place)."""
+#: The pasted drawings' digits are kept off as cells of this size (points): few boxes, all covered.
+_CELL_PT: Final = 6.0
+
+
+def _digit_cells(pdf: Path, index: int) -> list[Box]:
+    """Where the page's pasted drawings print digits, as `_CELL_PT` cells (a note must not cover
+    them either)."""
+    cells = {
+        (int((c.box[0] + c.box[2]) / 2 // _CELL_PT), int((c.box[1] + c.box[3]) / 2 // _CELL_PT))
+        for c in _printed_chars(pdf, index)
+        if c.text.isdigit()
+    }
+    return [(i * _CELL_PT, j * _CELL_PT, (i + 1) * _CELL_PT, (j + 1) * _CELL_PT) for i, j in cells]
+
+
+def number_boxes(document: Any, index: int) -> list[Box]:
+    """Every printed piece of text on a page that holds a digit (shown points, origin top-left):
+    the sheet's own numbers, which a note must never cover (#1804). Empty when the page has no
+    text layer (a drawn or scanned sheet: the least-ink place keeps notes off its strokes)."""
+    out: list[Box] = []
+    with _PDFIUM_LOCK:
+        try:
+            page = document[index]
+            height = page.get_height()
+            text = page.get_textpage()
+            try:
+                for n in range(text.count_rects()):
+                    left, bottom, right, top = text.get_rect(n)
+                    words = text.get_text_bounded(left, bottom, right, top)
+                    if any(ch.isdigit() for ch in words):
+                        out.append((left, height - top, right, height - bottom))
+            finally:
+                text.close()
+        except Exception as failed:  # noqa: BLE001 - notes are then placed by ink only
+            _log.warning("cloud drawing number boxes failed: %s", type(failed).__name__)
+            return []
+    return out
+
+
+def _layout(
+    size: tuple[float, float],
+    placed: list[_Placed],
+    ink: InkMap | None,
+    numbers: Sequence[Box] = (),
+) -> None:
+    """Markers, then notes, for one sheet's clouds (in place). A note goes clear of the sheet's
+    printed numbers (`numbers`) where it can; only a note with no such place falls back to the
+    least-ink place among the clouds, markers and other notes."""
     count = len({item.mark.number for item in placed})
     blocked: list[Box] = [_sheet_stamp_box(count)]
     taken: list[tuple[float, float]] = []
@@ -364,8 +460,19 @@ def _layout(size: tuple[float, float], placed: list[_Placed], ink: InkMap | None
         item.lines = note_lines(item.mark)
         width, height = _note_size(item.mark, item.lines)
         sizes.append((item.spot, width, height))
-    for item, box in zip(ordered, place_notes(size, sizes, ink, blocked), strict=True):
-        item.note = box
+    kept_off: list[Box] = [_grown(box, 1.5) for box in numbers]
+    first: list[Box | None] = (
+        place_notes(size, sizes, ink, [*blocked, *kept_off]) if kept_off else [None] * len(sizes)
+    )
+    for item, found in zip(ordered, first, strict=True):
+        item.note = found
+    left = [n for n, item in enumerate(ordered) if item.note is None]
+    if left:
+        clear: list[Box] = list(blocked)
+        clear += [item.note for item in ordered if item.note is not None]
+        again = place_notes(size, [sizes[n] for n in left], ink, clear)
+        for n, box in zip(left, again, strict=True):
+            ordered[n].note = box
 
 
 def _draw_sheet(c: canvas.Canvas, height: float, placed: Sequence[_Placed]) -> None:
@@ -583,7 +690,50 @@ def _tight(pdf: Path, page: int, box: Box, value: str, budget: _Budget) -> Box:
     return spots[0] if spots else box
 
 
+def _tighten(
+    source: Path, marks: Sequence[Mark], spots: dict[tuple[int, int], tuple[Box, Box | None]]
+) -> None:
+    """A small box that holds more than the value (two stacked labels, a value and its note) cut
+    to the value's own printed text (#1804), so the cloud and the proof's ring never take in a
+    neighbouring number. `_spots` searches only big boxes; this does the small ones, in place,
+    within the same time budget. A value drawn as lines (no text) keeps its box."""
+    budget = _Budget(_SNAP_BUDGET_S)
+    for mark in marks:
+        key = (mark.number, mark.page)
+        if _later(mark) or key not in spots or not mark.value or not budget.left():
+            continue
+        box, area = spots[key]
+        if area is not None or max(box[2] - box[0], box[3] - box[1]) > 54.0:
+            continue
+        try:
+            found = [s for s in _printed(source, mark, box) if _overlap(s, box)]
+        except Exception as failed:  # noqa: BLE001 - the box is clouded then
+            _log.warning("proof drawing tighten failed: %s", type(failed).__name__)
+            continue
+        tight = snapped(found, pad=1.5)
+        if tight is not None and _area(tight) < 0.8 * _area(box):
+            spots[key] = (tight, None)
+
+
+def _overlap(a: Box, b: Box) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _area(box: Box) -> float:
+    return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+
+
 # ---- the pages after the sheets -------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Shot:
+    """A snippet of a drawing for a proof card: the picture, the window of the sheet it shows
+    (shown points, origin top-left) and the value's spot in it, ringed when drawn (#1804)."""
+
+    png: bytes
+    window: Box
+    spot: Box
 
 
 @dataclass(frozen=True, slots=True)
@@ -592,8 +742,254 @@ class _ProofItem:
     finding: Mapping[str, Any]
     where: str
     """Where it is marked ("Marked on page 23."), or why it is not."""
-    vendor_png: bytes | None
-    architect_png: bytes | None
+    vendor: Shot | None
+    reference: Shot | None
+
+
+#: A proof card's snippet: the value's height on the card (points) it is zoomed to, the share of
+#: the panel the value may fill at most, the zoom limits, and the picture's pixels per card point.
+_VALUE_PT: Final = 15.0
+_VALUE_MIN_PT: Final = 9.0
+_VALUE_SHARE: Final = 0.7
+_ZOOM_MAX: Final = 6.0
+_SNIPPET_PX_PER_PT: Final = 2.2
+_SNIPPET_MAX_PX: Final = 2400
+#: The ring round a value: its line width and how far it stands off the value (card points).
+_RING_W: Final = 2.0
+_RING_PAD: Final = 4.0
+#: A value this much longer one way than the other gets a rounded box, not an ellipse.
+_LONG: Final = 3.2
+
+
+def snippet(
+    pdf: Path,
+    page: int,
+    spot: Box,
+    panel: tuple[float, float],
+    sizes: _Sizes,
+    view: Box | None = None,
+) -> Shot | None:
+    """A snippet of `pdf`'s `page` round the value at `spot`, cut to the panel's own shape and
+    zoomed by the value's own size (#1804): the value is drawn about `_VALUE_PT` high on the card
+    (never more than `_VALUE_SHARE` of the panel), so a 5 pt value on a large sheet is as readable
+    as a 14 pt one on a small sheet, and the window shows as much round it as the panel holds.
+    `view`: an area that should show too (a dimension string round its total): the zoom goes down
+    to fit it, but never below `_VALUE_MIN_PT` for the value. Rendered from the PDF at
+    `_SNIPPET_PX_PER_PT` per card point. `None` when the page or the spot is not there."""
+    size = sizes.of(pdf, page)
+    if size is None:
+        return None
+    width, height = size
+    x0, y0, x1, y1 = spot
+    x0, x1 = sorted((x0, x1))
+    y0, y1 = sorted((y0, y1))
+    if x1 <= 0 or y1 <= 0 or x0 >= width or y0 >= height:
+        return None
+    pw, ph = panel
+    w, h = max(x1 - x0, 1.0), max(y1 - y0, 1.0)
+    with _PDFIUM_LOCK:
+        try:
+            document = pdfium.PdfDocument(str(pdf))
+        except Exception as failed:  # noqa: BLE001 - no snippet then, never a failed drawing
+            _log.warning("proof snippet open failed: %s", type(failed).__name__)
+            return None
+    try:
+        if not 1 <= page <= len(document):
+            return None
+        printed = _text_height(pdf, page - 1, (x0, y0, x1, y1))
+        text_h = min(h, w * 1.6)
+        share = _VALUE_SHARE
+        if printed is not None and max(w, h) <= 8 * printed:
+            # The value's own printed height when the drawing's text gives it (a box drawn round
+            # a small value is often much bigger than the value).
+            text_h, share = printed, 1.0
+        zoom = min(_VALUE_PT / text_h, share * pw / w, share * ph / h, _ZOOM_MAX)
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        if view is not None:
+            v0, v1 = sorted((view[0], view[2]))
+            u0, u1 = sorted((view[1], view[3]))
+            fit = min(_VALUE_SHARE * pw / max(v1 - v0, 1.0), _VALUE_SHARE * ph / max(u1 - u0, 1.0))
+            if fit < zoom:
+                zoom = max(fit, min(zoom, _VALUE_MIN_PT / text_h))
+                cx, cy = (max(v0, 0.0) + min(v1, width)) / 2, (max(u0, 0.0) + min(u1, height)) / 2
+        zoom = max(zoom, min(pw / width, ph / height))
+        win_w, win_h = min(pw / zoom, width), min(ph / zoom, height)
+        # The value stays inside the window, whatever the view's centre.
+        cx = min(max(cx, x1 - win_w / 2 + 2), x0 + win_w / 2 - 2)
+        cy = min(max(cy, y1 - win_h / 2 + 2), y0 + win_h / 2 - 2)
+        left = min(max(cx - win_w / 2, 0.0), width - win_w)
+        top = min(max(cy - win_h / 2, 0.0), height - win_h)
+        window = (left, top, left + win_w, top + win_h)
+        drawn = min(pw / win_w, ph / win_h)
+        scale = min(drawn * _SNIPPET_PX_PER_PT, _SNIPPET_MAX_PX / max(win_w, win_h))
+        with _PDFIUM_LOCK:
+            bitmap = document[page - 1].render(
+                scale=scale,
+                crop=(left, height - (top + win_h), width - (left + win_w), top),
+                may_draw_forms=True,
+            )
+            picture = bitmap.to_pil().convert("RGB")
+    except Exception as failed:  # noqa: BLE001 - no snippet then
+        _log.warning("proof snippet render failed: %s", type(failed).__name__)
+        return None
+    finally:
+        with _PDFIUM_LOCK:
+            document.close()
+    out = io.BytesIO()
+    picture.save(out, format="PNG", optimize=True)
+    return Shot(out.getvalue(), window, (x0, y0, x1, y1))
+
+
+def _printed_chars(pdf: Path, index: int) -> Sequence[Any]:
+    """The page's printed characters, with those of its pasted drawings (`verify_value`'s own
+    reader, cached per file version); none when it cannot read them."""
+    try:
+        verify = import_module("app.review.assistant.verify_value")
+        return tuple(verify._read_page(pdf, index).chars)
+    except Exception as failed:  # noqa: BLE001 - the box's own size is used then
+        _log.warning("proof drawing text read failed: %s", type(failed).__name__)
+        return ()
+
+
+def _text_height(pdf: Path, index: int, spot: Box) -> float | None:
+    """The height of the printed digits inside `spot` (their median), or `None` when the drawing
+    has no such text there (drawn lines, a scan)."""
+    sizes = sorted(
+        float(char.size)
+        for char in _printed_chars(pdf, index)
+        if char.text.isdigit() and char.size > 0.5 and _overlap(char.box, spot)
+    )
+    return sizes[len(sizes) // 2] if sizes else None
+
+
+class _Snippet(Flowable):  # type: ignore[misc]
+    """A snippet on a proof card: the picture fitted into the panel, a thin frame, and a ring in
+    `colour` round the value (vector strokes over the picture: exact colour, crisp in print)."""
+
+    def __init__(self, shot: Shot, width: float, height: float, colour: Color) -> None:
+        super().__init__()
+        self.shot, self.width, self.height, self.colour = shot, width, height, colour
+
+    def draw(self) -> None:
+        c = self.canv
+        left, top, right, bottom = self.shot.window
+        scale = min(self.width / (right - left), self.height / (bottom - top))
+        shown_w, shown_h = (right - left) * scale, (bottom - top) * scale
+        ox, oy = (self.width - shown_w) / 2, (self.height - shown_h) / 2
+        c.saveState()
+        c.setFillColor(Color(0.97, 0.97, 0.97))
+        c.rect(0, 0, self.width, self.height, stroke=0, fill=1)
+        c.drawImage(_reader(self.shot.png), ox, oy, width=shown_w, height=shown_h, mask=None)
+        c.setStrokeColor(Color(0.78, 0.78, 0.78))
+        c.setLineWidth(0.6)
+        c.rect(0, 0, self.width, self.height, stroke=1, fill=0)
+        clip = c.beginPath()
+        clip.rect(0, 0, self.width, self.height)
+        c.clipPath(clip, stroke=0, fill=0)
+        x0, y0, x1, y1 = self.shot.spot
+        a0 = ox + (x0 - left) * scale - _RING_PAD
+        a1 = ox + (x1 - left) * scale + _RING_PAD
+        b0 = oy + shown_h - (y1 - top) * scale - _RING_PAD
+        b1 = oy + shown_h - (y0 - top) * scale + _RING_PAD
+        c.setStrokeColor(self.colour)
+        c.setLineWidth(_RING_W)
+        w, h = a1 - a0, b1 - b0
+        if max(w / max(h, 1.0), h / max(w, 1.0)) >= _LONG:
+            c.roundRect(a0, b0, w, h, min(8.0, min(w, h) / 2), stroke=1, fill=0)
+        else:
+            # An ellipse just round the value (its half-axes 1.3 times the padded box's).
+            ex, ey = (a0 + a1) / 2, (b0 + b1) / 2
+            rx, ry = w / 2 * 1.3, h / 2 * 1.3
+            c.ellipse(ex - rx, ey - ry, ex + rx, ey + ry, stroke=1, fill=0)
+        c.restoreState()
+
+
+class Legend(Flowable):  # type: ignore[misc]
+    """The cover's legend, drawn as the marks look on the sheets (#1804): a red cloud round a
+    value with its C-number marker, the note's green should-be, and what each means."""
+
+    HEIGHT: Final = 58.0
+
+    def __init__(self, width: float) -> None:
+        super().__init__()
+        self.width, self.height = width, self.HEIGHT
+
+    def draw(self) -> None:
+        c = self.canv
+        c.saveState()
+        c.setStrokeColor(Color(0.85, 0.85, 0.85))
+        c.setLineWidth(0.6)
+        c.rect(0, 0, self.width, self.height, stroke=1, fill=0)
+        y = self.height / 2
+        # The cloud round a value, and its marker.
+        c.setFont(_NOTE_FONT, 12)
+        c.setFillColor(_DARK)
+        c.drawString(32, y - 4, '46"')
+        c.setStrokeColor(RED)
+        c.setLineWidth(1.4)
+        _cloud(c, 26, y - 10, 58, y + 12, 4.0)
+        c.setFillColor(RED)
+        c.setStrokeColor(white)
+        c.circle(24, y + 13, _MARKER_RADIUS, stroke=1, fill=1)
+        c.setFillColor(white)
+        c.setFont(_NOTE_BOLD, 7.5)
+        c.drawCentredString(24, y + 10.4, "07")
+        # The note's words.
+        x = 74.0
+        pieces: list[tuple[str, str, Color]] = [
+            ('46"', _NOTE_BOLD, RED),
+            ("  should be  ", _NOTE_FONT, _GREY),
+            ('37"', _NOTE_BOLD, GREEN),
+        ]
+        for text, font, colour in pieces:
+            c.setFont(font, 11)
+            c.setFillColor(colour)
+            c.drawString(x, y - 4, text)
+            x += _measure(text, font, 11)
+        lines = (
+            ("Red cloud: ", "the vendor's value that is wrong.", RED),
+            ("Green: ", "what it should be (the proof card names the drawing or rule).", GREEN),
+            ("07 = C-07: ", "the comment number in the letter and the issue register.", _DARK),
+        )
+        x = max(x + 24, 230.0)
+        for row, (head, rest, colour) in enumerate(lines):
+            ty = self.height - 16 - row * 14
+            c.setFont(_NOTE_BOLD, 9.5)
+            c.setFillColor(colour)
+            c.drawString(x, ty, head)
+            c.setFont(_NOTE_FONT, 9.5)
+            c.setFillColor(_DARK)
+            c.drawString(x + _measure(head, _NOTE_BOLD, 9.5), ty, rest)
+        c.restoreState()
+
+
+def _reader(png: bytes) -> Any:
+    from reportlab.lib.utils import ImageReader  # type: ignore[import-untyped]
+
+    return ImageReader(io.BytesIO(png))
+
+
+class _Panel(Flowable):  # type: ignore[misc]
+    """A proof card's panel with no snippet: words in its middle (the worked sum, GV's rule, the
+    reviewer's value), on the same light ground and frame as a snippet."""
+
+    def __init__(self, story: Sequence[Any], width: float, height: float) -> None:
+        super().__init__()
+        self.story, self.width, self.height = list(story), width, height
+
+    def draw(self) -> None:
+        c = self.canv
+        c.saveState()
+        c.setFillColor(Color(0.97, 0.97, 0.97))
+        c.setStrokeColor(Color(0.78, 0.78, 0.78))
+        c.setLineWidth(0.6)
+        c.rect(0, 0, self.width, self.height, stroke=1, fill=1)
+        c.restoreState()
+        heights = [part.wrap(self.width - 24, self.height)[1] for part in self.story]
+        y = (self.height + sum(heights)) / 2
+        for part, h in zip(self.story, heights, strict=True):
+            y -= h
+            part.drawOn(c, 12, y)
 
 
 def _styles() -> dict[str, ParagraphStyle]:
@@ -685,7 +1081,7 @@ def _cover(
             Spacer(1, 8),
         ]
     tiles = [
-        ("Wrong", counts["clouded"], RED, "proved by code, clouded"),
+        ("Wrong", counts["clouded"], RED, "red marks, each with a proof card"),
         # The reviewer's "Not a problem" is Right on the vendor's files (#1766).
         ("Right", counts["right"] + counts["dismissed"], GREEN, "matches the architect"),
         ("Not compared", counts["not_compared"], _LIST_GREY, "listed apart, with the reason"),
@@ -715,16 +1111,11 @@ def _cover(
     story += [grid, Spacer(1, 14)]
     story.append(Paragraph(f"<b>The rule:</b> {escape(RULE_LINE)}", body))
     story.append(Spacer(1, 4))
-    legend = [
-        _coloured("", LEGEND_LINES[0], RED),
-        _coloured("", LEGEND_LINES[1], GREEN),
-        f'<font color="{_hex(_LIST_GREY)}">{escape(LEGEND_LINES[2])}</font>',
-    ]
-    story += [Paragraph(line, body) for line in legend]
+    story += [Spacer(1, 4), Legend(width - 72), Spacer(1, 4)]
     story.append(
         Paragraph(
-            "Page numbers are the vendor file's own pages; each clouded item has a proof entry "
-            "after the sheets.",
+            "Page numbers are the vendor file's own pages. Each red mark has a proof card after "
+            "the sheets, under its C-number. " + escape(LEGEND_LINES[2]),
             grey,
         )
     )
@@ -740,7 +1131,7 @@ def _cover(
             Paragraph(escape(str(item.finding.get("page") or "")), body),
             Paragraph(escape(item_words(item.finding)), body),
             Paragraph(_coloured("", vendor_text(vendor_value(item.finding), "") or "", RED), body),
-            Paragraph(_coloured("", vendor_text(should_be(item.finding), "") or "", GREEN), body),
+            Paragraph(_coloured("", _cover_should_be(item.finding), GREEN), body),
         ]
         for item in clouded
     ]
@@ -767,6 +1158,13 @@ def _cover(
         )
         story.append(table)
     return story
+
+
+def _cover_should_be(finding: Mapping[str, Any]) -> str:
+    """The cover's green column: `97 1/2" (Architect drawing, arch.pdf page 1)`."""
+    value = proof_words.should_text(finding)
+    reference = proof_words.reference_words(finding, note=False)
+    return vendor_text(f"{value} ({reference})" if value else reference, "") or ""
 
 
 #: A round-2 status as the cover says it, and its colour (#1603), in the comment letter's words:
@@ -832,13 +1230,13 @@ def _round_section(
         table = Table(
             [head, *rows],
             colWidths=[
-                24,
+                38,
                 36,
                 usable * 0.3,
                 usable * 0.14,
                 usable * 0.14,
                 usable * 0.14,
-                usable * 0.28 - 60,
+                usable * 0.28 - 74,
             ],
             repeatRows=1,
             hAlign="LEFT",
@@ -856,132 +1254,329 @@ def _round_section(
     return story
 
 
-def _proof_entries(
-    styles: Mapping[str, ParagraphStyle], items: Sequence[_ProofItem], width: float
-) -> list[Any]:
-    body, small, grey = styles["body"], styles["small"], styles["grey"]
+#: A proof card: its inner padding, the gap between its two panels, and the room its words take
+#: besides the panels (points), so two cards fit on a page.
+_CARD_PAD: Final = 10.0
+_PANEL_GAP: Final = 16.0
+_CARD_WORDS_PT: Final = 168.0
+
+
+def panel_size(size: tuple[float, float]) -> tuple[float, float]:
+    """A proof card's panel (width, height) on a page of `size`: half the card each, about twice
+    as wide as tall, low enough that two cards fit on a page."""
+    width, height = size
     usable = width - 72
-    max_w = usable * _CROP_MAX_W
-    story: list[Any] = [Paragraph("Proof: how code proved each clouded item", styles["section"])]
-    for item in items:
-        finding = item.finding
-        vendor_page = finding.get("page")
-        box = _box_of(finding.get("arch_box"))
-        architect_page = box[1] if box is not None else finding.get("vs_page")
-        head = Paragraph(
-            f'<font color="{_hex(RED)}"><b>{escape(tag(item.finding, item.number))}</b></font>'
-            "&nbsp;&nbsp;"
-            f"<b>{escape(item_words(finding))}</b>",
-            styles["head"],
-        )
-        left: list[Any] = [Paragraph(_coloured("Governs: ", governs(finding), GREEN), small)]
-        # A value GV's reviewer typed (#1803) is never shown as the vendor's own parts or span.
-        typed = governs(finding) == REVIEWER
-        own = None if typed else vendor_own(finding)
-        if item.architect_png is not None:
-            left.insert(0, _image(item.architect_png, max_w, _CROP_MAX_H))
-        elif own == "sum":
-            parts = " + ".join(str(part) for part in finding.get("parts") or [])
-            summed = should_be_value(finding)
-            left.insert(
-                0,
-                Paragraph(
-                    escape(f"{_vendor(parts)} = " if parts else "The parts add up to ")
-                    + _coloured("", summed, GREEN)
-                    + "<br/>"
-                    + escape(
-                        f"The vendor prints {_vendor(vendor_value(finding))} for their total."
-                    ),
-                    body,
-                ),
-            )
-        elif typed:
-            left.insert(
-                0,
-                Paragraph(
-                    _coloured("", should_be_value(finding), GREEN)
-                    + "<br/>"
-                    + escape("(the value GV's reviewer gave)"),
-                    body,
-                ),
-            )
+    pw = (usable - 2 * _CARD_PAD - _PANEL_GAP) / 2
+    ph = min(pw * 0.45, max(100.0, (height - 72 - 48) / 2 - _CARD_WORDS_PT))
+    return pw, ph
+
+
+def _runs_markup(runs: Sequence[proof_words.Run]) -> str:
+    """The sentence's pieces as Paragraph markup: the vendor's value red, the should-be green."""
+    out: list[str] = []
+    for words, role in runs:
+        text = escape(_vendor(words) if role != "plain" else words)
+        if role == "vendor":
+            out.append(f'<font color="{_hex(RED)}"><b>{text}</b></font>')
+        elif role == "should":
+            out.append(f'<font color="{_hex(GREEN)}"><b>{text}</b></font>')
         else:
-            left.insert(
-                0,
-                Paragraph(
-                    _coloured("", str(finding.get("architect") or ""), GREEN)
-                    + "<br/>"
-                    + escape("(no architect's picture: the value is a rule or a sum, not a spot)"),
-                    body,
-                ),
-            )
-        right: list[Any] = [Paragraph(_coloured("Vendor drew: ", "", RED), small)]
-        if item.vendor_png is not None:
-            right.insert(0, _image(item.vendor_png, max_w, _CROP_MAX_H))
-        else:
-            right.insert(0, Paragraph(escape("No picture of the vendor's spot."), grey))
-        right[-1] = Paragraph(_coloured("Vendor drew: ", _as_printed(finding), RED), small)
-        pair = Table(
-            [
-                [
-                    Paragraph(escape(LEFT_CAPTIONS[own]), styles["caption"]),
-                    Paragraph("Vendor (red: the wrong value)", styles["caption"]),
-                ],
-                [left, right],
-            ],
-            colWidths=[usable / 2, usable / 2],
-            hAlign="LEFT",
-        )
-        pair.setStyle(
-            TableStyle(
-                [
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                ]
-            )
-        )
-        pages = f"Vendor page {vendor_page}"
+            out.append(text)
+    return "".join(out)
+
+
+_REFERENCE_CAPTIONS: Final[Mapping[str, str]] = {
+    "architect": "Architect drawing",
+    "prototype": "Brand prototype (reference)",
+    "span": "Vendor's other dimension of the same span",
+    "sum": "The vendor's own parts, added up",
+    "rule": "GV rule",
+    "reviewer": "GV's reviewer",
+}
+_REFERENCE_SHOWS: Final[Mapping[str, str]] = {
+    "architect": "Architect shows ",
+    "prototype": "Brand prototype shows ",
+    "span": "Other dimension shows ",
+    "sum": "Parts add up to ",
+    "rule": "GV rule requires ",
+    "reviewer": "Should be ",
+}
+
+
+def _card_styles(styles: Mapping[str, ParagraphStyle]) -> dict[str, ParagraphStyle]:
+    body = styles["body"]
+    return {
+        "tag": ParagraphStyle(
+            "tag", parent=body, fontName=_NOTE_BOLD, fontSize=10, leading=12, textColor=white,
+            alignment=1,
+        ),
+        "title": ParagraphStyle("card_title", parent=body, fontName=_NOTE_BOLD, fontSize=11.5,
+                                leading=14),
+        "where": ParagraphStyle("card_where", parent=body, fontSize=8.5, leading=11,
+                                textColor=_LIST_GREY, alignment=2),
+        "sentence": ParagraphStyle("sentence", parent=body, fontSize=12, leading=15.5),
+        "caption": ParagraphStyle("card_caption", parent=body, fontName=_NOTE_BOLD, fontSize=7.5,
+                                  leading=10, textColor=_LIST_GREY),
+        "under": ParagraphStyle("under", parent=body, fontSize=9.5, leading=12),
+        "label": ParagraphStyle("fact_label", parent=body, fontName=_NOTE_BOLD, fontSize=8.5,
+                                leading=11, textColor=_LIST_GREY),
+        "fact": ParagraphStyle("fact", parent=body, fontSize=8.5, leading=11),
+        "big": ParagraphStyle("big", parent=body, fontName=_NOTE_BOLD, fontSize=14, leading=18),
+        "line": ParagraphStyle("panel_line", parent=body, fontSize=11, leading=14),
+    }  # fmt: skip
+
+
+def _where_words(finding: Mapping[str, Any], areas: Mapping[int, str]) -> str:
+    """ "Vendor page 4 · Kitchenette": the vendor's page and its area, when known."""
+    page = finding.get("page")
+    if not page:
+        return ""
+    area = areas.get(int(page), "") if isinstance(page, int) else ""
+    area = vendor_text(area, "") or ""
+    return f"Vendor page {page}" + (f" · {area}" if area else "")
+
+
+def _reference_caption(finding: Mapping[str, Any], kind: str) -> str:
+    words = _REFERENCE_CAPTIONS[kind]
+    box = _box_of(finding.get("arch_box"))
+    if kind in ("architect", "prototype", "span") and box is not None:
         separate = architect_file(finding)
-        if separate is not None and architect_page:
-            pages += f"; the architect's file {separate}, page {architect_page}"
-        elif architect_page and architect_page != vendor_page:
-            pages += f"; architect page {architect_page}"
-        elif box is not None:
-            pages += " (architect's drawing on the same sheet)"
-        lines = [
-            Paragraph(
-                _coloured("Vendor: ", vendor_value(finding), RED)
-                + "&nbsp;&nbsp;&nbsp;"
-                + _coloured("Should be: ", should_be(finding), GREEN),
-                body,
-            ),
-            Paragraph(
-                # A Wrong the reviewer made (#1803) is the reviewer's decision, with the value it
-                # should be (and the reviewer's note), never code's proof.
-                (
-                    _reviewer_line(finding)
-                    if reviewer_decided(finding)
-                    else f"<b>Proved by:</b> {escape(vendor_text(proof_line(finding), 'code') or 'code')}"
-                ),
-                body,
-            ),
-            Paragraph(escape(f"{pages}. {item.where}"), grey),
+        if separate is not None:
+            return f"{words} · {separate} page {box[1]}"
+        if box[1] != finding.get("page"):
+            return f"{words} · page {box[1]}"
+        return f"{words} · same sheet"
+    return words
+
+
+def _sum_panel(
+    finding: Mapping[str, Any], cs: Mapping[str, ParagraphStyle], pw: float, ph: float
+) -> Any:
+    parts = [_vendor(str(part)) for part in finding.get("parts") or [] if _vendor(str(part))]
+    total = _vendor(should_be_value(finding))
+    printed = _vendor(vendor_value(finding))
+    story: list[Any] = []
+    if parts and len(parts) * cs["line"].leading + 40 <= ph:
+        story += [
+            Paragraph(escape(("+ " if n else "") + part), cs["line"])
+            for n, part in enumerate(parts)
         ]
-        story.append(KeepTogether([head, Spacer(1, 3), pair, Spacer(1, 3), *lines, Spacer(1, 12)]))
+    elif parts:
+        story.append(Paragraph(escape(" + ".join(parts)), cs["line"]))
+    story += [
+        Paragraph(_coloured("= ", total, GREEN), cs["big"]),
+        Paragraph(_coloured("printed ", printed, RED), cs["under"]),
+    ]
+    return _Panel(story, pw, ph)
+
+
+def _words_panel(
+    finding: Mapping[str, Any],
+    kind: str,
+    cs: Mapping[str, ParagraphStyle],
+    pw: float,
+    ph: float,
+) -> Any:
+    """The right panel when there is no snippet of the reference: GV's rule, GV's reviewer, or the
+    architect's value with no spot to show."""
+    should = proof_words.should_text(finding)
+    story: list[Any] = [Paragraph(_coloured("", should, GREEN), cs["big"])]
+    worked = proof_words.worked_line(finding)
+    if worked:
+        story.append(Paragraph(escape(worked), cs["fact"]))
+    if kind == "reviewer":
+        story.append(
+            Paragraph(escape("No drawing prints this value: GV's reviewer gave it."), cs["fact"])
+        )
+    elif kind == "architect":
+        printed = _vendor(str(finding.get("architect") or ""))
+        if printed and printed != should:
+            story.append(Paragraph(escape(f"Printed {printed}"), cs["fact"]))
+        story.append(Paragraph(escape("No picture of the architect's spot."), cs["fact"]))
+    return _Panel(story, pw, ph)
+
+
+def _where_marked(where: str, label: str) -> str:
+    """Where the cloud of an item with no vendor's spot is: "The C-09 cloud is on page 17, at the
+    architect's value." (the placing's "Marked on page 17."), else the placing's own words."""
+    found = re.match(r"Marked on page (\d+)\.?$", where.strip())
+    if found:
+        return f"The {label} cloud is on page {found.group(1)}, at the architect's value."
+    return _vendor(where)
+
+
+def _card(
+    item: _ProofItem,
+    styles: Mapping[str, ParagraphStyle],
+    usable: float,
+    panel: tuple[float, float],
+    areas: Mapping[int, str],
+) -> Any:
+    """One red mark's proof card (#1804): its C-number and title, the one sentence, the vendor's
+    snippet ringed red beside the reference ringed green, then the sum, the reference and how it
+    was checked."""
+    cs = _card_styles(styles)
+    finding = item.finding
+    pw, ph = panel
+    kind = proof_words.reference_kind(finding)
+    inner = usable - 2 * _CARD_PAD
+    rounds = finding.get(_ROUND_KEY)
+    title = escape(item_words(finding))
+    if rounds is not None and getattr(rounds, "status", None) == "new":
+        title = f'<font color="{_hex(RED)}">New</font>&nbsp;&nbsp;{title}'
+    pill = Table([[Paragraph(escape(tag(finding, item.number)), cs["tag"])]], colWidths=[46])
+    pill.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), RED),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    head = Table(
+        [[pill, Paragraph(title, cs["title"]), Paragraph(escape(_where_words(finding, areas)), cs["where"])]],
+        colWidths=[56, inner - 56 - 190, 190],
+    )  # fmt: skip
+    head.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+    said = Paragraph(_runs_markup(proof_words.sentence_runs(finding)), cs["sentence"])
+    vendor_words = _vendor(vendor_value(finding))
+    absent = proof_words.missing(vendor_words)
+    shown = (
+        _coloured("", "Not on the vendor's sheets", RED)
+        if absent
+        else _coloured("Vendor shows ", vendor_words, RED)
+    )
+    if item.vendor is not None:
+        left: Any = _Snippet(item.vendor, pw, ph, RED)
+    else:
+        why = (
+            "Every vendor sheet of the area was searched for it."
+            if absent
+            else "No picture of the vendor's spot."
+        )
+        left = _Panel([Paragraph(shown, cs["big"]), Paragraph(escape(why), cs["fact"])], pw, ph)
+    if item.reference is not None:
+        right: Any = _Snippet(item.reference, pw, ph, GREEN)
+    elif kind == "sum":
+        right = _sum_panel(finding, cs, pw, ph)
+    else:
+        right = _words_panel(finding, kind, cs, pw, ph)
+    vendor_page = finding.get("page")
+    shows = _REFERENCE_SHOWS[kind]
+    panels = Table(
+        [
+            [
+                Paragraph(escape(f"VENDOR'S DRAWING · PAGE {vendor_page}".upper()), cs["caption"]),
+                Paragraph(escape(_reference_caption(finding, kind).upper()), cs["caption"]),
+            ],
+            [left, right],
+            [
+                Paragraph(shown, cs["under"]),
+                Paragraph(_coloured(shows, proof_words.should_text(finding), GREEN), cs["under"]),
+            ],
+        ],
+        colWidths=[pw + _PANEL_GAP, pw],
+        hAlign="LEFT",
+    )
+    panels.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 1),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    facts: list[tuple[str, str]] = []
+    summed = proof_words.sum_line(finding)
+    if summed:
+        facts.append(("Sum", summed))
+    worked = proof_words.worked_line(finding)
+    if worked and kind != "rule":
+        facts.append(("Worked out", worked))
+    reference = proof_words.reference_words(finding)
+    facts.append(("Reference", reference))
+    checked = proof_words.checked_words(finding)
+    if not (checked == proof_words.REVIEWER_WORDS and reference.startswith(checked)):
+        facts.append(("Checked", checked))
+    if item.vendor is None and item.where:
+        facts.append(("Where", _where_marked(item.where, tag(finding, item.number))))
+    rows = [
+        [Paragraph(escape(label), cs["label"]), Paragraph(escape(_vendor(text)), cs["fact"])]
+        for label, text in facts
+        if _vendor(text)
+    ]
+    table = Table(rows, colWidths=[70, inner - 70], hAlign="LEFT")
+    table.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 1),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+            ]
+        )
+    )
+    card = Table(
+        [[head], [said], [panels], [table]],
+        colWidths=[usable],
+        hAlign="LEFT",
+    )
+    card.setStyle(
+        TableStyle(
+            [
+                ("BOX", (0, 0), (-1, -1), 0.6, Color(0.8, 0.8, 0.8)),
+                ("LINEBEFORE", (0, 0), (0, -1), 3, RED),
+                ("LEFTPADDING", (0, 0), (-1, -1), _CARD_PAD),
+                ("RIGHTPADDING", (0, 0), (-1, -1), _CARD_PAD),
+                ("TOPPADDING", (0, 0), (-1, 0), _CARD_PAD),
+                ("TOPPADDING", (0, 1), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, -1), (-1, -1), _CARD_PAD),
+            ]
+        )
+    )
+    return card
+
+
+def _proof_entries(
+    styles: Mapping[str, ParagraphStyle],
+    items: Sequence[_ProofItem],
+    width: float,
+    panel: tuple[float, float],
+    areas: Mapping[int, str] | None = None,
+) -> list[Any]:
+    """The proof pages: one card per red mark, in the clouded order, two to a page."""
+    usable = width - 72
+    story: list[Any] = [
+        Paragraph("Proof: how each red mark was checked", styles["section"]),
+        Paragraph(
+            escape(
+                "Each card: on the left the vendor's drawing with the wrong value ringed in red; "
+                "on the right what it should be, ringed in green, and where that comes from."
+            ),
+            styles["grey"],
+        ),
+        Spacer(1, 6),
+    ]
+    for item in items:
+        story.append(KeepTogether([_card(item, styles, usable, panel, areas or {}), Spacer(1, 12)]))
     return story
-
-
-def _reviewer_line(finding: Mapping[str, Any]) -> str:
-    """A reviewer's Wrong on its proof card (#1803): "Decided by GV's reviewer: should be 34 1/2".
-    Hinge side." The note only as the vendor may read it."""
-    decision = finding.get("decision")
-    note = decision.get("note") if isinstance(decision, Mapping) else None
-    words = f"should be {should_be_value(finding)}"
-    said = vendor_text(note, "") if note else ""
-    if said:
-        words += f". {said}"
-    return f"<b>Decided by GV's reviewer:</b> {escape(words)}"
 
 
 def _as_printed(finding: Mapping[str, Any]) -> str:
@@ -1102,6 +1697,7 @@ def proof_markup_pdf(
     action: Any = None,
     action_stamp: str | None = None,
     not_compared: int | None = None,
+    areas: Mapping[int, str] | None = None,
 ) -> ProofCounts:
     """The zero-click cloud drawing of a full check (see the module's words) written to `out`.
 
@@ -1118,7 +1714,8 @@ def proof_markup_pdf(
     package's stable comment number) is printed on its cloud, note and entries instead of its
     place in the list.
     `not_compared`: how many rows the Not-compared list has (its product scope), shown on the
-    cover; else counted here. Returns the counts the cover shows."""
+    cover; else counted here. `areas`: the vendor's page -> its area's title, named on each proof
+    card ("Vendor page 4 · Kitchen"). Returns the counts the cover shows."""
     base = base if base is not None else clone_pdf(source)
     pdf = base.pdf
     known = dict(files or {})
@@ -1183,6 +1780,7 @@ def proof_markup_pdf(
         # A round-2 mark sits on code's own label (already tight), so it needs no search; it may
         # share its number and page with the round-1 mark (both rounds on one sheet).
         spots = _spots(source, [m for m in marks if not _later(m)])
+        _tighten(source, marks, spots)
         laid: dict[int, list[_Placed]] = {}
         clean = io.BytesIO()
         if by_page or base.dropped:
@@ -1208,7 +1806,15 @@ def proof_markup_pdf(
                         )
                         for m in by_page[number]
                     ]
-                    _layout(_shown_size(pdf.pages[number - 1]), items, _ink(document, number - 1))
+                    _layout(
+                        _shown_size(pdf.pages[number - 1]),
+                        items,
+                        _ink(document, number - 1),
+                        [
+                            *number_boxes(document, number - 1),
+                            *_digit_cells(source, number - 1),
+                        ],
+                    )
                     laid[number] = items
             finally:
                 with _PDFIUM_LOCK:
@@ -1229,14 +1835,24 @@ def proof_markup_pdf(
             if not item.mark.extra
         }
         proof_items: list[_ProofItem] = []
+        panel = panel_size(_shown_size(pdf.pages[0]))
         for number, finding, page, box, where in clouded:
-            vendor_png = None
-            if page is not None and box is not None:
+            vendor_shot = None
+            # Only the vendor's own spot is ringed red: an item placed at the architect's spot
+            # (missing from the vendor's sheets) gets the words "not on the vendor's sheets".
+            if (
+                page is not None
+                and box is not None
+                and isinstance(finding.get("vendor_box"), Mapping)
+            ):
                 spot = cloud_spot.get(number, box)
-                vendor_png = boxed_crop(crop_source, page, spot, RED, sizes, cache)
-            architect_png = None
+                # A sum's snippet shows as much of its string as it can (the AI's box).
+                view = box if proof_words.reference_kind(finding) == "sum" else None
+                vendor_shot = snippet(crop_source, page, spot, panel, sizes, view)
+            reference_shot = None
             arch = _box_of(finding.get("arch_box"))
-            if arch is not None and finding.get("source") not in ("rules", "vendor_arithmetic"):
+            kind = proof_words.reference_kind(finding)
+            if arch is not None and kind in ("architect", "prototype", "span"):
                 name, arch_page, arch_area = arch
                 arch_pdf = known.get(name) if name else source
                 if arch_pdf == source:
@@ -1245,8 +1861,8 @@ def proof_markup_pdf(
                     tight = _tight(
                         arch_pdf, arch_page, arch_area, str(finding.get("architect") or ""), budget
                     )
-                    architect_png = boxed_crop(arch_pdf, arch_page, tight, GREEN, sizes, cache)
-            proof_items.append(_ProofItem(number, finding, where, vendor_png, architect_png))
+                    reference_shot = snippet(arch_pdf, arch_page, tight, panel, sizes)
+            proof_items.append(_ProofItem(number, finding, where, vendor_shot, reference_shot))
         marked = io.BytesIO()
         pdf.save(marked, deterministic_id=True)
     finally:
@@ -1320,7 +1936,9 @@ def proof_markup_pdf(
     cover += _round_section(styles, rounds, numbers, size[0])
     parts = [("Cover", cover)]
     if proof_items:
-        parts.append(("Proof", _proof_entries(styles, proof_items, size[0])))
+        parts.append(
+            ("Proof", _proof_entries(styles, proof_items, size[0], panel_size(size), areas))
+        )
     parts.append(("Notes", notes))
     made = _pages_pdf(size, parts)
     with pikepdf.open(io.BytesIO(marked.getvalue())) as sheets:

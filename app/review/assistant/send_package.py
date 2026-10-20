@@ -8,7 +8,8 @@ one download the vendor can be sent as it is, with no editing:
 2. **The comment letter** (`comment_letter.comment_letter_pdf`): a transmittal-style letter with the
    submittal's identity, the review result and one entry per comment.
 3. **The issue register** (XLSX, every cell text): the submittal sheet, then one row per item,
-   Wrong / Right / Not compared, with a blank "Vendor response" column.
+   Wrong / Right / Not compared, with a blank "Vendor response" column. A Wrong row's "Comment" is
+   the proof card's own sentence (`proof_words`, #1804), its "Why" how it was checked.
 4. **The Not-compared list** (PDF and workbook), when the full check made it. GV's own check report
    never goes in (`internal_report`).
 
@@ -35,6 +36,7 @@ import csv
 import hashlib
 import io
 import logging
+import re
 import zipfile
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -42,14 +44,13 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from app.review.assistant import not_compared
+from app.review.assistant import not_compared, proof_words
 from app.review.assistant.impact import by_impact
 from app.review.assistant.proof import (
     NO_REQUIREMENT_REASON,
     REVIEWER,
     governs,
     proof_group,
-    proof_line,
     proof_of,
     should_be_value,
     stated_requirement,
@@ -146,14 +147,17 @@ REGISTER_COLUMNS: Final = (
     "Item",
     "Status",
     "Action",
+    "Comment",
     "Vendor value",
     "Should be",
-    "Source",
-    "Proof",
+    "Reference",
+    "Why",
     "Impact rank",
     "Round history",
     "Vendor response",
 )
+#: Where each column sits in a register row (`register_rows`).
+_COL: Final[Mapping[str, int]] = {name: at for at, name in enumerate(REGISTER_COLUMNS)}
 #: What governs, as the letter's "… requires" line names it.
 _WHO: Final[Mapping[str, str]] = {
     "rules": "GV rule",
@@ -471,6 +475,20 @@ class Correction:
     """"New" or "Previous comment not addressed" on a later round, else ""."""
     fabrication: bool
     finding_id: str
+    sentence: tuple[tuple[str, str], ...] = ()
+    """The one sentence (`proof_words.sentence_runs`): the proof card's, piece by piece, the
+    vendor's value marked `vendor` and the should-be `should` (#1804)."""
+    sum_line: str = ""
+    """The sum written out when it is the proof (`2" + 86 1/2" + 2" = 90 1/2", not the 88 1/2"
+    printed`), or GV's rule's working; else ""."""
+    checked: str = ""
+    """How it was checked, in the vendor's words ("Proved by code: …", "Decided by GV's
+    reviewer")."""
+
+    @property
+    def words(self) -> str:
+        """The sentence as one line."""
+        return "".join(text for text, _role in self.sentence)
 
 
 @dataclass(frozen=True, slots=True)
@@ -564,11 +582,14 @@ def corrections_of(
                 item=_item(finding),
                 vendor_shows=vendor_text(vendor_value(finding), "see the cloud drawing") or "",
                 requires=requires_words(finding),
-                source=vendor_text(governs(finding), "GV") or "GV",
+                source=vendor_text(proof_words.reference_words(finding), "GV") or "GV",
                 action=item_action(finding),
                 round_word=round_word,
                 fabrication=changes_fabrication(finding),
                 finding_id=finding_id,
+                sentence=tuple(proof_words.sentence_runs(finding)),
+                sum_line=proof_words.sum_line(finding) or proof_words.worked_line(finding) or "",
+                checked=proof_words.checked_words(finding),
             )
         )
     return out
@@ -590,7 +611,7 @@ def _previous(rounds: Any, labels: Mapping[str, str], clouded: set[str]) -> list
         elif item.status == "still_wrong":
             detail = f"vendor still shows {item.now or item.was}; requires {item.should_be}"
         else:
-            detail = item.reason or ""
+            detail = round_reason_words(item.reason)
         out.append(
             Previous(
                 label=labels.get(item.finding_id, ""),
@@ -600,6 +621,24 @@ def _previous(rounds: Any, labels: Mapping[str, str], clouded: set[str]) -> list
             )
         )
     return out
+
+
+#: The round-2 check's working words (`round_check`): measurements in points, "code would not
+#: guess". The vendor reads why in plain words (#1804).
+_ROUND_WORKING: Final = re.compile(
+    r"\s*\((?:its values miss by|\d+)[^)]*\)|;\s*code would not guess|\s*\(\d+\)", re.IGNORECASE
+)
+
+
+def round_reason_words(reason: object) -> str:
+    """Why a previous comment could not be followed, as the vendor reads it: "round 2 is a
+    different view or redrawn, so it could not be lined up with round 1"."""
+    words = _ROUND_WORKING.sub("", " ".join(str(reason or "").split())).strip(" ;,")
+    if words.startswith("round 2 is a different view or redrawn"):
+        return "round 2 is a different view or redrawn, so it could not be lined up with round 1"
+    if words.startswith("too few values printed in both rounds"):
+        return "too few values are printed in both rounds to line them up"
+    return vendor_text(words, "") or ""
 
 
 def letter_of(
@@ -681,7 +720,8 @@ def _round_history(
 
 def _proof_words(finding: Mapping[str, Any], status: Status) -> str:
     if status == "wrong":
-        return proof_line(finding)
+        # The proof card's words (#1804): never the reviewer's login or the check's machinery.
+        return proof_words.checked_words(finding)
     if proof_group(finding) == "dismissed":
         return reviewer_right(finding)
     if status == "right" and proof_group(finding) == "clouded":
@@ -721,6 +761,7 @@ def register_rows(
         # The comment number is shown where the item is (or was) a comment to the vendor: a Wrong
         # row, or a previous comment this round closed.
         commented = status == "wrong" or finding_id in closed
+        wrong = status == "wrong"
         groups[status].append(
             [
                 context.labels.get(finding_id, "") if commented else "",
@@ -730,9 +771,14 @@ def register_rows(
                 " ".join(str(finding.get("item") or "").split()),
                 STATUS_WORDS[status],
                 _item_action_of(finding, status),
+                _comment_words(finding) if wrong else "",
                 vendor_value(finding),
-                should_be_value(finding) if status != "not_compared" else "",
-                governs(finding),
+                (
+                    (proof_words.should_text(finding) if wrong else should_be_value(finding))
+                    if status != "not_compared"
+                    else ""
+                ),
+                proof_words.reference_words(finding) if wrong else governs(finding),
                 _proof_words(finding, status),
                 "",
                 _round_history(finding, status, by_round, context.round_no),
@@ -741,13 +787,29 @@ def register_rows(
         )
     rows = [*groups["wrong"], *groups["not_compared"], *groups["right"]]
     for rank, row in enumerate(rows[: len(groups["wrong"]) + len(groups["not_compared"])], start=1):
-        row[11] = str(rank)
+        row[_COL["Impact rank"]] = str(rank)
     # The guard on internal words (#1622): every cell is vendor-facing.
+    guarded = ("Area", "Product", "Comment", "Vendor value", "Should be", "Reference", "Why",
+               "Round history")  # fmt: skip
     for row in rows:
-        row[4] = _item({"item": row[4], "page": int(row[1]) if row[1] else None})
-        for at in (2, 3, 7, 8, 9, 10, 12):
-            row[at] = vendor_text(row[at], "") or ""
+        row[_COL["Item"]] = _item(
+            {"item": row[_COL["Item"]], "page": int(row[1]) if row[1] else None}
+        )
+        for name in guarded:
+            row[_COL[name]] = vendor_text(row[_COL[name]], "") or ""
     return rows
+
+
+def _comment_words(finding: Mapping[str, Any]) -> str:
+    """The register's comment: the proof card's one sentence, then its sum or rule working
+    (#1804), so the register, the letter and the card say the same."""
+    said = proof_words.sentence(finding)
+    worked = proof_words.sum_line(finding) or proof_words.worked_line(finding)
+    return (
+        f"{said} Sum: {worked}."
+        if worked and proof_words.sum_line(finding)
+        else (f"{said} Worked out: {worked}." if worked else said)
+    )
 
 
 def submittal_rows(letter: Letter) -> list[list[str]]:

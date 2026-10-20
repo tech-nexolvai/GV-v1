@@ -228,25 +228,54 @@ def _corrections(letter: Letter, styles: Mapping[str, ParagraphStyle], width: fl
     for item in letter.corrections:
         page = f"Page {item.page}" if item.page is not None else "Page not marked"
         status = f" · {item.round_word}" if item.round_word else ""
-        lines = [
-            Paragraph(
-                f"<b>{escape(page)} · {escape(item.item)}</b>"
-                f'<font color="{_hex(_GREY)}"> · {escape(item.action)}{escape(status)}</font>',
-                styles["body"],
-            ),
-            Paragraph(
-                f'<font color="{_hex(_RED)}">Vendor shows <b>{escape(item.vendor_shows)}</b>'
-                "</font>",
-                styles["body"],
-            ),
-            Paragraph(
-                f'<font color="{_hex(_GREEN)}"><b>{escape(item.requires)}</b></font>',
-                styles["body"],
-            ),
-            Paragraph(f"Source: {escape(item.source)}", styles["label"]),
-        ]
+        head = Paragraph(
+            f"<b>{escape(page)} · {escape(item.item)}</b>"
+            f'<font color="{_hex(_GREY)}"> · {escape(item.action)}{escape(status)}</font>',
+            styles["body"],
+        )
+        if item.sentence:
+            # The proof card's own sentence (#1804): the letter, the register and the cloud
+            # drawing say the same thing in the same words.
+            lines = [head, Paragraph(_sentence(item.sentence), styles["body"])]
+            if item.sum_line:
+                lines.append(Paragraph(escape(item.sum_line), styles["body"]))
+            lines.append(
+                Paragraph(
+                    f"Reference: {escape(item.source)}"
+                    + (f" · {escape(item.checked)}" if item.checked else ""),
+                    styles["label"],
+                )
+            )
+        else:
+            lines = [
+                head,
+                Paragraph(
+                    f'<font color="{_hex(_RED)}">Vendor shows <b>{escape(item.vendor_shows)}</b>'
+                    "</font>",
+                    styles["body"],
+                ),
+                Paragraph(
+                    f'<font color="{_hex(_GREEN)}"><b>{escape(item.requires)}</b></font>',
+                    styles["body"],
+                ),
+                Paragraph(f"Source: {escape(item.source)}", styles["label"]),
+            ]
         story.append(_numbered(item.label, lines, styles, width))
     return story
+
+
+def _sentence(runs: tuple[tuple[str, str], ...]) -> str:
+    """The sentence's pieces as markup: the vendor's value red, the should-be green, both bold."""
+    out: list[str] = []
+    for text, role in runs:
+        words = escape(text)
+        if role == "vendor":
+            out.append(f'<font color="{_hex(_RED)}"><b>{words}</b></font>')
+        elif role == "should":
+            out.append(f'<font color="{_hex(_GREEN)}"><b>{words}</b></font>')
+        else:
+            out.append(words)
+    return "".join(out)
 
 
 def _story(letter: Letter, width: float) -> list[Any]:
