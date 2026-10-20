@@ -2214,10 +2214,14 @@ def helper_footer(
     *,
     pages: Sequence[int] | None = None,
     report_words: int = 300,
+    calls: int | None = None,
 ) -> str:
     """What the app adds to every helper's brief: its pages from the page map (`pages`, else the
     pages the lead's brief names), where the pictures are, the zoom tool, its budget and what to
-    return (a report of at most `report_words` words)."""
+    return (a report of at most `report_words` words). `calls`: a full check's roster helper's own
+    reading-call allowance, which code enforces and tells it when it ends (#1817: the lead review
+    of 16 pages read "about 12 tool calls" and marked pages "not opened: Budget" with most of its
+    money unspent); else the chat helpers' `HELPER_CALL_BUDGET`."""
     folder = workspace.set_folder
     try:
         status = json.loads((folder / "status.json").read_text(encoding="utf-8"))
@@ -2267,7 +2271,14 @@ def helper_footer(
             f"- To read numbers, use zoom: up to {MAX_ZOOM_CROPS} crops in one call, sharp, GV's "
             "markup hidden. Ask for all the crops you need in one call."
         ),
-        f"- Budget: about {HELPER_CALL_BUDGET} tool calls; report before then.",
+        (
+            f"- Budget: about {HELPER_CALL_BUDGET} tool calls; report before then."
+            if calls is None
+            else f"- Tool calls: about {calls} reading calls for your pages (recording a finding "
+            "or a string does not count). The app tells you when your calls or your money run "
+            "out: until then go through every page of yours, and never skip a page or stop "
+            "early to save them."
+        ),
         (
             "- Return: the findings your brief asks for with report_finding (both values as "
             f"printed, each with its box), set_coverage for your pages, then a report of at most "

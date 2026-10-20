@@ -707,7 +707,10 @@ def test_the_record_turn_is_never_refused_for_the_helpers_share(
 
     assert script.calls.get("record"), "the helper still got its turn to record"
     record_call = script.params["record"][0]
-    assert record_call["tool_choice"]["type"] == "auto" and record_call["max_tokens"] <= 4000
+    assert (
+        record_call["tool_choice"]["type"] == "auto"
+        and record_call["max_tokens"] <= chat_engine.RECORD_MAX_TOKENS
+    )
 
 
 def test_dpi_and_marks_given_on_a_crop_are_the_calls(tmp_path: Path) -> None:

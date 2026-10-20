@@ -312,11 +312,28 @@ FULL_CHECK_HELPER_CALLS: Final = 12
 #: More reading calls for a helper sent back once to finish its per-page checklist.
 FULL_CHECK_SEND_BACK_CALLS: Final = 4
 FULL_CHECK_HELPER_MAX_TOKENS: Final = 12000
-#: A roster page helper's or gap closer's output allowance per call (#1634). Its money is held per
-#: call at the upper bound (`_hold`), so with ten helpers at once a 12000-token allowance held about
-#: $1.7 that was never spent and stopped helpers early; a reply of findings and a short report fits
-#: in this, and a reply cut at it is sent on (`_CUT_NOTE`).
-ROSTER_HELPER_MAX_TOKENS: Final = 6000
+#: A roster page helper's, gap closer's or lead review's output allowance per call (#1634, #1817).
+#: Adaptive thinking counts against it, and one reply may hold a dozen zoom and command calls: the
+#: paid run of 2026-10-20 cut three helpers at 6000 with 10-17 calls in the cut reply. Sonnet 5.5
+#: and Opus 5.5 take up to 128K output tokens; the call's money is still held at this upper bound
+#: (`_hold`: about $0.16 of Sonnet 5.5 a call, ten at once well inside the helpers' share), and a
+#: reply cut at it is sent on (`_CUT_NOTE`), its complete tool calls run.
+ROSTER_HELPER_MAX_TOKENS: Final = 16000
+#: A roster specialist with a reply shape (the tag reader, the verifier, the look-again): its
+#: answer is one JSON reply, after its thinking, also at its wrap-up (#1817: the tag table was cut
+#: at the 8000-token wrap-up in the middle of a row, so no tag was compared).
+SHAPED_HELPER_MAX_TOKENS: Final = 24000
+#: Sent once when a reply shape's answer, or a helper's report, was cut at its length limit
+#: (#1817): the answer is asked for again whole, never read from its cut piece.
+_SHAPE_CUT_NOTE: Final = (
+    "Your answer was cut at its length limit before it ended, so none of it can be read. Send "
+    "the whole answer again now, as one JSON object and nothing else: compact (no spaces or line "
+    "breaks between values), short item names."
+)
+_REPORT_CUT_NOTE: Final = (
+    "Your report was cut at its length limit. Finish it now, without tools: write it again, "
+    "shorter, ending with the CHECKLIST line for every one of your pages."
+)
 #: A roster helper's reading calls per page of its own (at least `FULL_CHECK_HELPER_CALLS`).
 ROSTER_CALLS_PER_PAGE: Final = 3
 _CUT_NOTE: Final = (
@@ -405,12 +422,14 @@ ROSTER_WRAP_UP_NOTE: Final = (
     + " p<page> | <area: item> | architect <value> | vendor <value> | different or check | "
     "<where each end lands, or why>."
 )
-#: A roster helper's report at its wrap-up: short, so it fits the money its share keeps for it.
-ROSTER_WRAP_UP_MAX_TOKENS: Final = 2500
+#: A roster helper's report at its wrap-up: short, so it fits the money its share keeps for it,
+#: with room for its thinking first (#1817).
+ROSTER_WRAP_UP_MAX_TOKENS: Final = 6000
 #: How many times the full check's lead review is sent on to pages it left (#1656).
 LEAD_SEND_ON: Final = 2
-#: A roster helper's record turn (#1654): tool calls that record, no long reply.
-RECORD_MAX_TOKENS: Final = 4000
+#: A roster helper's record turn (#1654): tool calls that record, no long reply, after its
+#: thinking: one record turn may hold a dozen findings (#1817).
+RECORD_MAX_TOKENS: Final = 12000
 
 #: The 5-6 line summary that ends every full check (both instructions below end with it).
 _FULL_CHECK_SUMMARY: Final = """End with a 5-6 line plain-English summary for the reviewer (no tables, no disclaimers: the app draws the cloud drawing, the report and the lists):
@@ -3945,6 +3964,33 @@ class ChatEngine:
         agent.cap_micros = (agent.cap_micros or 0) + more
         return True
 
+    def _note_cut_report(
+        self, agent: _Agent, report: str, turns: int, calls: int, wrap: str | None
+    ) -> None:
+        """A helper whose report still ended cut at its length limit (#1817): said in the log, and
+        each page of its own the cut report gives no CHECKLIST line (or says it did not reach) is
+        noted Not compared with the reason, so a later look takes it (never silently dropped)."""
+        _log.warning(
+            "assistant chat helper %s (%s) report cut at its length limit: turns=%d tool_calls=%d "
+            "wrap=%s chars=%d",
+            agent.number,
+            agent.description,
+            turns,
+            calls,
+            wrap or "none",
+            len(report),
+        )
+        if agent.lens not in (*LENSES, "gap", "lead"):
+            return  # the tag reader's or a prover's pages were compared by others
+        for page in unreached_pages(report, agent.pages or ()):
+            try:
+                self._note_coverage(
+                    int(page),
+                    "not compared in detail: its helper's report was cut at its length limit",
+                )
+            except Exception:  # noqa: BLE001 - the report still goes on
+                _log.warning("assistant chat helper page note failed: page %s", page)
+
     def _helper(
         self, agent: _Agent, step_index: int, entry: dict[str, Any], share: _Share
     ) -> tuple[str, bool, str | None]:
@@ -3963,8 +4009,15 @@ class ChatEngine:
         tools = agent.tools or helper_tools(agent.kit)
         allowance = FULL_CHECK_HELPER_MAX_TOKENS if full_check else HELPER_MAX_TOKENS
         roster_pages = agent.soft_cap and agent.output_format is None and bool(agent.pages)
+        shaped = agent.output_format is not None
         if roster_pages:
             allowance = ROSTER_HELPER_MAX_TOKENS
+        if shaped:
+            allowance = max(allowance, SHAPED_HELPER_MAX_TOKENS)
+        budget = FULL_CHECK_HELPER_CALLS
+        if roster_pages:
+            # Enough reading calls for every page of its own (#1634), never fewer than before.
+            budget = max(budget, ROSTER_CALLS_PER_PAGE * len(agent.pages or ()))
         try:
             # A specialist with a reply shape (the roster's verifier, tag reader) has its pages in
             # its brief, and the footer's "report_finding" is not one of its tools.
@@ -3976,6 +4029,9 @@ class ChatEngine:
                     self.tools.workspace,
                     pages=agent.pages,
                     report_words=FULL_CHECK_REPORT_WORDS if full_check else 300,
+                    # The real allowance and that code says when it ends (#1817: a lead review of
+                    # 16 pages read "about 12 tool calls" and left pages "not opened: Budget").
+                    calls=budget if roster_pages else None,
                 )
             )
         except Exception:  # noqa: BLE001 - the helper still gets its brief
@@ -3990,11 +4046,9 @@ class ChatEngine:
             }
         ]
         turns = reading = 0
-        budget = FULL_CHECK_HELPER_CALLS
-        if roster_pages:
-            # Enough reading calls for every page of its own (#1634), never fewer than before.
-            budget = max(budget, ROSTER_CALLS_PER_PAGE * len(agent.pages or ()))
         sent_back = False
+        #: A cut answer or report asked for again once (#1817).
+        cut_retried = False
         sent_on = False
         lead_sent_on = 0
         record_turn = False
@@ -4011,6 +4065,10 @@ class ChatEngine:
             max_tokens = WRAP_UP_MAX_TOKENS if final else allowance
             if final and roster_pages:
                 max_tokens = ROSTER_WRAP_UP_MAX_TOKENS
+            if final and (shaped or cut_retried):
+                # A reply shape's wrap-up is its whole answer; a report asked for again after a
+                # cut gets the full allowance (#1817).
+                max_tokens = max(max_tokens, allowance)
             body = self._body(
                 model=model,
                 thinking=thinking,
@@ -4131,19 +4189,34 @@ class ChatEngine:
             if replayable:
                 messages.append({"role": "assistant", "content": content})
             calls = reply.tool_uses() if replayable else []
+            cut = reply.stop_reason == "max_tokens"
             if (
-                roster_pages
+                (roster_pages or (shaped and not cut_retried))
                 and not calls
                 and not final
-                and (reply.stop_reason == "max_tokens" or not reply.text().strip())
+                and (cut or not reply.text().strip())
                 and turns < self.settings.helper_max_turns
             ):
                 # A reply cut at the smaller allowance, or one with only thinking in it (the lead
                 # review of 2026-10-19 ended so, recording nothing): sent on, never the report.
-                _append_note(messages, _CUT_NOTE)
+                # A reply shape's cut answer is asked for again whole, once (#1817).
+                cut_retried = cut_retried or shaped
+                _append_note(messages, _SHAPE_CUT_NOTE if shaped else _CUT_NOTE)
                 turns += 1
                 continue
-            if reply.stop_reason == "tool_use" and calls and not final:
+            if final and cut and not cut_retried and (roster_pages or shaped):
+                # Its report (or its answer) was cut at the wrap-up's limit (#1817: the tag table
+                # ended in the middle of a row): asked for once more, with the full allowance (no
+                # tool turn: a turn limit does not stop it; the fixed price still does).
+                cut_retried = True
+                _append_note(messages, _SHAPE_CUT_NOTE if shaped else _REPORT_CUT_NOTE)
+                turns += 1
+                continue
+            if (reply.stop_reason == "tool_use" or cut) and calls and not final:
+                # A reply cut at its length limit while it held tool calls (#1817: three helpers
+                # of the paid run of 2026-10-20 had 10-17 calls in it and ended with no report):
+                # its complete calls run (a cut one is answered "its input was cut off") and it
+                # is sent on, never ended.
                 bad = reply.bad_inputs
 
                 def parallel(call: dict[str, Any], bad: set[int] = bad) -> bool:
@@ -4155,12 +4228,18 @@ class ChatEngine:
                     return self._helper_tool(agent, step_index, entry, call, bad)
 
                 done = self._in_turns(calls, parallel, prepare)
-                results = [done[id(call)] for call in calls]
+                results: list[dict[str, Any]] = [done[id(call)] for call in calls]
+                if cut:
+                    results.append({"type": "text", "text": _CUT_NOTE})
                 messages.append({"role": "user", "content": results})
                 turns += 1
                 reading += sum(1 for call in calls if call.get("name") in _READING_TOOLS)
                 continue
             report = reply.text()
+            if report and cut:
+                # Still cut after it was asked again (or with no turn left): its pages without a
+                # CHECKLIST line are said Not compared with the reason, never silently dropped.
+                self._note_cut_report(agent, report, turns, len(calls), wrap)
             if not report:
                 # Said, never silent (#1811): why it stopped, how far it got, and its pages noted
                 # as not compared with that reason (a later look takes them).

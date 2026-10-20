@@ -28,7 +28,7 @@ import pytest
 from PIL import Image
 
 from app.review.assistant import full_check_roster
-from app.review.assistant.chat_engine import FULL_CHECK_INSTRUCTION
+from app.review.assistant.chat_engine import FULL_CHECK_INSTRUCTION, ROSTER_HELPER_MAX_TOKENS
 from app.review.assistant.full_check_advocate import (
     ADVOCATE_SYSTEM,
     CODE_PAIRS_FILE,
@@ -1190,8 +1190,9 @@ def test_a_helper_that_stops_short_is_sent_on_then_a_gap_closer_finishes_its_pag
     harness.run()
 
     numbers = script.params["numbers"]
-    # The smaller per-call allowance (its money is held per call at that bound).
-    assert {p["max_tokens"] for p in numbers} == {6000}
+    # The roster's per-call allowance (its money is held per call at that bound), with room for
+    # thinking and a dozen tool calls (#1817).
+    assert {p["max_tokens"] for p in numbers} == {ROSTER_HELPER_MAX_TOKENS}
     # Each numbers helper stopped short with money left: sent on once to its unread pages.
     sent_on = [p for p in numbers if "You still have money and tool calls left" in json.dumps(p)]
     assert len(sent_on) == 2  # one call each for the two numbers helpers, then never again
