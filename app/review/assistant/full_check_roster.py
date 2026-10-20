@@ -103,6 +103,7 @@ from app.review.assistant.full_check_advocate import (
 from app.review.assistant.full_check_specialists import HELPER_CORE, PACK_SHAPES, knowledge_text
 from app.review.assistant.impact import by_impact
 from app.review.assistant.product_scope import scaled_price
+from app.review.assistant.reply_json import json_of_reply, log_unreadable, object_of_reply
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.untrusted import fence
 
@@ -122,6 +123,11 @@ __all__ = [
 ]
 
 _log = logging.getLogger(__name__)
+#: The next step of a roster check that is not for sending (#1811).
+NOT_SENDABLE_NEXT: Final = (
+    "Next: finish the check (the pages and steps not done) before anything is sent to the vendor."
+)
+_SAYS_SEND: Final = re.compile(r"\bsend\b", re.IGNORECASE)
 
 _MICROS: Final = 1_000_000
 #: Each phase's share of the fixed price. The shares add up to 1, so the caps can never add up to
@@ -515,8 +521,9 @@ def apply_proofs(engine: ChatEngine, report: str, asked: Sequence[str]) -> dict[
     (code fills the value from the label and reads the box again); a value code then reads equal
     on both sides makes the item Right. Returns what happened to each item asked about."""
     try:
-        proofs = json.loads(report).get("proofs") or []
+        proofs = object_of_reply(report).get("proofs") or []
     except (ValueError, AttributeError):
+        log_unreadable(_log, "roster proofs", ",".join(asked)[:120], report)
         return dict.fromkeys(asked, "no proof: the verifier's reply was not readable")
     done: dict[str, str] = {}
     book = engine.book
@@ -739,8 +746,9 @@ def compare_tags(report: str) -> list[dict[str, Any]]:
     """Code compares the tag table by piece: for each piece both sides tag, Right when the tags
     are the same, else Wrong. Returns `report_finding`-shaped inputs."""
     try:
-        rows = json.loads(report).get("tags") or []
+        rows = object_of_reply(report).get("tags") or []
     except (ValueError, AttributeError):
+        log_unreadable(_log, "roster tag table", "tags", report)
         return []
     pieces: dict[str, dict[str, list[Mapping[str, Any]]]] = {}
     for row in rows:
@@ -941,6 +949,7 @@ class _Run:
     escalated: set[str] = field(default_factory=set)
     #: Every page's architect labels, set-wide, once read (`_architect_pages`, #1802).
     architect_labels: list[list[dict[str, Any]]] | None = None
+<<<<<<< HEAD
     #: The engine's spend when the roster started (the price counts from there).
     started_at: int = 0
     #: Pages a numbers helper compared whose open checklist lines no gap closer re-read (#1805).
@@ -949,6 +958,10 @@ class _Run:
     tool_calls: dict[str, dict[str, int]] = field(default_factory=dict)
     #: The set's chat proofs (`set_proofs`), read once.
     chat_proofs: dict[str, Any] | None = None
+=======
+    #: Steps that broke (a helper's error, a tag table not readable): never a sendable check.
+    failed_steps: list[str] = field(default_factory=list)
+>>>>>>> origin/main
 
     # -- money --
 
@@ -1010,6 +1023,52 @@ class _Run:
     def _note(self, line: str) -> None:
         if line not in self.not_done:
             self.not_done.append(line)
+
+    def _launched(self, agents: Sequence[Any], **given: Any) -> list[dict[str, Any]]:
+        """`engine._launch`, and each helper that ended with an error kept as a failed step: a
+        check with a broken step is never sendable (#1811)."""
+        entries = self.engine._launch(agents, **given)
+        for agent, entry in zip(agents, entries, strict=False):
+            if entry.get("stopped") == "error":
+                self.failed_steps.append(f"{agent.description} ended with an error")
+        return entries
+
+    def _not_for_sending(self) -> str | None:
+        """Why this check is not one to send (plain words), else `None`: a step broke, or vendor
+        pages the plan gave a helper were not compared (no architect drawing paired, not
+        reached, open). Code's own skipped pages (dividers, products out of scope) do not count.
+        A stop is said by `send_package.incomplete_reason` itself."""
+        if self.failed_steps:
+            more = len(self.failed_steps) - 2
+            return (
+                "a step did not finish: "
+                + "; ".join(self.failed_steps[:2])
+                + (f" and {more} more" if more > 0 else "")
+            )
+        plan = getattr(self.engine, "_plan", None)
+        if plan is None:
+            return None
+        if not self.engine.book.coverage_used:
+            return "no page's comparison was recorded"
+        skipped = {int(page) for page, _why in getattr(plan, "skipped", ())}
+        coverage = self.engine.book.coverage_map()
+        planned = [int(e["page"]) for e in coverage["pages"] if int(e["page"]) not in skipped]
+        # A page still "same"/"different" whose note says it was not reached or only partly
+        # compared is not compared either (#1654's pattern).
+        unfinished = set(unfinished_pages(planned, coverage))
+        left = sorted(
+            int(entry["page"])
+            for entry in coverage["pages"]
+            if int(entry["page"]) not in skipped
+            and (entry.get("status") not in ("same", "different") or entry["page"] in unfinished)
+        )
+        if not left:
+            return None
+        pages = ", ".join(f"p{page}" for page in left[:8]) + (" …" if len(left) > 8 else "")
+        return (
+            f"{len(left)} vendor {'page was' if len(left) == 1 else 'pages were'} not compared "
+            f"({pages})"
+        )
 
     # -- specialists --
 
@@ -1137,7 +1196,7 @@ class _Run:
         # The page helpers and the gap closers never spend the later checks' money (#1641).
         engine.helper_ceiling = engine.spent + max(0, price - self.plan.protected())
         try:
-            entries = engine._launch(agents, on_done=engine._helper_done)
+            entries = self._launched(agents, on_done=engine._helper_done)
             for agent, entry in zip(agents, entries, strict=True):
                 if agent.lens == "tags":
                     self._apply_tags(str(entry.get("report") or ""))
@@ -1252,6 +1311,14 @@ class _Run:
 
     def _apply_tags(self, report: str) -> None:
         engine = self.engine
+        if report.strip():
+            try:
+                rows = object_of_reply(report).get("tags")
+            except ValueError:
+                rows = None
+            if not isinstance(rows, list):
+                # Its rows were never compared: the tags are not checked (#1811).
+                self.failed_steps.append("the tag table could not be read")
         for given in compare_tags(report):
             try:
                 finding, _notes = engine.book.report(given, "tag_reader")
@@ -1369,7 +1436,7 @@ class _Run:
                     )
                 )
             )
-        entries = engine._launch(agents, on_done=engine._helper_done)
+        entries = self._launched(agents, on_done=engine._helper_done)
         for agent, entry in zip(agents, entries, strict=True):
             self._salvage(agent, entry)
             if entry.get("stopped") == "cost_cap":
@@ -1584,10 +1651,14 @@ class _Run:
             )
             pool.add(agents[-1])
             asked.append([str(f["id"]) for f in findings])
+<<<<<<< HEAD
         if cap <= 0:
             self._note("the verifier: not reached within the fixed price")
             return
         entries = engine._launch(agents)
+=======
+        entries = self._launched(agents)
+>>>>>>> origin/main
         for agent, entry, ids in zip(agents, entries, asked, strict=True):
             done = apply_proofs(engine, str(entry.get("report") or ""), ids)
             if entry.get("stopped") == "cost_cap":
@@ -1806,7 +1877,7 @@ class _Run:
             system=engine._kind_system("numbers"),
             tools=(*HELPER_TOOLS, UPDATE_FINDING),
         )
-        entries = engine._launch([agent], on_done=engine._helper_done)
+        entries = self._launched([agent], on_done=engine._helper_done)
         self._salvage(agent, entries[0])
         self._drop_placed_salvage()
         if entries[0].get("stopped") == "cost_cap":
@@ -2194,9 +2265,11 @@ class _Run:
             return {"chains": [], "note": "the reading failed"}
         finally:
             self._charge(self.pick_phase, max(0, engine.spent - before))
+        text = reply.text()
         try:
-            answer = json.loads(reply.text())
+            answer = json_of_reply(text)
         except ValueError:
+            log_unreadable(_log, "roster string reading", str(finding.get("id") or ""), text)
             return {"chains": [], "note": "the reply was not readable"}
         return answer if isinstance(answer, dict) else {"chains": []}
 
@@ -2525,9 +2598,11 @@ class _Run:
             return None
         finally:
             self._charge(self.pick_phase, max(0, engine.spent - before))
+        text = reply.text()
         try:
-            answer = json.loads(reply.text())
+            answer = json_of_reply(text)
         except ValueError:
+            log_unreadable(_log, "roster advocate", str(finding.get("id") or ""), text)
             return {"pick": "none", "note": "the reply was not readable"}
         if not isinstance(answer, dict):
             return {"pick": "none"}
@@ -2661,7 +2736,7 @@ class _Run:
             )
             pool.add(agents[-1])
             asked.append([str(f["id"]) for f in items])
-        entries = engine._launch(agents)
+        entries = self._launched(agents)
         for agent, entry, ids in zip(agents, entries, asked, strict=True):
             done = apply_proofs(engine, str(entry.get("report") or ""), ids)
             if entry.get("stopped") == "cost_cap":
@@ -2718,8 +2793,22 @@ class _Run:
         text = "\n".join(
             line for line in text.splitlines() if line.strip() != CODE_SUMMARY_NOTE
         ).strip()
+        # A check that stopped, broke a step or left vendor pages uncompared is never "send it to
+        # the vendor" (#1811, the simple check's rule): its cover says not for sending too.
+        from app.review.assistant.send_package import incomplete_reason
+
+        unsendable = incomplete_reason(stopped, None) or engine.incomplete_note
+        if unsendable:
+            text = "\n".join(
+                NOT_SENDABLE_NEXT if line.startswith("Next:") else line
+                for line in text.splitlines()
+            )
         reworded = self._reword(text)
+        if unsendable and reworded and _SAYS_SEND.search(reworded):
+            reworded = None  # the wording never turns it back into "send it"
         lines = [reworded or text]
+        if unsendable:
+            lines.append(f"**Check incomplete: {unsendable}. Not for sending until it is.**")
         # The price for the products in scope (`scaled_price`), else the whole price.
         price = cap_text(self.plan.price if self.plan is not None else settings.message_cap_micros)
         lines.append(f"Fixed price ${price}: this check used {_dollars(engine.spent)}.")
@@ -2758,7 +2847,7 @@ class _Run:
                 display=None,
                 output_format=SUMMARY_SCHEMA,
             )
-            lines = json.loads(reply.text()).get("lines") or []
+            lines = object_of_reply(reply.text()).get("lines") or []
         except Exception as failed:  # noqa: BLE001 - code's own summary stands
             _log.info("assistant roster summary kept code's words: %s", type(failed).__name__)
             return None
@@ -2788,6 +2877,12 @@ class _Run:
             except Exception:  # noqa: BLE001 - stored without its trust report
                 _log.exception("assistant roster trust report failed")
         engine._close_checks()
+        if engine.incomplete_note is None:
+            try:
+                engine.incomplete_note = self._not_for_sending()
+            except Exception:  # noqa: BLE001 - never sendable when it cannot be worked out
+                _log.exception("assistant roster could not work out whether it is sendable")
+                engine.incomplete_note = "whether every page was compared could not be worked out"
         files: list[str] = []
         if engine._progress is not None:
             engine._progress.phase("writing")

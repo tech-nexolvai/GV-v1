@@ -4087,6 +4087,34 @@ class ChatEngine:
                 continue
             report = reply.text()
             if not report:
+                # Said, never silent (#1811): why it stopped, how far it got, and its pages noted
+                # as not compared with that reason (a later look takes them).
+                steps = entry.get("steps") or []
+                last = steps[-1] if steps and isinstance(steps[-1], Mapping) else {}
+                stop = reply.stop_reason or "none"
+                _log.warning(
+                    "assistant chat helper %s (%s) ended with no written report: stop=%s turns=%d "
+                    "tool_calls=%d last_tool=%s wrap=%s",
+                    agent.number,
+                    agent.description,
+                    stop,
+                    turns,
+                    len(reply.tool_uses()),
+                    last.get("tool") or "none",
+                    wrap or "none",
+                )
+                why = (
+                    "not compared in detail: its helper did not write its report "
+                    f"(it stopped: {stop})"
+                )
+                # Only a page-comparing helper's pages (never the tag reader's or a prover's: their
+                # pages were compared by others).
+                owned = agent.pages if agent.lens in (*LENSES, "gap") else None
+                for page in owned or ():
+                    try:
+                        self._note_coverage(int(page), why)
+                    except Exception:  # noqa: BLE001 - the report below still names the stop
+                        _log.warning("assistant chat helper page note failed: page %s", page)
                 report = _report_from_steps(entry["steps"], "it gave no written report")
                 return report, False, wrap or "error"
             if agent.pages and agent.lens in LENSES:
