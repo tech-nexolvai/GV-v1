@@ -37,17 +37,33 @@ Verification: `tests/test_dev_server.py`
 
 from __future__ import annotations
 
+import copy
 import io
 import os
 import secrets
 import sys
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 DEVELOPMENT = "development"
 DEFAULT_PORT = 8000
+
+
+def log_config() -> dict[str, Any]:
+    """uvicorn's logging, with the time on every line, and the app's own warnings through the same
+    handler (they printed with no time, so a log could not be lined up with a run; #1811). The
+    levels are unchanged: the app still prints warnings and errors only."""
+    from uvicorn.config import LOGGING_CONFIG
+
+    config = copy.deepcopy(LOGGING_CONFIG)
+    config["formatters"]["default"]["fmt"] = "%(asctime)s %(levelprefix)s %(name)s: %(message)s"
+    config["formatters"]["access"][
+        "fmt"
+    ] = '%(asctime)s %(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s'
+    config["root"] = {"handlers": ["default"], "level": "WARNING"}
+    return config
 
 
 class NotADevelopmentEnvironment(RuntimeError):
@@ -319,7 +335,7 @@ def main() -> int:
         f"API on http://localhost:{port} — development identity, local storage, "
         "rulebook from the database."
     )
-    uvicorn.run(build_app(), host="127.0.0.1", port=port, log_level="info")
+    uvicorn.run(build_app(), host="127.0.0.1", port=port, log_level="info", log_config=log_config())
     return 0
 
 
