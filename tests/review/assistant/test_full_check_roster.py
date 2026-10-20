@@ -1042,7 +1042,10 @@ def test_a_note_about_the_drawing_is_not_a_page_left_unread() -> None:
     # The helper's own work said partly done, in other words, still counts (review of #1812).
     for note in ("did not check the vendor strings", "partly; right half pending",
                  "only the vendor elevation compared", "Compared partially",
-                 "the architect's plan does not show it, and I did not look at the section"):  # fmt: skip
+                 "the architect's plan does not show it, and I did not look at the section",
+                 "the sections did not get compared", "it did not get compared",
+                 "which did not fit in my turns", "drawing did not load, not compared",
+                 "the vendor's elevation did not load", "the plan has not been read"):  # fmt: skip
         entry = {"page": 2, "status": "same", "by": "helper:1", "note": note}
         assert full_check_roster.unfinished_pages([2], {"pages": [entry]}) == {2: note}, note
 
@@ -1073,7 +1076,8 @@ def test_a_step_stopped_at_its_share_counts_as_a_money_stop_once_the_price_is_us
     run._capped("Helper 1")
     assert run.capped_early and not run.stopped_for_money
     assert not run._stopped_for_money()  # the later steps' money is still there
-    run.engine._spent += 5 * DOLLARS  # the later steps used it
+    # The later steps used all they could: only the summary's and second reads' shares are left.
+    run.engine._spent += run.plan.price - run.plan.after("escalation")
     assert run._stopped_for_money()
 
 

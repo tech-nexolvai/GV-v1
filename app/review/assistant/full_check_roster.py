@@ -823,15 +823,17 @@ def keeps_numbers(code_text: str, reworded: str) -> bool:
 #: A helper's coverage note that says it never compared the page (it "skipped with a note").
 _UNREACHED: Final = re.compile(
     r"not reached|not opened|budget|ran out|out of (?:money|time)|not compared in detail|did not"
-    r"|partly|partially|only (?:the )?(?:overview|lead|vendor)|not finished|unhandled",
+    r"|partly|partially|only (?:the )?(?:overview|lead|vendor)|not finished|unhandled"
+    r"|not (?:yet )?been (?:compared|checked|read|reviewed|reached|opened)",
     re.IGNORECASE,
 )
 #: #1805: what a note says about the drawings, not the helper's own work ("the vendor did not
 #: dimension the toe kick"), is left out before `_UNREACHED` looks: a compared page was re-read.
 #: Any other "did not" or "partly" still counts as unfinished (the safe side).
 _ABOUT_THE_DRAWING: Final = re.compile(
-    r"\b(?:vendor|architect|drawings?|elevations?|plans?|sections?|details?|it|they|which)"
-    r"(?:'s)?\s+(?:does|did|do|has|have)\s+not\b",
+    r"\b(?:vendor|architect)(?:'s)?(?:\s+(?:drawings?|elevations?|plans?|sections?|details?))?"
+    r"\s+(?:does|did|do|has|have)\s+not\s+"
+    r"(?!(?:get|be|been|compar|check|review|read|reach|open|load|fit|zoom|finish)\w*)",
     re.IGNORECASE,
 )
 
@@ -971,12 +973,14 @@ class _Run:
         assert self.plan is not None
         return max(0, self._left() - self.plan.after(phase))
 
-    def _used_up(self) -> bool:
-        """The price is really used up (#1805): only then may a step "stop at its cap"."""
+    def _used_up(self, kept: int = 0) -> bool:
+        """The price is really used up (#1805): only then may a step "stop at its cap". `kept`:
+        money still held back for steps no specialist spends (at the finish: the summary's and
+        the second reads' shares, kept whole to the end)."""
         if self.plan is None:
             return True
         margin = max(_USED_UP_MICROS, int(self.plan.price * _USED_UP_SHARE))
-        return self._left() < margin
+        return self._left() < margin + max(0, kept)
 
     def _capped(self, description: str, tail: str = "") -> None:
         """A specialist stopped at its cap: a stop for money only when the price is used up;
@@ -991,7 +995,12 @@ class _Run:
     def _stopped_for_money(self) -> bool:
         """At the finish: whether the check stopped for money. A step that stopped at its share
         while money was kept for later steps counts once the later steps used the rest (#1805)."""
-        if not self.stopped_for_money and self.capped_early and self._used_up():
+        if (
+            not self.stopped_for_money
+            and self.capped_early
+            and self.plan is not None
+            and self._used_up(kept=self.plan.after("escalation"))
+        ):
             self.stopped_for_money = True
         return self.stopped_for_money
 
