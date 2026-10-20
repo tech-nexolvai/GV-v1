@@ -7,7 +7,8 @@ that set-up once per upload, in the background, and the agent sees it read-only 
 
 - `<name>_drawings_only.pdf`: a copy of each PDF that keeps only the pasted drawings (`/Stamp`
   annotations), so GV's markup is hidden (SKILL.md section 5). A page with no stamps is its own
-  page content, without annotations.
+  page content, without annotations. AutoCAD's SHX text comments are kept as invisible text at
+  their rectangles (#1772), as `verify_value` reads them.
 - `pages/<name>/p-001.png`: every page at 100 dpi, from the drawings-only copy.
 - `contact/<name>-01.png`: contact sheets, nine pages to a picture, each page number stamped.
 - `annotations.json`: every annotation (file, page, kind, author, text, box), GV's headings and
@@ -20,10 +21,14 @@ that set-up once per upload, in the background, and the agent sees it read-only 
   **Separate files** (#1719): a file uploaded as the architect's drawings (not the vendor's file
   itself) gives its pages the architect role: a pasted drawing with no GV heading is the
   architect's, and a page with no pasted drawing (a normal CAD sheet) is one whole-page architect
-  drawing. A vendor file with no pasted drawing at all is read the same way (whole-page vendor
-  drawings). A page that prints no dimension (a cover, a notes sheet) stays general. Each such
-  drawing says `from_upload`, and `upload_roles` names the files read so. GV's combined sheets are
-  read exactly as before.
+  drawing. A vendor file's pages are read the same way (whole-page vendor drawings). Decided page
+  by page (#1772): a stamp on one page (an approval stamp) never switches off the file's other
+  pages, and never decides its own page. A page is a drawing when its own content prints
+  dimensions, or, failing that, when its labels from every route (printed text, AutoCAD's SHX
+  text, the vendor's pen strokes) do (`settle_candidates`). A page that prints no dimension (a
+  cover, a notes sheet) stays general. Each such drawing says `from_upload`, and `upload_roles`
+  names the files read so. GV's combined sheets (drawings GV pasted and headed) are read exactly
+  as before.
 - `dims.json` (#1558): every printed dimension on every page, numbered per page (`D17`), with its
   value, inches, box, whose drawing it is on, and its dimension and extension lines when found
   (`dim_labels.py`). The `zoom` tool draws these ids on a crop; findings name them. Written as
@@ -351,7 +356,7 @@ def drawings_only(folder: Path, uploads: Path, name: str) -> Path:
             if not source.is_file():
                 raise FileNotFoundError(name)
             logging.getLogger("pypdf").setLevel(logging.ERROR)
-            writer = PdfWriter(clone_from=str(source))
+            writer = PdfWriter(clone_from=_with_shx_text(source))
             for page in writer.pages:
                 if "/Annots" in page:
                     annotations: Any = page["/Annots"]
@@ -362,6 +367,32 @@ def drawings_only(folder: Path, uploads: Path, name: str) -> Path:
             writer.write(buffer)
             _write_bytes(out, buffer.getvalue())
     return out
+
+
+def _with_shx_text(source: Path) -> Path | io.BytesIO:
+    """The upload, with AutoCAD's SHX text comments (`PDFSHX=1`) set as invisible text at their
+    rectangles (#1772), as `verify_value` reads them (`visible_text.shx_comment_text`): they are
+    the vendor's text, so the drawings-only copy keeps them when it drops every other comment,
+    and the page's text (its drawing gate, `page_texts.json`) sees them. A file without one is
+    the upload itself."""
+    visible = import_module("extraction.visible_text")
+    pikepdf = import_module("pikepdf")
+    try:
+        with pikepdf.open(str(source)) as pdf:
+            added = 0
+            for page in pdf.pages:
+                comments = [a for a in page.obj.get("/Annots") or [] if visible.is_shx_comment(a)]
+                if comments:
+                    added += visible.shx_comment_text(pdf, page, comments)
+            if not added:
+                return source
+            buffer = io.BytesIO()
+            pdf.save(buffer)
+    except Exception as failed:  # noqa: BLE001 - the copy is made without them, as before
+        _log.warning("assistant set pack SHX text not kept: %s", type(failed).__name__)
+        return source
+    buffer.seek(0)
+    return buffer
 
 
 def _hide_gv_marks(page: Any) -> None:
@@ -531,19 +562,22 @@ def _page_entries(
     upload_role: str | None = None,
     sizes: Sequence[tuple[float, float]] = (),
     upload_round: int | None = None,
+    own_texts: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Each page's entry of `page_map.json`. `upload_role` (#1719): the role the upload's kind
     gives (`upload_roles`). In the architect's file a pasted drawing with no GV heading is the
-    architect's; in a file with no pasted drawing at all (a plain CAD file, architect's or
-    vendor's), every page printing dimensions is one whole-page drawing (`sizes`: each page's
-    shown size), its role from `_whole_page_role`. `upload_round` (#1728): the round the upload's
-    kind gives such a whole-page vendor drawing (`upload_rounds`)."""
+    architect's. A page of such a file is one whole-page drawing (`sizes`: each page's shown
+    size), its role from `_whole_page_role`, when it is a drawing by itself: decided page by page
+    (#1772), never for the whole file, and stamps never decide it (an approval stamp on one page
+    of a CAD file is not a pasted drawing). A page with no pasted drawing GV headed is a whole-page
+    drawing when its own content (`own_texts`: its text without its pasted drawings) prints at
+    least `_DRAWING_DIMS` dimensions; any other such page is a `candidate` whole-page drawing
+    while the labels are read (so the drawn route reads its pen strokes, and AutoCAD's SHX text
+    counts), decided from its labels by `settle_candidates`. `upload_round` (#1728): the round the
+    upload's kind gives such a whole-page vendor drawing (`upload_rounds`)."""
     by_page: dict[int, list[dict[str, Any]]] = {}
     for item in annotations:
         by_page.setdefault(int(item["page"]), []).append(item)
-    plain = upload_role is not None and not any(
-        a["kind"] == "Stamp" and a["box"] for a in annotations
-    )
     entries: list[dict[str, Any]] = []
     area: str | None = None
     area_page: int | None = None
@@ -579,16 +613,21 @@ def _page_entries(
         halves: list[dict[str, Any]] = []
         text = texts[number - 1] if number - 1 < len(texts) else ""
         whole: str | None = None
-        if (
-            plain
-            and upload_role is not None
-            and number - 1 < len(sizes)
-            and len(_DIMENSION.findall(text)) >= _DRAWING_DIMS
-        ):
-            # A plain file's page that prints dimensions: one whole-page drawing.
+        candidate: dict[str, Any] | None = None
+        headed = bool(stamps) and any(h for h in _headings(stamps, role_labels))
+        if upload_role is not None and number - 1 < len(sizes) and not headed:
+            own = _own_text(own_texts, number, text, stamps)
             width, height = sizes[number - 1]
-            stamps = [{"box": (0.0, 0.0, round(width, 1), round(height, 1))}]
-            whole = _whole_page_role(upload_role, text)
+            page_box = (0.0, 0.0, round(width, 1), round(height, 1))
+            if len(_DIMENSION.findall(own)) >= _DRAWING_DIMS:
+                # A page that prints dimensions by itself: one whole-page drawing, whatever
+                # stamps sit on it.
+                stamps = [{"box": page_box}]
+                whole = _whole_page_role(upload_role, text)
+            else:
+                candidate = _candidate(
+                    page_box, _whole_page_role(upload_role, text), upload_role, upload_round
+                )
         ordered = sorted(stamps, key=lambda a: (a["box"][1], a["box"][0]))
         one_round = {label["round"] for label in round_labels}
         for stamp, heading in zip(ordered, _headings(ordered, role_labels), strict=True):
@@ -629,25 +668,106 @@ def _page_entries(
             sheet = printed.group(1) or printed.group(2)
             if sheet and sheet not in sheets:
                 sheets.append(sheet)
-        entries.append(
-            {
-                "file": name,
-                "page": number,
-                "role": "+".join(roles) if roles else "general",
-                "halves": halves,
-                "rounds": rounds,
-                "section": section,
-                "area": area,
-                "area_from_page": area_page if area is not None and area_page != number else None,
-                "sheet_numbers": sheets[:4],
-                "headings": [
-                    " ".join(str(a["text"]).split())
-                    for a in labels
-                    if heading_meaning(str(a["text"])) is not None
-                ],
-            }
-        )
+        entry: dict[str, Any] = {
+            "file": name,
+            "page": number,
+            "role": "+".join(roles) if roles else "general",
+            "halves": halves,
+            "rounds": rounds,
+            "section": section,
+            "area": area,
+            "area_from_page": area_page if area is not None and area_page != number else None,
+            "sheet_numbers": sheets[:4],
+            "headings": [
+                " ".join(str(a["text"]).split())
+                for a in labels
+                if heading_meaning(str(a["text"])) is not None
+            ],
+        }
+        if candidate is not None:
+            entry[CANDIDATE] = candidate
+        entries.append(entry)
     return entries
+
+
+def _own_text(
+    own_texts: Sequence[str] | None, number: int, text: str, stamps: Sequence[Any]
+) -> str:
+    """Page `number`'s own text (without its pasted drawings): from `own_texts` when given, else
+    the whole text of a page with nothing pasted on it."""
+    if own_texts is not None:
+        return own_texts[number - 1] if number - 1 < len(own_texts) else ""
+    return "" if stamps else text
+
+
+def _candidate(box: Box, role: str, upload_role: str, upload_round: int | None) -> dict[str, Any]:
+    """A page's candidate whole-page drawing (#1772): its box and role, as a drawing would hold
+    them, while the labels are read, and the role its upload's kind gives (`upload`)."""
+    return {
+        "box": box,
+        "role": role,
+        "heading": None,
+        "round": upload_round if role == "vendor" else None,
+        "from_upload": True,
+        "upload": upload_role,
+    }
+
+
+#: The page map's key for a page's candidate whole-page drawing, until its labels decide it.
+CANDIDATE: Final = "candidate"
+
+
+def _inside(box: Sequence[float], halves: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether a label's centre lies inside one of a page's drawings."""
+    x, y = (float(box[0]) + float(box[2])) / 2, (float(box[1]) + float(box[3])) / 2
+    for half in halves:
+        hb = half.get("box")
+        if isinstance(hb, Sequence) and len(hb) == 4:
+            x0, y0, x1, y1 = (float(v) for v in hb)
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                return True
+    return False
+
+
+def settle_candidates(
+    page_map: dict[str, Any], dims: Mapping[str, Any] | None
+) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+    """Decide each candidate whole-page drawing from its page's labels (#1772), in place: a page
+    whose labels outside its pasted drawings (every route: printed text, AutoCAD's SHX text, the
+    vendor's pen strokes; never a derived `EQ` part) number at least `_DRAWING_DIMS` is one
+    whole-page drawing (its stamps are not drawings); any other stays as it was. Returns the
+    pages that had a candidate (their labels' sides are set again from their drawings) and those
+    that became drawings."""
+    by_page: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
+    for entry in (dims or {}).get("pages") or []:
+        if isinstance(entry, Mapping):
+            key = (str(entry.get("file")), int(entry.get("page") or 0))
+            by_page[key] = [x for x in entry.get("labels") or [] if isinstance(x, Mapping)]
+    found: list[tuple[str, int]] = []
+    promoted: list[tuple[str, int]] = []
+    used = page_map.setdefault("upload_roles", {})
+    for entry in page_map.get("pages") or []:
+        candidate = entry.pop(CANDIDATE, None)
+        if not isinstance(candidate, Mapping):
+            continue
+        key = (str(entry.get("file")), int(entry.get("page") or 0))
+        found.append(key)
+        real = [h for h in entry.get("halves") or [] if isinstance(h, Mapping)]
+        outside = [
+            label
+            for label in by_page.get(key, [])
+            if not label.get("derived") and not _inside(label.get("box") or (), real)
+        ]
+        if len(outside) < _DRAWING_DIMS:
+            continue
+        half = {k: v for k, v in candidate.items() if k != "upload"}
+        half["box"] = list(candidate["box"])
+        entry["halves"] = [half]
+        entry["role"] = half["role"]
+        entry["rounds"] = [half["round"]] if half.get("round") else []
+        used.setdefault(key[0], str(candidate.get("upload") or half["role"]))
+        promoted.append(key)
+    return found, promoted
 
 
 # ---- pictures ------------------------------------------------------------------------------------
@@ -655,12 +775,26 @@ def _page_entries(
 
 def _page_texts(pdf: Path) -> list[str]:
     """Each page's text, the pasted drawings' own text included (flattened in memory)."""
+    return _texts(pdf)[0]
+
+
+def _texts(pdf: Path) -> tuple[list[str], list[str]]:
+    """Each page's text, the pasted drawings' own text included (flattened in memory), and each
+    page's own text: its content alone, without its pasted drawings (#1772: whether a page of a
+    separate upload is a drawing by itself, whatever is pasted on it)."""
     texts: list[str] = []
+    own: list[str] = []
     with PDFIUM_LOCK:
         document = pdfium.PdfDocument(str(pdf))
         try:
             for index in range(len(document)):
                 page = document[index]
+                try:
+                    textpage = page.get_textpage()
+                    own.append(textpage.get_text_range())
+                    textpage.close()
+                except Exception:  # noqa: BLE001 - a page with no readable text has none
+                    own.append("")
                 try:
                     pdfium.raw.FPDFPage_Flatten(page.raw, pdfium.raw.FLAT_NORMALDISPLAY)
                     page.close()
@@ -674,7 +808,7 @@ def _page_texts(pdf: Path) -> list[str]:
                     page.close()
         finally:
             document.close()
-    return texts
+    return texts, own
 
 
 def _render_pages(pdf: Path, out: Path, dpi: int) -> list[Path]:
@@ -802,14 +936,16 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
             reader = PdfReader(str(uploads / name))
             found = _annotations(name, reader)
             annotations += found
+            texts, own = _texts(copies[name])
             entries = _page_entries(
                 name,
                 found,
-                _page_texts(copies[name]),
+                texts,
                 len(reader.pages),
                 upload_role=roles.get(name),
                 sizes=[_shown_size(page) for page in reader.pages],
                 upload_round=rounds.get(name),
+                own_texts=own,
             )
             if any(h.get("from_upload") for e in entries for h in e["halves"]):
                 used[name] = roles[name]
@@ -836,10 +972,58 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
             done.append("dims")
         except Exception as failed:  # noqa: BLE001 - the pack works without labels
             _log.warning("assistant set pack labels failed: %s", type(failed).__name__)
+        # The labels' process decides the candidate drawings; if it stopped first, they are
+        # decided here from the labels it wrote (never left undecided in a ready pack).
+        _settle_folder(folder)
     except Exception as failed:
         _set_status(folder, "failed", done, files=names, error=type(failed).__name__)
         raise
     _set_status(folder, "ready", done, files=names)
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _settle_folder(
+    folder: Path,
+    document: dict[str, Any] | None = None,
+    side: Any = None,
+) -> bool:
+    """Decide the pack's candidate whole-page drawings (`settle_candidates`) from `document` (the
+    labels; default: `dims.json`), set those pages' labels' and phrases' sides again from their
+    drawings (`side`: `dim_labels._side`), and write `page_map.json` (and `dims.json` when it was
+    read here). Returns whether there was a candidate."""
+    page_map = _read_json(folder / "page_map.json")
+    if not isinstance(page_map, dict) or not any(
+        isinstance(e, Mapping) and CANDIDATE in e for e in page_map.get("pages") or []
+    ):
+        return False
+    own = document is None
+    dims = _read_json(folder / "dims.json") if own else document
+    decided, _promoted = settle_candidates(page_map, dims if isinstance(dims, Mapping) else None)
+    if isinstance(dims, dict):
+        if side is None:
+            side = import_module("app.review.assistant.dim_labels")._side
+        halves = {
+            (str(e.get("file")), int(e.get("page") or 0)): e.get("halves") or []
+            for e in page_map.get("pages") or []
+            if isinstance(e, Mapping)
+        }
+        for entry in dims.get("pages") or []:
+            key = (str(entry.get("file")), int(entry.get("page") or 0))
+            if key not in decided:
+                continue
+            for item in [*(entry.get("labels") or []), *(entry.get("phrases") or [])]:
+                if isinstance(item, dict) and item.get("box"):
+                    item["side"] = side(tuple(item["box"]), halves.get(key, []))
+        if own:
+            _write_json(folder / "dims.json", dims)
+    _write_json(folder / "page_map.json", page_map)
+    return True
 
 
 def _health(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]) -> None:
@@ -971,12 +1155,19 @@ def write_dims(
         # Each drawing's printed notes and tags (from the phrases dims.json keeps).
         _write_json(folder / notes.NOTES_FILE, notes.set_notes(document, pages))
 
-    labels.build_dims(
+    document = labels.build_dims(
         {name: uploads / name for name in names},
         pages,
         drawn_budget_s=_drawn_budget(),
         on_page=written,
     )
+    # The candidate whole-page drawings, decided from every route's labels (#1772); the pack's
+    # facts are written again from the settled page map.
+    if _settle_folder(folder, document, labels._side):
+        settled = _read_json(folder / "page_map.json") or {}
+        pages["pages"] = list(settled.get("pages") or [])
+        anchored_memo.clear()
+        written(document)
 
 
 def ensure_pack(

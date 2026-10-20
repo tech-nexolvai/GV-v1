@@ -2353,6 +2353,13 @@ def build_dims(
         if isinstance(entry, Mapping):
             key = (str(entry.get("file")), int(entry.get("page") or 0))
             halves[key] = [h for h in entry.get("halves") or [] if isinstance(h, Mapping)]
+            # A page of a separate upload not yet known to be a drawing (`set_pack`, #1772): its
+            # candidate whole-page drawing gives a side to every label outside its pasted
+            # drawings (listed last, so a pasted drawing keeps its own labels), so its pen
+            # strokes are read too; the set pack decides it from these labels afterwards.
+            candidate = entry.get("candidate")
+            if isinstance(candidate, Mapping):
+                halves[key].append(candidate)
     document: dict[str, Any] = {"version": LABELS_VERSION, "files": list(pdfs), "pages": []}
     for name, pdf in pdfs.items():
         count = 0
