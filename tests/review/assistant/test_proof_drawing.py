@@ -26,7 +26,6 @@ from reportlab.pdfgen import canvas  # type: ignore[import-untyped]
 
 from app.review.assistant.proof import (
     AI_ONLY_REASON,
-    LEFT_CAPTIONS,
     PAIRING_REASON,
     RULE_LINE,
     code_proved,
@@ -418,21 +417,39 @@ def test_the_drawing_clouds_only_what_code_proved_in_red_and_green(tmp_path: Pat
         assert words in cover, words
     assert "draft" not in cover.lower() and "AI markup" not in cover
     sheet = _words(reader.pages[1].extract_text())
-    assert 'Vendor: 46"' in sheet
-    assert 'Should be: 37" (architect 3\'-1")' in sheet
-    assert "Base cabinet height" not in sheet and 'Vendor: 12"' not in sheet
+    # The note says what is wrong and what it should be, never cut (#1804).
+    assert 'Buffet outlet height 46" should be 37"' in sheet and "…" not in sheet
+    assert "Base cabinet height" not in sheet and '12" should be' not in sheet
     picture = _render(out, 1)
     x, y = VENDOR_46
     assert _count(picture, RED, (x - 20, y - 25, x + 40, y + 15)) > 20  # the cloud
     x, y = VENDOR_12
     assert _count(picture, RED, (x - 20, y - 25, x + 40, y + 15)) == 0  # AI reading only
     assert _count(picture, GREEN) > 20  # the "Should be" words
-    proof = reader.pages[2].extract_text()
-    assert "Proved by: A blind second pick chose the same architect dimension" in proof
-    assert "printed at both spots, read by code" in proof
-    assert "Vendor page 1 (architect's drawing on the same sheet)" in proof
+    proof = _words(reader.pages[2].extract_text())
+    # The proof card (#1804): the C-number and title, one plain sentence, the two snippets'
+    # captions, the reference and how it was checked, in the vendor's words.
+    for words in (
+        "1 Buffet outlet height",
+        (
+            'Vendor shows 46" for the buffet outlet height; the architect shows 37" '
+            '(printed 3\'-1"). Change it to 37" (9" over).'
+        ),
+        "VENDOR'S DRAWING · PAGE 1",
+        "ARCHITECT DRAWING · SAME SHEET",
+        'Vendor shows 46" Architect shows 37"',
+        "Reference Architect drawing, on the same sheet",
+        (
+            "Checked Proved by code: both numbers are printed on the drawings and were read from "
+            "the drawings' text; a second, separate check matched the same two dimensions and "
+            "both ends"
+        ),
+    ):
+        assert words in proof, words
+    for gone in ("blind", "advocate", "Proved by:", "AI"):
+        assert gone not in proof, gone
     proof_picture = _render(out, 2)
-    assert _count(proof_picture, GREEN) > 50 and _count(proof_picture, RED) > 50  # the boxes
+    assert _count(proof_picture, GREEN) > 50 and _count(proof_picture, RED) > 50  # the rings
     notes = " ".join(reader.pages[3].extract_text().split())
     # What could not be compared is not on the drawing: the notes point to the separate list.
     assert "Not compared (2): listed with the reason" in notes
@@ -452,9 +469,10 @@ def test_decisions_override_and_the_stamp_names_the_reviewer(tmp_path: Path) -> 
     reader = PdfReader(str(out))
     assert "2026-10-18, and reviewed by Ann" in reader.pages[0].extract_text()
     sheet = _words(reader.pages[1].extract_text())
-    assert 'Vendor: 12"' in sheet and 'Vendor: 46"' not in sheet
+    assert '12" should be 34"' in sheet and '46" should be' not in sheet
     words = "".join(page.extract_text() for page in reader.pages)
-    assert "Agreed by Ann" in words
+    # The reviewer's Agree says it is GV's reviewer's decision, never by login (#1803, #1804).
+    assert "Decided by GV's reviewer" in words and "Agreed by Ann" not in words
     # The reviewer's "Not a problem" is Right, noted "(reviewer)": no fourth group (#1766).
     assert "Right (1)" in words and "Right (reviewer)" in words
     assert "Not a problem" not in words
@@ -573,11 +591,15 @@ def test_the_vendor_s_own_string_or_span_is_not_labelled_architect(tmp_path: Pat
     assert needs_pairing({**span, "source": "architect", "rule_check_id": None})
     out = _draw(tmp_path, [summed, span])
     proof = _words("".join(page.extract_text() for page in PdfReader(str(out)).pages))
-    assert LEFT_CAPTIONS["sum"] in proof
-    assert '40" + 40 1/8" = 80 1/8"' in proof
-    assert LEFT_CAPTIONS["span"] in proof
-    assert "Architect / rule" not in proof
-    assert "the vendor's own other dimension of the same span" in proof
+    # The sum written out (#1804), and the right panel says whose numbers they are.
+    assert "THE VENDOR'S OWN PARTS, ADDED UP" in proof
+    assert 'Sum 40" + 40 1/8" = 80 1/8", not the 80" printed' in proof
+    assert (
+        'Vendor prints 80" for the run height string, but its own parts add up to 80 1/8"' in proof
+    )
+    assert "VENDOR'S OTHER DIMENSION OF THE SAME SPAN" in proof
+    assert "Reference The vendor's other dimension of the same span" in proof
+    assert "ARCHITECT DRAWING" not in proof
 
 
 # ---- the Not-compared list (#1619) -----------------------------------------------------------------
