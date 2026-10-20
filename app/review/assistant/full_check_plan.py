@@ -190,8 +190,9 @@ def _pack_state(folder: Path) -> tuple[str | None, list[str]]:
 
 
 def pack_ready(folder: Path | None) -> bool:
-    """Whether the whole pack is made (its page pictures too)."""
-    return folder is not None and _pack_state(folder)[0] == "ready"
+    """Whether the whole pack is made (its page pictures too; its labels may have failed: #1768
+    `ready_without_labels`)."""
+    return folder is not None and _pack_state(folder)[0] in ("ready", "ready_without_labels")
 
 
 def wait_for_page_map(

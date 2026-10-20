@@ -38,7 +38,8 @@ that set-up once per upload, in the background, and the agent sees it read-only 
 - `pairs.json`: architect against vendor dimensions paired by drawn position (`dim_pairs.py`,
   wrapping `extraction/architect/pairing.py`) or by anchors, what both ends land on (`dim_anchors.py`:
   the same wall, floor or outlet on both drawings, no scale used), each `same` or `different`.
-- `status.json`: `building`, `ready` or `failed`, and the steps done. The agent can work before
+- `status.json`: `building`, `ready`, `ready_without_labels` (the labels step broke or ran out of
+  time) or `failed`, and the steps done. The agent can work before
   the pack is ready (the first message never waits); the `zoom` tool makes the drawings-only copy
   it needs at once if the pack has not made it yet.
 
@@ -103,6 +104,9 @@ _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
 PACK_VERSION: Final = 8
+#: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
+#: pictures are made, `dims.json` is missing or partial. Never "ready".
+READY_WITHOUT_LABELS: Final = "ready_without_labels"
 RENDER_DPI: Final = 100
 #: Seconds the dimension labels' drawn-ink route (OCR) may spend on one set, after every page's
 #: text labels (`GV_DIM_LABELS_DRAWN_BUDGET_S`; 0 turns it off). It reads the vendor's drawn
@@ -770,7 +774,8 @@ pairs.json             architect against vendor dimensions paired by drawn posit
                        value) or by anchors (method anchors: both ends land on the same wall,
                        floor or outlet on both drawings, no scale used), each same or different;
                        and why a row could not be paired.
-status.json            building / ready / failed.
+status.json            building / ready / ready_without_labels (the labels step broke or ran
+                       out of time: dims.json is missing or partial) / failed.
 hires/                 code's 300-dpi tiles of the pages zoom has cut from (not for reading:
                        zoom gives you any area sharp).
 
@@ -831,14 +836,25 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
             _contact_sheets(name, pages, folder / "contact")
         done += ["pages", "contact_sheets"]
         _set_status(folder, "building", done, files=names)
+        labels_error: str | None = None
         try:
             _dims(folder, uploads, names, page_map)
             done.append("dims")
-        except Exception as failed:  # noqa: BLE001 - the pack works without labels
+        except Exception as failed:  # noqa: BLE001 - the pack works without labels, said so
             _log.warning("assistant set pack labels failed: %s", type(failed).__name__)
+            labels_error = (
+                "timed out"
+                if isinstance(failed, subprocess.TimeoutExpired)
+                else type(failed).__name__
+            )
     except Exception as failed:
         _set_status(folder, "failed", done, files=names, error=type(failed).__name__)
         raise
+    if labels_error is not None:
+        # Never "ready" with no or partial labels (#1768): the simple check refuses to compare on
+        # it, and the next message builds the pack again.
+        _set_status(folder, READY_WITHOUT_LABELS, done, files=names, labels_error=labels_error)
+        return
     _set_status(folder, "ready", done, files=names)
 
 
