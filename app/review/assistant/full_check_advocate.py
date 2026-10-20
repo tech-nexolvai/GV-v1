@@ -14,7 +14,11 @@ hold:
 2. **Code read both values at those spots** (the labels themselves, or `verify_value`).
 3. **The drawn extents agree** (`same_extent`): code lines the two drawings up on dimensions they
    share and checks both dimension lines' end points land on the same drawn extent, allowing only
-   the claimed difference.
+   the claimed difference. Where code's geometry **cannot tell** (a sheet not drawn to scale, a
+   dimension line code cannot find), it never blocks, as in the simple check (`verify.py`'s
+   `geometry`): the blind pick is then made by the stronger model at high effort, as the simple
+   check's blind look is (`STRONG_PICK`), and must agree on the label and on both ends (#1819).
+   Geometry that shows different points always blocks.
 4. **Every code check passes** (`code_checks`): the vendor value is the drawing's black or grey
    ink, not inside one of GV's text notes; the labels are on a vendor half and an architect half
    (never a brand prototype); both run the same way; the vendor value is from the newest round;
@@ -48,6 +52,10 @@ from typing import Any, Final, Literal
 from app.review.assistant.colour_rule import COLOUR_RULE
 from app.review.assistant.untrusted import fence
 
+#: Set by the roster on a blind pick made by the stronger model at high effort (#1819): only such
+#: a pick may settle a pairing code's geometry cannot tell.
+STRONG_PICK: Final = "strong"
+
 __all__ = [
     "ADVOCATE_SCHEMA",
     "ADVOCATE_SYSTEM",
@@ -60,6 +68,7 @@ __all__ = [
     "STRING_QUESTION",
     "STRING_SCHEMA",
     "STRING_SYSTEM",
+    "STRONG_PICK",
     "Check",
     "Extent",
     "StringChain",
@@ -96,6 +105,10 @@ SPANS: Final = (
     "box_above_unit",
     "blocking",
     "other",
+)
+#: An item about the room, never millwork alone (the simple check's trade rule, `verify.py`).
+_ROOM_CONTEXT: Final = re.compile(
+    r"\b(?:ceiling|soffit|bulkhead|header|door|window|beam|column|room height)s?\b", re.IGNORECASE
 )
 #: A Wrong item between two drawings: its pairing must be proved.
 PAIRED_SOURCES: Final = frozenset({"architect", "brand_prototype", "gv_review"})
@@ -524,6 +537,7 @@ def decide(
     advocate: Mapping[str, Any] | None,
     extent: tuple[Extent, str] | None,
     code_paired: bool,
+    item: str | None = None,
 ) -> Verdict:
     """The verdict on one red candidate under D1 (see the module). `printed`: code read both
     values at their spots. `helper_pick`: the helper's architect label (`p23.D10`). `advocate`: the
@@ -551,8 +565,17 @@ def decide(
         )
     if helper_pick is None:
         return Verdict("objects", "Not proved: the architect's value has no label.", answers)
-    if extent is not None and extent[0] != "same_extent":
-        # Code's geometry is checked first (#1641): an item it cannot prove spends no AI call.
+    if extent is not None and extent[0] == "different_extent":
+        # Code's geometry is checked first (#1641): an item it shows apart spends no AI call.
+        answers["extent"] = extent[0]
+        return Verdict("objects", f"Not proved: {extent[1]}.", answers)
+    if (
+        extent is not None
+        and extent[0] != "same_extent"
+        and not (advocate is not None and advocate.get(STRONG_PICK))
+    ):
+        # Geometry that cannot tell is no proof alone: only the stronger blind pick may settle
+        # the pairing then (#1819); a weaker pick, or none, leaves it Not compared.
         answers["extent"] = extent[0]
         return Verdict("objects", f"Not proved: {extent[1]}.", answers)
     if advocate is None:
@@ -580,9 +603,27 @@ def decide(
     answers["spans"] = "agree"
     state, why = extent or ("cannot_tell", "not measured")
     answers["extent"] = state
-    if state != "same_extent":
+    if state != "same_extent" and not advocate.get(STRONG_PICK):
         return Verdict("objects", f"Not proved: {why}.", answers)
-    answers["pairing"] = "proved"
+    if state != "same_extent":
+        # With no geometry to back the picks, the simple check's trade rule holds too: an end at
+        # a box above the unit, or an item about the room (ceiling, soffit, bulkhead, a door), is
+        # never proved by two picks alone (#1819; key s3-60: the architect's height runs to a
+        # bulkhead box, the vendor's to the unit's top).
+        ends = [
+            str(spans.get(end))
+            for spans in (vendor_spans, architect_spans)
+            if isinstance(spans, Mapping)
+            for end in ("from", "to")
+        ]
+        if "box_above_unit" in ends or _ROOM_CONTEXT.search(item or ""):
+            answers["trade"] = "fail"
+            return Verdict(
+                "objects",
+                f"Not proved: {why}, and it may measure room context or another trade's box.",
+                answers,
+            )
+    answers["pairing"] = "proved" if state == "same_extent" else "proved_by_two_picks"
     return Verdict("passed", "", answers)
 
 

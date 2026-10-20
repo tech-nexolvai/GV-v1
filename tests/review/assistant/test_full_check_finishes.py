@@ -30,7 +30,7 @@ from app.review.assistant.chat_engine import (
     ROSTER_WRAP_UP_MAX_TOKENS,
     SHAPED_HELPER_MAX_TOKENS,
 )
-from app.review.assistant.chat_tools import HELPER_CALL_BUDGET, helper_footer
+from app.review.assistant.chat_tools import helper_footer
 from app.review.assistant.full_check_roster import tag_page_groups
 from app.review.assistant.reply_json import inch_marks_escaped, json_of_reply
 from tests.review.assistant.chat_fakes import reply, text, tool
@@ -225,7 +225,8 @@ def test_the_brief_states_the_real_call_allowance(tmp_path: Path) -> None:
     harness = Harness(tmp_path, ScriptedProvider(lead=[]))
     workspace = harness.engine.tools.workspace
     chat = helper_footer("Check pages 2-3.", workspace, pages=[2, 3])
-    assert f"about {HELPER_CALL_BUDGET} tool calls" in chat  # the chat's helpers: as before
+    # The chat's helpers: no number code does not enforce (#1819).
+    assert "tool calls" not in chat and "the app tells you when they run out" in chat
     roster = helper_footer("LEAD REVIEW", workspace, pages=list(range(2, 18)), calls=48)
     assert "about 48 reading calls" in roster and "Budget: about" not in roster
     assert "never skip a page or stop early" in roster

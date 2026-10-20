@@ -425,11 +425,11 @@ def test_the_footer_gives_the_pages_from_the_page_map(workspace: ChatWorkspace) 
     assert "- page 2 (combined.pdf): architect+vendor, 2. Vanity; drawings: architect at" in footer
     assert "vendor round 1 at" in footer
     assert "The set pack is ready at /mnt/user-data/set/" in footer
-    assert "zoom" in footer and "about 12 tool calls" in footer
+    assert "zoom" in footer and "the app tells you when they run out" in footer
     assert "at most 300 words" in footer and "did not reach" in footer
     # No pages named: no page lines, the rest stays.
     plain = helper_footer("Count the sinks.", workspace)
-    assert "Your pages" not in plain and "about 12 tool calls" in plain
+    assert "Your pages" not in plain and "the app tells you when they run out" in plain
 
 
 # ---- parallel tools --------------------------------------------------------------------------------
