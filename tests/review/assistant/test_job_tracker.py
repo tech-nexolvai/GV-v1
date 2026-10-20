@@ -124,10 +124,10 @@ def test_two_rounds_in_one_check_fixed_still_wrong_new_and_right_only() -> None:
     assert (filler["state"], filler["open_kind"], filler["tags"]) == (
         "open",
         "wrong",
-        ["Still wrong"],
+        ["Previous comment not addressed"],
     )
     outlet = items["Outlet height"]
-    assert outlet["state"] == "open" and outlet["tags"] == ["New in round 2"]
+    assert outlet["state"] == "open" and outlet["tags"] == ["New"]
     # The click opens the newest finding.
     assert filler["link"]["finding_id"] == "F5"
     assert [h["finding_id"] for h in filler["history"]] == ["F2", "F5"]
@@ -238,8 +238,8 @@ def test_a_stored_round_status_wins_in_both_spellings() -> None:
     assert items["Sink base width"]["state"] == "fixed"
     assert items["Sink base width"]["fixed_round"] == 2
     assert items["Filler at wall end"]["fixed_round"] == 2
-    assert items["Outlet height"]["tags"] == ["Still wrong"]
-    assert "New in round 2" in items["Drawer count"]["tags"]
+    assert items["Outlet height"]["tags"] == ["Previous comment not addressed"]
+    assert "New" in items["Drawer count"]["tags"]
 
 
 def test_the_round_two_recheck_statuses_are_read_as_they_are() -> None:

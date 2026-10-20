@@ -179,7 +179,7 @@ def test_the_tracker_follows_items_across_rounds_decisions_and_corrections(postg
         assert (filler["state"], filler["open_kind"], filler["tags"]) == (
             "open",
             "wrong",
-            ["Still wrong"],
+            ["Previous comment not addressed"],
         )
         assert filler["link"] == {
             "package_id": str(world.first),

@@ -632,7 +632,8 @@ def test_a_gv_rule_result_without_a_stated_requirement_is_never_a_comment(
     )
     row = next(r for r in rows if r[4] == "Countertop row on page 5")
     assert row[0] in (None, "") and row[5] == "Not compared"
-    assert row[10] == NO_REQUIREMENT_REASON
+    # The Not-compared list's reason for it, word for word (#1766: one reason per item, R6).
+    assert row[10].startswith("Not reviewed: project value not set: GV's rule found a difference")
     assert not any(FORBIDDEN.search(str(c or "")) for r in rows for c in r)
 
 
