@@ -5,6 +5,7 @@ and values only (no client data); no PDF, no model call."""
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -489,7 +490,14 @@ def test_geometry_blocks_only_on_different_points(monkeypatch: pytest.MonkeyPatc
 
 
 def test_different_points_unsure_and_no_architect_value() -> None:
-    points = _one(_pair("p2.D1", "p1.D1", "different_points"))
+    points = _one(
+        _pair(
+            "p2.D1",
+            "p1.D1",
+            "different_points",
+            ("floor", "top of counter", "floor", "underside of counter"),
+        )
+    )
     assert points.outcome == "not_compared" and points.reason == v.DIFFERENT_POINTS
     assert proof.classified(_stored(points.finding)).reason == "different_reference"
     unsure = _one(_pair("p2.D1", "p1.D1", "unsure"))
@@ -498,6 +506,92 @@ def test_different_points_unsure_and_no_architect_value() -> None:
     nothing = _one(_pair("p2.D1", None, "no_architect_value"))
     assert nothing.outcome == "listed" and nothing.reason_code == "nothing_to_compare"
     assert nothing.finding == {} and nothing.verdict == "not_compared"
+
+
+def test_a_different_points_its_own_ends_contradict_goes_to_the_blind_look() -> None:
+    """The AI's "no" is checked too (DeepSeekMath-V2's lesson): "different points" with end words
+    that name the same two points on both drawings is not supported, so the pair is verified like
+    any other and waits for the blind look; red still needs the blind look to agree."""
+    found = _one(_pair("p2.D1", "p1.D1", "different_points"))
+    assert found.outcome == "candidate" and found.needs_blind and found.blind == "pair"
+    objection = next(c for c in found.checks if c.name == v.OBJECTION)
+    assert objection.outcome == "pass" and "its own end words name the same" in objection.why
+    assert [c.name for c in found.checks if c.outcome != "pass"] == []
+    assert with_blind(found, _agrees(found)).outcome == "red"
+    refused = with_blind(found, None, "the call failed")
+    assert refused.outcome == "not_compared"
+    disagrees = replace(_agrees(found), verdict="different_points")
+    assert with_blind(found, disagrees).outcome == "not_compared"
+
+
+def test_a_different_points_code_geometry_contradicts_goes_to_the_blind_look(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Code's drawn extents agreeing outrank the AI's own end words: the blind look names the
+    ends (and must name the same ones on both drawings for red)."""
+    ends = ("floor", "top of counter", "floor", "underside of counter")
+    monkeypatch.setattr(v, "same_extent", lambda *a: ("same_extent", "both ends on one line"))
+    found = _one(_pair("p2.D1", "p1.D1", "different_points", ends))
+    assert found.outcome == "candidate"
+    assert "code's geometry shows the same extent" in next(
+        c.why for c in found.checks if c.name == v.OBJECTION
+    )
+    seen = replace(_agrees(found), vendor_to="top of counter", architect_to="underside of counter")
+    assert with_blind(found, seen).outcome == "not_compared"
+    agreed = replace(_agrees(found), vendor_to="top of counter", architect_to="top of counter")
+    assert with_blind(found, agreed).outcome == "red"
+
+
+@pytest.mark.parametrize(
+    ("pair", "item", "geometry"),
+    [
+        # its own ends name different points and code cannot tell: the "no" stands
+        (
+            _pair(
+                "p2.D1",
+                "p1.D1",
+                "different_points",
+                ("floor", "top of counter", "floor", "underside of counter"),
+            ),
+            ROUND_2,
+            ("cannot_tell", "too few dimensions"),
+        ),
+        # code's geometry shows different points
+        (_pair("p2.D1", "p1.D1", "different_points"), ROUND_2, ("different_extent", "apart")),
+        # an end at room context (another trade)
+        (
+            _pair("p2.D1", "p1.D1", "different_points", ("floor", "ceiling", "floor", "ceiling")),
+            ROUND_2,
+            ("cannot_tell", "too few dimensions"),
+        ),
+        # the values code reads are equal
+        (
+            _pair(
+                "p1.D7",
+                "p1.D3",
+                "different_points",
+                ("wall", "outlet centre line", "wall", "outlet centre line"),
+            ),
+            ROUND_1,
+            ("cannot_tell", "too few dimensions"),
+        ),
+        # an older round: round 2 is the vendor's current drawing
+        (_pair("p1.D5", "p1.D1", "different_points"), ROUND_1, ("cannot_tell", "few")),
+        # a width against a height
+        (_pair("p2.D2", "p1.D1", "different_points"), ROUND_2, ("cannot_tell", "few")),
+    ],
+)
+def test_a_different_points_code_does_not_contradict_stays_grey(
+    monkeypatch: pytest.MonkeyPatch,
+    pair: dict[str, Any],
+    item: Item,
+    geometry: tuple[str, str],
+) -> None:
+    monkeypatch.setattr(v, "same_extent", lambda *a: geometry)
+    found = _one(pair, item)
+    assert found.outcome == "not_compared" and not found.needs_blind
+    assert found.reason == v.DIFFERENT_POINTS and found.reason_code == "different_reference"
+    assert proof.classified(_stored(found.finding)).reason == "different_reference"
 
 
 def test_unsure_with_no_architect_label_has_its_own_reason() -> None:
