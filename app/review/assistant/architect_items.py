@@ -55,6 +55,7 @@ from time import monotonic
 from typing import Any, Final
 
 from app.review.assistant.decision_resolver import OTHER_TRADE_FAMILIES
+from app.review.assistant.product_packs import material_pattern, part_kinds
 from vocabulary.product_registry import Product, registry
 
 __all__ = [
@@ -94,58 +95,9 @@ _BY_OTHERS: Final = re.compile(
     r"general contractor)\b|\bN\.?\s?I\.?\s?C\.?(?![A-Z])|\bnot in contract\b",
     re.IGNORECASE,
 )
-#: Words that name a product's material without a code (the vendor wrote it out).
-_MATERIAL_WORDS: Final[Mapping[str, re.Pattern[str]]] = {
-    "countertop": re.compile(
-        r"\b(?:stone|quartz|granite|marble|solid surface|countertop|counter top)\b", re.IGNORECASE
-    ),
-    "cabinet": re.compile(
-        r"\b(?:laminate|plam|veneer|melamine|wood|lacquer|thermofoil)\b", re.IGNORECASE
-    ),
-}
-#: Millwork parts an architect note may ask for: (the part, the architect's words, the words that
-#: count as the vendor naming it).
-_PARTS: Final[tuple[tuple[str, re.Pattern[str], re.Pattern[str]], ...]] = (
-    (
-        "drawers",
-        re.compile(r"\bDRAWERS?\b|\bPULL[- ]?OUTS?\b", re.IGNORECASE),
-        re.compile(r"\bDRAWERS?\b|\bPULL[- ]?OUTS?\b|\bDWRS?\b", re.IGNORECASE),
-    ),
-    (
-        "shelves",
-        re.compile(r"\bSHEL(?:F|VES|VING)\b", re.IGNORECASE),
-        re.compile(r"\bSHEL(?:F|VES|VING)\b|\bSHLF\b", re.IGNORECASE),
-    ),
-    (
-        "pulls",
-        re.compile(r"\bPULLS?\b(?![- ]?OUT)", re.IGNORECASE),
-        re.compile(r"\bPULLS?\b(?![- ]?OUT)|\bHANDLES?\b|\bKNOBS?\b", re.IGNORECASE),
-    ),
-    (
-        "hinges",
-        re.compile(r"\bHINGES?\b", re.IGNORECASE),
-        re.compile(r"\bHINGES?\b|\bHINGED\b", re.IGNORECASE),
-    ),
-    (
-        "grommets",
-        re.compile(r"\bGROMMETS?\b", re.IGNORECASE),
-        re.compile(r"\bGROMMETS?\b", re.IGNORECASE),
-    ),
-    ("locks", re.compile(r"\bLOCKS?\b", re.IGNORECASE), re.compile(r"\bLOCKS?\b", re.IGNORECASE)),
-    (
-        "bins",
-        re.compile(r"\b(?:TRASH|WASTE|RECYCL\w*)\b|\bBINS?\b", re.IGNORECASE),
-        re.compile(r"\b(?:TRASH|WASTE|RECYCL\w*)\b|\bBINS?\b", re.IGNORECASE),
-    ),
-    (
-        "outlets",
-        re.compile(r"\bOUTLETS?\b|\bRECEPTACLES?\b|\bJ-?BOX(?:ES)?\b|\bGFC?I\b", re.IGNORECASE),
-        re.compile(
-            r"\bOUTLETS?\b|\bRECEPTACLES?\b|\bJ-?BOX(?:ES)?\b|\bGFC?I\b|\bDUPLEX\b|\bPOWER\b",
-            re.IGNORECASE,
-        ),
-    ),
-)
+#: Words that name a product's material without a code (the vendor wrote it out), and the millwork
+#: parts an architect note may ask for: each product's pack (`material_words`, `part_kinds`; #1776),
+#: read through `product_packs.material_pattern` and `product_packs.part_kinds`.
 #: An architect note is a view title, not a requirement ("KITCHENETTE ELEVATION").
 _TITLE: Final = re.compile(r"\b(?:ELEVATION|PLAN|SECTION|DETAIL|VIEW)S?\b\s*(?:-.*)?$")
 #: Notes: a line joins the one above when this close below it (in line heights) and aligned.
@@ -460,7 +412,7 @@ def _says(drawings: Iterable[_Drawing], pattern: re.Pattern[str]) -> str | None:
 
 def _by_others(drawings: Sequence[_Drawing], product: Product) -> str | None:
     """A vendor phrase saying this product is supplied by GV or others (`STONE TOP by GV`)."""
-    words = _MATERIAL_WORDS.get(product.id)
+    words = material_pattern(product)
     for drawing in drawings:
         lines = [text for text, _box in drawing.phrases]
         for at, text in enumerate(lines):
@@ -652,7 +604,7 @@ def _compare(ctx: _Context) -> None:
                     )
                 )
                 continue
-            named = _says(latest, _MATERIAL_WORDS.get(product.id, re.compile(r"(?!)")))
+            named = _says(latest, material_pattern(product) or re.compile(r"(?!)"))
             if named is not None:
                 result.unknowns.append(
                     _unknown(
@@ -774,10 +726,11 @@ def _open_notes(area: _Area, texts: Mapping[tuple[str, int], str] | None) -> lis
         for note, _box in _notes(drawing.phrases):
             if len(note.split()) < 3 or _BY_OTHERS.search(note) or _TITLE.search(note):
                 continue
-            parts = [name for name, asked, _named in _PARTS if asked.search(note)]
+            kinds = part_kinds()
+            parts = [name for name, asked, _named in kinds if asked.search(note)]
             lacking = [
                 name
-                for name, asked, named in _PARTS
+                for name, asked, named in kinds
                 if name in parts and not named.search(vendor_text)
             ]
             if not lacking or note.upper() in seen:

@@ -1,0 +1,48 @@
+# The countertops product pack (#1776): its registry entry and what it teaches the engines.
+# What each field means: vocabulary/products.yaml (the registry's fields) and
+# vocabulary/product_packs.py (the pack's own fields). Generic trade words only, no client values.
+
+id: countertop
+label: Countertop
+plural: Countertops
+description: Stone, quartz and solid-surface tops, with their sinks, splashes and cut-outs.
+active: true
+draft: false
+check_kinds: [dimension_match, global_rules]
+checklist:
+  - name: sizes
+    text: >-
+      Overall length, each piece, depth (countertop depth = cabinet depth + overhang), top and splash
+      thickness, counter height above the floor.
+  - name: sink
+    text: >-
+      Sink centre line from the wall or end, sink model or tag, undermount or drop-in, cut-out width and
+      depth, faucet holes; rim collars must fit their holes.
+  - name: splashes
+    text: >-
+      Backsplash and side splash: present or not, height, thickness, material (stone or tile). A side
+      splash only where the top meets a wall; a free-standing end gets none.
+  - name: overhang
+    text: Front and side overhang, knee space, brackets and corbels.
+  - name: cut_outs
+    text: 'Sink, cooktop, grommet and outlet cut-outs: present, size and position.'
+  - name: edges
+    text: >-
+      Edge profile, seams and their position, field cut (extra length cut on site, per wall end).
+  - name: material
+    text: Material and finish tags on each piece match the architect's for the same piece.
+global_rule_hints:
+  - Sink cut-out size from the sink's inside size less a clearance on each side.
+  - Sink front offset, and the minimum back offset left behind the cut-out.
+  - Field cut added at each wall end.
+  - Countertop depth from the cabinet depth plus the overhang.
+words: [countertop, countertops, counter top, counter tops, quartz, granite, marble, solid surface, backsplash,
+  back splash, side splash, sidesplash, splash]
+hints: [stone, sink, sinks, cooktop, faucet, lavatory, vanity top, counter, counters]
+tag_families: [CT, ST, QZ, QTZ, SS, SSM]
+# Moved from code (#1776), unchanged.
+# Words of this product's materials (the architect's "by others" notes; was architect_items.py).
+material_words: [stone, quartz, granite, marble, solid surface, countertop, counter top]
+# The chat ledger files a reading by these (was ledger.py); "ct" is the countertop tag letters.
+item_words: [countertop, counter, top, backsplash, splash, overhang, ct]
+# A countertop's worked example is the compare prompt's own (a kitchen run): no example.json.

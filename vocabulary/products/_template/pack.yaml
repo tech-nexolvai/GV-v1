@@ -1,0 +1,64 @@
+# A NEW PRODUCT PACK: copy this folder to `vocabulary/products/<id>/`, fill it in, add the id to
+# `vocabulary/products.yaml`, run the pack smoke test, then set `active: true` (#1776).
+# About an hour. Generic trade words only: never a client value (names, drawing numbers, sizes).
+# Every field below is explained in vocabulary/products.yaml (the registry's fields) and
+# vocabulary/product_packs.py (the pack's own fields). Delete a field you do not need.
+
+# -- who it is ----------------------------------------------------------------------------------
+id: widget                      # the folder's name: lowercase letters, digits and _
+label: Widget
+plural: Widgets
+description: Made-up starter; say in one plain sentence what this product is.
+active: false                   # true only once the smoke test passes and GV agrees
+draft: true                     # the checklist and skill are a generic starter
+check_kinds: [dimension_match, global_rules]
+
+# -- what a reviewer compares on every page -----------------------------------------------------
+checklist:
+  - name: dimensions
+    text: Overall width, depth and height; mounting height; centre lines.
+  - name: specs
+    text: The specification values below (attributes) against the architect's or the spec book.
+  - name: finish
+    text: Finish and material codes match the architect's or the specification.
+  - name: quantities
+    text: How many of each, and where each one goes.
+  - name: notes
+    text: Every note and callout on the architect's drawing or specification is followed.
+global_rule_hints: []           # kinds of GV standard, never their values (those go in the rulebook)
+
+# -- the words that name it ---------------------------------------------------------------------
+words: [widget, widgets]        # only this product: never shared with another pack
+hints: [knob]                   # only suggest it may be drawn on a page; broad is safe
+shared_words: []                # words another pack owns that this product also uses (a drawer)
+ours: the widget itself, its knob and its mounting plate
+room_words_extra: []            # another trade's work near it, never compared (a switch)
+tag_families: []                # e.g. [WG]: the letters before its finish codes (WG-1)
+
+# -- where its dimensions start and end (added to the core end words while in scope) ------------
+end_words:
+  - name: widget_centre         # the word the compare answer starts an end with
+    aliases: [centre of widget, widget centre line]
+    centred: true               # a centre line named alone may be this one
+    screen_words: the centre of the widget
+  - name: top_of_widget
+    aliases: [widget top]
+    strict: true                # never confused with another strict end
+    screen_words: the top of the widget
+
+# -- what code can check without a model --------------------------------------------------------
+part_kinds:
+  - kind: knobs
+    architect_words: [knob, knobs]
+    countable: true             # the count check compares "(2) KNOBS" against "(3) KNOBS"
+attributes:
+  - name: knob_finish
+    label_words: [knob]         # a value counts only beside one of these words
+    values: [BRASS, CHROME, BLACK]
+    synonyms: {CHROME: [POLISHED CHROME]}
+size_formats: [diameter]        # read Ø24" (diameter) and/or w_x_h (24" W x 36" H)
+semantic_types:                 # codes its GV rules may name (the values stay in the rulebook)
+  - code: WG_MOUNT_HT
+    meaning: Widget mounting height above the floor
+    unit: in
+impact_words: [mounting height] # what makes one of its differences matter more

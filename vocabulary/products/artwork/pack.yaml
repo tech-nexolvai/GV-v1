@@ -1,0 +1,24 @@
+# The artwork product pack (#1776): its registry entry and what it teaches the engines.
+# What each field means: vocabulary/products.yaml (the registry's fields) and
+# vocabulary/product_packs.py (the pack's own fields). Generic trade words only, no client values.
+
+id: artwork
+label: Artwork
+plural: Artwork
+description: Framed art and wall pieces (draft starter checklist).
+active: false
+draft: true
+check_kinds: [dimension_match, global_rules]
+checklist:
+  - name: dimensions
+    text: Image and frame size, mounting height, centre line on its wall.
+  - name: specs
+    text: Framing, mat, glazing and hanging hardware.
+  - name: finish
+    text: Frame finish code matches the architect's or the specification.
+  - name: quantities
+    text: How many pieces, and the piece tag for each location.
+  - name: notes
+    text: Every note and callout on the architect's drawing or specification is followed.
+global_rule_hints: []
+words: [artwork, art piece, framed art]

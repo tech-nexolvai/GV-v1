@@ -50,6 +50,7 @@ from importlib import import_module
 from typing import Any, Final, Literal
 
 from app.review.assistant.finding_checks import to_inches
+from app.review.assistant.product_packs import item_product
 from app.review.assistant.tool_schema import SIDE_WORDS, box_schema
 
 __all__ = [
@@ -712,17 +713,12 @@ def _misread_words(entry: StringEntry, others: Sequence[StringEntry]) -> str | N
 
 # ---- the ledger ----------------------------------------------------------------------------------
 
-_COUNTERTOP_WORDS: Final = ("countertop", "counter", "top", "backsplash", "splash", "overhang")
-_CABINET_WORDS: Final = ("cabinet", "base", "wall", "tall", "vanity", "drawer", "door", "filler")
-
 
 def _category(item: str) -> str:
-    words = set(_words(item))
-    if words & set(_COUNTERTOP_WORDS) or "ct" in words:
-        return "countertop"
-    if words & set(_CABINET_WORDS) or any(re.fullmatch(r"(?:b|w|sb|t|v)\d+", w) for w in words):
-        return "cabinet"
-    return "other"
+    """The product a reading's item files under: each active product's pack `item_words` and
+    `item_codes` (#1776; countertop: "top", "splash", "ct"; cabinet: "base", "door", B36), in the
+    registry's order; else `other`."""
+    return item_product(_words(item))
 
 
 @dataclass

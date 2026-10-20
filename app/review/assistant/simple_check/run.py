@@ -51,6 +51,7 @@ from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.full_check_advocate import code_checks, decide, ink_colour, needs_pairing
 from app.review.assistant.product_scope import refiled
 from app.review.assistant.run_fit import covered_labels as run_fit_labels
+from app.review.assistant.simple_check import funnel as funnel_module
 from app.review.assistant.simple_check import resolve as resolve_module
 from app.review.assistant.simple_check import verify as verify_module
 from app.review.assistant.simple_check.blind import BlindSettings, look_all
@@ -62,6 +63,7 @@ from app.review.assistant.simple_check.verify import (
     Item,
     Pack,
     ValueReader,
+    Verification,
     Verified,
     with_blind,
 )
@@ -76,6 +78,7 @@ __all__ = [
     "load_blind",
     "load_outcomes",
     "replay",
+    "replay_with_funnel",
     "run",
     "work_item_rows",
 ]
@@ -243,6 +246,10 @@ class _Run:
     """Vendor drawings of a separate file not compared because code could not pair them with an
     architect drawing, or the compare call said the drawing code paired shows something else
     (#1723): (page, drawing id, reason). Each is a Not-compared row; the check is not complete."""
+    verifications: dict[str, Verification] = field(default_factory=dict)
+    """Code's verify of each answered drawing, before the resolve loop (the funnel, #1767)."""
+    final: list[Verified] = field(default_factory=list)
+    """Every item after the resolve loop and the blind look (the funnel's end, #1767)."""
 
     # -- the run --
 
@@ -353,6 +360,7 @@ class _Run:
             verified = self._resolve(verified)
         with engine.timings.phase("blind"):
             verified = self._blind(verified)
+        self.final = [v for v, _item in verified]
         self._tell("looked", [v for v, _item in verified])
         with engine.timings.phase("finish_checks"):
             self._record(verified)
@@ -783,6 +791,7 @@ class _Run:
                 self._tell("drawing_finished", item.id, "failed", self.outcomes[item.id].reason)
                 self._tell("verified", item.id, ())
                 continue
+            self.verifications[item.id] = verification
             found += [(v, view) for v in verification.items]
             self._tell("verified", item.id, verification.items, scoped=self._scoped)
             if verification.missing_labels:
@@ -1326,11 +1335,13 @@ class _Run:
         index = engine._add_block({"type": "text", "text": text, "by": "code"})
         engine.emit("text_delta", {"index": index, "text": text, "by": "code"})
         rows = work_item_rows(self.items, self.outcomes, self.skipped)
+        funnel = self._funnel(stopped)
         engine._add_block(
             {
                 "type": "work_items",
                 "work_items": rows,
                 "run": self.run_dir.name if self.run_dir is not None else None,
+                **({"funnel": funnel_module.headline(funnel)} if funnel is not None else {}),
             }
         )
         try:
@@ -1352,6 +1363,61 @@ class _Run:
             cap_hit=cap_hit,
             seen=[dict(entry) for entry in engine.tools.seen],
         )
+
+    def _funnel(self, stopped: str | None) -> dict[str, Any] | None:
+        """The run's funnel (#1767), written as `funnel.json` in its run folder: counts and ids at
+        each step, per drawing and in total. Never stops the check: None when it cannot be made."""
+        engine = self.engine
+        try:
+            from app.review.assistant.chat_engine import HARNESS_ID
+            from app.review.assistant.set_pack import PACK_VERSION
+
+            timings = engine.timings.as_dict(engine.spent)
+            meta = {
+                "run": self.run_dir.name if self.run_dir is not None else None,
+                "chat": engine.tools.workspace.root.name,
+                "replay_of": self.options.replay,
+                "resolve_mode": self.options.resolve.as_dict().get("mode"),
+                "code": {"harness": HARNESS_ID, "pack_version": PACK_VERSION},
+                "settings": {
+                    "compare": dict(self.options.compare),
+                    "blind": {
+                        "model": self.options.blind.model,
+                        "effort": self.options.blind.effort,
+                    },
+                    "resolve": self.options.resolve.as_dict(),
+                    "pilot": self.options.pilot,
+                },
+                "stop": {"stopped": stopped, "cap_hit": self.cap_hit},
+                "cost": {
+                    "total": f"{engine.spent / _MICROS:.4f}",
+                    "compare": f"{sum(o.cost_usd for o in self.outcomes.values()):.4f}",
+                    "by_phase": {p["phase"]: p["cost_usd"] for p in timings["phases"]},
+                },
+                "time": {
+                    "total_s": timings["total_seconds"],
+                    "by_phase": {p["phase"]: p["seconds"] for p in timings["phases"]},
+                },
+                "code_findings": _code_findings(engine.book.live()),
+            }
+            funnel = funnel_module.build(
+                self.items,
+                compared=[item.id for item in self.compared],
+                skipped=self.skipped,
+                outcomes=self.outcomes,
+                verifications=self.verifications,
+                final=self.final,
+                meta=meta,
+            )
+        except Exception:  # noqa: BLE001 - the check goes on without its funnel
+            _log.exception("simple check: the funnel could not be made")
+            return None
+        if self.run_dir is not None:
+            try:
+                _write(self.run_dir / funnel_module.FILE, json.dumps(funnel, indent=1, default=str))
+            except OSError:
+                _log.exception("simple check: the funnel could not be saved")
+        return funnel
 
     def _cover_answered(self, failed: Sequence[WorkItem]) -> None:
         """Each compared page in the coverage map: different (a red item on it), same, or not
@@ -1645,6 +1711,20 @@ def _with_saved(candidate: Verified, saved: Mapping[str, Any] | None) -> Verifie
     return with_blind(candidate, BlindAnswer.from_dict(look))
 
 
+def _code_findings(live: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
+    """Code's own findings in the finding book (not the compare answer's), by who made them and
+    their status: GV's rules, the vendor's strings, the finish tags, code's own pairs."""
+    out: dict[str, dict[str, int]] = {}
+    for finding in live:
+        by = str(finding.get("created_by") or "unknown")
+        if by == CREATED_BY:
+            continue
+        status = str(finding.get("status") or "unknown")
+        mine = out.setdefault(by, {})
+        mine[status] = mine.get(status, 0) + 1
+    return out
+
+
 def _model(name: object) -> ChatModel | None:
     return MODELS.get(str(name)) if name else None
 
@@ -1852,6 +1932,31 @@ def replay(
     `verify_answer`, the markup-free copy's ink, `verify_value` readings and `read_number` (its
     readings cached in the pack) unless others are given (a given `read` comes with no
     `read_number` unless one is given too)."""
+    return replay_with_funnel(
+        run_dir,
+        pack_dir,
+        main_file=main_file,
+        products=products,
+        read=read,
+        ink=ink,
+        number=number,
+        resolve=resolve,
+    )[0]
+
+
+def replay_with_funnel(
+    run_dir: Path,
+    pack_dir: Path,
+    *,
+    main_file: str | None = None,
+    products: Sequence[str] | None = None,
+    read: ValueReader | None = None,
+    ink: Any = None,
+    number: Any = None,
+    resolve: resolve_module.ResolveSettings | None = None,
+) -> tuple[dict[str, list[Verified]], dict[str, Any]]:
+    """`replay`, and the replay's funnel (#1767, `funnel.build`): the local eval tools write it
+    for an offline replay ($0). Nothing is written here."""
     worklist = import_module("app.review.assistant.simple_check.worklist")
     work = worklist.build_worklist(pack_dir, main_file)
     items = work.items
@@ -1867,6 +1972,7 @@ def replay(
     proposer = resolve_module.SavedProposer(rounds)
     hook = resolve_module.reader_at(number, pack) if number is not None else None
     out: dict[str, list[Verified]] = {}
+    checked: dict[str, Verification] = {}
     for item in items:
         outcome = outcomes.get(item.id)
         if outcome is None or outcome.status != "ok" or outcome.result is None:
@@ -1881,6 +1987,7 @@ def replay(
             products=products,
             number=number,
         )
+        checked[item.id] = found
         data = outcome.result.model_dump(mode="json")
         raws = {f"{item.id}:{p.get('vendor_label')}": p for p in data.get("pairs") or []}
         raws.update(
@@ -1901,7 +2008,20 @@ def replay(
                 ).verified
             items_out.append(_with_saved(v, saved.get(v.key)) if v.needs_blind else v)
         out[item.id] = items_out
-    return out
+    funnel = funnel_module.build(
+        items,
+        compared=[item.id for item in items],
+        skipped={},
+        outcomes=outcomes,
+        verifications=checked,
+        final=[v for found in out.values() for v in found],
+        meta={
+            "run": None,
+            "replay_of": run_dir.name,
+            "resolve_mode": settings.as_dict().get("mode"),
+        },
+    )
+    return out, funnel
 
 
 def _run_resolve(run_dir: Path) -> resolve_module.ResolveSettings:
