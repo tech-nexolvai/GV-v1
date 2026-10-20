@@ -33,6 +33,7 @@ _BREAK = {
     "code_pairs": "add_code_pairs",
     "run_fit": "add_run_fit",
     "filler_range": "add_filler_range",
+    "sink_offset": "add_sink_offset",
 }
 
 

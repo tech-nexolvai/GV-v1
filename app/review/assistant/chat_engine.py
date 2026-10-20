@@ -251,6 +251,7 @@ from app.review.assistant.send_package import (
     package_context,
 )
 from app.review.assistant.sharpen import helper_lines
+from app.review.assistant.sink_offset import add_to_answer as add_sink_offset
 from app.review.assistant.spot_guard import dropped as spot_dropped
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
@@ -464,6 +465,7 @@ CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
     "code_pairs": "code's own pairs",
     "run_fit": "GV's site-fit rule",
     "filler_range": "GV's filler range",
+    "sink_offset": "GV's sink front offset",
 }
 
 
@@ -2485,8 +2487,8 @@ class ChatEngine:
     def add_code_findings(self) -> None:
         """The finish's code findings, $0, once per answer: the reading ledger's, the vendor
         consistency check's (#1584), the finish check's (#1623), code's own pairs, GV's site-fit rule
-        on the vendor's runs (`run_fit`) and GV's filler range on the vendor's fillers
-        (`filler_range`). A roster
+        on the vendor's runs (`run_fit`), GV's filler range on the vendor's fillers
+        (`filler_range`) and GV's sink front offset on the vendor's plans (`sink_offset`). A roster
         full check adds them before its proof steps (#1641), so its blind reads and devil's
         advocate see them; the trust phase then does not add them again."""
         if self._code_findings_added:
@@ -2504,6 +2506,8 @@ class ChatEngine:
             (CODE_CHECK_NAMES["run_fit"], lambda: add_run_fit(self)),
             # GV's filler range on the vendor's fillers.
             (CODE_CHECK_NAMES["filler_range"], lambda: add_filler_range(self)),
+            # GV's sink front offset on the vendor's plans (#1807).
+            (CODE_CHECK_NAMES["sink_offset"], lambda: add_sink_offset(self)),
         )
         # The pack's state before the checks read its labels counts too: it may turn `ready` while
         # they run on partial labels (#1768 review).

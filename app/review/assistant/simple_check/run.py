@@ -67,6 +67,9 @@ from app.review.assistant.simple_check.verify import (
     Verified,
     with_blind,
 )
+from app.review.assistant.sink_offset import agrees_with_compare as sink_agrees
+from app.review.assistant.sink_offset import decided_items as sink_decided_items
+from app.review.assistant.sink_offset import noted_labels as sink_noted_labels
 from app.review.assistant.spot_locate import code_spotted
 
 if TYPE_CHECKING:
@@ -1290,10 +1293,18 @@ class _Run:
             (pair for pair in verified if pair[0].finding),
             key=lambda pair: _ORDER.get(pair[0].outcome, 3),
         )
+        # A sink front offset code could only note (`sink_offset`, unsure: Not compared) gives way
+        # to the compare answer's own item on that label: one item per label (#1807).
+        noted = sink_noted_labels(engine.book.live(), engine.book.main_file)
         for one, _item in ordered:
             if one.outcome == "candidate":
                 continue  # never left so: the blind look ran on every candidate
             kept = self._add(one)
+            # Only once the comparison's own item is kept: a label never ends up with nothing.
+            key = self._label_key(one)
+            note = noted.pop(key, None) if kept and key in noted else None
+            if note is not None and engine.book.absorb(note):
+                engine._show_dropped(note, "Replaced by the comparison's own item on this label.")
             if kept is None:
                 # Another product than the check's (the strict scope): never listed, not even
                 # as Not compared; the finding book counted it.
@@ -1352,13 +1363,39 @@ class _Run:
         self, verified: list[tuple[Verified, Item]]
     ) -> list[tuple[Verified, Item]]:
         """The compare answer's items less those on a vendor label GV's site-fit rule decided
-        (`run_fit`, code's own items, Right or Wrong): the rule governs that label, so a door the
-        site made narrower than designed is never red against the architect's size, and no blind
-        look is paid for it."""
-        decided = run_fit_labels(self.engine.book.live(), self.engine.book.main_file)
-        if not decided:
+        (`run_fit`, code's own items, Right or Wrong) or GV's sink front offset decided
+        (`sink_offset`): the rule governs that label, so a door the site made narrower than
+        designed is never red against the architect's size, and no blind look is paid for it."""
+        engine = self.engine
+        live, main_file = engine.book.live(), engine.book.main_file
+        decided = run_fit_labels(live, main_file)
+        # GV's sink front offset (`sink_offset`, #1807): a front offset code proved and judged is
+        # the label's one item when the comparison agrees with it; a comparison that contradicts
+        # it (a red where code says Right, an architect value code did not see) speaks instead,
+        # and code's item goes, so neither a red nor a Right is ever hidden.
+        sink = sink_decided_items(live, main_file)
+        if not decided and not sink:
             return verified
-        return [pair for pair in verified if self._label_key(pair[0]) not in decided]
+        keys = [self._label_key(pair[0]) for pair in verified]
+        # Every compare item on a label is judged before any is dropped: one that contradicts
+        # code's item keeps them all, and code's item goes.
+        contradicted = {
+            key
+            for key, pair in zip(keys, verified, strict=True)
+            if key is not None and key in sink and not sink_agrees(sink[key], pair[0])
+        }
+        for key in contradicted:
+            item = sink.pop(key)
+            if engine.book.absorb(str(item["id"])):
+                engine._show_dropped(
+                    str(item["id"]),
+                    "The comparison reads this label otherwise: its own item speaks.",
+                )
+        return [
+            pair
+            for key, pair in zip(keys, verified, strict=True)
+            if key not in decided and key not in sink
+        ]
 
     def _label_key(self, one: Verified) -> tuple[str, int, str] | None:
         vendor = one.vendor

@@ -346,6 +346,25 @@ def test_only_the_picked_products_rules_are_listed(
     assert "### CAB-FILLER-001" in both and "### CT-WIDTH-001" in both
 
 
+def test_a_cabinet_pick_also_lists_the_sink_front_offset_check(
+    session: Session, local: Path
+) -> None:
+    """A sink cut-out sits on the sink cabinet's plan (#1807): a Cabinet pick lists GV's sink front
+    offset check and its setting too (code runs it only where it proves a cut-out), and no other
+    countertop check; a Countertop pick lists it once, as its own."""
+    _project, revision = _revision(session, product="countertop")
+
+    cabinet = rules_markdown(session, revision, ["cabinet"])
+    assert (
+        "### CT-SINK-OFFSET-FRONT-001" in cabinet
+        and "Also listed: CT-SINK-OFFSET-FRONT-001" in cabinet
+    )
+    assert '(`front_offset_required`) | 4"' in cabinet
+    assert "### CT-WIDTH-001" not in cabinet and "### CT-SINK-CUTOUT" not in cabinet
+    countertop = rules_markdown(session, revision, ["countertop"])
+    assert countertop.count("### CT-SINK-OFFSET-FRONT-001") == 1 and "Also listed" not in countertop
+
+
 def test_each_product_in_focus_gets_its_file_and_a_set_with_none_gets_every_active_one(
     session: Session, local: Path, tmp_path: Path
 ) -> None:

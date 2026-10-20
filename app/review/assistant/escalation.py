@@ -166,11 +166,14 @@ def _inside(point: tuple[float, float], box: Sequence[float], slack: float = _SL
 
 def undecided(finding: Mapping[str, Any]) -> bool:
     """An item the escalation works on: Not compared today (a Right item not looked at on both
-    sides aside), never one the reviewer decided, nor GV's filler-range note (`filler_range`)."""
+    sides aside), never one the reviewer decided, nor GV's filler-range note (`filler_range`), site-fit item
+    (`run_fit`) or sink front offset item (`sink_offset`)."""
     if finding.get("created_by") == "filler_range":
         return False  # GV's filler range decided it, the architect first: nothing to climb
     if finding.get("created_by") == "run_fit":
         return False  # GV's site-fit rule decided it by its own arithmetic: nothing to climb
+    if finding.get("created_by") == "sink_offset":
+        return False  # GV's sink front offset: code proved it or said why not (#1807)
     return proof.proof_group(finding) == "not_compared" and finding.get("status") != "same"
 
 
