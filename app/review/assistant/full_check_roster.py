@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from collections.abc import Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -825,6 +826,11 @@ class _Run:
     escalated: set[str] = field(default_factory=set)
     #: Every page's architect labels, set-wide, once read (`_architect_pages`, #1802).
     architect_labels: list[list[dict[str, Any]]] | None = None
+    #: What the blind picks in flight may still cost (millionths of $): counted as spent by the
+    #: phase's room, so picks started together on the advocate's workers never pass its budget
+    #: (a call is charged only when it ends; with thinking on its worst case is big, #1775 C4).
+    held: int = 0
+    held_lock: threading.Lock = field(default_factory=threading.Lock)
 
     # -- money --
 
@@ -2098,11 +2104,28 @@ class _Run:
     ) -> dict[str, Any] | None:
         """One blind call: the vendor's drawing with its label marked, the architect's whole
         drawing with every label numbered; `None` when the price leaves no room."""
-        engine = self.engine
         model = BY_SHORT["sonnet"]
-        estimate = engine._price(model, _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS) or 0
-        if not self._phase_room(self.pick_phase, estimate):
-            return None
+        estimate = self.engine._price(model, _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS) or 0
+        with self.held_lock:
+            if not self._phase_room(self.pick_phase, self.held + estimate):
+                return None
+            self.held += estimate
+        try:
+            return self._held_pick(finding, vendor, architect, page_map, model)
+        finally:
+            with self.held_lock:
+                self.held -= estimate
+
+    def _held_pick(
+        self,
+        finding: Mapping[str, Any],
+        vendor: Mapping[str, Any],
+        architect: Mapping[str, Any],
+        page_map: Mapping[str, Any] | None,
+        model: Any,
+    ) -> dict[str, Any] | None:
+        """The blind pick's crops and call, its price already held (`_blind_pick`)."""
+        engine = self.engine
         tools = engine.tools
 
         def crop(label: Mapping[str, Any], marks: bool) -> list[dict[str, Any]]:

@@ -522,8 +522,9 @@ def _merge(usage: dict[str, int], update: object) -> None:
         for key, value in update.items():
             if isinstance(value, int) and not isinstance(value, bool):
                 usage[key] = value
-        if isinstance(update.get("output_tokens_details"), Mapping):
-            usage["thinking_tokens"] = thinking_tokens(update)
+        thought = thinking_tokens(update)
+        if thought is not None:  # not reported stays absent, never a made-up 0
+            usage["thinking_tokens"] = thought
 
 
 def _stream(

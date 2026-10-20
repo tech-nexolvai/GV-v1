@@ -40,10 +40,11 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
@@ -329,16 +330,44 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
 # ---- the call ------------------------------------------------------------------------------------
 
 
-def look(
-    engine: ChatEngine, verified: Verified, item: Item, settings: BlindSettings
-) -> tuple[BlindAnswer | None, str]:
-    """One blind look: its answer, or None with why it could not be made."""
-    from app.review.assistant.chat_engine import HARNESS_ID
+@dataclass
+class Held:
+    """What the looks in flight may still cost (millionths of $), shared by `look_all`'s workers:
+    the runaway guard counts it as spent, so looks started together never pass the cap between
+    them (a look is charged only when its call ends; with thinking on its worst case is big)."""
 
+    reserved: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+def look(
+    engine: ChatEngine,
+    verified: Verified,
+    item: Item,
+    settings: BlindSettings,
+    held: Held | None = None,
+) -> tuple[BlindAnswer | None, str]:
+    """One blind look: its answer, or None with why it could not be made. Its price is held in
+    `held` (a fresh hold when none is shared) while the call runs."""
+    held = held if held is not None else Held()
     model = settings.chat_model
     estimate = engine._price(model, _PROMPT_TOKENS, _MAX_TOKENS) or 0
-    if not engine._fits(estimate):
-        return None, "the answer's runaway guard was reached"
+    with held.lock:
+        if not engine._fits(held.reserved + estimate):
+            return None, "the answer's runaway guard was reached"
+        held.reserved += estimate
+    try:
+        return _look(engine, verified, item, settings, model)
+    finally:
+        with held.lock:
+            held.reserved -= estimate
+
+
+def _look(
+    engine: ChatEngine, verified: Verified, item: Item, settings: BlindSettings, model: ChatModel
+) -> tuple[BlindAnswer | None, str]:
+    from app.review.assistant.chat_engine import HARNESS_ID
+
     if engine.cancel.is_set():
         return None, "the check was stopped"
     try:
@@ -409,12 +438,13 @@ def look_all(
     at once. A candidate the look could not reach stays Not compared with the reason."""
 
     timings = getattr(engine, "timings", None)
+    held = Held()
 
     def one(pair: tuple[Verified, Item]) -> Verified:
         verified, item = pair
         # Timed and charged to the blind phase on this worker thread (the timings are per thread).
         with timings.phase("blind") if timings is not None else nullcontext():
-            answer, why = look(engine, verified, item, settings)
+            answer, why = look(engine, verified, item, settings, held)
         done = with_blind(verified, answer, why)
         if on_done is not None:
             try:
