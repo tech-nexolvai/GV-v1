@@ -20,11 +20,12 @@ outputs read (the cloud drawing, the package, the Not-compared PDF and workbook,
   value the same way (the difference is still on the vendor's current drawing);
 - `units`: a dual label's millimetres agree with its inches; `slip`: the difference is not a unit
   slip (10x, 12x) or one drawn digit easy to misread;
-- `gv_ink`: the vendor value's OWN ink is not GV's colour. This replaces the old GV-note box check,
+- `gv_ink`: the vendor value's OWN ink is not GV's markup. This replaces the old GV-note box check,
   which blocked a label that merely sat inside a GV note's box: it stopped four true items and no
-  false one (PIPELINE-AUDIT.md). A label code read from the vendor's black or grey layer (the text
-  and drawn routes never read GV's colours) is the vendor's, whatever GV drew over it; any other
-  label's own spot is looked at (`run.py` measures it on the markup-free copy);
+  false one (PIPELINE-AUDIT.md). A label code read from the vendor's own ink (the text and drawn
+  routes: every colour on an ordinary upload, black or grey on GV's combined review sheets, never
+  GV's markup) is the vendor's, whatever GV drew over it; any other label's own spot is looked at
+  (`run.py` measures it on the markup-free copy);
 - `trade`: no end runs to the ceiling, a soffit or bulkhead, a door or another trade's work;
 - `ends`: the model's "from / to" ends name the same two points on both drawings;
 - `geometry`: code's drawn extents (`full_check_advocate.same_extent`) do not show different
@@ -552,6 +553,9 @@ class Region:
     view: str | None = None
     file_page: int | None = None
     """Its page in its own file when `page` is a separate file's set page (#1722)."""
+    sheet: str | None = None
+    """Its file's kind (`schema.Drawing.sheet`: `combined` / `ordinary`), for the prompts' colour
+    words; `None`: not known."""
 
 
 _VIEWS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = tuple(
@@ -608,6 +612,7 @@ class Item:
                 _box(getattr(vendor, "crop_box", None)) or _box(vendor.box),
                 vendor.round,
                 _view_of(getattr(vendor, "titles", ()) or ()),
+                sheet=getattr(vendor, "sheet", None),
             ),
             architect=tuple(
                 Region(
@@ -617,6 +622,7 @@ class Item:
                     None,
                     _view_of(getattr(d, "titles", ()) or ()),
                     getattr(d, "file_page", None),
+                    getattr(d, "sheet", None),
                 )
                 for d in work.architect
             ),
@@ -918,19 +924,19 @@ def _roles_check(
     return Check("roles", "pass")
 
 
-#: Label routes whose characters code read from the vendor's black or grey ink only: the text
-#: route reads black or grey characters, the drawn route black or grey strokes (`dim_labels`); GV's
-#: coloured markup is never read as a label.
+#: Label routes whose characters code read from the drawing's own ink (`dim_labels`): on an
+#: ordinary upload every colour, on GV's combined review sheets only black or grey (the colour rule,
+#: 2026-10-19); GV's markup is never read as a label either way.
 _VENDOR_INK_ROUTES: Final = frozenset({"text", "drawn"})
 
 
 def _ink_check(label: Mapping[str, Any], ink: Ink | None) -> Check:
     """Whether the vendor value is GV's markup: only by the label's OWN ink. A label code read
-    from the vendor's black or grey layer is the vendor's, whatever GV drew over or around it
-    (a yellow note covering it, a note box round it: the old box check stopped four true items).
-    Any other label's own spot is looked at (`ink`, its coloured share)."""
+    from the vendor's own ink (`_VENDOR_INK_ROUTES`) is the vendor's, whatever GV drew over or
+    around it (a yellow note covering it, a note box round it: the old box check stopped four true
+    items). Any other label's own spot is looked at (`ink`, its coloured share)."""
     if label.get("route") in _VENDOR_INK_ROUTES:
-        return Check("gv_ink", "pass", "read from the vendor's black or grey ink")
+        return Check("gv_ink", "pass", "read from the vendor's own ink, never GV's markup")
     measured = ink(label) if ink is not None else None
     if measured is None:
         return Check("gv_ink", "unknown", "the vendor value's own ink could not be looked at")
