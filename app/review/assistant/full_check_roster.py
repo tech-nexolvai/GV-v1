@@ -794,10 +794,24 @@ def keeps_numbers(code_text: str, reworded: str) -> bool:
 # ---- the pages left (P2, #1634) ------------------------------------------------------------------
 
 #: A helper's coverage note that says it never compared the page (it "skipped with a note").
+#: #1805: only words about the helper's own work count ("did not reach", "partly compared"), never
+#: about the drawing ("the vendor did not dimension the toe kick"), or a compared page was re-read.
 _UNREACHED: Final = re.compile(
-    r"not reached|not opened|budget|ran out|out of (?:money|time)|not compared in detail|did not"
-    r"|partly|partially|only (?:the )?(?:overview|lead|vendor)|not finished|unhandled",
+    r"not reached|not opened|budget|ran out|out of (?:money|time)|not compared in detail"
+    r"|(?:I |helper )?did not (?:get to|reach|open|zoom|compare|finish)"
+    r"|(?:partly|partially) (?:compared|checked|read|done)|only (?:the )?overview|not finished"
+    r"|unhandled",
     re.IGNORECASE,
+)
+
+
+#: A numbers helper's open checklist line that names work left on a page it compared (#1805): the
+#: labels code saw nobody handle, or counts the helper says are not all done. Anything else (no
+#: line, a missing count) is how the line was written, not work left.
+_WORK_LEFT: Final = re.compile(r"labels not handled|not all done", re.IGNORECASE)
+_ONLY_THESE: Final = (
+    "Close only what is listed for each page. A page listed with 'left by the numbers helper' was "
+    "compared already: do the named labels and counts there, never the whole page again."
 )
 
 
@@ -890,6 +904,8 @@ class _Run:
     architect_labels: list[list[dict[str, Any]]] | None = None
     #: The engine's spend when the roster started (the price counts from there).
     started_at: int = 0
+    #: Pages a numbers helper compared whose open checklist lines no gap closer re-read (#1805).
+    repeats_avoided: list[int] = field(default_factory=list)
 
     # -- money --
 
@@ -1182,19 +1198,32 @@ class _Run:
     # -- P2: gap closers --
 
     def _gap_closers(self, page_map: Mapping[str, Any] | None, rules: str, pictures: bool) -> None:
-        """P2 (#1634): every page a P1 helper left (not reached, stopped at its cap, an open
-        checklist) and every recorded difference no helper placed goes to a gap closer, several
-        pages each, with the gap phase's money plus all P1 left unspent (the later phases' shares
-        kept back). A page the price cannot reach is said so on its coverage, never dropped."""
+        """P2 (#1634): every page the numbers helpers left (not reached, stopped at its cap) and
+        every recorded difference no helper placed goes to a gap closer, several pages each, with
+        the gap phase's money plus all P1 left unspent (the later phases' shares kept back). A page
+        the price cannot reach is said so on its coverage, never dropped.
+
+        **One pass per kind (#1805).** A gap closer is a numbers pass, so it never re-does a page a
+        numbers helper compared: on such a page it takes only the work code knows was left (the
+        vendor labels nobody handled, counts the helper says are not all done), named one by one,
+        and never the whole page again. A checklist line that is only badly written (no line, a
+        missing count) is not work left. The drawn-things helpers' checklists are theirs alone: a
+        numbers closer never takes a page for them. The paid run of 2026-10-20 re-read 39 pages
+        in 4-page groups after both helpers had compared them."""
         engine = self.engine
         assert self.plan is not None
         from app.review.assistant.full_check_brief import helper_brief
         from app.review.assistant.full_check_plan import pair_lines
         from app.review.assistant.sandbox import UPLOADS
 
+        numbers = {agent.number for agent in self.agents if agent.lens not in ("drawn", "tags")}
         with engine._lock:
+            any_open = {page for gaps in engine._checklist_gaps.values() for page in gaps}
             open_gaps = {
-                page: why for gaps in engine._checklist_gaps.values() for page, why in gaps.items()
+                page: why
+                for number, gaps in engine._checklist_gaps.items()
+                if number in numbers
+                for page, why in gaps.items()
             }
         unboxed = [
             f for f in engine.book.live() if f.get("created_by") == "gv_review" and code_spotted(f)
@@ -1209,8 +1238,6 @@ class _Run:
                 f"page not compared yet ({why}): compare the whole page, every dimension and "
                 "string against the architect's"
             )
-        for page, why in open_gaps.items():
-            pages.setdefault(page, []).append(f"checklist: {why}")
         for finding in unboxed:
             pages.setdefault(int(finding["page"]), []).append(
                 f"GV Review recorded {finding['id']} ({finding.get('item')}: architect "
@@ -1218,6 +1245,17 @@ class _Run:
                 "and report it with record_id "
                 f"{finding.get('record_id')}"
             )
+        for page, why in open_gaps.items():
+            if page in pages or _WORK_LEFT.search(why):
+                pages.setdefault(page, []).append(
+                    f"left by the numbers helper, which compared the rest of the page: {why}"
+                )
+        self.repeats_avoided = sorted(any_open - set(pages))
+        _log.warning(
+            "assistant roster gap closers: %d pages to close; %d compared pages not read again",
+            len(pages),
+            len(self.repeats_avoided),
+        )
         if not pages:
             return
         budget = self._gap_budget()
@@ -1255,7 +1293,8 @@ class _Run:
                     self._agent(
                         call_id=f"gap-{run[0]}",
                         description=f"Close the gaps on {where}",
-                        prompt=f"{GAP_SCHEMA_NOTE} on {where} (only these):\n{gaps}\n\n{brief}",
+                        prompt=f"{GAP_SCHEMA_NOTE} on {where} (only these):\n{gaps}\n{_ONLY_THESE}"
+                        f"\n\n{brief}",
                         model=BY_SHORT["sonnet"],
                         pages=tuple(run),
                         lens="gap",

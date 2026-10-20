@@ -914,6 +914,51 @@ def test_the_gap_closers_get_what_p1_left_less_the_later_phases(tmp_path: Path) 
     assert run._gap_budget() == 0
 
 
+def test_a_gap_closer_never_re_does_a_page_its_kind_compared(tmp_path: Path) -> None:
+    """#1805: one pass per kind. A numbers gap closer takes a page a numbers helper compared only
+    for the work code knows was left there (named), never for a drawn helper's checklist or a
+    badly written line."""
+    from types import SimpleNamespace
+
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    run = _run(harness)
+    run.agents = [
+        SimpleNamespace(number=1, lens="numbers"),
+        SimpleNamespace(number=2, lens="drawn"),
+    ]
+    engine._checklist_gaps = {
+        1: {2: "no CHECKLIST line", 4: "1 of 3 vendor dimension labels not handled: D5"},
+        2: {3: "notes not all done, and 'not compared' says none", 5: "no CHECKLIST line"},
+    }
+    asked: list[Any] = []
+
+    def launch(agents: Any, on_done: Any = None) -> list[dict[str, Any]]:
+        asked.extend(agents)
+        return [{"report": "", "stopped": None} for _ in agents]
+
+    engine._launch = launch  # type: ignore[method-assign]
+    engine._plan = None
+    run._gap_closers(None, "", False)
+
+    assert [agent.pages for agent in asked] == [(4,)]
+    assert "left by the numbers helper" in asked[0].prompt and "D5" in asked[0].prompt
+    assert "never the whole page again" in asked[0].prompt
+    assert run.repeats_avoided == [2, 3, 5]
+
+
+def test_a_note_about_the_drawing_is_not_a_page_left_unread() -> None:
+    coverage = {
+        "pages": [
+            {"page": 2, "status": "different", "by": "helper:1",
+             "note": "vendor did not dimension the toe kick"},
+            {"page": 3, "status": "different", "by": "helper:1", "note": "partly compared"},
+            {"page": 4, "status": "different", "by": "helper:1", "note": "did not reach the end"},
+        ]
+    }  # fmt: skip
+    assert sorted(full_check_roster.unfinished_pages([2, 3, 4], coverage)) == [3, 4]
+
+
 class _Lazy(_Roster):
     """A numbers helper that says its last page was not reached, with money left, twice."""
 
