@@ -48,11 +48,9 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import logging
 import math
 import random
-import re
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -74,6 +72,7 @@ from app.review.assistant.chat_request import (
     thinking_tokens,
 )
 from app.review.assistant.page_pictures import fitting_dpi
+from app.review.assistant.reply_json import json_of_reply
 from app.review.assistant.simple_check.prompts import item_text, repair_text
 from app.review.assistant.simple_check.schema import (
     REPLY_SCHEMA,
@@ -599,19 +598,11 @@ def _wait_for(failure: ProviderFailure, attempt: int) -> float:
 
 # ---- reading an answer -------------------------------------------------------------------------
 
-_FENCE: Final = re.compile(r"^```(?:json)?\s*|\s*```$")
-
 
 def _json_of(text: str) -> object:
-    """The answer's JSON (structured outputs return it bare; a route without them may fence it)."""
-    plain = _FENCE.sub("", text.strip())
-    try:
-        return json.loads(plain)
-    except ValueError:
-        start, end = plain.find("{"), plain.rfind("}")
-        if 0 <= start < end:
-            return json.loads(plain[start : end + 1])
-        raise
+    """The answer's JSON (structured outputs return it bare; a route without them may fence it or
+    put a sentence first): the shared reader (`reply_json`, #1811)."""
+    return json_of_reply(text)
 
 
 def _px_box(

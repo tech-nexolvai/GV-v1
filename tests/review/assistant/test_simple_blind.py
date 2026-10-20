@@ -304,3 +304,52 @@ def test_looks_started_together_hold_their_price_and_never_pass_the_cap() -> Non
     assert len(engine.calls) == 2 and engine.spent <= engine.cap
     refused = [d for d in done if d.outcome == "not_compared"]
     assert len(refused) == 4 and all("runaway guard" in d.reason for d in refused)
+
+
+# ---- a reply wrapped in a code block or after a sentence (#1811) ------------------------------
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda body: f"```json\n{body}\n```",
+        lambda body: f"I compared the two dimensions.\n\n```json\n{body}\n```",
+        lambda body: f"Here is my answer: {body}",
+    ],
+)
+def test_a_wrapped_agreeing_reply_is_read(wrap: Any) -> None:
+    verified, item = _candidate()
+    engine = _Engine([_Reply(wrap(json.dumps(_agreeing())))])
+    done = look_all(engine, [(verified, item)], BlindSettings())  # type: ignore[arg-type]
+    assert done[0].outcome == "red"
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda body: f"```json\n{body}\n```",
+        lambda body: f"Looking closer, the ends differ. {body}",
+    ],
+)
+def test_a_wrapped_disagreeing_reply_never_goes_red(wrap: Any) -> None:
+    verified, item = _candidate()
+    reply = _Reply(wrap(json.dumps(_agreeing(verdict="different_points"))))
+    done = look_all(engine := _Engine([reply]), [(verified, item)], BlindSettings())  # type: ignore[arg-type]
+    assert engine.calls and done[0].outcome == "not_compared"
+    assert "different points" in done[0].reason
+
+
+def test_two_answers_in_one_reply_are_not_the_form_and_the_reply_is_kept(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    verified, item = _candidate()
+    text = (
+        f"```json\n{json.dumps(_agreeing())}\n```\nWait, correction:\n"
+        f"```json\n{json.dumps(_agreeing(verdict='different_points'))}\n```"
+    )
+    with caplog.at_level("WARNING"):
+        done = look_all(_Engine([_Reply(text)]), [(verified, item)], BlindSettings())  # type: ignore[arg-type]
+    assert done[0].outcome == "not_compared" and "not the form" in done[0].reason
+    advocate = done[0].finding["pairing"]["advocate"]
+    assert advocate["failed"] == "the reply was not the form" and advocate["reply"] == text
+    assert any("simple blind look" in r.getMessage() for r in caplog.records)

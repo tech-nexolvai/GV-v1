@@ -90,6 +90,14 @@ def test_blind_looks_that_could_not_be_made_are_said(
         "check again to settle them"
     )
     assert SEND not in outcome.text and "Next: finish the check" in outcome.text
+    # #1811: the page of the possible difference left open is never "same" in the page map.
+    coverage = next(b for b in outcome.blocks if b.get("type") == "coverage")["coverage"]
+    opened = [p for p in coverage["pages"] if str(p.get("note") or "").startswith("Open: ")]
+    assert opened and all(p["status"] == "not_comparable" for p in opened)
+    assert "possible difference not settled" in opened[0]["note"]
+    assert coverage["counts"]["same"] < sum(
+        1 for p in coverage["pages"] if p["status"] != "not_opened"
+    )
 
 
 def test_nothing_in_the_products_picked_is_said_and_not_for_sending(
