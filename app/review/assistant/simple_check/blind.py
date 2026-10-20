@@ -143,12 +143,17 @@ BLIND_SYSTEM: Final = (
 )
 
 
-def blind_system(products: Sequence[str] = (), precedents: bool = True) -> str:
+def blind_system(
+    products: Sequence[str] = (), precedents: bool = True, *, kind: str = "pair"
+) -> str:
     """The blind look's system prompt: `BLIND_SYSTEM`, then the "looks wrong but isn't"
-    precedents for the item's products (recipe step 6; off for a paid A/B)."""
+    precedents for the item's products (recipe step 6; off for a paid A/B). A `chain` look is
+    asked to pick a string of parts code adds up, so P6 (a sum the model made is not a value) is
+    left out of it."""
     if not precedents:
         return BLIND_SYSTEM
-    return f"{BLIND_SYSTEM}\n\n{precedents_module.render(products)}"
+    leave_out = ("P6",) if kind == "chain" else ()
+    return f"{BLIND_SYSTEM}\n\n{precedents_module.render(products, leave_out=leave_out)}"
 
 
 def question(
@@ -376,7 +381,7 @@ def look(
             # Always adaptive thinking (#1775, C4): the gate of every red is a judgement. Opus 5.5
             # thinks anyway; Sonnet 5.5 would otherwise answer cold.
             thinking=thinking_config(model, True),
-            system=blind_system(item.products, settings.precedents),
+            system=blind_system(item.products, settings.precedents, kind=verified.blind or "pair"),
             tools=(),
             messages=[{"role": "user", "content": content}],
             final=False,
