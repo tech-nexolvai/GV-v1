@@ -45,6 +45,7 @@ __all__ = [
     "answer_note",
     "apply_answers",
     "architect_in_area",
+    "architect_paired",
     "assumptions",
     "doubts",
     "plan_summary",
@@ -201,6 +202,28 @@ def architect_in_area(page_map: Mapping[str, Any] | None, file: str | None, page
     ):
         return True  # separate architect files: code pairs across the set, the architect governs
     # A page paired with an architect page (the plan check's answer) is compared with it.
+    return isinstance(entry.get("pair_page"), int)
+
+
+def architect_paired(
+    page_map: Mapping[str, Any] | None, file: str | None, page: int
+) -> bool | None:
+    """Whether a vendor page has an architect drawing paired with it (#1802): an architect
+    drawing on the page or in its typed area, or an architect page paired by hand (`pair_page`).
+    Unlike `architect_in_area`, separate architect files alone do not count: code pairs those
+    across the set, which is no pair of this page. `None` when code cannot tell (no page map, or
+    the page is not in it)."""
+    if not page_map:
+        return None
+    entries = [e for e in page_map.get("pages") or [] if isinstance(e, Mapping)]
+    mine = [
+        e for e in entries if e.get("page") == page and (file is None or str(e.get("file")) == file)
+    ]
+    if len(mine) != 1:
+        return None
+    entry = mine[0]
+    if _area_roles(entry, _roles_by_area(page_map)) & {"architect"}:
+        return True
     return isinstance(entry.get("pair_page"), int)
 
 
