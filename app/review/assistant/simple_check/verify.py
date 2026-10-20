@@ -85,10 +85,11 @@ from app.review.assistant.full_check_plan import read_page_map
 from app.review.assistant.product_packs import (
     EndVocabulary,
     end_vocabulary,
+    in_scope,
     room_pattern,
     scoped,
 )
-from app.review.assistant.product_scope import ProductScope, named_products
+from app.review.assistant.product_scope import named_products
 from app.review.assistant.read_number import Reading, Request
 from app.review.assistant.simple_check import pack_checks
 from app.review.assistant.simple_check.set_pages import SetPages, set_pages
@@ -2157,7 +2158,9 @@ def verify_answer(
     `number`: `read_number` (#1746), called by itself for a value without a label that `read` could
     not confirm or the AI could not read, and for a labelled value whose inches code cannot read
     (#1781)."""
-    scope = tuple(products) if products else ProductScope.of(None).products
+    # None keeps the check's own scope (the resolve loop gives none, #1776 review), else every
+    # active product.
+    scope = tuple(products) if products else in_scope()
     with scoped(scope):
         return _verify_answer(result, item, pack, ink, read, scope, number)
 

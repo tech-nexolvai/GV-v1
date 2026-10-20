@@ -240,6 +240,10 @@ def check(
         },
     }
     if found.vendor == found.architect:
+        if verdict != "same":
+            # The AI said the callouts differ: one attribute code reads equal does not prove the
+            # rest of the callout is (#1776 review). The item keeps its usual reason.
+            return None
         why = (
             f"The vendor's {what} is the architect's ({found.vendor}): code read both callouts "
             "at their boxes"

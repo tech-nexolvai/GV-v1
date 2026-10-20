@@ -35,6 +35,7 @@ import yaml
 from app.review.assistant import impact, product_packs, size_callouts
 from app.review.assistant.product_scope import named_products
 from app.review.assistant.simple_check import pack_checks, prompts
+from app.review.assistant.simple_check import verify as verify_module
 from app.review.assistant.simple_check.blind import BLIND_SYSTEM, question
 from app.review.assistant.simple_check.verify import (
     _ROOM,
@@ -266,9 +267,37 @@ def test_attribute_values_read_the_packs_words(widget: Path) -> None:
 
 def test_an_attribute_code_reads_the_same_is_right(widget: Path) -> None:
     drawings = _Set("KNOB FINISH: BRASS", "KNOB: BRASS")
-    found = _one(drawings, _answer("tag", "different"), ("widget",))
+    found = _one(drawings, _answer("tag", "same"), ("widget",))
     assert found.outcome == "right"
     assert found.finding["status"] == "same" and found.finding["vendor"] == "BRASS"
+
+
+def test_an_item_the_ai_called_different_is_never_made_right_by_one_equal_value(
+    widget: Path,
+) -> None:
+    """The AI said the callouts differ; code reading one attribute equal does not prove the rest
+    of the callout is (#1776 review: "BRASS, (2) KNOBS" against "BRASS, (3) KNOBS"): the item keeps
+    its usual reason, never Right."""
+    drawings = _Set("KNOB FINISH: BRASS", "KNOB: BRASS")
+    found = _one(drawings, _answer("tag", "different"), ("widget",))
+    assert found.outcome != "right"
+
+
+def test_verify_answer_keeps_the_checks_scope_when_given_none(
+    widget: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The resolve loop calls `verify_answer` without products (#1776 review): inside a cabinet
+    check its scope stays the cabinet's, so a mirror stays room context."""
+    seen: list[tuple[str, ...]] = []
+
+    def capture(*args: Any) -> Any:
+        seen.append(product_packs.in_scope())
+        raise RuntimeError("enough")
+
+    monkeypatch.setattr(verify_module, "_verify_answer", capture)
+    with product_packs.scoped(["cabinet"]), pytest.raises(RuntimeError):
+        verify_module.verify_answer({}, None, None)  # type: ignore[arg-type]
+    assert seen == [("cabinet",)]
 
 
 def test_an_attribute_that_differs_waits_for_the_blind_look(widget: Path) -> None:
