@@ -769,9 +769,13 @@ def _add(total: dict[str, int], usage: Mapping[str, int]) -> None:
         "output_tokens",
         "cache_read_input_tokens",
         "cache_creation_input_tokens",
-        "thinking_tokens",
     ):
         total[key] = total.get(key, 0) + int(usage.get(key, 0) or 0)
+    # Thinking tokens only where an attempt reported them (#1775, C4): not reported is unknown,
+    # never a made-up 0.
+    thought = usage.get("thinking_tokens")
+    if isinstance(thought, int) and not isinstance(thought, bool):
+        total["thinking_tokens"] = total.get("thinking_tokens", 0) + thought
 
 
 def compare_item(
