@@ -427,3 +427,24 @@ def test_an_item_for_gvs_reviewer_only_is_never_decided(postgres_engine, tmp_pat
         assert (
             _decide(world, chat_id, answer["id"], "F1", decision="not_a_problem").status_code == 201
         )
+
+
+def test_remakes_with_no_decision_between_them_offer_the_newest_files(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """#1803 re-review: "Re-make the package" twice with no decision between (a later correction,
+    new comment numbers): the newest remake's files are the ones offered, never an older one."""
+    with _world(postgres_engine, tmp_path, provider=_provider(), pdf=PDF3, pages=3) as world:
+        chat_id, answer = _full_check(world)
+        assert (
+            _decide(world, chat_id, answer["id"], "F1", decision="not_a_problem").status_code == 201
+        )
+        remake = f"/api/v1/chats/{chat_id}/messages/{answer['id']}/cloud-drawing"
+        last: dict[str, str] = {}
+        for _ in range(4):
+            made = world.client.post(remake)
+            assert made.status_code == 200, made.text
+            last = {file["name"].rsplit(" - ", 1)[-1]: file["id"] for file in made.json()["made"]}
+        message = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
+        assert message["package_outdated"] is False
+        for ending in ("review package.zip", "Not compared.xlsx", "Not compared.pdf"):
+            newest = _newest(message["files"], ending)
+            assert newest["id"] == next(v for k, v in last.items() if k.endswith(ending)), ending

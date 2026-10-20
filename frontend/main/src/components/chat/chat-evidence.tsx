@@ -189,6 +189,8 @@ export interface DraftState {
   updatedAt: string | null | undefined;
   /** The package does not hold every decision yet: its download is not offered. */
   stale: boolean;
+  /** Why the server would not make it again, in its own words. */
+  refusal?: string | null;
   /** How many items the reviewer decided ("Package updated with your 2 decisions"). */
   decided: number;
   pkg: ChatFile | null;
@@ -291,6 +293,8 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
             {decision && group && group !== 'right' && !isInternal(finding) && (
               <ReviewerCall key={finding.id} finding={finding} group={group} decision={decision} />
             )}
+            {/* An item for GV's reviewer only is never decided; a call saved on it before can still be taken back. */}
+            {decision?.saved && isInternal(finding) && <UndoCall decision={decision} />}
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               {draft ? <DraftLine draft={draft} /> : <span className="text-xs text-muted-foreground max-md:hidden"><kbd className="num rounded border px-1">J</kbd> <kbd className="num rounded border px-1">K</kbd> to step · <kbd className="num rounded border px-1">Esc</kbd></span>}
               <span className="flex-1" />
@@ -360,6 +364,20 @@ function ReviewerCall({ finding, group, decision }: { finding: ChatFinding; grou
         {(group === 'not_compared' || group === 'dismissed') && <CallChoice kind="wrong" onClick={() => setMode('wrong')} busy={decision.busy} />}
         {group === 'not_compared' && <CallChoice kind="right" onClick={() => setMode('right')} busy={decision.busy} />}
       </div>
+    </section>
+  );
+}
+
+/** #1803: only the Undo, for a call saved on an item for GV's reviewer only. */
+function UndoCall({ decision }: { decision: DecisionProps }) {
+  const hint = useId();
+  return (
+    <section aria-label="Your call" data-slot="chat-evidence-call" data-group="internal" className="grid min-w-0 content-start gap-1">
+      <button type="button" data-slot="chat-evidence-call-undo" aria-describedby={hint} disabled={decision.busy} onClick={() => decision.onDecide('undo')} className={cn(SMALL_BUTTON, 'w-fit')}>
+        <RotateCcw className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        Undo your call
+      </button>
+      <p id={hint} className="text-xs leading-[17px] text-muted-foreground">{UNDO_WORDS}</p>
     </section>
   );
 }
@@ -441,7 +459,7 @@ function DraftLine({ draft }: { draft: DraftState }) {
   if (draft.failed || draft.stale) {
     return (
       <p role="alert" data-slot="chat-evidence-draft" data-state={draft.failed ? 'failed' : 'outdated'} className="inline-flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        {draft.failed ? 'The package could not be made again.' : 'The package does not hold your newest decisions yet.'}
+        {draft.failed ? draft.refusal ?? 'The package could not be made again.' : 'The package does not hold your newest decisions yet.'}
         {draft.onRetry && <button type="button" data-slot="chat-evidence-remake" onClick={draft.onRetry} className="rounded font-medium text-foreground underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">Re-make the package</button>}
       </p>
     );

@@ -424,6 +424,8 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const [remakeDone, setRemakeDone] = useState(0);
   const [remakeRunning, setRemakeRunning] = useState(false);
   const [remakeFailed, setRemakeFailed] = useState(false);
+  // #1803: the server's own words when it refuses to make the package again ("Run the check again").
+  const [remakeRefusal, setRemakeRefusal] = useState<string | null>(null);
   const [draftAt, setDraftAt] = useState<Date | null>(null);
   // The page's functions change on every render; the timer reads the newest ones.
   const latestRemake = useRef({ remakeCloud, onReload, filesKey });
@@ -447,7 +449,10 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           setDraftAt(new Date());
           setRemakeDone(target);
         },
-        () => setRemakeFailed(true),
+        (error: unknown) => {
+          setRemakeRefusal(error instanceof ApiError && error.status === 409 && error.message ? error.message : null);
+          setRemakeFailed(true);
+        },
       ).finally(() => setRemakeRunning(false));
     }, REMAKE_DELAY_MS);
     return () => clearTimeout(timer);
@@ -512,6 +517,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
     failed: cloudState === 'failed',
     updatedAt: draftAt ? clockWords(draftAt) : null,
     stale: packageStale,
+    refusal: remakeFailed ? remakeRefusal : null,
   } : null;
 
   // The task list sits inside the activity timeline, at its newest update (the last task step);
@@ -667,7 +673,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           decisionFor={resultShown ? decisionFor : null}
           numberOf={resultShown ? (finding) => commentNumber(finding, message.package_state) : null}
           notice={decideFailed}
-          draft={resultShown && review ? { updating: review.updating, failed: review.failed, updatedAt: review.updatedAt, stale: review.stale ?? false, decided: review.decided, pkg: made.pkg, href: made.pkg ? made.pkg.url || chatPaths.file(chatId, made.pkg.id) : null, onRetry: review.onUpdate } : null}
+          draft={resultShown && review ? { updating: review.updating, failed: review.failed, updatedAt: review.updatedAt, stale: review.stale ?? false, refusal: review.refusal ?? null, decided: review.decided, pkg: made.pkg, href: made.pkg ? made.pkg.url || chatPaths.file(chatId, made.pkg.id) : null, onRetry: review.onUpdate } : null}
         />
       )}
       {finished && !resultShown && (

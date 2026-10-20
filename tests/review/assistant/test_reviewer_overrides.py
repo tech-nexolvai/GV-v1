@@ -214,3 +214,34 @@ def test_a_reviewers_value_is_never_credited_to_the_vendors_own_parts() -> None:
     assert reviewer_value_refusal(summed, '21 "') is not None  # the vendor's own value
     assert reviewer_value_refusal(summed, "wider") is not None  # no number
     assert reviewer_value_refusal(summed, '20"') is None
+
+
+def test_keeping_the_architects_pre_filled_value_still_names_the_architect_everywhere() -> None:
+    """#1803 re-review: "add a red mark" pre-fills the architect's value; kept as it is, every file
+    names the architect (the cloud note, the letter, the card), the check is the reviewer's, and
+    the card never says no drawing prints it."""
+    from app.review.assistant import proof_words
+    from app.review.assistant.send_package import requires_words
+
+    kept = {
+        "id": "K1",
+        "item": "Sink base width",
+        "status": "check",
+        "source": "architect",
+        "architect": '34"',
+        "vendor": '33"',
+        "inches": {"architect": "34", "vendor": "33"},
+        "page": 3,
+        "arch_box": {"page": 1, "x0": 1, "y0": 1, "x1": 2, "y1": 2},
+        "decision": {"decision": "agree", "should_be": ' 34 " ', "note": "Hinge side"},
+    }
+    assert governs(kept) != "reviewer"
+    assert proof_words.reference_kind(kept) == "architect"
+    assert requires_words(kept).startswith("Architect requires 34")
+    assert "architect" in should_be(kept)
+    assert proof_words.checked_words(kept).startswith("Decided by GV's reviewer")
+    assert "GV's reviewer requires" not in proof_words.sentence(kept)
+    assert proof_words.should_text(kept) == '34"'
+    # A value code does not know is the reviewer's, as before.
+    typed = {**kept, "decision": {**kept["decision"], "should_be": '34 1/2"'}}
+    assert proof_words.reference_kind(typed) == "reviewer"

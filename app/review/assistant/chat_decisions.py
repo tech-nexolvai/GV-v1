@@ -51,12 +51,12 @@ __all__ = [
     "DecidedFiles",
     "decided_findings",
     "decided_summary",
+    "decision_counts",
     "decision_out",
     "latest_decisions",
     "latest_decisions_of",
     "lay_decision",
     "make_decided_files",
-    "newest_decision_at",
     "record_decision",
     "resolver_settled",
     "with_decisions",
@@ -123,20 +123,16 @@ def lay_decision(
 UNDO: Final = "undo"
 
 
-def newest_decision_at(session: Session, chat_id: UUID) -> dict[UUID, datetime]:
-    """When each answer of the chat was last decided on (an undo too, #1803): a package made
-    before it is out of date."""
+def decision_counts(session: Session, chat_id: UUID) -> dict[UUID, int]:
+    """How many decision rows each answer of the chat has (an undo too, #1803). The table is
+    append-only, so the count only grows: a package made from fewer is out of date."""
     return {
-        message_id: at
-        for message_id, at in session.execute(
-            select(
-                AssistantFindingDecision.message_id,
-                func.max(AssistantFindingDecision.created_at),
-            )
+        message_id: int(count)
+        for message_id, count in session.execute(
+            select(AssistantFindingDecision.message_id, func.count())
             .where(AssistantFindingDecision.chat_id == chat_id)
             .group_by(AssistantFindingDecision.message_id)
         )
-        if at is not None
     }
 
 

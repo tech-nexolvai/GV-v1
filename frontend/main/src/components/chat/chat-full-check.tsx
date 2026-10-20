@@ -206,6 +206,8 @@ export interface CloudReview {
   updatedAt?: string | null;
   /** #1803: the package does not hold every decision yet (being made again, failed, or the server says it is older): never handed out. */
   stale?: boolean;
+  /** #1803: why the server would not make the package again, in its own words ("Run the check again"). */
+  refusal?: string | null;
 }
 
 export function FullCheckFiles({ cloud, report, notCompared = [], chatId, page = 1, totalPages = null, counts = null, proof = null, review = null, packaged = false, unsent = false }: {

@@ -74,7 +74,6 @@ from app.api.packages import published_products
 from app.auth import Principal
 from app.auth.dependencies import Authenticated
 from app.config import Settings
-from app.db.base import utc_now
 from app.errors import CodedHTTPException
 from app.models import (
     AssistantChat,
@@ -107,10 +106,10 @@ from app.review.assistant.chat_decisions import (
     UNDO,
     decided_findings,
     decided_summary,
+    decision_counts,
     decision_out,
     latest_decisions,
     make_decided_files,
-    newest_decision_at,
     package_block,
     record_decision,
     resolver_settled,
@@ -531,7 +530,7 @@ def read_chat(
     first = first_question(messages)
     run = registry.get(chat_id)
     decisions = latest_decisions(session, chat_id)
-    decided_at = newest_decision_at(session, chat_id)
+    counts = decision_counts(session, chat_id)
     corrections = corrections_by_answer(messages)
     return ChatOut(
         id=chat.id,
@@ -545,7 +544,7 @@ def read_chat(
                 files,
                 decisions.get(message.id),
                 corrections.get(str(message.id)),
-                decided_at=decided_at.get(message.id),
+                decisions_count=counts.get(message.id),
             )
             for message in messages
         ],
@@ -1018,7 +1017,7 @@ def cloud_drawing(
     the reviewer decided leave it); returns the cloud drawing and every file made with it.
 
     #1803: remakes of one answer run one at a time (a lock held to the end), and the files made
-    carry the time of the newest decision they hold, read before the decisions themselves: a
+    keep how many decision rows they were made from, counted before the decisions are read: a
     decision saved while this runs leaves the package out of date (`package_outdated`)."""
     chat, package = _chat(session, chat_id, principal)
     _not_running(registry, chat_id, message_id)
@@ -1028,7 +1027,7 @@ def cloud_drawing(
             sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {"key": f"gv-remake:{message_id}"},
         )
-    held_at = newest_decision_at(session, chat_id).get(message_id) or utc_now()
+    held = decision_counts(session, chat_id).get(message_id, 0)
     findings = decided_findings(
         row,
         latest_decisions(session, chat_id, message_id).get(message_id),
@@ -1151,7 +1150,7 @@ def cloud_drawing(
                 size=file.size,
                 mime=mime,
                 sha256=file.sha256,
-                created_at=held_at,
+                decisions_held=held,
             )
         )
     session.commit()
@@ -1607,7 +1606,7 @@ def _followed(
         row,
         files_of(session, chat_id),
         decided,
-        decided_at=newest_decision_at(session, chat_id).get(message_id),
+        decisions_count=decision_counts(session, chat_id).get(message_id),
     ).model_dump(mode="json")
     return _Followed(feed=None, stored=stored)
 

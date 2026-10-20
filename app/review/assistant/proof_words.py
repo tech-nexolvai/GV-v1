@@ -215,7 +215,9 @@ def reference_kind(finding: Mapping[str, Any]) -> Kind:
     """What the should-be comes from: GV's reviewer (an agreed item with their own value, or no
     code proof), the brand prototype, GV's rule, the vendor's own parts or other span, else the
     architect."""
-    if _reviewer_value(finding) is not None:
+    if _reviewer_value(finding) is not None and rule.governs(finding) == rule.REVIEWER:
+        # Only a value code does not know is the reviewer's (#1803): the architect's value kept
+        # as it was pre-filled stays the architect's, decided by the reviewer (`checked_words`).
         return "reviewer"
     own = rule.vendor_own(finding)
     if own == "sum":
@@ -305,7 +307,8 @@ def _item_phrase(finding: Mapping[str, Any]) -> str:
 
 def should_text(finding: Mapping[str, Any]) -> str:
     """The green should-be value, as the vendor may read it (the reviewer's value first)."""
-    return vendor_text(_reviewer_value(finding) or rule.should_be_value(finding), "") or ""
+    # `should_be_value` holds the reviewer's value (#1803), as code writes it when it is the same.
+    return vendor_text(rule.should_be_value(finding), "") or ""
 
 
 def missing(vendor: str) -> bool:

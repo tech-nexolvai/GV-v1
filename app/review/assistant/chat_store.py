@@ -258,11 +258,10 @@ def add_file(
     size: int,
     mime: str,
     sha256: str,
-    created_at: datetime | None = None,
+    decisions_held: int | None = None,
 ) -> AssistantChatFile:
-    """One file of a message. `created_at` (#1803): the files made again from the reviewer's
-    decisions carry the time of the newest decision they hold, so a package is out of date
-    exactly when a later decision exists (`package_outdated`)."""
+    """One file of a message. `decisions_held` (#1803): for the files made again from the
+    reviewer's decisions, how many decision rows they were made from (`package_outdated`)."""
     row = AssistantChatFile(
         id=file_id,
         chat_id=chat_id,
@@ -271,7 +270,7 @@ def add_file(
         size=size,
         mime=mime[:127],
         sha256=sha256,
-        **({} if created_at is None else {"created_at": created_at}),
+        decisions_held=decisions_held,
     )
     session.add(row)
     session.flush()
@@ -359,18 +358,15 @@ def file_out(row: AssistantChatFile) -> ChatFileOut:
 def package_outdated(
     message: AssistantChatMessage,
     files: Iterable[AssistantChatFile],
-    decided_at: datetime | None,
+    decisions: int | None,
 ) -> bool | None:
-    """Whether the answer's newest send-ready package (#1622) was made before its newest decision
-    (#1803); `None` without a package or a decision."""
-    made = [
-        row.created_at
-        for row in files
-        if row.message_id == message.id and row.mime == "application/zip"
-    ]
-    if decided_at is None or not made:
+    """Whether the answer's newest send-ready package (#1622) was made from fewer decision rows
+    than the answer has now (#1803); `None` without a package or a decision."""
+    made = [row for row in files if row.message_id == message.id and row.mime == "application/zip"]
+    if not decisions or not made:
         return None
-    return max(made) < decided_at
+    newest = max(made, key=lambda row: (row.created_at, str(row.id)))
+    return (newest.decisions_held or 0) < decisions
 
 
 def _usd(micros: int | None) -> str | None:
@@ -384,14 +380,14 @@ def message_out(
     files: Iterable[AssistantChatFile],
     decisions: Mapping[str, Mapping[str, Any]] | None = None,
     corrections: Mapping[str, Mapping[str, Any]] | None = None,
-    decided_at: datetime | None = None,
+    decisions_count: int | None = None,
 ) -> ChatMessageOut:
     """A stored message for the screen. An answer's accuracy is scored again from its stored
     findings with today's calibration (#1513; nothing is written). `decisions`: the answer's
     latest decision per finding id (#1521), added to its findings. `corrections`: later messages'
     newest correction per finding id (#1548, `chat_corrections`): each such finding is shown at its
-    newest version, marked as updated (or dropped) in a later message. `decided_at`: when the
-    answer was last decided on (#1803): a package made before it is out of date."""
+    newest version, marked as updated (or dropped) in a later message. `decisions_count`: how
+    many decision rows the answer has (#1803): a package made from fewer is out of date."""
     if message.role == "user":
         return ChatMessageOut.model_validate(
             {
@@ -417,7 +413,7 @@ def message_out(
             "thinking": message.thinking,
             "blocks": blocks,
             "files": [file_out(row) for row in files if row.message_id == message.id],
-            "package_outdated": package_outdated(message, files, decided_at),
+            "package_outdated": package_outdated(message, files, decisions_count),
             "cost_usd": _usd(message.cost_micros),
             "stopped": message.stopped,
             "error": message.error,

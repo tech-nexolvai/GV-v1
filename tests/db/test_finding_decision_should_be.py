@@ -71,7 +71,13 @@ def test_the_migration_adds_a_nullable_column_kept_to_an_agree_and_goes_down_and
         )
     assert "'undo'" in (values or "")  # an Undo is one more row (#1803)
 
+    files = {c["name"]: c for c in inspect(postgres_engine).get_columns("assistant_chat_files")}
+    assert files["decisions_held"]["nullable"]  # how many decisions a remade file holds (#1803)
+
     command.downgrade(config, BEFORE)
+    assert "decisions_held" not in {
+        c["name"] for c in inspect(postgres_engine).get_columns("assistant_chat_files")
+    }
     assert "should_be" not in {c["name"] for c in inspect(postgres_engine).get_columns(TABLE)}
     assert _check(postgres_engine) is None
     command.upgrade(config, "head")

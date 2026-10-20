@@ -165,7 +165,7 @@ export interface paths {
          *     the reviewer decided leave it); returns the cloud drawing and every file made with it.
          *
          *     #1803: remakes of one answer run one at a time (a lock held to the end), and the files made
-         *     carry the time of the newest decision they hold, read before the decisions themselves: a
+         *     keep how many decision rows they were made from, counted before the decisions are read: a
          *     decision saved while this runs leaves the package out of date (`package_outdated`).
          */
         post: operations["cloud_drawing_api_v1_chats__chat_id__messages__message_id__cloud_drawing_post"];

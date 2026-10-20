@@ -319,7 +319,7 @@ export function PackageLine({ review }: { review: CloudReview }) {
     return <p role="status" data-slot="chat-package-line" data-state="updating" className="inline-flex items-center gap-2 text-[13px] text-muted-foreground"><RefreshCw className="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />Making the package again with your {words}…</p>;
   }
   if (review.failed) {
-    return <p role="alert" data-slot="chat-package-line" data-state="failed" className="text-[13px] text-muted-foreground">The package could not be made again with your {words}. The old one is not offered: re-make the package.</p>;
+    return <p role="alert" data-slot="chat-package-line" data-state="failed" className="text-[13px] text-muted-foreground">{review.refusal ?? `The package could not be made again with your ${words}. The old one is not offered: re-make the package.`}</p>;
   }
   if (review.stale) {
     return <p role="status" data-slot="chat-package-line" data-state="outdated" className="text-[13px] text-muted-foreground">The package does not hold your newest decisions yet. Re-make the package.</p>;

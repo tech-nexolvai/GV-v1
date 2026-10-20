@@ -10,6 +10,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '@/api/client';
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { ShellSlotsContext } from '@/components/shell/shellSlots';
 import type { ChatApi, ChatFile, RemadeFiles } from '@/lib/chat-api';
@@ -390,6 +391,17 @@ describe('a full-check answer', () => {
     await user.keyboard('{Escape}');
     await user.click(within(node).getByRole('button', { name: 'Re-make the package' }));
     await waitFor(() => expect(remake).toHaveBeenCalledTimes(2), { timeout: 3000 });
+  }, 20_000);
+
+  it('says the server’s own words when the package cannot be made again, and offers no old one (#1803)', async () => {
+    const PKG: ChatFile = { id: 'f-z', kind: 'package', name: 'set - GV review package.zip', size: 4_000_000, mime: 'application/zip', url: '/api/v1/chats/c-1/files/f-z' };
+    const decided = findings.map((item) => (item.id === 'w2' ? { ...item, decision: { decision: 'not_a_problem' as const, by: 'anant', at: '2026-10-17T11:00:00Z' } } : item));
+    const remake = vi.fn(async () => { throw new ApiError(409, { error: 'list_not_remade', message: 'This check’s Not-compared list cannot be made again with your decisions. Run the check again.', request_id: 'r-1' }); });
+    render(<AssistantMessage message={answer({ findings: decided, files: [CLOUD, REPORT, PKG], package_outdated: true })} chatId="c-1" models={[OPUS]} fullCheck decide={vi.fn()} remakeCloud={remake} onReload={vi.fn()} />);
+    const node = screen.getByRole('article', { name: 'Answer' });
+    await waitFor(() => expect(node.querySelector('[data-slot="chat-package-line"]')?.getAttribute('data-state')).toBe('failed'), { timeout: 3000 });
+    expect(node.querySelector('[data-slot="chat-package-line"]')?.textContent).toMatch(/Run the check again\.$/);
+    expect(node.querySelector('[data-slot="chat-package-download"]')).toBeNull();
   }, 20_000);
 
   it('makes the package again by itself when the server says it is older than a decision (#1803)', async () => {

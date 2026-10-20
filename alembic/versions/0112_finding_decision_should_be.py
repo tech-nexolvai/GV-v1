@@ -17,7 +17,12 @@ A third decision value, `undo`: the reviewer takes a call back ("Undo"), and the
 what code found. Kept as one more row like any decision (the table stays append-only), so the
 history of what the reviewer clicked is never lost. The value CHECK is replaced to allow it.
 
-**Downgrade** drops the column and puts the two-value CHECK back. It refuses while a decision row
+One more nullable column, `assistant_chat_files.decisions_held`: for a file made again from the
+reviewer's decisions, how many decision rows of its answer it was made from. The send-ready
+package is out of date exactly when the answer has more (the decisions table is append-only, so
+a count never goes back), and the files keep their own creation time for which is newest.
+
+**Downgrade** drops the columns and puts the two-value CHECK back. It refuses while a decision row
 holds a value or is an undo, because those are the reviewer's own words and calls and would be
 lost.
 
@@ -43,6 +48,8 @@ CHECK = "should_be IS NULL OR (decision = 'agree' AND should_be <> '')"
 VALUE = "assistant_finding_decision_value"
 VALUES_BEFORE = "decision IN ('agree', 'not_a_problem')"
 VALUES_AFTER = "decision IN ('agree', 'not_a_problem', 'undo')"
+FILES = "assistant_chat_files"
+HELD = "assistant_chat_file_decisions_held"
 
 
 def upgrade() -> None:
@@ -50,6 +57,8 @@ def upgrade() -> None:
     op.create_check_constraint(NAME, DECISIONS, CHECK)
     op.drop_constraint(VALUE, DECISIONS, type_="check")
     op.create_check_constraint(VALUE, DECISIONS, VALUES_AFTER)
+    op.add_column(FILES, sa.Column("decisions_held", sa.Integer(), nullable=True))
+    op.create_check_constraint(HELD, FILES, "decisions_held IS NULL OR decisions_held >= 0")
 
 
 def downgrade() -> None:
@@ -63,6 +72,8 @@ def downgrade() -> None:
             f"Cannot downgrade: {count} decision row(s) hold a value a reviewer gave or an undo. "
             "Preserve these records."
         )
+    op.drop_constraint(HELD, FILES, type_="check")
+    op.drop_column(FILES, "decisions_held")
     op.drop_constraint(VALUE, DECISIONS, type_="check")
     op.create_check_constraint(VALUE, DECISIONS, VALUES_BEFORE)
     op.drop_constraint(NAME, DECISIONS, type_="check")
