@@ -705,6 +705,35 @@ def _viewed(box: object, page: object, seen: Sequence[_Seen]) -> bool:
     return False
 
 
+def code_read_both(finding: Mapping[str, Any]) -> bool:
+    """Whether code itself read both of a `same` item's values at their spots (#1819): each side
+    is a label code numbered from the drawing's own text layer (`dims`, route `text`), and code's
+    printed checks found that very value there on both sides. Then the item was looked at, by
+    code, however blurry the AI's own view was (Raj's template: 41 Right items stayed Not
+    compared because the architect's sheet was viewed whole at 139 dpi). Nothing else is
+    loosened: the page pair must still be compared, and a value read only from drawn ink or a
+    typed value with a box never counts here."""
+    checks = finding.get("checks") or {}
+    if checks.get("printed_vendor") != "match" or checks.get("printed_architect") != "match":
+        return False
+    dims = finding.get("dims")
+    if not isinstance(dims, Mapping):
+        return False
+    for side in ("vendor", "architect"):
+        label = dims.get(side)
+        if not isinstance(label, Mapping) or not label.get("id"):
+            return False
+        if str(label.get("route") or "text") != "text":
+            return False
+    from app.review.assistant.finding_checks import to_inches
+
+    vendor, architect = (
+        to_inches(str(finding.get(side) or "")) for side in ("vendor", "architect")
+    )
+    # The same value on both sides, as code reads them (a "same" with two values is never Right).
+    return vendor is not None and vendor == architect
+
+
 def not_compared_why(
     finding: Mapping[str, Any],
     coverage: Mapping[str, Any] | None,
@@ -717,7 +746,9 @@ def not_compared_why(
     architect side). `None`: it counts (or it is not a `same` finding)."""
     if finding.get("status") != "same":
         return None
-    if seen is not None:
+    if code_read_both(finding):
+        pass  # code itself read both values at their labels: looked at, by code (#1819)
+    elif seen is not None:
         pages = _seen_entries(seen)
         if not (
             _viewed(finding.get("vendor_box"), finding.get("page"), pages)
@@ -1141,10 +1172,13 @@ def accuracy(
         ):
             # Code decides the whole claim (GV's rule, or the vendor's own sum, the reading
             # ledger's included): it scores as confirmed (CONTRACT5).
-            points, how = 1.0, (
-                "code (the vendor's own arithmetic, from the reading ledger)"
-                if finding.get("created_by") == "ledger"
-                else "code (GV's rule or the vendor's own arithmetic)"
+            points, how = (
+                1.0,
+                (
+                    "code (the vendor's own arithmetic, from the reading ledger)"
+                    if finding.get("created_by") == "ledger"
+                    else "code (GV's rule or the vendor's own arithmetic)"
+                ),
             )
         else:
             points = ACCURACY_POINTS.get(level, ACCURACY_POINTS["to_check"]).get(kind, 0.0)

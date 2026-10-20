@@ -84,6 +84,7 @@ from app.review.assistant.full_check_advocate import (
     STRING_QUESTION,
     STRING_SCHEMA,
     STRING_SYSTEM,
+    STRONG_PICK,
     Check,
     Extent,
     StringChain,
@@ -1589,7 +1590,9 @@ class _Run:
                     "tool": (
                         "chat proof"
                         if answer.get("chat_proof") is not None
-                        else "read_number" if answer.get("read_number") else "verify_value"
+                        else "read_number"
+                        if answer.get("read_number")
+                        else "verify_value"
                     ),
                     "value": value,
                     "result": answer.get("result"),
@@ -2422,9 +2425,14 @@ class _Run:
                 and mode != "code_only"
             ):
                 extent = self._extent(vendor, architect, page_map)
-                if extent[0] == "same_extent":
-                    # Only an item code's geometry backs is worth the blind pick's call (#1641).
-                    reply = self._blind_pick(finding, vendor, architect, page_map)
+                if extent[0] in ("same_extent", "cannot_tell"):
+                    # Geometry that shows different points spends no call (#1641). Where it cannot
+                    # tell (a sheet not to scale), the stronger model makes the blind pick, as the
+                    # simple check's blind look (#1819: Raj's template, two planted mistakes
+                    # stayed grey here and were red in the simple check).
+                    reply = self._blind_pick(
+                        finding, vendor, architect, page_map, strong=extent[0] == "cannot_tell"
+                    )
             verdict = decide(
                 mode=mode,
                 checks=checks,
@@ -2572,17 +2580,26 @@ class _Run:
         vendor: Mapping[str, Any],
         architect: Mapping[str, Any],
         page_map: Mapping[str, Any] | None,
+        *,
+        strong: bool = False,
     ) -> dict[str, Any] | None:
         """One blind call: the vendor's drawing with its label marked, the architect's whole
-        drawing with every label numbered; `None` when the price leaves no room."""
-        model = BY_SHORT["sonnet"]
+        drawing with every label numbered; `None` when the price leaves no room. `strong`: the
+        stronger model at high effort (code's geometry cannot tell, #1819)."""
+        model = BY_SHORT["opus"] if strong else BY_SHORT["sonnet"]
         estimate = self.engine._price(model, _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS) or 0
         with self.held_lock:
             if not self._phase_room(self.pick_phase, self.held + estimate):
                 return None
             self.held += estimate
         try:
-            return self._held_pick(finding, vendor, architect, page_map, model)
+            answer = self._held_pick(
+                finding, vendor, architect, page_map, model, "high" if strong else "medium"
+            )
+            if answer is not None:
+                # Code's own mark, never the model's: a reply's own "strong" is overwritten.
+                answer[STRONG_PICK] = strong
+            return answer
         finally:
             with self.held_lock:
                 self.held -= estimate
@@ -2594,6 +2611,7 @@ class _Run:
         architect: Mapping[str, Any],
         page_map: Mapping[str, Any] | None,
         model: Any,
+        effort: str = "medium",
     ) -> dict[str, Any] | None:
         """The blind pick's crops and call, its price already held (`_blind_pick`)."""
         engine = self.engine
@@ -2634,7 +2652,7 @@ class _Run:
             # effort, never thinking off (#1775, C4).
             reply = engine._call(
                 model=model,
-                effort="medium",
+                effort=effort,
                 thinking=thinking_config(model, True),
                 system=ADVOCATE_SYSTEM,
                 tools=(),
