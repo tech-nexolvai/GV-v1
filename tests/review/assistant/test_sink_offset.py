@@ -571,6 +571,7 @@ def test_the_simple_check_keeps_the_note_when_the_comparisons_item_is_not_kept()
     (note,) = _findings("3", None, vendor_offset=3.0)
     fake = _simple([{**note, "id": "N1", "created_by": so.CREATED_BY}])
     fake.out_of_scope, fake.not_listed, fake.rows, fake.unpaired = 0, 0, [], []
+    fake.uncovered = []
     vendor = {"id": "D10", "page": 3, "file": FILE}
     one = SimpleNamespace(vendor=vendor, outcome="red", finding={"architect": '5"'})
     fake._add = lambda _one: None
