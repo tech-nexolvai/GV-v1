@@ -1146,12 +1146,46 @@ def verify_pair(
     ink: Ink | None = None,
     *,
     architect: Mapping[str, Any] | None = None,
+    number: NumberReader | None = None,
 ) -> Verified:
     """One pair verified from scratch, every check, no shortcut: the resolve loop's re-verification
     of a pair it amended (`resolve.py`). `architect`: the architect's value when it is not one label
     (code's proved chain of the architect's printed parts, owner decision 2026-10-19), with
-    `area_ref` naming one of its labels for the area check."""
-    return _verify_pair(pair, item, pack, ink, architect_override=architect)
+    `area_ref` naming one of its labels for the area check. `number`: `read_number`, for a label
+    whose value code cannot read (`_read_label`)."""
+    return _verify_pair(pair, item, pack, ink, architect_override=architect, number=number)
+
+
+def _read_label(
+    label: dict[str, Any], side: str, pack: Pack, number: NumberReader | None
+) -> Fraction | None:
+    """A label's inches when code cannot read its value (#1781): `read_number` at the label (its
+    id and box, on its file's own page), used only when the tool says read (its two-route
+    agreement rule). The pack's copy of the label takes the reading (`inches` and `read_number`),
+    so the resolve loop's re-verification and the finding see the value and how it was read;
+    `dims.json` is never changed. `None` when it is not read (the label keeps the tool's answer)."""
+    done = label.get("read_number")
+    if isinstance(done, Mapping):
+        return _fraction(label.get("inches")) if done.get("outcome") == "read" else None
+    if number is None:
+        return None
+    file = str(label.get("file") or pack.main_file)
+    page = int(label.get("page") or 0)
+    reading = number(
+        Request(
+            file,
+            pack.own_page(file, page),
+            side,
+            label=str(label.get("id") or "") or None,
+            box=_box(label.get("box")),
+        )
+    )
+    label["read_number"] = reading.as_dict()
+    value = reading.inches if reading.outcome == "read" else None
+    if value is None or value <= 0:
+        return None
+    label["inches"] = format(value.normalize(), "f")
+    return Fraction(value)
 
 
 def _verify_pair(
@@ -1161,6 +1195,7 @@ def _verify_pair(
     ink: Ink | None,
     *,
     architect_override: Mapping[str, Any] | None = None,
+    number: NumberReader | None = None,
 ) -> Verified:
     vref = str(pair.get("vendor_label") or "")
     key = f"{item.id}:{vref}"
@@ -1213,8 +1248,19 @@ def _verify_pair(
         note = str(pair.get("note") or "").strip()
         return one.grey(UNSURE + (f": {note}" if note else ""), "not_proved")
     v_in, a_in = _fraction(vendor.get("inches")), _fraction(architect.get("inches"))
+    if v_in is None:
+        v_in = _read_label(vendor, "vendor", pack, number)
+    if a_in is None and architect_override is None:
+        a_in = _read_label(architect, "architect", pack, number)
     if v_in is None or a_in is None:
-        return one.grey("code could not read the value as a size", "unreadable")
+        tool = [
+            str(label["read_number"].get("reason") or "")
+            for label in (vendor, architect)
+            if isinstance(label.get("read_number"), Mapping)
+            and label["read_number"].get("outcome") != "read"
+        ]
+        said = f" (the read-number tool: {tool[0]})" if tool and tool[0] else ""
+        return one.grey(f"code could not read the value as a size{said}", "unreadable")
     a_file = str(architect.get("file") or pack.main_file)
     a_page = int(architect.get("page") or 0)
     matched = ends_match(
@@ -1966,7 +2012,8 @@ def verify_answer(
     on the markup-free copy), asked only for a red candidate; None blocks red. `read`: `verify_value`
     at a spot, for an item without labels; None: such an item is never red. `products`: the check's
     product scope (None: every active product). `number`: `read_number` (#1746), called by itself
-    for a value without a label that `read` could not confirm or the AI could not read."""
+    for a value without a label that `read` could not confirm or the AI could not read, and for a
+    labelled value whose inches code cannot read (#1781)."""
     data = _plain_data(result)
     if not isinstance(data, Mapping):
         data = {}
@@ -1989,7 +2036,7 @@ def verify_answer(
                 one = _Pair(f"{item.id}:{vref}", item, pack, pair, label, None, {})
                 out.items.append(one.grey(f"the answer pairs {vref} more than once", "not_proved"))
             continue
-        out.items.append(_verify_pair(pair, item, pack, ink))
+        out.items.append(_verify_pair(pair, item, pack, ink, number=number))
     for at, entry in enumerate(data.get("other_items") or [], start=1):
         if isinstance(entry, Mapping):
             out.items.append(_verify_other(entry, at, item, pack, read, scope, number))

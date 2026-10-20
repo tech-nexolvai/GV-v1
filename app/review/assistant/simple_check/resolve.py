@@ -448,7 +448,10 @@ def _pair_entry(
         )
     v_in, a_in = _fraction(v.vendor.get("inches")), _fraction(v.architect.get("inches"))
     if v_in is None or a_in is None:
-        return Refusal("unreadable_label", "code could not read a label's value as a size")
+        return Refusal(
+            "unreadable_label",
+            "code could not read a label's value as a size, nor could the read-number tool",
+        )
     if abs(v_in - a_in) <= TOLERANCE:
         return Refusal("values_equal", "code reads the two values as equal")
     if verdict == "different":
