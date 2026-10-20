@@ -64,6 +64,7 @@ __all__ = [
     "ARCHITECT_OUTSIDE",
     "CATEGORY",
     "CREATED_BY",
+    "NO_ARCHITECT_SIZE",
     "OUTSIDE_RANGE",
     "Limits",
     "add_to_answer",
@@ -84,6 +85,8 @@ ARCHITECT_OUTSIDE: Final = "architect_outside_gv_rule"
 #: The Not-compared reason of a filler outside GV's usual range that the architect gives no size
 #: for (`classification`: "outside GV's usual range (GV note)"): never red.
 OUTSIDE_RANGE: Final = "outside_gv_rule"
+#: The architect's side of such a note: the architect's drawings give the filler no size.
+NO_ARCHITECT_SIZE: Final = "not sized on the architect's drawings"
 #: Two printed values closer than this are the same (a sixteenth: the drawings' own step).
 TOLERANCE: Final = Fraction(1, 16)
 
@@ -317,7 +320,9 @@ def _range_note(filler: _Filler, limits: Limits) -> dict[str, Any] | None:
         "page": filler.page,
         "item": _item(filler),
         "category": CATEGORY,
-        "architect": "",
+        # Words, never empty: the findings book refuses an empty side, so every such note was
+        # skipped in a real run ("ledger finding skipped: architect is empty", #1817).
+        "architect": NO_ARCHITECT_SIZE,
         "vendor": vendor,
         "status": "check",
         "why": (

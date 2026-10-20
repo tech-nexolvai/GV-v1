@@ -743,14 +743,57 @@ def _unrelated(sides: Mapping[str, Sequence[Mapping[str, Any]]]) -> bool:
     return not (kinds[0] & kinds[1])
 
 
+#: The most pages one tag reader lists (#1817): the whole 45-page table of the paid run of
+#: 2026-10-20 was cut at its length limit in the middle of a row, so no tag was compared. Its page
+#: groups' tables are read apart and compared together by code.
+TAG_PAGES_PER_READER: Final = 15
+
+
+def tag_page_groups(
+    groups: Sequence[Sequence[int]], most: int = TAG_PAGES_PER_READER
+) -> list[tuple[int, ...]]:
+    """The plan's page groups (each once, by their first page) joined in order into runs of at
+    most `most` pages; a group bigger than that stays whole (an area is never split)."""
+    seen: list[tuple[int, ...]] = []
+    for group in groups:
+        pages = tuple(sorted(set(group)))
+        if pages and pages not in seen:
+            seen.append(pages)
+    out: list[tuple[int, ...]] = []
+    taken: set[int] = set()
+    current: list[int] = []
+    for pages in sorted(seen):
+        fresh = [page for page in pages if page not in taken]
+        if not fresh:
+            continue
+        if current and len(current) + len(fresh) > most:
+            out.append(tuple(current))
+            current = []
+        current += fresh
+        taken.update(fresh)
+    if current:
+        out.append(tuple(current))
+    return out
+
+
+def tag_rows(report: str) -> list[Any] | None:
+    """A tag reader's rows, `None` when its reply is not readable (logged)."""
+    try:
+        rows = object_of_reply(report).get("tags")
+    except (ValueError, AttributeError):
+        log_unreadable(_log, "roster tag table", "tags", report)
+        return None
+    return rows if isinstance(rows, list) else None
+
+
 def compare_tags(report: str) -> list[dict[str, Any]]:
     """Code compares the tag table by piece: for each piece both sides tag, Right when the tags
     are the same, else Wrong. Returns `report_finding`-shaped inputs."""
-    try:
-        rows = object_of_reply(report).get("tags") or []
-    except (ValueError, AttributeError):
-        log_unreadable(_log, "roster tag table", "tags", report)
-        return []
+    return compare_tag_rows(tag_rows(report) or [])
+
+
+def compare_tag_rows(rows: Sequence[Any]) -> list[dict[str, Any]]:
+    """`compare_tags` on rows already read (every tag reader's together, #1817)."""
     pieces: dict[str, dict[str, list[Mapping[str, Any]]]] = {}
     for row in rows:
         if not isinstance(row, Mapping) or row.get("side") not in ("architect", "vendor"):
@@ -1197,8 +1240,9 @@ class _Run:
         for job, agent in zip(plan.jobs, agents, strict=True):
             agent.partner = None if job.partner is None else by_job.get(job.partner)
         tag_pages = sorted({page for job in plan.jobs for page in job.pages})
-        if tag_pages:
-            agents.append(self._tag_agent(tag_pages, page_map))
+        tag_groups = tag_page_groups([job.pages for job in plan.jobs])
+        for group in tag_groups:
+            agents.append(self._tag_agent(group, page_map, of_pages=len(tag_pages)))
         for agent in agents:
             pool.add(agent)
         self.agents = list(agents)
@@ -1206,13 +1250,16 @@ class _Run:
         engine.helper_ceiling = engine.spent + max(0, price - self.plan.protected())
         try:
             entries = self._launched(agents, on_done=engine._helper_done)
+            tag_reports: list[tuple[Any, str]] = []
             for agent, entry in zip(agents, entries, strict=True):
                 if agent.lens == "tags":
-                    self._apply_tags(str(entry.get("report") or ""))
+                    tag_reports.append((agent, str(entry.get("report") or "")))
                     continue
                 self._salvage(agent, entry)
                 if entry.get("stopped") == "cost_cap":
                     self._capped(agent.description, "; the pages it left are listed")
+            if tag_reports:
+                self._apply_tags(tag_reports)
             engine._queue_second_reads(engine.book.live())
             if not engine.cancel.is_set():
                 self._gap_closers(page_map, rules, pictures)
@@ -1225,6 +1272,11 @@ class _Run:
         if not engine.cancel.is_set():
             with engine.timings.phase("lead_review"):
                 self._lead_review(page_map)
+        engine._wait_checks()
+        if not engine.cancel.is_set():
+            # Code, not the lead's guess about money, sends on what is still not compared (#1817).
+            self._after_lead(page_map)
+        self._note_left_open()
         engine._wait_checks()
         if not engine.cancel.is_set():
             self._proof_steps(plan, page_map)
@@ -1293,15 +1345,27 @@ class _Run:
 
     # -- P1: tags --
 
-    def _tag_agent(self, pages: Sequence[int], page_map: Mapping[str, Any] | None) -> Any:
+    def _tag_agent(
+        self, pages: Sequence[int], page_map: Mapping[str, Any] | None, *, of_pages: int = 0
+    ) -> Any:
+        """One tag reader: the whole set's, or one run of page groups' (`tag_page_groups`), its
+        cap the tags' share by its pages (the P1 pool tops it up from what others left)."""
         from app.review.assistant.full_check_brief import page_lines
         from app.review.assistant.sandbox import UPLOADS
 
         engine = self.engine
         assert self.plan is not None
+        whole = of_pages <= len(pages)
+        cap = self.plan.caps["tags"]
+        if not whole:
+            cap = cap * len(pages) // of_pages
         return self._agent(
-            call_id="roster-tags",
-            description="Tags and models, the whole set",
+            call_id="roster-tags" if whole else f"roster-tags-{pages[0]}",
+            description=(
+                "Tags and models, the whole set"
+                if whole
+                else f"Tags and models, {page_ranges_words(list(pages))}"
+            ),
             prompt=TAG_BRIEF.format(
                 pages=", ".join(str(p) for p in pages),
                 file=f"{UPLOADS}/{engine.book.main_file}",
@@ -1311,24 +1375,35 @@ class _Run:
             pages=tuple(pages),
             lens="tags",
             effort="low",
-            cap_micros=self.plan.caps["tags"],
+            cap_micros=cap,
             soft_cap=True,
             system=self._system(TAG_JOB, [("glossary.md", "Materials and finishes")]),
             tools=self._tools(_TAG_TOOLS),
             output_format=TAG_SCHEMA,
         )
 
-    def _apply_tags(self, report: str) -> None:
+    def _apply_tags(self, reports: str | Sequence[tuple[Any, str]]) -> None:
+        """Every tag reader's rows compared together by code (a piece's two tags may sit in two
+        readers' tables). A table not readable is a failed step (#1811), said with its pages."""
         engine = self.engine
-        if report.strip():
-            try:
-                rows = object_of_reply(report).get("tags")
-            except ValueError:
-                rows = None
-            if not isinstance(rows, list):
-                # Its rows were never compared: the tags are not checked (#1811).
-                self.failed_steps.append("the tag table could not be read")
-        for given in compare_tags(report):
+        if isinstance(reports, str):
+            reports = [(None, reports)]
+        rows: list[Any] = []
+        for agent, report in reports:
+            found = tag_rows(report) if report.strip() else []
+            if found is None:
+                # Its rows were never compared: those tags are not checked (#1811).
+                whole = len(reports) == 1
+                self.failed_steps.append(
+                    "the tag table could not be read"
+                    if whole
+                    else "the tag table of "
+                    f"{page_ranges_words(list(getattr(agent, 'pages', None) or ()))} could not "
+                    "be read"
+                )
+                continue
+            rows += found
+        for given in compare_tag_rows(rows):
             try:
                 finding, _notes = engine.book.report(given, "tag_reader")
             except Exception as refused:  # noqa: BLE001 - one bad row never stops the others
@@ -1353,10 +1428,6 @@ class _Run:
         39 pages in 4-page groups after both helpers had compared them."""
         engine = self.engine
         assert self.plan is not None
-        from app.review.assistant.full_check_brief import helper_brief
-        from app.review.assistant.full_check_plan import pair_lines
-        from app.review.assistant.sandbox import UPLOADS
-
         numbers = {agent.number for agent in self.agents if agent.lens not in ("drawn", "tags")}
         with engine._lock:
             any_open = {page for gaps in engine._checklist_gaps.values() for page in gaps}
@@ -1397,14 +1468,33 @@ class _Run:
         )
         if not pages:
             return
-        budget = self._gap_budget()
-        chosen, left = gap_pages(pages, budget, has_record={int(f["page"]) for f in unboxed})
+        self._close(pages, self._gap_budget(), {int(f["page"]) for f in unboxed}, page_map)
+        del rules, pictures
+
+    def _close(
+        self,
+        pages: Mapping[int, Sequence[str]],
+        budget: int,
+        has_record: Collection[int],
+        page_map: Mapping[str, Any] | None,
+        *,
+        again: bool = False,
+    ) -> list[int]:
+        """Gap closers on `pages` (each with what to close there) from `budget`, several pages
+        each; a page the money cannot reach is said so on its coverage, never dropped. `again`:
+        the pass after the lead review (#1817). Returns the pages given to a closer."""
+        engine = self.engine
+        from app.review.assistant.full_check_brief import helper_brief
+        from app.review.assistant.full_check_plan import pair_lines
+        from app.review.assistant.sandbox import UPLOADS
+
+        chosen, left = gap_pages(pages, budget, has_record=has_record)
         if left:
             self._note(f"pages {', '.join(map(str, left))}: not reached within the fixed price")
             for page in left:
                 engine._note_coverage(page, "not reached within the fixed price")
         if not chosen:
-            return
+            return []
         closers = min(MAX_GAP_CLOSERS, engine._max_agents, max(1, budget // MIN_GAP_RUN_MICROS))
         runs = page_runs(chosen, closers)
         pool = _Pool(budget)
@@ -1430,8 +1520,12 @@ class _Run:
             agents.append(
                 pool.add(
                     self._agent(
-                        call_id=f"gap-{run[0]}",
-                        description=f"Close the gaps on {where}",
+                        call_id=f"{'again' if again else 'gap'}-{run[0]}",
+                        description=(
+                            f"Close what is still open on {where}"
+                            if again
+                            else f"Close the gaps on {where}"
+                        ),
                         prompt=f"{GAP_SCHEMA_NOTE} on {where} (only these):\n{gaps}\n{_ONLY_THESE}"
                         f"\n\n{brief}",
                         model=BY_SHORT["sonnet"],
@@ -1451,7 +1545,55 @@ class _Run:
             if entry.get("stopped") == "cost_cap":
                 self._capped(agent.description)
         self.agents.extend(agents)
-        del rules, pictures
+        return [page for run in runs for page in run]
+
+    def _after_lead(self, page_map: Mapping[str, Any] | None) -> None:
+        """#1817: after the lead review, every planned page still not compared (no helper set
+        it, "not opened", a note that says it was not reached, the lead's own "Budget") and every
+        page left open by its helper that the lead did not take goes to one more closer pass,
+        while the money really left covers it (the later steps' shares kept). Code decides, not
+        an AI's guess about money: the paid run of 2026-10-20 ended with pages "not opened:
+        Budget" and seven open pages never taken, with $8 of a $15 price unspent."""
+        engine = self.engine
+        if self.plan is None:
+            return
+        planned = sorted(
+            {page for job in (engine._plan.jobs if engine._plan else ()) for page in job.pages}
+        )
+        coverage = engine.book.coverage_map() if engine.book.coverage_used else None
+        with engine._lock:
+            open_gaps: dict[int, str] = {}
+            for gaps in engine._checklist_gaps.values():
+                for page, why in gaps.items():
+                    open_gaps.setdefault(page, why)
+        pages: dict[int, list[str]] = {}
+        for page, why in unfinished_pages(planned, coverage).items():
+            pages.setdefault(page, []).append(
+                f"page not compared yet ({why}): compare the whole page, every dimension and "
+                "string against the architect's"
+            )
+        for page in self.repeats_avoided:
+            if page not in self.lead_taken and page in open_gaps:
+                pages.setdefault(page, []).append(f"left open by its helper: {open_gaps[page]}")
+        if not pages:
+            return
+        budget = self._room("lead")
+        _log.warning(
+            "assistant roster look-again after the lead: %d pages still open; $%.2f left for it",
+            len(pages),
+            budget / _MICROS,
+        )
+        if budget < MIN_GAP_RUN_MICROS:
+            return  # the price is really short: the pages stay noted (`_note_left_open`)
+        engine.helper_ceiling = engine.spent + budget
+        try:
+            with engine.timings.phase("gap_closers"):
+                taken = self._close(pages, budget, (), page_map, again=True)
+        finally:
+            engine.helper_ceiling = None
+        # A page a closer took is not "left open, not compared again": its closer said what it
+        # did on its coverage.
+        self.lead_taken |= set(taken)
 
     def _gap_budget(self) -> int:
         """The gap closers' money: all that is left under the fixed price less the later phases'
@@ -1589,7 +1731,9 @@ class _Run:
                     "tool": (
                         "chat proof"
                         if answer.get("chat_proof") is not None
-                        else "read_number" if answer.get("read_number") else "verify_value"
+                        else "read_number"
+                        if answer.get("read_number")
+                        else "verify_value"
                     ),
                     "value": value,
                     "result": answer.get("result"),
@@ -1844,12 +1988,10 @@ class _Run:
         cap = self._lead_money()
         pages, unplaced = self._lead_pages(cap, page_map)
         if not pages or cap <= 0:
-            self._note_left_open()
             return
         model = BY_SHORT["opus"]
         if not engine._fits(engine._price(model, 30_000, 4_000)):
             self._note(f"the lead review of {page_ranges_words(pages)}: not reached")
-            self._note_left_open()
             return
         self.lead_taken = set(pages)
         brief = helper_brief(
@@ -1887,7 +2029,6 @@ class _Run:
         self._drop_placed_salvage()
         if entries[0].get("stopped") == "cost_cap":
             self._capped(agent.description)
-        self._note_left_open()
 
     def _note_left_open(self) -> None:
         """#1805: a page a numbers helper compared but left checklist lines open on is never
