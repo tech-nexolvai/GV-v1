@@ -50,9 +50,9 @@ def test_a_red_mark_with_the_reviewers_value_where_the_architect_gives_none() ->
     assert governs(made) == "reviewer"
     assert should_be(made) == '34 1/2" (reviewer)'
     assert reviewer_decided(made)
-    assert proof_line(made).startswith("Decided by the reviewer: Hinge side")
+    assert proof_line(made).startswith("Decided by GV's reviewer: Hinge side")
     assert "reviewer-one" not in proof_line(made)
-    assert group_words(made, "clouded") == "Wrong, decided by the reviewer (clouded)"
+    assert group_words(made, "clouded") == "Wrong, decided by GV's reviewer (clouded)"
     assert proof_of(made)["should_be"] == '34 1/2" (reviewer)'
     assert register_status(made) == "wrong"
     # It leaves the Not-compared list.
@@ -72,7 +72,7 @@ def test_the_architects_value_kept_by_the_reviewer_still_names_the_architect() -
 def test_an_internal_note_never_reaches_the_vendor() -> None:
     bare = _decision(inches={"vendor": "30"})
     made = {**bare, "decision": _agree(should_be='31"', note="see GV Review's record")}
-    assert proof_line(made).startswith("Decided by the reviewer")
+    assert proof_line(made).startswith("Decided by GV's reviewer")
     assert "record" not in proof_line(made)
     internal = {**bare, "decision": _agree(should_be="AI said 30")}
     assert proof_group(internal) == "not_compared"
@@ -110,3 +110,43 @@ def test_the_should_be_goes_with_an_agree_only() -> None:
         ChatFindingDecisionIn(decision="not_a_problem", should_be='30"')
     with pytest.raises(ValidationError):
         ChatFindingDecisionIn(decision="agree", should_be="x" * 81)
+
+
+def test_an_older_workbooks_set_rows_are_read_back_as_they_were_listed() -> None:
+    """#1803: an answer stored before its set gaps were kept: the list made again after a
+    decision keeps the set's own rows, read back from the workbook the check made."""
+    from app.review.assistant import not_compared
+
+    gaps = not_compared.gap_rows(
+        [
+            {
+                "what": "Sheet A-3: the island elevation",
+                "why": "no_sheet",
+                "needs": "the sheet",
+                "page": 4,
+            },
+            {"what": "A finish code the architect lists without a size", "needs": "a size"},
+        ]
+    )
+    assert gaps and all(row.level == "set" for row in gaps)
+    item = not_compared.Row(
+        finding_id="F9",
+        page=2,
+        area="",
+        product="Countertops",
+        item="Sink base width",
+        vendor='33"',
+        architect="",
+        reason=gaps[0].reason,
+        why="no size",
+        needed="a size",
+        reference="page 2",
+        file=None,
+        box=None,
+    )
+    back = not_compared.set_rows_of(not_compared.xlsx([item, *gaps]))
+    assert back is not None
+    assert [(r.page, r.item, r.reason, r.why, r.needed, r.reference, r.level) for r in back] == [
+        (r.page, r.item, r.reason, r.why, r.needed, r.reference, r.level) for r in gaps
+    ]
+    assert not_compared.set_rows_of(b"not a workbook") is None

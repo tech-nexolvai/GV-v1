@@ -141,8 +141,9 @@ class AssistantChatFile(Base, TimestampedUUID, Immutable):
     )
 
 
-#: The reviewer's decision on one finding (#1521).
-FINDING_DECISIONS: tuple[str, ...] = ("agree", "not_a_problem")
+#: The reviewer's decision on one finding (#1521). `undo` (#1803) takes the reviewer's call back:
+#: the item is again what code found, and the files made again say so.
+FINDING_DECISIONS: tuple[str, ...] = ("agree", "not_a_problem", "undo")
 
 
 class AssistantFindingDecision(Base, TimestampedUUID, Immutable):

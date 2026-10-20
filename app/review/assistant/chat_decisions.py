@@ -18,10 +18,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import AssistantChatMessage, AssistantFindingDecision
@@ -44,13 +44,16 @@ from app.review.assistant.send_package import (
 )
 
 __all__ = [
+    "UNDO",
     "DecidedFiles",
     "decided_findings",
     "decided_summary",
     "decision_out",
     "latest_decisions",
     "latest_decisions_of",
+    "lay_decision",
     "make_decided_files",
+    "newest_decision_at",
     "record_decision",
     "resolver_settled",
     "with_decisions",
@@ -102,6 +105,38 @@ def decision_out(row: AssistantFindingDecision) -> dict[str, Any]:
     return out
 
 
+def lay_decision(
+    latest: dict[UUID, dict[str, dict[str, Any]]], row: AssistantFindingDecision
+) -> None:
+    """Lay one decision row over the latest ones (rows read oldest first): an `undo` (#1803) takes
+    the finding's decision away, so it is again what code found."""
+    if row.decision == UNDO:
+        latest.get(row.message_id, {}).pop(row.finding_id, None)
+        return
+    latest.setdefault(row.message_id, {})[row.finding_id] = decision_out(row)
+
+
+#: The decision that takes the reviewer's call back (#1803).
+UNDO: Final = "undo"
+
+
+def newest_decision_at(session: Session, chat_id: UUID) -> dict[UUID, datetime]:
+    """When each answer of the chat was last decided on (an undo too, #1803): a package made
+    before it is out of date."""
+    return {
+        message_id: at
+        for message_id, at in session.execute(
+            select(
+                AssistantFindingDecision.message_id,
+                func.max(AssistantFindingDecision.created_at),
+            )
+            .where(AssistantFindingDecision.chat_id == chat_id)
+            .group_by(AssistantFindingDecision.message_id)
+        )
+        if at is not None
+    }
+
+
 def latest_decisions(
     session: Session, chat_id: UUID, message_id: UUID | None = None
 ) -> dict[UUID, dict[str, dict[str, Any]]]:
@@ -113,7 +148,7 @@ def latest_decisions(
     for row in session.scalars(
         query.order_by(AssistantFindingDecision.decided_at, AssistantFindingDecision.created_at)
     ):
-        latest.setdefault(row.message_id, {})[row.finding_id] = decision_out(row)
+        lay_decision(latest, row)
     return latest
 
 
@@ -130,7 +165,7 @@ def latest_decisions_of(
         .where(AssistantFindingDecision.message_id.in_(list(message_ids)))
         .order_by(AssistantFindingDecision.decided_at, AssistantFindingDecision.created_at)
     ):
-        latest.setdefault(row.message_id, {})[row.finding_id] = decision_out(row)
+        lay_decision(latest, row)
     return latest
 
 
@@ -270,6 +305,7 @@ def make_decided_files(
     extra: Sequence[tuple[str, Path]] = (),
     not_compared_out: tuple[Path, Path] | None = None,
     set_gaps: Sequence[Mapping[str, Any]] = (),
+    set_rows: Sequence[not_compared.Row] = (),
 ) -> DecidedFiles:
     """The cloud drawing and the check report made again with the reviewer's decisions as
     overrides (#1581, replacing #1521's only-agreed drawing): the same zero-click drawing as the
@@ -283,14 +319,15 @@ def make_decided_files(
     package holds as they were made (the Not-compared list, #1619), each name and path.
     `not_compared_out` (#1803): the Not-compared PDF and workbook are made again instead, from the
     decided list (an item the reviewer decided leaves it) and the set's own gaps (`set_gaps`, as
-    the check listed them); the package then holds these."""
+    the check listed them, or `set_rows` read back from an older answer's workbook); the package
+    then holds these."""
     findings = by_impact(findings)
     listed: tuple[MarkupFile, MarkupFile] | None = None
     if not_compared_out is not None:
         rows = _not_compared_rows(workspace, findings)
         pdf, sheet = not_compared.make_files(
             workspace,
-            [*rows, *not_compared.gap_rows(set_gaps)],
+            [*rows, *not_compared.gap_rows(set_gaps), *set_rows],
             not_compared_out[0],
             not_compared_out[1],
         )

@@ -97,7 +97,7 @@ GROUP_WORDS: Final[Mapping[str, str]] = {
     "dismissed": "Right (reviewer)",
 }
 #: A Wrong the reviewer made (#1803), as the report and the CSV name its group.
-REVIEWER_CLOUDED_WORDS: Final = "Wrong, decided by the reviewer (clouded)"
+REVIEWER_CLOUDED_WORDS: Final = "Wrong, decided by GV's reviewer (clouded)"
 
 
 def group_words(finding: Mapping[str, Any], group: str) -> str:
@@ -633,7 +633,7 @@ def proof_line(finding: Mapping[str, Any]) -> str:
 
 
 def reviewer_wrong(finding: Mapping[str, Any]) -> str:
-    """ "decided by the reviewer", with the reviewer's note when the vendor may read it (#1803;
+    """ "decided by GV's reviewer", with the reviewer's note when the vendor may read it (#1803;
     the Right side is `vendor_text.reviewer_right`)."""
     decision = finding.get("decision")
     note = decision.get("note") if isinstance(decision, Mapping) else None
@@ -642,7 +642,7 @@ def reviewer_wrong(finding: Mapping[str, Any]) -> str:
 
 
 #: The reviewer's Agree as every file says it (#1803).
-REVIEWER_WRONG: Final = "decided by the reviewer"
+REVIEWER_WRONG: Final = "decided by GV's reviewer"
 
 
 def could_not_compare_reason(finding: Mapping[str, Any]) -> str:

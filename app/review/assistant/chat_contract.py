@@ -479,13 +479,15 @@ class ChatFindingCriticOut(BaseModel):
     model: str | None = None
 
 
-type ChatDecision = Literal["agree", "not_a_problem"]
+type ChatDecision = Literal["agree", "not_a_problem", "undo"]
+"""`undo` (#1803): the reviewer takes the call back; the item is again what code found."""
 
 
 class ChatFindingDecisionIn(BaseModel):
     """The reviewer's ✓ Agree / ✗ Not a problem on one finding (#1521). On the screen (#1803): an
     Agree is "It's a mistake: add a red mark", a Not a problem is "It's fine: mark Right" or "Not
-    a mistake: remove the red mark" (the item is Right, noted "(reviewer)")."""
+    a mistake: remove the red mark" (the item is Right, noted "(reviewer)"), and an Undo takes the
+    reviewer's call back (the item is again what code found)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -495,7 +497,7 @@ class ChatFindingDecisionIn(BaseModel):
         default=None,
         max_length=80,
         description="With an Agree only: what the vendor's value should be, as the reviewer "
-        "gives it (the green \"should be\" on the cloud drawing, the letter and the register). "
+        'gives it (the green "should be" on the cloud drawing, the letter and the register). '
         "Empty or left out: what code knows (the architect's value).",
     )
 
@@ -1766,6 +1768,12 @@ class ChatMessageOut(BaseModel):
     thinking: bool | None = None
     blocks: list[ChatBlock] | None = None
     files: list[ChatFileOut] | None = None
+    package_outdated: bool | None = Field(
+        default=None,
+        description="A full check's send-ready package was made before the reviewer's newest "
+        "decision (#1803): the screen never hands it out, and makes it again. `null`: no package "
+        "or no decision.",
+    )
     cost_usd: str | None = None
     stopped: ChatStopped | None = None
     error: str | None = None

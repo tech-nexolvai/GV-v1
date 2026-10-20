@@ -46,6 +46,7 @@ from app.review.assistant import not_compared
 from app.review.assistant.impact import by_impact
 from app.review.assistant.proof import (
     NO_REQUIREMENT_REASON,
+    REVIEWER,
     governs,
     proof_group,
     proof_line,
@@ -297,6 +298,9 @@ def requires_words(finding: Mapping[str, Any]) -> str:
         return f"The vendor's own parts add up to {value}"
     if own == "span":
         return f"The vendor's other dimension of the same span shows {value}"
+    if governs(finding) == REVIEWER:
+        # A value GV's reviewer gave (#1803): never said to be the architect's.
+        return f"GV's reviewer requires {value}"
     source = str(finding.get("source") or "architect")
     settled = finding.get("settled")
     if isinstance(settled, Mapping) and settled.get("method") == "gv_limits":

@@ -1,4 +1,4 @@
-"""The reviewer's Agree can say what the value should be (#1803).
+"""The reviewer's Agree can say what the value should be, and a call can be taken back (#1803).
 
 Revision ID: 0112_finding_decision_should_be
 Revises: 0111_package_product_registry
@@ -13,8 +13,13 @@ typed it, kept with the decision row (the table stays append-only; a changed min
 A CHECK keeps it to an Agree and never empty. Existing rows keep NULL: their green "should be"
 stays what code knows (the architect's value), as before.
 
-**Downgrade** drops the column. It refuses while a decision row holds a value, because those are
-the reviewer's own words and would be lost.
+A third decision value, `undo`: the reviewer takes a call back ("Undo"), and the item is again
+what code found. Kept as one more row like any decision (the table stays append-only), so the
+history of what the reviewer clicked is never lost. The value CHECK is replaced to allow it.
+
+**Downgrade** drops the column and puts the two-value CHECK back. It refuses while a decision row
+holds a value or is an undo, because those are the reviewer's own words and calls and would be
+lost.
 
 Verification: `tests/db/test_finding_decision_should_be.py`.
 """
@@ -35,21 +40,30 @@ depends_on: str | Sequence[str] | None = None
 DECISIONS = "assistant_finding_decisions"
 NAME = "assistant_finding_decision_should_be"
 CHECK = "should_be IS NULL OR (decision = 'agree' AND should_be <> '')"
+VALUE = "assistant_finding_decision_value"
+VALUES_BEFORE = "decision IN ('agree', 'not_a_problem')"
+VALUES_AFTER = "decision IN ('agree', 'not_a_problem', 'undo')"
 
 
 def upgrade() -> None:
     op.add_column(DECISIONS, sa.Column("should_be", sa.Text(), nullable=True))
     op.create_check_constraint(NAME, DECISIONS, CHECK)
+    op.drop_constraint(VALUE, DECISIONS, type_="check")
+    op.create_check_constraint(VALUE, DECISIONS, VALUES_AFTER)
 
 
 def downgrade() -> None:
     count = op.get_bind().scalar(
-        sa.text(f"SELECT count(*) FROM {DECISIONS} WHERE should_be IS NOT NULL")
+        sa.text(
+            f"SELECT count(*) FROM {DECISIONS} WHERE should_be IS NOT NULL OR decision = 'undo'"
+        )
     )
     if count:
         raise RuntimeError(
-            f"Cannot downgrade: {count} decision row(s) hold the value a reviewer gave. "
+            f"Cannot downgrade: {count} decision row(s) hold a value a reviewer gave or an undo. "
             "Preserve these records."
         )
+    op.drop_constraint(VALUE, DECISIONS, type_="check")
+    op.create_check_constraint(VALUE, DECISIONS, VALUES_BEFORE)
     op.drop_constraint(NAME, DECISIONS, type_="check")
     op.drop_column(DECISIONS, "should_be")

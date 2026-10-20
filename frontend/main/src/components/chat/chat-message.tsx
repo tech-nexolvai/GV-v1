@@ -13,7 +13,7 @@ import { FullCheckResult } from '@/components/chat/chat-result';
 import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState } from '@/components/chat/chat-motion';
-import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionExtra, type FindingDecisionValue } from '@/lib/chat-api';
+import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionChoice, type FindingDecisionExtra } from '@/lib/chat-api';
 import { coverageCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
 import { fullCheckBubble, fullCheckFiles, withoutCodeNote } from '@/lib/chat-full-check';
 import { commentNumber, resultGroups } from '@/lib/chat-result';
@@ -312,7 +312,7 @@ export interface AssistantMessageProps {
    */
   fullCheck?: boolean;
   /** #1522 (PATH step 5): record the reviewer's Agree / Not a problem on a finding (#1803: with its note and the value it should be). */
-  decide?: (messageId: string, findingId: string, decision: FindingDecisionValue, extra?: FindingDecisionExtra) => Promise<unknown>;
+  decide?: (messageId: string, findingId: string, decision: FindingDecisionChoice, extra?: FindingDecisionExtra) => Promise<unknown>;
   /** #1525: make the cloud drawing again from the reviewer's decisions; returns the new drawing. */
   remakeCloud?: (messageId: string) => Promise<ChatFile>;
   /** #1578: a finding of this answer to open in the evidence viewer at once (the job tracker's link). */
@@ -400,10 +400,11 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   // A finished full check (#1684) counts as its screen shows: every Wrong and every Nothing to compare
   // (a "same" seen on one side only is Not compared, and can be made Wrong too).
   const actionable = fullCheck && !running ? findings.filter((finding) => proofGroup(finding, null) !== 'right') : findings.filter((finding) => finding.status !== 'same');
-  const [decisions, setDecisions] = useState<Record<string, FindingDecision>>({});
+  // A finding's entry is its newest decision on this screen; `null` after an Undo (#1803: what code found).
+  const [decisions, setDecisions] = useState<Record<string, FindingDecision | null>>({});
   const [decideFailed, setDecideFailed] = useState<string | null>(null);
   const [decisionsOff, setDecisionsOff] = useState(false);
-  const decisionOf = (finding: ChatFinding): FindingDecision | null => decisions[finding.id] ?? finding.decision ?? null;
+  const decisionOf = (finding: ChatFinding): FindingDecision | null => (finding.id in decisions ? decisions[finding.id] : finding.decision) ?? null;
   // #1619: a finished full check shows each item where its cloud drawing puts it (Wrong = proved
   // by code, Right, Nothing to compare), the reviewer's newest click laid over.
   const architectView = fullCheck && !running;
@@ -447,17 +448,30 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   }, [canRemake, messageId, remakeWanted, remakeDone, remakeRunning, remakeFailed]);
   const askRemake = () => { setRemakeFailed(false); setRemakeWanted((count) => count + 1); };
   const cloudState: 'idle' | 'updating' | 'failed' = remakeFailed ? 'failed' : remakeRunning || remakeWanted !== remakeDone ? 'updating' : 'idle';
+  // #1803: the server says the package was made before the newest decision (a decision made
+  // elsewhere, or a remake that never ran): it is never handed out, and it is made again at once.
+  const outdated = Boolean(fullCheck && finished && message.package_outdated);
+  useEffect(() => {
+    if (!outdated || !canRemake || remakeWanted !== remakeDone || remakeRunning || remakeFailed) return undefined;
+    const timer = setTimeout(askRemake, 0);
+    return () => clearTimeout(timer);
+    // Only when the server's answer changes: a remake already asked for is not asked again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outdated, canRemake]);
+  // The package on the screen does not hold every decision yet: no download until it does.
+  const packageStale = cloudState !== 'idle' || outdated;
   const decisionFor = finished && !decisionsOff && decide && messageId ? (finding: ChatFinding): DecisionProps => ({
     decision: decisionOf(finding)?.decision ?? null,
     saved: decisionOf(finding),
     onDecide: (decision, extra) => {
+      const had = finding.id in decisions;
       const before = decisions[finding.id];
       setDecideFailed(null);
-      const laid: FindingDecision = { ...(decisions[finding.id] ?? finding.decision ?? {}), decision, note: extra?.note?.trim() || null, should_be: decision === 'agree' ? extra?.should_be?.trim() || null : null };
+      const laid: FindingDecision | null = decision === 'undo' ? null : { ...(decisionOf(finding) ?? {}), decision, note: extra?.note?.trim() || null, should_be: decision === 'agree' ? extra?.should_be?.trim() || null : null };
       setDecisions((now) => ({ ...now, [finding.id]: laid }));
       (extra ? decide(messageId, finding.id, decision, extra) : decide(messageId, finding.id, decision)).then(
         (saved) => {
-          setDecisions((now) => ({ ...now, [finding.id]: isDecision(saved) ? saved : laid }));
+          setDecisions((now) => ({ ...now, [finding.id]: decision !== 'undo' && isDecision(saved) ? saved : laid }));
           if (fullCheck && remakeCloud) askRemake();
         },
         (error: unknown) => {
@@ -468,7 +482,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
             : 'Your answer was not saved. Try again.');
           setDecisions((now) => {
             const next = { ...now };
-            if (before) next[finding.id] = before;
+            if (had) next[finding.id] = before;
             else delete next[finding.id];
             return next;
           });
@@ -488,6 +502,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
     updating: cloudState === 'updating',
     failed: cloudState === 'failed',
     updatedAt: draftAt ? clockWords(draftAt) : null,
+    stale: packageStale,
   } : null;
 
   // The task list sits inside the activity timeline, at its newest update (the last task step);
@@ -643,7 +658,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           decisionFor={resultShown ? decisionFor : null}
           numberOf={resultShown ? (finding) => commentNumber(finding, message.package_state) : null}
           notice={decideFailed}
-          draft={resultShown && review ? { updating: review.updating, failed: review.failed, updatedAt: review.updatedAt, pkg: made.pkg, href: made.pkg ? made.pkg.url || chatPaths.file(chatId, made.pkg.id) : null, onRetry: review.onUpdate } : null}
+          draft={resultShown && review ? { updating: review.updating, failed: review.failed, updatedAt: review.updatedAt, stale: review.stale ?? false, decided: review.decided, pkg: made.pkg, href: made.pkg ? made.pkg.url || chatPaths.file(chatId, made.pkg.id) : null, onRetry: review.onUpdate } : null}
         />
       )}
       {finished && !resultShown && (

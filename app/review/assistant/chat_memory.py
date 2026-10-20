@@ -207,6 +207,7 @@ def notes_block(
 _DECIDED: Final[Mapping[str, str]] = {
     "agree": "agreed it is wrong",
     "not_a_problem": "marked it not a problem",
+    "undo": "took back their call (it is again what code found)",
 }
 
 

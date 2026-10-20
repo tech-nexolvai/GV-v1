@@ -9,6 +9,7 @@ import { categoriesPresent, categoryWords, sideLabels } from '@/lib/chat-finding
 import { fileSize, openHref } from '@/lib/chat-messages';
 import {
   commentNumber,
+  decisionsWords,
   differenceWords,
   filesLine,
   itemParts,
@@ -240,19 +241,28 @@ function ResultHead({ files, chatId, reviewAction, previewPage, onRunAgain, revi
     ? onRunAgain && <button type="button" data-slot="chat-result-run-again" onClick={onRunAgain} className={BUTTON_PRIMARY}><RotateCw className="size-4" aria-hidden="true" />Run the check again</button>
     : files.pkg ? <a data-slot="chat-package-download" href={href(files.pkg)} download={files.pkg.name} aria-label={`Download package: ${files.pkg.name}`} className={BUTTON_PRIMARY}><Download className="size-4" aria-hidden="true" />Download package</a>
       : files.cloud && <a data-slot="chat-cloud-download" href={href(files.cloud)} download={files.cloud.name} aria-label={`Download ${files.cloud.name}`} className={BUTTON_PRIMARY}><Download className="size-4" aria-hidden="true" />Download cloud drawing</a>;
-  // #1803: once the draft is made again from the decisions, its download says so.
-  const updated = review?.updatedAt && !review.updating && files.pkg
-    ? <a data-slot="chat-package-download" data-updated="true" href={href(files.pkg)} download={files.pkg.name} aria-label={`Download updated draft: ${files.pkg.name}`} className={BUTTON_PRIMARY}><Download className="size-4" aria-hidden="true" />Download updated draft</a>
+  // #1803: every decision makes the whole package again (the cloud drawing, the letter, the
+  // register, the Not-compared list). Until it holds them all, no file of the old one is handed out.
+  const stale = Boolean(review?.stale);
+  const decided = review?.decided ?? 0;
+  const remake = review?.onUpdate && decided > 0
+    ? <button type="button" data-slot="chat-package-remake" onClick={review.onUpdate} disabled={review.updating} className={cn(stale && !review.updating ? BUTTON_PRIMARY : BUTTON, 'disabled:cursor-progress disabled:opacity-70')}><RefreshCw className={cn('size-4', review.updating && 'animate-spin motion-reduce:animate-none')} aria-hidden="true" />{review.updating ? 'Making the package again…' : 'Re-make the package'}</button>
     : null;
-  const secondary = updated && verdict?.draft ? null : verdict?.draft
+  const shownPrimary = stale && !verdict?.draft ? null : primary;
+  const secondary = stale ? null : verdict?.draft
     ? files.pkg && <a data-slot="chat-package-download" href={href(files.pkg)} download={files.pkg.name} aria-label={`Download draft package: ${files.pkg.name}`} className={BUTTON}><Download className="size-4" aria-hidden="true" />Download draft</a>
     : files.cloud && <a href={openHref(files.cloud, href(files.cloud))} target="_blank" rel="noopener noreferrer" className={BUTTON}><ExternalLink className="size-4" aria-hidden="true" />Open cloud drawing</a>;
   return (
     <section data-slot="chat-result-head" aria-label="Review result" className="chat-rise grid min-w-0 overflow-hidden rounded-[14px] border bg-card md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-      {files.cloud && (
+      {files.cloud && !stale && (
         <a href={openHref(files.cloud, href(files.cloud))} target="_blank" rel="noopener noreferrer" aria-label="Open the cloud drawing" className="grid min-w-0 content-center border-r bg-muted/40 p-3.5 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset max-md:hidden">
           <CloudPreview href={href(files.cloud)} page={previewPage} total={null} />
         </a>
+      )}
+      {files.cloud && stale && (
+        <div aria-hidden="true" className="grid min-w-0 place-items-center border-r bg-muted/40 p-3.5 text-[13px] text-muted-foreground max-md:hidden">
+          <RefreshCw className={cn('size-5', review?.updating && 'animate-spin motion-reduce:animate-none')} />
+        </div>
       )}
       <div className="grid min-w-0 content-start gap-3 p-5 max-md:p-4">
         {verdict && (
@@ -270,32 +280,15 @@ function ResultHead({ files, chatId, reviewAction, previewPage, onRunAgain, revi
             <p data-slot="chat-review-sentence" className="max-w-prose text-[14.5px] leading-relaxed text-muted-foreground">{verdict.sentence}</p>
           </>
         )}
-        {(primary || secondary || updated || (review?.onUpdate && review.decided > 0 && (review.failed || !review.updatedAt))) && (
+        {(shownPrimary || secondary || remake) && (
           <div className="flex flex-wrap gap-2">
-            {updated ?? primary}
+            {shownPrimary}
             {secondary}
-            {/* #1803: the draft is made again by itself after each decision; the button stays as the way to try again. */}
-            {review?.onUpdate && review.decided > 0 && (review.failed || (!review.updatedAt && !review.updating)) && (
-              <button type="button" data-slot="chat-cloud-update" onClick={review.onUpdate} className={BUTTON}>
-                <RefreshCw className="size-4" aria-hidden="true" />
-                {review.failed ? 'Try again' : 'Update the draft'}
-              </button>
-            )}
+            {remake}
           </div>
         )}
-        {review?.updating && (
-          <p role="status" data-slot="chat-draft-line" data-state="updating" className="inline-flex items-center gap-2 text-[13px] text-muted-foreground">
-            <RefreshCw className="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-            Updating the draft…
-          </p>
-        )}
-        {!review?.updating && review?.updatedAt && !review.failed && (
-          <p role="status" data-slot="chat-draft-line" data-state="updated" className="text-[13px] text-muted-foreground">
-            Draft updated <span className="num">{review.updatedAt}</span> · the cloud drawing, letter, register and Not-compared list include what you decided
-          </p>
-        )}
-        {review?.failed && <p role="alert" data-slot="chat-draft-line" data-state="failed" className="text-sm text-muted-foreground">The draft could not be made again right now.</p>}
-        {line.count > 0 && (
+        {review && decided > 0 && <PackageLine review={review} />}
+        {line.count > 0 && !stale && (
           <div className="grid min-w-0 gap-1 border-t pt-3">
             <button type="button" aria-expanded={filesOpen} aria-controls={filesId} onClick={() => setFilesOpen(!filesOpen)} data-slot="chat-result-files" className="inline-flex max-w-full min-w-0 items-center gap-2 rounded-md text-left text-[13px] text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
               <ChevronRight aria-hidden="true" className={cn('size-3.5 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none', filesOpen && 'rotate-90')} />
@@ -313,6 +306,28 @@ function ResultHead({ files, chatId, reviewAction, previewPage, onRunAgain, revi
         )}
       </div>
     </section>
+  );
+}
+
+/**
+ * #1803: what the package holds after the reviewer's decisions: "Making the package again with your
+ * 2 decisions…", "Package updated with your 2 decisions", or that it could not be made (no download then).
+ */
+export function PackageLine({ review }: { review: CloudReview }) {
+  const words = decisionsWords(review.decided);
+  if (review.updating) {
+    return <p role="status" data-slot="chat-package-line" data-state="updating" className="inline-flex items-center gap-2 text-[13px] text-muted-foreground"><RefreshCw className="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />Making the package again with your {words}…</p>;
+  }
+  if (review.failed) {
+    return <p role="alert" data-slot="chat-package-line" data-state="failed" className="text-[13px] text-muted-foreground">The package could not be made again with your {words}. The old one is not offered: re-make the package.</p>;
+  }
+  if (review.stale) {
+    return <p role="status" data-slot="chat-package-line" data-state="outdated" className="text-[13px] text-muted-foreground">The package does not hold your newest decisions yet. Re-make the package.</p>;
+  }
+  return (
+    <p role="status" data-slot="chat-package-line" data-state="updated" className="text-[13px] text-muted-foreground">
+      Package updated with your {words}{review.updatedAt ? <> · <span className="num">{review.updatedAt}</span></> : null} · the cloud drawing, letter, register and Not-compared list include them
+    </p>
   );
 }
 

@@ -94,7 +94,9 @@ def test_a_not_compared_item_made_wrong_with_the_reviewers_value_and_one_marked_
         )
         assert response.status_code == 200, response.text
         answer = _named(_events(response.text), "message_end")[0]["message"]
-        found = {b["finding"]["id"]: b["finding"] for b in answer["blocks"] if b["type"] == "finding"}
+        found = {
+            b["finding"]["id"]: b["finding"] for b in answer["blocks"] if b["type"] == "finding"
+        }
         assert {f["proof"]["group"] for f in found.values()} == {"not_compared"}
         first_list = _pdf_text(
             world.client.get(_newest(answer["files"], "Not compared.pdf")["url"]).content
@@ -102,16 +104,26 @@ def test_a_not_compared_item_made_wrong_with_the_reviewers_value_and_one_marked_
         assert "Sink base width" in first_list and "Vanity top length" in first_list
 
         # A "should be" goes with an Agree only; an empty one is no value.
-        refused = _decide(world, chat_id, answer["id"], "F1", decision="not_a_problem", should_be='5"')
+        refused = _decide(
+            world, chat_id, answer["id"], "F1", decision="not_a_problem", should_be='5"'
+        )
         assert refused.status_code == 422
         # It's a mistake: add a red mark, with the value it should be (the architect gives none).
         made = _decide(
-            world, chat_id, answer["id"], "F2", decision="agree", should_be=' 34 1/2" ', note="Hinge side"
+            world,
+            chat_id,
+            answer["id"],
+            "F2",
+            decision="agree",
+            should_be=' 34 1/2" ',
+            note="Hinge side",
         )
         assert made.status_code == 201, made.text
         assert made.json()["should_be"] == '34 1/2"' and made.json()["note"] == "Hinge side"
         # It's fine: mark Right.
-        right = _decide(world, chat_id, answer["id"], "F1", decision="not_a_problem", note="Field fit")
+        right = _decide(
+            world, chat_id, answer["id"], "F1", decision="not_a_problem", note="Field fit"
+        )
         assert right.status_code == 201 and right.json().get("should_be") is None
 
         stored = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
@@ -122,16 +134,14 @@ def test_a_not_compared_item_made_wrong_with_the_reviewers_value_and_one_marked_
         assert now["F1"]["proof"]["group"] == "dismissed"
 
         # The files are made again from the decisions.
-        remade = world.client.post(
-            f"/api/v1/chats/{chat_id}/messages/{answer['id']}/cloud-drawing"
-        )
+        remade = world.client.post(f"/api/v1/chats/{chat_id}/messages/{answer['id']}/cloud-drawing")
         assert remade.status_code == 200, remade.text
         files = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]["files"]
         assert len(files) == 2 * len(answer["files"])
         drawing = world.client.get(remade.json()["url"]).content
         words = _pdf_text(drawing)
         assert 'Should be: 34 1/2" (reviewer)' in words
-        assert "Why: Decided by the reviewer: Hinge side" in words
+        assert "Decided by GV's reviewer: should be 34 1/2\". Hinge side" in words
         assert "reviewer-one" in words  # the stamp names who reviewed it
         assert "Agreed by" not in words
         assert _red_near(drawing, 4, PAGE3_BOX) > 5  # page 1 is the cover
@@ -149,7 +159,133 @@ def test_a_not_compared_item_made_wrong_with_the_reviewers_value_and_one_marked_
         with zipfile.ZipFile(io.BytesIO(world.client.get(package["url"]).content)) as archive:
             inside = archive.namelist()
             letter = _pdf_text(archive.read(next(n for n in inside if "Comment letter" in n)))
-            listed_inside = _pdf_text(archive.read(next(n for n in inside if n.endswith("Not compared.pdf"))))
+            listed_inside = _pdf_text(
+                archive.read(next(n for n in inside if n.endswith("Not compared.pdf")))
+            )
         assert "C-01" in letter and "Sink base width" in letter and '34 1/2"' in letter
         assert "reviewer-one" not in letter.split("reviewed by")[0]
         assert "Sink base width" not in listed_inside
+
+
+def _package(world: Any, chat_id: str) -> dict[str, Any]:
+    """The answer as the screen reads it, and its newest package's files, each read as the vendor
+    would open it: PDFs as text, workbooks as rows."""
+    from openpyxl import load_workbook
+
+    message = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
+    package = _newest(message["files"], "review package.zip")
+    out: dict[str, Any] = {"message": message, "package": package}
+    with zipfile.ZipFile(io.BytesIO(world.client.get(package["url"]).content)) as archive:
+        for name in archive.namelist():
+            data = archive.read(name)
+            key = name.rsplit(" - ", 1)[-1]
+            if name.endswith(".pdf"):
+                out[key] = _pdf_text(data)
+                out[key + " bytes"] = data
+            elif name.endswith(".xlsx"):
+                book = load_workbook(io.BytesIO(data), read_only=True)
+                out[key] = {
+                    sheet: [
+                        " | ".join(str(c or "") for c in row)
+                        for row in book[sheet].iter_rows(values_only=True)
+                    ]
+                    for sheet in book.sheetnames
+                }
+    return out
+
+
+def _cells(sheet: dict[str, list[str]]) -> str:
+    return " ".join(line for lines in sheet.values() for line in lines)
+
+
+def test_each_decision_updates_every_file_of_the_package_and_an_undo_restores_it(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """#1803: decision -> package made again -> download -> each file read: the cloud drawing's new
+    red cloud and its proof card, the letter's new comment number, the register, the Not-compared
+    PDF and workbook without the item, the cover's counts; the screen is told the old package is
+    out of date until it is made again; an undo puts every file back."""
+    with _world(postgres_engine, tmp_path, provider=_provider(), pdf=PDF3, pages=3) as world:
+        chat_id = world.chat()
+        response = world.client.post(
+            f"/api/v1/chats/{chat_id}/messages",
+            json={**ASK, "mode": "full_check", "products": ["countertop"]},
+        )
+        assert response.status_code == 200, response.text
+        answer = _named(_events(response.text), "message_end")[0]["message"]
+        remake = f"/api/v1/chats/{chat_id}/messages/{answer['id']}/cloud-drawing"
+
+        before = _package(world, chat_id)
+        assert before["message"]["package_outdated"] is None  # no decision yet
+        assert (
+            "0 Wrong" in before["GV cloud drawing.pdf"]
+            and "2 Not compared" in before["GV cloud drawing.pdf"]
+        )
+        assert "Sink base width" in before["Not compared.pdf"]
+        assert "Sink base width" in _cells(before["Not compared.xlsx"])
+        assert (
+            "Sink base width" not in _cells(before["Issue register.xlsx"]).split("Not compared")[0]
+        )
+        assert "C-01" not in before["Comment letter.pdf"]
+
+        # It's a mistake: add a red mark (the architect prints no value: the reviewer gives one).
+        made = _decide(
+            world,
+            chat_id,
+            answer["id"],
+            "F2",
+            decision="agree",
+            should_be='34 1/2"',
+            note="Hinge side",
+        )
+        assert made.status_code == 201, made.text
+        # The old package is never handed out as if it held the decision.
+        assert (
+            world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]["package_outdated"]
+            is True
+        )
+        assert world.client.post(remake).status_code == 200
+
+        after = _package(world, chat_id)
+        assert after["message"]["package_outdated"] is False
+        assert after["package"]["id"] != before["package"]["id"]
+        drawing = after["GV cloud drawing.pdf"]
+        assert "1 Wrong" in drawing and "1 Not compared" in drawing  # the cover's counts
+        assert "Decided by GV's reviewer: should be 34 1/2\". Hinge side" in drawing  # proof card
+        assert "reviewer-one" not in drawing.split("Proof", 1)[1]  # never the login on the card
+        assert _red_near(after["GV cloud drawing.pdf bytes"], 4, PAGE3_BOX) > 5  # the new red cloud
+        letter = after["Comment letter.pdf"]
+        assert "C-01" in letter and "Sink base width" in letter
+        assert (
+            "GV's reviewer requires 34 1/2\"" in letter
+            and "Architect requires 34 1/2" not in letter
+        )
+        register = _cells(after["Issue register.xlsx"])
+        assert "C-01" in register and "Sink base width" in register and '34 1/2"' in register
+        assert "Sink base width" not in after["Not compared.pdf"]
+        assert "Sink base width" not in _cells(after["Not compared.xlsx"])
+        assert "Vanity top length" in after["Not compared.pdf"]  # the undecided item stays listed
+
+        # Undo: the reviewer takes the call back; every file is as code found it again.
+        undone = _decide(world, chat_id, answer["id"], "F2", decision="undo")
+        assert undone.status_code == 201, undone.text
+        refused = _decide(world, chat_id, answer["id"], "F2", decision="undo", should_be='1"')
+        assert refused.status_code == 422
+        stored = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
+        assert stored["package_outdated"] is True
+        f2 = next(
+            b["finding"]
+            for b in stored["blocks"]
+            if b["type"] == "finding" and b["finding"]["id"] == "F2"
+        )
+        assert f2.get("decision") is None and f2["proof"]["group"] == "not_compared"
+        assert world.client.post(remake).status_code == 200
+
+        again = _package(world, chat_id)
+        assert again["message"]["package_outdated"] is False
+        assert (
+            "0 Wrong" in again["GV cloud drawing.pdf"]
+            and "2 Not compared" in again["GV cloud drawing.pdf"]
+        )
+        assert "Decided by GV's reviewer" not in again["GV cloud drawing.pdf"]
+        assert "C-01" not in again["Comment letter.pdf"]
+        assert "Sink base width" in again["Not compared.pdf"]
+        assert "Sink base width" in _cells(again["Not compared.xlsx"])

@@ -289,3 +289,8 @@ export function boxOnPicture(box: { x0: number; y0: number; x1: number; y1: numb
   const px = (points: number) => (points * dpi) / 72;
   return { left: px(box.x0), top: px(box.y0), width: Math.max(1, px(box.x1 - box.x0)), height: Math.max(1, px(box.y1 - box.y0)) };
 }
+
+/** #1803: "1 decision", "3 decisions" ("Package updated with your 2 decisions"). */
+export function decisionsWords(count: number): string {
+  return `${count} ${count === 1 ? 'decision' : 'decisions'}`;
+}

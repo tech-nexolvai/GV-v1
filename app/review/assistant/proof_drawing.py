@@ -944,15 +944,31 @@ def _proof_entries(
                 body,
             ),
             Paragraph(
-                # A Wrong the reviewer made (#1803) is the reviewer's decision, not code's proof.
-                f"<b>{'Why' if reviewer_decided(finding) else 'Proved by'}:</b> "
-                f"{escape(vendor_text(proof_line(finding), 'code') or 'code')}",
+                # A Wrong the reviewer made (#1803) is the reviewer's decision, with the value it
+                # should be (and the reviewer's note), never code's proof.
+                (
+                    _reviewer_line(finding)
+                    if reviewer_decided(finding)
+                    else f"<b>Proved by:</b> {escape(vendor_text(proof_line(finding), 'code') or 'code')}"
+                ),
                 body,
             ),
             Paragraph(escape(f"{pages}. {item.where}"), grey),
         ]
         story.append(KeepTogether([head, Spacer(1, 3), pair, Spacer(1, 3), *lines, Spacer(1, 12)]))
     return story
+
+
+def _reviewer_line(finding: Mapping[str, Any]) -> str:
+    """A reviewer's Wrong on its proof card (#1803): "Decided by GV's reviewer: should be 34 1/2".
+    Hinge side." The note only as the vendor may read it."""
+    decision = finding.get("decision")
+    note = decision.get("note") if isinstance(decision, Mapping) else None
+    words = f"should be {should_be_value(finding)}"
+    said = vendor_text(note, "") if note else ""
+    if said:
+        words += f". {said}"
+    return f"<b>Decided by GV's reviewer:</b> {escape(words)}"
 
 
 def _as_printed(finding: Mapping[str, Any]) -> str:

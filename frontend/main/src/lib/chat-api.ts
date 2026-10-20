@@ -142,6 +142,8 @@ export interface ChatMessage {
   /** The assistant's: thinking, words and tool steps in the order they happened. */
   blocks?: ChatBlock[] | null;
   files?: ChatFile[] | null;
+  /** #1803: the package was made before the reviewer's newest decision: never handed out, made again. */
+  package_outdated?: boolean | null;
   /** What the message cost, in dollars ("1.72"). */
   cost_usd?: string | null;
   stopped?: ChatStopped | null;
@@ -272,6 +274,8 @@ export interface ChatTaskEdit {
 
 /** The reviewer's answer on one finding (PATH step 5), recorded append-only by the server. */
 export type FindingDecisionValue = 'agree' | 'not_a_problem';
+/** #1803: what the reviewer can send: a decision, or `undo` (take the call back: the item is again what code found). */
+export type FindingDecisionChoice = FindingDecisionValue | 'undo';
 
 export interface FindingDecision {
   decision: FindingDecisionValue;
@@ -1081,7 +1085,7 @@ export const chatPaths = {
 };
 
 /** Record the reviewer's Agree / Not a problem on one finding (with its note and, for an Agree, the value it should be); the server answers with who and when. */
-export function decideFinding(chatId: string, messageId: string, findingId: string, decision: FindingDecisionValue, extra?: FindingDecisionExtra): Promise<FindingDecision> {
+export function decideFinding(chatId: string, messageId: string, findingId: string, decision: FindingDecisionChoice, extra?: FindingDecisionExtra): Promise<FindingDecision> {
   const note = extra?.note?.trim();
   const shouldBe = decision === 'agree' ? extra?.should_be?.trim() : '';
   return json<FindingDecision>(chatPaths.decision(chatId, messageId, findingId), {

@@ -4558,7 +4558,7 @@ export interface components {
             title: string | null;
         };
         /** @enum {string} */
-        ChatDecision: "agree" | "not_a_problem";
+        ChatDecision: "agree" | "not_a_problem" | "undo";
         /** ChatDismissedOut */
         ChatDismissedOut: {
             /** Reason */
@@ -4750,7 +4750,8 @@ export interface components {
          * ChatFindingDecisionIn
          * @description The reviewer's ✓ Agree / ✗ Not a problem on one finding (#1521). On the screen (#1803): an
          *     Agree is "It's a mistake: add a red mark", a Not a problem is "It's fine: mark Right" or "Not
-         *     a mistake: remove the red mark" (the item is Right, noted "(reviewer)").
+         *     a mistake: remove the red mark" (the item is Right, noted "(reviewer)"), and an Undo takes the
+         *     reviewer's call back (the item is again what code found).
          */
         ChatFindingDecisionIn: {
             decision: components["schemas"]["ChatDecision"];
@@ -5944,6 +5945,11 @@ export interface components {
              * @description The drawing set's AI budget this answer ran under ("40.00").
              */
             package_cap_usd?: string | null;
+            /**
+             * Package Outdated
+             * @description A full check's send-ready package was made before the reviewer's newest decision (#1803): the screen never hands it out, and makes it again. `null`: no package or no decision.
+             */
+            package_outdated?: boolean | null;
             /**
              * Products
              * @description The products the message was about (product ids); null on older messages.

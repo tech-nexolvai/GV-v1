@@ -38,6 +38,7 @@ __all__ = [
     "Row",
     "csv_text",
     "rows",
+    "set_rows_of",
     "summary_rows",
     "vendor_reason",
     "vendor_why",
@@ -321,6 +322,60 @@ def xlsx(found: Sequence[Row]) -> bytes:
             ("Summary", ("Counted", "What", "Items"), summary_rows(found)),
         ]
     )
+
+
+def set_rows_of(sheet: bytes) -> list[Row] | None:
+    """The set's own rows (`level: set`) read back from a workbook `xlsx` made (#1803): an answer
+    stored before its set gaps were kept with it can still have its list made again after the
+    reviewer's decisions, with the same set rows. `None` when it is not such a workbook."""
+    from importlib import import_module
+
+    try:
+        openpyxl = import_module("openpyxl")
+        book = openpyxl.load_workbook(io.BytesIO(sheet), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001 - not a workbook this list made
+        return None
+    if SET_SHEET not in book.sheetnames:
+        return None
+    lines = list(book[SET_SHEET].iter_rows(values_only=True))
+    if not lines or tuple(str(c or "") for c in lines[0][: len(COLUMNS)]) != COLUMNS:
+        return None
+    by_label = {
+        TRADE_WORDS.get(reason, REASON_WORDS.get(reason, reason)): reason for reason in REASONS
+    }
+    out: list[Row] = []
+    for line in lines[1:]:
+        cells = [("" if c is None else str(c)) for c in line[: len(COLUMNS)]]
+        if len(cells) < len(COLUMNS) or not cells[4]:
+            continue
+        _at, page, area, product, item, vendor, architect, why_words, needed, reference = cells
+        # The column is "<label>: <why>" (`vendor_reason`); a label may hold ": " itself.
+        label = max(
+            (k for k in by_label if why_words == k or why_words.startswith(f"{k}: ")),
+            key=len,
+            default="",
+        )
+        reason = by_label.get(label, "no_sheet")
+        why = why_words[len(label) + 2 :] if label else why_words
+        out.append(
+            Row(
+                finding_id="",
+                page=int(page) if page.isdigit() else None,
+                area=area,
+                product=product,
+                item=item,
+                vendor=vendor,
+                architect=architect,
+                reason=reason,
+                why=why,
+                needed=needed,
+                reference=reference,
+                file=None,
+                box=None,
+                level="set",
+            )
+        )
+    return out
 
 
 def csv_text(found: Sequence[Row]) -> str:

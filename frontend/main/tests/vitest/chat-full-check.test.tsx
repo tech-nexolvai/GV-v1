@@ -325,7 +325,7 @@ describe('a full-check answer', () => {
     await user.keyboard('{Escape}');
     await user.click(within(node).getByRole('tab', { name: /^Right/ }));
     expect(node.querySelector('[data-slot="chat-result-list"]')?.textContent).toContain('Right (your call)');
-    expect(node.querySelector('[data-slot="chat-draft-line"]')?.textContent).toMatch(/^Draft updated/);
+    expect(node.querySelector('[data-slot="chat-package-line"]')?.textContent).toMatch(/^Package updated with your 1 decision ·/);
 
     // A Not-compared item: "It's a mistake: add a red mark" asks what it should be, filled in with the architect's value.
     await user.click(within(node).getByRole('tab', { name: /^Not compared/ }));
@@ -345,6 +345,55 @@ describe('a full-check answer', () => {
     expect([...screen.getByRole('dialog').querySelectorAll('[data-slot="chat-evidence-side"] figcaption')].map((caption) => caption.textContent)).toContain('Should be12″');
     expect(within(screen.getByRole('dialog')).getByText('Wrong (reviewer).')).toBeTruthy();
     await waitFor(() => expect(remake).toHaveBeenCalledTimes(2), { timeout: 3000 });
+
+    // Undo: the call is taken back; the item is Not compared again and the package is made again.
+    expect(within(screen.getByRole('dialog')).getByText(/Takes your call back/)).toBeTruthy();
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Undo your call' }));
+    expect(decide).toHaveBeenLastCalledWith('msg-1', 'k1', 'undo');
+    await waitFor(() => expect(tiles(node)[0]).toMatch(/^wrong:Wrong1/));
+    expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'It’s a mistake: add a red mark' })).toBeTruthy();
+    await waitFor(() => expect(remake).toHaveBeenCalledTimes(3), { timeout: 3000 });
+  }, 20_000);
+
+  it('never hands out the old package: no download until it is made again with every decision (#1803)', async () => {
+    const user = userEvent.setup();
+    const PKG: ChatFile = { id: 'f-z', kind: 'package', name: 'set - GV review package.zip', size: 4_000_000, mime: 'application/zip', url: '/api/v1/chats/c-1/files/f-z' };
+    const decide = vi.fn(async (_message: string, _finding: string, decision: string) => ({ decision, by: 'anant', at: '2026-10-17T11:00:00Z' }));
+    let finish: (file: ChatFile) => void = () => {};
+    const remake = vi.fn(() => new Promise<ChatFile>((resolve) => { finish = resolve; }));
+    render(<AssistantMessage message={answer({ findings, files: [CLOUD, REPORT, PKG] })} chatId="c-1" models={[OPUS]} fullCheck decide={decide} remakeCloud={remake} onReload={vi.fn()} />);
+    const node = screen.getByRole('article', { name: 'Answer' });
+    expect(node.querySelector('[data-slot="chat-package-download"]')).not.toBeNull();
+    await user.click(within(node).getByRole('button', { name: /^Filler, page \d+\. Open the evidence$/ }));
+    const panel = await screen.findByRole('dialog');
+    await user.click(within(panel).getByRole('button', { name: 'Not a mistake: remove the red mark' }));
+    await user.click(within(panel).getByRole('button', { name: 'Remove the red mark' }));
+    // Saved, not yet made again: the old package is not offered anywhere.
+    await waitFor(() => expect(node.querySelector('[data-slot="chat-package-download"]')).toBeNull());
+    expect(node.querySelector('[data-slot="chat-result-files"]')).toBeNull();
+    expect(within(screen.getByRole('dialog')).queryByRole('link', { name: /Download package/ })).toBeNull();
+    await waitFor(() => expect(remake).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    expect(node.querySelector('[data-slot="chat-package-line"]')?.textContent).toBe('Making the package again with your 1 decision…');
+    finish({ ...PKG, id: 'f-z2' });
+    await waitFor(() => expect(node.querySelector('[data-slot="chat-package-line"]')?.getAttribute('data-state')).toBe('updated'));
+    expect(node.querySelector('[data-slot="chat-package-line"]')?.textContent).toMatch(/^Package updated with your 1 decision/);
+    expect(node.querySelector('[data-slot="chat-package-download"]')).not.toBeNull();
+    expect(within(screen.getByRole('dialog')).getByRole('link', { name: /Download package/ })).toBeTruthy();
+    // "Re-make the package" makes it again on request.
+    await user.keyboard('{Escape}');
+    await user.click(within(node).getByRole('button', { name: 'Re-make the package' }));
+    await waitFor(() => expect(remake).toHaveBeenCalledTimes(2), { timeout: 3000 });
+  }, 20_000);
+
+  it('makes the package again by itself when the server says it is older than a decision (#1803)', async () => {
+    const PKG: ChatFile = { id: 'f-z', kind: 'package', name: 'set - GV review package.zip', size: 4_000_000, mime: 'application/zip', url: '/api/v1/chats/c-1/files/f-z' };
+    const decided = findings.map((item) => (item.id === 'w2' ? { ...item, decision: { decision: 'not_a_problem' as const, by: 'anant', at: '2026-10-17T11:00:00Z' } } : item));
+    const remake = vi.fn(() => new Promise<ChatFile>(() => {}));
+    render(<AssistantMessage message={answer({ findings: decided, files: [CLOUD, REPORT, PKG], package_outdated: true })} chatId="c-1" models={[OPUS]} fullCheck decide={vi.fn()} remakeCloud={remake} onReload={vi.fn()} />);
+    const node = screen.getByRole('article', { name: 'Answer' });
+    expect(node.querySelector('[data-slot="chat-package-download"]')).toBeNull();
+    await waitFor(() => expect(remake).toHaveBeenCalledWith('msg-1'), { timeout: 3000 });
+    expect(node.querySelector('[data-slot="chat-package-download"]')).toBeNull();
   }, 20_000);
 
   it('the evidence panel shows both values large and the spot boxed on the vendor’s page picture (#1717)', async () => {

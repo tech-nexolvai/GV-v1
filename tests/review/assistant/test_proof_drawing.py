@@ -454,7 +454,7 @@ def test_decisions_override_and_the_stamp_names_the_reviewer(tmp_path: Path) -> 
     sheet = _words(reader.pages[1].extract_text())
     assert 'Vendor: 12"' in sheet and 'Vendor: 46"' not in sheet
     words = "".join(page.extract_text() for page in reader.pages)
-    assert "Decided by the reviewer" in words and "Agreed by Ann" not in words
+    assert "Decided by GV's reviewer" in words and "Agreed by Ann" not in words
     # The reviewer's "Not a problem" is Right, noted "(reviewer)": no fourth group (#1766).
     assert "Right (1)" in words and "Right (reviewer)" in words
     assert "Not a problem" not in words

@@ -4086,7 +4086,8 @@
       "ChatDecision": {
         "enum": [
           "agree",
-          "not_a_problem"
+          "not_a_problem",
+          "undo"
         ],
         "type": "string"
       },
@@ -4524,7 +4525,7 @@
       },
       "ChatFindingDecisionIn": {
         "additionalProperties": false,
-        "description": "The reviewer's \u2713 Agree / \u2717 Not a problem on one finding (#1521). On the screen (#1803): an\nAgree is \"It's a mistake: add a red mark\", a Not a problem is \"It's fine: mark Right\" or \"Not\na mistake: remove the red mark\" (the item is Right, noted \"(reviewer)\").",
+        "description": "The reviewer's \u2713 Agree / \u2717 Not a problem on one finding (#1521). On the screen (#1803): an\nAgree is \"It's a mistake: add a red mark\", a Not a problem is \"It's fine: mark Right\" or \"Not\na mistake: remove the red mark\" (the item is Right, noted \"(reviewer)\"), and an Undo takes the\nreviewer's call back (the item is again what code found).",
         "properties": {
           "decision": {
             "$ref": "#/components/schemas/ChatDecision"
@@ -7459,6 +7460,18 @@
             ],
             "description": "The drawing set's AI budget this answer ran under (\"40.00\").",
             "title": "Package Cap Usd"
+          },
+          "package_outdated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A full check's send-ready package was made before the reviewer's newest decision (#1803): the screen never hands it out, and makes it again. `null`: no package or no decision.",
+            "title": "Package Outdated"
           },
           "products": {
             "anyOf": [

@@ -3,7 +3,7 @@ import { Check, ChevronRight, CircleAlert, ExternalLink, ImageOff, Maximize2, X 
 
 import { RoundChip } from '@/components/chat/chat-trust';
 import { useMediaQuery } from '@/hooks/use-media-query';
-import type { ChatFinding, ChatResolver, ChatResolverEntry, FindingCategory, FindingDecision, FindingDecisionExtra, FindingDecisionValue, FindingStatus, SettledOutcome } from '@/lib/chat-api';
+import type { ChatFinding, ChatResolver, ChatResolverEntry, FindingCategory, FindingDecision, FindingDecisionChoice, FindingDecisionExtra, FindingDecisionValue, FindingStatus, SettledOutcome } from '@/lib/chat-api';
 import {
   alsoOnWords,
   architectPage,
@@ -247,7 +247,8 @@ export interface DecisionProps {
   decision: FindingDecisionValue | null;
   /** #1803: the whole decision (its note and "should be"), when there is one. */
   saved?: FindingDecision | null;
-  onDecide: (decision: FindingDecisionValue, extra?: FindingDecisionExtra) => void;
+  /** #1803: `undo` takes the reviewer's call back. */
+  onDecide: (decision: FindingDecisionChoice, extra?: FindingDecisionExtra) => void;
   busy?: boolean;
 }
 

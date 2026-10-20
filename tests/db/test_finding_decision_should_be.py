@@ -60,6 +60,17 @@ def test_the_migration_adds_a_nullable_column_kept_to_an_agree_and_goes_down_and
     check = _check(postgres_engine) or ""
     assert "should_be IS NULL" in check and "'agree'" in check
 
+    with postgres_engine.connect() as connection:
+        values = connection.scalar(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = "
+                "CAST(:table AS regclass) AND contype = 'c' "
+                "AND pg_get_constraintdef(oid) LIKE '%not_a_problem%'"
+            ),
+            {"table": TABLE},
+        )
+    assert "'undo'" in (values or "")  # an Undo is one more row (#1803)
+
     command.downgrade(config, BEFORE)
     assert "should_be" not in {c["name"] for c in inspect(postgres_engine).get_columns(TABLE)}
     assert _check(postgres_engine) is None

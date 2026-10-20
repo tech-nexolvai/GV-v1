@@ -9,7 +9,7 @@ import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from '@
 import type { ChatFile, ChatFinding, FindingDecisionExtra, FindingDecisionValue } from '@/lib/chat-api';
 import { architectPage, decisionHelpRows, pageWords, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
 import { proofGroup } from '@/lib/chat-proof';
-import { boxOnPicture, itemParts, shouldBeValue, suggestedShouldBe, vendorValue } from '@/lib/chat-result';
+import { boxOnPicture, decisionsWords, itemParts, shouldBeValue, suggestedShouldBe, vendorValue } from '@/lib/chat-result';
 import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { cn } from '@/lib/utils';
@@ -187,6 +187,10 @@ export interface DraftState {
   failed: boolean;
   /** "14:32" once made again; null before. */
   updatedAt: string | null | undefined;
+  /** The package does not hold every decision yet: its download is not offered. */
+  stale: boolean;
+  /** How many items the reviewer decided ("Package updated with your 2 decisions"). */
+  decided: number;
   pkg: ChatFile | null;
   href: string | null;
   onRetry: (() => void) | null;
@@ -323,6 +327,7 @@ const CALL_WORDS = {
  */
 function ReviewerCall({ finding, group, decision }: { finding: ChatFinding; group: string; decision: DecisionProps }) {
   const [mode, setMode] = useState<CallMode>('choose');
+  const undoHint = useId();
   const saved = decision.saved ?? null;
   const decide = (value: FindingDecisionValue, extra: FindingDecisionExtra) => { decision.onDecide(value, extra); setMode('choose'); };
   if (mode === 'wrong') return <CallForm kind="wrong" finding={finding} busy={decision.busy} onCancel={() => setMode('choose')} onSave={(extra) => decide('agree', extra)} />;
@@ -341,6 +346,15 @@ function ReviewerCall({ finding, group, decision }: { finding: ChatFinding; grou
           </span>
         </p>
       )}
+      {saved && (
+        <div className="grid min-w-0 content-start gap-1">
+          <button type="button" data-slot="chat-evidence-call-undo" aria-describedby={undoHint} disabled={decision.busy} onClick={() => decision.onDecide('undo')} className={cn(SMALL_BUTTON, 'w-fit')}>
+            <RotateCcw className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            Undo your call
+          </button>
+          <p id={undoHint} className="text-xs leading-[17px] text-muted-foreground">{UNDO_WORDS}</p>
+        </div>
+      )}
       <div className="grid min-w-0 gap-2 sm:grid-cols-2">
         {group === 'clouded' && <CallChoice kind="remove" onClick={() => setMode('remove')} busy={decision.busy} />}
         {(group === 'not_compared' || group === 'dismissed') && <CallChoice kind="wrong" onClick={() => setMode('wrong')} busy={decision.busy} />}
@@ -349,6 +363,9 @@ function ReviewerCall({ finding, group, decision }: { finding: ChatFinding; grou
     </section>
   );
 }
+
+/** #1803: what Undo does, under its button. */
+const UNDO_WORDS = 'Takes your call back: the item is again what code found, and the package is made again without it.';
 
 const CHOICE_WORDS = {
   wrong: 'It’s a mistake: add a red mark',
@@ -415,24 +432,25 @@ function CallForm({ kind, finding, busy, onCancel, onSave }: { kind: 'wrong' | '
   );
 }
 
-/** #1803: the draft made again after a decision: "Updating the draft…", then "Draft updated 14:32" and its download. */
+/** #1803: the package made again after each decision: "Making the package again…", then "Package updated with your 2 decisions" and its download. */
 function DraftLine({ draft }: { draft: DraftState }) {
+  const words = decisionsWords(draft.decided);
   if (draft.updating) {
-    return <p role="status" data-slot="chat-evidence-draft" data-state="updating" className="inline-flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3.5" />Updating the draft…</p>;
+    return <p role="status" data-slot="chat-evidence-draft" data-state="updating" className="inline-flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3.5" />Making the package again with your {words}…</p>;
   }
-  if (draft.failed) {
+  if (draft.failed || draft.stale) {
     return (
-      <p role="alert" data-slot="chat-evidence-draft" data-state="failed" className="inline-flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        The draft could not be updated.
-        {draft.onRetry && <button type="button" onClick={draft.onRetry} className="rounded font-medium text-foreground underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">Try again</button>}
+      <p role="alert" data-slot="chat-evidence-draft" data-state={draft.failed ? 'failed' : 'outdated'} className="inline-flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        {draft.failed ? 'The package could not be made again.' : 'The package does not hold your newest decisions yet.'}
+        {draft.onRetry && <button type="button" data-slot="chat-evidence-remake" onClick={draft.onRetry} className="rounded font-medium text-foreground underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">Re-make the package</button>}
       </p>
     );
   }
-  if (draft.updatedAt) {
+  if (draft.decided > 0) {
     return (
       <p role="status" data-slot="chat-evidence-draft" data-state="updated" className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-        <span>Draft updated <span className="num">{draft.updatedAt}</span></span>
-        {draft.pkg && draft.href && <a href={draft.href} download={draft.pkg.name} className="inline-flex items-center gap-1 rounded font-medium text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"><Download className="size-3.5" aria-hidden="true" />Download updated draft</a>}
+        <span>Package updated with your {words}{draft.updatedAt ? <> · <span className="num">{draft.updatedAt}</span></> : null}</span>
+        {draft.pkg && draft.href && <a href={draft.href} download={draft.pkg.name} className="inline-flex items-center gap-1 rounded font-medium text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"><Download className="size-3.5" aria-hidden="true" />Download package</a>}
       </p>
     );
   }

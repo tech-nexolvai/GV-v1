@@ -82,6 +82,7 @@ from app.models import (
     PackageRevision,
 )
 from app.models.document import Document, DocumentVersion, PackageRevisionDocument
+from app.review.assistant import not_compared
 from app.review.assistant.chat_contract import (
     AssistantModelOut,
     AssistantModelsOut,
@@ -99,13 +100,13 @@ from app.review.assistant.chat_contract import (
     ChatOut,
 )
 from app.review.assistant.chat_corrections import corrections_by_answer, with_corrections
-from app.review.assistant.not_compared import XLSX_MIME
 from app.review.assistant.chat_decisions import (
     decided_findings,
     decided_summary,
     decision_out,
     latest_decisions,
     make_decided_files,
+    newest_decision_at,
     package_block,
     record_decision,
     resolver_settled,
@@ -166,6 +167,7 @@ from app.review.assistant.consistency_answer import (
     PackNotReady,
     run_check,
 )
+from app.review.assistant.not_compared import XLSX_MIME
 from app.review.assistant.package_store import identity as package_identity
 from app.review.assistant.package_store import stored_numbers
 from app.review.assistant.product_scope import ProductScope
@@ -524,6 +526,7 @@ def read_chat(
     first = first_question(messages)
     run = registry.get(chat_id)
     decisions = latest_decisions(session, chat_id)
+    decided_at = newest_decision_at(session, chat_id)
     corrections = corrections_by_answer(messages)
     return ChatOut(
         id=chat.id,
@@ -532,7 +535,13 @@ def read_chat(
         title=chat.title or (chat_title(first) if first else None),
         created_at=chat.created_at,
         messages=[
-            message_out(message, files, decisions.get(message.id), corrections.get(str(message.id)))
+            message_out(
+                message,
+                files,
+                decisions.get(message.id),
+                corrections.get(str(message.id)),
+                decided_at=decided_at.get(message.id),
+            )
             for message in messages
         ],
         running=run is not None,
@@ -1027,6 +1036,15 @@ def cloud_drawing(
     # list), when the check kept the set's own gaps to list again; an older answer keeps its list.
     stored = package_block(row.blocks) or {}
     set_gaps = stored.get("set_gaps") if row.mode == "full_check" else None
+    old_list = _not_compared_files(session, workspace, message_id)
+    set_rows: list[not_compared.Row] = []
+    if row.mode == "full_check" and not isinstance(set_gaps, list) and old_list:
+        # An answer stored before its set gaps were kept (#1803): the set's rows are read back
+        # from its own workbook, so the decided items still leave the list.
+        old_sheet = next((path for name, path in old_list if name.endswith(".xlsx")), None)
+        read = None if old_sheet is None else not_compared.set_rows_of(old_sheet.read_bytes())
+        if read is not None:
+            set_gaps, set_rows = [], read
     list_ids = (uuid4(), uuid4())
     if isinstance(set_gaps, list):
         for file_id in list_ids:
@@ -1041,9 +1059,7 @@ def cloud_drawing(
             scratch[report_id],
             settled=resolver_settled(row.blocks),
             package_out=scratch.get(package_id),
-            extra=[] if isinstance(set_gaps, list) else _not_compared_files(
-                session, workspace, message_id
-            ),
+            extra=[] if isinstance(set_gaps, list) else old_list,
             identity=package_identity(session, package, tuple(row.products or ())),
             numbers=stored_numbers(session, package.id, message_id),
             incomplete=CheckState.from_dict(stored.get("state")).incomplete,
@@ -1051,6 +1067,7 @@ def cloud_drawing(
                 (scratch[list_ids[0]], scratch[list_ids[1]]) if isinstance(set_gaps, list) else None
             ),
             set_gaps=[gap for gap in set_gaps or [] if isinstance(gap, Mapping)],
+            set_rows=set_rows,
         )
     except LookupError:
         raise CodedHTTPException(
@@ -1070,9 +1087,7 @@ def cloud_drawing(
     if made.not_compared is not None:
         pdf, sheet = made.not_compared
         kept.append((list_ids[0], pdf, "application/pdf"))
-        kept.append(
-            (list_ids[1], sheet, XLSX_MIME if sheet.name.endswith(".xlsx") else "text/csv")
-        )
+        kept.append((list_ids[1], sheet, XLSX_MIME if sheet.name.endswith(".xlsx") else "text/csv"))
     if made.package is not None:
         kept.append((package_id, made.package, ZIP_MIME))
     for file_id, file, mime in kept:
@@ -1532,7 +1547,12 @@ def _followed(
     if row is None or row.chat_id != chat_id or row.role != "assistant":
         raise _not_found()
     decided = latest_decisions(session, chat_id, message_id).get(message_id)
-    stored = message_out(row, files_of(session, chat_id), decided).model_dump(mode="json")
+    stored = message_out(
+        row,
+        files_of(session, chat_id),
+        decided,
+        decided_at=newest_decision_at(session, chat_id).get(message_id),
+    ).model_dump(mode="json")
     return _Followed(feed=None, stored=stored)
 
 

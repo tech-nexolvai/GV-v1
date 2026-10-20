@@ -76,6 +76,8 @@ export interface ViewMessage {
   review_action?: ChatReviewAction | null;
   /** #1717: what the full check's package kept (the comment numbers C-01…); from the saved `package` block. */
   package_state?: ChatPackageState | null;
+  /** #1803: the server says the package was made before the newest decision. */
+  package_outdated?: boolean | null;
   /** #1727: a running full check's live state, from its `check_*` events. */
   live?: LiveState | null;
   /**
@@ -265,6 +267,7 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     understood: message.understood ?? understoodOf(saved),
     review_action: message.review_action ?? null,
     package_state: packageStateOf(saved),
+    package_outdated: message.package_outdated ?? null,
     fallback: fallbackOf(saved),
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
