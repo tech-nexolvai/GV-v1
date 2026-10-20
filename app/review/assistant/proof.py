@@ -53,6 +53,7 @@ __all__ = [
     "LEFT_CAPTIONS",
     "NO_REQUIREMENT_REASON",
     "PAIRING_REASON",
+    "PROTOTYPE_PROOF",
     "RULE_LINE",
     "TWO_READS",
     "ProofGroup",
@@ -106,6 +107,10 @@ TWO_READS: Final = "two_reads"
 PAIRING_REASON: Final = "Not clouded: code read both values, but what each measures is not proved."
 #: Why a GV rule result is not a comment to the vendor (#1622): no requirement it can act on.
 NO_REQUIREMENT_REASON: Final = "GV rule result without a stated requirement."
+#: The proof line's words when the brand prototype is the reference (R1, Anant 2026-10-20).
+PROTOTYPE_PROOF: Final = (
+    f"{classification.PROTOTYPE_REFERENCE_WORDS} (the architect gives no elevation of it)"
+)
 #: Why a Wrong item only AI readings back is not clouded.
 AI_ONLY_REASON: Final = "Not clouded: code could not read both values at their spots."
 #: The full check's devil's advocate (`full_check_advocate`, #1611) signs its verdict so.
@@ -284,10 +289,14 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
     same thing."""
     if classification.internal(finding):
         return False  # read by the AI only, never at its spot (#1652)
+    if finding.get("source") == "brand_prototype" and not classification.prototype_governs(finding):
+        return False  # R1: the architect gives the item, so the prototype is reference only
     if finding.get("architect_parts"):
         return False  # a total the architect never prints (code's summed chain) is never proof
     if finding.get("source") == "vendor_arithmetic" and not string_verified(finding):
         return False  # an AI-grouped string: only code's geometry proves the parts are one chain
+    if classification.architect_conflict(finding) is not None:
+        return False  # the architect prints the vendor's value, or not the "should be" (#1802)
     if not _read_by_code(finding):
         return False
     return not needs_pairing(finding) or pairing_proved(finding)
@@ -492,6 +501,10 @@ def governs(finding: Mapping[str, Any]) -> str:
     separate = architect_file(finding)
     if separate is not None and page:
         where = f", {separate} page {page}"
+    if classification.prototype_reference(finding):
+        # R1 (Anant, 2026-10-20): no architect elevation of the item, the prototype is the
+        # reference, and the words say so.
+        words = classification.PROTOTYPE_REFERENCE_WORDS
     if should_be_value(finding) == architect:
         return f"{words}{where}"
     return f"{words} {architect}{where}"
@@ -548,7 +561,10 @@ def proof_line(finding: Mapping[str, Any]) -> str:
         ai = witness.ai_witnesses(checks) if isinstance(checks, Mapping) else []
         parts += [_AI_WORDS[name] for name in ai if name in _AI_WORDS]
     if not parts:
-        return "AI reading only: no code check backs it"
+        parts.append("AI reading only: no code check backs it")
+    if classification.prototype_reference(finding):
+        # R1 (Anant, 2026-10-20): the proof names what the vendor was compared with.
+        parts.insert(0, PROTOTYPE_PROOF)
     text = "; ".join(dict.fromkeys(parts))
     return text[0].upper() + text[1:]
 

@@ -20,11 +20,12 @@ outputs read (the cloud drawing, the package, the Not-compared PDF and workbook,
   value the same way (the difference is still on the vendor's current drawing);
 - `units`: a dual label's millimetres agree with its inches; `slip`: the difference is not a unit
   slip (10x, 12x) or one drawn digit easy to misread;
-- `gv_ink`: the vendor value's OWN ink is not GV's colour. This replaces the old GV-note box check,
+- `gv_ink`: the vendor value's OWN ink is not GV's markup. This replaces the old GV-note box check,
   which blocked a label that merely sat inside a GV note's box: it stopped four true items and no
-  false one (PIPELINE-AUDIT.md). A label code read from the vendor's black or grey layer (the text
-  and drawn routes never read GV's colours) is the vendor's, whatever GV drew over it; any other
-  label's own spot is looked at (`run.py` measures it on the markup-free copy);
+  false one (PIPELINE-AUDIT.md). A label code read from the vendor's own ink (the text and drawn
+  routes: every colour on an ordinary upload, black or grey on GV's combined review sheets, never
+  GV's markup) is the vendor's, whatever GV drew over it; any other label's own spot is looked at
+  (`run.py` measures it on the markup-free copy);
 - `trade`: no end runs to the ceiling, a soffit or bulkhead, a door or another trade's work;
 - `ends`: the model's "from / to" ends name the same two points on both drawings;
 - `geometry`: code's drawn extents (`full_check_advocate.same_extent`) do not show different
@@ -76,6 +77,7 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 from app.review.assistant.architect_items import MIN_TEXT, tag_codes
+from app.review.assistant.classification import PROTOTYPE_REFERENCE, PROTOTYPE_REFERENCE_WORDS
 from app.review.assistant.dim_index import parse_ref
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.full_check_advocate import Check, code_pairs, is_slip, same_extent
@@ -581,6 +583,9 @@ class Region:
     view: str | None = None
     file_page: int | None = None
     """Its page in its own file when `page` is a separate file's set page (#1722)."""
+    sheet: str | None = None
+    """Its file's kind (`schema.Drawing.sheet`: `combined` / `ordinary`), for the prompts' colour
+    words; `None`: not known."""
 
 
 _VIEWS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = tuple(
@@ -617,6 +622,9 @@ class Item:
     """The label refs of its architect drawings (empty: each drawing's box decides)."""
     products: tuple[str, ...] = ()
     """The products the drawings' printed words name (the work list's)."""
+    prototype_reference: bool = False
+    """R1 (Anant, 2026-10-20): the area has no architect drawing, so `architect` is its brand
+    prototype, the reference (`schema.WorkItem.prototype_reference`)."""
 
     @property
     def category(self) -> str:
@@ -634,6 +642,7 @@ class Item:
                 _box(getattr(vendor, "crop_box", None)) or _box(vendor.box),
                 vendor.round,
                 _view_of(getattr(vendor, "titles", ()) or ()),
+                sheet=getattr(vendor, "sheet", None),
             ),
             architect=tuple(
                 Region(
@@ -643,6 +652,7 @@ class Item:
                     None,
                     _view_of(getattr(d, "titles", ()) or ()),
                     getattr(d, "file_page", None),
+                    getattr(d, "sheet", None),
                 )
                 for d in work.architect
             ),
@@ -651,6 +661,7 @@ class Item:
                 label.ref for drawing in work.architect for label in drawing.labels
             ),
             products=tuple(getattr(work, "products", ()) or ()),
+            prototype_reference=bool(getattr(work, "prototype_reference", False)),
         )
 
     @classmethod
@@ -926,10 +937,16 @@ def _view_check(item: Item, a_file: str, a_page: int) -> Check:
     return Check("view", "pass")
 
 
-def _roles_check(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> Check:
+def _roles_check(
+    vendor: Mapping[str, Any], architect: Mapping[str, Any], prototype: bool = False
+) -> Check:
+    """A vendor label against an architect label; against the brand prototype's only for an item
+    whose area has no architect elevation (`prototype`: the prototype is the reference, R1)."""
     if vendor.get("side") != "vendor":
         return Check("roles", "fail", f"the vendor value is on the {vendor.get('side')}'s drawing")
     side = str(architect.get("side") or "unknown")
+    if side == "brand" and prototype:
+        return Check("roles", "pass", PROTOTYPE_REFERENCE_WORDS)
     if side == "brand":
         return Check("roles", "fail", "the reference is the brand prototype (reference only)")
     if side != "architect":
@@ -937,19 +954,19 @@ def _roles_check(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> Che
     return Check("roles", "pass")
 
 
-#: Label routes whose characters code read from the vendor's black or grey ink only: the text
-#: route reads black or grey characters, the drawn route black or grey strokes (`dim_labels`); GV's
-#: coloured markup is never read as a label.
+#: Label routes whose characters code read from the drawing's own ink (`dim_labels`): on an
+#: ordinary upload every colour, on GV's combined review sheets only black or grey (the colour rule,
+#: 2026-10-19); GV's markup is never read as a label either way.
 _VENDOR_INK_ROUTES: Final = frozenset({"text", "drawn"})
 
 
 def _ink_check(label: Mapping[str, Any], ink: Ink | None) -> Check:
     """Whether the vendor value is GV's markup: only by the label's OWN ink. A label code read
-    from the vendor's black or grey layer is the vendor's, whatever GV drew over or around it
-    (a yellow note covering it, a note box round it: the old box check stopped four true items).
-    Any other label's own spot is looked at (`ink`, its coloured share)."""
+    from the vendor's own ink (`_VENDOR_INK_ROUTES`) is the vendor's, whatever GV drew over or
+    around it (a yellow note covering it, a note box round it: the old box check stopped four true
+    items). Any other label's own spot is looked at (`ink`, its coloured share)."""
     if label.get("route") in _VENDOR_INK_ROUTES:
-        return Check("gv_ink", "pass", "read from the vendor's black or grey ink")
+        return Check("gv_ink", "pass", "read from the vendor's own ink, never GV's markup")
     measured = ink(label) if ink is not None else None
     if measured is None:
         return Check("gv_ink", "unknown", "the vendor value's own ink could not be looked at")
@@ -968,6 +985,45 @@ def _trade_check(measures: object, ends: tuple[Ends, str]) -> Check:
     return Check("trade", "pass")
 
 
+#: The check that records code's answer to the AI's own "different points" (`objection`): it
+#: passes when code's evidence contradicts it, so the pair is verified like any other.
+OBJECTION: Final = "objection"
+
+
+def _contradicts(pair: Mapping[str, Any], ends: Mapping[str, str]) -> bool:
+    """Whether the AI's own answer contradicts its "different points" (#1773 review): it writes
+    the very same end words on both drawings (in either order, every end named) and gives no note.
+    Ends of one rough kind are not enough (two outlets' centre lines, two units' tops are
+    different points), and the note is where the AI says why the points differ."""
+    if str(pair.get("note") or "").strip():
+        return False
+    vendor = [_plain(ends["vendor_from"]), _plain(ends["vendor_to"])]
+    architect = [_plain(ends["architect_from"]), _plain(ends["architect_to"])]
+    if not all(vendor + architect):
+        return False
+    return vendor in (architect, architect[::-1])
+
+
+def _objection(matched: tuple[Ends, str], differ: bool) -> Check | None:
+    """Code's answer to the AI's "different points" (DeepSeekMath-V2: check the "no" as well as
+    the "yes"): a passed `objection` check when the AI's own end words are the same words on both
+    drawings with no note (`_contradicts`, checked first), code's end words agree and code reads
+    two different values; None otherwise (the AI's "no" stands). A pair it lets through still
+    needs every code check and the blind look to be red.
+
+    Code's drawn geometry (`same_extent`) is never evidence against the "no": it allows the two
+    lines' ends to differ by the values' own difference, which is exactly what two dimensions to
+    different points look like (a top against an underside), so it only ever blocks."""
+    if not differ or matched[0] != "same":
+        return None
+    return Check(
+        OBJECTION,
+        "pass",
+        f"the AI said {DIFFERENT_POINTS}, but its own end words are the same on both drawings "
+        f"({matched[1]})",
+    )
+
+
 def _geometry_check(vendor: Mapping[str, Any], architect: Mapping[str, Any], pack: Pack) -> Check:
     def side(label: Mapping[str, Any], wanted: str) -> list[dict[str, Any]]:
         file = str(label.get("file") or pack.main_file)
@@ -975,7 +1031,11 @@ def _geometry_check(vendor: Mapping[str, Any], architect: Mapping[str, Any], pac
         return [x for x in on if x.get("side") == wanted]
 
     state, why = same_extent(
-        vendor, architect, side(vendor, "vendor"), side(architect, "architect")
+        vendor,
+        architect,
+        side(vendor, "vendor"),
+        # The brand prototype's own labels when it is the reference (R1).
+        side(architect, "brand" if architect.get("side") == "brand" else "architect"),
     )
     if state == "different_extent":
         return Check("geometry", "fail", f"code's geometry shows different points: {why}")
@@ -1006,6 +1066,7 @@ _ORDER: Final = (
     "trade",
     "ends",
     "geometry",
+    OBJECTION,
 )
 
 
@@ -1127,6 +1188,10 @@ def _pair_finding(
             finding["vs_page"] = int(architect.get("page") or 0)
         if architect.get("side") == "brand":
             finding["source"] = "brand_prototype"
+    if item.prototype_reference:
+        # R1: no architect elevation of the area; the brand prototype is the reference.
+        finding["source"] = "brand_prototype"
+        finding["reference"] = PROTOTYPE_REFERENCE
     if status == "check" and reason_code is not None and reason_code in _KEEP:
         finding["keep_reason"] = _KEEP[reason_code]
     return finding
@@ -1177,12 +1242,46 @@ def verify_pair(
     ink: Ink | None = None,
     *,
     architect: Mapping[str, Any] | None = None,
+    number: NumberReader | None = None,
 ) -> Verified:
     """One pair verified from scratch, every check, no shortcut: the resolve loop's re-verification
     of a pair it amended (`resolve.py`). `architect`: the architect's value when it is not one label
     (code's proved chain of the architect's printed parts, owner decision 2026-10-19), with
-    `area_ref` naming one of its labels for the area check."""
-    return _verify_pair(pair, item, pack, ink, architect_override=architect)
+    `area_ref` naming one of its labels for the area check. `number`: `read_number`, for a label
+    whose value code cannot read (`_read_label`)."""
+    return _verify_pair(pair, item, pack, ink, architect_override=architect, number=number)
+
+
+def _read_label(
+    label: dict[str, Any], side: str, pack: Pack, number: NumberReader | None
+) -> Fraction | None:
+    """A label's inches when code cannot read its value (#1781): `read_number` at the label (its
+    id and box, on its file's own page), used only when the tool says read (its two-route
+    agreement rule). The pack's copy of the label takes the reading (`inches` and `read_number`),
+    so the resolve loop's re-verification and the finding see the value and how it was read;
+    `dims.json` is never changed. `None` when it is not read (the label keeps the tool's answer)."""
+    done = label.get("read_number")
+    if isinstance(done, Mapping):
+        return _fraction(label.get("inches")) if done.get("outcome") == "read" else None
+    if number is None:
+        return None
+    file = str(label.get("file") or pack.main_file)
+    page = int(label.get("page") or 0)
+    reading = number(
+        Request(
+            file,
+            pack.own_page(file, page),
+            side,
+            label=str(label.get("id") or "") or None,
+            box=_box(label.get("box")),
+        )
+    )
+    label["read_number"] = reading.as_dict()
+    value = reading.inches if reading.outcome == "read" else None
+    if value is None or value <= 0:
+        return None
+    label["inches"] = format(value.normalize(), "f")
+    return Fraction(value)
 
 
 def _verify_pair(
@@ -1192,6 +1291,7 @@ def _verify_pair(
     ink: Ink | None,
     *,
     architect_override: Mapping[str, Any] | None = None,
+    number: NumberReader | None = None,
 ) -> Verified:
     vref = str(pair.get("vendor_label") or "")
     key = f"{item.id}:{vref}"
@@ -1238,14 +1338,29 @@ def _verify_pair(
         return Verified(
             key, "pair", "listed", AI_UNSURE, "ai_unsure", vendor=vendor, ends=ends, about=about
         )
-    if verdict == "different_points":
-        return one.grey(DIFFERENT_POINTS, "different_reference")
-    if verdict not in ("same", "different"):
+    objected = verdict == "different_points"
+    if not objected and verdict not in ("same", "different"):
         note = str(pair.get("note") or "").strip()
         return one.grey(UNSURE + (f": {note}" if note else ""), "not_proved")
+    if objected and not _contradicts(pair, ends):
+        # Nothing in the AI's own answer contradicts its "different points": it stands.
+        return one.grey(DIFFERENT_POINTS, "different_reference")
     v_in, a_in = _fraction(vendor.get("inches")), _fraction(architect.get("inches"))
+    if v_in is None:
+        v_in = _read_label(vendor, "vendor", pack, number)
+    if a_in is None and architect_override is None:
+        a_in = _read_label(architect, "architect", pack, number)
     if v_in is None or a_in is None:
-        return one.grey("code could not read the value as a size", "unreadable")
+        if objected:
+            return one.grey(DIFFERENT_POINTS, "different_reference")
+        tool = [
+            str(label["read_number"].get("reason") or "")
+            for label in (vendor, architect)
+            if isinstance(label.get("read_number"), Mapping)
+            and label["read_number"].get("outcome") != "read"
+        ]
+        said = f" (the read-number tool: {tool[0]})" if tool and tool[0] else ""
+        return one.grey(f"code could not read the value as a size{said}", "unreadable")
     a_file = str(architect.get("file") or pack.main_file)
     a_page = int(architect.get("page") or 0)
     matched = ends_match(
@@ -1254,7 +1369,7 @@ def _verify_pair(
     same_axis = vendor.get("orientation") == architect.get("orientation")
     disagree = "disagrees" in (vendor.get("units"), architect.get("units"))
     checks = [
-        _roles_check(vendor, architect),
+        _roles_check(vendor, architect, item.prototype_reference),
         _area_check(
             item,
             pack,
@@ -1278,6 +1393,11 @@ def _verify_pair(
         Check("ends", "pass" if matched[0] == "same" else "fail", matched[1]),
         _geometry_check(vendor, architect, pack),
     ]
+    if objected:
+        objection = _objection(matched, _differ(v_in, a_in))
+        if objection is None:
+            return one.grey(DIFFERENT_POINTS, "different_reference", checks)
+        checks.append(objection)
     if verdict == "same" or not _differ(v_in, a_in):
         return _right(one, checks, matched, v_in, a_in, said_different=verdict == "different")
     checks.append(_round_check(pack, item, vendor))
@@ -1286,11 +1406,22 @@ def _verify_pair(
     checks.append(_flags_check(vendor, architect))
     failed = _first_failure(checks)
     if failed is not None:
+        if objected:
+            # The AI's "different points" was not supported, but another check stops it: the
+            # AI's own reason stays the item's reason.
+            return one.grey(DIFFERENT_POINTS, "different_reference", checks)
         return _blocked(one, failed, matched, checks)
     why = (
-        f"The vendor prints {_label_words(vendor)}; the architect prints "
-        f"{_label_words(architect)} for the same dimension ({_plain(ends['vendor_from'])} to "
-        f"{_plain(ends['vendor_to'])}). Code read both values at their labels"
+        f"The vendor prints {_label_words(vendor)}; the "
+        + ("brand prototype" if item.prototype_reference else "architect")
+        + f" prints {_label_words(architect)} for the same dimension "
+        f"({_plain(ends['vendor_from'])} to {_plain(ends['vendor_to'])}). Code read both values "
+        "at their labels"
+        + (
+            f" ({PROTOTYPE_REFERENCE_WORDS}: no architect elevation)"
+            if item.prototype_reference
+            else ""
+        )
     )
     finding = _pair_finding(item, pack, pair.get("measures"), vendor, architect, "different", why)
     return Verified(
@@ -1616,6 +1747,10 @@ def _verify_other(
         "vendor_box": _spot(_box(entry.get("vendor_box")), item.vendor.file, item.vendor.page),
         "arch_box": _spot(_box(entry.get("architect_box")), a_file, a_page),
     }
+    if item.prototype_reference:
+        # R1: no architect elevation of the area; the brand prototype is the reference.
+        base["source"] = "brand_prototype"
+        base["reference"] = PROTOTYPE_REFERENCE
     if isinstance(a_page, int) and a_page != item.vendor.page:
         base["vs_page"] = a_page
     other = _Other(key, kind, entry, base)
@@ -1661,7 +1796,7 @@ def _verify_missing(
     vendor = "not proved missing"
     if label is None and tag is None:
         return other.grey(f"not proved: {why}", "not_proved", vendor=vendor)
-    if label is not None and label.get("side") == "brand":
+    if label is not None and label.get("side") == "brand" and not item.prototype_reference:
         return other.grey(
             "the reference is the brand prototype (reference only)", "prototype", vendor=vendor
         )
@@ -1874,6 +2009,8 @@ def _verify_unlabelled(
     a_half = pack.half_at(a_file, a_page, a_box)
     if v_half is None or v_half.role != "vendor":
         roles = Check("roles", "fail", "the vendor box is not on a vendor drawing")
+    elif a_half is not None and a_half.role == "brand_prototype" and item.prototype_reference:
+        roles = Check("roles", "pass", PROTOTYPE_REFERENCE_WORDS)  # no architect elevation (R1)
     elif a_half is not None and a_half.role == "brand_prototype":
         roles = Check("roles", "fail", "the reference is the brand prototype (reference only)")
     elif a_half is None or a_half.role != "architect":
@@ -2018,7 +2155,8 @@ def verify_answer(
     at a spot, for an item without labels; None: such an item is never red. `products`: the check's
     product scope (None: every active product): its packs' room and end words apply (#1776).
     `number`: `read_number` (#1746), called by itself for a value without a label that `read` could
-    not confirm or the AI could not read."""
+    not confirm or the AI could not read, and for a labelled value whose inches code cannot read
+    (#1781)."""
     scope = tuple(products) if products else ProductScope.of(None).products
     with scoped(scope):
         return _verify_answer(result, item, pack, ink, read, scope, number)
@@ -2054,7 +2192,7 @@ def _verify_answer(
                 one = _Pair(f"{item.id}:{vref}", item, pack, pair, label, None, {})
                 out.items.append(one.grey(f"the answer pairs {vref} more than once", "not_proved"))
             continue
-        out.items.append(_verify_pair(pair, item, pack, ink))
+        out.items.append(_verify_pair(pair, item, pack, ink, number=number))
     for at, entry in enumerate(data.get("other_items") or [], start=1):
         if isinstance(entry, Mapping):
             out.items.append(_verify_other(entry, at, item, pack, read, scope, number))

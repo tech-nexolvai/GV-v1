@@ -9,7 +9,7 @@ crops of both drawings with code's marks, and answers in a fixed form (structure
 - **a pair:** the vendor's drawing with the candidate's vendor dimension marked (code draws its
   extension lines), and the architect's drawing with every printed dimension numbered. Which
   numbered dimension measures the same thing (or none)? Where does each end land on each drawing?
-  The same thing, different points, or not sure? Is the marked value in black or grey ink?
+  The same thing, different points, or not sure?
 - **two values code has no label for:** each drawing, plus a close crop centred on each value. Do
   the two measure the same thing, and where does each end land?
 - **an item missing on the vendor:** the architect's drawing with the dimension marked, and the
@@ -17,9 +17,16 @@ crops of both drawings with code's marks, and answers in a fixed form (structure
   thing, if any? Is the item millwork, and where do its ends land?
 
 `verify.with_blind` then decides: red only when the look agrees (the same architect label, the same
-thing, the same ends on both drawings, black ink; for an absence: none on the vendor's drawing,
-millwork, no room-context end). Anything else, or a look that could not be made, is Not compared
-with the reason. Anthropic's guidance and our research (SIMPLE-PIPELINE-RESEARCH.md §5.3): an
+thing, the same ends on both drawings; for an absence: none on the vendor's drawing, millwork, no
+room-context end). Anything else, or a look that could not be made, is Not compared with the
+reason.
+
+Colour decides nothing by itself (the colour rule, decided 2026-10-19): each question says which
+kind of file each drawing is on (`schema.Drawing.sheet`), and only on GV's combined review sheets
+may coloured ink be GV's markup. The look is no longer asked whether the value is in black ink
+(`vendor_ink_black`: never used by `with_blind`, and the old colour rule).
+
+Anthropic's guidance and our research (SIMPLE-PIPELINE-RESEARCH.md §5.3): an
 independent check that cannot see the draft catches what a self-check repeats; a different model
 from the compare call (Opus 5.5 by default, `assistant_simple_blind_model`).
 
@@ -43,6 +50,7 @@ from uuid import uuid4
 from app.review.assistant.chat_request import MODELS, ChatModel, thinking_config
 from app.review.assistant.chat_tools import new_step
 from app.review.assistant.product_packs import carry, pack_prompt_parts
+from app.review.assistant.simple_check.prompts import kinds_sentence
 from app.review.assistant.simple_check.verify import (
     BlindAnswer,
     Item,
@@ -101,7 +109,6 @@ BLIND_SCHEMA: Final[Mapping[str, Any]] = {
         "vendor_to",
         "architect_from",
         "architect_to",
-        "vendor_ink_black",
         "millwork",
         "note",
     ],
@@ -118,7 +125,6 @@ BLIND_SCHEMA: Final[Mapping[str, Any]] = {
         "vendor_to": _END,
         "architect_from": _END,
         "architect_to": _END,
-        "vendor_ink_black": _THREE,
         "millwork": _THREE,
         "note": {"type": "string", "description": "One short line, or empty"},
     },
@@ -126,8 +132,11 @@ BLIND_SCHEMA: Final[Mapping[str, Any]] = {
 
 BLIND_SYSTEM: Final = (
     "You check millwork shop drawings against the architect's drawings, from the pictures only. "
-    "Coloured marks drawn by code (a dimension's extension lines, numbered labels) show what you "
-    "are asked about; any other colour is a reviewer's note and never a dimension. Two dimensions "
+    "Code's marks (a dimension's extension lines, numbered labels) show what you are asked about. "
+    "What other coloured ink means depends on the kind of file a drawing is on, which the "
+    "question says: on GV's combined review sheet it may be a reviewer's earlier note, never a "
+    "dimension; on an ordinary upload every colour is the drawing's own ink; when the question "
+    "does not say, read it as a combined review sheet. Two dimensions "
     "measure the same thing only when both run between the same two points (the top of a counter "
     "is not its underside; a run to a soffit or bulkhead is not a run to the top of a unit). Room "
     "features (ceilings, soffits, doors, artwork, switches, lights, wall finishes) are not "
@@ -135,9 +144,17 @@ BLIND_SYSTEM: Final = (
 )
 
 
-def question(kind: str, vendor_ref: str | None, architect_ref: str | None) -> str:
+def question(
+    kind: str,
+    vendor_ref: str | None,
+    architect_ref: str | None,
+    sheets: tuple[str | None, str | None] = (None, None),
+) -> str:
     """The blind question for a candidate (`pair`, `chain`: an architect string the resolve loop
-    proved, `values` or `absence`): never the first answer's pairing, words or verdict."""
+    proved, `values` or `absence`): never the first answer's pairing, words or verdict. `sheets`:
+    the vendor's and the architect's drawing's file kinds (`schema.Drawing.sheet`)."""
+    said = kinds_sentence(*sheets)
+    kinds = f" {said}" if said else ""
     if kind == "pair":
         return (
             "Picture 1 is part of the vendor's shop drawing; the dimension marked on it (code drew "
@@ -147,8 +164,7 @@ def question(kind: str, vendor_ref: str | None, architect_ref: str | None) -> st
             "end of the marked vendor dimension lands (vendor_from, vendor_to) and each end of the "
             "one you picked (architect_from, architect_to). verdict: same_thing when both run "
             "between the same two points, different_points when they do not, unsure when the "
-            "pictures do not show it. vendor_ink_black: is the marked vendor value printed in black "
-            "or grey ink? millwork: unsure."
+            "pictures do not show it. millwork: unsure." + kinds
         )
     if kind == "chain":
         return (
@@ -161,8 +177,7 @@ def question(kind: str, vendor_ref: str | None, architect_ref: str | None) -> st
             "vendor_to) and where the string you picked starts and ends (architect_from, "
             "architect_to). verdict: same_thing when both run between the same two points, "
             "different_points when they do not, unsure when the pictures do not show it. "
-            "vendor_ink_black: is the marked vendor value printed in black or grey ink? millwork: "
-            "unsure."
+            "millwork: unsure." + kinds
         )
     if kind in PACK_KINDS:
         what = "property (a specification value)" if kind == "attribute" else "count of a part"
@@ -183,8 +198,8 @@ def question(kind: str, vendor_ref: str | None, architect_ref: str | None) -> st
             "picture 4 a close view of one value on it (in its middle). Do the two values measure "
             "the same thing? pick: none. Say where each end of the vendor's dimension lands "
             "(vendor_from, vendor_to) and each end of the architect's (architect_from, "
-            "architect_to). verdict: same_thing, different_points or unsure. vendor_ink_black: "
-            "is the vendor's value in black or grey ink? millwork: unsure."
+            "architect_to). verdict: same_thing, different_points or unsure. millwork: unsure."
+            + kinds
         )
     return (
         "Picture 1 is the architect's drawing; the dimension marked on it (code drew its extension "
@@ -195,7 +210,7 @@ def question(kind: str, vendor_ref: str | None, architect_ref: str | None) -> st
         "does not, unsure when the pictures do not tell. Say where each end of the marked "
         "architect dimension lands (architect_from, architect_to); vendor_from and vendor_to: "
         "other. millwork: is the thing it locates part of the millwork (in or on a cabinet, "
-        "counter, splash or vanity), not a room feature? vendor_ink_black: unsure."
+        "counter, splash or vanity), not a room feature?" + kinds
     )
 
 
@@ -294,7 +309,8 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
             *_crop(engine, region, marks=True),
         ]
         ref = f"p{vendor.get('page')}.{vendor.get('id')}"
-        return [*content, {"type": "text", "text": question(kind, ref, None)}]
+        sheets = (item.vendor.sheet, region.sheet)
+        return [*content, {"type": "text", "text": question(kind, ref, None, sheets)}]
     finding = verified.finding
     if kind == "values" or kind in PACK_KINDS:
         v_box, a_box = finding.get("vendor_box"), finding.get("arch_box")
@@ -309,7 +325,8 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
             *_crop(engine, region),
             *_crop(engine, region, box=_close(a_box)),
         ]
-        return [*content, {"type": "text", "text": question(kind, None, None)}]
+        sheets = (item.vendor.sheet, region.sheet)
+        return [*content, {"type": "text", "text": question(kind, None, None, sheets)}]
     a_box = finding.get("arch_box")
     page = int(a_box.get("page") or 0) if isinstance(a_box, Mapping) else 0
     region = _drawing_of(item, page)
@@ -322,7 +339,8 @@ def pictures(engine: ChatEngine, verified: Verified, item: Item) -> list[dict[st
         first = [*_crop(engine, region), *_crop(engine, region, box=_close(a_box or ()))]
         ref = "the tag in the middle of picture 2"
     content = [*first, *_crop(engine, item.vendor, marks=True)]
-    return [*content, {"type": "text", "text": question("absence", None, ref)}]
+    sheets = (item.vendor.sheet, region.sheet)
+    return [*content, {"type": "text", "text": question("absence", None, ref, sheets)}]
 
 
 # ---- the call ------------------------------------------------------------------------------------
