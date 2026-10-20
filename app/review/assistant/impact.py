@@ -24,6 +24,8 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Any, Final
 
+from app.review.assistant.product_packs import impact_touches
+
 __all__ = [
     "BIGGEST_FIRST",
     "TOP_IMPACT",
@@ -147,6 +149,16 @@ def _touches(finding: Mapping[str, Any], difference: Decimal | None) -> tuple[in
     touched = next(
         ((points, words) for pattern, points, words in _TOUCHES if pattern.search(item)), None
     )
+    if touched is None:
+        # What the product packs in scope say matters for their products (#1776).
+        touched = next(
+            (
+                (28, f"changes fabrication ({plural.lower()}: a key specification)")
+                for plural, pattern in impact_touches()
+                if pattern.search(item)
+            ),
+            None,
+        )
     cosmetic = _COSMETIC.search(item) is not None
     if cosmetic and (touched is None or (difference is not None and difference <= Decimal("0.25"))):
         return 6, "cosmetic (a tag, label or note)"

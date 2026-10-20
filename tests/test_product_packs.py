@@ -224,7 +224,11 @@ OLD_PARTS = (
     ("hinges", r"\bHINGES?\b", r"\bHINGES?\b|\bHINGED\b"),
     ("grommets", r"\bGROMMETS?\b", r"\bGROMMETS?\b"),
     ("locks", r"\bLOCKS?\b", r"\bLOCKS?\b"),
-    ("bins", r"\b(?:TRASH|WASTE|RECYCL\w*)\b|\bBINS?\b", r"\b(?:TRASH|WASTE|RECYCL\w*)\b|\bBINS?\b"),
+    (
+        "bins",
+        r"\b(?:TRASH|WASTE|RECYCL\w*)\b|\bBINS?\b",
+        r"\b(?:TRASH|WASTE|RECYCL\w*)\b|\bBINS?\b",
+    ),
     (
         "outlets",
         r"\bOUTLETS?\b|\bRECEPTACLES?\b|\bJ-?BOX(?:ES)?\b|\bGFC?I\b",

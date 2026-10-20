@@ -96,7 +96,7 @@ import numpy as np
 import pdfplumber
 from PIL import Image, ImageDraw, ImageFont
 
-from app.review.assistant import hand_labels, ink_labels
+from app.review.assistant import hand_labels, ink_labels, size_callouts
 from app.review.assistant import verify_value as vv
 from app.review.assistant.finding_checks import to_inches, units_check
 from app.review.assistant.measure import _pieces
@@ -354,8 +354,15 @@ def _row_readings(chars: Sequence[Any], font: float) -> list[_Reading]:
         return []
     out: list[_Reading] = []
     start = 0
+    taught = size_callouts.formats()  # the active product packs' size formats (#1776)
     while start < len(tokens):
         text = tokens[start][0]
+        if taught:
+            callout = _callout(tokens[start], taught)
+            if callout:
+                out.extend(callout)
+                start += 1
+                continue
         if text.startswith("["):
             end = start
             while end < len(tokens) - 1 and not tokens[end][0].rstrip(".,;:").endswith("]"):
@@ -381,6 +388,23 @@ def _row_readings(chars: Sequence[Any], font: float) -> list[_Reading]:
         else:
             start += 1
     return out
+
+
+def _callout(token: tuple[str, Sequence[Any]], taught: frozenset[str]) -> list[_Reading]:
+    """A size callout one word prints that a product pack teaches (`size_callouts`): a diameter
+    (`Ø24"`), or a "W x H" pair (`24"x36"`) as two labels; [] otherwise."""
+    text, chars = token
+    word = text.rstrip(".,;:")
+    if "diameter" in taught:
+        value = size_callouts.diameter(word)
+        if value is not None:
+            return [_reading(word, value, chars, bare=False)]
+    if "w_x_h" in taught and to_inches(word) is None:
+        return [
+            _reading(part, value, group, bare=False)
+            for part, value, group in size_callouts.split_w_x_h(word, chars)
+        ]
+    return []
 
 
 def _whole(

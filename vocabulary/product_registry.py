@@ -570,6 +570,12 @@ def _no_clashes(products: Sequence[Product], path: Path) -> None:
     )
     twice("attribute(s)", [(a.name, p.id) for p in products for a in p.attributes])
     twice("semantic type(s)", [(t.code, p.id) for p in products for t in p.semantic_types])
+    from vocabulary.semantic_types import SemanticType
+
+    core = {*SemanticType.__members__, *(m.value for m in SemanticType.__members__.values())}
+    taken = sorted({t.code for p in products for t in p.semantic_types} & core)
+    if taken:
+        raise RegistryError(f"{path}: semantic type(s) {', '.join(taken)} are core codes already")
     for product in products:
         for word in product.shared_words:
             if not any(word in other.words or word in other.hints for other in products):
@@ -622,10 +628,12 @@ def reset_registry() -> None:
 
 
 def _reset_product_types() -> None:
-    """Forget `ProductType` values made for registry ids that are not its own members, so a product
-    a test registry added does not outlive that registry."""
-    from vocabulary.semantic_types import ProductType
+    """Forget `ProductType` values made for registry ids, and `SemanticType` values made for packs'
+    codes, that are not their own members, so a product or code a test registry added does not
+    outlive that registry."""
+    from vocabulary.semantic_types import ProductType, SemanticType
 
-    members = {member.value for member in ProductType.__members__.values()}
-    for value in [v for v in ProductType._value2member_map_ if v not in members]:
-        del ProductType._value2member_map_[value]
+    for kind in (ProductType, SemanticType):
+        members = {member.value for member in kind.__members__.values()}
+        for value in [v for v in kind._value2member_map_ if v not in members]:
+            del kind._value2member_map_[value]

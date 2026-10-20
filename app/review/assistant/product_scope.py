@@ -178,15 +178,22 @@ def named_products(text: object, *, hints: bool = False, every: bool = False) ->
     """The active products whose registry `words` the text uses ("toe kick", "toekick" and "Toe-
     kick" all count); with `hints`, their `hints` too ("sink": maybe a countertop); with `every`,
     the products not active yet too (a pendant light is lighting, never a cabinet). A product
-    with no words is never named. The longest phrase wins: a word that stands only inside a
+    with no words is never named. A word an ACTIVE product lists in its pack's `shared_words` (a
+    dresser's "drawer", #1776) names no product: the item is filed by its drawing's own product.
+    The longest phrase wins: a word that stands only inside a
     longer phrase of another product names that product alone ("vanity top" is a countertop's,
     not also a cabinet's "vanity")."""
     plain = _plain(text)
     known = registry()
     products = list(known.products if every else known.active())
+    # Words an active product shares with another (a dresser's drawer, #1776) name no product.
+    shared = {w for p in known.active() for w in p.shared_words}
+
+    def own(words: Iterable[str]) -> list[str]:
+        return [w for w in words if w not in shared] if shared else list(words)
 
     def phrases(product: Any) -> list[str]:
-        return [*product.words, *(product.hints if hints else ())]
+        return own([*product.words, *(product.hints if hints else ())])
 
     found: dict[str, list[tuple[int, int]]] = {
         product.id: [span for word in phrases(product) for span in _spans(plain, word)]
@@ -195,7 +202,9 @@ def named_products(text: object, *, hints: bool = False, every: bool = False) ->
     named: set[str] = set()
     for product in products:
         shadows = [span for other, spans in found.items() if other != product.id for span in spans]
-        if _uses(plain, product.words, shadows) or (hints and _uses(plain, product.hints, shadows)):
+        if _uses(plain, own(product.words), shadows) or (
+            hints and _uses(plain, own(product.hints), shadows)
+        ):
             named.add(product.id)
     return named
 
