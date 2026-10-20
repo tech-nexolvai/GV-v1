@@ -805,13 +805,9 @@ _UNREACHED: Final = re.compile(
 )
 
 
-#: A numbers helper's open checklist line that names work left on a page it compared (#1805): the
-#: labels code saw nobody handle, or counts the helper says are not all done. Anything else (no
-#: line, a missing count) is how the line was written, not work left.
-_WORK_LEFT: Final = re.compile(r"labels not handled|not all done", re.IGNORECASE)
 _ONLY_THESE: Final = (
-    "Close only what is listed for each page. A page listed with 'left by the numbers helper' was "
-    "compared already: do the named labels and counts there, never the whole page again."
+    "Close only what is listed for each page: a page the numbers helper reached is not compared "
+    "again."
 )
 
 
@@ -1203,13 +1199,13 @@ class _Run:
         the gap phase's money plus all P1 left unspent (the later phases' shares kept back). A page
         the price cannot reach is said so on its coverage, never dropped.
 
-        **One pass per kind (#1805).** A gap closer is a numbers pass, so it never re-does a page a
-        numbers helper compared: on such a page it takes only the work code knows was left (the
-        vendor labels nobody handled, counts the helper says are not all done), named one by one,
-        and never the whole page again. A checklist line that is only badly written (no line, a
-        missing count) is not work left. The drawn-things helpers' checklists are theirs alone: a
-        numbers closer never takes a page for them. The paid run of 2026-10-20 re-read 39 pages
-        in 4-page groups after both helpers had compared them."""
+        **One pass per kind (#1805).** A gap closer is a numbers pass, so it never takes a page a
+        numbers helper compared: what that helper left there (the vendor labels nobody handled, a
+        count not all done) was sent back to the same helper once, in its own pass, and what is
+        still open waits for the lead review (which takes pages with open checklists) or stays Not
+        compared, said so. The drawn-things helpers' checklists are theirs alone. The open lines
+        are listed for a closer only on a page it takes anyway. The paid run of 2026-10-20 re-read
+        39 pages in 4-page groups after both helpers had compared them."""
         engine = self.engine
         assert self.plan is not None
         from app.review.assistant.full_check_brief import helper_brief
@@ -1246,10 +1242,8 @@ class _Run:
                 f"{finding.get('record_id')}"
             )
         for page, why in open_gaps.items():
-            if page in pages or _WORK_LEFT.search(why):
-                pages.setdefault(page, []).append(
-                    f"left by the numbers helper, which compared the rest of the page: {why}"
-                )
+            if page in pages:  # taken anyway (not reached, or a record to place)
+                pages[page].append(f"left open by the numbers helper: {why}")
         self.repeats_avoided = sorted(any_open - set(pages))
         _log.warning(
             "assistant roster gap closers: %d pages to close; %d compared pages not read again",

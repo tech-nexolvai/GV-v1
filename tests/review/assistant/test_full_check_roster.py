@@ -498,19 +498,24 @@ class _Roster:
         self._seen("drawn" if drawn else "numbers", params)
         page = pages[0]
         if step == 0 and not drawn:
-            found = {
-                "page": page,
-                "item": f"Top on page {page}",
-                "category": "countertop",
-                "status": "different",
-                "verified": False,
-                "source": "architect",
-                "vendor_dim": "D1",
-                "architect_dim": "D2",
-            }
+            # One top on each of its pages: one pass per kind (#1805), so no gap closer re-reads
+            # a page this helper compared.
+            found = [
+                {
+                    "page": p,
+                    "item": f"Top on page {p}",
+                    "category": "countertop",
+                    "status": "different",
+                    "verified": False,
+                    "source": "architect",
+                    "vendor_dim": "D1",
+                    "architect_dim": "D2",
+                }
+                for p in pages
+            ]
             covered = {"pages": [{"page": p, "status": "different"} for p in pages]}
             return reply(
-                tool(f"f{page}", "report_finding", found),
+                *(tool(f"f{f['page']}", "report_finding", f) for f in found),
                 tool(f"c{page}", "set_coverage", covered),
                 stop="tool_use",
                 model=SONNET,
@@ -915,9 +920,8 @@ def test_the_gap_closers_get_what_p1_left_less_the_later_phases(tmp_path: Path) 
 
 
 def test_a_gap_closer_never_re_does_a_page_its_kind_compared(tmp_path: Path) -> None:
-    """#1805: one pass per kind. A numbers gap closer takes a page a numbers helper compared only
-    for the work code knows was left there (named), never for a drawn helper's checklist or a
-    badly written line."""
+    """#1805: one pass per kind. A numbers gap closer never takes a page a numbers helper compared,
+    whatever its checklist (or a drawn helper's) left open: that waits for the lead review."""
     from types import SimpleNamespace
 
     harness = _roster(tmp_path, _Roster())
@@ -941,9 +945,16 @@ def test_a_gap_closer_never_re_does_a_page_its_kind_compared(tmp_path: Path) -> 
     engine._plan = None
     run._gap_closers(None, "", False)
 
+    assert asked == []
+    assert run.repeats_avoided == [2, 3, 4, 5]
+    # A page the helper never reached is taken, with its open lines named.
+    engine.book.set_coverage(
+        {"pages": [{"page": p, "status": "same"} for p in (2, 3, 5)]}, "helper:1"
+    )
+    engine._plan = SimpleNamespace(jobs=[SimpleNamespace(pages=(2, 3, 4, 5))])
+    run._gap_closers(None, "", False)
     assert [agent.pages for agent in asked] == [(4,)]
-    assert "left by the numbers helper" in asked[0].prompt and "D5" in asked[0].prompt
-    assert "never the whole page again" in asked[0].prompt
+    assert "left open by the numbers helper" in asked[0].prompt and "D5" in asked[0].prompt
     assert run.repeats_avoided == [2, 3, 5]
 
 
