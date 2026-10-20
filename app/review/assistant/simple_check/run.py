@@ -67,6 +67,8 @@ from app.review.assistant.simple_check.verify import (
     Verified,
     with_blind,
 )
+from app.review.assistant.sink_offset import decided_labels as sink_decided_labels
+from app.review.assistant.sink_offset import noted_labels as sink_noted_labels
 from app.review.assistant.spot_locate import code_spotted
 
 if TYPE_CHECKING:
@@ -1169,9 +1171,15 @@ class _Run:
             (pair for pair in verified if pair[0].finding),
             key=lambda pair: _ORDER.get(pair[0].outcome, 3),
         )
+        # A sink front offset code could only note (`sink_offset`, unsure: Not compared) gives way
+        # to the compare answer's own item on that label: one item per label (#1807).
+        noted = sink_noted_labels(engine.book.live(), engine.book.main_file)
         for one, _item in ordered:
             if one.outcome == "candidate":
                 continue  # never left so: the blind look ran on every candidate
+            note = noted.pop(key, None) if (key := self._label_key(one)) in noted else None
+            if note is not None and engine.book.absorb(note):
+                engine._show_dropped(note, "Replaced by the comparison's own item on this label.")
             kept = self._add(one)
             if kept is None:
                 # Another product than the check's (the strict scope): never listed, not even
@@ -1219,10 +1227,14 @@ class _Run:
         self, verified: list[tuple[Verified, Item]]
     ) -> list[tuple[Verified, Item]]:
         """The compare answer's items less those on a vendor label GV's site-fit rule decided
-        (`run_fit`, code's own items, Right or Wrong): the rule governs that label, so a door the
-        site made narrower than designed is never red against the architect's size, and no blind
-        look is paid for it."""
-        decided = run_fit_labels(self.engine.book.live(), self.engine.book.main_file)
+        (`run_fit`, code's own items, Right or Wrong) or GV's sink front offset decided
+        (`sink_offset`): the rule governs that label, so a door the site made narrower than
+        designed is never red against the architect's size, and no blind look is paid for it."""
+        live, main_file = self.engine.book.live(), self.engine.book.main_file
+        decided = run_fit_labels(live, main_file)
+        # GV's sink front offset (`sink_offset`, #1807) the same: a front offset code proved and
+        # judged (Right, Wrong, or the architect's other value for the reviewer) is its one item.
+        decided |= sink_decided_labels(live, main_file)
         if not decided:
             return verified
         return [pair for pair in verified if self._label_key(pair[0]) not in decided]

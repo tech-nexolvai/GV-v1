@@ -51,6 +51,7 @@ from vocabulary.product_registry import OTHER_CATEGORY, registry
 
 __all__ = [
     "CODE_MADE",
+    "SINK_CUTOUT_RULES",
     "ProductScope",
     "category_for",
     "filed_under",
@@ -64,6 +65,7 @@ __all__ = [
     "scoped_document",
     "scoped_gaps",
     "scoped_loader",
+    "sink_cutout_category",
 ]
 
 #: Who makes a finding by code (not an AI that was told the products): their "other" items may get a
@@ -80,8 +82,12 @@ CODE_MADE: Final = frozenset(
         "simple_check",
         "filler_range",
         "run_fit",
+        "sink_offset",
     }
 )
+#: GV's sink rules a sink cut-out on a cabinet drawing also needs (`sink_cutout_category`): the
+#: sink front offset (CT-SINK-OFFSET-FRONT-001), a countertop rule read on the sink cabinet's plan.
+SINK_CUTOUT_RULES: Final = frozenset({"CT-SINK-OFFSET-FRONT-001"})
 _NOT_WORD: Final = re.compile(r"[^0-9a-z]+")
 
 
@@ -510,3 +516,16 @@ def scaled_price(price: int, pages: int, pages_all: int) -> int:
     if pages_all <= 0 or pages >= pages_all:
         return price
     return max(0, price * pages // pages_all)
+
+
+def sink_cutout_category(scope: ProductScope | None) -> str | None:
+    """The product a sink cut-out's front offset item is filed under (`sink_offset`, #1807): a
+    sink cut-out is a countertop's, so `countertop` when countertops are in scope (or no scope is
+    known); on a pick without countertops it sits on the sink cabinet's plan, so `cabinet` when
+    cabinets are picked (the inclusive rule, 2026-10-19: an item on a drawing of several products
+    counts for each of them); `None` when neither is in scope (nothing is checked)."""
+    if scope is None or scope.allows("countertop"):
+        return "countertop"
+    if scope.allows("cabinet"):
+        return "cabinet"
+    return None

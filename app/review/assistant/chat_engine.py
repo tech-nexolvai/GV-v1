@@ -250,6 +250,7 @@ from app.review.assistant.send_package import (
     package_context,
 )
 from app.review.assistant.sharpen import helper_lines
+from app.review.assistant.sink_offset import add_to_answer as add_sink_offset
 from app.review.assistant.spot_guard import dropped as spot_dropped
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
@@ -2433,8 +2434,8 @@ class ChatEngine:
     def add_code_findings(self) -> None:
         """The finish's code findings, $0, once per answer: the reading ledger's, the vendor
         consistency check's (#1584), the finish check's (#1623), code's own pairs, GV's site-fit rule
-        on the vendor's runs (`run_fit`) and GV's filler range on the vendor's fillers
-        (`filler_range`). A roster
+        on the vendor's runs (`run_fit`), GV's filler range on the vendor's fillers
+        (`filler_range`) and GV's sink front offset on the vendor's plans (`sink_offset`). A roster
         full check adds them before its proof steps (#1641), so its blind reads and devil's
         advocate see them; the trust phase then does not add them again."""
         if self._code_findings_added:
@@ -2465,6 +2466,10 @@ class ChatEngine:
                 add_filler_range(self)  # GV's filler range on the vendor's fillers, $0
             except Exception:  # noqa: BLE001 - the answer goes on without it
                 _log.exception("assistant chat filler range check failed")
+            try:
+                add_sink_offset(self)  # GV's sink front offset on the vendor's plans (#1807), $0
+            except Exception:  # noqa: BLE001 - the answer goes on without it
+                _log.exception("assistant chat sink front offset check failed")
 
     def _code_finish(self) -> None:
         """A stopped full check's finish, by code only: no model call."""

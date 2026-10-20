@@ -491,8 +491,9 @@ def governs(finding: Mapping[str, Any]) -> str:
         return "sum of the vendor's own parts"
     if _gv_limits(finding) is not None:
         return "GV filler rule"
+    standard = _gv_standard(finding)
     if source == "rules":
-        return words
+        return standard or words
     page = finding.get("vs_page")
     box = finding.get("arch_box")
     if isinstance(box, Mapping) and box.get("page"):
@@ -505,9 +506,29 @@ def governs(finding: Mapping[str, Any]) -> str:
         # R1 (Anant, 2026-10-20): no architect elevation of the item, the prototype is the
         # reference, and the words say so.
         words = classification.PROTOTYPE_REFERENCE_WORDS
+    agrees = f"; {standard} agrees" if standard and _standard_agrees(finding) else ""
     if should_be_value(finding) == architect:
-        return f"{words}{where}"
-    return f"{words} {architect}{where}"
+        return f"{words}{where}{agrees}"
+    return f"{words} {architect}{where}{agrees}"
+
+
+def _gv_standard(finding: Mapping[str, Any]) -> str | None:
+    """A GV standard a code check compared the vendor with (`sink_offset`'s `gv_standard`, #1807):
+    "GV standard: sink front offset" (or "project value: ..."), else `None`."""
+    standard = finding.get("gv_standard")
+    if not isinstance(standard, Mapping) or not standard.get("name"):
+        return None
+    return f"{standard.get('origin') or 'GV standard'}: {standard['name']}"
+
+
+def _standard_agrees(finding: Mapping[str, Any]) -> bool:
+    """The architect prints the GV standard's own value (`gv_standard`'s `architect`, #1807)."""
+    standard = finding.get("gv_standard")
+    return (
+        isinstance(standard, Mapping)
+        and bool(standard.get("architect"))
+        and standard.get("architect") == standard.get("value")
+    )
 
 
 def should_be(finding: Mapping[str, Any]) -> str:
