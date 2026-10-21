@@ -137,6 +137,11 @@ def fill_from_labels(
             )
         if label.get("origin") == "picture":
             notes.append(f"{label['id']} was read from a pasted picture by OCR: look at it once")
+        elif label.get("origin") == "ocr":
+            notes.append(
+                f"{label['id']} was read at its spot by two OCR engines (no label reader read "
+                "it): look at it once"
+            )
         elif label.get("route") == "drawn":
             notes.append(f"{label['id']} was read from drawn ink by OCR: look at it once")
         dims[side] = _provenance(label)
@@ -178,9 +183,13 @@ def label_checks(finding: Mapping[str, Any], checks: Mapping[str, Any]) -> dict[
             f"the {side}'s pasted picture (two OCR engines)"
             if label.get("origin") == "picture"
             else (
-                f"the {side}'s drawn ink (two OCR engines)"
-                if route == "drawn"
-                else "the drawing's text"
+                f"the {side}'s drawing, read at its spot (two OCR engines)"
+                if label.get("origin") == "ocr"
+                else (
+                    f"the {side}'s drawn ink (two OCR engines)"
+                    if route == "drawn"
+                    else "the drawing's text"
+                )
             )
         )
         out[key] = {

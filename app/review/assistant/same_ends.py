@@ -52,6 +52,7 @@ from fractions import Fraction
 from typing import Any, Final, Literal
 
 from app.review.assistant import dim_anchors
+from app.review.assistant.label_origin import ocr_read
 
 __all__ = [
     "FACE_MIN_PPI",
@@ -181,7 +182,7 @@ def side(
             or axis not in ("h", "v")
             or value is None
             or label.get("scale_ok") is not True
-            or label.get("origin") == "picture"  # pixels, never a line (#1835)
+            or ocr_read(label)  # pixels, never a line (#1835, #1848)
             or not line
             or len(line) != 2
             or not raw

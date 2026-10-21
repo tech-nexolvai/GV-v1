@@ -789,6 +789,8 @@ def _row(label: Mapping[str, Any], note: str = "") -> str:
         bits.append("(horizontal)" if orientation == "h" else "(vertical)")
     if label.get("origin") == "picture":
         bits.append("[read from a pasted picture by code]")
+    elif label.get("origin") == "ocr":
+        bits.append("[read at its spot by two OCR engines]")
     elif label.get("route") == "drawn":
         bits.append("[pen strokes read by code]")
     derived = label.get("derived")

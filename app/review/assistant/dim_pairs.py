@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from app.review.assistant import view_scales
+from app.review.assistant.label_origin import ocr_read
 from extraction.architect.pairing import (
     DrawnRow,
     DrawnSpan,
@@ -82,9 +83,9 @@ def _inches(label: Label) -> Fraction | None:
 
 def _along(label: Label) -> tuple[float, float, float] | None:
     """A label's dimension line as (line position across, start, end) along its direction (never
-    a label read inside a pasted picture's, #1835)."""
+    an OCR reading's, #1835, #1848)."""
     line = label.get("dim_line")
-    if not line or label.get("orientation") not in ("h", "v") or label.get("origin") == "picture":
+    if not line or label.get("orientation") not in ("h", "v") or ocr_read(label):
         return None
     (ax, ay), (bx, by) = line
     if label["orientation"] == "h":

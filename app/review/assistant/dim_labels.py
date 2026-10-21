@@ -79,9 +79,17 @@ GV's heading over the picture (the page map lists a headed picture as a drawing,
 in a picture with no heading, or inside both an architect's and a vendor's region, it has none
 (`_picture_side`). A headed picture is never the drawing of any other label.
 
+**Numbers the readers missed** (#1848, decided by Anant 2026-10-22): on the vendor's drawings,
+vector ink no label and no phrase covers is read at its spot by the same two OCR engines from the
+page's picture (`ocr_labels`: GV's marks emptied, its colours whitened); a label is kept only when
+both engines read exactly one and the same value in a direction the vectors allow, and nothing the
+other way round. It is the picture route's trust class (`route: "drawn"`, `origin: "ocr"`, no
+dimension line: `label_origin.ocr_read`); anything less is listed under the page's `ocr`
+(`unconfirmed`), a suggestion only.
+
 **Ids are stable:** text labels are numbered in reading order (top to bottom, left to right), then
-picture labels, then drawn labels after them, then derived parts, so a drawn label found or not
-never moves a text label's id.
+picture labels, then drawn labels after them, then derived parts, then the OCR route's, so a label
+found later never moves an earlier label's id.
 
 Loaded by name (`set_pack`, `dim_index`), like `verify_value`: it parses PDFs and may run OCR.
 Verification: `tests/review/assistant/test_dim_labels.py` (synthetic PDFs).
@@ -109,7 +117,7 @@ import numpy as np
 import pdfplumber
 from PIL import Image, ImageDraw, ImageFont
 
-from app.review.assistant import hand_labels, ink_labels, picture_labels
+from app.review.assistant import hand_labels, ink_labels, ocr_labels, picture_labels
 from app.review.assistant import verify_value as vv
 from app.review.assistant.finding_checks import inch_first_mm, to_inches, units_check, value_flags
 from app.review.assistant.measure import _pieces
@@ -117,6 +125,7 @@ from extraction.visible_text import ink_picture
 
 __all__ = [
     "LABELS_VERSION",
+    "OCR_BUDGET_S",
     "LineReader",
     "PageLabels",
     "build_dims",
@@ -124,6 +133,7 @@ __all__ = [
     "draw_marks",
     "drawn_labels",
     "drawn_readers",
+    "ocr_pass",
     "page_labels",
     "picture_pass",
 ]
@@ -131,11 +141,14 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what a label holds or how ids are given changes.
-LABELS_VERSION: Final = 1
+LABELS_VERSION: Final = 2
 #: The most labels one page lists (a schedule page can print hundreds of numbers).
 MAX_LABELS: Final = 400
 #: The picture route's time across a set (seconds, #1830): most sets paste no picture at all.
 PICTURES_BUDGET_S: Final = 240.0
+#: The OCR route's time across a set and on one page (seconds, #1848): a few seconds a page.
+OCR_BUDGET_S: Final = 600.0
+OCR_PAGE_S: Final = 60.0
 #: The most phrases one page lists.
 MAX_PHRASES: Final = 1500
 #: A bare number larger than this is not read as inches (it is a count, a note number, or mm).
@@ -215,6 +228,10 @@ class PageLabels:
     unconfirmed}`; `None` when the picture route did not run on the page. `unconfirmed` lists the
     numbers read in a picture that two engines did not confirm (`{text, box, orientation, side,
     why}`): never labels, never a red."""
+    ocr: dict[str, Any] | None = None
+    """The OCR route's spots (#1848): `{status, spots, seconds, unconfirmed}`; `None` when it did
+    not run on the page. `unconfirmed` lists what one engine read, or the two read differently:
+    a suggestion only, never a label, never a red."""
 
 
 # ---- reading the page once -----------------------------------------------------------------------
@@ -1891,18 +1908,44 @@ def _add_pictures(
         for found in read.labels
         if not any(_overlap(found.box, other) > 0.5 for other in taken)
     ]
-    confirmed = [found for found in fresh if found.confirmed]
-    joined, _any_pair = _paired([_picture_reading(found) for found in confirmed])
+    added, unconfirmed = _read_labels(
+        fresh,
+        lambda box: _side(box, halves, pasted),
+        picture_labels.ORIGIN,
+        picture_labels.UNCONFIRMED,
+    )
+    result.labels += added[: max(0, MAX_LABELS - len(result.labels))]
+    result.pictures = {
+        "status": read.status,
+        "boxes": [[round(v, 2) for v in box] for box in read.boxes],
+        "unconfirmed": unconfirmed,
+    }
+
+
+def _read_labels(
+    found: Sequence[picture_labels.PictureLabel],
+    side_of: Callable[[Box], str],
+    origin: str,
+    unconfirmed_why: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Numbers two OCR engines read (a pasted picture's, `picture_labels`, or a vector spot's,
+    `ocr_labels`) as labels and the unconfirmed rest. A confirmed reading is a label like any other
+    (the OCR trust class, `route: "drawn"`, marked `origin`, with no dimension line); a millimetre
+    value is a label only over its bracketed inches with both agreeing (`_paired`,
+    `units_check`). Every other reading is listed as unconfirmed (`{text, box, orientation, side,
+    why}`), never a label."""
+    confirmed = [item for item in found if item.confirmed]
+    joined, _any_pair = _paired([_picture_reading(item) for item in confirmed])
     unconfirmed: list[dict[str, Any]] = [
         {
-            "text": found.text,
-            "box": list(found.box),
-            "orientation": found.orientation,
-            "side": _side(found.box, halves, pasted),
-            "why": f"{picture_labels.UNCONFIRMED} ({found.why})",
+            "text": item.text,
+            "box": list(item.box),
+            "orientation": item.orientation,
+            "side": side_of(item.box),
+            "why": f"{unconfirmed_why} ({item.why})",
         }
-        for found in fresh
-        if not found.confirmed
+        for item in found
+        if not item.confirmed
     ]
     added: list[dict[str, Any]] = []
     for reading in joined:
@@ -1914,22 +1957,17 @@ def _add_pictures(
                     "text": reading.text,
                     "box": [round(v, 2) for v in reading.box],
                     "orientation": _orientation(reading.along),
-                    "side": _side(reading.box, halves, pasted),
-                    "why": f"{picture_labels.UNCONFIRMED} (the millimetres and inches disagree)",
+                    "side": side_of(reading.box),
+                    "why": f"{unconfirmed_why} (the millimetres and inches disagree)",
                 }
             )
             continue
-        # No dimension line: a picture's line work is pixels (`picture_labels`).
-        label = _label(reading, None, _side(reading.box, halves, pasted))
-        label["origin"] = picture_labels.ORIGIN
+        # No dimension line: an OCR reading never passes a check on a line.
+        label = _label(reading, None, side_of(reading.box))
+        label["origin"] = origin
         added.append(label)
     added.sort(key=lambda label: (round(label["box"][1] / 4), label["box"][0]))
-    result.labels += added[: max(0, MAX_LABELS - len(result.labels))]
-    result.pictures = {
-        "status": read.status,
-        "boxes": [[round(v, 2) for v in box] for box in read.boxes],
-        "unconfirmed": unconfirmed,
-    }
+    return added, unconfirmed
 
 
 def picture_pass(
@@ -1954,6 +1992,184 @@ def picture_pass(
     )
     _add_pictures(result, Path(pdf), page, halves, budget_s, readers, detector, clock, pasted)
     _number(result.labels)
+    return result
+
+
+# ---- the OCR route (#1848) -----------------------------------------------------------------------
+
+
+def _ocr_spots(
+    parsed: _Parsed,
+    halves: Sequence[Mapping[str, Any]],
+    taken: Sequence[Box],
+) -> tuple[list[tuple[Box, list[ocr_labels.Spot]]], list[Box]]:
+    """The page's vector ink no label and no phrase covers, as spots grouped by the page map's
+    drawing they are on (`(drawing box, spots)`), and every group's box (kept from the line work's
+    whitening). A spot is a group of the ink split by `ink_labels` (the dimension line's own
+    pieces left out, `_without_line_work`), of a number's size, on one of the drawings, with room
+    round it (`_crowded`: a part of a longer number or of a word is never read alone)."""
+    page = parsed.page
+    clusters, lone = _clusters(page.paths, taken)
+    lines = _line_ends(parsed.segments)
+    every: list[Box] = []
+    pieces: list[ink_labels.Label] = []
+    for cluster in [*clusters, *lone]:
+        near = vv._ink_paths_near(page, cluster)
+        if len(near) > _MAX_NEAR_PATHS:
+            near = [p for p in near if _overlap(p.box, cluster) > 0]
+        pieces += ink_labels.labels(near, cluster)
+    # A cluster's edge may cut a label (`18"` without its second tick), and a fill's dots may join
+    # one: where two pieces share most of their ink, the one whose vectors end it in an inch mark
+    # is read, else the one with the most glyphs.
+    found: list[tuple[ink_labels.Label, ocr_labels.Spot]] = []
+    for piece in pieces:
+        every.append(piece.box)
+        bare = _without_line_work(piece, lines)
+        if bare is None:
+            continue
+        spot = ocr_labels.spot_of(bare, _mark_layouts(bare))
+        if spot is not None and not any(_overlap(spot.box, other) > 0.1 for other in taken):
+            found.append((bare, spot))
+    found.sort(
+        key=lambda item: (not item[1].marked, -len(item[0].glyphs), item[1].box[1], item[1].box[0])
+    )
+    seen: list[Box] = []
+    by_drawing: dict[int, list[ocr_labels.Spot]] = {}
+    drawings = [h for h in halves if h.get("box") and len(h["box"]) == 4 and not h.get("picture")]
+    for bare, spot in found:
+        if any(_overlap(spot.box, other) > 0.5 for other in seen):
+            continue
+        seen.append(spot.box)
+        centre = _centre(spot.box)
+        holding = next((i for i, h in enumerate(drawings) if _within(centre, h["box"])), None)
+        # The vendor's drawings only: the architect's numbers are the reference (a misread one
+        # would set the wrong target) and are text or hand lettering, which have their own routes.
+        if holding is None or _side(spot.box, halves) != "vendor":
+            continue
+        if _crowded(page, bare):
+            continue
+        by_drawing.setdefault(holding, []).append(spot)
+    areas: list[tuple[Box, list[ocr_labels.Spot]]] = []
+    count = 0
+    for index in sorted(by_drawing):
+        spots = by_drawing[index][: max(0, ocr_labels.MAX_SPOTS - count)]
+        count += len(spots)
+        if spots:
+            box = tuple(float(v) for v in drawings[index]["box"])
+            areas.append((box, spots))  # type: ignore[arg-type]
+    return areas, every
+
+
+def _mark_layouts(label: ink_labels.Label) -> tuple[tuple[int, _Layout], ...]:
+    """`(turn, layout)` for each direction in which the label is one row of digits (and at most
+    one stacked fraction) ending in an inch mark drawn as two twin ticks (`_twin_ticks`), its
+    digits counted by the vectors (`_layout`). A row with any other mark (a foot mark, a dash:
+    `7'-3"`) is none: its digits alone are not its value."""
+    out: list[tuple[int, _Layout]] = []
+    for turn in _marked_turns(label):
+        rows = ink_labels.rows(label, turn)
+        if len(rows) != 1 or not _twin_ticks(rows[0], turn):
+            continue
+        row = rows[0]
+        end = len(row) - ink_labels.inch_mark_at_end(row, turn)
+        if any(token.kind == "mark" for token in row[:end]):
+            continue
+        layout = _layout(row, turn)
+        if layout is not None:
+            out.append((int(turn), layout))
+    return tuple(out)
+
+
+_MARKED_LINE: Final = re.compile(r'^[\d /"]+$')
+
+
+def _marked_value(spot: ocr_labels.Spot, turn: int, text: str) -> Decimal | None:
+    """A reading with the drawn inch mark dropped or read as `9`s (`46`, `4699`), as inches: only
+    in a direction in which the vectors draw that mark, and only when the line is digits (a space,
+    a slash or the mark at most) and their count is the vectors' (`_laid_out`)."""
+    layout = dict(spot.marked).get(turn)
+    if layout is None:
+        return None
+    line = _mark_as_nines(vv._plain(text.translate(picture_labels._PRIMES)).strip(), layout)
+    if not _MARKED_LINE.fullmatch(line) or '"' in line.rstrip('"'):
+        return None
+    value = _laid_out(line, layout)
+    return value if value is not None and value > 0 else None
+
+
+def _add_ocr(
+    result: PageLabels,
+    parsed: _Parsed,
+    halves: Sequence[Mapping[str, Any]],
+    budget_s: float,
+    readers: Sequence[Any] | None,
+    clock: Callable[[], float],
+) -> None:
+    """The OCR route (`ocr_labels`): the numbers the label readers missed on the page's drawings,
+    read at their spots by two OCR engines. A confirmed reading is a label (`origin: "ocr"`, no
+    dimension line), added after every label already listed; the rest are listed in
+    `ocr.unconfirmed`, never labels."""
+    started = clock()
+    taken = [tuple(label["box"]) for label in result.labels] + [
+        tuple(phrase["box"]) for phrase in result.phrases
+    ]
+    areas, every = _ocr_spots(parsed, halves, taken)
+    spots = sum(len(found) for _box, found in areas)
+    if not spots:
+        result.ocr = {"status": "done", "spots": 0, "seconds": 0.0, "unconfirmed": []}
+        return
+    engines = list(drawn_readers() if readers is None else readers)
+    page = parsed.page
+    read = ocr_labels.read_spots(
+        page.vendor_pdf,
+        page.size,
+        areas,
+        [*taken, *every],
+        engines,
+        marked=_marked_value,
+        deadline=started + budget_s,
+        clock=clock,
+    )
+    added, unconfirmed = _read_labels(
+        read.labels, lambda box: _side(box, halves), ocr_labels.ORIGIN, ocr_labels.UNCONFIRMED
+    )
+    result.labels += added[: max(0, MAX_LABELS - len(result.labels))]
+    result.ocr = {
+        "status": read.status,
+        "spots": read.spots,
+        "seconds": round(clock() - started, 2),
+        "unconfirmed": unconfirmed,
+    }
+
+
+def ocr_pass(
+    pdf: Path,
+    page: int,
+    halves: Sequence[Mapping[str, Any]],
+    labels: Sequence[Mapping[str, Any]],
+    phrases: Sequence[Mapping[str, Any]],
+    *,
+    budget_s: float,
+    readers: Sequence[Any] | None = None,
+    clock: Callable[[], float] = monotonic,
+) -> PageLabels:
+    """Page `page`'s labels (every route's, `EQ` parts included) with the numbers the OCR route
+    confirms added after them (#1848): the pack's last reading pass, so no older label's id moves.
+    Labels are numbered on from the last one; nothing before them is renumbered."""
+    result = PageLabels(
+        labels=[dict(label) for label in labels],
+        phrases=[dict(phrase) for phrase in phrases],
+    )
+    before = len(result.labels)
+    try:
+        _add_ocr(result, _parse(Path(pdf), page - 1), halves, budget_s, readers, clock)
+    except Exception as failed:  # noqa: BLE001 - the page keeps its other labels
+        _log.warning("dimension labels: OCR route failed: %s", type(failed).__name__)
+        result.labels = result.labels[:before]
+        result.ocr = {"status": "failed", "spots": 0, "seconds": 0.0, "unconfirmed": []}
+        return result
+    for number, label in enumerate(result.labels[before:], start=before + 1):
+        label["id"] = f"D{number}"
     return result
 
 
@@ -2633,13 +2849,17 @@ def build_dims(
     drawn_budget_s: float = 0.0,
     on_page: Callable[[dict[str, Any]], None] | None = None,
     pictures_budget_s: float = PICTURES_BUDGET_S,
+    ocr_budget_s: float = OCR_BUDGET_S,
 ) -> dict[str, Any]:
-    """The set pack's `dims.json`: every page of every upload and its labels. Three passes: the
+    """The set pack's `dims.json`: every page of every upload and its labels. Four passes: the
     text route on every page first (the agent has every printed label in minutes), then the pasted
     pictures (#1830) of the pages that show one, within `pictures_budget_s` seconds (a page read
     gets `pictures`), then the drawn route page by page, sharing `drawn_budget_s` seconds across
-    the set (a page it does not reach stays `not_run`; one it leaves half read is `partial`).
-    `on_page` sees the document after each page of each pass (to write it as it grows)."""
+    the set (a page it does not reach stays `not_run`; one it leaves half read is `partial`), and
+    after the `EQ` parts, the OCR route (#1848) on the pages the drawn route read, sharing
+    `ocr_budget_s` seconds, at most `OCR_PAGE_S` a page (a page read gets `ocr`, with its seconds; its labels are numbered
+    after every other label, so no id moves). `on_page` sees the document after each page of each
+    pass (to write it as it grows)."""
     halves: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     pasted: dict[tuple[str, int], list[Sequence[float]]] = {}
     entries = page_map.get("pages") if isinstance(page_map, Mapping) else None
@@ -2758,6 +2978,32 @@ def build_dims(
             _log.warning("dimension labels: equal parts failed: %s", type(failed).__name__)
             continue
         entry["labels"] = result.labels
+        if on_page is not None:
+            on_page(document)
+    # The OCR route last (#1848): the numbers every route above missed, on the pages the drawn
+    # route read (it needs the vector ink read first; a page left `not_run` keeps what it has).
+    ocr_left = ocr_budget_s
+    for entry in document["pages"]:
+        if ocr_left <= 0:
+            break
+        if entry["drawn"] not in ("done", "partial"):
+            continue
+        name, number = entry["file"], entry["page"]
+        started = monotonic()
+        try:
+            found = ocr_pass(
+                pdfs[name],
+                number,
+                halves.get((name, number), ()),
+                entry["labels"],
+                entry.get("phrases") or [],
+                budget_s=min(ocr_left, OCR_PAGE_S),
+            )
+        finally:
+            ocr_left -= monotonic() - started
+        if found.ocr is None:
+            continue
+        entry["labels"], entry["ocr"] = found.labels, found.ocr
         if on_page is not None:
             on_page(document)
     return document

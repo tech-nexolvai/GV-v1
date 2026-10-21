@@ -91,6 +91,8 @@ def label_line(label: Mapping[str, Any]) -> str:
         return f"{label.get('id')} {text} ({', '.join(b for b in bits if b)})"
     if label.get("origin") == "picture":
         bits.append("read from a pasted picture, two OCR engines")  # #1830
+    elif label.get("origin") == "ocr":
+        bits.append("read at its spot, two OCR engines")  # #1848
     elif label.get("route") == "drawn":
         bits.append("drawn ink, OCR")
     if label.get("units") == "disagrees":
