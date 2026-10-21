@@ -214,6 +214,20 @@ def test_an_inch_mark_an_engine_drops_is_put_back_only_where_the_vectors_draw_it
 # ---- anything less is never a label --------------------------------------------------------------
 
 
+@pytest.mark.parametrize("read", ['184"', '1 1/8"', "18'-0\""])
+def test_a_reading_with_digits_the_vectors_do_not_draw_is_refused(
+    tmp_path: Path, read: str
+) -> None:
+    # Two characters drawn: a reading with three digits (a stacked fraction read as digits:
+    # `21 3/8"` read `213"`) or feet with more digits is never the value, however two engines agree.
+    path = _write(tmp_path, _page())
+
+    found = _ocr(path, _engines(read, read))
+
+    assert not _added(found)
+    assert found.ocr is not None and found.ocr["unconfirmed"] == []
+
+
 @pytest.mark.parametrize(
     ("rapid", "tesseract", "why"),
     [

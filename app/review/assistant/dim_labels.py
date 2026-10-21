@@ -2030,7 +2030,9 @@ def _ocr_spots(
         bare = _without_line_work(piece, lines)
         if bare is None:
             continue
-        spot = ocr_labels.spot_of(bare, _mark_layouts(bare))
+        spot = ocr_labels.spot_of(
+            bare, _mark_layouts(bare), lambda turn, label=bare: _one_row_layout(label, turn)
+        )
         if spot is not None and not any(_overlap(spot.box, other) > 0.1 for other in taken):
             found.append((bare, spot))
     found.sort(
@@ -2083,6 +2085,30 @@ def _mark_layouts(label: ink_labels.Label) -> tuple[tuple[int, _Layout], ...]:
     return tuple(out)
 
 
+def _one_row_layout(label: ink_labels.Label, turn: int) -> _Layout | None:
+    """The label's layout (`_layout`) read as `turn` when it is one row, else `None`."""
+    rows = ink_labels.rows(label, turn)  # type: ignore[arg-type]
+    return _layout(rows[0], turn) if len(rows) == 1 else None  # type: ignore[arg-type]
+
+
+def _fits_vectors(spot: ocr_labels.Spot, turn: int, text: str, parsed: tuple[str, Decimal]) -> bool:
+    """Whether a reading of a spot fits its vectors in that direction: the row is one the vectors
+    lay out (`_layout`), the reading has as many digits as the vectors draw characters, and a
+    reading in inches is the value its digits give laid out as the vectors draw them
+    (`_laid_out`: `21 3/8"` with a stacked fraction read `213"` does not fit). No layout, no
+    fit: an OCR reading is a label only where the vectors confirm its digits."""
+    layout = dict(spot.layouts).get(turn)
+    if layout is None:
+        return False
+    plain = vv._plain(text.translate(picture_labels._PRIMES))
+    if sum(ch.isdigit() for ch in plain) != sum(layout):
+        return False
+    kind, value = parsed
+    if kind == "feet":
+        return True  # a foot mark and a dash are marks: the digit count is what the vectors give
+    return _laid_out(plain, layout) == value
+
+
 _MARKED_LINE: Final = re.compile(r'^[\d /"]+$')
 
 
@@ -2130,6 +2156,7 @@ def _add_ocr(
         [*taken, *every],
         engines,
         marked=_marked_value,
+        fits=_fits_vectors,
         deadline=started + budget_s,
         clock=clock,
     )

@@ -93,10 +93,16 @@ class Spot:
     marked: tuple[tuple[int, tuple[int, int, int]], ...] = ()
     """`(turn, layout)`: the row's whole number's, numerator's and denominator's character counts
     (`dim_labels._layout`) where its vectors end it in an inch mark."""
+    layouts: tuple[tuple[int, tuple[int, int, int]], ...] = ()
+    """`(turn, layout)` for each allowed direction in which the spot is one row the vectors lay
+    out (`dim_labels._layout`): how many characters its whole number, numerator and denominator
+    have. A reading counts only when it fits them (`Fits`)."""
 
 
 #: A reading of a spot whose vectors draw the inch mark: `(spot, turn, text) -> inches or None`.
 type Marked = Callable[[Spot, int, str], Decimal | None]
+#: Whether a reading fits the spot's vectors: `(spot, turn, text, (kind, inches)) -> bool`.
+type Fits = Callable[[Spot, int, str, tuple[str, Decimal]], bool]
 
 
 @dataclass(slots=True)
@@ -130,12 +136,15 @@ def _read_spot(
     spot: Spot,
     readers: Sequence[Any],
     marked: Marked | None = None,
+    fits: Fits | None = None,
 ) -> tuple[dict[tuple[str, int], set[tuple[str, Decimal]]], list[str]]:
     """Each engine's readings of one spot in every direction its vectors allow and the other way
     round, at each size; the allowed directions are marked as found lying (`picture_labels._FOUND`),
     as the text detector marks a line on a picture. An engine often drops a drawn inch mark (`46`
     for `46"`): where the vectors draw the mark in that direction, `marked` reads the line's digits
-    as the vectors lay them out (their count must be the vectors' count) as that many inches."""
+    as the vectors lay them out (their count must be the vectors' count) as that many inches. In
+    an allowed direction a reading counts only when it `fits` the vectors (`21 3/8"` with its
+    fraction stacked, read `213"`, has a digit too few)."""
     values: dict[tuple[str, int], set[tuple[str, Decimal]]] = {}
     notes: list[str] = []
     allowed = {int(turn) for turn in spot.turns}
@@ -168,6 +177,14 @@ def _read_spot(
                     inches = marked(spot, turn, text)
                     if inches is not None:
                         parsed = ("dimension", inches)
+                if (
+                    parsed is not None
+                    and fits is not None
+                    and turn in allowed
+                    and not fits(spot, turn, text, parsed)
+                ):
+                    notes[-1] += " (does not fit the vectors)"
+                    parsed = None
                 if parsed is not None:
                     values.setdefault((reader.name, turn), set()).add(parsed)
     # Where the vectors draw the inch mark at the end of the row, they say which way it reads: a
@@ -222,6 +239,7 @@ def read_spots(
     readers: Sequence[Any],
     *,
     marked: Marked | None = None,
+    fits: Fits | None = None,
     deadline: float | None = None,
     clock: Callable[[], float] = monotonic,
 ) -> OcrRead:
@@ -258,7 +276,7 @@ def read_spots(
                 break
             result.spots += 1
             box_px = _px(spot.box, origin, scale)
-            values, notes = _read_spot(clean, box_px, spot, readers, marked)
+            values, notes = _read_spot(clean, box_px, spot, readers, marked, fits)
             turn, decided, why = pl._decide(values, names)
             kinds = {kind for vs in values.values() for kind, _v in vs}
             if turn is None or (why and kinds == {"bare"}):
@@ -292,10 +310,12 @@ def read_spots(
 
 
 def spot_of(
-    label: ink_labels.Label, marked: Sequence[tuple[int, tuple[int, int, int]]] = ()
+    label: ink_labels.Label,
+    marked: Sequence[tuple[int, tuple[int, int, int]]] = (),
+    layout: Callable[[int], tuple[int, int, int] | None] | None = None,
 ) -> Spot | None:
     """A group of vector ink as a spot: of a number's size, its directions from its vectors (the
-    directions its inch mark gives first, `marked`)."""
+    directions its inch mark gives first, `marked`), and in each its row's `layout`."""
     x0, y0, x1, y1 = label.box
     if max(x1 - x0, y1 - y0) > MAX_LENGTH_PT or min(x1 - x0, y1 - y0) < MIN_LETTER_PT:
         return None
@@ -304,4 +324,9 @@ def spot_of(
     turns = tuple(turn for turn, _layout in marked) or tuple(
         int(turn) for turn in ink_labels.turns(label)
     )
-    return Spot(label.box, turns, tuple(marked))
+    layouts = tuple(
+        (turn, found)
+        for turn in turns
+        if layout is not None and (found := layout(turn)) is not None
+    )
+    return Spot(label.box, turns, tuple(marked), layouts)
