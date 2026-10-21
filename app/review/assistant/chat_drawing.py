@@ -72,6 +72,8 @@ from app.review.assistant.cloud_layout import (
 )
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.impact import BIGGEST_FIRST, biggest_line
+from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
+from app.review.assistant.rule_notes import HEADING as RULE_NOTE_HEADING
 from extraction import gv_marks
 from extraction.stamp_text import carries_drawing, pasted_picture
 from vocabulary.product_registry import registry
@@ -1198,7 +1200,8 @@ def check_report_pdf(
         **summary,
         "Cloud drawing": (
             f"{groups['clouded']} wrong clouded (proved by code), {groups['right']} right, "
-            f"{groups['not_compared']} not compared (the Not-compared list)"
+            + (f"{groups['rule_note']} {RULE_NOTE_COUNT}, " if groups["rule_note"] else "")
+            + f"{groups['not_compared']} not compared (the Not-compared list)"
         ),
         "The rule": proof.RULE_LINE,
     }
@@ -1212,6 +1215,7 @@ def check_report_pdf(
     wrong = by_product([f for f in findings if placed[id(f)] == "clouded"])
     right = by_product([f for f in findings if placed[id(f)] == "right"])
     unseen = by_product([f for f in findings if placed[id(f)] == "not_compared"])
+    noted = by_product([f for f in findings if placed[id(f)] == "rule_note"])
     per_product: dict[str, list[int]] = {}
     for kinds, chosen in enumerate((wrong, unseen, right)):
         for f in chosen:
@@ -1261,6 +1265,26 @@ def check_report_pdf(
             [26, 70, 34, 210, 110, 190],
         ),
     ]
+    if noted:
+        # #1839: decided, never red: the architect's size breaks a GV rule; GV asks the architect.
+        sections.append(
+            (
+                f"{RULE_NOTE_HEADING} ({len(noted)})",
+                ["AI", "Product", "Page", "Item", "Value", "Question for the architect"],
+                [
+                    [
+                        number[id(f)],
+                        group(f),
+                        f.get("page"),
+                        f.get("item"),
+                        f.get("vendor"),
+                        (proof.proof_of(f)["rule_note"] or {}).get("question") or "",
+                    ]
+                    for f in noted
+                ],
+                [26, 70, 34, 210, 110, 190],
+            )
+        )
     if unseen:
         sections.append(
             (

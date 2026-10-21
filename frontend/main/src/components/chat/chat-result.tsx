@@ -17,6 +17,7 @@ import {
   notComparedGroups,
   previewPageOf,
   resultGroups,
+  resultTabs,
   shouldBeValue,
   TAB_WORDS,
   vendorValue,
@@ -26,6 +27,7 @@ import {
   type ResultTab,
   type WorkLineInput,
 } from '@/lib/chat-result';
+import { PROOF_WORDS, ruleNoteWords } from '@/lib/chat-proof';
 import { inchWords, type RoundCounts } from '@/lib/chat-trust';
 import { ROUND_WORDS } from '@/lib/words';
 import { cn } from '@/lib/utils';
@@ -36,7 +38,8 @@ import { cn } from '@/lib/utils';
  * 1. the work line: what the check did and how long (the only place for the time), opening to its steps;
  * 2. the result head: the cloud drawing's page, the review result in AWI's words, one sentence that
  *    says only what no count says, the main action and the package's files in one line;
- * 3. three tiles that ARE the tabs, the only place for the counts: Wrong / Right / Not compared;
+ * 3. tiles that ARE the tabs, the only place for the counts: Wrong / Right / Not compared, and
+ *    Ask the architect when the architect's size breaks a GV rule (#1839: decided, never red);
  * 4. the open tab's rows, the evidence beside each; a row opens the evidence panel.
  *
  * No Agree / Not a problem on the rows (owner decision 3): the optional override is in the panel.
@@ -79,11 +82,13 @@ export function FullCheckResult(props: FullCheckResultProps) {
     return decision && decision !== finding.decision ? { ...finding, decision } : finding;
   });
   const groups = resultGroups(findings, decisionOf);
-  const [tab, setTab] = useState<ResultTab>(groups.wrong.length ? 'wrong' : groups.notCompared.length ? 'not_compared' : 'right');
+  const [tab, setTab] = useState<ResultTab>(groups.wrong.length ? 'wrong' : groups.ruleNotes.length ? 'rule_note' : groups.notCompared.length ? 'not_compared' : 'right');
   const [category, setCategory] = useState<FindingCategory | null>(null);
   // #1803: what the reviewer marked Right is Right, as the vendor's files say ("Right (reviewer)"), listed first under Right.
-  const counts: Record<ResultTab, number> = { wrong: groups.wrong.length, right: groups.right.length + groups.dismissed.length, not_compared: groups.notCompared.length };
-  const listOf: Record<ResultTab, ChatFinding[]> = { wrong: groups.wrong, right: [...groups.dismissed, ...groups.right], not_compared: groups.notCompared };
+  const counts: Record<ResultTab, number> = { wrong: groups.wrong.length, right: groups.right.length + groups.dismissed.length, rule_note: groups.ruleNotes.length, not_compared: groups.notCompared.length };
+  const listOf: Record<ResultTab, ChatFinding[]> = { wrong: groups.wrong, right: [...groups.dismissed, ...groups.right], rule_note: groups.ruleNotes, not_compared: groups.notCompared };
+  // #1839: the fourth tile only when a size the architect specifies breaks a GV rule.
+  const tabs = resultTabs(groups);
   const inTab = listOf[tab];
   const categories = categoriesPresent(inTab);
   const shown = category ? inTab.filter((finding) => (finding.category ?? 'other') === category) : inTab;
@@ -98,8 +103,8 @@ export function FullCheckResult(props: FullCheckResultProps) {
 
       {rounds && <RoundStrip rounds={rounds} />}
 
-      <div role="tablist" aria-label="Items" data-slot="chat-result-tiles" className="grid grid-cols-3 gap-2.5 max-md:gap-2">
-        {(['wrong', 'right', 'not_compared'] as const).map((each) => (
+      <div role="tablist" aria-label="Items" data-slot="chat-result-tiles" className={cn('grid gap-2.5 max-md:gap-2', tabs.length === 4 ? 'grid-cols-4 max-md:grid-cols-2' : 'grid-cols-3')}>
+        {tabs.map((each) => (
           <button
             key={each}
             type="button"
@@ -115,7 +120,7 @@ export function FullCheckResult(props: FullCheckResultProps) {
             )}
           >
             <span className="flex min-w-0 items-center gap-2 text-sm font-semibold max-md:text-xs"><OutcomeGlyph kind={each} />{TAB_WORDS[each].word}</span>
-            <span data-slot="chat-result-count" className={cn('num text-[28px] leading-9 font-medium tracking-[-0.02em] max-md:text-2xl max-md:leading-8', each === 'wrong' ? 'text-outcome-fail-fg' : each === 'right' ? 'text-outcome-pass-fg' : 'text-outcome-missing-fg')}>{counts[each]}</span>
+            <span data-slot="chat-result-count" className={cn('num text-[28px] leading-9 font-medium tracking-[-0.02em] max-md:text-2xl max-md:leading-8', each === 'wrong' ? 'text-outcome-fail-fg' : each === 'right' ? 'text-outcome-pass-fg' : each === 'rule_note' ? 'text-outcome-ask-fg' : 'text-outcome-missing-fg')}>{counts[each]}</span>
             <span className="text-[12.5px] leading-[18px] text-muted-foreground max-md:hidden">{TAB_WORDS[each].hint}</span>
           </button>
         ))}
@@ -124,7 +129,7 @@ export function FullCheckResult(props: FullCheckResultProps) {
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
         <p className="text-[13px] text-muted-foreground">
           <span className="font-medium text-foreground">{tab === 'wrong' ? 'Biggest first' : tab === 'not_compared' ? 'By reason' : 'By page'}</span>
-          {tab === 'wrong' ? ' · what changes fabrication most' : tab === 'not_compared' ? ' · and what is needed to compare' : ''}
+          {tab === 'wrong' ? ' · what changes fabrication most' : tab === 'not_compared' ? ' · and what is needed to compare' : tab === 'rule_note' ? ' · with the question for the architect' : ''}
         </p>
         {categories.length > 1 && (
           <div role="group" aria-label="Product" className="inline-flex rounded-lg bg-muted p-0.5">
@@ -144,7 +149,7 @@ export function FullCheckResult(props: FullCheckResultProps) {
       </div>
 
       <div id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${tab}`} data-slot="chat-result-list" data-tab={tab} key={tab} className="chat-fade-in min-w-0 overflow-hidden rounded-[14px] border bg-card">
-        {shown.length === 0 && <p className="px-4 py-6 text-center text-sm text-muted-foreground">{inTab.length ? 'Nothing for this product.' : tab === 'wrong' ? 'Nothing proved wrong.' : tab === 'right' ? 'Nothing matched yet.' : 'Every item was compared.'}</p>}
+        {shown.length === 0 && <p className="px-4 py-6 text-center text-sm text-muted-foreground">{inTab.length ? 'Nothing for this product.' : tab === 'wrong' ? 'Nothing proved wrong.' : tab === 'right' ? 'Nothing matched yet.' : tab === 'rule_note' ? 'No architect’s size breaks a GV rule.' : 'Every item was compared.'}</p>}
         {tab === 'wrong' && !rounds && shown.filter((finding) => !groups.dismissed.includes(finding)).map((finding) => (
           <WrongRow key={finding.id} finding={finding} number={commentNumber(finding, packageState)} pictureUrl={pictureUrl} onOpen={onOpen} />
         ))}
@@ -165,6 +170,12 @@ export function FullCheckResult(props: FullCheckResultProps) {
           </>
         )}
         {tab === 'right' && shown.filter((finding) => !groups.dismissed.includes(finding)).map((finding) => <CompactRow key={finding.id} kind="right" finding={finding} onOpen={onOpen} />)}
+        {tab === 'rule_note' && shown.length > 0 && (
+          <div data-slot="chat-result-rule-notes">
+            <GroupHead words={PROOF_WORDS.rule_note} note="nothing is asked of the vendor" count={shown.length} kind="rule_note" />
+            {shown.map((finding) => <CompactRow key={finding.id} kind="rule_note" finding={finding} onOpen={onOpen} />)}
+          </div>
+        )}
         {tab === 'not_compared' && notComparedGroups(shown).map((group) => (
           <div key={group.reason} data-slot="chat-result-reason" data-reason={group.reason}>
             <GroupHead words={group.words} count={group.findings.length} />
@@ -183,6 +194,8 @@ export function FullCheckResult(props: FullCheckResultProps) {
 export function OutcomeGlyph({ kind, className }: { kind: ResultTab | 'dismissed'; className?: string }) {
   if (kind === 'wrong') return <span aria-hidden="true" className={cn('grid size-[18px] shrink-0 place-items-center rounded-full bg-outcome-fail text-white', className)}><X className="size-3" strokeWidth={2.75} /></span>;
   if (kind === 'right') return <span aria-hidden="true" className={cn('grid size-[18px] shrink-0 place-items-center rounded-full bg-outcome-pass text-white', className)}><Check className="size-3" strokeWidth={2.75} /></span>;
+  // #1839: decided, nothing for the vendor: a filled slate circle with a question mark (never amber).
+  if (kind === 'rule_note') return <span aria-hidden="true" className={cn('grid size-[18px] shrink-0 place-items-center rounded-full bg-outcome-ask text-xs leading-none font-bold text-background', className)}>?</span>;
   return <span aria-hidden="true" className={cn('grid size-[18px] shrink-0 place-items-center rounded-full border-[1.5px] border-dashed border-outcome-missing text-outcome-missing-fg', className)}><Minus className="size-2.5" strokeWidth={2.75} /></span>;
 }
 
@@ -461,10 +474,11 @@ function WrongRow({ finding, number, pictureUrl, onOpen }: { finding: ChatFindin
   );
 }
 
-function CompactRow({ kind, finding, onOpen }: { kind: 'right' | 'not_compared' | 'dismissed'; finding: ChatFinding; onOpen: (findingId: string) => void }) {
+function CompactRow({ kind, finding, onOpen }: { kind: 'right' | 'rule_note' | 'not_compared' | 'dismissed'; finding: ChatFinding; onOpen: (findingId: string) => void }) {
   const { thing } = itemParts(finding.item);
   const vendor = vendorValue(finding);
   const architect = finding.architect ? finding.architect.replace(/"/g, '″').replace(/'/g, '′') : null;
+  const note = kind === 'rule_note' ? ruleNoteWords(finding) : null;
   return (
     <button
       type="button"
@@ -480,6 +494,7 @@ function CompactRow({ kind, finding, onOpen }: { kind: 'right' | 'not_compared' 
         <span className="text-sm leading-5 font-medium text-foreground">{thing}</span>
         <Where finding={finding} />
         {kind === 'not_compared' && <span className="text-[13px] text-muted-foreground">Needs <span className="font-medium text-foreground/80">{neededWords(finding).replace(/"/g, '″')}</span></span>}
+        {note && <span data-slot="chat-result-rule" className="text-[13px] text-muted-foreground">{note.standard.replace(/"/g, '″')} · <span className="font-medium text-outcome-ask-fg">ask the architect</span></span>}
         {kind === 'dismissed' && <span className="text-[13px] text-muted-foreground">Right (reviewer){finding.decision?.by ? ` · marked by ${finding.decision.by}` : ''}{finding.decision?.note ? ` · “${finding.decision.note}”` : ''}</span>}
       </span>
       <span className="num text-right text-[13.5px] whitespace-nowrap text-foreground max-md:col-start-2 max-md:text-left">

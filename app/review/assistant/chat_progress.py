@@ -58,6 +58,8 @@ def progress_numbers(
         "wrong_so_far": groups.get("clouded", 0),
         "decision_so_far": groups.get("not_compared", 0),
         "right_so_far": groups.get("right", 0) + groups.get("dismissed", 0),
+        # Decided (#1839): the architect's size breaks a GV rule, GV asks the architect.
+        "rule_note_so_far": groups.get("rule_note", 0),
         "eta_seconds": eta,
     }
 

@@ -16,7 +16,8 @@ reconnects mid-run (`GET /chats/{chat_id}/live`, and `ChatOut.live`).
 - `check_drawings` (`drawings`): the whole work list at once, every drawing `waiting` (or
   `skipped` with code's reason); then `check_drawing` (`drawing`) each time one changes.
 - `check_finding` (`finding`): one decided finding (or a change to one), with its outcome
-  (`wrong`, `right`, `not_compared` + reason and what is needed), impact and product.
+  (`wrong`, `right`, `rule_note` + the question for the architect, `not_compared` + reason and
+  what is needed), impact and product.
 - `check_tally` (`tally`): Wrong / Right / Not compared so far and `waiting_second_look`.
 - `check_stopping` (`stopping`): after Stop, the drawings still finishing and those never started.
 - `check_service` (`reason`): the AI service stopped every call (a refused key, no payment, not
@@ -89,6 +90,8 @@ _OUTCOME: Final[Mapping[str, str]] = {
     "clouded": "wrong",
     "right": "right",
     "dismissed": "right",
+    # #1839: the architect's size breaks a GV rule and the vendor follows it: decided.
+    "rule_note": "rule_note",
     "not_compared": "not_compared",
 }
 #: The roster's progress phases as the live phases.
@@ -605,8 +608,18 @@ class LiveCheck:
             "architect": _text(finding.get("architect")),
             "should_be": _text(proof.get("should_be")),
             "product": str(finding.get("category") or "other"),
-            "reason": _text(proof.get("reason")) if outcome == "not_compared" else None,
-            "needs": _text(proof.get("settle")) if outcome == "not_compared" else None,
+            "reason": (
+                _text(proof.get("reason")) if outcome in ("not_compared", "rule_note") else None
+            ),
+            "needs": (
+                _text(proof.get("settle"))
+                if outcome == "not_compared"
+                else (
+                    _text((proof.get("rule_note") or {}).get("question"))  # GV asks
+                    if outcome == "rule_note"
+                    else None
+                )
+            ),
             "impact": (
                 None
                 if impact is None
@@ -746,6 +759,7 @@ class LiveCheck:
         return {
             "wrong": sum(1 for r in shown if r["outcome"] == "wrong" and r["same_as"] is None),
             "right": sum(1 for r in shown if r["outcome"] == "right"),
+            "rule_note": sum(1 for r in shown if r["outcome"] == "rule_note"),
             "not_compared": sum(1 for r in shown if r["outcome"] == "not_compared"),
             # A look that agreed but is not shown as Wrong yet still waits (for its record).
             "waiting_second_look": len(self._waiting) + len(self._held),

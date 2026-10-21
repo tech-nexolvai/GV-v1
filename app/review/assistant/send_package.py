@@ -8,7 +8,9 @@ one download the vendor can be sent as it is, with no editing:
 2. **The comment letter** (`comment_letter.comment_letter_pdf`): a transmittal-style letter with the
    submittal's identity, the review result and one entry per comment.
 3. **The issue register** (XLSX, every cell text): the submittal sheet, then one row per item,
-   Wrong / Right / Not compared, with a blank "Vendor response" column. A Wrong row's "Comment" is
+   Wrong / Ask the architect (GV rule) / Not compared / Right, with a blank "Vendor response"
+   column; and, when there are any, the "Architect questions" sheet (#1839): GV's ready question
+   for each size the architect specifies that breaks a GV rule. A Wrong row's "Comment" is
    the proof card's own sentence (`proof_words`, #1804), its "Why" how it was checked.
 4. **The Not-compared list** (PDF and workbook), when the full check made it. GV's own check report
    never goes in (`internal_report`).
@@ -23,7 +25,10 @@ comment not addressed", and a comment first seen this round is "New".
 
 The status words follow the owner's rule (2026-10-18): proven differences are **Wrong** (the
 clouds); everything code could not prove or compare is **Not compared**; an item that matches is
-**Right** (one the reviewer marked not a problem is Right too, and says so).
+**Right** (one the reviewer marked not a problem is Right too, and says so). A size the architect
+specifies that breaks a GV rule, printed the same by the vendor (#1839), is **Ask the architect
+(GV rule)**: decided, never a comment to the vendor; the letter lists it under "Questions for the
+architect (GV rules)" and says no change is asked of the vendor.
 
 Pure code here except `package_context` and `make_package_file`, which read the chat's workspace;
 the letter is drawn by `comment_letter`, loaded by name, because `app/api/` must not reach a PDF
@@ -66,11 +71,15 @@ from app.review.assistant.review_action import (
     review_action,
     stamp_words,
 )
+from app.review.assistant.rule_notes import HEADING as RULE_NOTE_HEADING
+from app.review.assistant.rule_notes import SHORT_WORDS as RULE_NOTE_WORDS
 from app.review.assistant.vendor_text import item_name, reviewer_right, vendor_text
 
 __all__ = [
     "LETTER_KIND",
     "PACKAGE_KIND",
+    "QUESTION_COLUMNS",
+    "QUESTION_SHEET",
     "REGISTER_COLUMNS",
     "REGISTER_KIND",
     "REPORT_IN_PACKAGE",
@@ -84,6 +93,7 @@ __all__ = [
     "PackageContext",
     "PackageIdentity",
     "Previous",
+    "Question",
     "Status",
     "check_state",
     "comment_labels",
@@ -95,6 +105,7 @@ __all__ = [
     "make_package_file",
     "package_context",
     "package_zip",
+    "questions_of",
     "register_csv",
     "register_rows",
     "register_status",
@@ -107,13 +118,30 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-type Status = Literal["wrong", "right", "not_compared"]
+type Status = Literal["wrong", "right", "rule_note", "not_compared"]
 #: The register's status words.
 STATUS_WORDS: Final[Mapping[Status, str]] = {
     "wrong": "Wrong",
     "right": "Right",
+    "rule_note": RULE_NOTE_WORDS,
     "not_compared": "Not compared",
 }
+#: The register's "Architect questions" sheet (#1839): one row per size the architect specifies
+#: that breaks a GV rule.
+QUESTION_SHEET: Final = "Architect questions"
+QUESTION_COLUMNS: Final = (
+    "No.",
+    "Page",
+    "Area",
+    "Product",
+    "Item",
+    "Architect's size",
+    "Vendor value",
+    "GV rule",
+    "In force",
+    "Where it comes from",
+    "Question for the architect",
+)
 #: The round-2 check's statuses (`round_check`) in the trade's words.
 ROUND_WORDS: Final[Mapping[str, str]] = {
     "fixed": "Closed",
@@ -217,7 +245,8 @@ def incomplete_reason(stopped: str | None, coverage: Mapping[str, Any] | None) -
 
 def register_status(finding: Mapping[str, Any], closed: Sequence[str] = ()) -> Status:
     """Wrong (clouded), Right (matches, the reviewer marked it not a problem, or a previous
-    comment this round fixed: `closed`), else Not compared."""
+    comment this round fixed: `closed`), Ask the architect (the architect's size breaks a GV rule,
+    #1839), else Not compared."""
     group = proof_group(finding)
     if group == "clouded" and str(finding.get("id") or "") in closed:
         return "right"
@@ -225,6 +254,8 @@ def register_status(finding: Mapping[str, Any], closed: Sequence[str] = ()) -> S
         return "wrong"
     if group in ("right", "dismissed"):
         return "right"
+    if group == "rule_note":
+        return "rule_note"
     return "not_compared"
 
 
@@ -503,6 +534,77 @@ class Previous:
 
 
 @dataclass(frozen=True, slots=True)
+class Question:
+    """A size the architect specifies that breaks a GV rule, printed the same by the vendor
+    (#1839): one line of the letter's "Questions for the architect (GV rules)" and one row of the
+    register's "Architect questions" sheet."""
+
+    page: int | None
+    area: str
+    product: str
+    item: str
+    architect: str
+    vendor: str
+    rule: str
+    settings: str
+    origin: str
+    question: str
+    finding_id: str = ""
+
+    def row(self, number: int) -> list[str]:
+        return [
+            str(number),
+            "" if self.page is None else str(self.page),
+            self.area,
+            self.product,
+            self.item,
+            self.architect,
+            self.vendor,
+            self.rule,
+            self.settings,
+            self.origin,
+            self.question,
+        ]
+
+
+def questions_of(
+    findings: Sequence[Mapping[str, Any]],
+    *,
+    areas: Mapping[int, str] | None = None,
+    product_label: Any = None,
+) -> list[Question]:
+    """The sizes the architect specifies that break a GV rule (`proof_group` "rule_note", #1839),
+    by page, each with GV's ready question for the architect. Every cell goes through the
+    vendor-text guard: the letter and the register are sent to the vendor."""
+    out: list[Question] = []
+    for finding in findings:
+        if proof_group(finding) != "rule_note":
+            continue
+        note = proof_of(finding).get("rule_note")
+        if not isinstance(note, Mapping):
+            continue
+        page = _page_of(finding)
+        category = str(finding.get("category") or "other")
+        out.append(
+            Question(
+                page=page,
+                area=vendor_text((areas or {}).get(page or 0, ""), "") or "",
+                product=str(product_label(category)) if product_label is not None else category,
+                item=_item(finding),
+                architect=vendor_text(note.get("architect"), "") or "",
+                vendor=vendor_text(vendor_value(finding), "") or "",
+                rule=vendor_text(f"GV rule: {note.get('name')}", "") or "",
+                settings=vendor_text(note.get("settings"), "") or "",
+                origin=vendor_text(note.get("origin"), "") or "",
+                question=vendor_text(note.get("question"), "") or "",
+                finding_id=str(finding.get("id") or ""),
+            )
+        )
+    out.sort(key=lambda q: (q.page or 0, q.item))
+    return out
+
+
+@dataclass(frozen=True, slots=True)
 class Letter:
     identity: PackageIdentity
     drawing_set: str
@@ -520,6 +622,9 @@ class Letter:
     enclosures: tuple[str, ...]
     products: str = ""
     """The products checked, in the registry's words ("Countertops and Cabinets")."""
+    questions: tuple[Question, ...] = ()
+    """The sizes the architect specifies that break a GV rule (#1839): GV asks the architect;
+    nothing is asked of the vendor."""
 
     @property
     def reviewer_line(self) -> str:
@@ -690,6 +795,7 @@ def letter_of(
             if (products := context.identity.products)
             else ""
         ),
+        questions=tuple(questions_of(findings, areas=context.areas)),
     )
 
 
@@ -728,6 +834,13 @@ def _proof_words(finding: Mapping[str, Any], status: Status) -> str:
         return "Closed: this round prints what it should be"
     if status == "right":
         return "Matches the drawings"
+    if status == "rule_note":
+        # #1839: the architect's size breaks a GV rule; GV asks the architect, not the vendor.
+        note = proof_of(finding).get("rule_note") or {}
+        return (
+            f"The architect specifies {note.get('architect')}; {note.get('standard')}. GV is "
+            "confirming the size with the architect; no change is asked of the vendor."
+        )
     # The Not-compared list's own reason for the item (#1766): the two files say the same.
     listed = not_compared.rows([finding])
     return not_compared.vendor_reason(listed[0]) if listed else "Not compared by code."
@@ -736,6 +849,8 @@ def _proof_words(finding: Mapping[str, Any], status: Status) -> str:
 def _item_action_of(finding: Mapping[str, Any], status: Status) -> str:
     if status == "wrong":
         return item_action(finding)
+    if status == "rule_note":
+        return "None (GV asks the architect)"
     return "None" if status == "right" else "Not reviewed"
 
 
@@ -746,13 +861,19 @@ def register_rows(
     product_label: Any = None,
 ) -> list[list[str]]:
     """One row per item (`REGISTER_COLUMNS`): Wrong first (biggest first, each with its comment
-    number), then Not compared, then Right, each biggest first. Impact rank: the row's place in
+    number), then Ask the architect (GV rule, #1839), then Not compared, then Right, each biggest
+    first. Impact rank: the row's place in
     that order (1 = matters most), Right rows none. "Vendor response" is left blank for the
     vendor. Every cell is text and vendor-facing (no internal "check before sending" words)."""
     ordered = by_impact(findings)
     by_round = context.rounds.by_finding() if context.rounds is not None else {}
     closed = context.state.closed
-    groups: dict[Status, list[list[str]]] = {"wrong": [], "not_compared": [], "right": []}
+    groups: dict[Status, list[list[str]]] = {
+        "wrong": [],
+        "rule_note": [],
+        "not_compared": [],
+        "right": [],
+    }
     for finding in ordered:
         status = register_status(finding, closed)
         page = _page_of(finding)
@@ -775,18 +896,23 @@ def register_rows(
                 vendor_value(finding),
                 (
                     (proof_words.should_text(finding) if wrong else should_be_value(finding))
-                    if status != "not_compared"
+                    if status not in ("not_compared", "rule_note")
                     else ""
                 ),
-                proof_words.reference_words(finding) if wrong else governs(finding),
+                (
+                    proof_words.reference_words(finding)
+                    if wrong
+                    else _rule_reference(finding) if status == "rule_note" else governs(finding)
+                ),
                 _proof_words(finding, status),
                 "",
                 _round_history(finding, status, by_round, context.round_no),
                 "",
             ]
         )
-    rows = [*groups["wrong"], *groups["not_compared"], *groups["right"]]
-    for rank, row in enumerate(rows[: len(groups["wrong"]) + len(groups["not_compared"])], start=1):
+    rows = [*groups["wrong"], *groups["rule_note"], *groups["not_compared"], *groups["right"]]
+    ranked = len(groups["wrong"]) + len(groups["rule_note"]) + len(groups["not_compared"])
+    for rank, row in enumerate(rows[:ranked], start=1):
         row[_COL["Impact rank"]] = str(rank)
     # The guard on internal words (#1622): every cell is vendor-facing.
     guarded = ("Area", "Product", "Comment", "Vendor value", "Should be", "Reference", "Why",
@@ -798,6 +924,12 @@ def register_rows(
         for name in guarded:
             row[_COL[name]] = vendor_text(row[_COL[name]], "") or ""
     return rows
+
+
+def _rule_reference(finding: Mapping[str, Any]) -> str:
+    """A rule note's reference (#1839): the architect's size, and the GV rule it breaks."""
+    note = proof_of(finding).get("rule_note") or {}
+    return f"architect {note.get('architect')}; GV rule: {note.get('name')} {note.get('settings')}"
 
 
 def _comment_words(finding: Mapping[str, Any]) -> str:
@@ -831,23 +963,37 @@ def submittal_rows(letter: Letter) -> list[list[str]]:
         ["Comments", str(len(letter.corrections))],
         ["Not compared", str(letter.not_compared)],
     ]
+    if letter.questions:
+        rows.append([RULE_NOTE_HEADING, str(len(letter.questions))])
     if letter.previous_line:
         rows.append(["Previous comments", letter.previous_line])
     rows += [["Stamp", letter.stamp], ["Disclaimer", letter.action.disclaimer]]
     return rows
 
 
-def register_xlsx(rows: Sequence[Sequence[str]], letter: Letter) -> bytes:
-    """The issue register workbook: "Submittal" (identity, result, disclaimer) and "Comments" (the
-    rows), every cell text (`workbook.write_xlsx`). Raises `ModuleNotFoundError` without
-    openpyxl."""
+def register_xlsx(
+    rows: Sequence[Sequence[str]],
+    letter: Letter,
+    questions: Sequence[Question] | None = None,
+) -> bytes:
+    """The issue register workbook: "Submittal" (identity, result, disclaimer), "Comments" (the
+    rows) and, when there are any, "Architect questions" (#1839: `questions`, else the letter's),
+    every cell text (`workbook.write_xlsx`). Raises `ModuleNotFoundError` without openpyxl."""
     workbook = import_module("app.review.assistant.workbook")
-    data: bytes = workbook.write_xlsx(
-        [
-            ("Submittal", ("Field", "Value"), submittal_rows(letter)),
-            ("Comments", REGISTER_COLUMNS, rows),
-        ]
-    )
+    asked = list(letter.questions if questions is None else questions)
+    sheets: list[tuple[str, Sequence[str], Sequence[Sequence[str]]]] = [
+        ("Submittal", ("Field", "Value"), submittal_rows(letter)),
+        ("Comments", REGISTER_COLUMNS, rows),
+    ]
+    if asked:
+        sheets.append(
+            (
+                QUESTION_SHEET,
+                QUESTION_COLUMNS,
+                [question.row(n) for n, question in enumerate(asked, start=1)],
+            )
+        )
+    data: bytes = workbook.write_xlsx(sheets)
     return data
 
 
@@ -966,8 +1112,11 @@ def make_package_file(
             enclosures=[m.name for m in everything if m.name != letter_name],
             not_compared_list=any(_NOT_COMPARED in m.name for m in members),
         )
+        questions = questions_of(
+            findings, areas=context.areas, product_label=registry.category_label
+        )
         register_path.write_bytes(
-            register_xlsx(rows, letter) if ending == "xlsx" else register_csv(rows)
+            register_xlsx(rows, letter, questions) if ending == "xlsx" else register_csv(rows)
         )
         import_module("app.review.assistant.comment_letter").comment_letter_pdf(letter, letter_path)
         size, digest = package_zip(everything, out, context.date)

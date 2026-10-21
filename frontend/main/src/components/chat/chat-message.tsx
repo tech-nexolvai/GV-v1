@@ -412,7 +412,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   // The viewer's arrows step through the findings in the order the sections show them.
   const ordered = architectView ? (() => {
     const groups = resultGroups(findings, decisionOf);
-    return [...groups.wrong, ...groups.notCompared, ...groups.dismissed, ...groups.right];
+    return [...groups.wrong, ...groups.ruleNotes, ...groups.notCompared, ...groups.dismissed, ...groups.right];
   })() : sectionOrder(shown, filter);
   // #1803: after each saved decision of a full check, the draft (cloud drawing, letter, register,
   // Not-compared list, package) is made again by itself, a moment later so quick decisions share one

@@ -35,7 +35,7 @@ function contrast(a: string, b: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-const OUTCOMES = ['pass', 'fail', 'review', 'missing'] as const;
+const OUTCOMES = ['pass', 'fail', 'review', 'missing', 'ask'] as const;
 
 describe.each([
   ['light', light],
