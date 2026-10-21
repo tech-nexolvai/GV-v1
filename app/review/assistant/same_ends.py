@@ -171,6 +171,7 @@ def side(
             or axis not in ("h", "v")
             or value is None
             or label.get("scale_ok") is not True
+            or label.get("origin") == "picture"  # pixels, never a line (#1835)
             or not line
             or len(line) != 2
             or not raw

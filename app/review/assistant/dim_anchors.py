@@ -251,13 +251,18 @@ def _candidates(lines: _Lines, label: Label, box: Box) -> list[tuple[float, floa
 
 
 def _spans(lines: _Lines, labels: Sequence[Label], box: Box) -> tuple[dict[str, Span], float]:
-    """The drawing's labels with a span code trusts, and its median points per inch."""
+    """The drawing's labels with a span code trusts, and its median points per inch. A label read
+    inside a pasted picture never has one (#1835): the ticks found beside it are vector line work
+    of whatever lies under or near the picture, never the picture's own (its line work is pixels),
+    so it never pairs on its ends."""
     found: dict[str, tuple[str, list[tuple[float, float, float, float]], Fraction, Label]] = {}
     for label in labels:
         axis = label.get("orientation")
         value = _inches(label)
         raw = label.get("box")
         if axis not in ("h", "v") or value is None or not raw or len(raw) != 4:
+            continue
+        if label.get("origin") == "picture":
             continue
         centre = ((float(raw[0]) + float(raw[2])) / 2, (float(raw[1]) + float(raw[3])) / 2)
         if not _inside(centre, box):
@@ -680,6 +685,8 @@ def set_anchor_pairs(
         for half in entry.get("halves") or []:
             role = half.get("role") if isinstance(half, Mapping) else None
             raw = half.get("box") if isinstance(half, Mapping) else None
+            if isinstance(half, Mapping) and half.get("picture"):
+                continue  # a headed pasted picture (#1835): no vector line work to anchor on
             if role in ("architect", "vendor") and raw and len(raw) == 4:
                 box = (float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3]))
                 groups.setdefault((file, str(entry["area"])), []).append((page, str(role), box))

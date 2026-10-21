@@ -267,7 +267,11 @@ def doubts(
         if not halves:
             continue
         roles = [str(h.get("role")) for h in halves]
-        labelled = [r for r in roles if r != "general"]
+        # A headed pasted picture (#1835) never makes code assume a role for a pasted drawing
+        # with no heading: the pasted drawings are asked about exactly as before.
+        labelled = [
+            r for r, h in zip(roles, halves, strict=True) if r != "general" and not h.get("picture")
+        ]
         area_roles = _area_roles(entry, by_area)
         # A sheet with no heading whose roles code decided from both drawings' content (#1825):
         # a drawing it left undecided (a plan printing no dimension) stays general unless a

@@ -202,21 +202,37 @@ class _Half:
     """The page in its own file, when `page` is a set page of a separate file (#1722)."""
     from_upload: bool = False
     """Its role came from its upload (a separate plain file, #1719): no GV area, no heading."""
+    picture: bool = False
+    """A pasted picture GV headed (#1835): it holds only the labels read inside it."""
 
 
 def _assign_labels(
     halves: Sequence[_Half], labels: Sequence[Mapping[str, Any]]
 ) -> list[Mapping[str, Any]]:
     """Each label to the nearest drawing within reach whose role matches the label's side (as
-    `dim_labels` gives the side). Returns the labels no drawing took."""
+    `dim_labels` gives the side). A headed pasted picture (#1835) takes only the labels read
+    inside it (`origin: "picture"`), before any other drawing; every other label goes to the
+    pasted drawings as before. Returns the labels no drawing took."""
     left: list[Mapping[str, Any]] = []
+    drawings = [half for half in halves if not half.picture]
     for label in labels:
         box = _box(label.get("box"))
         if box is None:
             continue
         centre = _centre(box)
+        if label.get("origin") == "picture":
+            holding = [
+                half
+                for half in halves
+                if half.picture
+                and _distance(centre, half.box) == 0
+                and _LABEL_SIDE.get(half.role) == label.get("side")
+            ]
+            if holding:
+                holding[0].labels.append(label)
+                continue
         best: tuple[float, float, _Half] | None = None
-        for half in halves:
+        for half in drawings:
             distance = _distance(centre, half.box)
             area = (half.box[2] - half.box[0]) * (half.box[3] - half.box[1])
             if best is None or (distance, area) < (best[0], best[1]):
@@ -507,6 +523,8 @@ def worklist_from(
             )
 
     drawings: dict[str, Drawing] = {}
+    pictures: set[str] = set()
+    """The refs of the drawings that are headed pasted pictures (#1835)."""
     halves_by_area: dict[str | None, list[_Half]] = {}
     vendor_halves: list[_Half] = []
     across: list[_Half] = []
@@ -581,6 +599,7 @@ def worklist_from(
                 box=box,
                 file_page=own if separate else None,
                 from_upload=bool(raw.get("from_upload")),
+                picture=bool(raw.get("picture")),
             )
             halves.append(half)
             if box[2] - box[0] < MIN_DRAWING_PT or box[3] - box[1] < MIN_DRAWING_PT:
@@ -648,6 +667,8 @@ def worklist_from(
                 sheet=_sheet(combined, entry_file),
             )
             drawings[half.ref] = drawing
+            if half.picture:
+                pictures.add(half.ref)
             if half.role == "architect" and (separate or half.from_upload):
                 across.append(half)
             if separate:
@@ -694,6 +715,11 @@ def worklist_from(
             and label.get("side") == side
             and (box := _box(label.get("box"))) is not None
             and _distance(_centre(box), drawing.box) <= _LABEL_REACH_PT
+            # A headed pasted picture's facts are only the labels read inside it (#1835).
+            and (
+                drawing.ref not in pictures
+                or (label.get("origin") == "picture" and _distance(_centre(box), drawing.box) == 0)
+            )
         ]
         scales_page = scales_pages.get((drawing.file, own)) or {}
         oriented = tuple(
