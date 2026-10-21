@@ -377,7 +377,12 @@ def _inside(box: Sequence[float], other: Sequence[float]) -> bool:
 
 
 def _half_of(
-    page_map: Mapping[str, Any] | None, file: str | None, page: int, box: Sequence[float]
+    page_map: Mapping[str, Any] | None,
+    file: str | None,
+    page: int,
+    box: Sequence[float],
+    *,
+    role: str | None = None,
 ) -> Mapping[str, Any] | None:
     for entry in (page_map or {}).get("pages") or []:
         if not isinstance(entry, Mapping) or entry.get("page") != page:
@@ -385,25 +390,41 @@ def _half_of(
         if file is not None and entry.get("file") not in (None, file):
             continue
         for half in entry.get("halves") or []:
-            if isinstance(half, Mapping) and half.get("box") and _inside(box, half["box"]):
+            if not isinstance(half, Mapping) or (role is not None and half.get("role") != role):
+                continue
+            if half.get("box") and _inside(box, half["box"]):
                 return half
     return None
 
 
 def _newest_round(
-    page_map: Mapping[str, Any] | None, file: str | None, page: int
+    page_map: Mapping[str, Any] | None,
+    file: str | None,
+    page: int,
+    box: Sequence[float] | None = None,
 ) -> tuple[int | None, int | None]:
-    """(this page's vendor round, the newest vendor round of its area) from the page map."""
+    """(the vendor round of the drawing holding `box` on this page, the newest vendor round of its
+    area) from the page map. On a sheet with two vendor rounds a label in the round-1 drawing is
+    round 1, not the page's highest round (#1845); with no box, or no vendor half with a round
+    holding it, the page's highest vendor round."""
     entries = [e for e in (page_map or {}).get("pages") or [] if isinstance(e, Mapping)]
     entry = next((e for e in entries if e.get("page") == page), None)
     if entry is None:
         return None, None
     area = entry.get("area") or entry.get("section")
-    own: list[int] = [
-        int(h["round"])
-        for h in entry.get("halves") or []
-        if isinstance(h, Mapping) and h.get("role") == "vendor" and isinstance(h.get("round"), int)
-    ]
+    half = _half_of(page_map, file, page, box, role="vendor") if box is not None else None
+    held = half.get("round") if half is not None else None
+    own: list[int] = (
+        [int(held)]
+        if isinstance(held, int)
+        else [
+            int(h["round"])
+            for h in entry.get("halves") or []
+            if isinstance(h, Mapping)
+            and h.get("role") == "vendor"
+            and isinstance(h.get("round"), int)
+        ]
+    )
     newest: list[int] = [
         int(h["round"])
         for e in entries
@@ -482,8 +503,8 @@ def code_checks(
             if same
             else Check("axis", "fail", "one dimension is a width and the other a height")
         )
-    # 5. The newest round that shows the item.
-    own, newest = _newest_round(page_map, file if isinstance(file, str) else None, page)
+    # 5. The newest round that shows the item: the round of the vendor drawing the value sits in.
+    own, newest = _newest_round(page_map, file if isinstance(file, str) else None, page, box)
     if own is not None and newest is not None and own < newest and newer_same is None:
         checks.append(
             Check("round", "fail", f"round {own}: round {newest} is the vendor's current drawing")

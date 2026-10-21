@@ -2856,7 +2856,8 @@ class _Run:
 
         file = str(vendor.get("file"))
         page = int(vendor.get("page") or 0)
-        own, newest = _newest_round(page_map, file, page)
+        box = [float(v) for v in vendor.get("box") or (0, 0, 0, 0)]
+        own, newest = _newest_round(page_map, file, page, box)
         if own is None or newest is None or own >= newest:
             return None
         entries = [e for e in (page_map or {}).get("pages") or [] if isinstance(e, Mapping)]
