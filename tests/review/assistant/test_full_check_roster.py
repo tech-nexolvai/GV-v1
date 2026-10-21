@@ -1031,7 +1031,7 @@ def _proved_on_pool(
         counts = run._prove_values("verifier")
     counts = {**counts, "failed_steps": len(run.failed_steps)}
     found = [
-        {k: f.get(k) for k in ("id", "checks", "proof_tools")}
+        {k: f.get(k) for k in ("id", "checks", "proof_tools", "reader_error")}
         for f in sorted(engine.book.live(), key=lambda f: str(f["id"]))
     ]
     return heard, found, counts
@@ -1041,20 +1041,24 @@ def test_the_proving_tools_on_the_pool_give_what_one_at_a_time_gave(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#1850: the reads run on a few threads, finishing in any order; every finding gets the
-    same answers, the listener hears them in the same order, and a side whose tool raised is
-    counted and left as it was (never a stop for the others)."""
+    same answers (run after run), the listener hears them in the same order, and an item whose
+    reader raised is Not compared with the reason, never a stop for the others."""
     one = _proved_on_pool(tmp_path / "one", monkeypatch, "1")
     pool = _proved_on_pool(tmp_path / "pool", monkeypatch, "3")
-    assert pool == one
+    again = _proved_on_pool(tmp_path / "again", monkeypatch, "3")
+    assert pool == one == again
     heard, found, counts = pool
-    assert counts == {"verify_value": 10, "read_number": 4, "failed_steps": 1}
+    # One read that raised is not a broken step: the check stays complete.
+    assert counts == {"verify_value": 10, "read_number": 4, "failed_steps": 0}
     assert len(heard) == 9  # the side whose tool raised is not heard
     assert sum(len(f["proof_tools"] or []) for f in found) == 10
-    # The side whose read raised keeps its reason on the item, and the check is not complete.
-    failed = [e for f in found for e in f["proof_tools"] or [] if "failed" in e["words"]]
+    # The item whose read raised is Not compared, with the reason; the others are not touched.
+    failed = [e for f in found for e in f["proof_tools"] or [] if e.get("failed")]
     assert [(e["side"], e["value"], e["result"]) for e in failed] == [
         ("vendor", '44"', "cannot_read")
     ]
+    marked = [f for f in found if f["reader_error"]]
+    assert len(marked) == 1 and marked[0]["proof_tools"][-1].get("failed")
 
 
 def test_stop_ends_the_proving_reads_on_the_pool(

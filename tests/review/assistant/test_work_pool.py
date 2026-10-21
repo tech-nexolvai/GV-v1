@@ -117,6 +117,8 @@ def test_the_worker_count_is_modest_and_settable(monkeypatch: pytest.MonkeyPatch
     assert code_workers() == 1
     monkeypatch.setenv(work_pool.WORKERS_SETTING, "2")
     assert code_workers() == 2
+    monkeypatch.setenv(work_pool.WORKERS_SETTING, "64")
+    assert code_workers() == work_pool.MOST_WORKERS
     monkeypatch.setenv(work_pool.WORKERS_SETTING, "0")
     assert code_workers() == 1
     monkeypatch.setenv(work_pool.WORKERS_SETTING, "many")

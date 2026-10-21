@@ -505,7 +505,6 @@ CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
 #: its own (`simple_check.run`).
 SEEDING_STEP: Final = "GV Review's recorded results"
 LABELS_STEP: Final = "the drawings' printed numbers (the labels step did not finish)"
-DRAWN_INK_STEP: Final = "the drawn-ink reads (a read failed)"
 
 
 def broken_steps_note(steps: Sequence[str]) -> str:
@@ -2716,15 +2715,10 @@ class ChatEngine:
             for inked in with_drawn_ink(book.live(), inks):
                 if book.replace(inked):
                     self._show_finding(inked)
-        if any(FAILED_KEY in answer for answer in inks.values()):
-            # A drawn-ink read that raised leaves its value unread: not a check to send (#1850).
-            self.code_checks_failed.append(DRAWN_INK_STEP)
-            if self.settings.mode == "full_check":
-                self.incomplete_note = "; ".join(
-                    part
-                    for part in (self.incomplete_note, broken_steps_note([DRAWN_INK_STEP]))
-                    if part
-                )
+        failed = sum(1 for answer in inks.values() if FAILED_KEY in answer)
+        if failed:
+            # Those items are Not compared, with the reason (#1850); one read is not a step.
+            _log.warning("assistant chat drawn-ink reads failed on %d findings", failed)
         with self.timings.phase("finish_checks"):
             self._finish_trust(skipped)
 

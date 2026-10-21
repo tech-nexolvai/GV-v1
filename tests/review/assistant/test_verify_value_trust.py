@@ -183,6 +183,13 @@ def test_the_drawn_ink_pass_on_the_pool_keeps_its_order_and_its_failures(
     updated = {f["id"]: f for f in chat_trust.with_drawn_ink(findings, found)}
     side = updated["F3"]["checks"]["verify_vendor"]
     assert side["pending"] and side["reason"].startswith(chat_trust.DRAWN_INK_FAILED)
+    # The item is Not compared with the reason; the others are read as before.
+    from app.review.assistant import classification, proof
+
+    assert updated["F3"]["reader_error"] == classification.READER_ERROR_WORDS
+    assert "reader_error" not in updated["F2"]
+    group = proof.proof_group(updated["F3"])
+    assert group == "not_compared"
 
 
 def test_a_checks_module_without_the_drawn_route_reads_nothing(

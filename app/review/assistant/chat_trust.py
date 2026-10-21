@@ -57,6 +57,7 @@ from typing import Any, Final
 
 from app.review.assistant import witness
 from app.review.assistant.chat_findings import finding_categories, live_findings, page_ranges
+from app.review.assistant.classification import READER_ERROR, READER_ERROR_WORDS
 from app.review.assistant.dim_findings import label_checks
 from app.review.assistant.vendor_text import item_name
 from app.review.assistant.work_pool import run_ordered
@@ -517,7 +518,7 @@ def _ledger_made(finding: Mapping[str, Any]) -> str | None:
 #: The most seconds the drawn-ink pass spends on one answer: a side not reached stays unread.
 DRAWN_INK_BUDGET_S: Final = 120.0
 #: A finding whose drawn-ink read raised (#1850): its answer holds only this reason, and the
-#: check that had it is not complete.
+#: finding is Not compared with it (`classification.READER_ERROR`).
 FAILED_KEY: Final = "_failed"
 DRAWN_INK_FAILED: Final = "the drawn-ink read of this value failed"
 
@@ -601,7 +602,11 @@ def with_drawn_ink(
             ):
                 # Still unread: it says why (#1850).
                 checks[key] = {**checks[key], "reason": str(answer[FAILED_KEY])}
-        out.append(judged({**finding, "checks": checks}))
+        updated = {**finding, "checks": checks}
+        if answer.get(FAILED_KEY):
+            # A reader that raised: the item is Not compared with that reason (#1850).
+            updated[READER_ERROR] = READER_ERROR_WORDS
+        out.append(judged(updated))
     return out
 
 

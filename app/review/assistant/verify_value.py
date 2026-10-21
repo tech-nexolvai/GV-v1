@@ -803,6 +803,8 @@ class InkReader(Protocol):
     def __call__(self, picture: np.ndarray, *, single_line: bool) -> list[str]: ...
 
 
+#: The setting that limits each Tesseract process's threads (OpenMP).
+TESSERACT_THREADS: Final = "OMP_THREAD_LIMIT"
 #: The characters a dimension is written with: what Tesseract is told to look for.
 _WHITELIST: Final = "0123456789/'\"-[]. "
 
@@ -815,6 +817,9 @@ class TesseractReader:
     """Told the characters a dimension is written with (`_WHITELIST`), it reads `"` as `"`."""
 
     def __init__(self) -> None:
+        # One thread per Tesseract process (#1850): code's pool runs a few reads at once, each
+        # its own process; without this each would start a thread per core and fight for them.
+        os.environ.setdefault(TESSERACT_THREADS, "1")
         self._tesseract = import_module("pytesseract")
         self._tesseract.get_tesseract_version()  # raises when the program is not installed
 

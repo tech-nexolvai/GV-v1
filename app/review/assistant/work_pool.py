@@ -1,7 +1,7 @@
 """A small, bounded pool for code's own $0 steps, results kept in the order given (#1850).
 
-A full check's code steps (the provers' `verify_value` / `read_number` reads, the finish's free
-steps) each read one item at a time: OCR and page renders, about two seconds an item, so a big set
+A full check's code steps (the provers' `verify_value` / `read_number` reads, the finish's
+drawn-ink pass) each read one item at a time: OCR and page renders, about two seconds an item, so a big set
 spent minutes on them while the machine's other cores waited. This pool runs such a step on a few
 threads at once and changes nothing else:
 
@@ -16,10 +16,11 @@ threads at once and changes nothing else:
   out; an item not started because the check was stopped says so (`Done.ran` is False).
 - **Stop stops everything.** When `stop()` turns true, no further item starts and the pool does
   not wait for the queue; the items already running end their current read.
-- **Modest.** At most `code_workers()` threads: `GV_ASSISTANT_CODE_WORKERS`, else
-  min(`DEFAULT_MAX_WORKERS`, cores - 2), at least one (one is the old one-at-a-time loop, run on
-  the caller's thread). OCR is the work: Tesseract runs as its own process per read and pdfium
-  renders hold `chat_drawing.PDFIUM_LOCK`, so threads are enough and memory stays the process's.
+- **Modest.** At most `code_workers()` threads: `GV_ASSISTANT_CODE_WORKERS` (never above
+  `MOST_WORKERS`), else min(`DEFAULT_MAX_WORKERS`, cores - 2), at least one (one is the old
+  one-at-a-time loop, run on the caller's thread). OCR is the work: Tesseract runs as its own
+  process per read (one thread each, `verify_value.TESSERACT_THREADS`) and pdfium renders hold
+  `chat_drawing.PDFIUM_LOCK`, so threads are enough and memory stays the process's.
 
 Each item runs in a copy of the caller's context (`contextvars`), so a step that reads a context
 variable sees what the caller set.
@@ -41,6 +42,8 @@ _log = logging.getLogger(__name__)
 
 #: The most threads by default; the machine may run other checks too.
 DEFAULT_MAX_WORKERS: Final = 4
+#: The most threads even when set higher: the machine runs other checks and the API too.
+MOST_WORKERS: Final = 6
 #: The setting that overrides it (1 runs one item at a time, on the caller's thread).
 WORKERS_SETTING: Final = "GV_ASSISTANT_CODE_WORKERS"
 #: How often a wait looks at `stop()` (seconds).
@@ -62,7 +65,7 @@ def code_workers() -> int:
     raw = os.environ.get(WORKERS_SETTING, "").strip()
     if raw:
         try:
-            return max(1, int(raw))
+            return max(1, min(MOST_WORKERS, int(raw)))
         except ValueError:
             _log.warning("%s is not a whole number: %r", WORKERS_SETTING, raw)
     return max(1, min(DEFAULT_MAX_WORKERS, (os.cpu_count() or 2) - 2))

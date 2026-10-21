@@ -299,7 +299,8 @@ def _failed_entry(
         "result": "cannot_read",
         "route": "none",
         "read": None,
-        "words": f"the read failed ({type(error).__name__}): this value is not read",
+        "words": f"{classification.READER_ERROR_WORDS}: {type(error).__name__}",
+        "failed": True,
     }
 
 
@@ -2165,17 +2166,16 @@ class _Run:
                 current["proof_tools"] = [*(current.get("proof_tools") or []), *entries][
                     -_PROOF_ENTRIES:
                 ]
+                if any(entry.get("failed") for entry in entries):
+                    # A reader raised on one of its numbers: Not compared, said why (#1850).
+                    current[classification.READER_ERROR] = classification.READER_ERROR_WORDS
                 return current
 
             engine._update_finding(str(finding["id"]), change)
         failed = counts.pop(_FAILED, 0)
         if failed:
-            # A read that raised leaves its value unread, with the reason on the item; the check
-            # is not one to send (#1850).
-            self.failed_steps.append(
-                f"the proving reads ({stage}): {failed} "
-                f"{'read' if failed == 1 else 'reads'} ended with an error"
-            )
+            # Each is Not compared with the reason (#1850); one read is not a broken step.
+            _log.warning("assistant roster proving reads failed (%s): %d", stage, failed)
         self.tool_calls[stage] = {
             name: self.tool_calls.get(stage, {}).get(name, 0) + n for name, n in counts.items()
         }
