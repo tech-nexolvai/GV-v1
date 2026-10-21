@@ -113,6 +113,7 @@ from app.review.assistant.full_check_advocate import (
     finding_words,
     ink_colour,
     needs_pairing,
+    same_dimension,
     same_extent,
     string_chain,
     string_extent,
@@ -3013,6 +3014,7 @@ class _Run:
                 code_paired=code_paired,
                 item=str(finding.get("item") or ""),
                 words=finding_words(finding),
+                twins=self._twins(reply, architect, page_map),
             )
             pairing = {
                 "labels": {
@@ -3069,6 +3071,37 @@ class _Run:
             if inside and label.get("side") == (on or side) and _same_inches(label, want):
                 hits.append(dict(label))
         return hits[0] if len(hits) == 1 else None
+
+    def _twins(
+        self,
+        reply: Mapping[str, Any] | None,
+        architect: Mapping[str, Any] | None,
+        page_map: Mapping[str, Any] | None,
+    ) -> tuple[str, ...]:
+        """The blind pick's label when code proves it is the helper's architect dimension printed
+        again on the same drawing (`same_dimension`, #1840), else nothing."""
+        from app.review.assistant.full_check_advocate import _REF, _half_of
+
+        if reply is None or architect is None:
+            return ()
+        pick = str(reply.get("pick") or "")
+        found = _REF.fullmatch(pick.strip())
+        if found is None:
+            return ()
+        file = str(architect.get("file") or self.engine.book.main_file or "")
+        page = int(found.group(1))
+        labels = self.engine.book.dim_labels.on_page(file, page, read_now=False) or []
+        label = next((item for item in labels if item.get("id") == f"D{found.group(2)}"), None)
+        if label is None:
+            return ()
+        named = {"file": file, "page": page, **dict(label)}
+
+        def drawing(of: Mapping[str, Any]) -> object | None:
+            box = [float(v) for v in of.get("box") or (0, 0, 0, 0)]
+            half = _half_of(page_map, str(of.get("file")), int(of.get("page") or 0), box)
+            return None if half is None else tuple(float(v) for v in half["box"])
+
+        return (pick,) if same_dimension(named, architect, drawing) is not None else ()
 
     def _ink(self, label: Mapping[str, Any]) -> tuple[int, float] | None:
         from app.review.assistant import set_pack

@@ -106,7 +106,14 @@ def _by_id(result: Any) -> dict[str, dict[str, Any]]:
 
 def test_the_ladder_is_cheapest_first_and_every_step_tried_is_kept() -> None:
     # Missed, changed or added finishes are code's own finish check (#1623), not a step here.
-    assert FREE_STEPS == ("labels", "under_markup", "same_item", "vendor_sums", "pairs")
+    assert FREE_STEPS == (
+        "labels",
+        "under_markup",
+        "same_item",
+        "vendor_sums",
+        "pairs",
+        "vendor_search",
+    )
     result = escalate([_wrong()], _ctx())
     finding = _by_id(result)["F1"]
     # Code read both values at their labels: a code witness, but no pairing proof yet, so the item

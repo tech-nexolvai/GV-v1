@@ -11,6 +11,8 @@ hold:
    `architect_dim`) and the advocate's, made without seeing the claim or the helper's pick: it is
    shown the vendor's label and the whole architect drawing with every label numbered, and asked
    which one measures the same thing. Both must also say the same about where each end lands.
+   A pick naming another label that code proves is the same dimension printed twice on the same
+   drawing (`same_dimension`: same value, its line ending at the same two places) agrees (#1840).
 2. **Code read both values at those spots** (the labels themselves, or `verify_value`).
 3. **The drawn extents agree** (`same_extent`): code lines the two drawings up on dimensions they
    share and checks both dimension lines' end points land on the same drawn extent, allowing only
@@ -46,7 +48,7 @@ from __future__ import annotations
 import io
 import re
 import statistics
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from itertools import pairwise
@@ -95,6 +97,7 @@ __all__ = [
     "room_end",
     "room_words",
     "same_chain",
+    "same_dimension",
     "same_extent",
     "string_chain",
     "string_extent",
@@ -610,6 +613,51 @@ def same_extent(
     return "different_extent", f"the ends land apart ({error:.0f} pt, {allowed:.0f} allowed)"
 
 
+#: Two dimension lines of one drawing whose ends along their axis lie this close (points) end at
+#: the same two places (#1840).
+_TWIN_PT: Final = 1.0
+#: Two printed values are one value within this (inches).
+_TWIN_IN: Final = Decimal(1) / Decimal(32)
+
+
+def same_dimension(
+    one: Mapping[str, Any],
+    other: Mapping[str, Any],
+    drawing_of: Callable[[Mapping[str, Any]], object | None],
+) -> str | None:
+    """Why two labels code read are one dimension printed twice on the same drawing, or None
+    (#1840): the same file, page and side, inside the same drawing (`drawing_of`: the page map's
+    drawing holding a label, None when none does), the same direction, the same value (within
+    1/32"), and both dimension lines, each on its drawing's scale (`scale_ok`, so each is the
+    label's own line), end at the same two places along their axis (each end within `_TWIN_PT`).
+    On one orthographic drawing, two lines between the same two places along one axis measure the
+    same extent (a width printed above an elevation and again below it), so a blind pick naming
+    either label names the same dimension. A label read inside a pasted picture never has a line
+    (`_axis`), so it is never one."""
+    if one.get("id") == other.get("id") and one.get("page") == other.get("page"):
+        return None
+    for key in ("file", "page", "side", "orientation"):
+        if one.get(key) != other.get(key) or one.get(key) in (None, ""):
+            return None
+    if one.get("scale_ok") is not True or other.get("scale_ok") is not True:
+        return None
+    a, b = _inches(one), _inches(other)
+    if a is None or b is None or abs(a - b) > _TWIN_IN:
+        return None
+    ends_one, ends_other = _axis(one), _axis(other)
+    if ends_one is None or ends_other is None:
+        return None
+    if any(abs(p - q) > _TWIN_PT for p, q in zip(ends_one, ends_other, strict=True)):
+        return None
+    drawing = drawing_of(one)
+    if drawing is None or drawing != drawing_of(other):
+        return None
+    return (
+        f"{one.get('id')} and {other.get('id')} print the same value on the same drawing and "
+        "their lines end at the same two places: one dimension printed twice"
+    )
+
+
 # ---- the verdict -------------------------------------------------------------------------------------
 
 
@@ -686,6 +734,7 @@ def decide(
     code_paired: bool,
     item: str | None = None,
     words: str | None = None,
+    twins: Collection[str] = (),
 ) -> Verdict:
     """The verdict on one red candidate under D1 (see the module). `printed`: code read both
     values at their spots. `helper_pick`: the helper's architect label (`p23.D10`). `advocate`: the
@@ -693,7 +742,9 @@ def decide(
     architect's page (`p23.D10`), or `None` when it was not made (the price, a failed call): then
     "Not verified within the fixed price", whatever the geometry said (#1829). `extent`: `same_extent`'s.
     `item` and `words` (`finding_words`): the finding's own, read for room context (`room_end`)
-    when geometry cannot back the picks."""
+    when geometry cannot back the picks. `twins`: architect labels code proved are the helper's
+    dimension printed again on the same drawing (`same_dimension`, #1840): a pick naming one of
+    them names the helper's dimension."""
     answers: dict[str, str] = {check.name: str(check.outcome) for check in checks}
     failed = [check for check in checks if check.outcome != "pass"]
     if failed:
@@ -757,11 +808,14 @@ def decide(
         return Verdict(
             "objects", "Not proved: the checker sees the vendor value in colour.", answers
         )
-    if pick != helper_pick:
+    if pick != helper_pick and pick not in twins:
         said = "no architect dimension" if pick == "none" else pick
         return Verdict(
             "objects", f"Not proved: a blind second pick chose {said}, not {helper_pick}.", answers
         )
+    if pick != helper_pick:
+        # The same dimension printed twice on the drawing (#1840): the pick agrees on it.
+        answers["twin"] = "same_dimension"
     vendor_spans, architect_spans = advocate.get("vendor_spans"), advocate.get("architect_spans")
     if vendor_spans != architect_spans:
         answers["spans"] = "differ"

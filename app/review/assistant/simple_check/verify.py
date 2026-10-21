@@ -85,7 +85,13 @@ from app.review.assistant.architect_items import MIN_TEXT, tag_codes
 from app.review.assistant.classification import PROTOTYPE_REFERENCE, PROTOTYPE_REFERENCE_WORDS
 from app.review.assistant.dim_index import parse_ref
 from app.review.assistant.finding_checks import to_inches
-from app.review.assistant.full_check_advocate import Check, code_pairs, is_slip, same_extent
+from app.review.assistant.full_check_advocate import (
+    Check,
+    code_pairs,
+    is_slip,
+    same_dimension,
+    same_extent,
+)
 from app.review.assistant.full_check_plan import read_page_map
 from app.review.assistant.product_scope import ProductScope, named_products
 from app.review.assistant.read_number import Reading, Request
@@ -795,6 +801,9 @@ class Verified:
     resolve: tuple[Mapping[str, Any], ...] = ()
     """The resolve loop's rounds on this item (`resolve.py`): each round's failed check, the
     evidence the AI named (label ids), code's verdict on it. Empty when the loop did not run."""
+    twins: tuple[str, ...] = ()
+    """Architect labels code proved are the pair's architect dimension printed again on the same
+    drawing (`same_dimension`, #1840): a blind look naming one of them names the same dimension."""
 
     @property
     def verdict(self) -> str:
@@ -1424,6 +1433,24 @@ def _verify_pair(
         finding=finding,
         blind="pair",
         ends=ends,
+        twins=_twins(architect, pack),
+    )
+
+
+def _twins(architect: Mapping[str, Any], pack: Pack) -> tuple[str, ...]:
+    """The other labels on the architect's page that print the same dimension again on the same
+    drawing (`same_dimension`, #1840), as refs (`p25.D11`)."""
+    file = str(architect.get("file") or pack.main_file)
+    page = int(architect.get("page") or 0)
+
+    def drawing(label: Mapping[str, Any]) -> object | None:
+        half = pack.half_of(label)
+        return None if half is None else half.box
+
+    return tuple(
+        _ref(label)
+        for label in pack.on_page(file, page)
+        if same_dimension(label, architect, drawing) is not None
     )
 
 
@@ -2294,7 +2321,7 @@ def _pair_disagrees(verified: Verified, answer: BlindAnswer | None, failed: str)
         assert verified.architect is not None
         want = _ref(verified.architect)
         pick = _pick(answer, verified.architect.get("page"))
-        if pick != want:
+        if pick != want and pick not in verified.twins:
             said = "no architect dimension" if pick is None else pick
             return f"not proved: a blind second look chose {said}, not {want}"
     if verified.blind == "chain":
