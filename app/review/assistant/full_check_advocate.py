@@ -503,9 +503,11 @@ _TOLERANCE_PT: Final = 4.0
 
 
 def _axis(label: Mapping[str, Any]) -> tuple[float, float] | None:
-    """The dimension line's two ends along its own axis (x for a width, y for a height)."""
+    """The dimension line's two ends along its own axis (x for a width, y for a height). A label
+    read inside a pasted picture has none (#1830, #1835): a picture's line work is pixels, so it
+    never passes a geometry check on a line."""
     line = label.get("dim_line")
-    if not line or len(line) != 2:
+    if not line or len(line) != 2 or label.get("origin") == "picture":
         return None
     index = 0 if label.get("orientation") == "h" else 1
     ends = sorted(float(point[index]) for point in line)
@@ -1144,9 +1146,10 @@ _RUN_BAND_PT: Final = 40.0
 
 
 def _line(label: Mapping[str, Any]) -> tuple[float, float, float] | None:
-    """(start, end, across) of a label's dimension line along its own axis."""
+    """(start, end, across) of a label's dimension line along its own axis (never a picture
+    label's, #1835)."""
     line = label.get("dim_line")
-    if not line or len(line) != 2:
+    if not line or len(line) != 2 or label.get("origin") == "picture":
         return None
     along = 0 if label.get("orientation") == "h" else 1
     ends = sorted(float(point[along]) for point in line)

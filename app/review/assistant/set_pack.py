@@ -33,7 +33,12 @@ that set-up once per upload, in the background, and the agent sees it read-only 
   #1052), `role_by: "content"`; anything less stays general. Drawings pasted as pictures (a
   rectangle comment holding an image) are kept in the drawings-only copy and listed as the
   page's `pictures`: the agents see them, and code reads their numbers with two OCR engines
-  (`picture_labels`, #1830; a label only when both read the same value).
+  (`picture_labels`, #1830; a label only when both read the same value). **A picture GV headed**
+  (#1835, decided by Anant 2026-10-21) is also a drawing of the page (`picture: true`, after the
+  pasted drawings), its role from the heading over it by the same rule (above, or below as a
+  caption), so the labels read in it take that side; a picture with no heading stays nobody's
+  (its labels' side `unknown`), never by a guess from its content. On a whole-page drawing
+  (#1798) no picture is a drawing.
 - `dims.json` (#1558): every printed dimension on every page, numbered per page (`D17`), with its
   value, inches, box, whose drawing it is on, and its dimension and extension lines when found
   (`dim_labels.py`). The `zoom` tool draws these ids on a crop; findings name them. Written as
@@ -114,7 +119,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 11
+PACK_VERSION: Final = 12
 #: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
@@ -570,6 +575,34 @@ def _headings(
     return above if count >= sum(1 for found in below if found) else below
 
 
+def _picture_headings(
+    stamps: Sequence[dict[str, Any]],
+    pictures: Sequence[Sequence[float]],
+    labels: Sequence[dict[str, Any]],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """The pasted pictures GV headed, each with its heading (#1835, decided by Anant 2026-10-21):
+    the heading the drawings' rule gives it (`_headings` over every drawing of the page, so the
+    page's own side wins, above or below as a caption), kept only when it lies over the picture
+    itself: across its width and within `_CAPTION_PT` of its edge, as a round's caption must. A
+    heading over another drawing only is never a picture's (a picture pasted beside a headed
+    drawing, or deep inside one, is nobody's): a picture's side is never guessed."""
+    shown: list[dict[str, Any]] = [
+        {"box": (float(box[0]), float(box[1]), float(box[2]), float(box[3]))}
+        for box in sorted(pictures, key=lambda b: (b[1], b[0]))
+    ]
+    if not shown:
+        return []
+    found = _headings([*stamps, *shown], labels)[len(stamps) :]
+    out: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for picture, heading in zip(shown, found, strict=True):
+        if heading is None:
+            continue
+        vertical, horizontal = _gap(picture["box"], heading["box"])
+        if vertical <= _CAPTION_PT and not horizontal:
+            out.append((picture, heading))
+    return out
+
+
 def _round_of(text: str) -> int | None:
     found = _ROUNDS.search(text)
     return _ROUND_NUMBER[found.group(1).lower()] if found else None
@@ -671,10 +704,23 @@ def _page_entries(
                 )
         ordered = sorted(stamps, key=lambda a: (a["box"][1], a["box"][0]))
         one_round = {label["round"] for label in round_labels}
-        for stamp, heading in zip(ordered, _headings(ordered, role_labels), strict=True):
+        pictures = [list(a["box"]) for a in items if a.get("picture") and a["box"]]
+        # Pasted pictures GV headed (#1835): drawings of the page map, after the pasted ones
+        # (whose headings and indices never change), marked `picture`. On a whole-page drawing
+        # (#1798) no picture is a drawing.
+        headed_pictures = (
+            [] if whole is not None else _picture_headings(ordered, pictures, role_labels)
+        )
+        drawn = [
+            *zip(ordered, _headings(ordered, role_labels), [False] * len(ordered), strict=True),
+            *((picture, heading, True) for picture, heading in headed_pictures),
+        ]
+        for stamp, heading, is_picture in drawn:
             role = heading["role"] if heading else "general"
             from_upload = False
-            if whole is not None:
+            if is_picture:
+                pass  # a picture's side is its heading's, never its upload's
+            elif whole is not None:
                 role, from_upload, heading = whole, True, None
             elif heading is None and upload_role == "architect":
                 # The architect's own file: a drawing GV gave no heading is the architect's.
@@ -699,6 +745,9 @@ def _page_entries(
             }
             if from_upload:
                 half["from_upload"] = True
+            if is_picture:
+                half["box"] = list(stamp["box"])
+                half[PICTURE] = True
             halves.append(half)
         roles = sorted({half["role"] for half in halves} - {"general"})
         rounds = sorted({half["round"] for half in halves if half["round"]})
@@ -725,10 +774,10 @@ def _page_entries(
                 if heading_meaning(str(a["text"])) is not None
             ],
         }
-        pictures = [list(a["box"]) for a in items if a.get("picture") and a["box"]]
         if pictures:
             # Pasted pictures (#1825): a drawing the agents see; `dims.json` holds the numbers
-            # two OCR engines agree on in it (#1830).
+            # two OCR engines agree on in it (#1830). Every one is listed here, headed or not;
+            # a headed one is also a drawing (`halves`, `picture: true`, #1835).
             entry["pictures"] = pictures
         if candidate is not None:
             entry[CANDIDATE] = candidate
@@ -761,6 +810,8 @@ def _candidate(box: Box, role: str, upload_role: str, upload_round: int | None) 
 
 #: The page map's key for a page's candidate whole-page drawing, until its labels decide it.
 CANDIDATE: Final = "candidate"
+#: A page-map drawing's key when it is a pasted picture GV headed (#1835).
+PICTURE: Final = "picture"
 
 
 def _inside(box: Sequence[float], halves: Sequence[Mapping[str, Any]]) -> bool:
@@ -805,7 +856,12 @@ def settle_candidates(
             continue
         key = (str(entry.get("file")), int(entry.get("page") or 0))
         found.append(key)
-        real = [h for h in entry.get("halves") or [] if isinstance(h, Mapping)]
+        # Its pasted drawings, never a headed picture (#1835): which labels lie outside them is
+        # counted as before, and a page that becomes one drawing keeps no picture drawing (as on
+        # a whole-page drawing, #1798).
+        real = [
+            h for h in entry.get("halves") or [] if isinstance(h, Mapping) and not h.get(PICTURE)
+        ]
         outside = [
             label
             for label in by_page.get(key, [])
@@ -933,7 +989,9 @@ page_map.json          per page: whose drawing each pasted drawing is (from GV's
                        inch/millimetre labels and ratio scale); role_by: "content" marks them.
                        Compare its architect drawing with its vendor drawing on the same sheet.
                        pictures: boxes of drawings pasted as pictures (code lists only the
-                       numbers two OCR engines agree on in them; look at them).
+                       numbers two OCR engines agree on in them; look at them). A picture GV
+                       headed is also a drawing (picture: true) with its heading's role; one
+                       with no heading is nobody's (its numbers have no side).
 annotations.json      every annotation: file, page, kind, author, text, box (GV's markup and
                        headings included; the drawings-only copies drop them).
 *_drawings_only.pdf    each PDF with only the pasted drawings kept: GV's markup hidden.
@@ -950,7 +1008,8 @@ dims.json              every printed dimension code found, numbered per page (D1
                        architect's hand lettering such as 2'-6 1/2") read by two OCR engines
                        (added later; check one with zoom before you rely on it).
                        "origin": "picture": read inside a pasted picture by two OCR engines
-                       (same trust as "drawn"; no dimension line). A number read there that
+                       (same trust as "drawn"; no dimension line); its side is the role of
+                       GV's heading over the picture, else unknown. A number read there that
                        the engines did not agree on is never a label: the page's "pictures"
                        lists it as unconfirmed.
                        "derived": an EQ part, numbered last: the printed overall (less
@@ -1125,13 +1184,22 @@ def _settle_folder(
             for e in page_map.get("pages") or []
             if isinstance(e, Mapping)
         }
+        pasted = {
+            (str(e.get("file")), int(e.get("page") or 0)): e.get("pictures") or []
+            for e in page_map.get("pages") or []
+            if isinstance(e, Mapping)
+        }
         for entry in dims.get("pages") or []:
             key = (str(entry.get("file")), int(entry.get("page") or 0))
             if key not in decided:
                 continue
             for item in [*(entry.get("labels") or []), *(entry.get("phrases") or [])]:
                 if isinstance(item, dict) and item.get("box"):
-                    item["side"] = side(tuple(item["box"]), halves.get(key, []))
+                    if item.get("origin") == "picture" and pasted.get(key):
+                        # A label read in a pasted picture: its heading's side or none (#1835).
+                        item["side"] = side(tuple(item["box"]), halves.get(key, []), pasted[key])
+                    else:
+                        item["side"] = side(tuple(item["box"]), halves.get(key, []))
         if own:
             _write_json(folder / "dims.json", dims)
     _write_json(folder / "page_map.json", page_map)

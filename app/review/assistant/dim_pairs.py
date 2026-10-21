@@ -81,9 +81,10 @@ def _inches(label: Label) -> Fraction | None:
 
 
 def _along(label: Label) -> tuple[float, float, float] | None:
-    """A label's dimension line as (line position across, start, end) along its direction."""
+    """A label's dimension line as (line position across, start, end) along its direction (never
+    a label read inside a pasted picture's, #1835)."""
     line = label.get("dim_line")
-    if not line or label.get("orientation") not in ("h", "v"):
+    if not line or label.get("orientation") not in ("h", "v") or label.get("origin") == "picture":
         return None
     (ax, ay), (bx, by) = line
     if label["orientation"] == "h":

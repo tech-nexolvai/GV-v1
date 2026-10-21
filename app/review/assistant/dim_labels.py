@@ -74,7 +74,10 @@ read exactly one and the same value the way the detector found it, and nothing t
 round. It is the OCR trust class (`route: "drawn"`, the drawn-ink witness, never more), marked
 `origin: "picture"`, with no dimension line (a raster's line work is not measured). A number read
 in a picture that is not confirmed is never a label: the page lists it under `pictures`
-(`unconfirmed`, with the reason `picture_labels.UNCONFIRMED`).
+(`unconfirmed`, with the reason `picture_labels.UNCONFIRMED`). Its side (#1835) is the role of
+GV's heading over the picture (the page map lists a headed picture as a drawing, `picture: true`);
+in a picture with no heading, or inside both an architect's and a vendor's region, it has none
+(`_picture_side`). A headed picture is never the drawing of any other label.
 
 **Ids are stable:** text labels are numbered in reading order (top to bottom, left to right), then
 picture labels, then drawn labels after them, then derived parts, so a drawn label found or not
@@ -1623,14 +1626,31 @@ def _drawn_value(
 _SIDES: Final = {"architect": "architect", "vendor": "vendor", "brand_prototype": "brand"}
 
 
-def _side(box: Box, halves: Sequence[Mapping[str, Any]]) -> str:
+def _within(point: tuple[float, float], box: object) -> bool:
+    if not isinstance(box, Sequence) or len(box) != 4:
+        return False
+    x0, y0, x1, y1 = (float(v) for v in box)
+    return x0 <= point[0] <= x1 and y0 <= point[1] <= y1
+
+
+def _side(
+    box: Box, halves: Sequence[Mapping[str, Any]], pasted: Sequence[Sequence[float]] = ()
+) -> str:
     """Whose drawing a label is on: the nearest drawing's (within 36 pt). A label lying inside
     both an architect's and a vendor's drawing (two pasted drawings overlapping) is on neither
-    (#1825): code cannot tell, so it is never paired."""
-    cx, cy = _centre(box)
+    (#1825): code cannot tell, so it is never paired. A headed pasted picture (`picture: true`
+    in `halves`, #1835) is never the nearest drawing here: a label printed on the page is not in
+    a picture. `pasted`: the page's pasted pictures (the page map's `pictures`), given for a label
+    read inside a picture (`origin: "picture"`): see `_picture_side`."""
+    centre = _centre(box)
+    if pasted and any(_within(centre, picture) for picture in pasted):
+        return _picture_side(centre, halves, pasted)
+    cx, cy = centre
     best: tuple[float, str] | None = None
     inside: set[str] = set()
     for half in halves:
+        if half.get("picture"):
+            continue
         hb = half.get("box")
         if not isinstance(hb, Sequence) or len(hb) != 4:
             continue
@@ -1644,6 +1664,46 @@ def _side(box: Box, halves: Sequence[Mapping[str, Any]]) -> str:
     if best is None or best[0] > 36 or {"architect", "vendor"} <= inside:
         return "unknown"
     return best[1]
+
+
+def _picture_side(
+    centre: tuple[float, float],
+    halves: Sequence[Mapping[str, Any]],
+    pasted: Sequence[Sequence[float]],
+) -> str:
+    """Whose drawing a label read inside a pasted picture is on (#1835, decided by Anant
+    2026-10-21): the side of the GV heading over that picture (its page-map drawing, `picture:
+    true`), by the heading rule pasted drawings have, never a guess from what the picture shows.
+    `unknown` (never paired, never red) when a picture holding it has no heading, when the
+    pictures holding it disagree, or when it lies inside both an architect's and a vendor's
+    region (a picture and a pasted drawing overlapping, #1825)."""
+    sides: set[str] = set()
+    for picture in pasted:
+        if not _within(centre, picture):
+            continue
+        headed = [
+            half for half in halves if half.get("picture") and _same_box(half.get("box"), picture)
+        ]
+        if not headed:
+            return "unknown"
+        sides |= {_SIDES.get(str(half.get("role")), "unknown") for half in headed}
+    if len(sides) != 1 or "unknown" in sides:
+        return "unknown"
+    regions = sides | {
+        _SIDES.get(str(half.get("role")), "unknown")
+        for half in halves
+        if not half.get("picture") and _within(centre, half.get("box"))
+    }
+    if {"architect", "vendor"} <= regions:
+        return "unknown"
+    return next(iter(sides))
+
+
+def _same_box(a: object, b: Sequence[float]) -> bool:
+    """Whether a page-map drawing's box is this pasted picture's (to the rounding it is kept to)."""
+    if not isinstance(a, Sequence) or len(a) != 4 or len(b) != 4:
+        return False
+    return all(abs(float(x) - float(y)) <= 0.5 for x, y in zip(a, b, strict=True))
 
 
 def _label(reading: _Reading, line: dict[str, Any] | None, side: str) -> dict[str, Any]:
@@ -1696,13 +1756,15 @@ def page_labels(
     equal_parts: bool = True,
     picture_budget_s: float = 0.0,
     detector: Any = None,
+    pasted: Sequence[Sequence[float]] = (),
 ) -> PageLabels:
     """The labels of page `page` (from 1) of `pdf`. `halves` are the page map's drawings on the
     page (`{box, role}`), for each label's side. The drawn route runs only while
     `drawn_budget_s` seconds last (0: not at all); `readers` are its OCR engines (default: the
     installed ones). The picture route (#1830) reads the page's pasted pictures within
     `picture_budget_s` seconds (0: not at all), with the same engines and `detector` (default:
-    RapidOCR's text detector). `equal_parts`: the `EQ` parts are added last (`build_dims` adds them
+    RapidOCR's text detector); `pasted` are the page map's pasted pictures, for the sides of the
+    labels read in them (`_picture_side`, #1835). `equal_parts`: the `EQ` parts are added last (`build_dims` adds them
     once, after its drawn pass, so no id is ever given to two labels)."""
     started = clock()
     parsed = _parse(Path(pdf), page - 1)
@@ -1717,7 +1779,17 @@ def page_labels(
         metric=_metric(phrases, halves),
     )
     if picture_budget_s > 0:
-        _add_pictures(result, Path(pdf), page, halves, picture_budget_s, readers, detector, clock)
+        _add_pictures(
+            result,
+            Path(pdf),
+            page,
+            halves,
+            picture_budget_s,
+            readers,
+            detector,
+            clock,
+            pasted,
+        )
     if drawn_budget_s > 0:
         _add_drawn(
             result,
@@ -1789,13 +1861,17 @@ def _add_pictures(
     readers: Sequence[Any] | None,
     detector: Any,
     clock: Callable[[], float],
+    pasted: Sequence[Sequence[float]] = (),
 ) -> None:
     """The picture route: the page's pasted pictures read by two OCR engines
     (`picture_labels`). A confirmed reading is a label like any other (the OCR trust class,
     `route: "drawn"`, marked `origin: "picture"`, with no dimension line), added after the labels
     already listed, unless the page's own text already prints a label or phrase there; a
     millimetre value is a label only over its bracketed inches with both agreeing (`_paired`,
-    `units_check`). Every other reading is listed in `pictures.unconfirmed`, never a label."""
+    `units_check`). Every other reading is listed in `pictures.unconfirmed`, never a label. A
+    reading inside one of the page map's pasted pictures (`pasted`) takes that picture's heading's
+    side or none (`_picture_side`, #1835); one in a picture inside a pasted drawing (a scan, a
+    photo) takes the drawing's, as any label."""
     engines = list(drawn_readers() if readers is None else readers)
     try:
         read = picture_labels.read_page(
@@ -1822,7 +1898,7 @@ def _add_pictures(
             "text": found.text,
             "box": list(found.box),
             "orientation": found.orientation,
-            "side": _side(found.box, halves),
+            "side": _side(found.box, halves, pasted),
             "why": f"{picture_labels.UNCONFIRMED} ({found.why})",
         }
         for found in fresh
@@ -1838,13 +1914,13 @@ def _add_pictures(
                     "text": reading.text,
                     "box": [round(v, 2) for v in reading.box],
                     "orientation": _orientation(reading.along),
-                    "side": _side(reading.box, halves),
+                    "side": _side(reading.box, halves, pasted),
                     "why": f"{picture_labels.UNCONFIRMED} (the millimetres and inches disagree)",
                 }
             )
             continue
         # No dimension line: a picture's line work is pixels (`picture_labels`).
-        label = _label(reading, None, _side(reading.box, halves))
+        label = _label(reading, None, _side(reading.box, halves, pasted))
         label["origin"] = picture_labels.ORIGIN
         added.append(label)
     added.sort(key=lambda label: (round(label["box"][1] / 4), label["box"][0]))
@@ -1867,14 +1943,16 @@ def picture_pass(
     readers: Sequence[Any] | None = None,
     detector: Any = None,
     clock: Callable[[], float] = monotonic,
+    pasted: Sequence[Sequence[float]] = (),
 ) -> PageLabels:
     """Page `page`'s labels (as the text pass gave them) with the labels read in its pasted
-    pictures added after them (#1830): the pack's pass between the text and the drawn ink."""
+    pictures added after them (#1830): the pack's pass between the text and the drawn ink.
+    `pasted`: the page map's pasted pictures (`_picture_side`, #1835)."""
     result = PageLabels(
         labels=[dict(label) for label in labels],
         phrases=[dict(phrase) for phrase in phrases],
     )
-    _add_pictures(result, Path(pdf), page, halves, budget_s, readers, detector, clock)
+    _add_pictures(result, Path(pdf), page, halves, budget_s, readers, detector, clock, pasted)
     _number(result.labels)
     return result
 
@@ -2563,11 +2641,16 @@ def build_dims(
     the set (a page it does not reach stays `not_run`; one it leaves half read is `partial`).
     `on_page` sees the document after each page of each pass (to write it as it grows)."""
     halves: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
+    pasted: dict[tuple[str, int], list[Sequence[float]]] = {}
     entries = page_map.get("pages") if isinstance(page_map, Mapping) else None
     for entry in entries if isinstance(entries, list) else []:
         if isinstance(entry, Mapping):
             key = (str(entry.get("file")), int(entry.get("page") or 0))
             halves[key] = [h for h in entry.get("halves") or [] if isinstance(h, Mapping)]
+            # The page's pasted pictures (#1835): a label read in one takes its heading's side.
+            pasted[key] = [
+                b for b in entry.get("pictures") or [] if isinstance(b, Sequence) and len(b) == 4
+            ]
             # A page of a separate upload not yet known to be a drawing (`set_pack`, #1772): its
             # candidate whole-page drawing gives a side to every label outside its pasted
             # drawings (listed last, so a pasted drawing keeps its own labels), so its pen
@@ -2624,6 +2707,7 @@ def build_dims(
                     entry["labels"],
                     entry.get("phrases") or [],
                     budget_s=pictures_left,
+                    pasted=pasted.get((name, number), ()),
                 )
             except Exception as failed:  # noqa: BLE001 - the page keeps its text labels
                 _log.warning("dimension labels: picture pass failed: %s", type(failed).__name__)
