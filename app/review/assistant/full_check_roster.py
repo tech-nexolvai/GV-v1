@@ -135,6 +135,7 @@ __all__ = [
     "apply_proofs",
     "compare_tags",
     "numbers_in",
+    "pick_prompt",
     "run",
 ]
 
@@ -496,6 +497,24 @@ def _near(labels: Sequence[Mapping[str, Any]], box: Mapping[str, Any] | None) ->
             scored.append((distance, label))
     scored.sort(key=lambda pair: pair[0])
     return [f"{label.get('id')} {label.get('text')}" for _d, label in scored[:_NEAR_LABELS]]
+
+
+def pick_prompt() -> str:
+    """The blind pick's fixed prompt text, as its kept-pick key holds it (`pick_cache.pick_key`):
+    the harness, the system prompt, the schema and the question's form. The item's name is left
+    out: the pick is blind to which claim asked it (#1829). The question's form says the name's
+    numbers are left out (`NAME_WORDS`, #1833), so picks kept from a question that may have carried
+    a value in the name are never reused."""
+    from app.review.assistant.chat_engine import HARNESS_ID
+
+    return "\n".join(
+        (
+            HARNESS_ID,
+            ADVOCATE_SYSTEM,
+            json.dumps(ADVOCATE_SCHEMA, sort_keys=True),
+            advocate_question("D0", ""),
+        )
+    )
 
 
 def prover_items(engine: ChatEngine, findings: Sequence[Mapping[str, Any]]) -> str:
@@ -3177,16 +3196,6 @@ class _Run:
             labels = self.engine.book.dim_labels.on_page(
                 str(architect.get("file")), int(architect["page"]), read_now=False
             )
-            from app.review.assistant.chat_engine import HARNESS_ID
-
-            prompt = "\n".join(
-                (
-                    HARNESS_ID,
-                    ADVOCATE_SYSTEM,
-                    json.dumps(ADVOCATE_SCHEMA, sort_keys=True),
-                    advocate_question("D0", ""),
-                )
-            )
             return pick_cache.pick_key(
                 vendor=vendor,
                 architect_page=[
@@ -3196,7 +3205,7 @@ class _Run:
                 crops=[self._half_box(page_map, vendor), self._half_box(page_map, architect)],
                 model=model,
                 effort=effort,
-                prompt=prompt,
+                prompt=pick_prompt(),
             )
         except Exception:  # noqa: BLE001 - no key: the pick is asked, never reused
             _log.info("assistant roster could not key the blind pick for %s", vendor.get("id"))

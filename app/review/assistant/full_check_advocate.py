@@ -62,6 +62,7 @@ __all__ = [
     "CODE_PAIRED_SOURCES",
     "CODE_PAIRS_FILE",
     "INCOMPLETE",
+    "NAME_WORDS",
     "NOT_VERIFIED",
     "PAIRED_SOURCES",
     "SPANS",
@@ -85,6 +86,7 @@ __all__ = [
     "ink_colour",
     "is_slip",
     "needs_pairing",
+    "neutral_name",
     "room_end",
     "room_words",
     "same_chain",
@@ -165,14 +167,73 @@ ADVOCATE_SCHEMA: Final[Mapping[str, Any]] = {
 }
 
 
+#: Unicode primes, curly quotes and the times sign, as the plain marks the dimension pattern knows.
+_MARKS: Final = str.maketrans(
+    {
+        "′": "'",
+        "’": "'",
+        "‘": "'",
+        "″": '"',
+        "“": '"',
+        "”": '"',
+        "×": "x",
+        "–": "-",
+        "—": "-",
+        "⁄": "/",
+    }
+)
+_FRACTION_SIGNS: Final = "½¼¾⅛⅜⅝⅞⅓⅔⅕⅖⅗⅘⅙⅚⅐⅑⅒"
+_NUMBER: Final = (
+    rf"(?:\d+(?:[.,]\d+)?|[.,]\d+|[{_FRACTION_SIGNS}])(?:\s*/\s*\d+)?[{_FRACTION_SIGNS}]?"
+)
+_UNIT: Final = r"(?:mm|cm|m|in|inch|inches|ft|feet|foot)\b\.?"
+_PART: Final = rf"{_NUMBER}(?:st|nd|rd|th)?(?:\s*{_UNIT})?(?:\s*(?:''|'|\"))?"
+#: One written dimension: feet-inches (3'-9 1/2"), inches, fractions, decimals, millimetres, sizes
+#: (24 x 36), parts joined by a dash, a space, an x, "by" or a plus.
+_DIMENSION: Final = re.compile(
+    rf"[±+]?\s*{_PART}(?:\s*(?:-|x|by|\+|/|\+/-|±)?\s*{_PART})*", re.IGNORECASE
+)
+#: A bracket holding a number: a dual "mm [in]" label's other unit, a size note.
+_BRACKETED: Final = re.compile(r"[\[(][^\[\]()]*\d[^\[\]()]*[\])]")
+
+
+def neutral_name(name: str) -> str:
+    """An item's name with every number and written dimension taken out, for a blind question
+    (#1833). A helper writes the item's name, and may put the value it claimed in it ("outlet
+    spacing 3'-9\\""): told that number, a blind pick may name the label that prints it because it
+    was told, not because the ends match. Code keeps the values and the original name; only the
+    question's words are cleaned. Takes out feet-inches, inches, fractions, decimals, millimetres,
+    a dual label's bracketed other unit, unicode primes and fraction signs, and any digit left
+    (an index like "segment 3" names no value the pick needs: the vendor's label is marked)."""
+    text = str(name or "").translate(_MARKS)
+    text = _BRACKETED.sub(" ", text)
+    text = _DIMENSION.sub(" ", text)
+    text = re.sub(rf"[\d{_FRACTION_SIGNS}]+", " ", text)
+    # Tidy what the numbers leave behind: empty brackets, lone quotes, a dash or @ left alone.
+    text = re.sub(r"\(\s*\)|\[\s*\]", " ", text)
+    text = re.sub(r"(?<![A-Za-z])['\"]+|\"+", " ", text)
+    text = re.sub(r"(?<=\w)-(?=\s|$|[:,;.])", "", text)
+    text = re.sub(r"(?:^|(?<=\s))[-@#~=+/x×]+(?=\s|$)", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+([:,;.)\]])", r"\1", text)
+    text = re.sub(r"([:,;])(?:\s*[:,;])+", r"\1", text)
+    return text.strip(" -:,;.")
+
+
+#: Said in every advocate question (#1833); being in the question's fixed text, it also changes the
+#: kept picks' key (`pick_cache`), so a pick asked with a value in the item's name is asked again.
+NAME_WORDS: Final = "Numbers are left out of the item's name: read every value from the pictures."
+
+
 def advocate_question(vendor_label: str, item: str) -> str:
     """The blind question: the vendor's label and the item, never the claimed architect label or
-    either value."""
+    either value. The item's name is said without its numbers (`neutral_name`, #1833)."""
     # The item's name was written by a helper from what the drawing says: data, fenced.
-    named = fence(item, "item")
+    named = fence(neutral_name(item), "item")
     return (
         f"The first picture is the vendor's drawing; the dimension marked there is {vendor_label}, "
-        f"for this item:\n{named}\nThe second picture is the architect's drawing with every printed dimension "
+        f"for this item:\n{named}\n{NAME_WORDS} The second picture is the architect's drawing "
+        "with every printed dimension "
         "numbered. Which numbered dimension measures the same thing as the marked one? Answer "
         "none if none does. Then, for the marked one and the one you picked, say where each end "
         "lands (top_of_counter, underside_of_counter, top_of_splash, floor, wall_face, "
