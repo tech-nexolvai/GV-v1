@@ -1200,8 +1200,8 @@ def check_report_pdf(
         **summary,
         "Cloud drawing": (
             f"{groups['clouded']} wrong clouded (proved by code), {groups['right']} right, "
-            f"{groups['rule_note']} {RULE_NOTE_COUNT}, "
-            f"{groups['not_compared']} not compared (the Not-compared list)"
+            + (f"{groups['rule_note']} {RULE_NOTE_COUNT}, " if groups["rule_note"] else "")
+            + f"{groups['not_compared']} not compared (the Not-compared list)"
         ),
         "The rule": proof.RULE_LINE,
     }

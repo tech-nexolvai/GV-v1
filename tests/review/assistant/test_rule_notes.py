@@ -305,3 +305,24 @@ def test_register_rows_and_questions_from_the_same_list(workspace: ChatWorkspace
     assert [q.rule for q in asked] == ["GV rule: sink front offset", "GV rule: filler width"]
     letter = letter_of(findings, context, drawing_set="sheet.pdf")
     assert len(letter.questions) == 2 and letter.not_compared == 0
+
+
+def test_a_reviewers_red_mark_on_a_rule_note_remakes_the_package(workspace: ChatWorkspace) -> None:
+    """The reviewer makes the rule note a red mark (#1803 overrides): the package made again holds
+    it as a comment, and no longer asks the architect about it."""
+    agreed = _filler(
+        decision={"decision": "agree", "by": "R", "should_be": '1"', "note": "Too thin"}
+    )
+    findings = [_proved(), agreed, _right()]
+    context = package_context(workspace, findings, IDENTITY, today="2026-10-21")
+    drawing = workspace.files / "drawing.pdf"
+    made = make_proof_file(workspace, findings, drawing, context=context, today="2026-10-21")
+    out = workspace.files / "package.zip"
+    make_package_file(workspace, findings, [(made.name, drawing)], out, context)
+    with zipfile.ZipFile(out) as archive:
+        names = archive.namelist()
+        letter = _text(archive.read(names[1]))
+        cloud = _text(archive.read(names[0]))
+    assert "Comments (2)" in letter and "Questions for the architect" not in letter
+    assert "Clouded items (2)" in cloud and "Ask the architect" not in cloud
+    assert [q.finding_id for q in questions_of(findings)] == []
