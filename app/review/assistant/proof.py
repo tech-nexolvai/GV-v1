@@ -40,7 +40,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
-from app.review.assistant import classification, spot_guard, witness
+from app.review.assistant import classification, missing_items, spot_guard, witness
 from app.review.assistant import full_check_advocate as advocate
 from app.review.assistant.chat_trust import inch_words
 from app.review.assistant.vendor_text import vendor_text
@@ -671,6 +671,8 @@ def proof_line(finding: Mapping[str, Any]) -> str:
                     parts.append("a second reading, blind to the first, lists the same parts")
             elif name == "rule" and finding.get("rule_check_id"):
                 parts.append(f"GV's rule check {finding.get('rule_check_id')} fails it")
+            elif name == "text" and _missing_item(finding) is not None:
+                parts.append(missing_items.proof_words(_missing_item(finding) or {}))
             elif name in _PROOF_WORDS:
                 parts.append(_PROOF_WORDS[name])
     if witnesses:
@@ -684,6 +686,14 @@ def proof_line(finding: Mapping[str, Any]) -> str:
         parts.insert(0, PROTOTYPE_PROOF)
     text = "; ".join(dict.fromkeys(parts))
     return text[0].upper() + text[1:]
+
+
+def _missing_item(finding: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The `text_proof` of a missing millwork item code proved (`missing_items`), else None."""
+    found = finding.get("text_proof")
+    if isinstance(found, Mapping) and found.get("kind") == missing_items.KIND:
+        return found
+    return None
 
 
 def reviewer_wrong(finding: Mapping[str, Any]) -> str:
