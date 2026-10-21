@@ -22,6 +22,7 @@ import json
 from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -32,6 +33,7 @@ from app.review.assistant.chat_trust import apply_checks, kept_advocate
 from app.review.assistant.full_check_advocate import (
     STRING_SYSTEM,
     Check,
+    _newest_round,
     code_checks,
     compare_strings,
     string_gap,
@@ -40,7 +42,7 @@ from app.review.assistant.full_check_brief import label_summary
 from app.review.assistant.full_check_roster import PROTECTED, SHARES, PricePlan, unrecorded_lines
 from tests.review.assistant.chat_fakes import reply, text, tool
 from tests.review.assistant.test_chat_engine import DOLLARS
-from tests.review.assistant.test_full_check_fanout import _box, _first_text, _steps
+from tests.review.assistant.test_full_check_fanout import FILE, _box, _first_text, _steps
 from tests.review.assistant.test_full_check_roster import (
     _clean_ink,
     _findings,
@@ -259,6 +261,69 @@ def test_a_newer_round_printing_the_same_value_is_still_the_current_drawing() ->
     assert round_check(None).outcome == "fail"
     passed = round_check("p5.D7")
     assert passed.outcome == "pass" and "p5.D7" in passed.why
+
+
+# A made-up combined sheet (#1845): the vendor's round 1 on the left, round 2 on the right.
+TWO_ROUNDS = {
+    "pages": [
+        {"page": 5, "file": FILE, "area": "2. Area 2",
+         "halves": [{"role": "architect", "round": None, "box": [0, 0, 1000, 300]},
+                    {"role": "vendor", "round": 1, "box": [0, 400, 480, 800]},
+                    {"role": "vendor", "round": 2, "box": [520, 400, 1000, 800]}]},
+    ]
+}  # fmt: skip
+
+
+def _round_of(vendor: Mapping[str, Any], newer: str | None = None) -> Check:
+    architect = _label("D2", "architect", "37", (100, 174))
+    found = code_checks(vendor, architect, page_map=TWO_ROUNDS, vendor_ink=(40, 0.0),
+                        newer_same=newer)  # fmt: skip
+    return next(c for c in found if c.name == "round")
+
+
+def test_a_label_in_the_round_1_drawing_of_a_two_round_sheet_is_round_1() -> None:
+    old = _label("D1", "vendor", "46", (100, 192), y=600)  # inside the round 1 half
+    new = _label("D3", "vendor", "46", (600, 692), y=600)  # inside the round 2 half
+
+    assert _newest_round(TWO_ROUNDS, FILE, 5, old["box"]) == (1, 2)
+    assert _newest_round(TWO_ROUNDS, FILE, 5, new["box"]) == (2, 2)
+    failed = _round_of(old)
+    assert failed.outcome == "fail" and "round 1" in failed.why
+    assert _round_of(new).outcome == "pass"
+    # The newest round printing the same value the same way still passes (#1641).
+    passed = _round_of(old, "p5.D3")
+    assert passed.outcome == "pass" and "p5.D3" in passed.why
+
+
+def test_a_label_outside_every_vendor_drawing_keeps_the_pages_highest_round() -> None:
+    outside = _label("D4", "vendor", "46", (500, 510), y=600)  # in the gap between the halves
+    in_architect = _label("D5", "vendor", "46", (100, 192), y=200)
+
+    assert _newest_round(TWO_ROUNDS, FILE, 5, outside["box"]) == (2, 2)
+    assert _newest_round(TWO_ROUNDS, FILE, 5, in_architect["box"]) == (2, 2)
+    assert _newest_round(TWO_ROUNDS, FILE, 5) == (2, 2)
+    assert _round_of(outside).outcome == "pass"
+    # Another file's page of the same number holds nothing: today's page round.
+    assert _newest_round(TWO_ROUNDS, "other.pdf", 5, outside["box"]) == (2, 2)
+
+
+def test_the_roster_looks_for_the_same_value_only_for_a_round_1_label() -> None:
+    old = _label("D1", "vendor", "46", (100, 192), y=600)
+    new = _label("D3", "vendor", "46", (600, 692), y=600)
+    other = _label("D6", "vendor", "52", (600, 692), y=700)
+
+    class _Labels:
+        def on_page(self, file: str, page: int, *, read_now: bool) -> list[dict[str, Any]]:
+            return [old, new, other] if (file, page) == (FILE, 5) else []
+
+    engine = SimpleNamespace(book=SimpleNamespace(dim_labels=_Labels()))
+    run = full_check_roster._Run(engine)  # type: ignore[arg-type]
+
+    assert run._newer_same(old, TWO_ROUNDS) == "p5.D3"
+    assert run._newer_same(new, TWO_ROUNDS) is None  # already the current round
+    changed = _label("D7", "vendor", "40", (100, 192), y=600)
+    assert run._newer_same(changed, TWO_ROUNDS) is None
+    assert _round_of(changed, run._newer_same(changed, TWO_ROUNDS)).outcome == "fail"
 
 
 def test_the_advocate_names_what_the_price_did_not_reach_on_the_item(
