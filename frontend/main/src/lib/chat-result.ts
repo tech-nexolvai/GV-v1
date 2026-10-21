@@ -77,7 +77,9 @@ const REASONS: readonly [string, string][] = [
   ['not_seen', 'Not looked at on both drawings'],
   ['finish_not_comparable', 'Finish codes not comparable'],
   ['no_sheet', 'No sheet of the area or round to compare'],
+  ['round_only', 'Compared only with the vendor’s earlier round, not the architect'],
   ['prototype', 'Brand prototype differs (reference only)'],
+  ['prototype_only', 'Matches the brand prototype only (reference only)'],
   ['internal', 'For GV only: read by the AI, never found at its spot'],
 ];
 const REASON_ORDER = new Map(REASONS.map(([reason], at) => [reason, at]));

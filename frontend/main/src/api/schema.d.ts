@@ -5080,6 +5080,8 @@ export interface components {
             reference_side?: ("vendor" | "architect") | null;
             /** Round */
             round?: number | null;
+            /** @description Information only (2026-10-22): the item was compared with the vendor's own drawing (an earlier round), never counted as right; whether code compared it with the architect instead. */
+            round_match?: components["schemas"]["ChatFindingRoundMatchOut"] | null;
             /** Round Status */
             round_status?: ("fixed_in_later_round" | "still_wrong" | "new_in_later_round" | "not_in_later_round" | "single_round") | null;
             /** Rule Check Id */
@@ -5148,7 +5150,7 @@ export interface components {
              * Not Compared
              * @description not_compared: the reason (the list's group).
              */
-            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "no_spot" | "ai_unsure" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "architect_outside_gv_rule" | "outside_gv_rule" | "internal") | null;
+            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "no_spot" | "ai_unsure" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "architect_outside_gv_rule" | "outside_gv_rule" | "round_only" | "prototype_only" | "internal") | null;
             /**
              * Proof
              * @description Clouded items: the check that proved it, in plain words.
@@ -5205,6 +5207,63 @@ export interface components {
             value_arch?: string | null;
             /** Value Vendor */
             value_vendor?: string | null;
+        };
+        /**
+         * ChatFindingRoundMatchOut
+         * @description A comparison with the vendor's own drawing (`round_reference`): information only, shown as
+         *     "Unchanged since round 1"; never a Right and never counted as decided by itself.
+         */
+        ChatFindingRoundMatchOut: {
+            /**
+             * Architect
+             * @description The architect's label (p57.D21).
+             */
+            architect?: string | null;
+            /**
+             * Compared
+             * @description How code compared the item with the architect instead (None: it could not, so the item is Not compared).
+             */
+            compared?: ("carrier" | "code_pair" | "earlier_round") | null;
+            /**
+             * Label
+             * @description The label compared with (D3).
+             */
+            label?: string | null;
+            /** Page */
+            page?: number | null;
+            /**
+             * Round
+             * @description The round of the drawing compared with.
+             */
+            round?: number | null;
+            /**
+             * Unchanged
+             * @description Code reads the same value there.
+             * @default false
+             */
+            unchanged: boolean;
+            /**
+             * Value
+             * @description The value printed there.
+             * @default
+             */
+            value: string;
+            /**
+             * Vendor Round
+             * @description The round of the vendor's value.
+             */
+            vendor_round?: number | null;
+            /**
+             * Via
+             * @description What linked it to the architect's label.
+             */
+            via?: string | null;
+            /**
+             * Words
+             * @description "Unchanged since round 1".
+             * @default
+             */
+            words: string;
         };
         /**
          * ChatFindingRuleNoteOut
@@ -6596,6 +6655,12 @@ export interface components {
             rounds: number[];
             /** Still Wrong */
             still_wrong: number;
+            /**
+             * Unchanged
+             * @description Items whose value is unchanged since an earlier round: information only, never counted as right (2026-10-22).
+             * @default 0
+             */
+            unchanged: number;
             /**
              * Unrequested
              * @description compare_rounds: changes nobody asked for (no finding, no GV markup).

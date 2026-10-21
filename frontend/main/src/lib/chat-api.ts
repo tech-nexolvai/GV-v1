@@ -397,6 +397,8 @@ export interface ChatFinding {
   trust_level?: TrustLevel | null;
   /** Chat v3: what happened to it across the set's rounds of comments. */
   round_status?: RoundStatus | null;
+  /** Compared with the vendor's own earlier round: information only, never counted as right (2026-10-22). */
+  round_match?: RoundMatch | null;
   /** Chat v3, `source: vendor_arithmetic`: the vendor's parts and the total it printed, as printed. */
   parts?: string[] | null;
   printed_total?: string | null;
@@ -713,6 +715,21 @@ export interface FindingCritic {
   model?: string | null;
 }
 
+/** A comparison with the vendor's own drawing (an earlier round), shown as "Unchanged since round 1". */
+export interface RoundMatch {
+  page?: number | null;
+  round?: number | null;
+  vendor_round?: number | null;
+  label?: string | null;
+  value?: string;
+  unchanged?: boolean;
+  /** How code compared the item with the architect instead (null: it could not). */
+  compared?: 'carrier' | 'code_pair' | 'earlier_round' | null;
+  via?: string | null;
+  architect?: string | null;
+  words?: string;
+}
+
 export type RoundStatus = 'fixed_in_later_round' | 'still_wrong' | 'new_in_later_round' | 'not_in_later_round' | 'single_round';
 
 /** One difference GV Review's own checks recorded that the answer did not include. */
@@ -778,6 +795,8 @@ export interface ChatTrust {
     still_wrong: number;
     new: number;
     not_in_later?: number | null;
+    /** Unchanged since an earlier round: information only, never counted as right. */
+    unchanged?: number | null;
     /** compare_rounds: changes nobody asked for (no finding, no GV markup nearby). */
     unrequested?: number | null;
     /** The line code wrote for it. */

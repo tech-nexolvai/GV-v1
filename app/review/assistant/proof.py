@@ -47,6 +47,7 @@ from typing import Any, Final, Literal
 from app.review.assistant import classification, rule_notes, spot_guard, witness
 from app.review.assistant import full_check_advocate as advocate
 from app.review.assistant.chat_trust import inch_words
+from app.review.assistant.round_reference import round_only
 from app.review.assistant.vendor_text import vendor_text
 
 __all__ = [
@@ -352,6 +353,8 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
     same thing."""
     if classification.internal(finding):
         return False  # read by the AI only, never at its spot (#1652)
+    if round_only(finding):
+        return False  # compared only with the vendor's own earlier round (Anant, 2026-10-22)
     if spot_guard.listed_only(finding):
         return False  # kept only to be listed (`spot_guard`): no vendor spot, never red (#1808)
     if finding.get("source") == "brand_prototype" and not classification.prototype_governs(finding):
