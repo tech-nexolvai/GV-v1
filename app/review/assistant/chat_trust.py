@@ -59,6 +59,7 @@ from app.review.assistant import witness
 from app.review.assistant.chat_findings import finding_categories, live_findings, page_ranges
 from app.review.assistant.dim_findings import label_checks
 from app.review.assistant.vendor_text import item_name
+from app.review.assistant.work_pool import run_ordered
 
 __all__ = [
     "ACCURACY_CALIBRATION_LINE",
@@ -67,6 +68,7 @@ __all__ = [
     "CHECKS_MODULE",
     "CITE_POINTS",
     "CLOUD_WORDS",
+    "FAILED_KEY",
     "MIN_SEEN_DPI",
     "SECOND_READ_MODULE",
     "STATUS_WORDS",
@@ -514,6 +516,10 @@ def _ledger_made(finding: Mapping[str, Any]) -> str | None:
 
 #: The most seconds the drawn-ink pass spends on one answer: a side not reached stays unread.
 DRAWN_INK_BUDGET_S: Final = 120.0
+#: A finding whose drawn-ink read raised (#1850): its answer holds only this reason, and the
+#: check that had it is not complete.
+FAILED_KEY: Final = "_failed"
+DRAWN_INK_FAILED: Final = "the drawn-ink read of this value failed"
 
 
 def drawn_ink_checks(
@@ -543,14 +549,27 @@ def drawn_ink_checks(
     waiting.sort(key=lambda f: {"different": 0, "check": 1}.get(str(f.get("status")), 2))
     out: dict[str, dict[str, Any]] = {}
     started = monotonic()
-    for finding in waiting:
-        if stop() or monotonic() - started > budget_s:
-            break
-        try:
-            found = dict(run(finding, pdf_paths))
-        except Exception as failed:  # noqa: BLE001 - an unread side stays as it was
-            _log.warning("assistant chat drawn-ink check failed: %s", type(failed).__name__)
+
+    def read(finding: Mapping[str, Any]) -> dict[str, Any] | None:
+        # The budget is looked at as each finding starts, in order, as the one-at-a-time loop did.
+        if monotonic() - started > budget_s:
+            return None
+        return dict(run(finding, pdf_paths))
+
+    # On code's pool (#1850): the findings are read at once, their answers kept in this order.
+    done = run_ordered(waiting, read, stop=stop, name="gv-drawn-ink")
+    for finding, outcome in zip(waiting, done, strict=True):
+        if not outcome.ran or (outcome.error is None and outcome.value is None):
+            break  # stopped, or the budget was used up: the findings after it stay unread
+        if outcome.error is not None:
+            # An unread side stays as it was, with the reason; the check is not complete (#1850).
+            _log.warning("assistant chat drawn-ink check failed: %s", type(outcome.error).__name__)
+            out[str(finding.get("id"))] = {
+                FAILED_KEY: f"{DRAWN_INK_FAILED} ({type(outcome.error).__name__})",
+                "_claims": _claims(finding),
+            }
             continue
+        found = outcome.value or {}
         if found:
             found["_claims"] = _claims(finding)
             out[str(finding.get("id"))] = found
@@ -575,6 +594,13 @@ def with_drawn_ink(
         for key in ("verify_architect", "verify_vendor"):
             if isinstance(answer.get(key), Mapping):
                 checks[key] = dict(answer[key])
+            elif (
+                answer.get(FAILED_KEY)
+                and isinstance(checks.get(key), Mapping)
+                and checks[key].get("pending")
+            ):
+                # Still unread: it says why (#1850).
+                checks[key] = {**checks[key], "reason": str(answer[FAILED_KEY])}
         out.append(judged({**finding, "checks": checks}))
     return out
 

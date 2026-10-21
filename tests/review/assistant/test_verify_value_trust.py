@@ -136,7 +136,8 @@ def test_the_drawn_ink_pass_reads_pending_sides_and_judges_again(
         {**_finding("F3"), "checks": _checks()},  # nothing pending: not read
     ]
     found = chat_trust.drawn_ink_checks(findings, {})
-    assert fake.asked == ["F2", "F1"]  # differences first
+    assert list(found) == ["F2", "F1"]  # differences first (read at once on code's pool)
+    assert sorted(fake.asked) == ["F1", "F2"]
     updated = {f["id"]: f for f in chat_trust.with_drawn_ink(findings, found)}
     assert set(updated) == {"F1", "F2"}
     assert updated["F2"]["checks"]["verify_vendor"]["route"] == "drawn"
@@ -153,6 +154,35 @@ def test_the_drawn_ink_pass_stops_when_told(monkeypatch: pytest.MonkeyPatch) -> 
     assert chat_trust.drawn_ink_checks([_finding("F1")], {}, stop=lambda: True) == {}
     assert chat_trust.drawn_ink_checks([_finding("F1")], {}, budget_s=-1) == {}
     assert fake.asked == []
+
+
+def test_the_drawn_ink_pass_on_the_pool_keeps_its_order_and_its_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1850: the findings are read on a few threads, the first ones slowest; the answers come
+    back in the old order, and a finding whose read raised is reported with its reason."""
+    import time
+
+    class Slow:
+        def drawn_checks(self, finding: dict[str, Any], _paths: Any) -> dict[str, Any]:
+            number = int(str(finding["id"])[1:])
+            time.sleep(0.02 * (8 - number))
+            if number == 3:
+                raise RuntimeError("this page could not be rendered")
+            return {"verify_vendor": _side("match", "drawn", read=str(number))}
+
+    monkeypatch.setattr(chat_trust, "load_module", lambda name: Slow())
+    monkeypatch.setenv("GV_ASSISTANT_CODE_WORKERS", "3")
+    findings = [_finding(f"F{n}") for n in range(1, 8)]
+    found = chat_trust.drawn_ink_checks(findings, {})
+    assert list(found) == ["F1", "F2", "F3", "F4", "F5", "F6", "F7"]
+    read = [found[f]["verify_vendor"]["read"] for f in found if f != "F3"]
+    assert read == ["1", "2", "4", "5", "6", "7"]
+    # The finding whose read raised: reported, never dropped; its side stays unread, with why.
+    assert chat_trust.FAILED_KEY in found["F3"] and "verify_vendor" not in found["F3"]
+    updated = {f["id"]: f for f in chat_trust.with_drawn_ink(findings, found)}
+    side = updated["F3"]["checks"]["verify_vendor"]
+    assert side["pending"] and side["reason"].startswith(chat_trust.DRAWN_INK_FAILED)
 
 
 def test_a_checks_module_without_the_drawn_route_reads_nothing(
