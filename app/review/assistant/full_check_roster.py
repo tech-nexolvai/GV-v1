@@ -79,7 +79,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
-from app.review.assistant import classification, dim_anchors, same_ends, witness
+from app.review.assistant import classification, dim_anchors, pick_cache, same_ends, witness
 from app.review.assistant import proof as proof_rule
 from app.review.assistant.chat_findings import UPDATE_FINDING
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
@@ -236,6 +236,9 @@ _ADVOCATE_MAX_TOKENS: Final = 12_000  # adaptive thinking first (#1775, C4)
 _SUMMARY_MAX_TOKENS: Final = 800
 _SUMMARY_PROMPT_TOKENS: Final = 1_500
 _ADVOCATE_WORKERS: Final = 6
+#: How long a blind pick that does not fit waits for a running pick to end before it looks again
+#: (seconds; a running pick's end wakes it first, #1829).
+_PICK_WAIT_S: Final = 5.0
 #: Each side of a finding the proving tools read: its value, its spot and its check (#1805).
 _PROOF_SIDES: Final = (
     ("architect", "arch_box", "verify_architect"),
@@ -1101,7 +1104,13 @@ class _Run:
     #: phase's room, so picks started together on the advocate's workers never pass its budget
     #: (a call is charged only when it ends; with thinking on its worst case is big, #1775 C4).
     held: int = 0
-    held_lock: threading.Lock = field(default_factory=threading.Lock)
+    #: Guards `held`; a pick that does not fit waits on it for the picks in flight (#1829).
+    held_lock: threading.Condition = field(default_factory=threading.Condition)
+    #: The decided blind picks of this run, by `pick_cache.pick_key`: findings on the same vendor
+    #: label and architect crop share one call (#1829).
+    picks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: One lock per pick key, so two findings on the same labels never ask at the same time.
+    pick_locks: dict[str, threading.Lock] = field(default_factory=dict)
     #: Steps that broke (a helper's error, a tag table not readable): never a sendable check.
     failed_steps: list[str] = field(default_factory=list)
     #: What the finishing steps need (#1821), by step (`NEED_STEPS`), from the red candidates when
@@ -1582,6 +1591,23 @@ class _Run:
         if not engine.cancel.is_set():
             with engine.timings.phase("escalation"):
                 self._escalate(plan, page_map)
+        else:
+            self._note_unverified()
+
+    def _note_unverified(self) -> None:
+        """A red candidate still without the blind pick it needed, after the escalation tried it
+        again, makes this a check that ran out of money, said so (#1829: was set when the first
+        try missed, though the escalation could still settle it)."""
+        for finding in self.engine.book.live():
+            critic = finding.get("critic")
+            if (
+                isinstance(critic, Mapping)
+                and critic.get("model") == "devil's advocate"
+                and str(critic.get("note") or "").startswith(NOT_VERIFIED)
+            ):
+                self.stopped_for_money = True
+                self._note("the devil's advocate: some red candidates were not verified (grey)")
+                return
 
     def _prototype_references(self, page_map: Mapping[str, Any] | None) -> None:
         """R1 (Anant, 2026-10-20): a finding compared with the brand prototype has the prototype
@@ -2942,9 +2968,8 @@ class _Run:
                 "extent": None if extent is None else list(extent),
                 "checks": [[c.name, c.outcome, c.why] for c in checks],
             }
-            if verdict.reason.startswith(NOT_VERIFIED):
-                self.stopped_for_money = True
-                self._note("the devil's advocate: some red candidates were not verified (grey)")
+            # A candidate the price left without its pick is said once the escalation, which
+            # tries it again with what is left, is done (`_note_unverified`, #1829).
             return verdict.critic(), pairing
         except Exception:  # noqa: BLE001 - an item the advocate could not judge is not proved
             _log.exception("assistant roster advocate failed on %s", finding.get("id"))
@@ -3072,17 +3097,57 @@ class _Run:
     ) -> dict[str, Any] | None:
         """One blind call: the vendor's drawing with its label marked, the architect's whole
         drawing with every label numbered; `None` when the price leaves no room. `strong`: the
-        stronger model at high effort (code's geometry cannot tell, #1819)."""
+        stronger model at high effort (code's geometry cannot tell, #1819).
+
+        #1829: a pick already decided on the same vendor label and architect crop (this run's,
+        or one kept in the set pack, `pick_cache`) is reused at $0, so the same drawings get the
+        same pick, and two claims on one vendor label get one blind answer. A pick that does not
+        fit while other picks are running waits for them: it is refused only when none is running
+        and it still does not fit (the price is really used up), never because of which pick
+        happened to start first."""
         model = BY_SHORT["opus"] if strong else BY_SHORT["sonnet"]
-        estimate = self.engine._price(model, _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS) or 0
+        effort = "high" if strong else "medium"
+        key = self._pick_key(vendor, architect, page_map, model.id, effort)
+        if key is None:
+            return self._asked_pick(finding, vendor, architect, page_map, model, effort, strong)
         with self.held_lock:
-            if not self._phase_room(self.pick_phase, self.held + estimate):
-                return None
+            lock = self.pick_locks.setdefault(key, threading.Lock())
+        with lock:
+            kept = self.picks.get(key)
+            if kept is None:
+                kept = pick_cache.load(self._pack_folder(), key)
+            if kept is not None:
+                self.picks[key] = kept
+                # Code's own marks, never the model's.
+                return {**kept, STRONG_PICK: strong, pick_cache.CACHED: True}
+            answer = self._asked_pick(finding, vendor, architect, page_map, model, effort, strong)
+            if pick_cache.decided(answer):
+                assert answer is not None
+                self.picks[key] = {k: v for k, v in answer.items() if k != STRONG_PICK}
+                pick_cache.store(self._pack_folder(), key, answer, model=model.id, effort=effort)
+            return answer
+
+    def _asked_pick(
+        self,
+        finding: Mapping[str, Any],
+        vendor: Mapping[str, Any],
+        architect: Mapping[str, Any],
+        page_map: Mapping[str, Any] | None,
+        model: Any,
+        effort: str,
+        strong: bool,
+    ) -> dict[str, Any] | None:
+        """The pick asked of the model, its worst case held while it runs (`_blind_pick`)."""
+        estimate = self.engine._price(model, _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS) or 0
+        cancel = getattr(self.engine, "cancel", None)
+        with self.held_lock:
+            while not self._phase_room(self.pick_phase, self.held + estimate):
+                if self.held <= 0 or (cancel is not None and cancel.is_set()):
+                    return None  # nothing running frees money: the price is really used up
+                self.held_lock.wait(timeout=_PICK_WAIT_S)
             self.held += estimate
         try:
-            answer = self._held_pick(
-                finding, vendor, architect, page_map, model, "high" if strong else "medium"
-            )
+            answer = self._held_pick(finding, vendor, architect, page_map, model, effort)
             if answer is not None:
                 # Code's own mark, never the model's: a reply's own "strong" is overwritten.
                 answer[STRONG_PICK] = strong
@@ -3090,6 +3155,52 @@ class _Run:
         finally:
             with self.held_lock:
                 self.held -= estimate
+                self.held_lock.notify_all()
+
+    def _pack_folder(self) -> Path | None:
+        tools = getattr(self.engine, "tools", None)
+        workspace = getattr(tools, "workspace", None)
+        folder = getattr(workspace, "set_pack", None)
+        return folder if isinstance(folder, Path) else None
+
+    def _pick_key(
+        self,
+        vendor: Mapping[str, Any],
+        architect: Mapping[str, Any],
+        page_map: Mapping[str, Any] | None,
+        model: str,
+        effort: str,
+    ) -> str | None:
+        """What one blind pick is shown and asked (`pick_cache.pick_key`), or `None` when it
+        cannot be worked out (the pick is then asked as before, never reused)."""
+        try:
+            labels = self.engine.book.dim_labels.on_page(
+                str(architect.get("file")), int(architect["page"]), read_now=False
+            )
+            from app.review.assistant.chat_engine import HARNESS_ID
+
+            prompt = "\n".join(
+                (
+                    HARNESS_ID,
+                    ADVOCATE_SYSTEM,
+                    json.dumps(ADVOCATE_SCHEMA, sort_keys=True),
+                    advocate_question("D0", ""),
+                )
+            )
+            return pick_cache.pick_key(
+                vendor=vendor,
+                architect_page=[
+                    {**dict(label), "file": architect.get("file"), "page": architect.get("page")}
+                    for label in labels or []
+                ],
+                crops=[self._half_box(page_map, vendor), self._half_box(page_map, architect)],
+                model=model,
+                effort=effort,
+                prompt=prompt,
+            )
+        except Exception:  # noqa: BLE001 - no key: the pick is asked, never reused
+            _log.info("assistant roster could not key the blind pick for %s", vendor.get("id"))
+            return None
 
     def _held_pick(
         self,
@@ -3181,6 +3292,13 @@ class _Run:
         each item code now reads on both sides that it has not judged. Nothing is repeated: an
         item gets its look once. What the money does not reach stays Not compared, and is said
         so."""
+        try:
+            self._escalate_items(plan, page_map)
+        finally:
+            self._note_unverified()
+
+    def _escalate_items(self, plan: Any, page_map: Mapping[str, Any] | None) -> None:
+        """The escalation's steps (`_escalate`)."""
         engine = self.engine
         from app.review.assistant.escalation import escalate_answer
 
