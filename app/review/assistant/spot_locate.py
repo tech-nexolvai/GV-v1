@@ -31,10 +31,14 @@ from units.normalise import plain_marks
 
 __all__ = [
     "SPOT_SEARCH",
+    "VENDOR_SEARCH",
+    "AreaSearch",
     "Located",
     "code_spotted",
     "locate",
     "relocate",
+    "search_area",
+    "search_words",
     "spot_words",
 ]
 
@@ -202,6 +206,111 @@ def relocate(
     if search:
         out[SPOT_SEARCH] = search
     return out
+
+
+#: The finding field that records code's search of the vendor's drawings for a value the AI says
+#: the vendor does not show (`search_area`).
+VENDOR_SEARCH: Final = "vendor_search"
+
+
+@dataclass(frozen=True, slots=True)
+class AreaSearch:
+    """Code's search of the vendor's drawings of an area for one printed value."""
+
+    found: Literal["one", "several", "none", "unknown"]
+    value: str
+    pages: tuple[int, ...] = ()
+    searched: int = 0
+    """How many vendor labels code read on those drawings (the ones it compared the value with)."""
+    labels: tuple[str, ...] = ()
+    """`p<page>.<id>` of every vendor label that prints the value the same way round."""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "found": self.found,
+            "value": self.value,
+            "pages": list(self.pages),
+            "searched": self.searched,
+            "labels": list(self.labels),
+        }
+
+
+def _centre_in(label: Mapping[str, Any], box: Sequence[float]) -> bool:
+    try:
+        x0, y0, x1, y1 = (float(v) for v in label.get("box") or ())
+        hx0, hy0, hx1, hy1 = (float(v) for v in box)
+    except (TypeError, ValueError):
+        return False
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    return hx0 <= cx <= hx1 and hy0 <= cy <= hy1
+
+
+def search_area(
+    claim: object,
+    orientation: object,
+    drawings: Sequence[tuple[int, Sequence[float], Sequence[Mapping[str, Any]]]],
+) -> AreaSearch:
+    """Where `claim` (the architect's printed value) is printed on the vendor's drawings of its
+    area: each of `drawings` is (page, the vendor drawing's box on it, the page's labels). A
+    vendor label counts when its centre is inside a vendor drawing, it prints the same inches (and
+    the same millimetres when the claim gives both) and, when both are known, it runs the same way
+    round (`orientation`: `h` a width, `v` a height). `unknown`: the value is not one size, or
+    there is no vendor drawing to search. Code never says which of several is meant."""
+    text = claim_value(claim)
+    want = to_inches(text) if text is not None else None
+    shown = text or " ".join(str(claim or "").split())
+    if want is None or not drawings:
+        return AreaSearch("unknown", shown)
+    mm = _mm(text)
+    way = orientation if orientation in ("h", "v") else None
+    searched = 0
+    hits: list[str] = []
+    pages: list[int] = []
+    for page, box, labels in drawings:
+        if page not in pages:
+            pages.append(page)
+        for label in labels:
+            if label.get("side") != "vendor" or label.get("derived") or not _centre_in(label, box):
+                continue
+            if _decimal(label.get("inches")) is None:
+                continue
+            searched += 1
+            other = label.get("orientation")
+            if way is not None and other in ("h", "v") and other != way:
+                continue
+            if _prints(label, want, mm):
+                ref = f"p{page}.{label.get('id')}"
+                if ref not in hits:
+                    hits.append(ref)
+    found: Literal["one", "several", "none"] = (
+        "none" if not hits else "one" if len(hits) == 1 else "several"
+    )
+    return AreaSearch(found, shown, tuple(sorted(pages)), searched, tuple(hits))
+
+
+def search_words(search: object) -> str | None:
+    """What code's search of the vendor's drawings found (`search_area`), in one plain line, or
+    `None` when it did not search."""
+    if not isinstance(search, Mapping) or search.get("found") not in ("one", "several", "none"):
+        return None
+    pages = [str(p) for p in search.get("pages") or []]
+    where = (
+        f"page {pages[0]}" if len(pages) == 1 else f"pages {', '.join(pages[:-1])} and {pages[-1]}"
+    )
+    value = search.get("value")
+    if search.get("found") == "none":
+        count = int(search.get("searched") or 0)
+        labels = "1 label" if count == 1 else f"{count} labels"
+        return (
+            f"code searched the vendor's drawings of this area ({where}): none of the {labels} "
+            f"code read there prints {value}; code cannot tell whether the item itself is left "
+            "out or only its dimension"
+        )
+    found = ", ".join(str(ref) for ref in search.get("labels") or [])
+    return (
+        f"code finds {value} printed on the vendor's drawing ({found}), the same way round; code "
+        "cannot prove it is the same dimension"
+    )
 
 
 def code_spotted(finding: Mapping[str, Any]) -> bool:
