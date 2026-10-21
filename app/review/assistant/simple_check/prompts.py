@@ -263,7 +263,9 @@ def _label_line(label: Label, drawing: Drawing, places: bool = True) -> str:
     where = [w for w in (_DIRECTION.get(label.orientation or ""), _place(label, drawing)) if w]
     if where and places:
         bits.append(f"[{' '.join(where)}]")
-    if label.route == "drawn":
+    if label.origin == "picture":
+        bits.append("(read from a pasted picture by code)")
+    elif label.route == "drawn":
         bits.append("(pen strokes read by code)")
     return f"{label.ref} {' '.join(bits)}"
 

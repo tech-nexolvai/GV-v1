@@ -265,6 +265,7 @@ def _label(page: int, raw: Mapping[str, Any]) -> Label | None:
         orientation=raw.get("orientation") if isinstance(raw.get("orientation"), str) else None,
         route=raw.get("route") if isinstance(raw.get("route"), str) else None,
         mm=None if mm is None else str(mm),
+        origin=raw.get("origin") if isinstance(raw.get("origin"), str) else None,
     )
 
 

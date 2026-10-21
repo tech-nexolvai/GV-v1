@@ -787,7 +787,9 @@ def _row(label: Mapping[str, Any], note: str = "") -> str:
     orientation = label.get("orientation")
     if orientation in ("h", "v"):
         bits.append("(horizontal)" if orientation == "h" else "(vertical)")
-    if label.get("route") == "drawn":
+    if label.get("origin") == "picture":
+        bits.append("[read from a pasted picture by code]")
+    elif label.get("route") == "drawn":
         bits.append("[pen strokes read by code]")
     derived = label.get("derived")
     if isinstance(derived, Mapping) and derived.get("rule") == "equal_parts":

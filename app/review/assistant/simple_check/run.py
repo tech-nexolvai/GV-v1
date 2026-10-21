@@ -596,7 +596,11 @@ class _Run:
             page_map=self.page_map,
             # A label read from the vendor's black or grey layer is the vendor's, whatever GV
             # drew over it (`verify._ink_check`); any other label's own spot is looked at.
-            vendor_ink=(1, 0.0) if vendor.get("route") in ("text", "drawn") else self._ink(vendor),
+            vendor_ink=(
+                (1, 0.0)
+                if vendor.get("route") in ("text", "drawn") and vendor.get("origin") != "picture"
+                else self._ink(vendor)
+            ),
             newer_same=same,
         )
         if not code_paired and not any(c.outcome != "pass" for c in checks):

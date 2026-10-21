@@ -73,7 +73,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
 from importlib import import_module
@@ -1518,16 +1518,57 @@ def _verify(
         return Verified(
             "mismatch", "text", printed, text_reads, f"the drawing prints {printed} here", value
         )
+    in_picture = not printed and not has_ink and _in_pasted_picture(Path(pdf), page - 1, spot)
     if not drawn:
         if printed and not has_ink:
             reason = "stacked digits here that code could not put together"
             return Verified("cannot_read", "text", None, text_reads, reason, value)
+        if in_picture and not _has_picture(read, spot):
+            # A pasted picture the vendor layer leaves out (a rectangle comment holding an image):
+            # the drawn route cannot read it either. A picture in the vendor layer (a scanned
+            # page) is read by the drawn route, so it waits for it as before.
+            return Verified("cannot_read", "none", None, text_reads, _IN_PICTURE, value)
         if not printed and not has_ink and not _has_picture(read, spot):
             return Verified(
                 "cannot_read", "none", None, text_reads, "nothing is printed at this spot", value
             )
         return Verified("cannot_read", "none", None, text_reads, _PENDING, value, pending=True)
-    return _drawn(read, spot, wanted, value, text, text_reads, readers)
+    found = _drawn(read, spot, wanted, value, text, text_reads, readers)
+    if in_picture and found.result == "cannot_read":
+        return replace(found, reason=_IN_PICTURE)
+    return found
+
+
+#: Why a value inside a pasted picture is not read here (#1830): only the picture route reads a
+#: picture, and only two agreeing engines make a label of it (`picture_labels.UNCONFIRMED`).
+_IN_PICTURE: Final = "number read from a picture: not confirmed"
+_PASTED_LOCK: Final = threading.Lock()
+_PASTED: OrderedDict[tuple[str, int, int, int], tuple[tuple[float, float, float, float], ...]] = (
+    OrderedDict()
+)
+
+
+def _in_pasted_picture(pdf: Path, page_index: int, spot: tuple[float, float, float, float]) -> bool:
+    """Whether the spot's centre lies in a picture the page shows with its pasted drawings and
+    pasted pictures (`picture_labels.picture_page`; cached per file version and page)."""
+    try:
+        stat = pdf.stat()
+        key = (str(pdf.resolve()), stat.st_mtime_ns, stat.st_size, page_index)
+        with _PASTED_LOCK:
+            boxes = _PASTED.get(key)
+        if boxes is None:
+            pictures = import_module("app.review.assistant.picture_labels")
+            page_pdf = pictures.picture_page(pdf.read_bytes(), page_index)
+            boxes = () if page_pdf is None else tuple(pictures.picture_boxes(page_pdf))
+            with _PASTED_LOCK:
+                _PASTED[key] = boxes
+                while len(_PASTED) > _PAGE_CACHE_SIZE:
+                    _PASTED.popitem(last=False)
+    except Exception as failed:  # noqa: BLE001 - the answer keeps its own reason
+        _log.warning("verify_value could not list the pictures: %s", type(failed).__name__)
+        return False
+    cx, cy = (spot[0] + spot[2]) / 2, (spot[1] + spot[3]) / 2
+    return any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for b in boxes)
 
 
 def _union(chars: Iterable[_Char]) -> tuple[float, float, float, float]:
