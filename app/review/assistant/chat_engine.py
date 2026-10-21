@@ -166,7 +166,7 @@ from app.review.assistant.chat_scope import (
     scoped_recorded,
     widened,
 )
-from app.review.assistant.chat_summary import code_summary, needs_code_summary
+from app.review.assistant.chat_summary import code_summary, needs_code_summary, rule_note_line
 from app.review.assistant.chat_timings import Timings
 from app.review.assistant.chat_tools import (
     BATCH_LISTS,
@@ -250,6 +250,7 @@ from app.review.assistant.product_scope import (
     scoped_gaps,
 )
 from app.review.assistant.proof import proof_counts, vendor_facing
+from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.run_fit import add_to_answer as add_run_fit
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
 from app.review.assistant.send_package import (
@@ -3111,6 +3112,8 @@ class ChatEngine:
         # The same counts as the screen and the cloud drawing (#1554, #1619): one final list.
         groups = proof_counts(findings)
         unseen = f", {groups['not_compared']} not compared" if groups["not_compared"] else ""
+        if groups["rule_note"]:
+            unseen = f", {groups['rule_note']} {RULE_NOTE_COUNT}{unseen}"
         coverage = book.coverage_map()["counts"] if book.coverage_used else None
         trust = report.get("counts") or {}
         products = products_words(self.settings.products)
@@ -3357,6 +3360,11 @@ class ChatEngine:
                 Counter(row.reason for row in self.not_compared),
                 int(counts.get("not_opened") or 0),
             )
+            # #1839: the sizes the architect specifies that break a GV rule (decided, ask the
+            # architect), said apart from what could not be compared.
+            noted = proof_counts([f for f in self.book.live() if vendor_facing(f)])["rule_note"]
+            if noted:
+                lines.append(rule_note_line(noted))
             for words in (*lines, nothing.replace("list.", "list (PDF / Excel).")):
                 if words:
                     index = self._add_block({"type": "text", "text": words, "by": "code"})

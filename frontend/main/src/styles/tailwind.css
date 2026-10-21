@@ -101,6 +101,11 @@
     --outcome-missing: #8a8a8a;
     --outcome-missing-fg: #525252;
     --outcome-missing-bg: #f4f4f4;
+    /* #1839: "Ask the architect": the architect's size breaks a GV rule and the vendor follows it.
+       Decided, nothing for the vendor: a neutral slate (never red, green or amber). */
+    --outcome-ask: #475569;
+    --outcome-ask-fg: #334155;
+    --outcome-ask-bg: #f1f5f9;
     /* GV's maroon (#1534): the Graniti Vicentia logo's own red, measured from logo-graniti.svg.
        The brand accent only: the AI sign, primary buttons, focus rings. Never a status colour.
        --gv-maroon is for marks and text (6.1:1 on white); --gv-maroon-solid fills buttons. */
@@ -160,6 +165,9 @@
     --outcome-missing: #8a8a8a;
     --outcome-missing-fg: #b4b4b4;
     --outcome-missing-bg: #232323;
+    --outcome-ask: #94a3b8;
+    --outcome-ask-fg: #cbd5e1;
+    --outcome-ask-bg: #1e2633;
     /* Lighter on dark so the sign keeps 4.7:1 on the page; buttons keep the logo red (white text 6.1:1). */
     --gv-maroon: #e5485e;
     --gv-maroon-solid: #c21531;
@@ -228,6 +236,9 @@
   --color-outcome-missing: var(--outcome-missing);
   --color-outcome-missing-fg: var(--outcome-missing-fg);
   --color-outcome-missing-bg: var(--outcome-missing-bg);
+  --color-outcome-ask: var(--outcome-ask);
+  --color-outcome-ask-fg: var(--outcome-ask-fg);
+  --color-outcome-ask-bg: var(--outcome-ask-bg);
   --color-gv-maroon: var(--gv-maroon);
   --color-gv-maroon-solid: var(--gv-maroon-solid);
 

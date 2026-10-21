@@ -165,6 +165,7 @@ def test_nothing_counts_before_the_run_decides_it_and_only_proved_wrongs_are_wro
     assert screen.last("check_tally")["tally"] == {
         "wrong": 1,
         "right": 1,
+        "rule_note": 0,
         "not_compared": 1,
         "waiting_second_look": 0,
     }
@@ -233,6 +234,7 @@ def test_candidates_wait_for_the_second_look_then_become_wrong_or_not_compared()
     assert screen.last("check_tally")["tally"] == {
         "wrong": 0,
         "right": 0,
+        "rule_note": 0,
         "not_compared": 1,
         "waiting_second_look": 2,
     }
@@ -250,6 +252,7 @@ def test_candidates_wait_for_the_second_look_then_become_wrong_or_not_compared()
     assert screen.last("check_tally")["tally"] == {
         "wrong": 1,
         "right": 0,
+        "rule_note": 0,
         "not_compared": 2,
         "waiting_second_look": 0,
     }

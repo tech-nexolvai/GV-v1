@@ -283,7 +283,13 @@ def test_an_architect_comparison_needs_a_pairing_proof_a_rule_or_sum_does_not() 
 
 def test_counts_split_the_screen_counts_and_follow_decisions() -> None:
     findings = [_proved(), _ai_only(), _decision(), _right(), _right(compared=False)]
-    assert proof_counts(findings) == {"clouded": 1, "right": 1, "not_compared": 3, "dismissed": 0}
+    assert proof_counts(findings) == {
+        "clouded": 1,
+        "right": 1,
+        "rule_note": 0,
+        "not_compared": 3,
+        "dismissed": 0,
+    }
     decided = [_proved(decision={"decision": "not_a_problem", "by": "R"}), _ai_only()]
     assert proof_counts(decided)["dismissed"] == 1 and proof_counts(decided)["clouded"] == 0
 
