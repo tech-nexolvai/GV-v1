@@ -42,39 +42,6 @@ export function roundTagWords(tag: string): string | null {
   return tag;
 }
 
-const READING = new Set(['UPLOADING', 'UPLOADED', 'INGESTING', 'EXTRACTING', 'MATCHING', 'VALIDATING_EVIDENCE', 'RUNNING_CHECKS', 'GENERATING_OUTPUTS']);
-
-/**
- * A drawing set's state as plain grey words for the sidebar: no pill, no colour (a set's state is
- * not an outcome). Unknown states still read, by their own name. `restarting` is the package's
- * `reading.retrying` (#1249), known only for the open set.
- */
-export function setStatusWords(state: string, { restarting = false }: { restarting?: boolean } = {}): string {
-  if (READING.has(state)) return 'Reading the drawings…';
-  if (state === 'FAILED_RETRYABLE') return restarting ? 'Restarting after a problem' : 'Stopped after a problem';
-  switch (state) {
-    case 'AWAITING_REVIEW':
-    case 'NEEDS_INPUT':
-      return 'Drawings read';
-    case 'CHANGES_REQUESTED':
-      return 'Changes requested';
-    case 'APPROVED':
-      return 'Approved';
-    case 'FAILED_PERMANENT':
-      return 'Could not read the drawings';
-    case 'CANCELLED':
-      return 'Cancelled';
-    case 'SUPERSEDED':
-      return 'Replaced by a newer upload';
-    case 'CREATED':
-      return 'Waiting for the drawings';
-    default: {
-      const words = state.toLowerCase().replace(/_/g, ' ').trim();
-      return words.charAt(0).toUpperCase() + words.slice(1);
-    }
-  }
-}
-
 /** Words a reviewer screen must never show, each with what to say instead. */
 export const BANNED_WORDS: readonly { pattern: RegExp; instead: string }[] = [
   { pattern: /nothing to compare/i, instead: 'say "Not compared"' },

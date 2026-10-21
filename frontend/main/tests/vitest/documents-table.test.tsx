@@ -5,13 +5,26 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PackageSummary } from '@/api/client';
 import { DocumentsTable } from '@/components/documents/documents-table';
-import { matchesSearch, outcomeSegments, outcomeSentence, productWord, resultTotal, statusRank } from '@/lib/documents-table';
+import { matchesSearch, productWord, resultRank } from '@/lib/documents-table';
+import { countParts, countSentence, setResult } from '@/lib/set-check';
 import { PackagesPage } from '@/pages/PackagesPage';
 
 // Synthetic data only: nothing here comes from a client drawing.
 vi.mock('@/api/config', () => ({ projectId: () => 'p' }));
 
 const zero = { pass: 0, fail: 0, review: 0, not_found: 0, no_rule: 0 };
+type Check = NonNullable<PackageSummary['full_check']>;
+function check(extra: Partial<Check> = {}): Check {
+  return {
+    chat_id: 'chat-1',
+    message_id: 'answer-1',
+    ran_at: '2026-10-05T09:00:00Z',
+    stopped: null,
+    review_result: { action: 'revise_resubmit', words: 'Revise and resubmit' },
+    counts: { wrong: 5, right: 12, ask_architect: 0, not_compared: 30 },
+    ...extra,
+  };
+}
 function summary(id: string, extra: Partial<PackageSummary> = {}): PackageSummary {
   return {
     package_id: id,
@@ -19,7 +32,8 @@ function summary(id: string, extra: Partial<PackageSummary> = {}): PackageSummar
     revision_number: 1,
     vendor: `Synthetic ${id}`,
     product_type: 'countertop',
-    state: 'AWAITING_REVIEW',
+    // The old pipeline's state: a chat-read set never moves on there, and it is not shown.
+    state: 'UPLOADING',
     created_at: '2026-10-01T10:00:00Z',
     updated_at: '2026-10-01T10:00:00Z',
     outcomes: { ...zero },
@@ -27,34 +41,45 @@ function summary(id: string, extra: Partial<PackageSummary> = {}): PackageSummar
     needs_decision_by_outcome: { fail: 0, review: 0, not_found: 0, other: 0 },
     approved: false,
     signed_exports_ready: false,
+    checking: false,
+    drawings: null,
+    full_check: null,
     ...extra,
   };
 }
 
+// In the server's order: newest change first.
 const ROWS: PackageSummary[] = [
-  summary('b', { vendor: 'Beta Stone', updated_at: '2026-10-02T09:00:00Z', outcomes: { ...zero, pass: 8, fail: 2, review: 1 }, needs_decision: 3 }),
-  summary('a', { vendor: 'alpha works', updated_at: '2026-10-05T09:00:00Z', state: 'APPROVED', outcomes: { ...zero, pass: 4 }, approved: true, signed_exports_ready: true }),
-  summary('u', { vendor: null, product_type: 'cabinet', updated_at: '2026-10-03T09:00:00Z', state: 'EXTRACTING' }),
+  summary('b', { vendor: 'Beta Stone', full_check: check() }),
+  summary('a', { vendor: 'alpha works', full_check: check({ chat_id: 'chat-a', ran_at: '2026-10-03T09:00:00Z', review_result: { action: 'approved', words: 'Approved' }, counts: { wrong: 0, right: 20, ask_architect: 2, not_compared: 1 } }) }),
+  summary('u', { vendor: null, product_type: 'cabinet', drawings: 'reading' }),
 ];
 
 function vendorsInOrder() {
-  const table = screen.getByRole('table', { name: 'Drawing reviews' });
-  return within(table).getAllByRole('row').slice(1).map((row) => within(row).getAllByRole('cell')[0].textContent?.replace(/Revision \d+$/, ''));
+  const table = screen.getByRole('table', { name: 'Drawing sets' });
+  return within(table).getAllByRole('row').slice(1).map((row) => within(row).getAllByRole('button')[0].textContent?.replace(/Revision \d+$/, ''));
 }
 
-describe('documents table arithmetic', () => {
-  it('lists non-zero recorded results in one order, with the agreed words', () => {
-    expect(outcomeSegments({ ...zero, fail: 2, pass: 8, no_rule: 1 })).toEqual([
-      { outcome: 'PASS', count: 8, label: 'Looks right' },
-      { outcome: 'FAIL', count: 2, label: 'Needs correction' },
-      { outcome: 'NO_APPLICABLE_RULE', count: 1, label: 'Not applicable' },
-    ]);
-    expect(resultTotal({ ...zero, pass: 1, review: 2, not_found: 3 })).toBe(6);
-    expect(outcomeSentence({ ...zero, pass: 1, review: 1 })).toBe('2 recorded results: 1 Looks right, 1 Needs your decision');
+describe('documents table words', () => {
+  it('says the newest full check in AWI words, shortening only "Check incomplete"', () => {
+    expect(setResult({ full_check: check() })).toEqual({ kind: 'revise_resubmit', words: 'Revise and resubmit', title: null });
+    expect(setResult({ full_check: check({ review_result: { action: 'not_for_sending', words: 'Check incomplete: not for sending' } }) }))
+      .toEqual({ kind: 'not_for_sending', words: 'Check incomplete', title: 'Check incomplete: not for sending' });
+    expect(setResult({ full_check: check({ review_result: null, stopped: 'cost_cap' }) }))
+      .toEqual({ kind: 'unfinished', words: 'Check did not finish', title: 'It stopped at its price limit.' });
+    expect(setResult({}).words).toBe('Not checked yet');
+    expect(setResult({ checking: true, full_check: check() }).words).toBe('Full check running…');
   });
 
-  it('says zero results in words, never as an empty all-clear', () => {
-    expect(outcomeSentence(zero)).toBe('No recorded results yet');
+  it('counts as the result screen does: Ask the architect only when there is one', () => {
+    expect(countParts({ wrong: 1, right: 2, ask_architect: 0, not_compared: 3 }).map((part) => part.words)).toEqual(['Wrong', 'Right', 'Not compared']);
+    expect(countSentence({ wrong: 1, right: 2, ask_architect: 4, not_compared: 3 })).toBe('1 Wrong, 2 Right, 4 Ask the architect, 3 Not compared');
+  });
+
+  it('orders results by what they ask of the vendor, sets not checked yet last', () => {
+    expect(resultRank({ full_check: check({ review_result: { action: 'rejected', words: 'Rejected' } }) })).toBeLessThan(resultRank({ full_check: check() }));
+    expect(resultRank({ full_check: check() })).toBeLessThan(resultRank({ full_check: check({ review_result: { action: 'approved', words: 'Approved' } }) }));
+    expect(resultRank({ full_check: check() })).toBeLessThan(resultRank({}));
   });
 
   it('searches the vendor and the product, ignoring case and spaces around', () => {
@@ -64,51 +89,51 @@ describe('documents table arithmetic', () => {
     expect(matchesSearch({ vendor: 'Beta Stone', product_type: 'countertop' }, 'cabinet')).toBe(false);
     expect(productWord(null)).toBe('Not set');
   });
-
-  it('orders statuses the way a review moves', () => {
-    expect(statusRank('EXTRACTING')).toBeLessThan(statusRank('AWAITING_REVIEW'));
-    expect(statusRank('AWAITING_REVIEW')).toBeLessThan(statusRank('APPROVED'));
-    expect(statusRank('SOMETHING_NEW')).toBeGreaterThan(statusRank('SUPERSEDED'));
-  });
 });
 
 describe('DocumentsTable', () => {
-  it('opens newest-updated first, with every column for each review', () => {
+  it('keeps the server order and shows each set’s newest full check, never the old pipeline', () => {
     render(<DocumentsTable rows={ROWS} onOpen={() => {}} morePages={false} />);
-    expect(vendorsInOrder()).toEqual(['alpha works', 'Untitled document set', 'Beta Stone']);
-    expect(screen.getByRole('img', { name: '11 recorded results: 8 Looks right, 2 Needs correction, 1 Needs your decision' })).toBeTruthy();
-    expect(screen.getByText('results need your decision', { exact: false })).toBeTruthy();
-    expect(screen.getAllByText('Signed off', { selector: '.sr-only' })).toHaveLength(1);
-    expect(screen.getAllByText('Signed files ready', { selector: '.sr-only' })).toHaveLength(1);
-    expect(screen.getByText('3 reviews.')).toBeTruthy();
-    expect(screen.queryByText(/cover this page only/)).toBeNull();
+    expect(vendorsInOrder()).toEqual(['Beta Stone', 'alpha works', 'Untitled document set']);
+    const [beta, alpha, untitled] = screen.getAllByRole('row').slice(1);
+    // The result, in its own column (and again in the phone summary, hidden by CSS on wider screens).
+    expect(within(beta).getAllByText('Revise and resubmit').length).toBeGreaterThan(0);
+    expect(within(beta).getAllByText('5 Wrong, 12 Right, 30 Not compared').length).toBeGreaterThan(0);
+    expect(within(alpha).getAllByText('0 Wrong, 20 Right, 2 Ask the architect, 1 Not compared').length).toBeGreaterThan(0);
+    // A set with no check: "Not checked yet", and "Reading the drawings…" while its pack is made.
+    expect(within(untitled).getAllByText('Not checked yet').length).toBeGreaterThan(0);
+    expect(within(untitled).getAllByText('Reading the drawings…').length).toBeGreaterThan(0);
+    // The old columns are gone.
+    for (const old of ['Uploading', 'No results yet', 'Not under review', 'Signed off', 'Needs you']) {
+      expect(screen.queryByText(old)).toBeNull();
+    }
+    expect(screen.getByText(/^3 drawing sets\. Each shows its newest full check\.$/)).toBeTruthy();
+    // Ask the architect is in the legend because a row has one.
+    expect(within(screen.getByRole('list', { name: 'Item counts' })).getAllByRole('listitem').map((li) => li.textContent?.replace(/^\?/, '')))
+      .toEqual(['Wrong', 'Right', 'Ask the architect', 'Not compared']);
   });
 
-  it('asks "Needs you" only of a review under review, never of a signed-off one', () => {
-    const lapsed = summary('s', { vendor: 'Signed vendor', state: 'APPROVED', approved: true, outcomes: { ...zero, pass: 2 }, needs_decision: 1 });
-    render(<DocumentsTable rows={[lapsed]} onOpen={() => {}} morePages={false} />);
-    const row = screen.getAllByRole('row')[1];
-    expect(within(row).getByText('Not under review')).toBeTruthy();
-    expect(within(row).queryByText(/need your decision|needs your decision/)).toBeNull();
+  it('paints a result with its glyph and outcome colour, never amber', () => {
+    render(<DocumentsTable rows={[summary('n', { full_check: check({ review_result: { action: 'approved_as_noted', words: 'Approved as noted' } }) }), ...ROWS]} onOpen={() => {}} morePages={false} />);
+    const results = [...document.querySelectorAll('[data-slot="set-result"]')] as HTMLElement[];
+    for (const result of results) {
+      expect(result.className).not.toMatch(/review|amber/);
+      expect(result.querySelector('svg')).not.toBeNull();
+    }
+    expect(results.find((result) => result.dataset.result === 'revise_resubmit')?.className).toContain('text-outcome-fail-fg');
+    expect(results.find((result) => result.dataset.result === 'approved')?.className).toContain('text-outcome-pass-fg');
+    expect(results.find((result) => result.dataset.result === 'approved_as_noted')?.className).toContain('text-foreground');
   });
 
-  it('shows a review with nothing recorded as "No results yet", not as a zero', () => {
-    render(<DocumentsTable rows={[{ ...ROWS[2], state: 'NEEDS_INPUT' }]} onOpen={() => {}} morePages={false} />);
-    const row = screen.getAllByRole('row')[1];
-    expect(within(row).getAllByText('No results yet')).toHaveLength(2); // the bar and the Needs-you cell
-    expect(within(row).queryByText('0')).toBeNull();
-  });
-
-  it('sorts by a column on click: vendor A→Z with untitled last, needs-you most first', async () => {
+  it('sorts by a column on click: name A→Z with untitled last, result by what it asks', async () => {
     const user = userEvent.setup();
     render(<DocumentsTable rows={ROWS} onOpen={() => {}} morePages={false} />);
-    await user.click(screen.getByRole('button', { name: /Vendor/ }));
+    await user.click(screen.getByRole('button', { name: /Drawing set/ }));
     expect(vendorsInOrder()).toEqual(['alpha works', 'Beta Stone', 'Untitled document set']);
-    await user.click(screen.getByRole('button', { name: /Vendor/ }));
+    await user.click(screen.getByRole('button', { name: /Review result/ }));
     expect(vendorsInOrder()).toEqual(['Beta Stone', 'alpha works', 'Untitled document set']);
-    await user.click(screen.getByRole('button', { name: /Needs you/ }));
-    expect(vendorsInOrder()[0]).toBe('Beta Stone');
-    expect(screen.getByRole('columnheader', { name: /Needs you/ }).getAttribute('aria-sort')).toBe('descending');
+    await user.click(screen.getByRole('button', { name: /Checked/ }));
+    expect(vendorsInOrder()).toEqual(['Beta Stone', 'alpha works', 'Untitled document set']);
   });
 
   it('searches by vendor or product and says how many match', async () => {
@@ -117,28 +142,22 @@ describe('DocumentsTable', () => {
     expect(screen.getByText(/Sorting and search cover this page only\./)).toBeTruthy();
     await user.type(screen.getByRole('searchbox', { name: 'Search vendor or product' }), 'cabinet');
     expect(vendorsInOrder()).toEqual(['Untitled document set']);
-    expect(screen.getByText(/1 of 3 reviews match\./)).toBeTruthy();
+    expect(screen.getByText(/1 of 3 drawing sets match\./)).toBeTruthy();
     await user.clear(screen.getByRole('searchbox'));
     await user.type(screen.getByRole('searchbox'), 'nothing like this');
     expect(screen.getByText('Nothing matches “nothing like this”.')).toBeTruthy();
   });
 
-  it('opens a review by its Open button or its name', async () => {
+  it('opens the newest check’s chat by its Open button or its name; a set with none opens its chats', async () => {
     const user = userEvent.setup();
     const onOpen = vi.fn();
     render(<DocumentsTable rows={ROWS} onOpen={onOpen} morePages={false} />);
-    await user.click(screen.getByRole('button', { name: 'Open review for Beta Stone' }));
-    expect(onOpen).toHaveBeenCalledWith('b');
-    // The name opens it too (the Open column is hidden on a phone).
-    await user.click(screen.getByRole('button', { name: /^Untitled document set/ }));
-    expect(onOpen).toHaveBeenLastCalledWith('u');
-  });
-
-  it('keeps the "counts checks, not drawings" caveat behind the Results "?"', async () => {
-    const user = userEvent.setup();
-    render(<DocumentsTable rows={ROWS} onOpen={() => {}} morePages={false} />);
-    await user.click(screen.getByRole('button', { name: 'About these results' }));
-    expect(await screen.findByText(/not drawings or individual dimensions/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Open the full check of Beta Stone' }));
+    expect(onOpen).toHaveBeenCalledWith('b', 'chat-1');
+    await user.click(screen.getByRole('button', { name: /^alpha works/ }));
+    expect(onOpen).toHaveBeenLastCalledWith('a', 'chat-a');
+    await user.click(screen.getByRole('button', { name: 'Open the chats of Untitled document set' }));
+    expect(onOpen).toHaveBeenLastCalledWith('u', null);
   });
 });
 
@@ -159,8 +178,8 @@ describe('PackagesPage', () => {
   });
 
   it('loads the whole table in one request, at the largest page size', async () => {
-    render(<PackagesPage onOpenReview={() => {}} onNewPackage={() => {}} />);
-    await screen.findByRole('table', { name: 'Drawing reviews' });
+    render(<PackagesPage onOpenSet={() => {}} onNewPackage={() => {}} />);
+    await screen.findByRole('table', { name: 'Drawing sets' });
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatch(/\/projects\/p\/packages-summary\?limit=200$/);
     expect(screen.queryByRole('navigation', { name: 'Document pages' })).toBeNull();
@@ -172,7 +191,7 @@ describe('PackagesPage', () => {
       first: { items: ROWS.slice(0, 2), next_cursor: 'opaque+cursor', limit: 200 },
       'opaque+cursor': { items: ROWS.slice(2), next_cursor: null, limit: 200 },
     };
-    render(<PackagesPage onOpenReview={() => {}} onNewPackage={() => {}} />);
+    render(<PackagesPage onOpenSet={() => {}} onNewPackage={() => {}} />);
     await screen.findByText(/Sorting and search cover this page only/);
     await user.click(screen.getByRole('button', { name: 'Next page' }));
     await waitFor(() => expect(vendorsInOrder()).toEqual(['Untitled document set']));
@@ -182,7 +201,7 @@ describe('PackagesPage', () => {
 
   it('says a failed load out loud, with a retry', async () => {
     pages = { first: 503 };
-    render(<PackagesPage onOpenReview={() => {}} onNewPackage={() => {}} />);
+    render(<PackagesPage onOpenSet={() => {}} onNewPackage={() => {}} />);
     expect(await screen.findByText('Documents could not be loaded')).toBeTruthy();
     expect(screen.queryByRole('table')).toBeNull();
   });

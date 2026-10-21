@@ -236,6 +236,7 @@ const summary = (id: string, created: string, outcomes = zero, vendor: string | 
   package_id: id, revision_id: `rev-${id}`, revision_number: 1, vendor, product_type: 'countertop', state: 'AWAITING_REVIEW',
   created_at: created, updated_at: created, outcomes, needs_decision: 0,
   needs_decision_by_outcome: { fail: 0, review: 0, not_found: 0, other: 0 }, approved: false, signed_exports_ready: false,
+  checking: false,
 });
 const SUMMARY = {
   items: [

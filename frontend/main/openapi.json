@@ -12236,6 +12236,14 @@
         "title": "DrawingOut",
         "type": "object"
       },
+      "DrawingsState": {
+        "enum": [
+          "reading",
+          "read",
+          "failed"
+        ],
+        "type": "string"
+      },
       "EarlierRunOut": {
         "description": "One day's earlier calls for one purpose, from `ai_spend_history`.",
         "properties": {
@@ -13486,6 +13494,70 @@
         "title": "Focus",
         "type": "object"
       },
+      "FullCheckCountsOut": {
+        "description": "A full check's items as its result screen counts them (its tiles).",
+        "properties": {
+          "ask_architect": {
+            "description": "Ask the architect: the architect's size breaks a GV rule (#1839).",
+            "minimum": 0.0,
+            "title": "Ask Architect",
+            "type": "integer"
+          },
+          "not_compared": {
+            "description": "Not compared, each with its reason.",
+            "minimum": 0.0,
+            "title": "Not Compared",
+            "type": "integer"
+          },
+          "right": {
+            "description": "Right: matches the architect or GV's rule.",
+            "minimum": 0.0,
+            "title": "Right",
+            "type": "integer"
+          },
+          "wrong": {
+            "description": "Wrong: proved by code, red on the cloud drawing.",
+            "minimum": 0.0,
+            "title": "Wrong",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "wrong",
+          "right",
+          "ask_architect",
+          "not_compared"
+        ],
+        "title": "FullCheckCountsOut",
+        "type": "object"
+      },
+      "FullCheckReviewOut": {
+        "description": "A full check's review result in AWI's words (`review_action`), once its package is made.",
+        "properties": {
+          "action": {
+            "enum": [
+              "approved",
+              "approved_as_noted",
+              "revise_resubmit",
+              "rejected",
+              "not_for_sending"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "words": {
+            "description": "\"Revise and resubmit\", \"Check incomplete: not for sending\", \u2026",
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "words"
+        ],
+        "title": "FullCheckReviewOut",
+        "type": "object"
+      },
       "GrantException": {
         "additionalProperties": false,
         "description": "Accept one specific deviation, until one specific moment.\n\n**Every field is required, and `expires_at` most of all.** A permanent silent exception is not\nrepresentable anywhere in this system: the column is `NOT NULL`, `ExceptionGrant` has no default\nfor it, and this schema will not accept its absence. An exception with no end date is how a check\ngets switched off and nobody remembers.\n\nNo `approved_by`. The approver is the authenticated caller \u2014 `AGENTS.md` \u00a72.6 calls an anonymous\nexception nobody's decision, and a client-supplied approver answers \"who says so?\" with \"whoever\nwas asked\".",
@@ -13995,6 +14067,69 @@
           "auto"
         ],
         "title": "JobValueSuggestionOut",
+        "type": "object"
+      },
+      "LatestFullCheckOut": {
+        "description": "The drawing set's newest full check (a chat's one-click check), for the Documents list and\nthe sidebar: the results now live in the chat, not in the old check runs.",
+        "properties": {
+          "chat_id": {
+            "description": "The chat that holds it: open `#/chat/<set>/<chat>`.",
+            "format": "uuid",
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/FullCheckCountsOut"
+          },
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "ran_at": {
+            "description": "When its answer was stored (the check ended).",
+            "format": "date-time",
+            "title": "Ran At",
+            "type": "string"
+          },
+          "review_result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FullCheckReviewOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its review result once its package is made; null when it stopped before."
+          },
+          "stopped": {
+            "anyOf": [
+              {
+                "enum": [
+                  "cost_cap",
+                  "cancelled",
+                  "error",
+                  "turn_limit",
+                  "interrupted"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it stopped before it finished; null when it finished.",
+            "title": "Stopped"
+          }
+        },
+        "required": [
+          "chat_id",
+          "message_id",
+          "ran_at",
+          "counts"
+        ],
+        "title": "LatestFullCheckOut",
         "type": "object"
       },
       "LayoutProposalOut": {
@@ -15104,6 +15239,11 @@
             ],
             "title": "Budget Limit"
           },
+          "checking": {
+            "default": false,
+            "title": "Checking",
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -15117,6 +15257,26 @@
           "current_revision_number": {
             "title": "Current Revision Number",
             "type": "integer"
+          },
+          "drawings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DrawingsState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "full_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LatestFullCheckOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "format": "uuid",
@@ -15309,10 +15469,38 @@
             "title": "Approved",
             "type": "boolean"
           },
+          "checking": {
+            "default": false,
+            "description": "A full check of the set is running now on this server.",
+            "title": "Checking",
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "drawings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DrawingsState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The set pack for the full check: reading, read, failed; null when not started."
+          },
+          "full_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LatestFullCheckOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The set's newest full check (the chat's one-click check): its review result, counts and chat; null before the first. The Documents table's main columns."
           },
           "needs_decision": {
             "title": "Needs Decision",

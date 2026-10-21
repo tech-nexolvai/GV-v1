@@ -18,7 +18,7 @@ vi.mock('@/api/client', () => ({
   listPackages: vi.fn(async () => ({
     items: [
       { id: 'p1', vendor: 'Synthetic vendor A', state: 'AWAITING_REVIEW', created_at: new Date().toISOString(), current_revision_number: 1, current_revision_id: 'r1', project_id: 'x', product_type: 'countertop' },
-      { id: 'p2', vendor: 'Synthetic vendor B', state: 'APPROVED', created_at: new Date().toISOString(), current_revision_number: 2, current_revision_id: 'r2', project_id: 'x', product_type: 'countertop' },
+      { id: 'p2', vendor: 'Synthetic vendor B', state: 'UPLOADING', created_at: new Date().toISOString(), current_revision_number: 2, current_revision_id: 'r2', project_id: 'x', product_type: 'countertop', checking: false, drawings: 'read', full_check: { chat_id: 'c2', message_id: 'm2', ran_at: new Date().toISOString(), review_result: { action: 'revise_resubmit', words: 'Revise and resubmit' }, counts: { wrong: 3, right: 9, ask_architect: 0, not_compared: 4 } } },
     ],
     next_cursor: null,
   })),
@@ -207,7 +207,7 @@ describe('app shell', () => {
     localStorage.clear();
   });
 
-  function Shell({ children, openPackage = 'p1', liveRestarting = null }: { children?: React.ReactNode; openPackage?: string | null; liveRestarting?: { packageId: string; restarting: boolean } | null }) {
+  function Shell({ children, openPackage = 'p1' }: { children?: React.ReactNode; openPackage?: string | null }) {
     return (
       <AppShell
         title="Synthetic vendor A"
@@ -216,7 +216,6 @@ describe('app shell', () => {
         activePackage={openPackage}
         theme="light"
         sidebarRefreshKey={0}
-        liveRestarting={liveRestarting}
         onNavigate={() => {}}
         onOpenPackage={() => {}}
         onNewReview={() => {}}
@@ -243,37 +242,33 @@ describe('app shell', () => {
     expect(document.querySelector('[data-slot="sidebar"][data-state]')?.getAttribute('data-state')).toBe('expanded');
   });
 
-  it('lists recent reviews with their state in plain grey words: no pill, no "N optional" count (#1712)', async () => {
+  it('lists recent reviews with their newest full check in plain grey words: no pill, no "N optional" count (#1712)', async () => {
     render(<Shell openPackage={null} />);
     const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
     expect(await within(sidebar).findByText('Synthetic vendor A')).toBeTruthy();
-    const status = sidebar.querySelector('[data-slot="set-status"][data-status="APPROVED"]') as HTMLElement;
+    const status = sidebar.querySelector('[data-slot="set-status"][data-status="checked"]') as HTMLElement;
     expect(status).not.toBeNull();
-    expect(status.textContent).toMatch(/^Approved/);
+    // The full check's result, never the old pipeline's "Uploading" or "Reading the drawings…".
+    expect(status.textContent).toBe('Revise and resubmit · 3 wrong · Rev 2');
+    expect(status.querySelector('.num')?.textContent).toBe('3');
     // Grey words: a set's state is not an outcome, so no outcome colour and no badge.
     expect(status.className).toContain('text-muted-foreground');
     expect(status.className).not.toMatch(/outcome-/);
+    // A set with no full check and no copy of its drawings yet.
+    expect(sidebar.querySelector('[data-slot="set-status"][data-status="none"]')?.textContent).toBe('Not checked yet');
     expect(sidebar.querySelector('[data-slot="package-status-badge"]')).toBeNull();
     expect(sidebar.querySelector('[data-slot="need-you"]')).toBeNull();
-    expect(sidebar.textContent).not.toMatch(/optional|need you|needs you|Awaiting Review/i);
+    expect(sidebar.textContent).not.toMatch(/optional|need you|needs you|Awaiting Review|Uploading|Reading the drawings/i);
   });
 
-  it('the open review\'s badge says "Restarting" with its header while its reading restarts; other reviews keep "Stopped" (#1249)', async () => {
-    const stopped = (id: string, vendor: string) => ({ id, vendor, state: 'FAILED_RETRYABLE', created_at: new Date().toISOString(), current_revision_number: 1, current_revision_id: `r-${id}`, project_id: 'x', product_type: 'countertop' });
-    vi.mocked(listPackages).mockResolvedValueOnce({ items: [stopped('p1', 'Synthetic vendor A'), stopped('p2', 'Synthetic vendor B')], next_cursor: null } as Awaited<ReturnType<typeof listPackages>>);
-    render(<Shell liveRestarting={{ packageId: 'p1', restarting: true }} />);
+  it('says "Reading the drawings…" only while the set pack is being made', async () => {
+    const reading = { id: 'p1', vendor: 'Synthetic vendor A', state: 'AWAITING_REVIEW', created_at: new Date().toISOString(), current_revision_number: 1, current_revision_id: 'r1', project_id: 'x', product_type: 'countertop', checking: false, drawings: 'reading' as const, full_check: null };
+    vi.mocked(listPackages).mockResolvedValueOnce({ items: [reading, { ...reading, id: 'p2', vendor: 'Synthetic vendor B', drawings: 'read' as const }], next_cursor: null } as Awaited<ReturnType<typeof listPackages>>);
+    render(<Shell />);
     const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
     await within(sidebar).findByText('Synthetic vendor B');
     const states = [...sidebar.querySelectorAll('[data-slot="set-status"]')].map((line) => line.textContent);
-    expect(states).toEqual(['Restarting after a problem', 'Stopped after a problem']);
-  });
-
-  it('the open review\'s badge keeps "Stopped" when nothing restarts (#1249)', async () => {
-    vi.mocked(listPackages).mockResolvedValueOnce({ items: [{ id: 'p1', vendor: 'Synthetic vendor A', state: 'FAILED_RETRYABLE', created_at: new Date().toISOString(), current_revision_number: 1, current_revision_id: 'r1', project_id: 'x', product_type: 'countertop' }], next_cursor: null } as Awaited<ReturnType<typeof listPackages>>);
-    render(<Shell liveRestarting={{ packageId: 'p1', restarting: false }} />);
-    const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
-    await within(sidebar).findByText('Synthetic vendor A');
-    expect(sidebar.querySelector('[data-slot="set-status"]')?.textContent).toBe('Stopped after a problem');
+    expect(states).toEqual(['Reading the drawings…', 'Drawings read · Not checked yet']);
   });
 
   it('keyboard order: skip link, navigation, header (where you are → status → action), then the page', async () => {
