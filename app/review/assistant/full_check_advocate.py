@@ -585,7 +585,8 @@ def decide(
     """The verdict on one red candidate under D1 (see the module). `printed`: code read both
     values at their spots. `helper_pick`: the helper's architect label (`p23.D10`). `advocate`: the
     blind pick's reply (`ADVOCATE_SCHEMA`) with `pick` set to the label it names on the
-    architect's page (`p23.D10`), or `None` when it was not asked. `extent`: `same_extent`'s.
+    architect's page (`p23.D10`), or `None` when it was not made (the price, a failed call): then
+    "Not verified within the fixed price", whatever the geometry said (#1829). `extent`: `same_extent`'s.
     `item` and `words` (`finding_words`): the finding's own, read for room context (`room_end`)
     when geometry cannot back the picks."""
     answers: dict[str, str] = {check.name: str(check.outcome) for check in checks}
@@ -614,17 +615,22 @@ def decide(
         # Code's geometry is checked first (#1641): an item it shows apart spends no AI call.
         answers["extent"] = extent[0]
         return Verdict("objects", f"Not proved: {extent[1]}.", answers)
-    if (
-        extent is not None
-        and extent[0] != "same_extent"
-        and not (advocate is not None and advocate.get(STRONG_PICK))
-    ):
+    if advocate is None:
+        # The blind pick this item needed was not made (the price, or a call that failed): said
+        # so, never as the geometry's reason, so the escalation tries it again and the answer
+        # says picks were cut (#1829: such an item read "off its drawing's scale" and was never
+        # tried again, while another run of the same drawings made it red).
+        if extent is not None:
+            answers["extent"] = extent[0]
+            return Verdict(
+                "objects", f"{NOT_VERIFIED}: the blind pick was not made ({extent[1]}).", answers
+            )
+        return Verdict("objects", f"{NOT_VERIFIED}.", answers)
+    if extent is not None and extent[0] != "same_extent" and not advocate.get(STRONG_PICK):
         # Geometry that cannot tell is no proof alone: only the stronger blind pick may settle
-        # the pairing then (#1819); a weaker pick, or none, leaves it Not compared.
+        # the pairing then (#1819); a weaker pick leaves it Not compared.
         answers["extent"] = extent[0]
         return Verdict("objects", f"Not proved: {extent[1]}.", answers)
-    if advocate is None:
-        return Verdict("objects", f"{NOT_VERIFIED}.", answers)
     pick = str(advocate.get("pick") or "none")
     answers.update(advocate_pick=pick, helper_pick=helper_pick)
     if advocate.get("vendor_ink_black") == "no":

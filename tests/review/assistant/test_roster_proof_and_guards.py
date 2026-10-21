@@ -128,7 +128,8 @@ def test_a_strong_pick_settles_a_pairing_code_geometry_cannot_tell() -> None:
     [
         ({**_AGREE, STRONG_PICK: False}, _CANNOT, "off its drawing's scale"),
         (_AGREE, _CANNOT, "off its drawing's scale"),  # an unmarked pick is not the strong one
-        (None, _CANNOT, "off its drawing's scale"),
+        # No pick made (the price): said as not verified, never as the geometry's reason (#1829).
+        (None, _CANNOT, "Not verified within the fixed price: the blind pick was not made"),
         ({**_AGREE, STRONG_PICK: True, "pick": "p1.D9"}, _CANNOT, "chose p1.D9"),
         (
             {**_AGREE, STRONG_PICK: True, "architect_spans": {"from": "wall", "to": "sink_cutout"}},

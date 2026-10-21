@@ -282,6 +282,9 @@ def test_the_advocate_names_what_the_price_did_not_reach_on_the_item(
     assert "advocate" not in script.calls
     assert found["critic"]["note"].startswith("Not verified within the fixed price")
     assert str(proof.classified(found).why).startswith("not verified within the fixed price")
+    # Said once the escalation, which tries it again with what is left, is done (#1829).
+    assert not run.stopped_for_money
+    run._note_unverified()
     assert run.stopped_for_money
 
 
