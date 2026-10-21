@@ -4,9 +4,10 @@ Search and sort (#1065). Read-only and project-scoped, like the rest of the summ
 
 - `q` keeps packages whose vendor name contains the text, ignoring case, or whose product's label
   (the words the upload screen shows) does. LIKE wildcards in `q` are matched as plain text.
-- `sort` is `updated` (default: newest change first), `vendor` (A to Z ignoring case, unnamed last)
-  or `needs_decision` (most findings still needing a reviewer first, then newest). Every order ends
-  in the package id, so it is total and a page boundary falls in one place only.
+- `sort` is `updated` (default: newest change first; a full check in the set's chat is a change),
+  `vendor` (A to Z ignoring case, unnamed last) or `needs_decision` (most findings still needing a
+  reviewer first, then newest). Every order ends in the package id, so it is total and a page
+  boundary falls in one place only.
 - The cursor carries the sort and the search it was issued for. Reusing it with a different sort or
   search is refused (422), never silently reinterpreted: a position in one order is not a position
   in another, and treating it as one skips or repeats rows without any sign of it.
@@ -27,16 +28,19 @@ from datetime import datetime
 from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import ColumnElement, Select, and_, case, collate, func, or_, select, tuple_
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
 from app.api.packages import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from app.api.set_check_status import set_check_statuses
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models import (
     Approval,
     ApprovalExportBundle,
+    AssistantChat,
+    AssistantChatMessage,
     CheckRun,
     Finding,
     Package,
@@ -137,6 +141,7 @@ def _decode(raw: str, sort: SummarySort, q: str | None) -> tuple[Any, ...]:
     summary="Summarize packages for the Documents table",
 )
 def packages_summary(
+    request: Request,
     principal: Annotated[Principal, Depends(require_project_access)],
     _: Annotated[Principal, Depends(require_action(Action.READ_PACKAGE))],
     session: Annotated[Session, Depends(get_session)],
@@ -187,7 +192,21 @@ def packages_summary(
         .label("rank"),
     ).subquery()
     state_event = select(latest_event).where(latest_event.c.rank == 1).subquery()
-    updated_at = func.coalesce(state_event.c.updated_at, PackageRevision.created_at)
+    # A set's newest full check is a change too: the results live in the chat now.
+    checked = (
+        select(
+            AssistantChat.package_id,
+            func.max(AssistantChatMessage.created_at).label("checked_at"),
+        )
+        .join(AssistantChat, AssistantChat.id == AssistantChatMessage.chat_id)
+        .where(AssistantChatMessage.role == "assistant", AssistantChatMessage.mode == "full_check")
+        .group_by(AssistantChat.package_id)
+        .subquery()
+    )
+    updated_at = func.greatest(
+        func.coalesce(state_event.c.updated_at, PackageRevision.created_at),
+        checked.c.checked_at,
+    )
     unnamed = func.coalesce(func.btrim(Package.vendor), "") == ""
     unnamed_rank = case((unnamed, 1), else_=0)
     vendor_key = collate(case((unnamed, ""), else_=func.lower(func.btrim(Package.vendor))), "C")
@@ -221,6 +240,7 @@ def packages_summary(
                     state_event.c.rank == 1,
                 ),
             )
+            .outerjoin(checked, checked.c.package_id == Package.id)
             .where(*filters)
         )
 
@@ -268,7 +288,7 @@ def packages_summary(
         .outerjoin(
             ApprovalExportBundle, ApprovalExportBundle.package_revision_id == PackageRevision.id
         )
-        .group_by(Package.id, PackageRevision.id, state_event.c.updated_at)
+        .group_by(Package.id, PackageRevision.id, state_event.c.updated_at, checked.c.checked_at)
     )
 
     readiness: dict[UUID, ApprovalReadiness]
@@ -337,6 +357,8 @@ def packages_summary(
             counts[_SPLIT.get(outcome_of.get(identity, ""), "other")] += 1
         return NeedsDecisionByOutcomeOut(**counts)
 
+    # The set's newest full check (the chat's one-click check): the table's main columns.
+    statuses = set_check_statuses(session, request.app, [row.Package.id for row in page_rows])
     items = tuple(
         PackageSummaryItemOut(
             package_id=row.Package.id,
@@ -360,6 +382,9 @@ def packages_summary(
             needs_decision_by_outcome=split(row),
             approved=bool(row.approved),
             signed_exports_ready=bool(row.signed_ready),
+            full_check=statuses[row.Package.id].full_check,
+            checking=statuses[row.Package.id].checking,
+            drawings=statuses[row.Package.id].drawings,
         )
         for row in page_rows
     )

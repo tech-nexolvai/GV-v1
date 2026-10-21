@@ -1,70 +1,75 @@
 import { useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { AlertCircle, ArrowRight, Check, Search } from 'lucide-react';
+import { ArrowRight, Search } from 'lucide-react';
 
 import type { PackageSummary } from '@/api/client';
 import { DataTable, SortableHeader } from '@/components/data-table/data-table';
+import { SetCounts, SetCountsLegend, SetResultLine } from '@/components/documents/set-result';
 import { Button } from '@/components/ui/button';
-import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
-import { PackageStatusBadge } from '@/components/ui/package-status-badge';
-import { OutcomeBar, OutcomeLegend } from '@/components/documents/outcome-bar';
-import { matchesSearch, productWord, resultTotal, statusRank } from '@/lib/documents-table';
+import { matchesSearch, productWord, resultRank } from '@/lib/documents-table';
+import { drawingsWords, ranWords } from '@/lib/set-check';
 
 const UNTITLED = 'Untitled document set';
 
-/** States in which someone may still need to decide something; elsewhere "Needs you" is not asked. */
-const IN_REVIEW = new Set(['AWAITING_REVIEW', 'NEEDS_INPUT', 'CHANGES_REQUESTED']);
+/** Where a row opens: its newest full check's chat, else the set's chats. */
+export type OpenSet = (packageId: string, chatId: string | null) => void;
 
-function underReview(row: PackageSummary): boolean {
-  return IN_REVIEW.has(row.state) && !row.approved;
+function open(row: PackageSummary, onOpen: OpenSet) {
+  onOpen(row.package_id, row.full_check?.chat_id ?? null);
 }
 
-function formatDay(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
-}
-
-function formatMoment(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-}
-
-/**
- * A yes/no column: a check mark, or a dash; the words are always there for a screen reader. Plain
- * colour, because the outcome colours mean results, not facts like "signed off".
- */
-function YesNo({ yes, yesWord, noWord }: { yes: boolean; yesWord: string; noWord: string }) {
-  return yes ? (
-    <span className="inline-flex items-center text-foreground" title={yesWord}>
-      <Check className="size-4" aria-hidden="true" />
-      <span className="sr-only">{yesWord}</span>
-    </span>
-  ) : (
-    <span className="text-muted-foreground" title={noWord}>
-      <span aria-hidden="true">—</span>
-      <span className="sr-only">{noWord}</span>
-    </span>
+/** When the newest full check ended, in Plex Mono; "—" (with words for a reader) before the first. */
+function Ran({ row }: { row: PackageSummary }) {
+  const check = row.full_check;
+  if (!check) {
+    return <span className="text-muted-foreground"><span aria-hidden="true">—</span><span className="sr-only">Not checked yet</span></span>;
+  }
+  return (
+    <time className="num text-xs whitespace-nowrap" dateTime={check.ran_at}>
+      {ranWords(check.ran_at)}
+    </time>
   );
 }
 
-function columns(onOpen: (packageId: string) => void): ColumnDef<PackageSummary>[] {
+/** The review result and, before any check, where the drawings are (the set pack). */
+function Result({ row }: { row: PackageSummary }) {
+  const drawings = row.full_check || row.checking ? null : drawingsWords(row.drawings);
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <SetResultLine set={row} />
+      {drawings && <span data-slot="set-drawings" className="text-xs text-muted-foreground">{drawings}</span>}
+    </div>
+  );
+}
+
+function columns(onOpen: OpenSet): ColumnDef<PackageSummary>[] {
   return [
     {
       id: 'vendor',
       accessorFn: (row) => row.vendor ?? undefined,
-      header: ({ column }) => <SortableHeader column={column}>Vendor</SortableHeader>,
+      header: ({ column }) => <SortableHeader column={column}>Drawing set</SortableHeader>,
       // Named sets A→Z (or Z→A), ignoring case; untitled sets stay last either way.
       sortUndefined: 'last',
       sortingFn: (a, b) => (a.original.vendor ?? '').localeCompare(b.original.vendor ?? '', undefined, { sensitivity: 'base' }),
-      // The name opens the review too, so on a phone (no Open column) it is one tap away.
+      // The name opens the newest check too, so on a phone (no Open column) it is one tap away; there
+      // the cell also carries the result, the counts and the date (the other columns are hidden).
       cell: ({ row }) => (
-        <button
-          type="button"
-          onClick={() => onOpen(row.original.package_id)}
-          className="flex min-w-32 flex-col rounded-sm text-left hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
-        >
-          <span className="font-medium">{row.original.vendor ?? UNTITLED}</span>
-          <span className="text-xs text-muted-foreground">Revision <span className="num">{row.original.revision_number}</span></span>
-        </button>
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <button
+            type="button"
+            onClick={() => open(row.original, onOpen)}
+            className="flex min-w-32 flex-col rounded-sm text-left hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+          >
+            <span className="font-medium">{row.original.vendor ?? UNTITLED}</span>
+            <span className="text-xs text-muted-foreground">Revision <span className="num">{row.original.revision_number}</span></span>
+          </button>
+          <div data-slot="documents-phone-summary" className="flex flex-col gap-1 sm:hidden">
+            <Result row={row.original} />
+            {row.original.full_check && <SetCounts counts={row.original.full_check.counts} />}
+            {row.original.full_check && <Ran row={row.original} />}
+          </div>
+        </div>
       ),
     },
     {
@@ -75,84 +80,33 @@ function columns(onOpen: (packageId: string) => void): ColumnDef<PackageSummary>
       meta: { className: 'hidden lg:table-cell' },
     },
     {
-      id: 'status',
-      accessorFn: (row) => statusRank(row.state),
-      header: ({ column }) => <SortableHeader column={column}>Status</SortableHeader>,
+      id: 'result',
+      accessorFn: (row) => resultRank(row),
+      header: ({ column }) => <SortableHeader column={column}>Review result</SortableHeader>,
       sortDescFirst: false,
-      cell: ({ row }) => <PackageStatusBadge status={row.original.state} />,
+      meta: { className: 'hidden sm:table-cell' },
+      cell: ({ row }) => <Result row={row.original} />,
     },
     {
-      id: 'results',
-      header: () => (
-        <span className="inline-flex items-center gap-1.5">
-          Results
-          <InfoTip label="About these results">
-            <p>Each check&apos;s <strong>recorded result</strong>: what it found when it ran. These count checks, not drawings or individual dimensions.</p>
-            <p>A decision does not change a recorded result. &ldquo;Needs your decision&rdquo; here counts the checks that could not decide on their own, decided since or not. <strong>Needs you</strong> counts what still needs a decision.</p>
-          </InfoTip>
-        </span>
-      ),
+      id: 'counts',
+      header: 'Items',
       enableSorting: false,
-      cell: ({ row }) => <OutcomeBar outcomes={row.original.outcomes} />,
-    },
-    {
-      id: 'needs',
-      // Only a review still under review is asked (as the old cards did): readiness is "now", so a
-      // signed-off review with an exception that has since expired would otherwise show a count
-      // nobody can act on. Not under review sorts below every count.
-      accessorFn: (row) => (underReview(row) ? row.needs_decision : -1),
-      header: ({ column }) => <SortableHeader column={column}>Needs you</SortableHeader>,
-      sortDescFirst: true,
-      cell: ({ row }) => {
-        const count = row.original.needs_decision;
-        if (!underReview(row.original)) {
-          return <span className="text-muted-foreground"><span aria-hidden="true">—</span><span className="sr-only">Not under review</span></span>;
-        }
-        if (count > 0) {
-          return (
-            <span className="num inline-flex items-center gap-1 rounded-full border border-outcome-review-fg/60 bg-outcome-review-bg px-2 py-0.5 text-xs font-medium text-outcome-review-fg">
-              <AlertCircle className="size-3.5" aria-hidden="true" />
-              {count}
-              <span className="sr-only">{count === 1 ? ' result needs' : ' results need'} your decision</span>
-            </span>
-          );
-        }
-        // Nothing recorded yet is "—", never a reassuring zero.
-        return resultTotal(row.original.outcomes) === 0 ? (
-          <span className="text-muted-foreground"><span aria-hidden="true">—</span><span className="sr-only">No results yet</span></span>
+      meta: { className: 'hidden sm:table-cell' },
+      cell: ({ row }) =>
+        row.original.full_check ? (
+          <SetCounts counts={row.original.full_check.counts} />
         ) : (
-          <span className="num text-muted-foreground">0</span>
-        );
-      },
+          <span className="text-muted-foreground"><span aria-hidden="true">—</span><span className="sr-only">No items yet</span></span>
+        ),
     },
     {
-      id: 'approved',
-      accessorFn: (row) => row.approved,
-      header: 'Signed off',
-      enableSorting: false,
-      cell: ({ row }) => <YesNo yes={row.original.approved} yesWord="Signed off" noWord="Not signed off" />,
-    },
-    {
-      id: 'files',
-      accessorFn: (row) => row.signed_exports_ready,
-      header: 'Signed files',
-      enableSorting: false,
-      meta: { className: 'hidden md:table-cell' },
-      cell: ({ row }) => (
-        <YesNo yes={row.original.signed_exports_ready} yesWord="Signed files ready" noWord="Signed files not ready" />
-      ),
-    },
-    {
-      id: 'updated',
-      accessorFn: (row) => Date.parse(row.updated_at),
-      header: ({ column }) => <SortableHeader column={column}>Updated</SortableHeader>,
+      id: 'checked',
+      accessorFn: (row) => (row.full_check ? Date.parse(row.full_check.ran_at) : undefined),
+      header: ({ column }) => <SortableHeader column={column}>Checked</SortableHeader>,
       sortDescFirst: true,
+      sortUndefined: 'last',
       meta: { className: 'hidden md:table-cell' },
-      cell: ({ row }) => (
-        <time className="num text-xs whitespace-nowrap" dateTime={row.original.updated_at} title={formatMoment(row.original.updated_at)}>
-          {formatDay(row.original.updated_at)}
-        </time>
-      ),
+      cell: ({ row }) => <Ran row={row.original} />,
     },
     {
       id: 'open',
@@ -164,8 +118,8 @@ function columns(onOpen: (packageId: string) => void): ColumnDef<PackageSummary>
           type="button"
           size="sm"
           variant="outline"
-          aria-label={`Open review for ${row.original.vendor ?? UNTITLED}`}
-          onClick={() => onOpen(row.original.package_id)}
+          aria-label={row.original.full_check ? `Open the full check of ${row.original.vendor ?? UNTITLED}` : `Open the chats of ${row.original.vendor ?? UNTITLED}`}
+          onClick={() => open(row.original, onOpen)}
         >
           {/* The word only on very wide screens: at laptop widths the arrow alone keeps the column inside the table. */}
           <span className="hidden 2xl:inline">Open</span> <ArrowRight aria-hidden="true" />
@@ -176,9 +130,11 @@ function columns(onOpen: (packageId: string) => void): ColumnDef<PackageSummary>
 }
 
 /**
- * The Documents table (#1064): one row per review from `packages-summary`, sortable by column and
- * searchable by vendor or product. Both act on the rows of the page that is loaded (the API pages by
- * cursor and has no server-side search yet), and the table says so when there is more than one page.
+ * The Documents table (#1064): one row per drawing set from `packages-summary`, showing its newest
+ * full check (the chat's one-click check): the review result, the counts its result screen shows,
+ * when it ran, and a way into that chat. Sort and search act on the rows of the page that is loaded
+ * (the API pages by cursor), and the table says so when there is more than one page. Rows come in
+ * the server's order: newest change first, a full check counting as a change.
  */
 export function DocumentsTable({
   rows,
@@ -187,7 +143,7 @@ export function DocumentsTable({
   emptyMessage = 'No reviews yet.',
 }: {
   rows: readonly PackageSummary[];
-  onOpen: (packageId: string) => void;
+  onOpen: OpenSet;
   /** True when other pages exist, so sort and search say they cover this page only. */
   morePages: boolean;
   /** What an empty page says (the first page and a later one differ). */
@@ -196,6 +152,7 @@ export function DocumentsTable({
   const [query, setQuery] = useState('');
   const shown = rows.filter((row) => matchesSearch(row, query));
   const searching = query.trim() !== '';
+  const askArchitect = rows.some((row) => (row.full_check?.counts.ask_architect ?? 0) > 0);
 
   return (
     <div data-tw data-slot="documents-table" className="flex flex-col gap-3 font-sans">
@@ -211,18 +168,18 @@ export function DocumentsTable({
             className="pl-8"
           />
         </div>
-        <OutcomeLegend />
+        <SetCountsLegend askArchitect={askArchitect} />
       </div>
       <p className="text-xs text-muted-foreground" role="status" aria-live="polite">
-        {searching ? `${shown.length} of ${rows.length} reviews match.` : `${rows.length} ${rows.length === 1 ? 'review' : 'reviews'}.`}
+        {searching ? `${shown.length} of ${rows.length} drawing sets match.` : `${rows.length} ${rows.length === 1 ? 'drawing set' : 'drawing sets'}.`}
+        {' '}Each shows its newest full check.
         {morePages && ' Sorting and search cover this page only.'}
       </p>
       <DataTable
-        label="Drawing reviews"
+        label="Drawing sets"
         columns={columns(onOpen)}
         data={shown}
         getRowId={(row) => row.package_id}
-        initialSorting={[{ id: 'updated', desc: true }]}
         emptyMessage={searching ? `Nothing matches “${query.trim()}”.` : emptyMessage}
       />
     </div>
