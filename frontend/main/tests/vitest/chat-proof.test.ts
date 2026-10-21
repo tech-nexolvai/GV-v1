@@ -33,7 +33,7 @@ describe('the zero-click drawing groups (#1581)', () => {
     expect(proofGroup(finding('e', { status: 'check' }))).toBe('not_compared');
     expect(proofGroup(finding('f', { status: 'same', compared: false }))).toBe('not_compared');
     expect(proofCounts([finding('a', printed), finding('e', { status: 'check' })])).toEqual({
-      clouded: 1, right: 0, not_compared: 1, dismissed: 0,
+      clouded: 1, right: 0, rule_note: 0, not_compared: 1, dismissed: 0,
     });
   });
 
@@ -56,7 +56,7 @@ describe('items for GV’s reviewer only (#1652)', () => {
     expect(proofGroup(note, { decision: 'agree' })).toBe('not_compared');
     expect(notComparedWords(note)?.label).toBe('Internal: read but not recorded at its spot');
     const sent = finding('w1', { status: 'different', proof: { group: 'clouded' } });
-    expect(proofCounts([note, sent])).toEqual({ clouded: 1, right: 0, not_compared: 0, dismissed: 0 });
+    expect(proofCounts([note, sent])).toEqual({ clouded: 1, right: 0, rule_note: 0, not_compared: 0, dismissed: 0 });
   });
 });
 

@@ -461,7 +461,26 @@ export interface ChatFinding {
 }
 
 /** #1581: the zero-click cloud drawing's group for a finding, and its words. */
-export type ProofGroup = 'clouded' | 'right' | 'not_compared' | 'dismissed';
+export type ProofGroup = 'clouded' | 'right' | 'rule_note' | 'not_compared' | 'dismissed';
+
+/**
+ * #1839: the GV rule an architect's size breaks while the vendor prints that same size: decided,
+ * never red; GV asks the architect (`rule_notes.py`).
+ */
+export interface FindingRuleNote {
+  /** The rule's subject: "filler width", "sink front offset". */
+  name: string;
+  rule_id?: string | null;
+  /** The settings in force as printed: 1"-2", 4". */
+  settings: string;
+  origin: 'GV standard' | 'project value' | 'drawing set value';
+  /** The architect's size, which the vendor prints too. */
+  architect: string;
+  /** "GV's standard is 1"-2"". */
+  standard: string;
+  /** The ready question for the architect (an RFI line). */
+  question: string;
+}
 
 export interface FindingProof {
   group: ProofGroup;
@@ -479,6 +498,8 @@ export interface FindingProof {
   label?: string | null;
   /** #1619, not_compared: what is needed to compare it. */
   settle?: string | null;
+  /** #1839, rule_note: the GV rule and the question for the architect. */
+  rule_note?: FindingRuleNote | null;
 }
 
 /** #1569: code's impact score (0-100), its place among the items of its status, and why. */

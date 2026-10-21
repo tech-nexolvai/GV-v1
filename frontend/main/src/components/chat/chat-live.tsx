@@ -212,6 +212,8 @@ function LiveCheckCard({ live: fromServer, eta = null, files = [], model = null,
         <div data-slot="chat-live-tally" className="flex items-center gap-3.5 text-[13px] text-muted-foreground">
           <span data-count="wrong" className="inline-flex items-center gap-1.5"><OutcomeGlyph kind="wrong" className="size-4 [&_svg]:size-2.5" /><Rolling value={tally.wrong} reduced={reduced} /> Wrong</span>
           <span data-count="right" className="inline-flex items-center gap-1.5"><OutcomeGlyph kind="right" className="size-4 [&_svg]:size-2.5" /><Rolling value={tally.right} reduced={reduced} /> Right</span>
+          {/* #1839: decided, never red: the architect's size breaks a GV rule (shown once there is one). */}
+          {(tally.rule_note ?? 0) > 0 && <span data-count="rule_note" className="inline-flex items-center gap-1.5"><OutcomeGlyph kind="rule_note" className="size-4" /><Rolling value={tally.rule_note ?? 0} reduced={reduced} /> Ask the architect</span>}
           <span data-count="not_compared" className="inline-flex items-center gap-1.5"><OutcomeGlyph kind="not_compared" className="size-4 [&_svg]:size-2.5" /><Rolling value={tally.not_compared} reduced={reduced} /> Not compared</span>
         </div>
       </div>

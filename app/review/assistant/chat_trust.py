@@ -126,6 +126,7 @@ STATUS_WORDS: Final[Mapping[str, str]] = {
 _GROUP_STATUS: Final[Mapping[str, str]] = {
     "clouded": "Wrong",
     "right": "Right",
+    "rule_note": "Ask the architect (GV rule)",
     "not_compared": "Not compared",
     "dismissed": "Not a problem",
 }
@@ -1383,6 +1384,9 @@ def _proof_cells(finding: Mapping[str, Any]) -> list[str]:
     words = proof.group_words(finding, found["group"])
     # A Not-compared item (#1619) says why, and what would settle it.
     settle = f" Needed: {found['settle']}." if found.get("settle") else ""
+    note = found.get("rule_note")
+    if found["group"] == "rule_note" and isinstance(note, Mapping) and note.get("question"):
+        settle = f" {note['question']}"  # #1839: GV's question for the architect
     detail = found["proof"] or (f"{found['reason']}.{settle}" if found["reason"] else None)
     return [_cell(found["should_be"] or ""), _cell(f"{words}: {detail}" if detail else words)]
 

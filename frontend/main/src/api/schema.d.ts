@@ -5135,10 +5135,10 @@ export interface components {
         ChatFindingProofOut: {
             /**
              * Group
-             * @description clouded: Wrong, proved by code (red cloud); right; not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').
+             * @description clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks the architect, `rule_note`); not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').
              * @enum {string}
              */
-            group: "clouded" | "right" | "not_compared" | "dismissed";
+            group: "clouded" | "right" | "rule_note" | "not_compared" | "dismissed";
             /**
              * Label
              * @description not_compared: the trade's words for the reason (Field verify, RFI to the architect, Not reviewed: <reason>, Illegible).
@@ -5164,6 +5164,8 @@ export interface components {
              * @description The architect-first rule it falls under (#1619): R4 a difference, R5 the vendor's own contradiction, R6 GV's rule; for not_compared R1 (brand prototype, or the architect's size outside a GV rule), R3 (architect's drawings disagree), R7 (architect gives nothing), R8 (different reference points), R9 (unreadable), R10 (missing job value or setting).
              */
             rule?: string | null;
+            /** @description rule_note: the GV rule and the question for the architect. */
+            rule_note?: components["schemas"]["ChatFindingRuleNoteOut"] | null;
             /**
              * Settle
              * @description not_compared: what is needed to compare it, in plain words.
@@ -5203,6 +5205,49 @@ export interface components {
             value_arch?: string | null;
             /** Value Vendor */
             value_vendor?: string | null;
+        };
+        /**
+         * ChatFindingRuleNoteOut
+         * @description The GV rule an architect's size breaks while the vendor prints that same size (#1839,
+         *     `rule_notes`): decided, never red; GV asks the architect.
+         */
+        ChatFindingRuleNoteOut: {
+            /**
+             * Architect
+             * @description The architect's size, which the vendor prints too.
+             */
+            architect: string;
+            /**
+             * Name
+             * @description The rule's subject: "filler width", "sink front offset".
+             */
+            name: string;
+            /**
+             * Origin
+             * @description Where the settings come from.
+             * @enum {string}
+             */
+            origin: "GV standard" | "project value" | "drawing set value";
+            /**
+             * Question
+             * @description The ready question for the architect (an RFI line).
+             */
+            question: string;
+            /**
+             * Rule Id
+             * @description The rulebook's id when the check names one.
+             */
+            rule_id?: string | null;
+            /**
+             * Settings
+             * @description The settings in force as printed: 1"-2", 4".
+             */
+            settings: string;
+            /**
+             * Standard
+             * @description "GV's standard is 1"-2"" (or the project's value).
+             */
+            standard: string;
         };
         /**
          * ChatFindingSettledOut
@@ -5671,21 +5716,21 @@ export interface components {
             key: string;
             /**
              * Needs
-             * @description Not compared: what would settle it.
+             * @description Not compared: what would settle it; a rule note: the question for the architect.
              */
             needs?: string | null;
             /**
              * Outcome
              * @enum {string}
              */
-            outcome: "wrong" | "right" | "not_compared";
+            outcome: "wrong" | "right" | "rule_note" | "not_compared";
             /** Page */
             page?: number | null;
             /**
              * Previous
              * @description Its outcome before, when it changed.
              */
-            previous?: ("wrong" | "right" | "not_compared") | null;
+            previous?: ("wrong" | "right" | "rule_note" | "not_compared") | null;
             /**
              * Product
              * @description The product id the item is filed under.
@@ -5699,7 +5744,7 @@ export interface components {
             proved_by?: ("code" | "checked_twice") | null;
             /**
              * Reason
-             * @description Not compared: why, in plain words.
+             * @description Not compared (or a rule note): why, in plain words.
              */
             reason?: string | null;
             /**
@@ -5859,6 +5904,12 @@ export interface components {
             not_compared: number;
             /** Right */
             right: number;
+            /**
+             * Rule Note
+             * @description The architect's size breaks a GV rule: GV asks (#1839).
+             * @default 0
+             */
+            rule_note: number;
             /** Waiting Second Look */
             waiting_second_look: number;
             /** Wrong */
@@ -6258,6 +6309,12 @@ export interface components {
             phase: "reading" | "checking" | "writing";
             /** Right So Far */
             right_so_far: number;
+            /**
+             * Rule Note So Far
+             * @description The architect's size breaks a GV rule: GV asks (#1839).
+             * @default 0
+             */
+            rule_note_so_far: number;
             /** Wrong So Far */
             wrong_so_far: number;
         };

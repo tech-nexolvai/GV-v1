@@ -627,6 +627,25 @@ class ChatFindingImpactOut(BaseModel):
     why: str = Field(description='Plain words: "changes fabrication (overall size); 9 in off".')
 
 
+class ChatFindingRuleNoteOut(BaseModel):
+    """The GV rule an architect's size breaks while the vendor prints that same size (#1839,
+    `rule_notes`): decided, never red; GV asks the architect."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(description='The rule\'s subject: "filler width", "sink front offset".')
+    rule_id: str | None = Field(
+        default=None, description="The rulebook's id when the check names one."
+    )
+    settings: str = Field(description='The settings in force as printed: 1"-2", 4".')
+    origin: Literal["GV standard", "project value", "drawing set value"] = Field(
+        description="Where the settings come from."
+    )
+    architect: str = Field(description="The architect's size, which the vendor prints too.")
+    standard: str = Field(description='"GV\'s standard is 1"-2"" (or the project\'s value).')
+    question: str = Field(description="The ready question for the architect (an RFI line).")
+
+
 class ChatFindingProofOut(BaseModel):
     """Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read
     (`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a
@@ -634,8 +653,10 @@ class ChatFindingProofOut(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    group: Literal["clouded", "right", "not_compared", "dismissed"] = Field(
-        description="clouded: Wrong, proved by code (red cloud); right; not_compared: could not be "
+    group: Literal["clouded", "right", "rule_note", "not_compared", "dismissed"] = Field(
+        description="clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's "
+        "size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks "
+        "the architect, `rule_note`); not_compared: could not be "
         "compared under the architect-first rules (#1619: listed with its reason in the "
         "Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer "
         "marked it Right (Not a problem; the vendor's files say 'Right (reviewer)')."
@@ -689,6 +710,9 @@ class ChatFindingProofOut(BaseModel):
     )
     settle: str | None = Field(
         default=None, description="not_compared: what is needed to compare it, in plain words."
+    )
+    rule_note: ChatFindingRuleNoteOut | None = Field(
+        default=None, description="rule_note: the GV rule and the question for the architect."
     )
 
 
@@ -1452,6 +1476,9 @@ class ChatProgressOut(BaseModel):
     wrong_so_far: int
     decision_so_far: int
     right_so_far: int
+    rule_note_so_far: int = Field(
+        default=0, description="The architect's size breaks a GV rule: GV asks (#1839)."
+    )
     eta_seconds: int | None = Field(
         default=None, description="Time left at the pace so far; null before any page is done."
     )
@@ -1903,7 +1930,7 @@ class ChatLiveFindingOut(BaseModel):
     id: str | None = Field(
         default=None, description="The finding's id (`F12`) once recorded in the answer."
     )
-    outcome: Literal["wrong", "right", "not_compared"]
+    outcome: Literal["wrong", "right", "rule_note", "not_compared"]
     proved_by: Literal["code", "checked_twice"] | None = Field(
         default=None,
         description="A Wrong only: code alone, or code and the blind second look ('checked twice').",
@@ -1915,8 +1942,14 @@ class ChatLiveFindingOut(BaseModel):
     architect: str | None = None
     should_be: str | None = Field(default=None, description="What it should be (green).")
     product: str = Field(default="other", description="The product id the item is filed under.")
-    reason: str | None = Field(default=None, description="Not compared: why, in plain words.")
-    needs: str | None = Field(default=None, description="Not compared: what would settle it.")
+    reason: str | None = Field(
+        default=None, description="Not compared (or a rule note): why, in plain words."
+    )
+    needs: str | None = Field(
+        default=None,
+        description="Not compared: what would settle it; a rule note: the question for the "
+        "architect.",
+    )
     impact: ChatLiveImpactOut | None = None
     same_as: str | None = Field(
         default=None,
@@ -1926,7 +1959,7 @@ class ChatLiveFindingOut(BaseModel):
     removed: bool = Field(
         default=False, description="No longer in the answer (folded into another, or left out)."
     )
-    previous: Literal["wrong", "right", "not_compared"] | None = Field(
+    previous: Literal["wrong", "right", "rule_note", "not_compared"] | None = Field(
         default=None, description="Its outcome before, when it changed."
     )
     final: bool = Field(
@@ -1944,6 +1977,9 @@ class ChatLiveTallyOut(BaseModel):
 
     wrong: int = Field(ge=0)
     right: int = Field(ge=0)
+    rule_note: int = Field(
+        default=0, ge=0, description="The architect's size breaks a GV rule: GV asks (#1839)."
+    )
     not_compared: int = Field(ge=0)
     waiting_second_look: int = Field(ge=0)
 

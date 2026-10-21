@@ -21,7 +21,8 @@ not, and a previous round's comment this round fixed is Closed, not a correction
   corrections: Revise and resubmit;
 - **S5** 1 to `MAX_NOTED` corrections, all minor: Approved as noted;
 - **S6** no correction, but items code could not prove or compare (other than "the architect gives
-  no information"): Approved as noted, with the note that those items were not reviewed;
+  no information"), or sizes the architect specifies that break a GV rule (#1839: GV asks the
+  architect; nothing is asked of the vendor): Approved as noted, with the note that says which;
 - **S7** otherwise: Approved.
 
 **What changes fabrication** comes from the impact score's own words (#1569, `impact.touches`), so
@@ -55,6 +56,7 @@ __all__ = [
     "MINOR_IN",
     "NEXT_STEP",
     "NOT_REVIEWED_NOTE",
+    "RULE_NOTE_NOTE",
     "Action",
     "CheckState",
     "ReviewAction",
@@ -104,6 +106,12 @@ NEXT_STEP: Final[Mapping[Action, str]] = {
 NOT_REVIEWED_NOTE: Final = (
     "Items in the Not-compared list were not reviewed; each is listed with the reason and what is "
     "needed to compare it."
+)
+#: S6's note when sizes the architect specifies break a GV rule (#1839).
+RULE_NOTE_NOTE: Final = (
+    'Sizes the architect specifies that break a GV rule are listed under "Questions for the '
+    'architect (GV rules)"; GV is confirming them with the architect, and no change is asked of '
+    "the vendor."
 )
 # Pending legal review: GV's or Nexolv's lawyer approves this wording before it is relied on.
 #: The standard disclaimer printed under the result on the letter, the cloud drawing's cover and
@@ -367,11 +375,21 @@ def review_action(
             ),
         )
     unreviewed = _not_reviewed(given)
-    if unreviewed:
+    asked = sum(1 for finding in given if proof_group(finding) == "rule_note")
+    if unreviewed or asked:
+        parts = [f"{_plural(unreviewed, 'item')} not reviewed by code"] if unreviewed else []
+        if asked:
+            parts.append(
+                f"{_plural(asked, 'size')} the architect specifies "
+                f"{'breaks' if asked == 1 else 'break'} a GV rule (GV asks the architect)"
+            )
+        notes = [NOT_REVIEWED_NOTE] if unreviewed else []
+        if asked:
+            notes.append(RULE_NOTE_NOTE)
         return result(
             "approved_as_noted",
             "S6",
-            f"No correction; {_plural(unreviewed, 'item')} not reviewed by code.",
-            NOT_REVIEWED_NOTE,
+            f"No correction; {'; '.join(parts)}.",
+            " ".join(notes),
         )
     return result("approved", "S7", "No correction: every item compared matches.")

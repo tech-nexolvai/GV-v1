@@ -4,7 +4,8 @@
  *
  * - The work line says what the check did and how long it took (the only place for the time).
  * - The review result speaks AWI's words; its one sentence says only what no count says.
- * - Three tiles are the tabs and the only place for the counts: Wrong / Right / Not compared.
+ * - The tiles are the tabs and the only place for the counts: Wrong / Right / Not compared, and
+ *   Ask the architect when a size the architect specifies breaks a GV rule (#1839: decided, never red).
  * - A row says where (area, page), what was measured, and "Vendor 7″ → Should be 12″".
  */
 
@@ -12,18 +13,27 @@ import type { ChatFinding, ChatFile, ChatPackageState, ChatReviewAction, ChatTim
 import { isInternal, proofGroup } from '@/lib/chat-proof';
 import { inchNumber, inchWords } from '@/lib/chat-trust';
 
-export type ResultTab = 'wrong' | 'right' | 'not_compared';
+export type ResultTab = 'wrong' | 'right' | 'rule_note' | 'not_compared';
 
 export const TAB_WORDS: Record<ResultTab, { word: string; hint: string }> = {
   wrong: { word: 'Wrong', hint: 'Red on the cloud drawing, with what it should be' },
   right: { word: 'Right', hint: 'Match the architect or GV’s rules' },
+  // #1839: the owner's words; decided, never red, nothing asked of the vendor.
+  rule_note: { word: 'Ask the architect', hint: 'Architect’s size breaks a GV rule; the vendor follows it' },
   not_compared: { word: 'Not compared', hint: 'Each with its reason and what is needed' },
 };
+
+/** The tiles shown: Ask the architect only when there is one (#1839), so most sets keep three. */
+export function resultTabs(groups: Pick<ResultGroups, 'ruleNotes'>): ResultTab[] {
+  return groups.ruleNotes.length ? ['wrong', 'right', 'rule_note', 'not_compared'] : ['wrong', 'right', 'not_compared'];
+}
 
 export interface ResultGroups {
   /** Proved by code (clouded), biggest first. */
   wrong: ChatFinding[];
   right: ChatFinding[];
+  /** #1839: the architect's size breaks a GV rule and the vendor follows it: decided, GV asks the architect. */
+  ruleNotes: ChatFinding[];
   /** Not compared, in the order of their reasons (see `notComparedGroups`). */
   notCompared: ChatFinding[];
   /** The reviewer's "Not a problem" (an optional override): listed under Wrong, apart, not counted. */
@@ -34,16 +44,18 @@ const impactOf = (finding: ChatFinding) => finding.impact?.rank ?? Number.MAX_SA
 
 /** The findings by where the cloud drawing puts them, with the reviewer's newest click laid over. */
 export function resultGroups(findings: readonly ChatFinding[], decisionOf: (finding: ChatFinding) => FindingDecision | null = (finding) => finding.decision ?? null): ResultGroups {
-  const groups: ResultGroups = { wrong: [], right: [], notCompared: [], dismissed: [] };
+  const groups: ResultGroups = { wrong: [], right: [], ruleNotes: [], notCompared: [], dismissed: [] };
   for (const finding of findings) {
     const group = proofGroup(finding, decisionOf(finding));
     if (group === 'clouded') groups.wrong.push(finding);
     else if (group === 'right') groups.right.push(finding);
     else if (group === 'dismissed') groups.dismissed.push(finding);
+    else if (group === 'rule_note') groups.ruleNotes.push(finding);
     else groups.notCompared.push(finding);
   }
   groups.wrong.sort((a, b) => impactOf(a) - impactOf(b) || (b.impact?.score ?? 0) - (a.impact?.score ?? 0));
   groups.right.sort((a, b) => a.page - b.page);
+  groups.ruleNotes.sort((a, b) => a.page - b.page);
   groups.notCompared = notComparedGroups(groups.notCompared).flatMap((group) => group.findings);
   return groups;
 }
@@ -279,7 +291,7 @@ export function filesLine(files: { cloud: ChatFile | null; report: ChatFile | nu
 
 /** The page the preview opens on: the biggest Wrong item's vendor page, else the first item's, else 1. */
 export function previewPageOf(groups: ResultGroups): number {
-  const first = groups.wrong[0] ?? groups.notCompared[0] ?? groups.right[0];
+  const first = groups.wrong[0] ?? groups.ruleNotes[0] ?? groups.notCompared[0] ?? groups.right[0];
   return first ? first.vendor_box?.page ?? first.page : 1;
 }
 

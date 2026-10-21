@@ -5,8 +5,9 @@ GV's reviewer compares the vendor's shop drawing against the architect's intent:
 miss anything, change the design or use the wrong material? Shop drawings are not contract
 documents and cannot vary them (AIA A201); printed dimensions govern over scaled ones, larger-scale
 and detail drawings over general ones, a later revision over an earlier one. Nobody at GV is asked
-to decide anything: an item is **Wrong** (red, proved), **Right**, or **Not compared** (with the
-reason and what would settle it, listed in the separate "Not compared" PDF and the summary line).
+to decide anything: an item is **Wrong** (red, proved), **Right**, a **rule note** (the architect's
+size breaks a GV rule: GV asks the architect, #1839), or **Not compared** (with the reason and what
+would settle it, listed in the separate "Not compared" PDF and the summary line).
 
 The rules, in the order they are applied:
 
@@ -37,6 +38,10 @@ The rules, in the order they are applied:
   equals the architect's printed value for the same item is never Wrong, and a "should be" that
   differs from the architect's printed value for the same item is never proposed: Not compared.
 - **R6, GV's rule** (from GV's rulebook) broken: Wrong.
+- **A rule note** (#1839, the owner 2026-10-21): the architect specifies a size that breaks a GV
+  rule and the vendor prints that same size, both read by code at their spots (`rule_notes`): a
+  DECIDED outcome of its own, "Breaks a GV rule (architect's size): ask the architect", never red
+  and never Not compared; it carries the rule and GV's ready question for the architect.
 - **R7, the architect gives no information** (no size, no layout, no drawing of the area), or only
   parts where the vendor prints an overall: a total the architect never prints is never Wrong
   (`no_overall`, code's pairs: "architect's parts add to 110\"; vendor shows 107 3/4\"").
@@ -62,6 +67,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
+from app.review.assistant.rule_notes import RuleNote, rule_note_of
 from app.review.assistant.spot_locate import VENDOR_SEARCH, search_words, spot_words
 
 __all__ = [
@@ -80,7 +86,7 @@ __all__ = [
     "rule_without_requirement",
 ]
 
-type Outcome = Literal["wrong", "right", "not_compared"]
+type Outcome = Literal["wrong", "right", "not_compared", "rule_note"]
 type Reason = Literal[
     "architect_disagrees",
     "nothing_to_compare",
@@ -303,7 +309,10 @@ class Classified:
         return TRADE_WORDS.get(self.reason) if self.reason else None
 
     settle: str | None = None
-    """What would settle it (Not compared only)."""
+    """What would settle it (Not compared only); for a rule note, the question for the
+    architect."""
+    note: RuleNote | None = None
+    """A rule note (#1839): the GV rule the architect's size breaks."""
 
 
 def _flat(text: object) -> str:
@@ -615,8 +624,15 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
     reason = str(finding.get("keep_reason") or "")
     named = str(finding.get("check_reason") or "")
     if reason == "architect_outside_gv_rule":
-        # The vendor follows the architect, whose size is outside a GV rule (`filler_range`): the
-        # architect governs, so never red; a GV note (Anant's architect-first rule, 2026-10-18).
+        # The vendor follows the architect, whose size is outside a GV rule (`filler_range`,
+        # `sink_offset`): the architect governs, so never red. When code proved both values at
+        # their spots it is DECIDED (#1839, the owner 2026-10-21): a rule note, GV's question to
+        # the architect; else a GV note on the Not-compared list (Anant's rule, 2026-10-18).
+        note = rule_note_of(finding)
+        if note is not None:
+            return Classified(
+                "rule_note", "R1", "architect_outside_gv_rule", note.why, note.question, note
+            )
         return _not(
             "architect_outside_gv_rule",
             _short(finding.get("gv_note") or finding.get("why"), 120)
@@ -766,7 +782,12 @@ def _with_thing(found: Classified, finding: Mapping[str, Any]) -> Classified:
     item = _flat(finding.get("item")) or "this item"
     thing = f"the {item[:1].lower()}{item[1:]}" if item[1:2].islower() else f"the {item}"
     return Classified(
-        found.outcome, found.rule, found.reason, found.why, found.settle.replace("{thing}", thing)
+        found.outcome,
+        found.rule,
+        found.reason,
+        found.why,
+        found.settle.replace("{thing}", thing),
+        found.note,
     )
 
 

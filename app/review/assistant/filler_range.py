@@ -27,8 +27,11 @@ changeable per project). Until now it ran only inside the cabinet run distributi
     nothing is added (a Right needs both drawings looked at, `chat_trust.not_compared_why`, and a
     GV rule has no architect side);
   - the architect gives this filler's size and the vendor prints the same: never red; when the
-    size is outside GV's range it is **Not compared** ("the architect specifies 3/4\", outside
-    GV's 1\"-2\" filler range"), else nothing is added (the architect comparison says Right);
+    size is outside GV's range it is a **rule note** (#1839, the owner 2026-10-21: decided, "Breaks
+    a GV rule (architect's size): ask the architect", `rule_notes`) when code read both sizes from
+    the drawings' text, else **Not compared** ("the architect specifies 3/4\", outside GV's
+    1\"-2\" filler range"); either way it carries `gv_standard` (the range, where it comes from,
+    the architect's size). Inside the range nothing is added (the architect comparison says Right);
   - the vendor prints another size than the architect's: the architect comparison decides, not
     this rule (nothing is added).
 - **One item once.** A label the answer already has an item for is left to it, except a "same"
@@ -79,6 +82,9 @@ _log = logging.getLogger(__name__)
 
 CREATED_BY: Final = "filler_range"
 CATEGORY: Final = "cabinet"
+#: The rule's name in the outputs ("GV rule: filler width") and its rulebook id.
+NAME: Final = "filler width"
+RULE_ID: Final = "CAB-FILLER-001"
 #: The Not-compared reason of a filler the architect sizes outside GV's range
 #: (`classification`: "the architect's size is outside a GV rule").
 ARCHITECT_OUTSIDE: Final = "architect_outside_gv_rule"
@@ -112,6 +118,10 @@ class Limits:
 
     low: Fraction
     high: Fraction
+    origin: str = "GV standard"
+    """Where the range comes from: "GV standard", "project value" or "drawing set value"."""
+    where: str = ""
+    """`rules.md`'s own words for where it comes from ("the rulebook's default")."""
 
     def words(self) -> str:
         return f"{_inches(self.low)} to {_inches(self.high)}"
@@ -136,9 +146,10 @@ def _fraction(value: object) -> Fraction | None:
         return None
 
 
-def limits_from(settings: Mapping[str, str]) -> Limits | None:
+def limits_from(settings: Mapping[str, str], rules_md: str | None = None) -> Limits | None:
     """GV's filler range from the settings in force (`decision_resolver.settings_in_force`), or
-    `None` when either end is not set."""
+    `None` when either end is not set. `rules_md`: the chat's `rules.md`, for where the range comes
+    from (a project's own value names the project; else GV's standard)."""
     to_inches = import_module("app.review.assistant.finding_checks").to_inches
     low_text, high_text = settings.get("filler_min"), settings.get("filler_max")
     if low_text is None or high_text is None:
@@ -146,7 +157,32 @@ def limits_from(settings: Mapping[str, str]) -> Limits | None:
     low, high = _fraction(to_inches(low_text)), _fraction(to_inches(high_text))
     if low is None or high is None or low > high:
         return None
-    return Limits(low, high)
+    origin, where = _origin(rules_md)
+    return Limits(low, high, origin, where)
+
+
+#: The more specific origin wins when the two ends come from different places.
+_ORIGIN_RANK: Final[Mapping[str, int]] = {
+    "GV standard": 0,
+    "project value": 1,
+    "drawing set value": 2,
+}
+
+
+def _origin(rules_md: str | None) -> tuple[str, str]:
+    """Where the filler range comes from, by `rules.md`'s "Where it comes from" cells of
+    `filler_min` and `filler_max` (`rule_notes.origin_of`): the most specific of the two."""
+    origin_of = import_module("app.review.assistant.rule_notes").origin_of
+    found: list[tuple[str, str]] = []
+    for line in (rules_md or "").splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) >= 3 and any(
+            f"(`{key}`)" in cells[0] for key in ("filler_min", "filler_max")
+        ):
+            found.append((origin_of(cells[2]), cells[2]))
+    if not found:
+        return "GV standard", ""
+    return max(found, key=lambda item: _ORIGIN_RANK.get(item[0], 0))
 
 
 def is_filler_label(text: object) -> bool:
@@ -343,9 +379,12 @@ def _range_note(filler: _Filler, limits: Limits) -> dict[str, Any] | None:
 
 def _architect_note(filler: _Filler, architect: _Filler, limits: Limits) -> dict[str, Any]:
     """The architect sizes this filler outside GV's range and the vendor follows the architect:
-    never red (the architect governs); a GV note on the Not-compared list."""
+    never red (the architect governs). A rule note (#1839: decided, GV asks the architect) when code
+    read both sizes from the drawings' text (`gv_standard.proved`), else a GV note on the
+    Not-compared list."""
     size = _inches(architect.value)
     note = f"the architect specifies {size}, outside GV's {limits.dash()} filler range"
+    proved = all(str(side.label.get("route") or "text") == "text" for side in (filler, architect))
     finding: dict[str, Any] = {
         "page": filler.page,
         "item": _item(filler),
@@ -363,6 +402,18 @@ def _architect_note(filler: _Filler, architect: _Filler, limits: Limits) -> dict
         "ledger_ids": [filler.ref, architect.ref],
         "keep_reason": ARCHITECT_OUTSIDE,
         "gv_note": note,
+        # The rule the architect's size breaks (#1839, `rule_notes`), as `sink_offset` records its.
+        "gv_standard": {
+            "rule": RULE_ID,
+            "setting": "filler_min / filler_max",
+            "name": NAME,
+            "value": limits.dash(),
+            "origin": limits.origin,
+            "from": limits.where,
+            "architect": size,
+            "proved": proved,
+            "follows_architect": True,
+        },
     }
     if architect.page != filler.page:
         finding["vs_page"] = architect.page
@@ -481,7 +532,7 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
         rules = None
     settings = import_module("app.review.assistant.decision_resolver").settings_in_force(rules)
     dims = _read(Path(folder) / "dims.json")
-    limits = limits_from(settings)
+    limits = limits_from(settings, rules)
     found = findings_from(
         dims,
         _read(Path(folder) / "page_map.json"),
@@ -518,7 +569,7 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
             if added is None:
                 continue
             extra: dict[str, Any] = {
-                k: finding[k] for k in ("keep_reason", "gv_note") if k in finding
+                k: finding[k] for k in ("keep_reason", "gv_note", "gv_standard") if k in finding
             }
             updated = trust.judged({**added, **extra})
             if book.replace(updated):

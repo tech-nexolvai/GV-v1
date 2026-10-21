@@ -47,8 +47,9 @@ of the cut-out (a cabinet plan); a top's plan with only its outline is unsure.
 | = setting | prints the setting | Right, the architect governs, the GV standard agrees |
 | differs | silent | Wrong: should be the setting ("GV standard: sink front offset") |
 | differs | prints the setting | Wrong, should be the architect's value, the GV standard agrees |
-| any | prints another value | Not compared: "architect 5" vs GV standard 4": reviewer decides" |
-|  |  | (it decides the label only when the vendor prints the architect's value) |
+| any | prints another value | "architect 5" vs GV standard 4"": never red |
+|  |  | (it decides the label only when the vendor prints the architect's value: then a |
+|  |  | rule note, #1839, decided: GV asks the architect, `rule_notes`; else Not compared) |
 | differs | unknown, or the vendor's side unsure | Not compared with the reason |
 | = setting | unknown | nothing (left to the architect comparison) |
 

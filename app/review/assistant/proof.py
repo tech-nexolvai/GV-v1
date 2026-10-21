@@ -22,6 +22,10 @@ a false red cloud goes straight to the vendor, so **only what code proved is clo
   to anyone: listed with its reason and what would settle it in the separate "Not compared" PDF,
   and counted in the summary's one line.
 - **right**: a Right item that was compared: a short green list.
+- **rule_note** (#1839, the owner 2026-10-21): the architect specifies a size that breaks a GV rule
+  and the vendor prints that same size, both read by code at their spots (`rule_notes`): DECIDED,
+  "Breaks a GV rule (architect's size): ask the architect". Never clouded, no "should be", not on
+  the Not-compared list: the letter and the register carry GV's ready question for the architect.
 
 The reviewer's Agree / Not a problem stay as optional overrides: an agreed item is clouded
 whatever code proved (the reviewer is the witness), and an item marked not a problem is never
@@ -40,7 +44,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
-from app.review.assistant import classification, missing_items, spot_guard, witness
+from app.review.assistant import classification, missing_items, rule_notes, spot_guard, witness
 from app.review.assistant import full_check_advocate as advocate
 from app.review.assistant.chat_trust import inch_words
 from app.review.assistant.vendor_text import vendor_text
@@ -90,12 +94,19 @@ __all__ = [
     "witnesses_of",
 ]
 
-type ProofGroup = Literal["clouded", "right", "not_compared", "dismissed"]
-GROUPS: Final[tuple[ProofGroup, ...]] = ("clouded", "right", "not_compared", "dismissed")
+type ProofGroup = Literal["clouded", "right", "rule_note", "not_compared", "dismissed"]
+GROUPS: Final[tuple[ProofGroup, ...]] = (
+    "clouded",
+    "right",
+    "rule_note",
+    "not_compared",
+    "dismissed",
+)
 #: Each group as the drawing, the report, the CSV and the screen name it.
 GROUP_WORDS: Final[Mapping[str, str]] = {
     "clouded": "Wrong, proved by code (clouded)",
     "right": "Right",
+    "rule_note": rule_notes.GROUP_WORDS,
     "not_compared": "Not compared",
     "dismissed": "Right (reviewer)",
 }
@@ -428,7 +439,11 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
         return "clouded"
     if decided == "not_a_problem":
         return "dismissed"
-    return "clouded" if proved else "not_compared"
+    if proved:
+        return "clouded"
+    # The architect's size breaks a GV rule and the vendor follows it (#1839): decided, GV asks
+    # the architect; never clouded, never on the Not-compared list.
+    return "rule_note" if classified(finding).outcome == "rule_note" else "not_compared"
 
 
 def classified(finding: Mapping[str, Any]) -> classification.Classified:
@@ -728,11 +743,13 @@ def could_not_compare_reason(finding: Mapping[str, Any]) -> str:
 
 def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
     """A finding's `proof` for the screen and the CSV: its group, the green "Should be" (Wrong
-    items), the proof line (clouded items), and for a Not-compared item the rule, the reason, why
-    in one line and what would settle it (#1619)."""
+    items), the proof line (clouded items), for a Not-compared item the rule, the reason, why in
+    one line and what would settle it (#1619), and for a rule note (#1839) why and the GV rule with
+    GV's question for the architect."""
     group = proof_group(finding)
     found = classified(finding)
     not_compared = group == "not_compared"
+    noted = group == "rule_note" and found.note is not None
     wrong = (finding.get("status") == "different" and not not_compared) or group == "clouded"
     reason: str | None = None
     if not_compared:
@@ -740,6 +757,8 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
         if unproved_reason(finding) == NO_REQUIREMENT_REASON:
             # A GV rule result with nothing the vendor can act on (#1622).
             reason = NO_REQUIREMENT_REASON
+    elif noted:
+        reason = found.why
     elif group == "dismissed":
         reason = "The reviewer marked it Right."
     return {
@@ -757,8 +776,11 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
             )
         ),
         "not_compared": found.reason if not_compared else None,
-        "label": found.label if not_compared else None,
+        "label": found.label if not_compared else (rule_notes.SHORT_WORDS if noted else None),
         "settle": found.settle if not_compared else None,
+        # #1839: the GV rule the architect's size breaks, and GV's question for the architect: what
+        # code found, also under a reviewer's override (the screen goes back to it on an undo).
+        "rule_note": found.note.as_dict() if found.note is not None else None,
     }
 
 

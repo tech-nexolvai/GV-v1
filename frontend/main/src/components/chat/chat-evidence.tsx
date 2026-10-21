@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Check, ChevronLeft, ChevronRight, Download, ExternalLink, ImageOff, Minus, Plus, RotateCcw, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, ImageOff, Minus, Plus, RotateCcw, X } from 'lucide-react';
 
 import { StatusMark, type DecisionProps } from '@/components/chat/chat-findings';
 import { Spinner } from '@/components/chat/chat-motion';
@@ -8,7 +8,7 @@ import { RoundChip } from '@/components/chat/chat-trust';
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 import type { ChatFile, ChatFinding, FindingDecisionExtra, FindingDecisionValue } from '@/lib/chat-api';
 import { architectPage, decisionHelpRows, pageWords, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
-import { isInternal, proofGroup } from '@/lib/chat-proof';
+import { isInternal, proofGroup, ruleNoteWords, type RuleNoteWords } from '@/lib/chat-proof';
 import { boxOnPicture, decisionsWords, itemParts, shouldBeValue, suggestedShouldBe, vendorValue } from '@/lib/chat-result';
 import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
@@ -133,9 +133,12 @@ export function NoPicture({ compact = false }: { compact?: boolean }) {
 }
 
 /** The viewer's words: what each side shows, why, and what to tell the vendor (the card's words). */
-function ViewerWords({ finding }: { finding: ChatFinding }) {
-  const words = reviewerWords(finding);
-  const help = decisionHelpRows(finding);
+function ViewerWords({ finding, note = null }: { finding: ChatFinding; note?: RuleNoteWords | null }) {
+  const reviewer = reviewerWords(finding);
+  // #1839: the architect's size breaks a GV rule and the vendor follows it: code's own why, and
+  // nothing to tell the vendor (GV asks the architect: the question box below).
+  const words = note ? { ...reviewer, whyLabel: 'Why', why: (note.why ?? reviewer.why).replace(/"/g, '″'), tell: null } : reviewer;
+  const help = note ? [] : decisionHelpRows(finding);
   return (
     <>
       <dl className="grid gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
@@ -153,6 +156,7 @@ function ViewerWords({ finding }: { finding: ChatFinding }) {
         </dl>
       )}
       {words.tell && <p data-slot="chat-evidence-tell" className="text-sm font-medium break-words">{words.tell}</p>}
+      {note && <ArchitectQuestion note={note} />}
       <p className="text-xs text-muted-foreground">How sure: {trustLevelOf(finding) ? `${TRUST_WORDS[trustLevelOf(finding)!]}. ` : ''}{words.sure}</p>
     </>
   );
@@ -198,6 +202,30 @@ export interface DraftState {
   onRetry: (() => void) | null;
 }
 
+/** #1839: GV's ready question for the architect (an RFI line), with a Copy button. */
+function ArchitectQuestion({ note }: { note: RuleNoteWords }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard?.writeText(note.question).then(() => setCopied(true), () => setCopied(false));
+  };
+  return (
+    <div data-slot="chat-evidence-question" className="grid min-w-0 gap-2 rounded-xl border border-outcome-ask/30 bg-outcome-ask-bg px-3.5 py-3">
+      <p className="flex min-w-0 items-center gap-2 text-xs font-semibold text-outcome-ask-fg">
+        <OutcomeGlyph kind="rule_note" className="size-4" />
+        Question for the architect
+      </p>
+      <p className="text-sm break-words text-foreground">{note.question.replace(/"/g, '″')}</p>
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <button type="button" data-slot="chat-evidence-question-copy" onClick={copy} className={cn(SMALL_BUTTON, 'w-fit')}>
+          {copied ? <Check className="size-3.5 shrink-0" aria-hidden="true" /> : <Copy className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />}
+          {copied ? 'Copied' : 'Copy question'}
+        </button>
+        <span className="text-xs text-muted-foreground">Nothing is asked of the vendor: not a red mark.</span>
+      </div>
+    </div>
+  );
+}
+
 /**
  * #1717: the evidence panel, a sheet from the right (full screen on a phone): the two values large,
  * both crops (zoomable), the spot boxed on the vendor's page where its picture exists, why (in
@@ -212,6 +240,7 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
   const decision = finding && decisionFor ? decisionFor(finding) : null;
   const laid = decision ? (decision.saved ?? (decision.decision ? { decision: decision.decision } : null)) : finding?.decision ?? null;
   const group = finding ? proofGroup(finding, laid) : null;
+  const note = finding && group === 'rule_note' ? ruleNoteWords(finding, laid) : null;
   const number = finding && numberOf ? numberOf(finding) : null;
   const parts = finding ? itemParts(finding.item) : null;
   const vendor = finding ? vendorValue(finding) : null;
@@ -272,8 +301,8 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
             {pagePicture && (finding.vendor_box || finding.arch_box) && <PageSpot finding={finding} src={pagePicture((finding.vendor_box ?? finding.arch_box)!.page)} />}
 
             <section aria-label="Why" className="grid min-w-0 gap-2">
-              <h3 className="text-xs font-semibold text-muted-foreground">{group === 'clouded' ? 'Why it is Wrong' : group === 'right' ? 'Why it is Right' : group === 'dismissed' ? 'What code found' : 'Why it was not compared'}</h3>
-              <ViewerWords finding={finding} />
+              <h3 className="text-xs font-semibold text-muted-foreground">{group === 'clouded' ? 'Why it is Wrong' : group === 'right' ? 'Why it is Right' : group === 'dismissed' ? 'What code found' : group === 'rule_note' ? 'Why GV asks the architect' : 'Why it was not compared'}</h3>
+              <ViewerWords finding={finding} note={note} />
               {sumWords(finding) && (
                 <p data-slot="chat-evidence-sum" className="text-sm tabular-nums">
                   <span className="text-muted-foreground">Code’s sum: </span>
@@ -322,6 +351,8 @@ const CALL_WORDS = {
   right: 'You checked this yourself. It leaves the Not-compared list and shows as Right (reviewer).',
   remove: 'The red cloud and its comment come off. It shows as Right (reviewer) in the vendor’s files.',
 } as const;
+/** #1839: marking a rule note Right takes it out of the questions for the architect. */
+const RULE_NOTE_RIGHT_WORDS = 'You checked this yourself. It leaves the questions for the architect and shows as Right (reviewer).';
 
 /**
  * #1803: what the reviewer can decide here, each choice with one line saying what happens. A
@@ -361,8 +392,8 @@ function ReviewerCall({ finding, group, decision }: { finding: ChatFinding; grou
       )}
       <div className="grid min-w-0 gap-2 sm:grid-cols-2">
         {group === 'clouded' && <CallChoice kind="remove" onClick={() => setMode('remove')} busy={decision.busy} />}
-        {(group === 'not_compared' || group === 'dismissed') && <CallChoice kind="wrong" onClick={() => setMode('wrong')} busy={decision.busy} />}
-        {group === 'not_compared' && <CallChoice kind="right" onClick={() => setMode('right')} busy={decision.busy} />}
+        {(group === 'not_compared' || group === 'rule_note' || group === 'dismissed') && <CallChoice kind="wrong" onClick={() => setMode('wrong')} busy={decision.busy} />}
+        {(group === 'not_compared' || group === 'rule_note') && <CallChoice kind="right" onClick={() => setMode('right')} busy={decision.busy} hintWords={group === 'rule_note' ? RULE_NOTE_RIGHT_WORDS : undefined} />}
       </div>
     </section>
   );
@@ -391,7 +422,7 @@ const CHOICE_WORDS = {
   remove: 'Not a mistake: remove the red mark',
 } as const;
 
-function CallChoice({ kind, onClick, busy }: { kind: 'wrong' | 'right' | 'remove'; onClick: () => void; busy?: boolean }) {
+function CallChoice({ kind, onClick, busy, hintWords }: { kind: 'wrong' | 'right' | 'remove'; onClick: () => void; busy?: boolean; hintWords?: string }) {
   const hint = useId();
   return (
     <div className="grid min-w-0 content-start gap-1">
@@ -399,7 +430,7 @@ function CallChoice({ kind, onClick, busy }: { kind: 'wrong' | 'right' | 'remove
         {kind === 'remove' ? <X className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" /> : <OutcomeGlyph kind={kind} className="size-4 [&_svg]:size-2.5" />}
         <span className="min-w-0 truncate">{CHOICE_WORDS[kind]}</span>
       </button>
-      <p id={hint} className="text-xs leading-[17px] text-muted-foreground">{CALL_WORDS[kind]}</p>
+      <p id={hint} className="text-xs leading-[17px] text-muted-foreground">{hintWords ?? CALL_WORDS[kind]}</p>
     </div>
   );
 }

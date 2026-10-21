@@ -5499,10 +5499,11 @@
         "description": "Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read\n(`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a\nproblem override.",
         "properties": {
           "group": {
-            "description": "clouded: Wrong, proved by code (red cloud); right; not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').",
+            "description": "clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks the architect, `rule_note`); not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').",
             "enum": [
               "clouded",
               "right",
+              "rule_note",
               "not_compared",
               "dismissed"
             ],
@@ -5588,6 +5589,17 @@
             ],
             "description": "The architect-first rule it falls under (#1619): R4 a difference, R5 the vendor's own contradiction, R6 GV's rule; for not_compared R1 (brand prototype, or the architect's size outside a GV rule), R3 (architect's drawings disagree), R7 (architect gives nothing), R8 (different reference points), R9 (unreadable), R10 (missing job value or setting).",
             "title": "Rule"
+          },
+          "rule_note": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingRuleNoteOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "rule_note: the GV rule and the question for the architect."
           },
           "settle": {
             "anyOf": [
@@ -5706,6 +5718,68 @@
           "model"
         ],
         "title": "ChatFindingReadOut",
+        "type": "object"
+      },
+      "ChatFindingRuleNoteOut": {
+        "description": "The GV rule an architect's size breaks while the vendor prints that same size (#1839,\n`rule_notes`): decided, never red; GV asks the architect.",
+        "properties": {
+          "architect": {
+            "description": "The architect's size, which the vendor prints too.",
+            "title": "Architect",
+            "type": "string"
+          },
+          "name": {
+            "description": "The rule's subject: \"filler width\", \"sink front offset\".",
+            "title": "Name",
+            "type": "string"
+          },
+          "origin": {
+            "description": "Where the settings come from.",
+            "enum": [
+              "GV standard",
+              "project value",
+              "drawing set value"
+            ],
+            "title": "Origin",
+            "type": "string"
+          },
+          "question": {
+            "description": "The ready question for the architect (an RFI line).",
+            "title": "Question",
+            "type": "string"
+          },
+          "rule_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The rulebook's id when the check names one.",
+            "title": "Rule Id"
+          },
+          "settings": {
+            "description": "The settings in force as printed: 1\"-2\", 4\".",
+            "title": "Settings",
+            "type": "string"
+          },
+          "standard": {
+            "description": "\"GV's standard is 1\"-2\"\" (or the project's value).",
+            "title": "Standard",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "settings",
+          "origin",
+          "architect",
+          "standard",
+          "question"
+        ],
+        "title": "ChatFindingRuleNoteOut",
         "type": "object"
       },
       "ChatFindingSettledOut": {
@@ -6672,13 +6746,14 @@
                 "type": "null"
               }
             ],
-            "description": "Not compared: what would settle it.",
+            "description": "Not compared: what would settle it; a rule note: the question for the architect.",
             "title": "Needs"
           },
           "outcome": {
             "enum": [
               "wrong",
               "right",
+              "rule_note",
               "not_compared"
             ],
             "title": "Outcome",
@@ -6701,6 +6776,7 @@
                 "enum": [
                   "wrong",
                   "right",
+                  "rule_note",
                   "not_compared"
                 ],
                 "type": "string"
@@ -6743,7 +6819,7 @@
                 "type": "null"
               }
             ],
-            "description": "Not compared: why, in plain words.",
+            "description": "Not compared (or a rule note): why, in plain words.",
             "title": "Reason"
           },
           "removed": {
@@ -7072,6 +7148,13 @@
           "right": {
             "minimum": 0.0,
             "title": "Right",
+            "type": "integer"
+          },
+          "rule_note": {
+            "default": 0,
+            "description": "The architect's size breaks a GV rule: GV asks (#1839).",
+            "minimum": 0.0,
+            "title": "Rule Note",
             "type": "integer"
           },
           "waiting_second_look": {
@@ -8089,6 +8172,12 @@
           },
           "right_so_far": {
             "title": "Right So Far",
+            "type": "integer"
+          },
+          "rule_note_so_far": {
+            "default": 0,
+            "description": "The architect's size breaks a GV rule: GV asks (#1839).",
+            "title": "Rule Note So Far",
             "type": "integer"
           },
           "wrong_so_far": {
