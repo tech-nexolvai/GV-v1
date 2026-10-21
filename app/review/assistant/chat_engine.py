@@ -1854,7 +1854,7 @@ class ChatEngine:
         checked.setdefault("round_status", None)
         checked["second_read_values"] = dict(kept[2]) if kept is not None else None
         # The resolver's fields (#1554) and the escalation's (#1619) are set only on the items
-        # they touch.
+        # they touch (and the round match, 2026-10-22).
         for key in (
             "ledger_ids",
             "reference_side",
@@ -1866,6 +1866,7 @@ class ChatEngine:
             "parts_sum",
             "escalation",
             "string_reads",
+            "round_match",
         ):
             checked.setdefault(key, None)
         return checked
