@@ -29,7 +29,12 @@ same order. Ties that disagree are dropped, the weakest kind first; a run in the
   dimension's reach, another dimension's end, an outlet) between where its own end lands and
   where the other drawing's value would land, plus `MARGIN_IN`. A counter's top 3/4" above its
   underside is such a feature: "34 1/4" to the underside against 35" to the top" is never proved.
-- Anything else: `cannot_tell` (never a block: the existing checks decide as before).
+- Anything else: `cannot_tell` (never a block: the existing checks decide as before), unless
+  **a face lies where the other value would end** (`other_face`, #1837): on either drawing, the
+  other drawing's longer value measured from either end of this dimension lands exactly on
+  another drawn line across its reach (or another dimension's end). A vendor height to a top's
+  underside, with the top's upper face drawn right where the architect's height to the counter
+  would end, is then `different_extent`: never left to a blind pick.
 
 Pure code, $0, no AI, never the AI's words about the ends. The caller passes each drawing's
 labels (`dims.json`), its line work (`dim_anchors.page_segments`) and its box on the page.
@@ -49,11 +54,13 @@ from typing import Any, Final, Literal
 from app.review.assistant import dim_anchors
 
 __all__ = [
+    "FACE_MIN_PPI",
     "MARGIN_IN",
     "MAX_MOVE_IN",
     "MIN_LINE_IN",
     "Line",
     "Side",
+    "other_face",
     "prove",
     "prove_labels",
     "side",
@@ -89,6 +96,9 @@ _REACH_PAD_IN: Final = 2.0
 _DASH_GAP_PT: Final = 10.0
 #: Two values are the same within this (inches).
 _SAME_IN: Final = Fraction(1, 32)
+#: The least points per inch a dimension must be drawn at for `other_face` to look for a face
+#: where the other value would end (#1837): about 3/8" to the foot.
+FACE_MIN_PPI: Final = 2.5
 #: Tie kinds, strongest first (the weakest is dropped first when ties disagree).
 _KINDS: Final = ("base", "outlet", "neighbour")
 
@@ -464,9 +474,77 @@ def _on(ties: Sequence[_Tie], vendor_at: float | None, architect_at: float | Non
     ]
 
 
+# ---- a face where the other value lands -----------------------------------------------------------
+
+
+def other_face(found: Side, line: Line, other: Fraction) -> str | None:
+    """What is drawn exactly where the other drawing's longer value `other` would end on this
+    drawing, beyond either end of `line`, along the line's own drawn scale (#1837), or None: a long
+    line across the dimension's reach, or another dimension's end, within a sixteenth of an inch
+    (at least `_SAME_PT`) of that place. Then the two dimensions may stop at different faces of one
+    band: a vendor height to a top's underside, with the top's upper face drawn right where the
+    architect's height to the counter would end. Outlets are not counted (an outlet's edge beside
+    its centre is no face of a band). Only a difference up to `MAX_MOVE_IN`, seen apart from the
+    line's own end (`_SEEN_GAP_PT`), on a line drawn at `FACE_MIN_PPI` or more, is looked at."""
+    gap = other - line.inches
+    if gap <= 0 or gap > MAX_MOVE_IN:
+        # Only a value longer than the line is looked at, beyond the line's end (the other
+        # drawing is looked at the other way round): inside a dimension's own extent a unit's
+        # parts (a cabinet under a top, a panel) are drawn everywhere, so a line there is no sign.
+        return None
+    own = (line.b - line.a) / float(line.inches)
+    if own < FACE_MIN_PPI or own * float(gap) < _SEEN_GAP_PT:
+        # At a small scale a floor's drawn thickness or its hatching sits within a point or two
+        # of the end: no face can be told apart there (a quarter-inch elevation, 1.5 pt an inch).
+        return None
+    near = max(_SAME_PT, own / 16)
+    for shared, moved in ((line.a, line.b), (line.b, line.a)):
+        landing = shared + math.copysign(float(other) * own, moved - shared)
+        seen = [
+            what
+            for what in _features(found, line, moved, (landing - near, landing + near))
+            if what != "an outlet"
+        ]
+        if seen:
+            return (
+                f"on the {found.role}'s drawing {seen[0]} lies exactly where the other value "
+                f"would end ({_in_words(gap)} beyond {line.id}'s own end): the two may stop at "
+                "different faces"
+            )
+    return None
+
+
+def _in_words(value: Fraction) -> str:
+    whole, part = divmod(value, 1)
+    if not part:
+        return f'{whole}"'
+    return f'{whole} {part.numerator}/{part.denominator}"' if whole else f'{part}"'
+
+
+def _faces(vendor: Side, architect: Side, v_line: Line, a_line: Line) -> str | None:
+    """`other_face` on both drawings: the architect's value on the vendor's, and the vendor's on
+    the architect's."""
+    return other_face(vendor, v_line, a_line.inches) or other_face(architect, a_line, v_line.inches)
+
+
 def prove(vendor: Side, architect: Side, vendor_id: str, architect_id: str) -> tuple[Extent, str]:
     """Whether the vendor's dimension `vendor_id` and the architect's `architect_id` run between
-    the same two points (see the module), with why in plain words."""
+    the same two points (see the module), with why in plain words. Where the ends cannot tell, a
+    drawn face exactly where the other value would end (`other_face`, #1837) says different
+    points: such a pair is never left to a blind pick."""
+    state, why = _prove(vendor, architect, vendor_id, architect_id)
+    if state != "cannot_tell":
+        return state, why
+    v_line, a_line = vendor.lines.get(vendor_id), architect.lines.get(architect_id)
+    if v_line is None or a_line is None or v_line.axis != a_line.axis:
+        return state, why
+    face = _faces(vendor, architect, v_line, a_line)
+    if face is not None:
+        return "different_extent", face
+    return state, why
+
+
+def _prove(vendor: Side, architect: Side, vendor_id: str, architect_id: str) -> tuple[Extent, str]:
     v_line, a_line = vendor.lines.get(vendor_id), architect.lines.get(architect_id)
     if v_line is None or a_line is None:
         return "cannot_tell", "code did not find both dimensions' ends from their ticks"

@@ -18,7 +18,10 @@ hold:
    dimension line code cannot find), it never blocks, as in the simple check (`verify.py`'s
    `geometry`): the blind pick is then made by the stronger model at high effort, as the simple
    check's blind look is (`STRONG_PICK`), and must agree on the label and on both ends (#1819).
-   Geometry that shows different points always blocks.
+   Geometry that shows different points always blocks. An item whose own words name the
+   underside of a top (or the carcass top under it, a top's thickness: `face_doubt`, #1837) is
+   never proved by picks or the anchor fit, which allows the claimed difference (the band itself):
+   only code's own pairing proves it.
 4. **Every code check passes** (`code_checks`): the vendor value is the drawing's black or grey
    ink, not inside one of GV's text notes; the labels are on a vendor half and an architect half
    (never a brand prototype); both run the same way; the vendor value is from the newest round;
@@ -80,6 +83,8 @@ __all__ = [
     "code_pairs",
     "compare_strings",
     "decide",
+    "face_doubt",
+    "face_words",
     "filler_notes_left_out",
     "filler_size",
     "finding_words",
@@ -117,6 +122,18 @@ _ROOM_CONTEXT: Final = re.compile(
 )
 #: A box drawn above the unit, in a finding's or a pick's words (#1827).
 _BOX_ABOVE: Final = re.compile(r"\bbox(?:es)? (?:above|over)\b", re.IGNORECASE)
+#: A face one band's thickness from another, in a finding's own words (#1837): the underside of a
+#: top (or of anything: an upper cabinet, a desk), the carcass top under a counter, a top's
+#: thickness. A dimension to such a face and one to the face beside it differ by the band itself,
+#: so two picks that agree on the label do not show which face each stops at.
+_UNDER_FACE: Final = re.compile(
+    r"\bunder[\s-]?sides?\b|\bu/s\b|\bunderneath\b"
+    r"|\bbottom\s+(?:face\s+)?of\s+(?:the\s+)?(?:\w+\s+)?"
+    r"(?:counter|countertop|top|slab|stone|quartz|worktop|desk|shelf|upper|wall\s*cab)"
+    r"|\bcarcass|\bcarcase|\bcase\s+top\b"
+    r"|\b(?:counter\s*top|top|slab|stone)\s+thickness\b|\bthickness\s+of\s+(?:the\s+)?(?:\w+\s+)?top\b",
+    re.IGNORECASE,
+)
 #: A Wrong item between two drawings: its pairing must be proved.
 PAIRED_SOURCES: Final = frozenset({"architect", "brand_prototype", "gv_review"})
 #: Code paired these itself: the vendor's own string (one string, no pairing), GV's rule check.
@@ -633,6 +650,31 @@ def room_words(thing: str) -> str:
     return f"the architect's dimension may run to {thing}, not the unit: confirm"
 
 
+def face_doubt(*, item: str | None, words: str | None = None) -> str | None:
+    """What a finding's own words say that two faces a band apart are in play (#1837), or None:
+    the underside of a top (or of an upper, a desk), the carcass top under a counter, a top's
+    thickness, named in its item or in the AI's own words about it (`finding_words`). Such an item
+    is never proved by blind picks, nor by the anchor fit (it allows the claimed difference, which
+    is the band itself): only code's own pairing of both ends by what they land on proves it. A
+    vendor height to a top's underside against an architect height to the counter's top went red
+    on two agreeing picks (the paid run of 2026-10-21): the second pick was wrong about the
+    architect's end, and the helper had written "architect to counter, vendor to underside"."""
+    for text in (item or "", words or ""):
+        # End words such as `underside_of_counter` read as words.
+        found = _UNDER_FACE.search(text.replace("_", " "))
+        if found is not None:
+            return " ".join(found.group(0).lower().split())
+    return None
+
+
+def face_words(said: str) -> str:
+    """The Not-compared words for an item `face_doubt` names (#1837)."""
+    return (
+        f'the item names "{said}": the two dimensions may stop at different faces '
+        "(a top's upper face and its underside, one thickness apart): confirm"
+    )
+
+
 def decide(
     *,
     mode: str,
@@ -678,6 +720,21 @@ def decide(
         # Code's geometry is checked first (#1641): an item it shows apart spends no AI call.
         answers["extent"] = extent[0]
         return Verdict("objects", f"Not proved: {extent[1]}.", answers)
+    said = face_doubt(item=item, words=words)
+    thing = room_end(item=item, words=words)
+    if said is not None and thing is not None and not (extent and extent[0] == "same_extent"):
+        # An underside of room context (a bulkhead, a soffit): the room words say it better.
+        answers["trade"] = "fail"
+        why = extent[1] if extent is not None else "not measured"
+        return Verdict("objects", f"Not proved: {room_words(thing)} ({why}).", answers)
+    if said is not None:
+        # A top's underside against its upper face (#1837): neither the picks nor the anchor fit
+        # (it allows the claimed difference, the band itself) show which face each end stops at;
+        # only code's own pairing does (above). No pick is needed, so none is asked or retried.
+        answers["faces"] = "fail"
+        if extent is not None:
+            answers["extent"] = extent[0]
+        return Verdict("objects", f"Not proved: {face_words(said)}.", answers)
     if advocate is None:
         # The blind pick this item needed was not made (the price, or a call that failed): said
         # so, never as the geometry's reason, so the escalation tries it again and the answer

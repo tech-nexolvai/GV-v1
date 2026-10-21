@@ -163,7 +163,9 @@ def test_a_moved_end_with_nothing_else_drawn_near_it_is_the_same_point() -> None
 
 def test_underside_against_top_of_a_counter_is_never_the_same_point() -> None:
     """Rule R8's trap: the vendor's 34" runs to the underside of a 1" top, the architect's 35" to
-    its top. Both drawings draw both edges: another feature is at the moved end."""
+    its top. Both drawings draw both edges: the top's upper face lies exactly where the
+    architect's value would end on the vendor's drawing, so different points (#1837; it was
+    "cannot tell" before, which left the pair to a blind pick)."""
     arch, vendor = _pair()
     for drawing in (arch, vendor):
         drawing.shelf(34)
@@ -171,8 +173,8 @@ def test_underside_against_top_of_a_counter_is_never_the_same_point() -> None:
     a_id = arch.up(35, -10, to_x_in=10)
     v_id = vendor.up(34, -10, to_x_in=10)
     state, why = se.prove(vendor.side_of(), arch.side_of(), v_id, a_id)
-    assert state == "cannot_tell"
-    assert "another drawn feature" in why
+    assert state == "different_extent", why
+    assert "different faces" in why
 
 
 def test_a_difference_too_big_to_be_one_point_is_not_proved() -> None:
