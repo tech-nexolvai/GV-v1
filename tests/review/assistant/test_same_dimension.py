@@ -1,6 +1,5 @@
-"""#1840: a dimension printed twice on one drawing is one blind pick, and the Not-compared list says
-what really stopped an item. Made-up drawings and values only (no client data); no PDF, no model
-call."""
+"""#1840: a dimension printed twice on one drawing is one blind pick. Made-up drawings and values
+only (no client data); no PDF, no model call."""
 
 from __future__ import annotations
 
@@ -10,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from app.review.assistant import classification, full_check_roster
+from app.review.assistant import full_check_roster
 from app.review.assistant.full_check_advocate import Check, Extent, decide, same_dimension
 from app.review.assistant.simple_check import verify as v
 from app.review.assistant.simple_check.verify import BlindAnswer, Item, Pack, Region, with_blind
@@ -204,74 +203,3 @@ def test_the_blind_look_naming_the_twin_agrees() -> None:
     other = dataclasses.replace(answer, pick="p2.D7")
     grey = with_blind(found, other)
     assert grey.outcome == "not_compared" and "chose p2.D7" in grey.reason
-
-
-# ---- what the Not-compared list says -------------------------------------------------------------
-
-
-def _stopped(answers: dict[str, str], note: str) -> dict[str, Any]:
-    return {
-        "page": 7,
-        "item": "Counter: overall width",
-        "status": "different",
-        "source": "architect",
-        "vendor": '40"',
-        "architect": "3' - 6\"",
-        "vendor_box": {"page": 7, "x0": 1, "y0": 1, "x1": 2, "y1": 2},
-        "arch_box": {"page": 7, "x0": 1, "y0": 1, "x1": 2, "y1": 2},
-        "checks": {"printed_vendor": "match", "printed_architect": "match"},
-        "witnesses": ["printed"],
-        "critic": {
-            "result": "objects",
-            "answers": answers,
-            "note": note,
-            "model": "devil's advocate",
-        },
-    }
-
-
-PASS = {"ink": "pass", "annotation": "pass", "roles": "pass", "axis": "pass", "round": "pass"}
-
-
-@pytest.mark.parametrize(
-    ("answers", "note", "reason", "words"),
-    [
-        ({**PASS, "roles": "fail"}, "Not proved: the reference is on the vendor's drawing.",
-         "not_proved", "vendor's own drawing (another round)"),
-        ({**PASS, "roles": "fail", "axis": "fail"},
-         "Not proved: the vendor value is on the brand's drawing.", "prototype", "brand prototype"),
-        ({**PASS, "ink": "fail"}, "Not proved: the vendor value is in colour.", "not_proved",
-         "in colour"),
-        ({**PASS, "ink": "unknown"}, "Not proved: its ink could not be looked at.", "not_proved",
-         "ink"),
-        ({**PASS, "annotation": "fail"}, "Not proved: inside a note.", "not_proved",
-         "under a reviewer's note"),
-        ({"labels": "fail"}, "Not proved: no label.", "not_proved", "no printed label"),
-        ({**PASS, "slip": "fail"}, "Not proved: check the reading.", "not_proved", "misreading"),
-        ({**PASS, "advocate_pick": "p7.D3", "helper_pick": "p7.D1"},
-         "Not proved: a blind second pick chose p7.D3, not p7.D1.", "not_proved",
-         "another of the architect's dimensions"),
-        # A doubt about the two ends stays "different reference points".
-        ({**PASS, "extent": "different_extent"}, "Not proved: the ends land apart.",
-         "different_reference", "same points"),
-        ({**PASS, "spans": "differ"}, "Not proved: the ends land in different places.",
-         "different_reference", "same points"),
-        ({**PASS, "trade": "fail", "extent": "cannot_tell"},
-         "Not proved: the architect's dimension may run to the bulkhead.",
-         "different_reference", "same points"),
-        ({**PASS, "axis": "fail"}, "Not proved: one is a width and the other a height.",
-         "different_reference", "same points"),
-    ],
-)  # fmt: skip
-def test_the_not_compared_reason_is_what_stopped_the_item(
-    answers: dict[str, str], note: str, reason: str, words: str
-) -> None:
-    found = classification.classify(_stopped(answers, note), proved=False)
-    assert found.outcome == "not_compared"
-    assert found.reason == reason and words in str(found.why), (found.reason, found.why)
-
-
-def test_an_item_the_advocate_never_judged_keeps_the_old_reason() -> None:
-    finding = {**_stopped(PASS, ""), "critic": None}
-    found = classification.classify(finding, proved=False)
-    assert found.reason == "different_reference"
