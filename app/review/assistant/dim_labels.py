@@ -2013,7 +2013,10 @@ def _ocr_spots(
     lines = _line_ends(parsed.segments)
     every: list[Box] = []
     pieces: list[ink_labels.Label] = []
+    vendor = [h["box"] for h in halves if h.get("role") == "vendor" and h.get("box")]
     for cluster in [*clusters, *lone]:
+        if not any(_within(_centre(cluster), box) for box in vendor):
+            continue  # read only on the vendor's drawings (below): no time spent elsewhere
         near = vv._ink_paths_near(page, cluster)
         if len(near) > _MAX_NEAR_PATHS:
             near = [p for p in near if _overlap(p.box, cluster) > 0]
