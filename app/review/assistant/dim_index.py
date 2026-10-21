@@ -89,7 +89,9 @@ def label_line(label: Mapping[str, Any]) -> str:
         bits.insert(0, f"equal part of {derived.get('from')}, by code")
         text = f"{label.get('text')} = {_inches_words(label.get('inches'))}"
         return f"{label.get('id')} {text} ({', '.join(b for b in bits if b)})"
-    if label.get("route") == "drawn":
+    if label.get("origin") == "picture":
+        bits.append("read from a pasted picture, two OCR engines")  # #1830
+    elif label.get("route") == "drawn":
         bits.append("drawn ink, OCR")
     if label.get("units") == "disagrees":
         bits.append("mm and inches disagree")

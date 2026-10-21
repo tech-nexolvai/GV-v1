@@ -71,6 +71,7 @@ def _provenance(label: Mapping[str, Any]) -> dict[str, Any]:
         "route": label.get("route"),
         "side": label.get("side"),
         "box": list(label.get("box") or []),
+        **({"origin": label["origin"]} if label.get("origin") else {}),
     }
 
 
@@ -134,7 +135,9 @@ def fill_from_labels(
                 f"{label['id']} is on the drawing the page map calls the {found_side}'s: check "
                 f"it is the {side}'s"
             )
-        if label.get("route") == "drawn":
+        if label.get("origin") == "picture":
+            notes.append(f"{label['id']} was read from a pasted picture by OCR: look at it once")
+        elif label.get("route") == "drawn":
             notes.append(f"{label['id']} was read from drawn ink by OCR: look at it once")
         dims[side] = _provenance(label)
     return out, (dims or None), notes
@@ -172,9 +175,13 @@ def label_checks(finding: Mapping[str, Any], checks: Mapping[str, Any]) -> dict[
             continue
         route = "drawn" if label.get("route") == "drawn" else "text"
         how = (
-            f"the {side}'s drawn ink (two OCR engines)"
-            if route == "drawn"
-            else "the drawing's text"
+            f"the {side}'s pasted picture (two OCR engines)"
+            if label.get("origin") == "picture"
+            else (
+                f"the {side}'s drawn ink (two OCR engines)"
+                if route == "drawn"
+                else "the drawing's text"
+            )
         )
         out[key] = {
             "result": "match",

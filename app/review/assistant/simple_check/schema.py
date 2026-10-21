@@ -276,6 +276,8 @@ class Label(_Frozen):
     route: str | None = None
     """`text` (the PDF's characters) or `drawn` (pen strokes read by two OCR engines)."""
     mm: str | None = None
+    origin: str | None = None
+    """`picture` when the label was read inside a pasted picture by two OCR engines (#1830)."""
 
     _ref = field_validator("ref")(_check_ref)
 

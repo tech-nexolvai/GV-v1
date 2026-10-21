@@ -66,9 +66,19 @@ equally (`_equal_parts`: 36" wall to wall marked `EQ` / `EQ` is 18" each side). 
 part only when the chain's ends meet the overall's and every other part is printed, and lists it
 as a label with `derived` naming the overall. Derived labels never set a drawing's scale.
 
+**Pasted pictures** (#1830): a drawing pasted as a picture (a raster snapshot, or a scanned page)
+has no characters and no vectors, so the routes above read nothing in it. `picture_labels` reads
+its numbers with the same two OCR engines (each line found by RapidOCR's text detector, upright or
+sideways, and read by both engines both ways along it); a label is kept only when both engines
+read exactly one and the same value the way the detector found it, and nothing the other way
+round. It is the OCR trust class (`route: "drawn"`, the drawn-ink witness, never more), marked
+`origin: "picture"`, with no dimension line (a raster's line work is not measured). A number read
+in a picture that is not confirmed is never a label: the page lists it under `pictures`
+(`unconfirmed`, with the reason `picture_labels.UNCONFIRMED`).
+
 **Ids are stable:** text labels are numbered in reading order (top to bottom, left to right), then
-drawn labels after them, then derived parts, so a drawn label found or not never moves a text
-label's id.
+picture labels, then drawn labels after them, then derived parts, so a drawn label found or not
+never moves a text label's id.
 
 Loaded by name (`set_pack`, `dim_index`), like `verify_value`: it parses PDFs and may run OCR.
 Verification: `tests/review/assistant/test_dim_labels.py` (synthetic PDFs).
@@ -96,7 +106,7 @@ import numpy as np
 import pdfplumber
 from PIL import Image, ImageDraw, ImageFont
 
-from app.review.assistant import hand_labels, ink_labels
+from app.review.assistant import hand_labels, ink_labels, picture_labels
 from app.review.assistant import verify_value as vv
 from app.review.assistant.finding_checks import inch_first_mm, to_inches, units_check, value_flags
 from app.review.assistant.measure import _pieces
@@ -112,6 +122,7 @@ __all__ = [
     "drawn_labels",
     "drawn_readers",
     "page_labels",
+    "picture_pass",
 ]
 
 _log = logging.getLogger(__name__)
@@ -120,6 +131,8 @@ _log = logging.getLogger(__name__)
 LABELS_VERSION: Final = 1
 #: The most labels one page lists (a schedule page can print hundreds of numbers).
 MAX_LABELS: Final = 400
+#: The picture route's time across a set (seconds, #1830): most sets paste no picture at all.
+PICTURES_BUDGET_S: Final = 240.0
 #: The most phrases one page lists.
 MAX_PHRASES: Final = 1500
 #: A bare number larger than this is not read as inches (it is a count, a note number, or mm).
@@ -194,6 +207,11 @@ class PageLabels:
     """Millimetre-only values (`794mm`, #1778): `{text, mm, box, side}`. Never a label: inches
     count, millimetres are never a verdict operand, and 794 mm is no exact number of inches; listed
     so the page is known to print dimensions."""
+    pictures: dict[str, Any] | None = None
+    """The page's pasted pictures and what code read in them (#1830): `{status, boxes,
+    unconfirmed}`; `None` when the picture route did not run on the page. `unconfirmed` lists the
+    numbers read in a picture that two engines did not confirm (`{text, box, orientation, side,
+    why}`): never labels, never a red."""
 
 
 # ---- reading the page once -----------------------------------------------------------------------
@@ -1676,12 +1694,16 @@ def page_labels(
     readers: Sequence[Any] | None = None,
     clock: Callable[[], float] = monotonic,
     equal_parts: bool = True,
+    picture_budget_s: float = 0.0,
+    detector: Any = None,
 ) -> PageLabels:
     """The labels of page `page` (from 1) of `pdf`. `halves` are the page map's drawings on the
     page (`{box, role}`), for each label's side. The drawn route runs only while
     `drawn_budget_s` seconds last (0: not at all); `readers` are its OCR engines (default: the
-    installed ones). `equal_parts`: the `EQ` parts are added last (`build_dims` adds them once,
-    after its drawn pass, so no id is ever given to two labels)."""
+    installed ones). The picture route (#1830) reads the page's pasted pictures within
+    `picture_budget_s` seconds (0: not at all), with the same engines and `detector` (default:
+    RapidOCR's text detector). `equal_parts`: the `EQ` parts are added last (`build_dims` adds them
+    once, after its drawn pass, so no id is ever given to two labels)."""
     started = clock()
     parsed = _parse(Path(pdf), page - 1)
     phrases = _phrases(parsed)
@@ -1694,6 +1716,8 @@ def page_labels(
         ],
         metric=_metric(phrases, halves),
     )
+    if picture_budget_s > 0:
+        _add_pictures(result, Path(pdf), page, halves, picture_budget_s, readers, detector, clock)
     if drawn_budget_s > 0:
         _add_drawn(
             result,
@@ -1720,19 +1744,138 @@ def drawn_labels(
     readers: Sequence[Any] | None = None,
     clock: Callable[[], float] = monotonic,
 ) -> PageLabels:
-    """Page `page`'s text labels (as `page_labels` gave them) with its drawn labels added after
-    them, read within `budget_s` seconds: the pack's second pass, after every page's text."""
+    """Page `page`'s text labels (as `page_labels` gave them) and its picture labels (#1830)
+    with its drawn labels added after them, read within `budget_s` seconds: the pack's last
+    reading pass, after every page's text and pictures."""
     started = clock()
     result = PageLabels(
         labels=[
             dict(label)
             for label in text_labels
-            if label["route"] == "text" and not label.get("derived")
+            if (label["route"] == "text" or label.get("origin") == picture_labels.ORIGIN)
+            and not label.get("derived")
         ]
     )
     _add_drawn(result, _parse(Path(pdf), page - 1), halves, budget_s, readers, clock)
     _number(result.labels)
     result.seconds = round(clock() - started, 2)
+    return result
+
+
+# ---- the picture route (#1830) -------------------------------------------------------------------
+
+
+def _picture_reading(found: picture_labels.PictureLabel) -> _Reading:
+    return _Reading(
+        text=found.text,
+        inches=found.inches,
+        box=found.box,
+        along=found.along,
+        font=found.font,
+        bare=found.kind == "bare",
+        bracket=found.kind == "bracket" or found.mm is not None,
+        mm=found.mm,
+        units=None if found.mm is None else units_check(found.text),
+        route="drawn",
+    )
+
+
+def _add_pictures(
+    result: PageLabels,
+    pdf: Path,
+    page: int,
+    halves: Sequence[Mapping[str, Any]],
+    budget_s: float,
+    readers: Sequence[Any] | None,
+    detector: Any,
+    clock: Callable[[], float],
+) -> None:
+    """The picture route: the page's pasted pictures read by two OCR engines
+    (`picture_labels`). A confirmed reading is a label like any other (the OCR trust class,
+    `route: "drawn"`, marked `origin: "picture"`, with no dimension line), added after the labels
+    already listed, unless the page's own text already prints a label or phrase there; a
+    millimetre value is a label only over its bracketed inches with both agreeing (`_paired`,
+    `units_check`). Every other reading is listed in `pictures.unconfirmed`, never a label."""
+    engines = list(drawn_readers() if readers is None else readers)
+    try:
+        read = picture_labels.read_page(
+            pdf, page - 1, engines, detector=detector, budget_s=budget_s, clock=clock
+        )
+    except Exception as failed:  # noqa: BLE001 - the page keeps its other labels
+        _log.warning("dimension labels: picture route failed: %s", type(failed).__name__)
+        result.pictures = {"status": "failed", "boxes": [], "unconfirmed": []}
+        return
+    if not read.boxes:
+        return
+    taken = [tuple(label["box"]) for label in result.labels] + [
+        tuple(phrase["box"]) for phrase in result.phrases
+    ]
+    fresh = [
+        found
+        for found in read.labels
+        if not any(_overlap(found.box, other) > 0.5 for other in taken)
+    ]
+    confirmed = [found for found in fresh if found.confirmed]
+    joined, _any_pair = _paired([_picture_reading(found) for found in confirmed])
+    unconfirmed: list[dict[str, Any]] = [
+        {
+            "text": found.text,
+            "box": list(found.box),
+            "orientation": found.orientation,
+            "side": _side(found.box, halves),
+            "why": f"{picture_labels.UNCONFIRMED} ({found.why})",
+        }
+        for found in fresh
+        if not found.confirmed
+    ]
+    added: list[dict[str, Any]] = []
+    for reading in joined:
+        if reading.bare or (reading.bracket and reading.mm is None):
+            continue  # a lone millimetre number, or inches in brackets with no millimetres
+        if reading.mm is not None and reading.units != "agrees":
+            unconfirmed.append(
+                {
+                    "text": reading.text,
+                    "box": [round(v, 2) for v in reading.box],
+                    "orientation": _orientation(reading.along),
+                    "side": _side(reading.box, halves),
+                    "why": f"{picture_labels.UNCONFIRMED} (the millimetres and inches disagree)",
+                }
+            )
+            continue
+        # No dimension line: a picture's line work is pixels (`picture_labels`).
+        label = _label(reading, None, _side(reading.box, halves))
+        label["origin"] = picture_labels.ORIGIN
+        added.append(label)
+    added.sort(key=lambda label: (round(label["box"][1] / 4), label["box"][0]))
+    result.labels += added[: max(0, MAX_LABELS - len(result.labels))]
+    result.pictures = {
+        "status": read.status,
+        "boxes": [[round(v, 2) for v in box] for box in read.boxes],
+        "unconfirmed": unconfirmed,
+    }
+
+
+def picture_pass(
+    pdf: Path,
+    page: int,
+    halves: Sequence[Mapping[str, Any]],
+    labels: Sequence[Mapping[str, Any]],
+    phrases: Sequence[Mapping[str, Any]],
+    *,
+    budget_s: float,
+    readers: Sequence[Any] | None = None,
+    detector: Any = None,
+    clock: Callable[[], float] = monotonic,
+) -> PageLabels:
+    """Page `page`'s labels (as the text pass gave them) with the labels read in its pasted
+    pictures added after them (#1830): the pack's pass between the text and the drawn ink."""
+    result = PageLabels(
+        labels=[dict(label) for label in labels],
+        phrases=[dict(phrase) for phrase in phrases],
+    )
+    _add_pictures(result, Path(pdf), page, halves, budget_s, readers, detector, clock)
+    _number(result.labels)
     return result
 
 
@@ -2411,12 +2554,14 @@ def build_dims(
     *,
     drawn_budget_s: float = 0.0,
     on_page: Callable[[dict[str, Any]], None] | None = None,
+    pictures_budget_s: float = PICTURES_BUDGET_S,
 ) -> dict[str, Any]:
-    """The set pack's `dims.json`: every page of every upload and its labels. Two passes: the text
-    route on every page first (the agent has every printed label in minutes), then the drawn
-    route page by page, sharing `drawn_budget_s` seconds across the set (a page it does not reach
-    stays `not_run`; one it leaves half read is `partial`). `on_page` sees the document after each
-    page of each pass (to write it as it grows)."""
+    """The set pack's `dims.json`: every page of every upload and its labels. Three passes: the
+    text route on every page first (the agent has every printed label in minutes), then the pasted
+    pictures (#1830) of the pages that show one, within `pictures_budget_s` seconds (a page read
+    gets `pictures`), then the drawn route page by page, sharing `drawn_budget_s` seconds across
+    the set (a page it does not reach stays `not_run`; one it leaves half read is `partial`).
+    `on_page` sees the document after each page of each pass (to write it as it grows)."""
     halves: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     entries = page_map.get("pages") if isinstance(page_map, Mapping) else None
     for entry in entries if isinstance(entries, list) else []:
@@ -2453,6 +2598,41 @@ def build_dims(
                     **({"metric": found.metric} if found.metric else {}),
                 }
             )
+            if on_page is not None:
+                on_page(document)
+    # The pasted pictures (#1830), after every page's text and before the drawn ink: most pages
+    # have none (`pages_with_pictures` draws nothing), and a picture page is read in seconds.
+    pictures_left = pictures_budget_s
+    for name, pdf in pdfs.items():
+        if pictures_left <= 0 or not pdf.is_file():
+            continue
+        try:
+            with_pictures = set(picture_labels.pages_with_pictures(pdf))
+        except Exception as failed:  # noqa: BLE001 - the pages keep their text labels
+            _log.warning("dimension labels: pictures not listed: %s", type(failed).__name__)
+            continue
+        for entry in document["pages"]:
+            if entry["file"] != name or entry["page"] not in with_pictures or pictures_left <= 0:
+                continue
+            number = entry["page"]
+            started = monotonic()
+            try:
+                found = picture_pass(
+                    pdf,
+                    number,
+                    halves.get((name, number), ()),
+                    entry["labels"],
+                    entry.get("phrases") or [],
+                    budget_s=pictures_left,
+                )
+            except Exception as failed:  # noqa: BLE001 - the page keeps its text labels
+                _log.warning("dimension labels: picture pass failed: %s", type(failed).__name__)
+                continue
+            finally:
+                pictures_left -= monotonic() - started
+            if found.pictures is None:
+                continue
+            entry["labels"], entry["pictures"] = found.labels, found.pictures
             if on_page is not None:
                 on_page(document)
     left = drawn_budget_s

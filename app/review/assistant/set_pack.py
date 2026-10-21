@@ -32,13 +32,15 @@ that set-up once per upload, in the background, and the agent sees it read-only 
   from the content of both drawings, only when clear on both sides (`content_sides`, the rule of
   #1052), `role_by: "content"`; anything less stays general. Drawings pasted as pictures (a
   rectangle comment holding an image) are kept in the drawings-only copy and listed as the
-  page's `pictures`: the agents see them, code reads no number in them.
+  page's `pictures`: the agents see them, and code reads their numbers with two OCR engines
+  (`picture_labels`, #1830; a label only when both read the same value).
 - `dims.json` (#1558): every printed dimension on every page, numbered per page (`D17`), with its
   value, inches, box, whose drawing it is on, and its dimension and extension lines when found
   (`dim_labels.py`). The `zoom` tool draws these ids on a crop; findings name them. Written as
   it grows, page by page, after the pictures; a page not in it yet is read when it is asked for.
-  Every page's text labels come first; then the vendor's drawn numbers (pen strokes, read by two
-  OCR engines) are added page by page within `DIMS_DRAWN_BUDGET_S`, after the text ids.
+  Every page's text labels come first; then the numbers in pasted pictures (two OCR engines must
+  agree, #1830); then the vendor's drawn numbers (pen strokes, read by two OCR engines) are added
+  page by page within `DIMS_DRAWN_BUDGET_S`, after the text ids.
 - `scales.json`: each drawing's scale measured from its own printed dimensions
   (`view_scales.py`; printed scale notes are wrong where GV resized a pasted drawing), written
   with `dims.json`. `measure_on_drawing` uses it when no calibration is given.
@@ -112,7 +114,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 10
+PACK_VERSION: Final = 11
 #: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
@@ -386,7 +388,7 @@ def picture_annotations(source: Path) -> frozenset[tuple[int, int]]:
     """`(page, index in /Annots)` of each pasted picture in `source` (#1825): a rectangle comment
     holding an image and no text (`extraction.stamp_text.pasted_picture`), as a viewer's "paste
     image" leaves a raster snapshot of a drawing. The drawings-only copy keeps them, so the
-    agents see a drawing pasted that way; code never reads a number from a picture."""
+    agents see a drawing pasted that way; `picture_labels` reads its numbers (#1830)."""
     stamp_text = import_module("extraction.stamp_text")
     pikepdf = import_module("pikepdf")
     found: set[tuple[int, int]] = set()
@@ -725,7 +727,8 @@ def _page_entries(
         }
         pictures = [list(a["box"]) for a in items if a.get("picture") and a["box"]]
         if pictures:
-            # Pasted pictures (#1825): a drawing the agents see, whose numbers code cannot read.
+            # Pasted pictures (#1825): a drawing the agents see; `dims.json` holds the numbers
+            # two OCR engines agree on in it (#1830).
             entry["pictures"] = pictures
         if candidate is not None:
             entry[CANDIDATE] = candidate
@@ -929,8 +932,8 @@ page_map.json          per page: whose drawing each pasted drawing is (from GV's
                        own content (feet-and-inches labels and scale against the vendor's
                        inch/millimetre labels and ratio scale); role_by: "content" marks them.
                        Compare its architect drawing with its vendor drawing on the same sheet.
-                       pictures: boxes of drawings pasted as pictures (code reads no number in
-                       them; look at them).
+                       pictures: boxes of drawings pasted as pictures (code lists only the
+                       numbers two OCR engines agree on in them; look at them).
 annotations.json      every annotation: file, page, kind, author, text, box (GV's markup and
                        headings included; the drawings-only copies drop them).
 *_drawings_only.pdf    each PDF with only the pasted drawings kept: GV's markup hidden.
@@ -946,6 +949,10 @@ dims.json              every printed dimension code found, numbered per page (D1
                        route "drawn": numbers drawn as pen strokes (the vendor's, and an
                        architect's hand lettering such as 2'-6 1/2") read by two OCR engines
                        (added later; check one with zoom before you rely on it).
+                       "origin": "picture": read inside a pasted picture by two OCR engines
+                       (same trust as "drawn"; no dimension line). A number read there that
+                       the engines did not agree on is never a label: the page's "pictures"
+                       lists it as unconfirmed.
                        "derived": an EQ part, numbered last: the printed overall (less
                        the chain's printed parts) shared equally, by code; "from" names
                        the overall (36" wall to wall marked EQ / EQ is 18" each side).
