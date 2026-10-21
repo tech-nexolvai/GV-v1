@@ -354,8 +354,9 @@ def test_a_helper_naming_the_vendor_s_round_1_label_as_the_architect_s_is_told_w
         architect_file=FILE,
     )
     assert dims is not None and dims["architect"]["side"] == "vendor"
-    assert notes == [
+    said = (
         "D12 is on the vendor's own drawing (an earlier round or another view), not the "
         "architect's: a match with it is never counted as right; give the architect's label for "
         "the same dimension"
-    ]
+    )
+    assert notes == [said]
