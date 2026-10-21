@@ -62,7 +62,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
-from app.review.assistant.spot_locate import spot_words
+from app.review.assistant.spot_locate import VENDOR_SEARCH, search_words, spot_words
 
 __all__ = [
     "PROTOTYPE_REFERENCE",
@@ -246,10 +246,22 @@ def missing_on_vendor(finding: Mapping[str, Any]) -> bool:
 def _missing(finding: Mapping[str, Any]) -> Classified:
     """The architect shows it and the vendor's drawing does not, by the readings, but code did not
     prove the vendor's sheets leave it out (#1648: code does not recognise every vendor's symbol
-    for an outlet, so a symbol it does not find may still be drawn)."""
+    for an outlet, so a symbol it does not find may still be drawn). When code searched the
+    vendor's drawings of the area for the architect's printed value (`escalation`'s
+    `vendor_search`), the reason says what it found."""
+    shows = f"the architect shows it ({_short(finding.get('architect'), 90)})"
+    searched = search_words(finding.get(VENDOR_SEARCH))
+    if searched is not None:
+        found = (finding.get(VENDOR_SEARCH) or {}).get("found")
+        said = "" if found == "none" else "the AI says the vendor's drawing does not show it, but "
+        return _not(
+            "not_proved",
+            f"{shows}; {said}{searched}",
+            "the vendor to show {thing} as the architect draws it, or to note that it is by others",
+        )
     return _not(
         "not_proved",
-        f"the architect shows it ({_short(finding.get('architect'), 90)}); the vendor's drawing "
+        f"{shows}; the vendor's drawing "
         "does not, by the AI's reading; code could not confirm the vendor's sheets leave it out",
         "the vendor to show {thing} as the architect draws it, or to note that it is by others",
     )
@@ -536,6 +548,9 @@ def _unproved(finding: Mapping[str, Any]) -> Classified:
             "measure the same thing was not reached",
             "the same check in a full check with money left for it",
         )
+    stopped = _advocate_stop(finding)
+    if stopped is not None:
+        return stopped
     if _read_by_code(finding):
         return _not(
             "different_reference",
@@ -547,6 +562,47 @@ def _unproved(finding: Mapping[str, Any]) -> Classified:
         "the difference rests on readings code could not check",
         "a printed value at both spots, or code's own pairing of the two dimensions",
     )
+
+
+#: The devil's advocate's code checks (`full_check_advocate.code_checks`, the roster's label and
+#: pairing checks) whose failure means the two values were never compared as one dimension, in the
+#: order the advocate makes them (its note names the first that failed), with what would settle
+#: each.
+_ADVOCATE_STOPS: Final[tuple[tuple[str, str], ...]] = (
+    ("labels", "a code reading of the value at a numbered label on the drawing"),
+    ("ink", "the vendor's own value clear of GV's markup (or on the next round)"),
+    ("annotation", "the vendor's own value clear of GV's markup (or on the next round)"),
+    ("roles", "the architect's own printed value for {thing} (the reference is another drawing)"),
+    ("round", "the same item on the vendor's newest round"),
+    ("units", "a second reading of the value (its millimetres and inches disagree)"),
+    ("slip", "a second reading of the value"),
+    ("code_pair", "which of the architect's dimensions the vendor's value matches"),
+)
+
+
+def _advocate_stop(finding: Mapping[str, Any]) -> Classified | None:
+    """A difference the devil's advocate stopped at one of its code checks (the value is GV's
+    markup, the reference is on the vendor's own or the brand's drawing, the value has no label
+    code read, an older round, ...): Not compared with that check's own words, never "different
+    reference points", which says the two dimensions were compared and run between different
+    points (accuracy step 1: of the full-price Set 3 run's 42 "different reference points", most
+    had stopped at such a check). A width against a height (`axis`) and an architect dimension
+    that may run to a bulkhead (`trade`) are different points, so they stay as they are."""
+    critic = finding.get("critic")
+    if not isinstance(critic, Mapping) or critic.get("model") != "devil's advocate":
+        return None
+    answers = critic.get("answers")
+    if not isinstance(answers, Mapping) or critic.get("result") == "passed":
+        return None
+    failed = {str(name) for name, outcome in answers.items() if outcome == "fail"}
+    if failed & {"axis", "trade"}:
+        return None
+    for name, settle in _ADVOCATE_STOPS:
+        if name in failed:
+            note = _flat(critic.get("note")).removeprefix("Not proved:").strip().rstrip(".")
+            words = note or f"code's {name} check did not pass"
+            return _not("not_proved", f"code's check stopped it: {_short(words, 160)}", settle)
+    return None
 
 
 def _check_item(finding: Mapping[str, Any]) -> Classified:

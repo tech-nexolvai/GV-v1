@@ -16,7 +16,14 @@ inside the full check and its fixed price, it climbs a ladder, the biggest items
    - `vendor_sums`: a string of the vendor's own that code already proved does not add up
      (`vendor_consistency`) carries the item;
    - `pairs`: code's own pairing of the two labels by drawn position (`pairs.json`): a proof that
-     both numbers measure the same thing (`paired_by: code`).
+     both numbers measure the same thing (`paired_by: code`);
+   - `vendor_search` (accuracy step 1): an item the AI says the vendor's drawing does not show
+     (`classification.missing_on_vendor`): code searches every vendor drawing of its area (the
+     page map) for the architect's printed value (`spot_locate.search_area`) and records what it
+     found (`vendor_search`), so the Not-compared reason says it. It settles nothing: a dimension
+     the vendor does not print does not prove the item itself is left out (code does not
+     recognise every symbol, #1648), and the same value printed elsewhere does not prove it is
+     the same dimension.
    Missed, changed and added finishes (R4) are code's own finish check (`architect_items`, #1623),
    which runs at the finish of every full check; its findings are proved there, never here.
 2. **One deeper AI look** per item that is left (the roster, `full_check_roster`): a sharper crop
@@ -46,10 +53,11 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from app.review.assistant import proof
+from app.review.assistant import classification, proof
 from app.review.assistant.chat_trust import inch_words, judged, round_item_key
 from app.review.assistant.full_check_advocate import code_pairs
 from app.review.assistant.impact import by_impact
+from app.review.assistant.spot_locate import VENDOR_SEARCH, search_area, search_words
 
 __all__ = [
     "FREE_STEPS",
@@ -66,7 +74,14 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 type StepName = Literal[
-    "labels", "under_markup", "same_item", "vendor_sums", "pairs", "equal_parts", "read_number"
+    "labels",
+    "under_markup",
+    "same_item",
+    "vendor_sums",
+    "pairs",
+    "equal_parts",
+    "read_number",
+    "vendor_search",
 ]
 #: The free code steps, cheapest first.
 FREE_STEPS: Final[tuple[StepName, ...]] = (
@@ -75,6 +90,7 @@ FREE_STEPS: Final[tuple[StepName, ...]] = (
     "same_item",
     "vendor_sums",
     "pairs",
+    "vendor_search",
 )
 #: Two printed values this close are the same (the drawings' smallest step, as the resolver).
 PRECISION: Final = Decimal("0.0625")
@@ -600,6 +616,59 @@ def _pairs_step(item: _Item, ctx: EscalationContext) -> None:
         item.outcome = "wrong"
 
 
+def _vendor_drawings(
+    ctx: EscalationContext, page: int
+) -> list[tuple[int, Sequence[float], Sequence[Mapping[str, Any]]]]:
+    """The vendor's drawings of `page`'s area (every round): (page, the drawing's box, the page's
+    labels), from the page map. Empty when the page has no area there."""
+    file = ctx.main_file or ""
+    entries = [
+        e
+        for e in (ctx.page_map or {}).get("pages") or []
+        if isinstance(e, Mapping) and e.get("file") in (None, file)
+    ]
+    own = next((e for e in entries if e.get("page") == page), None)
+    area = None if own is None else (own.get("area") or own.get("section"))
+    if not area:
+        return []
+    found: list[tuple[int, Sequence[float], Sequence[Mapping[str, Any]]]] = []
+    for entry in entries:
+        if (entry.get("area") or entry.get("section")) != area:
+            continue
+        number = entry.get("page")
+        if not isinstance(number, int) or isinstance(number, bool):
+            continue
+        for half in entry.get("halves") or []:
+            box = half.get("box") if isinstance(half, Mapping) else None
+            if half.get("role") == "vendor" and isinstance(box, Sequence) and len(box) == 4:
+                found.append((number, box, ctx.labels.get((file, number), [])))
+    return found
+
+
+def _vendor_search_step(item: _Item, ctx: EscalationContext) -> None:
+    """An item the AI says the vendor's drawing does not show: code searches the vendor's drawings
+    of its area for the architect's printed value and keeps what it found on the item (see the
+    module); the item's outcome does not change."""
+    finding = item.finding
+    if not classification.missing_on_vendor(finding):
+        return
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    architect = (dims or {}).get("architect")
+    label = _label_of(ctx, architect) if isinstance(architect, Mapping) else None
+    claim = label.get("text") if label is not None else finding.get("architect")
+    page = (label or {}).get("page") or finding.get("vs_page") or finding.get("page")
+    if not isinstance(page, int) or isinstance(page, bool):
+        return
+    drawings = _vendor_drawings(ctx, page) or _vendor_drawings(ctx, int(finding.get("page") or 0))
+    found = search_area(claim, (label or {}).get("orientation"), drawings)
+    if found.found == "unknown":
+        item.note("vendor_search", "no_change", "no value or no vendor drawing to search")
+        return
+    finding[VENDOR_SEARCH] = found.as_dict()
+    item.changed = True
+    item.note("vendor_search", "searched", search_words(finding[VENDOR_SEARCH]) or "")
+
+
 def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> Escalation:
     """The free code steps on every undecided item of `findings` (an answer's live findings),
     the biggest first (see the module). Pure: returns what changed."""
@@ -627,6 +696,8 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
                 carrier = _vendor_sum_carrier(item.finding, live)
                 if carrier is not None:
                     _fold(item, carrier, step, result)
+            elif step == "vendor_search":
+                _vendor_search_step(item, ctx)
             else:
                 _pairs_step(item, ctx)
             if item.changed:
