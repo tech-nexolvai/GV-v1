@@ -57,11 +57,13 @@ __all__ = [
     "DRAWN_TOTAL_CAP_MICROS",
     "MAX_JOB_PAGES",
     "MIN_JOB_PAGES",
+    "NO_VENDOR_NOTE",
     "PAGE_MAP_WAIT_SECONDS",
     "CrossPairs",
     "FanOutPlan",
     "HelperJob",
     "drawn_job_cap",
+    "no_vendor_pages",
     "pack_ready",
     "pair_lines",
     "plan_assumptions",
@@ -84,6 +86,13 @@ _POLL_SECONDS: Final = 0.25
 #: What a job's description may say of its areas.
 _MAX_DESCRIPTION: Final = 100
 DIVIDER_NOTE: Final = "divider or general page: no drawing pasted on it (code)"
+#: A page whose page map shows drawings but no vendor drawing (#1837): its coverage note.
+NO_VENDOR_NOTE: Final = (
+    "no vendor drawing to compare: only the architect's or the brand prototype's drawing is on "
+    "this page; it is the reference for its area's vendor pages (code)"
+)
+#: The drawing roles that are never the vendor's (`set_pack`'s page map).
+_NOT_VENDOR_ROLES: Final = frozenset({"architect", "brand_prototype"})
 #: The rules summary in a brief: the picked products' checks, one line each, at most this long.
 _MAX_RULES_SUMMARY: Final = 2_500
 _MAX_RULE_LINE: Final = 220
@@ -298,6 +307,23 @@ def _entries(page_map: Mapping[str, Any], main_file: str | None) -> list[Mapping
         e for e in entries if str(e.get("file")) == main_file and isinstance(e.get("page"), int)
     ]
     return sorted(chosen, key=lambda e: int(e["page"]))
+
+
+def no_vendor_pages(page_map: Mapping[str, Any] | None, main_file: str | None) -> frozenset[int]:
+    """The main file's pages that hold drawings but no vendor drawing (#1837): every drawing on
+    them is the architect's or the brand prototype's (a drawing of unknown role keeps the page
+    in). Nothing on such a page can be compared: it is the reference for its area's vendor pages,
+    so it is never a page "not compared" and is never sent on for another look. The paid run of
+    2026-10-21 kept four such pages "not compared after 2 more looks" and the check not for
+    sending."""
+    if not page_map:
+        return frozenset()
+    out: set[int] = set()
+    for entry in _entries(page_map, main_file):
+        halves = [h for h in entry.get("halves") or [] if isinstance(h, Mapping)]
+        if halves and all(str(h.get("role")) in _NOT_VENDOR_ROLES for h in halves):
+            out.add(int(entry["page"]))
+    return frozenset(out)
 
 
 def _area(entry: Mapping[str, Any]) -> str | None:

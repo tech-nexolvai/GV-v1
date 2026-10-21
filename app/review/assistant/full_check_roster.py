@@ -108,6 +108,7 @@ from app.review.assistant.full_check_advocate import (
     code_pairs,
     compare_strings,
     decide,
+    face_doubt,
     filler_notes_left_out,
     finding_words,
     ink_colour,
@@ -1055,11 +1056,15 @@ def remaining_plan(plan: Any, done: Collection[int]) -> Any:
         pages = tuple(page for page in job.pages if page not in done)
         if not pages:
             continue
+        # A page carried over is still looked at (an architect-only page is the reference for
+        # its area's vendor pages left, #1837), never compared again.
+        kept = tuple((job.file, page) for page in job.pages if page in done)
         jobs.append(
             replace(
                 job,
                 number=len(jobs) + 1,
                 pages=pages,
+                reference=tuple(dict.fromkeys((*job.reference, *kept))),
                 pairs=tuple(pair for pair in job.pairs if pair[0] in pages),
                 unpaired=tuple(item for item in job.unpaired if item[0] in pages),
             )
@@ -1099,6 +1104,9 @@ class _Run:
     capped_early: bool = False
     #: The pages the lead review took (`_lead_review`), to name the open ones it could not.
     lead_taken: set[int] = field(default_factory=set)
+    #: The planned pages with no vendor drawing (`full_check_plan.no_vendor_pages`, #1837): never
+    #: a page left, never sent on again; said "no vendor drawing to compare" at the finish.
+    no_vendor: frozenset[int] = frozenset()
     pairs: dict[str, str] = field(default_factory=dict)
     #: The drawn run's drawings and line work (`same_ends`), read once per run.
     _drawn_sides: dict[Any, Any] = field(default_factory=dict)
@@ -1316,7 +1324,8 @@ class _Run:
         plan = getattr(self.engine, "_plan", None)
         if plan is None or not self.engine.book.coverage_used:
             return []
-        skipped = {int(page) for page, _why in getattr(plan, "skipped", ())}
+        # A page with no vendor drawing has nothing to compare (#1837): never a page left.
+        skipped = {int(page) for page, _why in getattr(plan, "skipped", ())} | set(self.no_vendor)
         coverage = self.engine.book.coverage_map()
         planned = [int(e["page"]) for e in coverage["pages"] if int(e["page"]) not in skipped]
         unfinished = set(unfinished_pages(planned, coverage))
@@ -1326,6 +1335,30 @@ class _Run:
             if int(entry["page"]) not in skipped
             and (entry.get("status") not in ("same", "different") or entry["page"] in unfinished)
         )
+
+    def _class_no_vendor(self) -> None:
+        """Each planned page with no vendor drawing (#1837) that no helper compared (marked not
+        comparable, not opened, or never recorded) is said by code as "no vendor drawing to
+        compare", never "not compared". A helper's same or different stays as it said."""
+        from app.review.assistant.full_check_plan import NO_VENDOR_NOTE
+
+        engine = self.engine
+        if not self.no_vendor:
+            return
+        coverage = engine.book.coverage_map() if engine.book.coverage_used else {"pages": []}
+        status = {
+            int(e["page"]): e.get("status")
+            for e in coverage.get("pages") or []
+            if isinstance(e, Mapping) and isinstance(e.get("page"), int)
+        }
+        pages = [
+            {"page": page, "status": "not_comparable", "note": NO_VENDOR_NOTE}
+            for page in sorted(self.no_vendor)
+            if status.get(page) not in ("same", "different")
+        ]
+        if pages:
+            engine.book.set_coverage({"pages": pages}, "code")
+            engine._show_coverage()
 
     def _unfinished(self, stopped: str | None) -> tuple[list[int], list[dict[str, Any]], str]:
         """What this check did not finish (#1821): the vendor pages not compared, the red
@@ -1409,6 +1442,7 @@ class _Run:
         engine = self.engine
         settings = engine.settings
         from app.review.assistant.full_check_plan import (
+            no_vendor_pages,
             pack_ready,
             wait_for_page_map,
             with_lenses,
@@ -1466,6 +1500,7 @@ class _Run:
             # (`GV_ASSISTANT_NUMBERS_HELPER_PAGES`); the default is today's plan exactly.
             plan = with_lenses(plan, settings.numbers_pages, page_map)
         engine._plan = plan
+        self.no_vendor = no_vendor_pages(page_map, engine.book.main_file)
         # The page groups: the drawn-things helpers' (the plan's own), never the numbers'.
         groups = len({job.pages for job in plan.jobs if job.lens != "numbers"})
         # The fixed price (#1823): base + per content page the plan compares (the products in
@@ -1915,6 +1950,7 @@ class _Run:
         engine = self.engine
         planned = sorted(
             {page for job in (engine._plan.jobs if engine._plan else ()) for page in job.pages}
+            - set(self.no_vendor)  # nothing to compare there (#1837): never sent on again
         )
         coverage = engine.book.coverage_map() if engine.book.coverage_used else None
         with engine._lock:
@@ -2955,11 +2991,15 @@ class _Run:
                 and mode != "code_only"
             ):
                 extent = self._extent(vendor, architect, page_map)
-                if extent[0] in ("same_extent", "cannot_tell"):
+                faces = face_doubt(
+                    item=str(finding.get("item") or ""), words=finding_words(finding)
+                )
+                if extent[0] in ("same_extent", "cannot_tell") and faces is None:
                     # Geometry that shows different points spends no call (#1641). Where it cannot
                     # tell (a sheet not to scale), the stronger model makes the blind pick, as the
                     # simple check's blind look (#1819: a cabinet template, two planted mistakes
                     # stayed grey here and were red in the simple check).
+                    # An item naming a top's underside (#1837) is never proved by picks: no pick.
                     reply = self._blind_pick(
                         finding, vendor, architect, page_map, strong=extent[0] == "cannot_tell"
                     )
@@ -3581,6 +3621,10 @@ class _Run:
             except Exception:  # noqa: BLE001 - stored without its trust report
                 _log.exception("assistant roster trust report failed")
         engine._close_checks()
+        try:
+            self._class_no_vendor()
+        except Exception:  # noqa: BLE001 - the pages keep their helpers' coverage
+            _log.exception("assistant roster could not class the pages with no vendor drawing")
         if engine.incomplete_note is None:
             try:
                 engine.incomplete_note = self._not_for_sending()

@@ -375,6 +375,11 @@ def test_two_picks_alone_never_prove_room_context(spans: Mapping[str, str], item
     advocate = {**_AGREE, STRONG_PICK: True, "vendor_spans": spans, "architect_spans": spans}
     verdict = decide(advocate=advocate, extent=_CANNOT, item=item, **_COMMON)
     assert verdict.result == "objects" and "not the unit: confirm" in verdict.reason
-    # Where code's geometry proves the same extent, the item is judged as before.
+    # Where code's geometry proves the same extent, the item is judged as before, except an
+    # item naming an underside: the anchor fit allows the claimed difference, so it never shows
+    # which face each end stops at (#1837).
     proved = decide(advocate=advocate, extent=("same_extent", "ok"), item=item, **_COMMON)
-    assert proved.result == "passed"
+    if "underside" in item:
+        assert proved.result == "objects" and "different faces" in proved.reason
+    else:
+        assert proved.result == "passed"
