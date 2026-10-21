@@ -25,6 +25,7 @@ from app.review.assistant import dim_pairs, ocr_labels, same_ends
 from app.review.assistant import full_check_advocate as advocate
 from app.review.assistant.dim_findings import label_checks
 from app.review.assistant.dim_index import label_line
+from app.review.assistant.escalation import label_provenance
 from app.review.assistant.label_origin import OCR_ORIGINS, ocr_read
 from app.review.assistant.simple_check import verify as simple_verify
 from tests.review.assistant.test_dim_labels import _dimension, _glyphs, _line, _pdf, _text
@@ -419,6 +420,11 @@ def test_an_ocr_label_has_its_own_ink_looked_at_for_gv_colour() -> None:
     assert simple_verify._ink_check(_OCR_LABEL, None).outcome == "unknown"
     assert simple_verify._ink_check(_OCR_LABEL, lambda _label: (1, 0.0)).outcome == "pass"
     assert simple_verify._ink_check(_OCR_LABEL, lambda _label: (1, 0.9)).outcome == "fail"
+
+
+def test_a_finding_resting_on_an_ocr_label_keeps_its_origin() -> None:
+    assert label_provenance(_OCR_LABEL)["origin"] == "ocr"
+    assert "origin" not in label_provenance({**_OCR_LABEL, "origin": None})
 
 
 def test_an_ocr_label_says_how_it_was_read() -> None:

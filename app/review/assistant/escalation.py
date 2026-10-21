@@ -224,6 +224,8 @@ def _provenance(label: Mapping[str, Any]) -> dict[str, Any]:
         "side": label.get("side"),
         "orientation": label.get("orientation"),
         "box": [float(v) for v in label.get("box") or (0, 0, 0, 0)],
+        # An OCR reading (a picture's or a spot's, `label_origin`) stays one on the finding.
+        **({"origin": label["origin"]} if label.get("origin") else {}),
     }
 
 
