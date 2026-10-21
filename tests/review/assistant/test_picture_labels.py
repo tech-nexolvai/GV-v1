@@ -39,7 +39,7 @@ HALVES = [{"box": [40, 40, 530, 290], "role": "architect"}]
 def _label_picture(text: str, size: int = 24) -> Image.Image:
     font = ImageFont.load_default(size=size)
     left, top, right, bottom = font.getbbox(text)
-    image = Image.new("L", (right - left + 8, bottom - top + 8), 255)
+    image = Image.new("L", (int(right - left) + 8, int(bottom - top) + 8), 255)
     ImageDraw.Draw(image).text((4 - left, 4 - top), text, font=font, fill=0)
     return image
 
