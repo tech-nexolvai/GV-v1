@@ -2143,6 +2143,7 @@ class _Run:
                     "assistant roster proving tools failed on %s: %s",
                     finding.get("id"),
                     type(outcome.error).__name__,
+                    exc_info=outcome.error,
                 )
                 entries, reads = [_failed_entry(stage, None, None, outcome.error)], {}
                 counts[_FAILED] = counts.get(_FAILED, 0) + 1
@@ -2309,7 +2310,11 @@ class _Run:
             engine.timings.tool("verify_value")
             counts["verify_value"] = counts.get("verify_value", 0) + 1
             if isinstance(read.answer, Exception):
-                _log.warning("assistant roster proving tool failed: %s", type(read.answer).__name__)
+                _log.warning(
+                    "assistant roster proving tool failed: %s",
+                    type(read.answer).__name__,
+                    exc_info=read.answer,  # its cause, for the next look (#1850)
+                )
                 entries.append(_failed_entry(stage, side, value, read.answer))
                 counts[_FAILED] = counts.get(_FAILED, 0) + 1
                 continue

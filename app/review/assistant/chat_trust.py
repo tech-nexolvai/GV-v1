@@ -564,7 +564,11 @@ def drawn_ink_checks(
             break  # stopped, or the budget was used up: the findings after it stay unread
         if outcome.error is not None:
             # An unread side stays as it was, with the reason; the check is not complete (#1850).
-            _log.warning("assistant chat drawn-ink check failed: %s", type(outcome.error).__name__)
+            _log.warning(
+                "assistant chat drawn-ink check failed: %s",
+                type(outcome.error).__name__,
+                exc_info=outcome.error,  # its cause, for the next look (#1850)
+            )
             out[str(finding.get("id"))] = {
                 FAILED_KEY: f"{DRAWN_INK_FAILED} ({type(outcome.error).__name__})",
                 "_claims": _claims(finding),
