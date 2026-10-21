@@ -1523,7 +1523,10 @@ def _verify(
         if printed and not has_ink:
             reason = "stacked digits here that code could not put together"
             return Verified("cannot_read", "text", None, text_reads, reason, value)
-        if in_picture:
+        if in_picture and not _has_picture(read, spot):
+            # A pasted picture the vendor layer leaves out (a rectangle comment holding an image):
+            # the drawn route cannot read it either. A picture in the vendor layer (a scanned
+            # page) is read by the drawn route, so it waits for it as before.
             return Verified("cannot_read", "none", None, text_reads, _IN_PICTURE, value)
         if not printed and not has_ink and not _has_picture(read, spot):
             return Verified(
