@@ -88,6 +88,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from functools import partial
 from itertools import zip_longest
 from pathlib import Path
 from time import monotonic
@@ -2131,7 +2132,7 @@ class _Run:
             "/".join(str(len(band.pages)) for band in self.bands),
         )
         chains: list[Callable[[], None]] = [tag_chain]
-        chains += [lambda band=band: counted(band) for band in self.bands]
+        chains += [partial(counted, band) for band in self.bands]
         for failed in run_chains(chains):
             self.failed_steps.append(f"the check of {failed} ended with an error")
         final_pairs()  # a band that broke before it: the matcher's calls still end first
