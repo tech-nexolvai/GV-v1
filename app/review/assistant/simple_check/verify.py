@@ -93,6 +93,7 @@ from app.review.assistant.full_check_advocate import (
     same_extent,
 )
 from app.review.assistant.full_check_plan import read_page_map
+from app.review.assistant.label_origin import ocr_read
 from app.review.assistant.product_scope import ProductScope, named_products
 from app.review.assistant.read_number import Reading, Request
 from app.review.assistant.simple_check.schema import claimed_verdict
@@ -958,8 +959,9 @@ def _ink_check(label: Mapping[str, Any], ink: Ink | None) -> Check:
     from the vendor's own ink (`_VENDOR_INK_ROUTES`) is the vendor's, whatever GV drew over or
     around it (a yellow note covering it, a note box round it: the old box check stopped four true
     items). Any other label's own spot is looked at (`ink`, its coloured share), and so is a label
-    read inside a pasted picture (#1830): a picture is pixels, not the vendor's ink layer."""
-    if label.get("route") in _VENDOR_INK_ROUTES and label.get("origin") != "picture":
+    read by OCR from pixels (a pasted picture's, #1830, or a vector page's, #1848): pixels, not
+    the vendor's ink layer."""
+    if label.get("route") in _VENDOR_INK_ROUTES and not ocr_read(label):
         return Check("gv_ink", "pass", "read from the vendor's own ink, never GV's markup")
     measured = ink(label) if ink is not None else None
     if measured is None:

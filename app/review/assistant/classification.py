@@ -280,8 +280,12 @@ def _missing(finding: Mapping[str, Any]) -> Classified:
     shows = f"the architect shows it ({_short(finding.get('architect'), 90)})"
     searched = search_words(finding.get(VENDOR_SEARCH))
     if searched is not None:
-        found = (finding.get(VENDOR_SEARCH) or {}).get("found")
+        search = finding.get(VENDOR_SEARCH) or {}
+        found = search.get("found")
         said = "" if found == "none" else "the AI says the vendor's drawing does not show it, but "
+        # Why code did not make it a missing millwork item (`missing_items.judge`, #1847).
+        why_not = " ".join(str(search.get("not_red") or "").split())
+        searched += f"; not a red: {why_not}" if why_not else ""
         return _not(
             "not_proved",
             f"{shows}; {said}{searched}",

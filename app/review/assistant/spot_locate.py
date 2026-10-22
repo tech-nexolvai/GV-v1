@@ -171,6 +171,7 @@ def _provenance(label: Mapping[str, Any], file: str) -> dict[str, Any]:
         "route": label.get("route"),
         "side": label.get("side"),
         "box": [float(v) for v in label.get("box") or ()],
+        **({"origin": label["origin"]} if label.get("origin") else {}),
     }
 
 
