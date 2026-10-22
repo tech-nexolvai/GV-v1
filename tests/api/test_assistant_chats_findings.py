@@ -467,7 +467,9 @@ def test_a_full_check_through_the_route_shows_its_label_and_ends_with_its_two_fi
                 for page in PdfReader(io.BytesIO(archive.read(inside[1]))).pages
             )
         result = message["review_action"]
-        assert result is not None and result["words"] in letter
+        # The letter is the vendor's: it prints the result's vendor words ("Under review" for
+        # Review needed, #1858).
+        assert result is not None and result["vendor_words"] in letter
         assert result["disclaimer"].split(".")[0] in " ".join(letter.split())
         assert chat["messages"][1]["review_action"] == result
 

@@ -14,7 +14,7 @@ import { ShellSlotsContext } from '@/components/shell/shellSlots';
 import type { ChatFinding, ChatFullCheckPlan } from '@/lib/chat-api';
 import { biggestFirst, groupByArea } from '@/lib/chat-findings';
 import type { ViewMessage } from '@/lib/chat-messages';
-import { planAnswers, usePlanCheck, type PlanState } from '@/lib/chat-plan-check';
+import { planAnswers, readingWords, usePlanCheck, type PlanState } from '@/lib/chat-plan-check';
 import { ChatPage } from '@/pages/ChatPage';
 import { drivenStream, fakeChatApi, finding, OPUS } from './fixtures/chat';
 
@@ -186,3 +186,11 @@ describe('What’s wrong, biggest first (#1569)', () => {
   });
 });
 
+describe('the reading before the check (#1872)', () => {
+  it('says how many pages are read, and nothing once every page is read', () => {
+    expect(readingWords({ state: 'reading', done: 40, total: 188, unreadable: 0 })).toBe('Reading the drawings: 40 of 188 pages. The check starts when every page is read; nothing is spent while it waits.');
+    expect(readingWords({ state: 'ready', done: 188, total: 188, unreadable: 1 })).toBeNull();
+    expect(readingWords(null)).toBeNull();
+    expect(readingWords({ state: 'failed', done: 0, total: 188, unreadable: 0, why: 'page 3 could not be read' })).toBe('The drawings could not be read (page 3 could not be read).');
+  });
+});

@@ -101,12 +101,21 @@ class FullCheckProgress:
         self._stop = threading.Event()
         self._ticker: threading.Thread | None = None
         self._work: tuple[int, int] | None = None
+        self._reading: tuple[int, int] | None = None
 
     def current(self) -> dict[str, Any]:
         findings, coverage, pages = self._snapshot()
         elapsed = self._clock() - self._started
         numbers = progress_numbers(findings, coverage, pages, self._phase, elapsed)
+        if self._reading is not None and self._phase == "reading":
+            numbers["reading_done"], numbers["reading_total"] = self._reading
         return with_work(numbers, self._work, elapsed)
+
+    def set_reading(self, done: int, total: int) -> None:
+        """The drawings' pages read so far, while the check waits for them (#1872): "Reading the
+        drawings: 40 of 188 pages"."""
+        self._reading = (done, total)
+        self.changed(force=True)
 
     def set_work(self, done: int, total: int) -> None:
         """The simple full check's drawings compared so far, of the work list's (#1665)."""

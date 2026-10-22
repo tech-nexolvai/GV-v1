@@ -36,6 +36,8 @@ export function usePlanCheck(load: (() => Promise<ChatFullCheckPlan>) | undefine
             return;
           }
           setResult(plan.state === 'ready' ? { status: 'ready', plan } : { status: 'unavailable' });
+          // #1872: while the drawings are still being read, ask again so the count moves.
+          if (plan.state === 'ready' && plan.reading?.state === 'reading') timer = setTimeout(ask, pollMs);
         })
         .catch(() => {
           if (!stopped) setResult({ status: 'unavailable' });
@@ -50,6 +52,15 @@ export function usePlanCheck(load: (() => Promise<ChatFullCheckPlan>) | undefine
   }, [active, load, pollMs]);
   if (!active || !load) return { status: 'idle' };
   return result ?? { status: 'loading' };
+}
+
+/** "Reading the drawings: 40 of 188 pages" while the set is read (#1872); null once it is read. */
+export function readingWords(reading: ChatFullCheckPlan['reading']): string | null {
+  if (!reading) return null;
+  if (reading.state === 'failed') return `The drawings could not be read${reading.why ? ` (${reading.why})` : ''}.`;
+  if (reading.state !== 'reading') return null;
+  const count = reading.total ? `Reading the drawings: ${reading.done} of ${reading.total} pages.` : 'Reading the drawings…';
+  return `${count} The check starts when every page is read; nothing is spent while it waits.`;
 }
 
 /** The answers as the message body sends them, in the questions' order. */

@@ -94,7 +94,12 @@ from app.review.assistant.chat_tools import (
     named_pages,
 )
 from app.review.assistant.chat_unknowns import asks_for_the_rest, last_unknowns, work_list_note
-from app.review.assistant.full_check_plan import MAX_JOB_PAGES, read_page_map, scoped_plan
+from app.review.assistant.full_check_plan import (
+    MAX_JOB_PAGES,
+    read_page_map,
+    reading_of,
+    scoped_plan,
+)
 from app.review.assistant.live_check import LiveCheck
 from app.review.assistant.package_store import numbering
 from app.review.assistant.plan_check import (
@@ -584,6 +589,7 @@ def full_check_plan(
         return {"state": "none", "summary": None, "doubts": [], "more": 0}
     workspace = start_set_pack(workspace, chat_root, listing)
     folder = workspace.set_pack
+    reading = reading_words(folder)
     page_map = read_page_map(folder)
     if folder is None or page_map is None:
         state = read_status_state(folder)
@@ -592,6 +598,7 @@ def full_check_plan(
             "summary": None,
             "doubts": [],
             "more": 0,
+            "reading": reading,
         }
     main = main_upload(listing)
     main_file = None if main is None else str(main["name"])
@@ -617,6 +624,7 @@ def full_check_plan(
         "summary": plan_summary(page_map, main_file),
         "doubts": shown,
         "more": max(0, len(found) - MAX_DOUBTS),
+        "reading": reading,
     }
     if price is not None:
         plan, _all = scoped_plan(
@@ -630,6 +638,20 @@ def full_check_plan(
             answer["price_pages"] = plan.pages
             answer["price_usd"] = cost_text(price(plan.pages))
     return answer
+
+
+def reading_words(folder: Path | None) -> dict[str, Any] | None:
+    """The plan's `reading` (#1872): how many of the set's pages are read; `None` with no pack."""
+    reading = reading_of(folder)
+    if reading.state not in ("reading", "ready", "failed"):
+        return None
+    return {
+        "state": reading.state,
+        "done": reading.done,
+        "total": reading.total,
+        "unreadable": len(reading.unreadable),
+        "why": reading.why,
+    }
 
 
 def set_pack_state(chat_root: Path, package_id: UUID, chat_ids: Sequence[UUID] = ()) -> str | None:

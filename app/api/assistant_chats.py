@@ -294,8 +294,44 @@ def _graceful_sigterm(app: Any) -> Callable[[], None] | None:
     return undo
 
 
+#: Where the documents API finds `start_reading` (`app.state`): reading a set starts at upload.
+READING_HOOK: Final = "assistant_start_reading"
+
+
+def start_reading(app: Any, session: Session, package_id: UUID) -> None:
+    """Start reading the set's latest drawings now, in the background (#1872): its PDFs copied
+    through the front door and its set pack started (`full_check_plan`), so the pages are read
+    while the reviewer opens the chat and the plan, and a full check reuses that reading. Never
+    raises; never an AI call. Only with `GV_ASSISTANT_READ_AT_UPLOAD=true`."""
+    settings = getattr(app.state, "settings", None)
+    if not getattr(settings, "assistant_read_at_upload", False):
+        return
+    factory = _factory(session)
+    store = getattr(app.state, ARTIFACT_STORE_STATE, None)
+
+    def run() -> None:
+        try:
+            with factory() as own:
+                revision_id = _latest_revision_id(own, package_id)
+            full_check_plan(
+                _chat_root(app),
+                package_id,
+                _upload_sources(factory, store, package_id, revision_id),
+                lambda page: f"/api/v1/packages/{package_id}/plan-pages/{page}",
+            )
+        except Exception as failed:  # noqa: BLE001 - the plan check or a chat starts it later
+            _log.warning("assistant reading could not start at upload: %s", type(failed).__name__)
+
+    threading.Thread(target=run, name="assistant-start-reading", daemon=True).start()
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    setattr(
+        app.state,
+        READING_HOOK,
+        lambda session, package_id: start_reading(app, session, package_id),
+    )
     threading.Thread(
         target=_recover_at_start, args=(app,), name="assistant-chat-recover", daemon=True
     ).start()
