@@ -486,12 +486,7 @@ def _read_page(path: Path, page_index: int) -> _Page:
                 return cached
         colour_rule = combined_sheet_at(path)
         vendor = vendor_page_at(path, page_index)
-        pool = _parse_pool()
-        if pool is None:
-            chars, paths, pictures, size = _parse_page(vendor, colour_rule)
-        else:
-            # A big set's checks parse many pages: in worker processes, beside each other (#1874).
-            chars, paths, pictures, size = pool.submit(_parse_page, vendor, colour_rule).result()
+        chars, paths, pictures, size = _parsed(vendor, colour_rule)
         result = _Page(key, vendor, chars, paths, pictures, size, colour_rule)
         with _CACHE_LOCK:
             _PAGE_CACHE[key] = result
@@ -499,6 +494,27 @@ def _read_page(path: Path, page_index: int) -> _Page:
                 old, _ = _PAGE_CACHE.popitem(last=False)
                 _PAGE_LOCKS.pop(old, None)
         return result
+
+
+def _parsed(vendor: bytes, colour_rule: bool) -> tuple[
+    tuple[_Char, ...],
+    tuple[_Path, ...],
+    tuple[tuple[float, float, float, float], ...],
+    tuple[float, float],
+]:
+    """`_parse_page` in a worker process when the server asks for them (#1874: a big set's checks
+    parse many pages, beside each other); on this thread otherwise, or when the workers broke
+    (then from now on: the check never fails for its helpers)."""
+    pool = _parse_pool()
+    if pool is not None:
+        try:
+            return pool.submit(_parse_page, vendor, colour_rule).result()  # type: ignore[no-any-return]
+        except Exception as failed:  # noqa: BLE001 - parsed here instead, the workers stopped
+            _log.warning(
+                "verify_value page workers failed, parsing here: %s", type(failed).__name__
+            )
+            use_parse_processes(0)
+    return _parse_page(vendor, colour_rule)
 
 
 def _parse_page(vendor: bytes, colour_rule: bool) -> tuple[

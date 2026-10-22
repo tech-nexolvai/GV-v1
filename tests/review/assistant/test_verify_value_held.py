@@ -44,3 +44,20 @@ def test_a_page_parsed_in_a_worker_process_reads_the_same(tmp_path: Path) -> Non
     assert there.chars == here.chars and there.paths == here.paths
     assert there.size == here.size and there.pictures == here.pictures
     assert any(char.text for char in there.chars)
+
+
+def test_a_broken_worker_pool_never_fails_a_check(tmp_path: Path) -> None:
+    path = _sheet(tmp_path / "c.pdf", _dimension(100, 300, 200, '24"', BLUE))
+
+    class _Broken:
+        def submit(self, *_args: object) -> None:
+            raise RuntimeError("the workers stopped")
+
+        def shutdown(self, wait: bool = True) -> None:
+            del wait
+
+    vv.use_parse_processes(2)
+    vv._PARSE_POOL = _Broken()
+    page = vv._read_page(path, 0)
+    assert any(char.text for char in page.chars)
+    assert vv._PARSE_WORKERS == 0 and vv._PARSE_POOL is None  # parsed here from now on
