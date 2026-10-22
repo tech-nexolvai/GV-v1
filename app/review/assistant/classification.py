@@ -56,7 +56,12 @@ The rules, in the order they are applied:
 - **R8, different reference points** (the underside against the top of the counter): not directly
   comparable.
 - **R9, the vendor's value is unreadable** after the whole escalation ladder: code looked at its
-  spot and could not read it. A value with no spot on the drawing (an older stored record that
+  spot and could not read it. Never said of words (#1859): a note or model in words is "a note in
+  words" (code compares sizes and tags, not notes), a tag is compared by the tag reader
+  (`tag_reader`: "tags differ", or the tag not confirmed at its spot), and words code cannot read
+  because they are drawn as pen strokes are "words drawn as strokes". A vendor value that is GV's
+  own sticker over the vendor's ink (`gv_stickers`) is never the vendor's: "GV's sticker", with
+  what code reads of the vendor's own value under it. A value with no spot on the drawing (an older stored record that
   carries a value but no box or label, which `spot_locate` could not place) was never looked at:
   it is Not compared as `no_spot` ("the value has no spot on the drawing"), never "Illegible"
   (#1738).
@@ -80,6 +85,7 @@ from app.review.assistant.rule_notes import RuleNote, rule_note_of
 from app.review.assistant.spot_locate import VENDOR_SEARCH, search_words, spot_words
 
 __all__ = [
+    "GV_STICKER",
     "PROTOTYPE_REFERENCE",
     "PROTOTYPE_REFERENCE_WORDS",
     "READER_ERROR",
@@ -119,6 +125,11 @@ type Reason = Literal[
     "round_only",
     "prototype_only",
     "internal",
+    "gv_sticker",
+    "tags_differ",
+    "tag_unconfirmed",
+    "words",
+    "stroke_words",
 ]
 
 #: The Not-compared reasons, in the order the list and the summary give them.
@@ -128,9 +139,14 @@ REASONS: Final[tuple[Reason, ...]] = (
     "no_overall",
     "string_not_verified",
     "different_reference",
+    "gv_sticker",
     "unreadable",
+    "stroke_words",
     "no_spot",
     "ai_unsure",
+    "tags_differ",
+    "tag_unconfirmed",
+    "words",
     "architect_disagrees",
     "missing_setting",
     "architect_outside_gv_rule",
@@ -168,6 +184,11 @@ REASON_WORDS: Final[Mapping[str, str]] = {
     "round_only": "compared only with the vendor's earlier round, not the architect",
     "prototype_only": "matches the brand prototype only (reference only)",
     "internal": "read by the AI only, never at its spot (GV's reviewer only)",
+    "gv_sticker": "GV's sticker covers the vendor's value",
+    "tags_differ": "tags differ (confirm the vendor's code maps to the architect's)",
+    "tag_unconfirmed": "tag not confirmed by code against the architect's",
+    "words": "a note in words, not a size",
+    "stroke_words": "words drawn as strokes (code cannot read them yet)",
 }
 #: The trade's own words for each reason (industry review, topic 5), shown next to ours on the
 #: Not-compared list, the workbook and the screen.
@@ -192,6 +213,11 @@ TRADE_WORDS: Final[Mapping[str, str]] = {
     "round_only": "Not reviewed: compared with the vendor's earlier round only",
     "prototype_only": "Not reviewed: brand prototype (reference only)",
     "internal": "Internal: read but not recorded at its spot",
+    "gv_sticker": "Not reviewed: under GV's sticker",
+    "tags_differ": "Not reviewed: confirm the tag",
+    "tag_unconfirmed": "Not reviewed: tag not confirmed",
+    "words": "Not reviewed: note in words",
+    "stroke_words": "Illegible: words drawn as strokes",
 }
 #: The rule each reason comes from.
 _RULES: Final[Mapping[str, str]] = {
@@ -215,6 +241,11 @@ _RULES: Final[Mapping[str, str]] = {
     "round_only": "R4",
     "prototype_only": "R1",
     "internal": "R9",
+    "gv_sticker": "R9",
+    "tags_differ": "R4",
+    "tag_unconfirmed": "R4",
+    "words": "R4",
+    "stroke_words": "R9",
 }
 #: The architect's drawing points to the brand standard: the prototype is then its intent (R1).
 _POINTS_TO_PROTOTYPE: Final = re.compile(
@@ -383,6 +414,65 @@ def _page(finding: Mapping[str, Any]) -> object:
 #: A finding one of whose numbers a code reader failed to read (it raised, #1850): the reason.
 READER_ERROR: Final = "reader_error"
 READER_ERROR_WORDS: Final = "the number could not be read (reader error)"
+#: A finding whose vendor value is one of GV's stickers (`gv_stickers`, set by `escalation`): its
+#: page, box, text, and the vendor's own value code reads under it (`under`, or `None`, `how`).
+GV_STICKER: Final = "gv_sticker"
+#: What the tag reader read and decided (`tag_reader.TAG_READ`, set by `escalation`).
+_TAG_READ: Final = "tag_read"
+
+
+def _sticker(finding: Mapping[str, Any]) -> Classified | None:
+    """A vendor value that is GV's sticker (#1859): never the vendor's."""
+    sticker = finding.get(GV_STICKER)
+    if not isinstance(sticker, Mapping):
+        return None
+    page = sticker.get("page") or finding.get("page")
+    said = _short(sticker.get("text") or finding.get("vendor"), 40)
+    under = _short(sticker.get("under"), 40)
+    why = (
+        f"the value read ({said}) is GV's sticker on page {page}, not the vendor's: under GV's "
+        f"sticker the vendor prints {under}"
+        if under
+        else f"the value read ({said}) is GV's sticker on page {page}, not the vendor's; code has "
+        f"not read the vendor's own value under it yet ({_short(sticker.get('how'), 90)})"
+    )
+    return _not(
+        "gv_sticker",
+        why,
+        f"the vendor's own value under GV's sticker on page {page}, read by code (or on the next "
+        "round)",
+    )
+
+
+def _tag_read(finding: Mapping[str, Any]) -> Classified | None:
+    """The tag reader's Not compared (#1859), with its own reason and words."""
+    read = finding.get(_TAG_READ)
+    if not isinstance(read, Mapping) or read.get("outcome") != "not_compared":
+        return None
+    reason = read.get("reason")
+    if reason not in _RULES:
+        return None
+    return _not(
+        reason,  # type: ignore[arg-type]
+        _short(read.get("why"), 240) or REASON_WORDS[str(reason)],
+        _short(read.get("settle"), 200) or "the item compared by code at both spots",
+    )
+
+
+def _words_item(finding: Mapping[str, Any]) -> Classified | None:
+    """A vendor side in words, not a size, that would be "Illegible": a note in words (#1859)."""
+    vendor = _flat(finding.get("vendor"))
+    if not re.search(r"[A-Za-z]{2,}", vendor) or _UNREAD_WORDS.search(vendor):
+        return None
+    checks = finding.get("checks") if isinstance(finding.get("checks"), Mapping) else {}
+    if (checks or {}).get("printed_vendor") != "not_a_number" and _ONE_SIZE.search(vendor):
+        return None
+    return _not(
+        "words",
+        f'a note in words, not a size: vendor "{_short(vendor, 60)}", architect '
+        f'"{_short(finding.get("architect"), 60)}"; code compares sizes, and tags by the tag reader',
+        "a person reads the two notes (or a tag code can compare)",
+    )
 
 
 def _not(
@@ -569,7 +659,7 @@ def _unproved(finding: Mapping[str, Any]) -> Classified:
             f"the label the vendor's value is printed at on page {page}",
         )
     if not _vendor_read(finding):
-        return _not(
+        return _words_item(finding) or _not(
             "unreadable",
             f"could not read the vendor's value on page {page}{_unread_detail(finding)}",
             f"a legible value on page {page} (or on the next round)",
@@ -734,7 +824,7 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
                 f"the vendor's value: the value has no spot on the drawing (page {page})",
                 f"the label the vendor's value is printed at on page {page}",
             )
-        return _not(
+        return _words_item(finding) or _not(
             "unreadable",
             f"could not read the vendor's value on page {page}{_unread_detail(finding)}",
             f"a legible value on page {page} (or on the next round)",
@@ -952,6 +1042,10 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
                 "drawing for it; kept for GV's reviewer only"
             )
         return _not("internal", why, "both values read at their spots on the drawings")
+    # GV's sticker is never the vendor's value, whatever it was compared with (#1859).
+    sticker = _sticker(finding)
+    if sticker is not None:
+        return sticker
     reference = _reference_problem(finding)
     if reference is not None:
         return reference
@@ -964,6 +1058,10 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
             READER_ERROR_WORDS,
             "both values read at their spots on the drawings",
         )
+    # The tag reader's own reason stands (#1859).
+    held = _tag_read(finding)
+    if held is not None:
+        return held
     source = str(finding.get("source") or "")
     parts = finding.get("architect_parts")
     if status in ("different", "check") and isinstance(parts, Mapping):

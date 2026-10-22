@@ -4786,7 +4786,7 @@
             "type": "string"
           },
           "step": {
-            "description": "labels, under_markup, same_item, vendor_sums, notes or pairs (cheapest first).",
+            "description": "gv_sticker or tags (before the ladder, #1859); labels, under_markup, same_item, vendor_sums, notes or pairs (cheapest first).",
             "title": "Step",
             "type": "string"
           }
@@ -5556,7 +5556,12 @@
                   "outside_gv_rule",
                   "round_only",
                   "prototype_only",
-                  "internal"
+                  "internal",
+                  "gv_sticker",
+                  "tags_differ",
+                  "tag_unconfirmed",
+                  "words",
+                  "stroke_words"
                 ],
                 "type": "string"
               },

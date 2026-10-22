@@ -724,6 +724,11 @@ class ChatFindingProofOut(BaseModel):
             "round_only",
             "prototype_only",
             "internal",
+            "gv_sticker",
+            "tags_differ",
+            "tag_unconfirmed",
+            "words",
+            "stroke_words",
         ]
         | None
     ) = Field(default=None, description="not_compared: the reason (the list's group).")
@@ -747,7 +752,8 @@ class ChatFindingEscalationStepOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     step: str = Field(
-        description="labels, under_markup, same_item, vendor_sums, notes or pairs (cheapest first)."
+        description="gv_sticker or tags (before the ladder, #1859); labels, under_markup, "
+        "same_item, vendor_sums, notes or pairs (cheapest first)."
     )
     outcome: str = Field(description="read, proved, folded or no_change.")
     how: str = Field(description="What code did and found, in one plain line.")
