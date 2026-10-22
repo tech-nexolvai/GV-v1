@@ -59,11 +59,16 @@ __all__ = [
     "MIN_JOB_PAGES",
     "NO_VENDOR_NOTE",
     "PAGE_MAP_WAIT_SECONDS",
+    "UNPAIRED_NEEDS",
+    "UNPAIRED_NOTE",
+    "UNPAIRED_RETRY_NOTE",
+    "UNPAIRED_WARN_SHARE",
     "CrossPairs",
     "FanOutPlan",
     "HelperJob",
     "Reading",
     "drawn_job_cap",
+    "mostly_unpaired",
     "no_vendor_pages",
     "pack_ready",
     "pair_lines",
@@ -73,6 +78,7 @@ __all__ = [
     "reading_of",
     "rules_summary",
     "scoped_plan",
+    "unpaired_words",
     "wait_for_page_map",
     "wait_for_reading",
     "with_lenses",
@@ -677,9 +683,75 @@ def pair_lines(
         lines.append(
             "NOT PAIRED (no architect drawing of the same piece could be agreed on): "
             f"{left}. Do not pick an architect drawing for these pages yourself (a wrong pair "
-            "makes false differences): record each one Not compared with that reason."
+            "makes false differences) and compare nothing on them with an architect: record "
+            "each one Not compared with that reason. Still do the checks that need no "
+            "architect there: record each vendor dimension string (its parts and its printed "
+            "overall) as usual."
         )
     return lines
+
+
+# ---- pages no architect drawing could be paired with (#1885) --------------------------------------
+
+#: More than this share of the vendor pages the check compares with no architect drawing paired
+#: across the uploads (#1885): the summary says so in its first line. Past half, the check can never
+#: be a complete one and the cause is almost always the set itself (the architect's file is for
+#: another job, or lacks these items), which only the reviewer can fix; under half, the unpaired
+#: pages are listed in the Not-compared list like any other page that could not be compared.
+UNPAIRED_WARN_SHARE: Final = 0.5
+#: An unpaired page's coverage note: final, not "open".
+UNPAIRED_NOTE: Final = "Not compared with the architect: no architect drawing found for it ({why})"
+#: A page whose pairing did not finish (the page matcher had no answer): Continue asks again.
+UNPAIRED_RETRY_NOTE: Final = (
+    "not compared with the architect: no architect drawing paired with it yet ({why}); Continue "
+    "asks again"
+)
+#: An unpaired page's line in the Not-compared list (the set's rows): what would settle it.
+UNPAIRED_NEEDS: Final = (
+    "the architect's drawing of this item: upload it, or check that the architect's file is for "
+    "the same project"
+)
+
+#: The pairing's reasons in plain words, for the reviewer's screen and the files (vendor-facing:
+#: never "AI", never code's drawing ids). The first pattern that matches gives the words.
+_UNPAIRED_PLAIN: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
+    (
+        re.compile(r"no architect drawing to pair it with", re.IGNORECASE),
+        "the architect's file has no drawing to pair it with",
+    ),
+    (
+        re.compile(r"ruled out|found no architect drawing of the same item", re.IGNORECASE),
+        "no drawing of the same item was found in the architect's file",
+    ),
+    (
+        re.compile(r"prints its dimensions|too few dimensions", re.IGNORECASE),
+        "no architect drawing prints its dimensions",
+    ),
+    (
+        re.compile(r"match its dimensions equally", re.IGNORECASE),
+        "two architect drawings match it equally",
+    ),
+    (
+        re.compile(r"code found no clear architect drawing", re.IGNORECASE),
+        "no architect drawing could be identified for it",
+    ),
+)
+_UNPAIRED_DEFAULT: Final = "the architect's drawing of this item could not be identified for sure"
+
+
+def unpaired_words(reason: str) -> str:
+    """A pairing reason (`pairing.UNPAIRED`: ...) in plain words: "no drawing of the same item was
+    found in the architect's file", never the matcher's or code's working words."""
+    for pattern, words in _UNPAIRED_PLAIN:
+        if pattern.search(reason or ""):
+            return words
+    return _UNPAIRED_DEFAULT
+
+
+def mostly_unpaired(unpaired: int, pages: int) -> bool:
+    """Whether more than `UNPAIRED_WARN_SHARE` of the `pages` compared have no architect drawing
+    paired with them (#1885): the summary then says so first, in plain words."""
+    return pages > 0 and unpaired > pages * UNPAIRED_WARN_SHARE
 
 
 def drawn_job_cap(jobs: int) -> int:

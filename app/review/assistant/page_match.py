@@ -768,6 +768,11 @@ class MatchRun:
             pair.vendor.ref: (pair.vendor.own_page if pair.vendor.file == work.file else None)
             for pair in todo
         }
+        #: Each asked drawing's page in the vendor's file (fixed): `unanswered_pages` reads it.
+        self._page_of: dict[str, int | None] = dict(self._pending)
+        #: The drawings the matcher left with no saved answer (a failed call, the money, a stop,
+        #: the matcher broke): their pages are not decided for good (#1885), Continue asks again.
+        self._unanswered: set[str] = set()
         self.total = len(self._pending)
         #: The vendor's pages the matcher is asked about (fixed): a helper comparing any of them
         #: waits for their answers (`wait_pages`); every other page is decided already.
@@ -824,15 +829,28 @@ class MatchRun:
         finally:
             with self._cond:
                 if self._pending:
+                    self._unanswered.update(self._pending)
                     self._pending.clear()
                     self._fresh = False
                 self._cond.notify_all()
 
     def _answered(self, ref: str) -> None:
+        # Told for every drawing, answered or left to code: one with no saved answer is noted.
+        saved = ref in load_answers(self.folder)
         with self._cond:
+            if not saved:
+                self._unanswered.add(ref)
             if self._pending.pop(ref, False) is not False:
                 self._fresh = False
             self._cond.notify_all()
+
+    def unanswered_pages(self) -> frozenset[int]:
+        """The vendor's pages with a drawing the matcher left with no answer (#1885): code
+        decided them alone this time, so they are not unpaired for good."""
+        with self._cond:
+            return frozenset(
+                page for ref in self._unanswered if (page := self._page_of.get(ref)) is not None
+            )
 
     def wait_pages(self, pages: Sequence[int], cancel: threading.Event | None = None) -> CrossPairs:
         """The pairs once none of `pages` waits for the matcher any more (or the check stops)."""
