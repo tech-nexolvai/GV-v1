@@ -65,6 +65,7 @@ specialists design (local), decision D1 (vault, 2026-10-18).
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -124,6 +125,7 @@ from app.review.assistant.impact import by_impact
 from app.review.assistant.reply_json import json_of_reply, log_unreadable, object_of_reply
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.untrusted import fence
+from app.review.assistant.work_pool import code_workers, run_ordered
 
 if TYPE_CHECKING:
     from app.review.assistant.chat_engine import ChatEngine, MessageOutcome
@@ -279,6 +281,60 @@ _NOTE_CHARS: Final = 1_500
 _NOTES_CHARS: Final = 7_000
 _SALVAGE_WHY: Final = 400
 _SUMMARY_PROMPT_ID: Final = "review-assistant-chat-summary-{provider}-{harness}"
+
+
+#: The proving step's count of reads that raised (#1850), never a tool name.
+_FAILED: Final = "_failed"
+
+
+def _failed_entry(
+    stage: str, side: str | None, value: str | None, error: BaseException
+) -> dict[str, Any]:
+    """A proving read that raised, kept on the item with its reason (#1850)."""
+    return {
+        "stage": stage,
+        "side": side,
+        "tool": "verify_value",
+        "value": value,
+        "result": "cannot_read",
+        "route": "none",
+        "read": None,
+        "words": f"{classification.READER_ERROR_WORDS}: {type(error).__name__}",
+        "failed": True,
+    }
+
+
+#: The set pack's files `read_number` reads besides the drawing (its labels, halves and scales).
+_LABEL_FILES: Final = ("dims.json", "scales.json", "page_map.json")
+
+
+def _label_files(pack: Path | None) -> tuple[tuple[str, int, int], ...]:
+    """The pack's label files as they are now (name, size, time written): a proving read made
+    before one of them changed is read again."""
+    if pack is None:
+        return ()
+    out: list[tuple[str, int, int]] = []
+    for name in _LABEL_FILES:
+        try:
+            stat = (pack / name).stat()
+        except OSError:
+            continue
+        out.append((name, stat.st_size, stat.st_mtime_ns))
+    return tuple(out)
+
+
+@dataclass(frozen=True, slots=True)
+class _SideRead:
+    """One side of a red candidate as the proving step read it (`_read_sides`): its value, its
+    spot and `verify_value`'s answer there, or the error the tool raised."""
+
+    side: str
+    key: str
+    value: str
+    name: str
+    page: int
+    coords: tuple[float, ...]
+    answer: dict[str, Any] | Exception
 
 
 # ---- the price ---------------------------------------------------------------------------------------
@@ -1144,6 +1200,13 @@ class _Run:
     #: What the finishing steps need (#1821), by step (`NEED_STEPS`), from the red candidates when
     #: last worked out (`_refresh_needs`): kept before any extra pass spends.
     needs: dict[str, int] = field(default_factory=dict)
+    #: The proving reads already made this run (#1850), by spot, value, side and the pack's label
+    #: files: the same read is never made twice (the look-again's, or one read ahead).
+    proof_reads: dict[tuple[Any, ...], dict[str, Any]] = field(default_factory=dict)
+    proof_reads_lock: threading.Lock = field(default_factory=threading.Lock)
+    #: The proving reads made ahead while the AI steps run (`_read_ahead`), and how to stop them.
+    _ahead: threading.Thread | None = None
+    _ahead_stop: threading.Event = field(default_factory=threading.Event)
 
     # -- money --
 
@@ -1594,6 +1657,7 @@ class _Run:
                 self._apply_tags(tag_reports)
             engine._queue_second_reads(engine.book.live())
             if not engine.cancel.is_set():
+                self._read_ahead()
                 self._gap_closers(page_map, rules, pictures)
         finally:
             engine.helper_ceiling = None
@@ -1606,8 +1670,10 @@ class _Run:
                 self._lead_review(page_map)
         engine._wait_checks()
         if not engine.cancel.is_set():
+            self._read_ahead()  # the lead review's items too
             # Code, not the lead's guess about money, sends on what is still not compared (#1817).
             self._after_lead(page_map)
+        self._end_read_ahead()
         self._note_left_open()
         engine._wait_checks()
         if not engine.cancel.is_set():
@@ -2055,11 +2121,34 @@ class _Run:
             and (only is None or str(f["id"]) in only)
         ]
         counts: dict[str, int] = {}
+        if self.chat_proofs is None:
+            from app.review.assistant import set_proofs
+
+            self.chat_proofs = set_proofs.load(tools.workspace.set_pack)
         started = monotonic()
-        for finding in candidates:
-            if engine.cancel.is_set() or monotonic() - started > _PROOF_BUDGET_S:
-                break
-            entries, reads = self._prove_one(tools, finding, stage, counts)
+
+        def read(finding: dict[str, Any]) -> list[_SideRead] | None:
+            # The budget is looked at as each item starts, in order, as the old loop did.
+            if monotonic() - started > _PROOF_BUDGET_S:
+                return None
+            return self._read_sides(tools, finding)
+
+        # The reads run on code's pool (#1850); each item's answer is applied in the old order.
+        done = run_ordered(candidates, read, stop=engine.cancel.is_set, name="gv-provers")
+        for finding, outcome in zip(candidates, done, strict=True):
+            if not outcome.ran or (outcome.error is None and outcome.value is None):
+                break  # stopped, or the budget was used up: the items after it are not read
+            if outcome.error is not None:
+                _log.warning(
+                    "assistant roster proving tools failed on %s: %s",
+                    finding.get("id"),
+                    type(outcome.error).__name__,
+                    exc_info=outcome.error,
+                )
+                entries, reads = [_failed_entry(stage, None, None, outcome.error)], {}
+                counts[_FAILED] = counts.get(_FAILED, 0) + 1
+            else:
+                entries, reads = self._proved(tools, outcome.value or [], stage, counts)
             if not entries:
                 continue
 
@@ -2078,9 +2167,16 @@ class _Run:
                 current["proof_tools"] = [*(current.get("proof_tools") or []), *entries][
                     -_PROOF_ENTRIES:
                 ]
+                if any(entry.get("failed") for entry in entries):
+                    # A reader raised on one of its numbers: Not compared, said why (#1850).
+                    current[classification.READER_ERROR] = classification.READER_ERROR_WORDS
                 return current
 
             engine._update_finding(str(finding["id"]), change)
+        failed = counts.pop(_FAILED, 0)
+        if failed:
+            # Each is Not compared with the reason (#1850); one read is not a broken step.
+            _log.warning("assistant roster proving reads failed (%s): %d", stage, failed)
         self.tool_calls[stage] = {
             name: self.tool_calls.get(stage, {}).get(name, 0) + n for name, n in counts.items()
         }
@@ -2092,19 +2188,13 @@ class _Run:
         )
         return counts
 
-    def _prove_one(
-        self, tools: Any, finding: Mapping[str, Any], stage: str, counts: dict[str, int]
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """One red candidate's two values through the proving tools: the entries to keep on it
-        and each side's new `verify_<side>` answer (only a side with a spot)."""
-        from app.review.assistant import set_proofs
-        from app.review.assistant.finding_checks import claim_value, to_inches
+    def _read_sides(self, tools: Any, finding: Mapping[str, Any]) -> list[_SideRead]:
+        """One red candidate's two values read by the proving tools (on a pool thread, #1850):
+        each side with a number and a spot, and `verify_value`'s answer there (or the error it
+        raised). Reads only: what the answers mean is `_proved`'s, on the caller's thread."""
+        from app.review.assistant.finding_checks import claim_value
 
-        engine = self.engine
-        entries: list[dict[str, Any]] = []
-        reads: dict[str, Any] = {}
-        if self.chat_proofs is None:
-            self.chat_proofs = set_proofs.load(engine.tools.workspace.set_pack)
+        found: list[_SideRead] = []
         for side, box_key, key in _PROOF_SIDES:
             value = claim_value(finding.get(side))
             box = finding.get(box_key)
@@ -2118,12 +2208,117 @@ class _Run:
                 if box.get("file"):
                     spot["file"] = str(box["file"])
                 name, page, coords, _label = tools._crop_request(spot, 0)
-                engine.timings.tool("verify_value")
-                counts["verify_value"] = counts.get("verify_value", 0) + 1
-                answer = tools.verify_answer(name, page, coords, value, side)
             except Exception as failed:  # noqa: BLE001 - one side not read never stops the rest
                 _log.info("assistant roster proving tool not run: %s", type(failed).__name__)
                 continue
+            try:
+                answer: dict[str, Any] | Exception = self._verify(
+                    tools, name, page, coords, value, side
+                )
+            except Exception as failed:  # noqa: BLE001 - one side not read never stops the rest
+                answer = failed
+            found.append(_SideRead(side, key, value, name, page, coords, answer))
+        return found
+
+    def _verify(
+        self, tools: Any, name: str, page: int, coords: tuple[float, ...], value: str, side: str
+    ) -> dict[str, Any]:
+        """`verify_answer` at one spot, made once per run (#1850): the same spot, value and side,
+        while the pack's label files are unchanged, gives the answer already read (the tools read
+        the drawing itself: the same answer every time for the same file)."""
+        key = (name, page, tuple(coords), value, side, _label_files(tools.workspace.set_pack))
+        with self.proof_reads_lock:
+            known = self.proof_reads.get(key)
+        if known is not None:
+            return copy.deepcopy(known)
+        answer = dict(tools.verify_answer(name, page, coords, value, side))
+        with self.proof_reads_lock:
+            self.proof_reads[key] = copy.deepcopy(answer)
+        return answer
+
+    def _read_ahead(self) -> None:
+        """While the AI steps run (the gap closers, the verifier, the lead review), the proving
+        step's reads of today's red candidates are made ahead on a spare thread or two (#1850):
+        only reads, kept by `_verify`; the proving step itself still runs later on the final items
+        and applies each answer then, so nothing an AI step sees changes. A read ahead that was
+        running is stopped first (what it read is kept). Off with one code worker."""
+        engine = self.engine
+        self._end_read_ahead()
+        workers = code_workers() // 2
+        if workers < 1 or engine.cancel.is_set() or engine.tools.workspace.set_pack is None:
+            return
+        candidates = [
+            dict(f)
+            for f in by_impact(engine.book.live())
+            if f.get("status") == "different" and not _judged(f)
+        ]
+        if not candidates:
+            return
+        tools = engine.tools
+        stop = threading.Event()
+        self._ahead_stop = stop
+
+        def read(finding: dict[str, Any]) -> None:
+            self._read_sides(tools, finding)
+
+        def ahead() -> None:
+            try:
+                with engine.timings.phase("provers_ahead"):
+                    run_ordered(
+                        candidates,
+                        read,
+                        workers=workers,
+                        stop=lambda: stop.is_set() or engine.cancel.is_set(),
+                        name="gv-provers-ahead",
+                    )
+            except Exception:  # noqa: BLE001 - the proving step reads what is missing itself
+                _log.exception("assistant roster proving reads ahead failed")
+
+        self._ahead = threading.Thread(target=ahead, name="gv-provers-ahead", daemon=True)
+        self._ahead.start()
+
+    def _end_read_ahead(self) -> None:
+        """Stops the reads ahead (each running read ends) and waits for them."""
+        ahead = self._ahead
+        if ahead is None:
+            return
+        self._ahead_stop.set()
+        ahead.join()
+        self._ahead = None
+
+    def _proved(
+        self, tools: Any, sides: Sequence[_SideRead], stage: str, counts: dict[str, int]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """One red candidate's read sides, in order: the entries to keep on it and each side's
+        new `verify_<side>` answer (only a side with a spot). The tool counts, the chat proofs
+        and the proof listener, as the one-at-a-time loop had them."""
+        from app.review.assistant import set_proofs
+        from app.review.assistant.finding_checks import to_inches
+
+        engine = self.engine
+        entries: list[dict[str, Any]] = []
+        reads: dict[str, Any] = {}
+        for read in sides:
+            side, key, value, name, page, coords = (
+                read.side,
+                read.key,
+                read.value,
+                read.name,
+                read.page,
+                read.coords,
+            )
+            engine.timings.tool("verify_value")
+            counts["verify_value"] = counts.get("verify_value", 0) + 1
+            if isinstance(read.answer, Exception):
+                _log.warning(
+                    "assistant roster proving tool failed: %s",
+                    type(read.answer).__name__,
+                    exc_info=read.answer,  # its cause, for the next look (#1850)
+                )
+                entries.append(_failed_entry(stage, side, value, read.answer))
+                counts[_FAILED] = counts.get(_FAILED, 0) + 1
+                continue
+            answer = read.answer
             if answer.get("read_again"):
                 engine.timings.tool("read_number")
                 counts["read_number"] = counts.get("read_number", 0) + 1
@@ -3746,7 +3941,11 @@ def _code_pairs(engine: ChatEngine) -> dict[str, str]:
 def run(engine: ChatEngine) -> MessageOutcome | None:
     """A full check as the fixed-price roster (see the module). `None`: there is no page map to
     plan from, so the lead plans as before, under the price of the set's pages (#1823)."""
-    ended = _Run(engine).run()
+    roster = _Run(engine)
+    try:
+        ended = roster.run()
+    finally:
+        roster._end_read_ahead()  # never left reading after the check ends (#1850)
     if ended is None:
         rule = engine.settings.price_rule
         set_price(engine, rule.price(engine.tools.page_count, price_bound(engine)))

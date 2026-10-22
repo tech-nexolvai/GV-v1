@@ -193,6 +193,7 @@ from app.review.assistant.chat_tools import (
 )
 from app.review.assistant.chat_trust import (
     CHECKS_MODULE,
+    FAILED_KEY,
     REVISION_DIFF_MODULE,
     SECOND_READ_MODULE,
     Recorded,
@@ -2709,10 +2710,15 @@ class ChatEngine:
             # The simple full check makes no second or third reads and has no critic: its two AI
             # roles are the compare call and the blind look (CONTRACT-SIMPLE).
             skipped = 0 if self._simple else self._post_checks()
+        inks = drawn.result()
         with self.finding_lock:
-            for inked in with_drawn_ink(book.live(), drawn.result()):
+            for inked in with_drawn_ink(book.live(), inks):
                 if book.replace(inked):
                     self._show_finding(inked)
+        failed = sum(1 for answer in inks.values() if FAILED_KEY in answer)
+        if failed:
+            # Those items are Not compared, with the reason (#1850); one read is not a step.
+            _log.warning("assistant chat drawn-ink reads failed on %d findings", failed)
         with self.timings.phase("finish_checks"):
             self._finish_trust(skipped)
 
