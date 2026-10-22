@@ -186,7 +186,7 @@ SHARES: Final[Mapping[str, float]] = {
 #: The phases whose money the page helpers and gap closers may never spend (#1641): the paid run
 #: of 2026-10-19 let its helpers take $5.31 of a $5 price, so the devil's advocate made no call
 #: and no AI-found difference could be proved. The engine's `helper_ceiling` keeps them.
-PROTECTED: Final = ("provers", "advocate", "lead", "round_picks", "escalation", "summary", "reads")
+PROTECTED: Final = ("provers", "advocate", "lead", "escalation", "summary", "reads")
 #: The later steps in the order they run (#1805): each may take all that is left under the price
 #: except the shares of the steps after it. The second reads run alongside everything, so their
 #: share (and the summary's) is kept to the end.
@@ -421,7 +421,7 @@ class PricePlan:
 
     def protected(self) -> int:
         """The money the page helpers and gap closers may never spend (`PROTECTED`)."""
-        return sum(self.budgets.get(name, 0) for name in PROTECTED)
+        return sum(self.budgets[name] for name in PROTECTED)
 
 
 def scaled_cap(name: str, price: int) -> int:
@@ -1715,9 +1715,9 @@ class _Run:
         # The page helpers and the gap closers never spend the later checks' money (#1641), nor
         # what the finishing steps need for the red candidates already there (#1821).
         self._refresh_needs("helpers")
-        protected = sum(
-            max(self.plan.budgets.get(name, 0), self.needs.get(name, 0)) for name in PROTECTED
-        )
+        protected = sum(max(self.plan.budgets[name], self.needs.get(name, 0)) for name in PROTECTED)
+        # The cheap round picks have no share of the price: what they need is kept too (#1861).
+        protected += self.needs.get(ROUND_PHASE, 0)
         engine.helper_ceiling = engine.spent + max(0, price - protected)
         try:
             entries = self._launched(agents, on_done=engine._helper_done)
