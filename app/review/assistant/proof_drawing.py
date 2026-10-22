@@ -169,12 +169,13 @@ _ROUND_KEY: Final = "_round_two"
 #: The small heading on each sheet with clouds.
 _SHEET_STAMP_SIZE: Final = 9.0
 #: The review result's colour on the cover (#1622): red to resubmit or rejected, dark amber as
-#: noted, green approved, grey when the check did not finish.
+#: noted, green approved, grey when GV's person decides the rest or the check did not finish.
 _ACTION_COLOURS: Final[Mapping[str, Color]] = {
     "revise_resubmit": _RED,
     "rejected": _RED,
     "approved_as_noted": Color(0.63, 0.29, 0.02),
     "approved": Color(0.0, 0.47, 0.2),
+    "review_needed": Color(0.4, 0.4, 0.4),
     "not_for_sending": Color(0.4, 0.4, 0.4),
 }
 _NOTE_ROWS: Final = 3
@@ -1076,10 +1077,12 @@ def _cover(
         # The send-ready package's review result (#1622, `review_action`), as the letter says it,
         # with the standard disclaimer.
         colour = _ACTION_COLOURS.get(action.action, _DARK)
-        why = f"{action.reason} {action.note}" if action.note else action.reason
+        # The vendor's words: "Under review" while GV's person decides the rest, never approved.
+        reason = action.vendor_reason
+        why = f"{reason} {action.note}" if action.note else reason
         story += [
             Paragraph(
-                f'<font color="{_hex(colour)}"><b>{escape(action_stamp or action.words)}</b></font>',
+                f'<font color="{_hex(colour)}"><b>{escape(action_stamp or action.vendor_words)}</b></font>',
                 styles["head"],
             ),
             Paragraph(f"{escape(why)} Action required by: {escape(action.required_by)}.", body),

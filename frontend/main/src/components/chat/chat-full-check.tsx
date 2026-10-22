@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CircleAlert, CircleCheck, CircleX, Download, ExternalLink, FileText, ListX, PencilLine, RefreshCw, RotateCcw, ScanSearch } from 'lucide-react';
+import { CircleAlert, CircleCheck, CircleX, Download, ExternalLink, FileText, ListX, PencilLine, RefreshCw, RotateCcw, ScanSearch, UserRoundSearch } from 'lucide-react';
 
 import { AccuracyBadge } from '@/components/chat/chat-accuracy';
 import { GVSpark } from '@/components/chat/chat-motion';
@@ -358,6 +358,7 @@ const ACTION_LOOK: Record<ChatReviewAction['action'], { Icon: typeof RotateCcw; 
   rejected: { Icon: CircleX, tone: 'text-outcome-fail-fg' },
   approved_as_noted: { Icon: PencilLine, tone: 'text-outcome-review-fg' },
   approved: { Icon: CircleCheck, tone: 'text-outcome-pass-fg' },
+  review_needed: { Icon: UserRoundSearch, tone: 'text-foreground' },
   not_for_sending: { Icon: CircleAlert, tone: 'text-muted-foreground' },
 };
 
@@ -379,6 +380,7 @@ export function PackageCard({ pkg, chatId, action, hasReport = true, hasNotCompa
   const look = action ? ACTION_LOOK[action.action] : null;
   const corrections = action ? `${action.corrections} ${action.corrections === 1 ? 'comment' : 'comments'}, numbered like the clouds` : 'numbered like the clouds';
   const unsent = action?.action === 'not_for_sending';
+  const pending = action?.action === 'review_needed';
   const inside = [
     { name: 'GV cloud drawing', note: 'PDF' },
     { name: 'Comment letter', note: corrections },
@@ -392,7 +394,7 @@ export function PackageCard({ pkg, chatId, action, hasReport = true, hasNotCompa
         <div className="grid min-w-0 gap-1">
           <p className="text-xs font-medium text-muted-foreground">Send to the vendor</p>
           <p className="text-[17px] font-semibold tracking-[-0.01em]">Send-ready package</p>
-          <p className="text-[13.5px] text-muted-foreground">{unsent ? 'Kept for you to look at. The check did not finish, so do not send it yet.' : 'Everything the vendor needs in one file, made by code from the final list. Nothing to edit.'}</p>
+          <p className="text-[13.5px] text-muted-foreground">{unsent ? 'Kept for you to look at. The check did not finish, so do not send it yet.' : pending ? 'A person decides the items not compared first: until then the package tells the vendor “Under review”.' : 'Everything the vendor needs in one file, made by code from the final list. Nothing to edit.'}</p>
         </div>
         <a
           href={href}

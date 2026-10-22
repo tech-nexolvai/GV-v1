@@ -286,7 +286,12 @@ class FullCheckReviewOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     action: Literal[
-        "approved", "approved_as_noted", "revise_resubmit", "rejected", "not_for_sending"
+        "approved",
+        "approved_as_noted",
+        "review_needed",
+        "revise_resubmit",
+        "rejected",
+        "not_for_sending",
     ]
     words: str = Field(description='"Revise and resubmit", "Check incomplete: not for sending", …')
 

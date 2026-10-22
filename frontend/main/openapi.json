@@ -8634,12 +8634,13 @@
         "type": "object"
       },
       "ChatReviewActionOut": {
-        "description": "A full check's review result (#1622, `review_action.review_action`, rules S0 to S7),\ndecided by code on read from its findings with the reviewer's latest decisions and the state\nkept with its package; the comment letter and the cloud drawing's cover say the same.",
+        "description": "A full check's review result (#1622, `review_action.review_action`, rules S0 to S7 and RN),\ndecided by code on read from its findings with the reviewer's latest decisions and the state\nkept with its package; the comment letter and the cloud drawing's cover say the same.",
         "properties": {
           "action": {
             "enum": [
               "approved",
               "approved_as_noted",
+              "review_needed",
               "revise_resubmit",
               "rejected",
               "not_for_sending"
@@ -8664,10 +8665,24 @@
             "title": "Fabrication",
             "type": "integer"
           },
+          "items": {
+            "default": 0,
+            "description": "All items: Wrong + Right + Ask the architect + Not compared (decided ones included); Review needed when more than the set share of them are Not compared.",
+            "minimum": 0.0,
+            "title": "Items",
+            "type": "integer"
+          },
           "next_step": {
             "description": "What the vendor does next (the letter's closing line).",
             "title": "Next Step",
             "type": "string"
+          },
+          "not_compared": {
+            "default": 0,
+            "description": "Items Not compared (decided items no longer count).",
+            "minimum": 0.0,
+            "title": "Not Compared",
+            "type": "integer"
           },
           "note": {
             "anyOf": [
@@ -8678,7 +8693,7 @@
                 "type": "null"
               }
             ],
-            "description": "S6: what was not reviewed.",
+            "description": "S6 and RN: what was not reviewed.",
             "title": "Note"
           },
           "reason": {
@@ -8699,6 +8714,7 @@
               "S2",
               "S3",
               "S4",
+              "RN",
               "S5",
               "S6",
               "S7"
@@ -8706,8 +8722,14 @@
             "title": "Rule",
             "type": "string"
           },
+          "vendor_words": {
+            "default": "",
+            "description": "The result as the vendor reads it: the same words, but \"Under review\" for Review needed (never an approval).",
+            "title": "Vendor Words",
+            "type": "string"
+          },
           "words": {
-            "description": "\"Approved as noted\", \"Revise and resubmit\", \u2026",
+            "description": "\"Approved as noted\", \"Review needed\", \"Revise and resubmit\", \u2026",
             "title": "Words",
             "type": "string"
           }
@@ -9269,6 +9291,7 @@
             "enum": [
               "approved",
               "approved_as_noted",
+              "review_needed",
               "revise_resubmit",
               "rejected",
               "not_for_sending"
@@ -13538,6 +13561,7 @@
             "enum": [
               "approved",
               "approved_as_noted",
+              "review_needed",
               "revise_resubmit",
               "rejected",
               "not_for_sending"

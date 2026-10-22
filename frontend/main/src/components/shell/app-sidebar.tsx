@@ -293,6 +293,7 @@ function SetStatus({ pkg }: { pkg: PackageItem }) {
     <span data-slot="set-status" data-status={kind} className="w-full truncate text-xs text-muted-foreground">
       {line.words}
       {line.wrong !== null && <> · <span className="num">{line.wrong}</span> wrong</>}
+      {line.toDecide !== null && <> · <span className="num">{line.toDecide}</span> to decide</>}
       {pkg.current_revision_number > 1 && <> · Rev <span className="num">{pkg.current_revision_number}</span></>}
     </span>
   );
