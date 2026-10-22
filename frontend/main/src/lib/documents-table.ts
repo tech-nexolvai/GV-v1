@@ -32,10 +32,11 @@ export function matchesSearch(row: Pick<PackageSummary, 'vendor' | 'product_type
 
 /**
  * Review-result order for sorting: what asks the most of the vendor first (Rejected, Revise and
- * resubmit, Approved as noted, Approved), then checks with no result to send, then running, then
- * sets not checked yet.
+ * resubmit), then what needs GV's person before it can be approved (Review needed), then Approved
+ * as noted and Approved, then checks with no result to send, then running, then sets not checked
+ * yet.
  */
-const RESULT_ORDER: readonly ResultKind[] = ['rejected', 'revise_resubmit', 'approved_as_noted', 'approved', 'not_for_sending', 'unfinished', 'checking', 'none'];
+const RESULT_ORDER: readonly ResultKind[] = ['rejected', 'revise_resubmit', 'review_needed', 'approved_as_noted', 'approved', 'not_for_sending', 'unfinished', 'checking', 'none'];
 
 export function resultRank(row: Parameters<typeof setResult>[0]): number {
   return RESULT_ORDER.indexOf(setResult(row).kind);

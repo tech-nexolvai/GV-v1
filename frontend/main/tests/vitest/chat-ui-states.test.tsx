@@ -4,7 +4,7 @@
  * is not there, losing and getting back the connection, toasts, and the composer while a full check
  * runs. Synthetic data only.
  */
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const toast = vi.hoisted(() => vi.fn());
@@ -14,7 +14,7 @@ import { ApiError } from '@/api/client';
 import { FullCheckResult } from '@/components/chat/chat-result';
 import { ShellSlotsContext } from '@/components/shell/shellSlots';
 import type { ChatApi, ChatEvent, ChatMessage } from '@/lib/chat-api';
-import { roundCounts } from '@/lib/chat-trust';
+import { roundCounts, roundWords } from '@/lib/chat-trust';
 import { ChatPage } from '@/pages/ChatPage';
 import { chatOut, drivenFollow, fakeChatApi, finding, QUESTION, SAVED_ANSWER } from './fixtures/chat';
 
@@ -54,6 +54,22 @@ describe('a later round', () => {
     expect(groups.map((group) => group.getAttribute('data-round'))).toEqual(['not_addressed', 'new', 'closed']);
     expect(within(groups[0] as HTMLElement).getByText('Sink base')).toBeTruthy();
     expect(within(groups[2] as HTMLElement).getByText('Overall width')).toBeTruthy();
+  });
+
+  it('says “Unchanged since round 1” as information only, never as a Right (2026-10-22)', () => {
+    const unchanged = finding('d', {
+      item: 'Bar: overall height', status: 'same', round_status: 'new_in_later_round',
+      round_match: { page: 3, round: 1, vendor_round: 2, value: '45 11/16"', unchanged: true, compared: null, words: 'Unchanged since round 1' },
+      proof: { group: 'not_compared', not_compared: 'round_only' },
+    });
+    render(<FullCheckResult findings={[...findings, unchanged]} decisionOf={() => null} chatId="c-1" files={NO_FILES} reviewAction={null} packageState={null} work={WORK} pictureUrl={(id) => `/p/${id}`} onOpen={vi.fn()} rounds={{ ...roundCounts(findings, null)!, unchanged: 1 }} />);
+    const strip = document.querySelector('[data-slot="chat-result-rounds"]') as HTMLElement;
+    expect(within(strip).getAllByText(/^1$/)).toHaveLength(3); // the three cells, unchanged by it
+    fireEvent.click(document.querySelector('[role="tab"][data-tab="not_compared"]') as HTMLElement);
+    expect(document.querySelector('[data-slot="chat-result-round-match"]')?.textContent).toBe('Unchanged since round 1');
+    expect(roundWords({ fixed: 1, still_wrong: 1, new: 1, unchanged: 1 })).toBe(
+      'Closed 1 of 2 round-1 items · 1 previous comment not addressed · 1 new · 1 unchanged since an earlier round (information only)',
+    );
   });
 
   it('a single round has no strip', () => {
