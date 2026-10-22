@@ -269,6 +269,17 @@ class Settings(BaseSettings):
     # stopped the API).
     assistant_page_cache_workers: int = Field(default=3, ge=1, le=8)
     assistant_page_cache_memory_mb: int = Field(default=256, ge=16, le=100_000)
+    # #1871: the chat's messages (the full check above all) and the set packs run in a separate
+    # worker process (`scripts/assistant_worker.py --watch`), never in the API: the API writes a
+    # job row and streams its progress from PostgreSQL. Off: the API's own threads, as before (a
+    # deployment that turns it on must run the worker, or messages wait in the queue).
+    assistant_run_in_worker: bool = False
+    # The worker's jobs running at once, over every worker process: messages, and set packs.
+    assistant_worker_message_slots: int = Field(default=3, ge=1, le=16)
+    assistant_worker_pack_slots: int = Field(default=1, ge=1, le=8)
+    # A running job with no heartbeat for this long is dead (its process was killed): a message is
+    # stored as interrupted (Continue), a set pack is built again once.
+    assistant_worker_stale_seconds: int = Field(default=60, ge=10, le=3600)
     # The Usage page can show what OpenRouter reports this key has used (all projects using the
     # key), beside the recorded total (#1165): a free, read-only request with `OPENROUTER_API_KEY`.
     # Off by default, and off whenever no key is set.
