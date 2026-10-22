@@ -128,6 +128,10 @@ class Settings(BaseSettings):
     review_assistant_timeout_seconds: int = Field(default=60, ge=1, le=300)
     # How many earlier turns of the conversation are sent with a question (the request takes <= 6).
     review_assistant_max_history_turns: int = Field(default=6, ge=0, le=6)
+    # Anant 2026-10-22: a finished full check that would approve while MORE than this share of all
+    # its items are Not compared is "Review needed" instead (`review_action.review_needed_share`,
+    # which reads `GV_REVIEW_NEEDED_SHARE` itself: the result is worked out where no settings are).
+    review_needed_share: Decimal = Field(default=Decimal("0.10"), ge=0, le=1, allow_inf_nan=False)
     # The chat-first assistant (#1463): saved chats per drawing set, the model, effort and thinking
     # the reviewer picks, claude.ai's tools in a locked sandbox. `auto` uses Anthropic's own API
     # when `ANTHROPIC_API_KEY` is set, else OpenRouter's keep-no-data route (`OPENROUTER_API_KEY`);

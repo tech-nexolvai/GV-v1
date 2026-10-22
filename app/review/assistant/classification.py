@@ -20,6 +20,14 @@ The rules, in the order they are applied:
   `plan_check.architect_in_area`), and it is then judged like an architect comparison, its words
   saying "reference: brand prototype" (`PROTOTYPE_REFERENCE_WORDS`). The prototype also governs
   where the architect's drawing points to it ("per brand standard").
+- **R1 and R4, the reference is the architect's** (Anant, 2026-10-22: "if it is not matched with
+  our rules or the architect's drawing, then it is wrong, no matter how many rounds it took"). An
+  item compared only with the vendor's own drawing (its round 1, or another vendor drawing:
+  `round_reference.round_only`) is never Right, whatever the values: it is Not compared
+  (`round_only`) unless code compared it with the architect instead (`round_reference`), and the
+  round match is shown as information only ("Unchanged since round 1"). A "same" against the brand
+  prototype where the prototype is not the reference, or a "vendor" value on the brand
+  prototype's drawing, is never Right either (`prototype_only`).
 - **R2, printed dimensions only.** A value scaled off a drawing never decides anything; it may
   appear as context ("the drawing scales about 58\\"").
 - **R3, the architect's drawings disagree** (code's reading ledger: the architect's own views):
@@ -67,12 +75,15 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
+from app.review.assistant.round_reference import ROUND_MATCH, match_words, round_only
 from app.review.assistant.rule_notes import RuleNote, rule_note_of
 from app.review.assistant.spot_locate import VENDOR_SEARCH, search_words, spot_words
 
 __all__ = [
     "PROTOTYPE_REFERENCE",
     "PROTOTYPE_REFERENCE_WORDS",
+    "READER_ERROR",
+    "READER_ERROR_WORDS",
     "REASONS",
     "REASON_WORDS",
     "TRADE_WORDS",
@@ -105,6 +116,8 @@ type Reason = Literal[
     "string_not_verified",
     "architect_outside_gv_rule",
     "outside_gv_rule",
+    "round_only",
+    "prototype_only",
     "internal",
 ]
 
@@ -126,7 +139,9 @@ REASONS: Final[tuple[Reason, ...]] = (
     "not_seen",
     "finish_not_comparable",
     "no_sheet",
+    "round_only",
     "prototype",
+    "prototype_only",
     "internal",
 )
 #: Each reason as the Not-compared list's heading and the summary line say it.
@@ -150,6 +165,8 @@ REASON_WORDS: Final[Mapping[str, str]] = {
     "string_not_verified": "vendor's string not verified on the drawing",
     "architect_outside_gv_rule": "the architect's size is outside a GV rule (GV note)",
     "outside_gv_rule": "outside GV's usual range (GV note)",
+    "round_only": "compared only with the vendor's earlier round, not the architect",
+    "prototype_only": "matches the brand prototype only (reference only)",
     "internal": "read by the AI only, never at its spot (GV's reviewer only)",
 }
 #: The trade's own words for each reason (industry review, topic 5), shown next to ours on the
@@ -172,6 +189,8 @@ TRADE_WORDS: Final[Mapping[str, str]] = {
     "string_not_verified": "Not reviewed: string not verified on the drawing",
     "architect_outside_gv_rule": "Not reviewed: per architect (outside GV's rule)",
     "outside_gv_rule": "Not reviewed: outside GV's usual range (GV note)",
+    "round_only": "Not reviewed: compared with the vendor's earlier round only",
+    "prototype_only": "Not reviewed: brand prototype (reference only)",
     "internal": "Internal: read but not recorded at its spot",
 }
 #: The rule each reason comes from.
@@ -193,6 +212,8 @@ _RULES: Final[Mapping[str, str]] = {
     "string_not_verified": "R5",
     "architect_outside_gv_rule": "R1",
     "outside_gv_rule": "R6",
+    "round_only": "R4",
+    "prototype_only": "R1",
     "internal": "R9",
 }
 #: The architect's drawing points to the brand standard: the prototype is then its intent (R1).
@@ -357,6 +378,11 @@ def prototype_governs(finding: Mapping[str, Any]) -> bool:
 
 def _page(finding: Mapping[str, Any]) -> object:
     return finding.get("page")
+
+
+#: A finding one of whose numbers a code reader failed to read (it raised, #1850): the reason.
+READER_ERROR: Final = "reader_error"
+READER_ERROR_WORDS: Final = "the number could not be read (reader error)"
 
 
 def _not(
@@ -849,6 +875,63 @@ def internal(finding: Mapping[str, Any]) -> bool:
     )
 
 
+def _reference_problem(finding: Mapping[str, Any]) -> Classified | None:
+    """An item whose reference is not the architect's (Anant, 2026-10-22), or `None`: compared
+    only with the vendor's own drawing (`round_only`, whatever its status: never Right, never
+    red), or called the same as the brand prototype where the prototype is not the reference, or
+    with its "vendor" value on the prototype's drawing (`prototype_only`)."""
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    vendor, architect = (dims or {}).get("vendor"), (dims or {}).get("architect")
+    if (
+        finding.get("status") == "same"
+        and isinstance(vendor, Mapping)
+        and vendor.get("side") == "brand"
+    ):
+        return _not(
+            "prototype_only",
+            "the value called the vendor's is on the brand prototype's drawing: the vendor's own "
+            "drawing was not compared with the architect's",
+            "the vendor's value of {thing} against the architect's",
+        )
+    if round_only(finding):
+        match = finding.get(ROUND_MATCH)
+        label = architect
+        page = (
+            match.get("page")
+            if isinstance(match, Mapping)
+            else (label.get("page") if isinstance(label, Mapping) else finding.get("vs_page"))
+        )
+        said = f"{match_words(match)}: " if isinstance(match, Mapping) else ""
+        where = f" on page {page}" if page is not None else ""
+        earlier = match.get("earlier_item") if isinstance(match, Mapping) else None
+        why = _short(match.get("earlier_reason"), 120) if isinstance(match, Mapping) else ""
+        tail = (
+            f"; the earlier round's own comparison with the architect ({earlier}) is not "
+            f"proved either: {why or 'not compared'}"
+            if earlier
+            else "; code found no architect value of this dimension to compare it with"
+        )
+        return _not(
+            "round_only",
+            f"{said}compared only with the vendor's own drawing{where}, never with the "
+            f"architect's{tail}",
+            "the architect's value of {thing}",
+        )
+    if finding.get("status") != "same":
+        return None
+    on_prototype = finding.get("source") == "brand_prototype" or (
+        isinstance(architect, Mapping) and architect.get("side") == "brand"
+    )
+    if on_prototype and not prototype_governs(finding):
+        return _not(
+            "prototype_only",
+            "matches the brand prototype, which is reference only: the architect's drawing "
+            "governs and was not compared",
+            "the architect's value of {thing}",
+        )
+    return None
+
+
 def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
     if internal(finding):
         if finding.get("salvaged") is not True and str(finding.get("created_by") or "").startswith(
@@ -869,7 +952,18 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
                 "drawing for it; kept for GV's reviewer only"
             )
         return _not("internal", why, "both values read at their spots on the drawings")
+    reference = _reference_problem(finding)
+    if reference is not None:
+        return reference
     status = finding.get("status")
+    if finding.get(READER_ERROR) and status in ("different", "same"):
+        # One of its numbers could not be read because a code reader raised (#1850): never
+        # Wrong or Right on what was not read; the check itself stays complete.
+        return _not(
+            "unreadable",
+            READER_ERROR_WORDS,
+            "both values read at their spots on the drawings",
+        )
     source = str(finding.get("source") or "")
     parts = finding.get("architect_parts")
     if status in ("different", "check") and isinstance(parts, Mapping):

@@ -16,8 +16,6 @@ interface AppShellProps {
   activePackage: string | null;
   theme: Theme;
   sidebarRefreshKey: number;
-  /** Whether the open review's failed reading is restarting now, so its sidebar badge says so (#1249). */
-  liveRestarting?: { packageId: string; restarting: boolean } | null;
   /** The evidence for the finding the reviewer opened, or nothing. Never open on its own. */
   evidencePanel?: React.ReactNode;
   onNavigate: (page: Page) => void;
@@ -55,7 +53,6 @@ export function AppShell({
   activePackage,
   theme,
   sidebarRefreshKey,
-  liveRestarting = null,
   evidencePanel,
   onNavigate,
   onOpenPackage,
@@ -95,7 +92,6 @@ export function AppShell({
           activePackage={activePackage}
           theme={theme}
           refreshKey={sidebarRefreshKey}
-          liveRestarting={liveRestarting}
           onNavigate={onNavigate}
           onOpenPackage={onOpenPackage}
           onOpenReviewList={onOpenReviewList}

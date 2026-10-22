@@ -55,6 +55,14 @@ const DROP_MS = 220;
 type RowStatus = FindingStatus | 'not_compared' | 'rule_note';
 
 const statusOf = (finding: ChatFinding): RowStatus => {
+  // The item's FINAL group when code worked it out (2026-10-22): a Wrong code did not prove, or an
+  // item carried by another, is Not compared everywhere, never "Wrong" in one panel and Not
+  // compared in the list and the counts.
+  const group = finding.proof?.group;
+  if (group === 'clouded') return 'different';
+  if (group === 'right') return 'same';
+  if (group === 'not_compared') return 'not_compared';
+  if (group === 'rule_note') return 'rule_note';
   // #1839: the architect's size breaks a GV rule and the vendor follows it: decided, GV asks.
   if (finding.status === 'check' && ruleNoteWords(finding)) return 'rule_note';
   return finding.status === 'same' && finding.compared === false ? 'not_compared' : finding.status;

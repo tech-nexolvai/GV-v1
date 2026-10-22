@@ -179,19 +179,25 @@ export interface ChatMessage {
 
 /**
  * #1622: the review result a full check's send-ready package carries, decided by code (rules S0 to
- * S7, the first that matches wins) from the comments it sends the vendor (the clouded Wrong items).
- * The comment letter and the cloud drawing's cover say the same words.
+ * S7 and RN, the first that matches wins) from the comments it sends the vendor (the clouded Wrong
+ * items). The comment letter and the cloud drawing's cover say the same words, except that the
+ * vendor reads "Under review" where GV's screen says "Review needed" (`vendor_words`).
  */
 export interface ChatReviewAction {
-  action: 'approved' | 'approved_as_noted' | 'revise_resubmit' | 'rejected' | 'not_for_sending';
-  rule: 'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7';
-  /** "Approved", "Approved as noted", "Revise and resubmit", "Rejected", "Check incomplete: not for sending". */
+  action: 'approved' | 'approved_as_noted' | 'review_needed' | 'revise_resubmit' | 'rejected' | 'not_for_sending';
+  rule: 'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'RN' | 'S5' | 'S6' | 'S7';
+  /** "Approved", "Approved as noted", "Review needed", "Revise and resubmit", "Rejected", "Check incomplete: not for sending". */
   words: string;
+  /** The result as the vendor reads it: the same words, but "Under review" for Review needed. */
+  vendor_words?: string;
+  /** Items Not compared, and all items (Wrong + Right + Ask the architect + Not compared). */
+  not_compared?: number;
+  items?: number;
   /** Why, in one line: "2 of 5 corrections change fabrication." */
   reason: string;
   corrections: number;
   fabrication: number;
-  /** S6: what was not reviewed. */
+  /** S6 and RN: what was not reviewed. */
   note?: string | null;
   /** What the vendor does next (the letter's closing line). */
   next_step: string;
@@ -397,6 +403,8 @@ export interface ChatFinding {
   trust_level?: TrustLevel | null;
   /** Chat v3: what happened to it across the set's rounds of comments. */
   round_status?: RoundStatus | null;
+  /** Compared with the vendor's own earlier round: information only, never counted as right (2026-10-22). */
+  round_match?: RoundMatch | null;
   /** Chat v3, `source: vendor_arithmetic`: the vendor's parts and the total it printed, as printed. */
   parts?: string[] | null;
   printed_total?: string | null;
@@ -713,6 +721,21 @@ export interface FindingCritic {
   model?: string | null;
 }
 
+/** A comparison with the vendor's own drawing (an earlier round), shown as "Unchanged since round 1". */
+export interface RoundMatch {
+  page?: number | null;
+  round?: number | null;
+  vendor_round?: number | null;
+  label?: string | null;
+  value?: string;
+  unchanged?: boolean;
+  /** How code compared the item with the architect instead (null: it could not). */
+  compared?: 'carrier' | 'code_pair' | 'earlier_round' | null;
+  via?: string | null;
+  architect?: string | null;
+  words?: string;
+}
+
 export type RoundStatus = 'fixed_in_later_round' | 'still_wrong' | 'new_in_later_round' | 'not_in_later_round' | 'single_round';
 
 /** One difference GV Review's own checks recorded that the answer did not include. */
@@ -778,6 +801,8 @@ export interface ChatTrust {
     still_wrong: number;
     new: number;
     not_in_later?: number | null;
+    /** Unchanged since an earlier round: information only, never counted as right. */
+    unchanged?: number | null;
     /** compare_rounds: changes nobody asked for (no finding, no GV markup nearby). */
     unrequested?: number | null;
     /** The line code wrote for it. */
