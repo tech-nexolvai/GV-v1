@@ -57,6 +57,7 @@ __all__ = [
     "ChatLiveStateOut",
     "ChatLiveStoppingOut",
     "ChatLiveTallyOut",
+    "ChatLiveUsualOut",
     "ChatMessageIn",
     "ChatMessageOut",
     "ChatOut",
@@ -2013,6 +2014,23 @@ class ChatMessageOut(BaseModel):
 # (`GET /chats/{chat_id}/live`, and `ChatOut.live`), for a page that reconnects mid-run.
 
 
+class ChatLiveUsualOut(BaseModel):
+    """How long a full check of this set usually takes (#1883): a range from measured runs,
+    by its content pages and whether its pages must first be matched with a separate architect's
+    file (`check_time.usual_minutes`). Absent when no honest range can be given."""
+
+    model_config = ConfigDict(frozen=True)
+
+    low_minutes: int = Field(description="The range's low end, whole minutes.")
+    high_minutes: int = Field(description="The range's high end, whole minutes.")
+    pages: int = Field(description="The content pages the check compares.")
+    matched: int = Field(
+        default=0,
+        description="The vendor drawings the AI page matcher pairs with the architect's file "
+        "first (0: a combined set, or every answer saved).",
+    )
+
+
 class ChatLivePhaseOut(BaseModel):
     """What the full check is doing now, in plain phases with counts (`check_phase`)."""
 
@@ -2024,13 +2042,16 @@ class ChatLivePhaseOut(BaseModel):
         "answers, then the blind second looks (n of m); making_files: n of 5 files; done: the "
         "answer is stored."
     )
-    step: Literal["code_checks", "verifying", "second_looks", "final_checks", "stopped"] | None = (
-        Field(
-            default=None,
-            description="Within double_checking: code_checks (code's own checks of the whole set, "
-            "no count), verifying (code checks each answered drawing), second_looks, final_checks "
-            "(no count); `stopped` on a done check that was stopped.",
-        )
+    step: (
+        Literal["matching", "code_checks", "verifying", "second_looks", "final_checks", "stopped"]
+        | None
+    ) = Field(
+        default=None,
+        description="Within comparing: matching (the AI page matcher pairs the vendor's drawings "
+        "with a separate architect's file, n of m drawings; the comparing starts page by page as "
+        "they are paired). Within double_checking: code_checks (code's own checks of the whole "
+        "set, no count), verifying (code checks each answered drawing), second_looks, "
+        "final_checks (no count); `stopped` on a done check that was stopped.",
     )
     done: int | None = Field(default=None, description="How many of `total` are done.")
     total: int | None = Field(default=None, description="null: no count for this phase.")
@@ -2040,6 +2061,11 @@ class ChatLivePhaseOut(BaseModel):
     started_at: datetime = Field(description="When the check started (the elapsed clock).")
     phase_started_at: datetime
     stopping: bool = Field(default=False, description="Stop was pressed (`check_stopping`).")
+    usual: ChatLiveUsualOut | None = Field(
+        default=None,
+        description="How long a check of this set usually takes, once code knows its pages "
+        "(null: no honest range; the screen then says no time).",
+    )
 
 
 class ChatLiveDrawingOut(BaseModel):

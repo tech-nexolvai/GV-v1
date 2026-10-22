@@ -918,6 +918,10 @@ class _Agent:
     so it stops at its cap only when its phase's money is really used up."""
     done: bool = False
     """It has reported (a phase's top-up counts only what a finished specialist really spent)."""
+    ready: Callable[[], str | None] | None = None
+    """A code-planned helper whose pages wait for the AI page matcher (#1883): called in its
+    own thread before its first call; it waits until its pages are paired (or left unpaired) and
+    returns its brief with those pairs (`None`: its prompt stands)."""
 
 
 @dataclass(slots=True)
@@ -3563,6 +3567,14 @@ class ChatEngine:
 
         def run(position: int, agent: _Agent) -> None:
             entry = entries[position]
+            if agent.ready is not None and not self.cancel.is_set():
+                try:
+                    brief = agent.ready()
+                except Exception:  # noqa: BLE001 - the helper runs with the brief it has
+                    _log.exception("assistant chat helper's pairs could not be added")
+                    brief = None
+                if brief is not None:
+                    agent.prompt = brief
             pages = list(agent.pages or ())
             self.timings.helper_started(agent.number, agent.description, pages)
             with self.timings.phase(agent.phase, helper=agent.number):
@@ -3938,38 +3950,40 @@ class ChatEngine:
         for (its labels), the AI page matcher is asked about every vendor drawing the work list
         pairs across the uploads (saved in the pack: asked once per set), and the work list
         (code's score and the agreement rule) says which page goes with which. `None` when the
-        set has no separate architect's upload or the pack is not there."""
-        folder = self.tools.workspace.set_pack
-        main = self.book.main_file
-        roles = (page_map or {}).get("upload_roles") or {}
-        separate = any(
-            role == "architect" and name != main
-            for name, role in (roles.items() if isinstance(roles, Mapping) else ())
-        )
-        if folder is None or not separate:
-            return None
+        set has no separate architect's upload or the pack is not there. Waits for the whole
+        matcher; the roster starts its helpers beside it instead (`page_matching`)."""
         # Loaded by name: the work list reaches the drawn-position pairing (OpenCV-side code),
         # which `app/api/` must not import (`tests/api/test_no_heavy_work.py`).
-        page_match = import_module("app.review.assistant.page_match")
-        worklist = import_module("app.review.assistant.simple_check.worklist")
-        if not page_match.wait_ready(folder, self.cancel):
-            _log.warning("assistant full check: the set pack is not ready; no cross-file pairs")
+        run = import_module("app.review.assistant.page_match").prepare_run(self, page_map)
+        if run is None:
             return None
-        try:
-            page_match.run_for_engine(self, folder, main)
-        except Exception:  # noqa: BLE001 - code then pairs alone (its saved answers, if any)
-            _log.exception("assistant full check: the page matcher failed")
-        try:
-            work = worklist.build_worklist(folder, main)
-        except Exception:  # noqa: BLE001 - the helpers are planned without the pairs
-            _log.exception("assistant full check: no work list for the cross-file pairs")
-            return None
-        self._cross = CrossPairs.of(work)
+        run.start()
+        self._cross = run.finish()
         return self._cross
 
-    def scoped_jobs(self, page_map: Mapping[str, Any] | None) -> tuple[FanOutPlan | None, int]:
+    def page_matching(self, page_map: Mapping[str, Any] | None) -> Any:
+        """A full check's page matching, to run beside its helpers (#1883,
+        `page_match.MatchRun`): code's pairs (its ranking and the pack's saved answers) at once in
+        `_cross`; the caller starts the matcher, each helper waits only for its own pages, and
+        `finish_page_matching` sets the final pairs. `None` as `cross_file_pairs`."""
+        run = import_module("app.review.assistant.page_match").prepare_run(self, page_map)
+        if run is not None:
+            self._cross = run.cross
+        return run
+
+    def finish_page_matching(self, run: Any) -> None:
+        """The final cross-file pairs once the matcher has asked about every drawing (the gap
+        closers and the finishing steps read them)."""
+        if run is not None:
+            self._cross = run.finish()
+
+    def scoped_jobs(
+        self, page_map: Mapping[str, Any] | None, *, pairs: bool = True
+    ) -> tuple[FanOutPlan | None, int]:
         """A full check's helper jobs for the products in scope, and the pages the whole set would
-        have compared (`full_check_plan.scoped_plan`: the plan check counts the same pages)."""
+        have compared (`full_check_plan.scoped_plan`: the plan check counts the same pages).
+        `pairs=False`: the jobs without their cross-file pairs (added as each starts,
+        `full_check_plan.with_pairs`)."""
         folder = self.tools.workspace.set_pack
         return scoped_plan(
             page_map,
@@ -3977,7 +3991,7 @@ class ChatEngine:
             self._max_agents,
             self.product_scope,
             None if folder is None else lambda files: page_texts(folder, files),
-            across=self._cross,
+            across=self._cross if pairs else None,
         )
 
     def page_words(self, page: int) -> str:

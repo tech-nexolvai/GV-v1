@@ -222,3 +222,23 @@ describe('a full check running when its chat is opened', () => {
     expect(api.cancel).toHaveBeenCalledWith('c-1');
   });
 });
+
+describe('the live card while pages are matched across files (#1883)', () => {
+  const usual = { low_minutes: 35, high_minutes: 65, pages: 99, matched: 96 };
+
+  it('shows the matching step with its count and the usual time for this set', () => {
+    const live = liveState({ mode: 'roster', drawings: [], findings: [], phase: phase({ step: 'matching', done: 74, total: 96, unit: 'drawings', usual }) });
+    render(<LiveCheck live={live} />);
+    const card = screen.getByRole('region', { name: 'Full check in progress' });
+    expect(within(card).getByRole('heading', { name: 'Matching pages' })).toBeTruthy();
+    expect(card.querySelector('[aria-current="step"]')?.textContent).toContain('Compare');
+    expect(card.querySelector('[data-slot="chat-live-count"]')?.textContent).toBe('74 of 96 drawings matched to the architect’s');
+    expect(card.querySelector('[data-slot="chat-live-left"]')?.textContent).toBe('usually 35–65 min for 99\u00a0content pages');
+  });
+
+  it('says no time when the server gives no range for the set', () => {
+    const live = liveState({ mode: 'roster', drawings: [], findings: [], phase: phase({ step: 'matching', done: 3, total: 96, unit: 'drawings' }) });
+    render(<LiveCheck live={live} />);
+    expect(document.querySelector('[data-slot="chat-live-left"]')?.textContent).toBe('');
+  });
+});

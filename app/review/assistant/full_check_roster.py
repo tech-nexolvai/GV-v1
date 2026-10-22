@@ -1125,6 +1125,36 @@ def carried_done(coverage: Mapping[str, Any] | None) -> frozenset[int]:
     return frozenset(done)
 
 
+def _say_usual_time(engine: ChatEngine, pages: int, matched: int) -> None:
+    """The live card's usual time for this set (#1883, `check_time.usual_minutes`): its
+    content pages, and the vendor drawings the AI page matcher asks about."""
+    from app.review.assistant.check_time import usual_minutes
+    from app.review.assistant.page_match import PARALLEL
+
+    found = usual_minutes(pages, matched, PARALLEL)
+    live = getattr(engine, "live", None)
+    if found is None or live is None:
+        return
+    try:
+        live.usual(found[0], found[1], pages, matched)
+    except Exception:  # noqa: BLE001 - only the screen misses it
+        _log.debug("assistant roster: the usual time was not shown")
+
+
+def _paired_brief(
+    engine: ChatEngine, matching: Any, job: Any, brief: tuple[Any, ...]
+) -> Callable[[], str | None]:
+    """A helper's wait for the page matcher (#1883, `_Agent.ready`): once its own pages are
+    decided (`page_match.MatchRun.wait_pages`), its brief with their cross-file pairs."""
+    from app.review.assistant.full_check_plan import with_pairs
+
+    def ready() -> str | None:
+        cross = matching.wait_pages(job.pages, engine.cancel)
+        return engine._job_brief(with_pairs(job, cross), *brief)
+
+    return ready
+
+
 def remaining_plan(plan: Any, done: Collection[int]) -> Any:
     """`plan` with the pages in `done` taken out of every job, the jobs left with no page dropped
     and numbered again from 1 (before `with_lenses`, which pairs the lenses by number)."""
@@ -1582,6 +1612,7 @@ class _Run:
             pack_ready,
             wait_for_page_map,
             with_lenses,
+            with_pairs,
         )
 
         workspace = engine.tools.workspace
@@ -1593,16 +1624,22 @@ class _Run:
                 page_map = wait_for_page_map(workspace.set_pack, engine.cancel)
             with engine.timings.phase("page_match"):
                 # Separate uploads: each vendor page's architect pages, agreed by code and the AI
-                # page matcher (#1798); the helpers are handed them with their pages.
-                engine.cross_file_pairs(page_map)
+                # page matcher (#1798); the helpers are handed them with their pages. Code's
+                # pairs are known now; the matcher runs beside the helpers, each helper waiting
+                # only for its own pages (#1883).
+                matching = engine.page_matching(page_map)
             with engine.timings.phase("planning"):
-                # Only the areas of the products in scope get helpers (`product_scope`).
-                plan, _pages_all = engine.scoped_jobs(page_map)
+                # Only the areas of the products in scope get helpers (`product_scope`); each
+                # job gets its pages' cross-file pairs when it starts (`with_pairs`).
+                plan, _pages_all = engine.scoped_jobs(page_map, pairs=False)
                 rules = engine._rules_summary() if plan is not None else ""
                 pictures = pack_ready(workspace.set_pack)
             warm.result()
         if plan is None:
             return None  # no page map: the lead plans, as before (nothing was done yet)
+        if matching is not None:
+            # The first helpers' pages are asked about first; pages no helper compares last.
+            matching.start([page for job in plan.jobs for page in job.pages])
         engine.helper_share_percent = 100
         engine.critic_off = True
         with engine.timings.phase("seeding"):
@@ -1622,6 +1659,7 @@ class _Run:
         except Exception:  # noqa: BLE001 - the drawing makes its own copy at the end
             _log.warning("assistant roster could not start the markup copy")
         if engine.cancel.is_set():
+            engine.finish_page_matching(matching)  # its calls in flight end before the answer
             return self._finish("cancelled")
         carried = (
             carried_done(engine.book.coverage_map() if engine.book.coverage_used else None)
@@ -1636,6 +1674,7 @@ class _Run:
             # (`GV_ASSISTANT_NUMBERS_HELPER_PAGES`); the default is today's plan exactly.
             plan = with_lenses(plan, settings.numbers_pages, page_map)
         engine._plan = plan
+        _say_usual_time(engine, plan.pages, 0 if matching is None else matching.total)
         self.no_vendor = no_vendor_pages(page_map, engine.book.main_file)
         # A vendor round after the first: the cheap picks' money is kept from the start (#1861).
         self.later_rounds = _later_rounds(page_map)
@@ -1685,22 +1724,30 @@ class _Run:
         model = engine._helper_model()
         pool = _Pool(sum(self.plan.budgets[name] for name in ("numbers", "drawn", "tags")))
         agents = []
+        # Fixed when the matcher started: a job whose pages it was asked about always waits (its
+        # brief is made from the answers, never from the pairs before them).
+        waiting = matching.to_answer if matching is not None else frozenset()
         for job in plan.jobs:
             kind = "drawn" if job.lens == "drawn" else "numbers"
-            agents.append(
-                self._agent(
-                    call_id=f"plan-{job.number}",
-                    description=job.description,
-                    prompt=engine._job_brief(job, rules, len(plan.jobs), pictures, page_map),
-                    model=BY_SHORT["sonnet"] if job.lens == "drawn" else model,
-                    pages=job.pages,
-                    lens=job.lens,
-                    effort=settings.numbers_effort if job.lens == "numbers" else "low",
-                    cap_micros=self.plan.cap_for(kind, len(job.pages)),
-                    soft_cap=True,
-                    system=engine._kind_system(job.lens),
-                )
+            agent = self._agent(
+                call_id=f"plan-{job.number}",
+                description=job.description,
+                prompt=engine._job_brief(
+                    with_pairs(job, engine._cross), rules, len(plan.jobs), pictures, page_map
+                ),
+                model=BY_SHORT["sonnet"] if job.lens == "drawn" else model,
+                pages=job.pages,
+                lens=job.lens,
+                effort=settings.numbers_effort if job.lens == "numbers" else "low",
+                cap_micros=self.plan.cap_for(kind, len(job.pages)),
+                soft_cap=True,
+                system=engine._kind_system(job.lens),
             )
+            if waiting.intersection(job.pages):
+                agent.ready = _paired_brief(
+                    engine, matching, job, (rules, len(plan.jobs), pictures, page_map)
+                )
+            agents.append(agent)
         by_job = {job.number: agent for job, agent in zip(plan.jobs, agents, strict=True)}
         for job, agent in zip(plan.jobs, agents, strict=True):
             agent.partner = None if job.partner is None else by_job.get(job.partner)
@@ -1709,6 +1756,9 @@ class _Run:
         tag_groups = tag_page_groups([job.pages for job in plan.jobs if job.lens != "numbers"])
         for group in tag_groups:
             agents.append(self._tag_agent(group, page_map, of_pages=len(tag_pages)))
+        # The helpers that wait for the page matcher start after those that can start now (the
+        # tag readers, the pages code or a saved answer paired): none holds a place idle.
+        agents.sort(key=lambda agent: agent.ready is not None)
         for agent in agents:
             pool.add(agent)
         self.agents = list(agents)
@@ -1720,7 +1770,11 @@ class _Run:
         protected += self.needs.get(ROUND_PHASE, 0)
         engine.helper_ceiling = engine.spent + max(0, price - protected)
         try:
-            entries = self._launched(agents, on_done=engine._helper_done)
+            try:
+                entries = self._launched(agents, on_done=engine._helper_done)
+            finally:
+                # Every answer in: the gap closers and the finishing steps read the final pairs.
+                engine.finish_page_matching(matching)
             tag_reports: list[tuple[Any, str]] = []
             for agent, entry in zip(agents, entries, strict=True):
                 if agent.lens == "tags":
