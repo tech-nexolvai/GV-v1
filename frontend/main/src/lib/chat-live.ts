@@ -18,6 +18,7 @@ export type LiveDrawing = components['schemas']['ChatLiveDrawingOut'];
 export type LiveFinding = components['schemas']['ChatLiveFindingOut'];
 export type LiveTally = components['schemas']['ChatLiveTallyOut'];
 export type LiveStopping = components['schemas']['ChatLiveStoppingOut'];
+export type LiveUsual = components['schemas']['ChatLiveUsualOut'];
 
 /** The live events this screen reads (version 1). */
 export const LIVE_EVENTS = ['check_phase', 'check_drawings', 'check_drawing', 'check_finding', 'check_tally', 'check_stopping', 'check_service'] as const;
@@ -88,7 +89,8 @@ export function applyLive(live: LiveState | null | undefined, event: LiveEvent, 
   }
 }
 
-const STEP_ORDER: Record<string, number> = { code_checks: 1, verifying: 2, second_looks: 3, final_checks: 4, stopped: 5 };
+// Matching pages comes before the pages' own count within comparing (#1883).
+const STEP_ORDER: Record<string, number> = { matching: -1, code_checks: 1, verifying: 2, second_looks: 3, final_checks: 4, stopped: 5 };
 
 /** How far a check is, as one number that only grows: the phase, its step, then its count. */
 export function progressOf(live: LiveState): number {
@@ -122,6 +124,7 @@ export function stepOf(phase: LivePhase['phase']): number {
 export function phaseTitle(live: LiveState): string {
   if (live.service) return 'The check could not go on';
   if (live.phase.stopping || live.stopping) return 'Stopping…';
+  if (isMatching(live)) return 'Matching pages';
   return { getting_ready: 'Getting ready', comparing: 'Comparing drawings', double_checking: 'Double-checking', making_files: 'Making the package', done: 'Full check done' }[live.phase.phase] ?? 'Checking';
 }
 
@@ -133,6 +136,7 @@ export function nowWords(live: LiveState): { words: string; page: number | null;
   }
   const phase = live.phase;
   if (phase.phase === 'getting_ready') return { words: 'Reading the drawings: whose drawing is where, every printed size and tag', page: null, area: null, more: 0 };
+  if (isMatching(live)) return { words: 'Pairing vendor pages with the architect’s; each starts once paired', page: null, area: null, more: 0 };
   if (phase.phase === 'comparing') {
     const running = live.drawings.filter((drawing) => drawing.status === 'comparing');
     const last = running[running.length - 1];
@@ -140,13 +144,14 @@ export function nowWords(live: LiveState): { words: string; page: number | null;
     return { words: 'with the architect’s', page: last.page, area: areaWords(last.area), more: running.length - 1 };
   }
   if (phase.phase === 'double_checking') {
-    const words = {
+    const steps: Partial<Record<NonNullable<LivePhase['step']>, string>> = {
       code_checks: 'GV Review’s own checks of the whole set, by code',
       verifying: 'Checking each answer by code: the printed values, their spots and directions',
       second_looks: 'A second, independent look at each difference',
       final_checks: 'The final checks by code',
       stopped: 'Checking what was compared before the stop',
-    }[phase.step ?? 'code_checks'];
+    };
+    const words = steps[phase.step ?? 'code_checks'];
     return { words: words ?? 'Double-checking', page: null, area: null, more: 0 };
   }
   if (phase.phase === 'making_files') return { words: 'Making the cloud drawing, the comment letter and the lists', page: null, area: null, more: 0 };
@@ -161,6 +166,8 @@ export function barShare(live: LiveState): number | null {
     case 'getting_ready':
       return null;
     case 'comparing':
+      // Matching pages fills only the bar's first few percent: the pages' own count starts at 5.
+      if (live.phase.step === 'matching') return part === null ? null : 2 + part * 3;
       return part === null ? null : 5 + part * 75;
     case 'double_checking':
       return part === null ? null : 80 + part * 15;
@@ -174,8 +181,9 @@ export function barShare(live: LiveState): number | null {
 /** The words under the bar, left: what is counted now. */
 export function barWords(live: LiveState): string {
   const { phase, step, done, total, unit } = live.phase;
-  if (phase === 'getting_ready') return 'Usually 4–5 minutes for a set of about 40 drawings';
+  if (phase === 'getting_ready') return usualSentence(live.phase.usual) ?? '';
   // "of" and its total never part across lines (a no-break space).
+  if (phase === 'comparing' && step === 'matching' && total) return `${done ?? 0} of\u00a0${total} drawings matched to the architect’s`;
   if (phase === 'comparing' && total) return `${done ?? 0} of\u00a0${total} ${unit === 'pages' ? 'pages' : 'drawings'} compared`;
   if (phase === 'double_checking') {
     if (step === 'second_looks' && total) return `All drawings compared · second look ${done ?? 0} of\u00a0${total}`;
@@ -193,7 +201,8 @@ export function barWords(live: LiveState): string {
  */
 export function secondsLeft(live: LiveState, now: number, eta: number | null | undefined): number | null {
   const { phase, done, total, phase_started_at } = live.phase;
-  if (phase === 'comparing' && (done ?? 0) < 3) return null;
+  // While matching, the pace of the matcher says nothing of the check's own time.
+  if (phase === 'comparing' && (live.phase.step === 'matching' || (done ?? 0) < 3)) return null;
   if (eta != null && Number.isFinite(eta)) return Math.max(0, eta);
   if (phase !== 'comparing' || !total || !done) return null;
   const since = (now - Date.parse(phase_started_at)) / 1000;
@@ -208,15 +217,46 @@ export function leftWords(seconds: number | null): string | null {
   return `about ${Math.round(seconds / 60)} min left`;
 }
 
-/** While comparing, before 3 drawings are done: the usual time instead of an estimate. */
+/**
+ * While matching pages, or comparing before 3 drawings are done: the usual time for this set (the
+ * server's range from measured runs, by its content pages and whether they are matched across
+ * files) instead of an estimate. While matching it names the content pages (the card shows no page
+ * count then); while comparing the bar already counts the pages. No range from the server: no time
+ * at all, never a wrong one (#1883).
+ */
 export function usualWords(live: LiveState): string | null {
-  return live.phase.phase === 'comparing' && (live.phase.done ?? 0) < 3 ? 'usually 4–5 min' : null;
+  const { phase, step, done, usual } = live.phase;
+  if (phase !== 'comparing' || (step !== 'matching' && (done ?? 0) >= 3)) return null;
+  const range = usualRange(usual);
+  if (range === null || !usual) return null;
+  return step === 'matching' ? `usually ${range} min for ${contentPages(usual.pages)}` : `usually ${range} min`;
+}
+
+/** "Usually 35–65 min for 99 content pages", before the check counts anything. */
+export function usualSentence(usual: LiveUsual | null | undefined): string | null {
+  const range = usualRange(usual);
+  return range === null || !usual ? null : `Usually ${range} min for ${contentPages(usual.pages)}`;
+}
+
+function usualRange(usual: LiveUsual | null | undefined): string | null {
+  if (!usual || usual.pages <= 0 || usual.high_minutes <= 0) return null;
+  return usual.low_minutes === usual.high_minutes ? `${usual.high_minutes}` : `${usual.low_minutes}–${usual.high_minutes}`;
+}
+
+/** "99 content pages" (a no-break space keeps the number with its words). */
+function contentPages(pages: number): string {
+  return `${pages}\u00a0content ${pages === 1 ? 'page' : 'pages'}`;
+}
+
+/** The AI page matcher is pairing the vendor's pages with a separate architect's file. */
+export function isMatching(live: LiveState): boolean {
+  return live.phase.phase === 'comparing' && live.phase.step === 'matching';
 }
 
 /** Drawings compared so far and in all (skipped ones left out), for the sidebar row. */
 export function drawingCounts(live: LiveState): { done: number | null; total: number | null } {
   // The same number as the card's bar and the tab ("one place per number": never two counts).
-  if (live.phase.phase === 'comparing' && live.phase.total) return { done: live.phase.done ?? 0, total: live.phase.total };
+  if (live.phase.phase === 'comparing' && !isMatching(live) && live.phase.total) return { done: live.phase.done ?? 0, total: live.phase.total };
   if (!live.drawings.length) return { done: live.counts.drawings_done ?? null, total: live.counts.drawings_total ?? null };
   const counted = live.drawings.filter((drawing) => drawing.status !== 'skipped');
   return { done: counted.filter((drawing) => drawing.status === 'answered' || drawing.status === 'failed').length, total: counted.length };
@@ -262,6 +302,7 @@ export function badgesByDrawing(live: LiveState): Map<string, number> {
 export function tabTitle(live: LiveState | null, base = 'GV Review'): string {
   if (!live) return base;
   const { phase, done, total } = live.phase;
+  if (phase === 'comparing' && live.phase.step === 'matching') return `Matching pages · ${base}`;
   if (phase === 'comparing' && total) return `(${done ?? 0}/${total}) Checking · ${base}`;
   return `Checking · ${base}`;
 }

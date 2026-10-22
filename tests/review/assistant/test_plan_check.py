@@ -23,6 +23,7 @@ from app.review.assistant.plan_check import (
     read_answers,
     record_answers,
     valid_answer,
+    with_assumptions,
 )
 from app.review.assistant.sandbox import ChatWorkspace
 
@@ -121,6 +122,55 @@ def test_another_upload_with_the_architects_drawing_of_the_area_settles_it() -> 
         files=(FILE, ARCH),
     )
     assert doubts(page_map, FILE) == []
+
+
+def _two_file_map(*, architect_upload: bool) -> dict[str, Any]:
+    """A vendor's file with an architect's sheet bound inside it (p3) and vendor pages after it,
+    each a whole-page drawing taken from its upload; with `architect_upload`, the architect's
+    own file uploaded beside it."""
+    whole = {"from_upload": True}
+    vendor = [
+        _page(3, [{**_half("architect"), **whole}], None, section=None),
+        *(_page(p, [{**_half("vendor", 0, 1), **whole}], None, section=None) for p in (4, 5, 6)),
+        _page(7, [], None, section=None),
+    ]
+    if not architect_upload:
+        return _map(*vendor)
+    architect = [
+        {**_page(p, [{**_half("architect"), **whole}], None, section=None), "file": ARCH}
+        for p in (1, 2)
+    ]
+    return {
+        **_map(*vendor, *architect, files=(FILE, ARCH)),
+        "upload_roles": {FILE: "vendor", ARCH: "architect"},
+    }
+
+
+def test_a_separate_architect_file_is_paired_by_code_never_asked() -> None:
+    page_map = _two_file_map(architect_upload=True)
+
+    # The architect's sheet inside the vendor's file is no pair to guess: code pairs each vendor
+    # drawing with the architect's file when the check runs (#1723, #1798).
+    assert [d.kind for d in doubts(page_map, FILE, limit=None)] == []
+    assumed = with_assumptions(page_map, FILE, {})
+    assert not any("pair_page" in entry for entry in assumed["pages"])
+    assert plan_summary(page_map, FILE) == (
+        "5 pages · paired with the architect's file when the check runs · round 1 · 1 general page"
+    )
+    # A reviewer's own answer still pairs a page by hand.
+    answered = with_assumptions(page_map, FILE, {"pair:f0:p5": "pair:3"})
+    by_page = {(e["file"], e["page"]): e for e in answered["pages"]}
+    assert by_page[(FILE, 5)]["pair_page"] == 3 and "pair_page" not in by_page[(FILE, 4)]
+
+
+def test_a_single_combined_file_still_asks_which_page_to_compare() -> None:
+    page_map = _two_file_map(architect_upload=False)
+
+    every = doubts(page_map, FILE, limit=None)
+
+    assert [(d.kind, d.page) for d in every] == [("pair", 4), ("pair", 5), ("pair", 6)]
+    assert every[0].options == (("pair:3", "Compare with page 3"), ("skip", "Skip it"))
+    assert plan_summary(page_map, FILE) == "5 pages · 0 pairs · round 1 · 1 general page"
 
 
 def test_answers_are_kept_append_only_and_laid_over_the_page_map(tmp_path: Path) -> None:

@@ -112,7 +112,7 @@ def _pair_first(why: str) -> Any:
     """`worklist._pair_across` for a test: every vendor drawing paired with the first architect
     item (#1798's contract: the candidates are architect items, the answer an `AcrossPair`)."""
 
-    def pair(vendor: Any, candidates: Any, *_: Any) -> AcrossPair:
+    def pair(vendor: Any, candidates: Any, *_: Any, **__: Any) -> AcrossPair:
         first = candidates[0].id
         return AcrossPair(
             vendor=vendor, candidates=tuple(candidates), asked=(first,), chosen=(first,), why=why
