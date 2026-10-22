@@ -108,7 +108,7 @@ class PageTask:
     health: tuple[tuple[str, Any], ...] | None = None
     upload: str = ""
     line_work: str = ""
-    """The set pack whose `line_work/` keeps the page's line work (#1883); empty: not kept."""
+    """The set pack whose `line_work/` keeps the page's line work (#1879); empty: not kept."""
 
 
 # ---- the reading table ---------------------------------------------------------------------------

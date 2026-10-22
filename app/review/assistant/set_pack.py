@@ -1424,7 +1424,7 @@ def read_pack_page(task: Any, given: Mapping[str, float]) -> Any:
     read = labels.read_page(task, given)
     read.health = health
     if task.upload and task.line_work:
-        # The page's line work for the set's anchor pairs (#1883), read here in the worker and
+        # The page's line work for the set's anchor pairs (#1879), read here in the worker and
         # kept in the pack, instead of page after page in the labels' process at the end.
         try:
             consistency = import_module("app.review.assistant.vendor_consistency")
@@ -1453,7 +1453,7 @@ def write_dims(
     anchors = import_module("app.review.assistant.dim_anchors")
     pages = {"pages": list(page_map)}
     # Each page's line work, read by the page workers with its labels and kept in the pack
-    # (`vendor_consistency.LINE_WORK_DIR`, #1883); a page not kept is read here once.
+    # (`vendor_consistency.LINE_WORK_DIR`, #1879); a page not kept is read here once.
     line_work = import_module("app.review.assistant.vendor_consistency").line_work(uploads, folder)
 
     def segments_of(name: str, page: int) -> Any:
@@ -1465,7 +1465,7 @@ def write_dims(
     def written(document: dict[str, Any], *, now: bool = False) -> None:
         """`dims.json` and the reading table as pages finish (at most every `WRITE_EVERY_S`
         seconds, and at the end); the facts worked out from the whole set (`facts`) once, at
-        the end (#1883: worked out on every write they took minutes on a big set)."""
+        the end (#1879: worked out on every write they took minutes on a big set)."""
         if parent is not None and os.getppid() != parent:
             raise SystemExit(0)
         if not now and time.monotonic() - last[0] < WRITE_EVERY_S:
