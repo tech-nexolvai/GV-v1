@@ -5290,6 +5290,17 @@
             ],
             "title": "Round"
           },
+          "round_match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingRoundMatchOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Information only (2026-10-22): the item was compared with the vendor's own drawing (an earlier round), never counted as right; whether code compared it with the architect instead."
+          },
           "round_status": {
             "anyOf": [
               {
@@ -5543,6 +5554,8 @@
                   "string_not_verified",
                   "architect_outside_gv_rule",
                   "outside_gv_rule",
+                  "round_only",
+                  "prototype_only",
                   "internal"
                 ],
                 "type": "string"
@@ -5718,6 +5731,119 @@
           "model"
         ],
         "title": "ChatFindingReadOut",
+        "type": "object"
+      },
+      "ChatFindingRoundMatchOut": {
+        "description": "A comparison with the vendor's own drawing (`round_reference`): information only, shown as\n\"Unchanged since round 1\"; never a Right and never counted as decided by itself.",
+        "properties": {
+          "architect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The architect's label (p57.D21).",
+            "title": "Architect"
+          },
+          "compared": {
+            "anyOf": [
+              {
+                "enum": [
+                  "carrier",
+                  "code_pair",
+                  "earlier_round"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How code compared the item with the architect instead (None: it could not, so the item is Not compared).",
+            "title": "Compared"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The label compared with (D3).",
+            "title": "Label"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "round": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The round of the drawing compared with.",
+            "title": "Round"
+          },
+          "unchanged": {
+            "default": false,
+            "description": "Code reads the same value there.",
+            "title": "Unchanged",
+            "type": "boolean"
+          },
+          "value": {
+            "default": "",
+            "description": "The value printed there.",
+            "title": "Value",
+            "type": "string"
+          },
+          "vendor_round": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The round of the vendor's value.",
+            "title": "Vendor Round"
+          },
+          "via": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What linked it to the architect's label.",
+            "title": "Via"
+          },
+          "words": {
+            "default": "",
+            "description": "\"Unchanged since round 1\".",
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "title": "ChatFindingRoundMatchOut",
         "type": "object"
       },
       "ChatFindingRuleNoteOut": {
@@ -8847,6 +8973,12 @@
           },
           "still_wrong": {
             "title": "Still Wrong",
+            "type": "integer"
+          },
+          "unchanged": {
+            "default": 0,
+            "description": "Items whose value is unchanged since an earlier round: information only, never counted as right (2026-10-22).",
+            "title": "Unchanged",
             "type": "integer"
           },
           "unrequested": {

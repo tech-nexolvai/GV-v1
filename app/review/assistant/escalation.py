@@ -5,6 +5,11 @@ The architect's drawings are the source of truth and nobody at GV is asked to de
 inside the full check and its fixed price, it climbs a ladder, the biggest items first
 (`impact.by_impact`), and stops at the first step that settles it:
 
+0. **The reference is the architect's** (Anant, 2026-10-22; `round_reference`, $0): an item
+   compared only with the vendor's own drawing (its round 1) is never Right; code records the
+   round match as information ("Unchanged since round 1") and compares the item with the architect
+   instead where it links the vendor's label to an architect label (another item comparing the
+   same label, code's pairs, the earlier round's own item); else it stays Not compared.
 1. **Free code steps** (this module, $0):
    - `labels`: the drawn-label reader (`dims.json`, set pack v3): code's numbered label inside the
      item's box that prints the item's value is a code reading of it (`printed_<side>`), and a
@@ -57,6 +62,8 @@ from app.review.assistant import classification, proof
 from app.review.assistant.chat_trust import inch_words, judged, round_item_key
 from app.review.assistant.full_check_advocate import code_pairs
 from app.review.assistant.impact import by_impact
+from app.review.assistant.round_reference import applies as compares_drawings
+from app.review.assistant.round_reference import compare_with_architect
 from app.review.assistant.spot_locate import VENDOR_SEARCH, search_area, search_words
 
 __all__ = [
@@ -132,12 +139,18 @@ class Escalation:
     """How many items each step settled (an outcome: wrong, right or folded)."""
     log: dict[str, list[dict[str, str]]] = field(default_factory=dict)
     """Per finding id: each step tried, its outcome and what code found."""
+    round_matches: int = 0
+    """Items compared only with the vendor's own drawing (`round_reference`)."""
+    linked: dict[str, str] = field(default_factory=dict)
+    """Per finding id: how code compared such an item with the architect instead."""
 
     def block(self) -> dict[str, Any]:
         return {
             "tried": self.tried,
             "settled": dict(self.settled),
             "absorbed": len(self.absorbed),
+            "round_matches": self.round_matches,
+            "linked": len(self.linked),
         }
 
 
@@ -674,6 +687,17 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     the biggest first (see the module). Pure: returns what changed."""
     result = Escalation()
     live = [dict(f) for f in findings]
+    # First (Anant, 2026-10-22): an item compared only with the vendor's own earlier round is
+    # never Right; code compares it with the architect instead where it can (`round_reference`).
+    linked = compare_with_architect(
+        live, labels=ctx.labels, page_map=ctx.page_map, pairs=ctx.pairs, main_file=ctx.main_file
+    )
+    result.round_matches = linked.marked
+    result.linked = dict(linked.linked)
+    result.absorbed.update(linked.absorbed)
+    relinked = {str(f["id"]): judged(f) for f in linked.changed}
+    live = [relinked.get(str(f["id"]), f) for f in live if str(f["id"]) not in linked.absorbed]
+    result.changed.extend(relinked.values())
     by_id = {str(f["id"]): f for f in live}
     areas = _areas(ctx)
     for finding in by_impact(live):
@@ -714,6 +738,9 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
         }
         result.log[str(item.finding["id"])] = item.steps
         result.changed.append(item.finding)
+    # One copy of each changed finding, its last state.
+    last = {str(f["id"]): f for f in result.changed}
+    result.changed = list(last.values())
     return result
 
 
@@ -781,7 +808,9 @@ def escalate_answer(engine: Any) -> Escalation | None:
     reason. `None` when the answer has no set pack."""
     workspace = engine.tools.workspace
     book = engine.book
-    if workspace.set_pack is None or not any(undecided(f) for f in book.live()):
+    if workspace.set_pack is None or not any(
+        undecided(f) or compares_drawings(f) for f in book.live()
+    ):
         return None
     plan = import_module("app.review.assistant.full_check_plan")
     page_map = plan.read_page_map(workspace.set_pack, assume=True, main_file=book.main_file)

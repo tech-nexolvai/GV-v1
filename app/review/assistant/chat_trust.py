@@ -55,7 +55,7 @@ from time import monotonic
 from types import ModuleType
 from typing import Any, Final
 
-from app.review.assistant import witness
+from app.review.assistant import round_reference, witness
 from app.review.assistant.chat_findings import finding_categories, live_findings, page_ranges
 from app.review.assistant.classification import READER_ERROR, READER_ERROR_WORDS
 from app.review.assistant.dim_findings import label_checks
@@ -842,7 +842,7 @@ def round_statuses(findings: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     """Each finding's `round_status`, linking the same item across rounds."""
     rounds = {int(f.get("round") or 1) for f in findings}
     if len(rounds) <= 1:
-        return {str(f["id"]): "single_round" for f in findings}
+        return _still_wrong(findings, {str(f["id"]): "single_round" for f in findings})
     by_key: dict[str, list[Mapping[str, Any]]] = {}
     for finding in findings:
         by_key.setdefault(_key(finding), []).append(finding)
@@ -851,12 +851,29 @@ def round_statuses(findings: Sequence[Mapping[str, Any]]) -> dict[str, str]:
         seen = {int(f.get("round") or 1) for f in group}
         if len(seen) > 1:
             latest = max(group, key=lambda f: int(f.get("round") or 1))
-            status = "fixed_in_later_round" if latest.get("status") == "same" else "still_wrong"
+            # A later "same" against the vendor's own earlier round fixes nothing (2026-10-22).
+            fixed = latest.get("status") == "same" and not round_reference.round_only(latest)
+            status = "fixed_in_later_round" if fixed else "still_wrong"
             out.update({str(f["id"]): status for f in group})
         elif seen == {min(rounds)}:
             out.update({str(f["id"]): "not_in_later_round" for f in group})
         else:
             out.update({str(f["id"]): "new_in_later_round" for f in group})
+    return _still_wrong(findings, out)
+
+
+def _still_wrong(findings: Sequence[Mapping[str, Any]], out: dict[str, str]) -> dict[str, str]:
+    """`out` with "still wrong" for a proved Wrong whose value the vendor did not change since an
+    earlier round: it repeats on its newest round a value the architect does not print (Anant,
+    2026-10-22: wrong "no matter how many rounds it took"; `round_reference`)."""
+    proof = import_module("app.review.assistant.proof")  # proof reads this module
+    for finding in findings:
+        if (
+            finding.get("status") == "different"
+            and round_reference.unchanged(finding)
+            and proof.proof_group(finding) == "clouded"
+        ):
+            out[str(finding["id"])] = "still_wrong"
     return out
 
 
@@ -873,6 +890,9 @@ def _rounds_summary(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any] | N
         for status in ("fixed_in_later_round", "still_wrong", "not_in_later_round")
     }
     new = sum(1 for f in findings if f.get("round_status") == "new_in_later_round")
+    # Information only (Anant, 2026-10-22): a value the vendor did not change since an earlier
+    # round is never Right by itself (`round_reference`).
+    unchanged = sum(1 for f in findings if round_reference.unchanged(f))
     # The comment letter's words (Closed / Previous comment not addressed / New, #1766).
     line = (
         f"Round {first} comments: {counts['fixed_in_later_round']} of {len(earlier)} closed; "
@@ -883,6 +903,11 @@ def _rounds_summary(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any] | N
         line += f"; {counts['not_in_later_round']} not found in a later round"
     if new:
         line += f"; {new} new in a later round"
+    if unchanged:
+        line += (
+            f"; {unchanged} unchanged since an earlier round (information only, not counted as "
+            "right)"
+        )
     return {
         "rounds": rounds,
         "earlier_items": len(earlier),
@@ -890,6 +915,7 @@ def _rounds_summary(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any] | N
         "still_wrong": counts["still_wrong"],
         "not_in_later_round": counts["not_in_later_round"],
         "new": new,
+        "unchanged": unchanged,
         "line": line,
     }
 

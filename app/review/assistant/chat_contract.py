@@ -557,6 +557,28 @@ type ChatKeepReason = Literal[
 ]
 
 
+class ChatFindingRoundMatchOut(BaseModel):
+    """A comparison with the vendor's own drawing (`round_reference`): information only, shown as
+    "Unchanged since round 1"; never a Right and never counted as decided by itself."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page: int | None = None
+    round: int | None = Field(default=None, description="The round of the drawing compared with.")
+    vendor_round: int | None = Field(default=None, description="The round of the vendor's value.")
+    label: str | None = Field(default=None, description="The label compared with (D3).")
+    value: str = Field(default="", description="The value printed there.")
+    unchanged: bool = Field(default=False, description="Code reads the same value there.")
+    compared: Literal["carrier", "code_pair", "earlier_round"] | None = Field(
+        default=None,
+        description="How code compared the item with the architect instead (None: it could not, "
+        "so the item is Not compared).",
+    )
+    via: str | None = Field(default=None, description="What linked it to the architect's label.")
+    architect: str | None = Field(default=None, description="The architect's label (p57.D21).")
+    words: str = Field(default="", description='"Unchanged since round 1".')
+
+
 class ChatFindingSettledOut(BaseModel):
     """How code settled a not-compared ("check") item by itself (#1554), shown as "Settled by GV
     Review: …"."""
@@ -699,6 +721,8 @@ class ChatFindingProofOut(BaseModel):
             "string_not_verified",
             "architect_outside_gv_rule",
             "outside_gv_rule",
+            "round_only",
+            "prototype_only",
             "internal",
         ]
         | None
@@ -916,6 +940,12 @@ class ChatFindingOut(BaseModel):
         description="A full check (#1619): the free code steps tried on this item when code could "
         "not settle it at first, and how it ended.",
     )
+    round_match: ChatFindingRoundMatchOut | None = Field(
+        default=None,
+        description="Information only (2026-10-22): the item was compared with the vendor's own "
+        "drawing (an earlier round), never counted as right; whether code compared it with the "
+        "architect instead.",
+    )
     string_reads: ChatFindingStringReadsOut | None = Field(
         default=None,
         description="A vendor string (#1641): the blind second reading's outcome, in code's words "
@@ -1105,6 +1135,11 @@ class ChatRoundsOut(BaseModel):
     not_in_later_round: int
     new: int
     line: str
+    unchanged: int = Field(
+        default=0,
+        description="Items whose value is unchanged since an earlier round: information only, "
+        "never counted as right (2026-10-22).",
+    )
     unrequested: int = Field(
         default=0,
         description="compare_rounds: changes nobody asked for (no finding, no GV markup).",
