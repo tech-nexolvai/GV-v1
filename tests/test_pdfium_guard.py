@@ -171,24 +171,30 @@ def test_a_collected_object_never_waits_for_the_lock() -> None:
     bitmap = page.render(scale=0.5)
     holding = threading.Event()
     release = threading.Event()
+    left = threading.Event()
 
     def hold() -> None:
+        # Holds the lock until the test lets go (or a minute passes), then says it has left. A
+        # close that waited for the lock could only finish after `left` is set.
         with PDFIUM_LOCK:
             holding.set()
-            release.wait(10)
+            release.wait(60)
+        left.set()
 
     holder = threading.Thread(target=hold)
     holder.start()
     assert holding.wait(5)
     try:
-        started = time.monotonic()
         del bitmap, page
         gc.collect()
-        assert time.monotonic() - started < 1.0  # it did not wait for the holder
+        # No clock: the holder is still inside, so the collection did not wait for it, however
+        # slow the machine is.
+        assert not left.is_set(), "the collected close waited for the lock's holder"
         assert pdfium_guard.queued_closes() >= 2
     finally:
         release.set()
         holder.join(timeout=10)
+    assert left.is_set()
     document.close()  # drains the queue first: the page is closed before its document
     assert pdfium_guard.queued_closes() == 0
 

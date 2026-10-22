@@ -167,7 +167,7 @@ function LiveCheckCard({ live: fromServer, eta = null, files = [], model = null,
             >
               <i style={share === null ? undefined : { width: `${share.toFixed(1)}%` }} />
             </div>
-            <div className="mt-2 flex min-w-0 justify-between gap-3 text-[13px] text-muted-foreground">
+            <div className="mt-2 flex min-w-0 flex-wrap justify-between gap-x-3 gap-y-0.5 text-[13px] text-muted-foreground">
               <span data-slot="chat-live-count" className="min-w-0">{isStopping ? 'Stopping: nothing new starts' : <CountWords words={barWords(live)} />}</span>
               <span data-slot="chat-live-left" className="shrink-0 transition-opacity duration-150 motion-reduce:transition-none">{leftText}</span>
             </div>
