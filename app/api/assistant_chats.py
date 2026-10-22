@@ -1551,6 +1551,7 @@ def _message(
             numbers_effort=settings.assistant_numbers_helper_effort,
             numbers_pages=settings.assistant_numbers_helper_pages,
             pairing_proof=settings.assistant_pairing_proof,
+            round_pick_cap_micros=int(settings.assistant_round_pick_cap_usd * _MICROS),
             full_check_mode=settings.assistant_full_check_mode,
             page_match_model=(
                 None

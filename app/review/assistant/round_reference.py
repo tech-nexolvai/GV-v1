@@ -28,7 +28,8 @@ match (`round_only`). Pure code, $0, run by the escalation before its free steps
    underside and room-end guards); a vendor repeating a value the architect does not print is still
    wrong on round 2, so its round status is "still wrong".
 3. **Anything else stays as it is**: `classification.round_only` keeps it Not compared ("compared
-   only with the vendor's earlier round"), with what would settle it.
+   only with the vendor's earlier round"), with what would settle it. The roster then asks a cheap
+   blind pick for these leftovers only (`round_picks`, layer 2, #1861): `round_pick` links.
 
 The brand prototype is never a vendor round: a reference on it stays the prototype's rule (R1).
 """
@@ -44,8 +45,10 @@ __all__ = [
     "ROUND_MATCH",
     "LinkResult",
     "applies",
+    "architect_label",
     "compare_with_architect",
     "match_words",
+    "point_at",
     "reference_of",
     "round_only",
     "unchanged",
@@ -64,7 +67,7 @@ _CODE_MADE: Final = frozenset(
 _SAME_IN: Final = Decimal(1) / Decimal(32)
 
 type Role = Literal["vendor", "architect", "brand"]
-type Link = Literal["carrier", "code_pair", "earlier_round"]
+type Link = Literal["carrier", "code_pair", "earlier_round", "round_pick"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,7 +305,7 @@ def _record(
     return match
 
 
-def _architect_label(
+def architect_label(
     labels: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]],
     ref: str | None,
     main_file: str | None,
@@ -340,7 +343,7 @@ def _provenance(label: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _point_at(
+def point_at(
     finding: dict[str, Any], label: Mapping[str, Any], how: Link, via: str, *, by_code: bool
 ) -> None:
     """The item compared with the architect's `label` instead of the vendor's earlier round: its
@@ -468,9 +471,9 @@ def compare_with_architect(
                 carriers_changed[str(carrier["id"])] = carrier
             result.linked[str(finding["id"])] = "carrier"
             continue
-        paired = _architect_label(labels, pairs.get(vendor_ref or ""), main_file)
+        paired = architect_label(labels, pairs.get(vendor_ref or ""), main_file)
         if paired is not None:
-            _point_at(finding, paired, "code_pair", f"code paired {vendor_ref}", by_code=True)
+            point_at(finding, paired, "code_pair", f"code paired {vendor_ref}", by_code=True)
             result.linked[str(finding["id"])] = "code_pair"
             result.changed.append(finding)
             continue
@@ -483,9 +486,9 @@ def compare_with_architect(
             None,
         )
         label = (
-            _architect_label(labels, _ref(_dims(earlier).get("architect")), main_file)
+            architect_label(labels, _ref(_dims(earlier).get("architect")), main_file)
             if earlier is not None
-            else _architect_label(labels, pairs.get(earlier_ref or ""), main_file)
+            else architect_label(labels, pairs.get(earlier_ref or ""), main_file)
         )
         if earlier is not None and label is not None:
             from app.review.assistant.proof import proof_of
@@ -507,7 +510,7 @@ def compare_with_architect(
                 if earlier is not None
                 else f"code paired {earlier_ref} with {_ref(label)}"
             )
-            _point_at(finding, label, "earlier_round", via, by_code=False)
+            point_at(finding, label, "earlier_round", via, by_code=False)
             result.linked[str(finding["id"])] = "earlier_round"
             result.changed.append(finding)
             continue

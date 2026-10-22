@@ -756,6 +756,7 @@ def decide(
     item: str | None = None,
     words: str | None = None,
     twins: Collection[str] = (),
+    first_spans: tuple[object, object] | None = None,
 ) -> Verdict:
     """The verdict on one red candidate under D1 (see the module). `printed`: code read both
     values at their spots. `helper_pick`: the helper's architect label (`p23.D10`). `advocate`: the
@@ -765,7 +766,9 @@ def decide(
     `item` and `words` (`finding_words`): the finding's own, read for room context (`room_end`)
     when geometry cannot back the picks. `twins`: architect labels code proved are the helper's
     dimension printed again on the same drawing (`same_dimension`, #1840): a pick naming one of
-    them names the helper's dimension."""
+    them names the helper's dimension. `first_spans`: where the first blind pick said the two
+    dimensions' ends land (vendor's, architect's), when the first pick was a blind pick too (a
+    cheap round pick, #1861): the second pick must say the same."""
     answers: dict[str, str] = {check.name: str(check.outcome) for check in checks}
     failed = [check for check in checks if check.outcome != "pass"]
     if failed:
@@ -844,6 +847,16 @@ def decide(
             "objects",
             "Not proved: the two dimensions' ends land in different places "
             f"({_ends(vendor_spans)} vs {_ends(architect_spans)}).",
+            answers,
+        )
+    if first_spans is not None and (vendor_spans, architect_spans) != tuple(first_spans):
+        # Two blind picks of the same label must also agree on the ends (#1861).
+        answers["spans"] = "picks_differ"
+        return Verdict(
+            "objects",
+            "Not proved: the two blind picks say the ends land in different places (first: "
+            f"vendor {_ends(first_spans[0])}, architect {_ends(first_spans[1])}; second: vendor "
+            f"{_ends(vendor_spans)}, architect {_ends(architect_spans)}).",
             answers,
         )
     answers["spans"] = "agree"

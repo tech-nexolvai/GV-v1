@@ -582,6 +582,9 @@ class EngineSettings:
     pairing_proof: str = "ai_pair_plus_code"
     """What proves that two numbers measure the same thing (`GV_ASSISTANT_PAIRING_PROOF`):
     `ai_pair_plus_code` or `code_only` (`full_check_roster`)."""
+    round_pick_cap_micros: int = 2_000_000
+    """The roster's hard cap for the cheap picks that compare the round-only leftovers with the
+    architect (`GV_ASSISTANT_ROUND_PICK_CAP_USD`, #1861; `round_picks`); 0: off."""
     identity: PackageIdentity = field(default_factory=PackageIdentity)
     """Who and what the send-ready package is about (#1622): project, vendor, submittal number,
     date received, products."""

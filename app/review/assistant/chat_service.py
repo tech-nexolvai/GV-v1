@@ -797,6 +797,8 @@ class MessageJob:
     """The roster's numbers page helpers' most pages each (`GV_ASSISTANT_NUMBERS_HELPER_PAGES`)."""
     pairing_proof: str = "ai_pair_plus_code"
     """What proves a pairing for a red cloud (`full_check_roster`)."""
+    round_pick_cap_micros: int = 2_000_000
+    """The roster's hard cap for the cheap picks on the round-only leftovers (#1861); 0: off."""
     full_check_mode: str = "roster"
     """Which full check runs: `roster` or `simple` (`simple_check/`, #1665)."""
     simple: Mapping[str, Any] | None = None
@@ -1237,6 +1239,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             numbers_effort=job.numbers_effort,
             numbers_pages=job.numbers_pages,
             pairing_proof=job.pairing_proof,
+            round_pick_cap_micros=job.round_pick_cap_micros,
             full_check_mode=job.full_check_mode,
             simple=_simple_of(job, run, workspace.root, workspace.set_pack),
             page_match_model=job.page_match_model,
