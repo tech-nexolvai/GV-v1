@@ -259,6 +259,9 @@ def decided_summary(
         "Trust": f"{counts.get('confirmed', 0)} confirmed, {counts.get('likely', 0)} likely, "
         f"{counts.get('to_check', 0)} AI reading only",
     }
+    reading = (trust.get("reading") or {}).get("lines") or []
+    if reading:  # the reading coverage the check showed (#1862)
+        summary["Numbers read"] = "; ".join(str(line) for line in reading)
     not_checked = [str(line) for line in trust.get("not_checked") or []]
     for item in (trust.get("gv_checks") or {}).get("left_out") or []:
         not_checked.append(

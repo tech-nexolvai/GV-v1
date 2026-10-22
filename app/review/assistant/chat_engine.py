@@ -88,7 +88,7 @@ from time import monotonic, monotonic_ns
 from typing import Any, Final, Protocol
 from uuid import uuid4
 
-from app.review.assistant import not_compared, set_proofs
+from app.review.assistant import not_compared, reading_coverage, set_proofs
 from app.review.assistant.agent import (
     HELPER_PICTURE_EDGE_PX,
     billed_input_tokens,
@@ -2867,9 +2867,23 @@ class ChatEngine:
             ]
         self._ledger_trust(report)
         self._diff_rounds(report)
+        # Always present (null when not counted), so the live event and the stored block agree.
+        report["reading"] = self._reading_report()
         index = self._add_block({"type": "trust", "trust": report})
         self._trust_index = index
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(report))})
+
+    def _reading_report(self) -> dict[str, Any] | None:
+        """A full check's reading coverage (#1862): how many printed numbers the set pack's labels
+        read, from the pack's `reading_coverage.json`; None on other answers or an older pack.
+        Shown and filed only: never an input to a finding or a verdict."""
+        if self.settings.mode != "full_check":
+            return None
+        try:
+            return reading_coverage.report(reading_coverage.load(self.tools.workspace.set_pack))
+        except Exception:  # noqa: BLE001 - the answer goes on without it
+            _log.exception("reading coverage could not be shown")
+            return None
 
     def _fold_same_wrongs(self) -> None:
         """The same Wrong item reported more than once (two helpers, or a helper and a gap
@@ -3143,6 +3157,9 @@ class ChatEngine:
             "Trust": f"{trust.get('confirmed', 0)} confirmed, {trust.get('likely', 0)} likely, "
             f"{trust.get('to_check', 0)} AI reading only",
         }
+        reading = (report.get("reading") or {}).get("lines") or []
+        if reading:
+            summary["Numbers read"] = "; ".join(str(line) for line in reading)
         not_checked = list(report.get("not_checked") or [])
         for item in (report.get("gv_checks") or {}).get("left_out") or []:
             not_checked.append(

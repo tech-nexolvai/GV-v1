@@ -810,6 +810,55 @@ export interface ChatTrust {
   } | null;
   /** Where the answer's time and money went, phase by phase (#1512); older answers have none. */
   timings?: ChatTimings | null;
+  /** #1862: a full check's reading coverage (numbers read of those printed); older answers have none. */
+  reading?: ChatReading | null;
+}
+
+/** #1862: how many printed numbers code read on one side's drawings. */
+export interface ChatReadingSide {
+  read: number;
+  /** About how many are printed (counted by code). */
+  printed: number;
+  percent: number;
+}
+
+/** #1862: one unread number: whose drawing, where (PDF points of the page as shown), and how it was printed. */
+export interface ChatReadingSpot {
+  side: string;
+  box: number[];
+  kind: string;
+}
+
+/** #1862: a page's unread numbers that share one reason. */
+export interface ChatReadingGroup {
+  reason: string;
+  words: string;
+  count: number;
+  spots: ChatReadingSpot[];
+}
+
+/** #1862: one page of the reading coverage. */
+export interface ChatReadingPage {
+  file?: string | null;
+  page: number;
+  /** The page picture can show its spots (the set's first file). */
+  viewable?: boolean;
+  /** False: the drawn reader did not reach this page; its pen strokes are not counted. */
+  strokes_counted: boolean;
+  vendor_read: number;
+  vendor_printed: number;
+  architect_read: number;
+  architect_printed: number;
+  not_read: ChatReadingGroup[];
+}
+
+/** #1862: the reading coverage of a full check, counted by code when the set pack was made. */
+export interface ChatReading {
+  lines: string[];
+  vendor?: ChatReadingSide | null;
+  architect?: ChatReadingSide | null;
+  pages: ChatReadingPage[];
+  pages_not_counted?: number;
 }
 
 /** One phase of an answer: wall-clock seconds and what its model calls cost. */

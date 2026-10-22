@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
+from app.review.assistant import reading_coverage
 from app.review.assistant.chat_request import MODELS, ChatModel
 from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
 from app.review.assistant.chat_trust import judged
@@ -1599,6 +1600,10 @@ class _Run:
                     "by_phase": {p["phase"]: p["seconds"] for p in timings["phases"]},
                 },
                 "code_findings": _code_findings(engine.book.live()),
+                # How many printed numbers the set pack read (#1862): tracked run to run.
+                "reading": reading_coverage.headline(
+                    reading_coverage.load(engine.tools.workspace.set_pack)
+                ),
             }
             funnel = funnel_module.build(
                 self.items,
