@@ -238,6 +238,8 @@ export function progressWords(
   // #1524: the server's own progress when it sends it.
   const live = message.progress;
   if (live) {
+    // #1871: the check waits for every page to be read before any AI step; it says how far.
+    if (live.phase === 'reading' && live.reading_total) return `Reading the drawings: ${Math.min(live.reading_done ?? 0, live.reading_total)} of ${live.reading_total} pages`;
     if (live.phase === 'reading' && !live.pages_done && !live.drawings_total) return 'Reading the drawings…';
     if (live.phase === 'writing') return `Writing the summary and the cloud drawing · ${live.wrong_so_far} wrong · ${live.decision_so_far} to decide`;
     // #1665: the simple full check counts drawings, not pages.
