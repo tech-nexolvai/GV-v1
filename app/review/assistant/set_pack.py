@@ -73,7 +73,12 @@ rotation applied), origin top-left: the units of `pdftotext -bbox`, `report_find
 
 **Loaded by name, never imported**: this module draws with pypdfium2 and Pillow, which `app/api/`
 must not reach by import (`tests/api/test_no_heavy_work.py`); `chat_service` and the `zoom` tool
-load it with `import_module`. pdfium is not thread-safe: every use holds `chat_drawing`'s lock.
+load it with `import_module`. pdfium is not thread-safe: every call holds its one lock
+(`extraction/pdfium_guard.py`), and a whole step holds `chat_drawing.PDFIUM_LOCK` (the same lock).
+
+**Built in a process of its own** (`ensure_pack` -> `_build_in_child`, #1869): the set's pages are
+read and drawn there, so a page that crashes the PDF engine fails this pack (`status.json`:
+`renderer_crashed` and a `reason` naming the page, from `progress.json`) and never the server.
 """
 
 from __future__ import annotations

@@ -56,6 +56,8 @@ _log = logging.getLogger(__name__)
 #: whole step may call pdfium inside it).
 PDFIUM_LOCK: Final = threading.RLock()
 
+#: The type of a C function of a loaded library (ctypes keeps it private).
+_C_FUNCTION: Final[type] = ctypes._CFuncPtr  # type: ignore[attr-defined]
 #: Marks a function this module wrapped.
 _MARK: Final = "__gv_pdfium_guarded__"
 
@@ -73,7 +75,7 @@ _DEPTH = 0
 _ORIGINAL_CLOSE: Final = _bases._close_template
 
 
-def guarded(function: Callable[..., Any]) -> bool:
+def guarded(function: object) -> bool:
     """Whether `function` is a pdfium function wrapped by this module."""
     return bool(getattr(function, _MARK, False))
 
@@ -114,7 +116,7 @@ def _wrap(name: str, function: Any) -> Callable[..., Any]:
                 _DEPTH -= 1
 
     setattr(call, _MARK, True)
-    call.__wrapped__ = function  # type: ignore[attr-defined]
+    call.__wrapped__ = function
     call.__qualname__ = name
     return call
 
@@ -146,7 +148,7 @@ def _install() -> None:
     with PDFIUM_LOCK:
         for module in (_bindings, pdfium_raw):
             for name, value in list(vars(module).items()):
-                if guarded(value) or not isinstance(value, ctypes._CFuncPtr):
+                if guarded(value) or not isinstance(value, _C_FUNCTION):
                     continue
                 if isinstance(value, type):
                     continue  # a callback type, not a function of the library

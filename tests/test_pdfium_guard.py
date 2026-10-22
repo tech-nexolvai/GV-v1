@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter  # type: ignore[import-untyped]
+from reportlab.pdfgen import canvas  # type: ignore[import-untyped]
 
 from extraction import pdfium_guard
 from extraction.pdfium_guard import PDFIUM_LOCK, pdfium, pdfium_raw
@@ -96,12 +96,10 @@ def test_every_pdfium_function_holds_the_lock() -> None:
         assert pdfium_guard.guarded(getattr(pdfium_raw, name))
     # pypdfium2's helpers call the raw module, so they go through the same wrappers.
     assert pdfium.raw is pdfium_raw
-    import ctypes
-
     bare = [
         name
         for name, value in vars(pdfium_raw).items()
-        if isinstance(value, ctypes._CFuncPtr) and not isinstance(value, type)
+        if isinstance(value, pdfium_guard._C_FUNCTION) and not isinstance(value, type)
     ]
     assert bare == []
 

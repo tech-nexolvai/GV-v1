@@ -26,7 +26,9 @@ flattened.
 times the scale) against the working copy, annotations drawn, and their counts compared. A page
 whose pictures do not agree is replaced by a blank page that says why: no reader ever places
 anything on a page whose working copy is not exact, and the unchanged page is never used instead.
-So is a page with no visible area.
+So is a page with no visible area. The check runs in a process of its own (`verify_isolated`,
+#1869): a page that crashes the PDF engine is such a page too ("the PDF reader crashed on it"), and
+the rest are still checked; the server never goes down with it.
 
 **A file that needs none of this comes back byte for byte**, so a set already in this shape (every
 GV set so far) reads exactly as before and keeps its set pack.
