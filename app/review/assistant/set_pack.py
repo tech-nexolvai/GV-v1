@@ -7,7 +7,9 @@ that set-up once per upload, in the background, and the agent sees it read-only 
 
 - `<name>_drawings_only.pdf`: a copy of each PDF that keeps only the pasted drawings (`/Stamp`
   annotations, and drawings pasted as pictures, #1825), so GV's markup is hidden (SKILL.md section 5). A page with no stamps is its own
-  page content, without annotations. AutoCAD's SHX text comments are kept as invisible text at
+  page content, without annotations. GV's stickers baked inside a pasted drawing (a coloured
+  note over the vendor's ink, #1859) are hidden too, and listed in `<name>_stickers.json`
+  (`gv_stickers`). AutoCAD's SHX text comments are kept as invisible text at
   their rectangles (#1772), as `verify_value` reads them.
 - `pages/<name>/p-001.png`: every page at 100 dpi, from the drawings-only copy.
 - `contact/<name>-01.png`: contact sheets, nine pages to a picture, each page number stamped.
@@ -54,6 +56,9 @@ that set-up once per upload, in the background, and the agent sees it read-only 
 - `pairs.json`: architect against vendor dimensions paired by drawn position (`dim_pairs.py`,
   wrapping `extraction/architect/pairing.py`) or by anchors, what both ends land on (`dim_anchors.py`:
   the same wall, floor or outlet on both drawings, no scale used), each `same` or `different`.
+- `reading_coverage.json` (#1862): how many printed numbers the labels read, per set and page,
+  and every unread one with its box and why (`reading_coverage.py`, `reading_ink.py`). Counts
+  only; never shown to the agent (not in the README) and never a verdict's input.
 - `status.json`: `building`, `ready`, `ready_without_labels` (the labels step broke or ran out of
   time) or `failed`, and the steps done. The agent can work before
   the pack is ready (the first message never waits); the `zoom` tool makes the drawings-only copy
@@ -82,6 +87,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -119,7 +125,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 14
+PACK_VERSION: Final = 15
 #: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
@@ -372,7 +378,15 @@ def drawings_only(folder: Path, uploads: Path, name: str) -> Path:
                 raise FileNotFoundError(name)
             logging.getLogger("pypdf").setLevel(logging.ERROR)
             pictures = picture_annotations(source)
-            writer = PdfWriter(clone_from=_with_shx_text(source))
+            # GV's stickers baked into a pasted drawing are GV's markup too (#1859): hidden, and
+            # listed for the readers (`gv_stickers`), so GV's values are never the vendor's.
+            stickers = import_module("app.review.assistant.gv_stickers")
+            copy, found = stickers.hidden_copy(_with_shx_text(source))
+            try:
+                stickers.write_file(folder / f"{stem(name)}{stickers.STICKERS_SUFFIX}", name, found)
+            except OSError as failed:  # the copy still hides them; the readers search the upload
+                _log.warning("assistant set pack stickers not listed: %s", type(failed).__name__)
+            writer = PdfWriter(clone_from=copy)
             for number, page in enumerate(writer.pages, start=1):
                 if "/Annots" in page:
                     annotations: Any = page["/Annots"]
@@ -994,7 +1008,10 @@ page_map.json          per page: whose drawing each pasted drawing is (from GV's
                        with no heading is nobody's (its numbers have no side).
 annotations.json      every annotation: file, page, kind, author, text, box (GV's markup and
                        headings included; the drawings-only copies drop them).
-*_drawings_only.pdf    each PDF with only the pasted drawings kept: GV's markup hidden.
+*_drawings_only.pdf    each PDF with only the pasted drawings kept: GV's markup hidden, and
+                       GV's stickers baked inside a pasted drawing (coloured notes) too.
+*_stickers.json        GV's stickers code hid: page, box, text. A value inside one is GV's,
+                       never the vendor's.
 pages/<name>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbers.
                        <name> is the upload's name without ".pdf" (A.pdf: pages/A/p-003.png);
                        NNN is the page with three digits.
@@ -1343,11 +1360,13 @@ def write_dims(
         # Each drawing's printed notes and tags (from the phrases dims.json keeps).
         _write_json(folder / notes.NOTES_FILE, notes.set_notes(document, pages))
 
+    ink: dict[tuple[str, int], Any] = {}
     document = labels.build_dims(
         {name: uploads / name for name in names},
         pages,
         drawn_budget_s=_drawn_budget(),
         on_page=written,
+        ink=ink,
     )
     # The candidate whole-page drawings, decided from every route's labels (#1772); the pack's
     # facts are written again from the settled page map.
@@ -1356,6 +1375,40 @@ def write_dims(
         pages["pages"] = list(settled.get("pages") or [])
         anchored_memo.clear()
         written(document)
+    _write_coverage(folder, document, ink)
+
+
+def _write_coverage(
+    folder: Path, document: Mapping[str, Any], ink: Mapping[tuple[str, int], Any]
+) -> None:
+    """`reading_coverage.json` (#1862): how many printed numbers the labels read, per page, and
+    where the rest are. Counts only; a failure leaves the pack without it, said in the log."""
+    try:
+        coverage = import_module("app.review.assistant.reading_coverage")
+        reading_ink = import_module("app.review.assistant.reading_ink")
+        started = time.process_time()
+        pages = {
+            (str(e.get("file")), int(e.get("page") or 0)): ink.get(
+                (str(e.get("file")), int(e.get("page") or 0))
+            )
+            for e in document.get("pages") or []
+            if isinstance(e, Mapping)
+        }
+        spots = reading_ink.unread_spots(pages)
+        annotations = _read_json(folder / "annotations.json")
+        seconds = sum(float(getattr(page, "seconds", 0.0)) for page in ink.values())
+        seconds += time.process_time() - started
+        coverage.write(
+            folder,
+            coverage.build(
+                document,
+                spots,
+                annotations if isinstance(annotations, list) else [],
+                seconds=seconds,
+            ),
+        )
+    except Exception:  # noqa: BLE001 - the pack works without its reading coverage
+        _log.exception("reading coverage failed; the pack has no reading_coverage.json")
 
 
 def ensure_pack(

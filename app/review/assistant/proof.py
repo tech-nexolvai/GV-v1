@@ -357,6 +357,11 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
         return False  # compared only with the vendor's own earlier round (Anant, 2026-10-22)
     if spot_guard.listed_only(finding):
         return False  # kept only to be listed (`spot_guard`): no vendor spot, never red (#1808)
+    if finding.get(classification.GV_STICKER) is not None:
+        return False  # the vendor value read is GV's own sticker, never the vendor's (#1859)
+    tag_read = finding.get("tag_read")
+    if isinstance(tag_read, Mapping) and tag_read.get("outcome") != "wrong":
+        return False  # the tag reader did not prove it (#1859)
     if finding.get("source") == "brand_prototype" and not classification.prototype_governs(finding):
         return False  # R1: the architect gives the item, so the prototype is reference only
     if finding.get("architect_parts"):

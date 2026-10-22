@@ -27,10 +27,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+from app.review.assistant import reading_coverage
 from app.review.assistant.classification import REASON_WORDS, REASONS, TRADE_WORDS
 from app.review.assistant.proof import classified, proof_group, vendor_value
 from app.review.assistant.vendor_text import internal, item_name, vendor_text
-from app.review.assistant.workbook import write_xlsx
+from app.review.assistant.workbook import Sheet, write_xlsx
 
 __all__ = [
     "COLUMNS",
@@ -308,20 +309,29 @@ def summary_rows(found: Sequence[Row]) -> list[list[str]]:
 SET_SHEET: Final = "Found across the set"
 
 
-def xlsx(found: Sequence[Row]) -> bytes:
+def xlsx(found: Sequence[Row], reading: Mapping[str, Any] | None = None) -> bytes:
     """The workbook: "Not compared" (the items: as many rows as the screen and the cloud drawing
     count), "Found across the set" (the set's own gaps code found: sheet gaps, finish notes, the
-    labels the architect gives no size for; the PDF lists them apart too) and "Summary" (the
-    counts). Raises `ModuleNotFoundError` when openpyxl is not installed (`csv_text` then)."""
+    labels the architect gives no size for; the PDF lists them apart too), "Summary" (the
+    counts) and, with the set pack's reading coverage (`reading`, #1862), "Not read": every
+    printed number code did not read, with its page, box and why. Raises `ModuleNotFoundError`
+    when openpyxl is not installed (`csv_text` then)."""
     items = [row for row in found if row.level == "item"]
     gaps = [row for row in found if row.level != "item"]
-    return write_xlsx(
-        [
-            ("Not compared", COLUMNS, _table(items)),
-            (SET_SHEET, COLUMNS, _table(gaps)),
-            ("Summary", ("Counted", "What", "Items"), summary_rows(found)),
-        ]
-    )
+    sheets: list[Sheet] = [
+        ("Not compared", COLUMNS, _table(items)),
+        (SET_SHEET, COLUMNS, _table(gaps)),
+        ("Summary", ("Counted", "What", "Items"), summary_rows(found)),
+    ]
+    if reading:
+        sheets.append(
+            (
+                reading_coverage.SHEET,
+                reading_coverage.SHEET_COLUMNS,
+                reading_coverage.sheet_rows(reading),
+            )
+        )
+    return write_xlsx(sheets)
 
 
 def set_rows_of(sheet: bytes, *, csv: bool = False) -> list[Row] | None:
@@ -473,7 +483,7 @@ def make_files(
     pdf = pdf_out.read_bytes()
     stem = name[:-4] if name.lower().endswith(".pdf") else name
     try:
-        sheet, ending = xlsx(found), "xlsx"
+        sheet, ending = xlsx(found, reading_coverage.load(pack)), "xlsx"
     except ModuleNotFoundError:
         sheet, ending = csv_text(found).encode("utf-8-sig"), "csv"
     xlsx_out.write_bytes(sheet)

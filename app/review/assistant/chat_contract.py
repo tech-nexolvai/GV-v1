@@ -65,6 +65,11 @@ __all__ = [
     "ChatPlanOptionOut",
     "ChatProgressBlock",
     "ChatProgressOut",
+    "ChatReadingGroupOut",
+    "ChatReadingOut",
+    "ChatReadingPageOut",
+    "ChatReadingSideOut",
+    "ChatReadingSpotOut",
     "ChatResolverBlock",
     "ChatResolverCountsOut",
     "ChatResolverEntryOut",
@@ -724,6 +729,11 @@ class ChatFindingProofOut(BaseModel):
             "round_only",
             "prototype_only",
             "internal",
+            "gv_sticker",
+            "tags_differ",
+            "tag_unconfirmed",
+            "words",
+            "stroke_words",
         ]
         | None
     ) = Field(default=None, description="not_compared: the reason (the list's group).")
@@ -747,7 +757,8 @@ class ChatFindingEscalationStepOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     step: str = Field(
-        description="labels, under_markup, same_item, vendor_sums, notes or pairs (cheapest first)."
+        description="gv_sticker or tags (before the ladder, #1859); labels, under_markup, "
+        "same_item, vendor_sums, notes or pairs (cheapest first)."
     )
     outcome: str = Field(description="read, proved, folded or no_change.")
     how: str = Field(description="What code did and found, in one plain line.")
@@ -1359,6 +1370,66 @@ class ChatProductScopeOut(BaseModel):
     )
 
 
+class ChatReadingSideOut(BaseModel):
+    """How many printed numbers code read on one side's drawings (#1862)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    read: int
+    printed: int = Field(description="About how many are printed (counted by code).")
+    percent: int
+
+
+class ChatReadingSpotOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    side: str = Field(description="vendor | architect | brand")
+    box: list[float] = Field(description="PDF points of the page as shown: x0, y0, x1, y1.")
+    kind: str = Field(description="typed | strokes | pictures")
+
+
+class ChatReadingGroupOut(BaseModel):
+    """A page's unread numbers that share one reason."""
+
+    model_config = ConfigDict(frozen=True)
+
+    reason: str
+    words: str = Field(description="The reason in plain words.")
+    count: int
+    spots: list[ChatReadingSpotOut]
+
+
+class ChatReadingPageOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    file: str | None = None
+    page: int
+    viewable: bool = Field(
+        default=False, description="The page picture can show it (the set's first file)."
+    )
+    strokes_counted: bool = Field(
+        description="False: the drawn reader did not reach the page; its pen strokes are uncounted."
+    )
+    vendor_read: int = 0
+    vendor_printed: int = 0
+    architect_read: int = 0
+    architect_printed: int = 0
+    not_read: list[ChatReadingGroupOut] = Field(default_factory=list)
+
+
+class ChatReadingOut(BaseModel):
+    """The reading coverage (#1862): how many of the numbers printed on the drawings code read,
+    and where the rest are. Counted by code when the set pack is made; never a verdict's input."""
+
+    model_config = ConfigDict(frozen=True)
+
+    lines: list[str] = Field(description="Plain sentences: one per side, the main reasons.")
+    vendor: ChatReadingSideOut | None = None
+    architect: ChatReadingSideOut | None = None
+    pages: list[ChatReadingPageOut] = Field(default_factory=list)
+    pages_not_counted: int = 0
+
+
 class ChatTrustOut(BaseModel):
     """Why the answer can be believed, built by code from its findings and coverage."""
 
@@ -1389,6 +1460,11 @@ class ChatTrustOut(BaseModel):
         default=None,
         description="The products checked and how many findings of other products code dropped "
         "(for the record, not shown); null on older answers.",
+    )
+    reading: ChatReadingOut | None = Field(
+        default=None,
+        description="A full check's reading coverage (#1862): numbers read of those printed; null "
+        "on other answers, older answers and set packs made before it was counted.",
     )
 
 
@@ -1563,6 +1639,14 @@ class ChatFunnelOut(BaseModel):
     red: int = 0
     right: int = 0
     not_compared: int = 0
+    vendor_numbers_read: int | None = Field(
+        default=None,
+        description="Reading coverage (#1862): printed numbers code read on the vendor's drawings; "
+        "null when the set pack has no coverage.",
+    )
+    vendor_numbers_printed: int | None = None
+    architect_numbers_read: int | None = None
+    architect_numbers_printed: int | None = None
 
 
 class ChatWorkItemsBlock(BaseModel):

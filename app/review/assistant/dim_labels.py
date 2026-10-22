@@ -247,6 +247,9 @@ class PageLabels:
     """The OCR route's spots (#1848): `{status, spots, seconds, unconfirmed}`; `None` when it did
     not run on the page. `unconfirmed` lists what one engine read, or the two read differently:
     a suggestion only, never a label, never a red."""
+    ink: Any = None
+    """With `drawn_labels(count_ink=True)`: the page's pen-stroke ink that may be a printed number
+    code did not read (`reading_ink.PageInk`), for the reading coverage (#1862). Counts only."""
 
 
 # ---- reading the page once -----------------------------------------------------------------------
@@ -1873,6 +1876,7 @@ def drawn_labels(
     phrases: Sequence[Mapping[str, Any]] = (),
     sweep_budget_s: float = 0.0,
     alphabet: bool = False,
+    count_ink: bool = False,
 ) -> PageLabels:
     """Page `page`'s text labels (as `page_labels` gave them) and its picture labels (#1830)
     with its drawn labels added after them, read within `budget_s` seconds: the pack's last
@@ -1882,7 +1886,9 @@ def drawn_labels(
     (no id), for the pack to number after every other label, and `ocr` says what it did. With
     `sweep_budget_s` (#1860), `read_number` then reads the groups still unlabelled that look like
     a number (`_sweep`); with `alphabet`, the page's confirmed drawn labels are kept as samples of
-    the vendor's alphabet (`alphabet_samples`)."""
+    the vendor's alphabet (`alphabet_samples`).
+    `count_ink`: also count the page's unread pen-stroke numbers (`PageLabels.ink`, #1862) on the
+    page this pass already parsed, after every route's labels."""
     started = clock()
     result = PageLabels(
         labels=[
@@ -1920,6 +1926,12 @@ def drawn_labels(
             result.ocr = {**read.ocr, "sweep": said}
     if alphabet:
         result.alphabet = alphabet_samples(parsed, result.labels, page)
+    if count_ink:
+        try:
+            ink = import_module("app.review.assistant.reading_ink")
+            result.ink = ink.page_ink(parsed, halves, [*result.labels, *result.ocr_labels])
+        except Exception as failed:  # noqa: BLE001 - counting never costs the page its labels
+            _log.warning("dimension labels: reading coverage failed: %s", type(failed).__name__)
     result.seconds = round(clock() - started, 2)
     return result
 
@@ -3329,6 +3341,7 @@ def build_dims(
     pictures_budget_s: float = PICTURES_BUDGET_S,
     ocr_budget_s: float = OCR_BUDGET_S,
     sweep_budget_s: float = SWEEP_BUDGET_S,
+    ink: dict[tuple[str, int], Any] | None = None,
 ) -> dict[str, Any]:
     """The set pack's `dims.json`: every page of every upload and its labels. Three passes: the
     text route on every page first (the agent has every printed label in minutes), then the pasted
@@ -3340,8 +3353,10 @@ def build_dims(
     seconds), then `read_number` reads the groups still unlabelled that look like numbers, sharing
     `sweep_budget_s` seconds (#1860); the vendor's alphabet is learned from every page's confirmed
     drawn labels (`dims.json`'s `alphabet`) and seconds the sweep's OCR-only readings. After the
-    `EQ` parts these labels are numbered after every other label, so no id moves. `on_page` sees the document after each page of each pass (to write it as it grows).
-    """
+    `EQ` parts these labels are numbered after every other label, so no id moves. `on_page` sees
+    the document after each page of each pass (to write it as it grows). `ink`: filled with each
+    page's unread pen-stroke candidates the drawn pass counted (#1862), keyed `(file, page)`; a
+    page it did not reach is not in it."""
     halves: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     pasted: dict[tuple[str, int], list[Sequence[float]]] = {}
     entries = page_map.get("pages") if isinstance(page_map, Mapping) else None
@@ -3445,6 +3460,7 @@ def build_dims(
                 phrases=entry.get("phrases") or [],
                 sweep_budget_s=sweep_left,
                 alphabet=True,
+                count_ink=ink is not None,
             )
         except Exception as failed:  # noqa: BLE001 - the page keeps its text labels
             _log.warning("dimension labels: drawn pass failed: %s", type(failed).__name__)
@@ -3459,6 +3475,8 @@ def build_dims(
             ocr_left -= float(found.ocr.get("seconds") or 0.0)
             sweep_left -= float((found.ocr.get("sweep") or {}).get("seconds") or 0.0)
             pending[(name, number)] = found
+        if ink is not None and found.ink is not None:
+            ink[(name, number)] = found.ink
         if on_page is not None:
             on_page(document)
     # The `EQ` parts last, after every printed label of the page (text and drawn).

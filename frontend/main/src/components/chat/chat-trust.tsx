@@ -2,6 +2,7 @@ import { useId, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 
 import { Collapse } from '@/components/chat/chat-motion';
+import { ReadingCoverage } from '@/components/chat/chat-reading';
 import type { ChatCoverage, ChatFinding, ChatTrust, ChatUnknown, TrustLevel } from '@/lib/chat-api';
 import { coverageCounts, coverageWords } from '@/lib/chat-findings';
 import {
@@ -183,10 +184,12 @@ export interface HowCheckedProps {
   coverageStrip?: React.ReactNode;
   /** What the answer did not check (code's records). */
   unknowns?: readonly ChatUnknown[] | null;
+  /** #1862: the page picture, so an unread number can be shown boxed on its page. */
+  pagePicture?: ((page: number) => string) | null;
 }
 
 /** One folded section at the end of a whole-set answer: everything about how it was checked. */
-export function HowChecked({ findings, trust, coverage, coverageStrip, unknowns }: HowCheckedProps) {
+export function HowChecked({ findings, trust, coverage, coverageStrip, unknowns, pagePicture = null }: HowCheckedProps) {
   const [open, setOpen] = useState(false);
   const bodyId = useId();
   const levels = levelCounts(findings, trust);
@@ -243,6 +246,8 @@ export function HowChecked({ findings, trust, coverage, coverageStrip, unknowns 
               {rounds && <p data-slot="chat-trust-rounds" className="tabular-nums">{roundWords(rounds)}</p>}
             </div>
           )}
+
+          {trust?.reading && <ReadingCoverage reading={trust.reading} pagePicture={pagePicture} />}
 
           {(ledger || gv || trust?.evidence) && (
             <div className="grid gap-1 text-muted-foreground">
