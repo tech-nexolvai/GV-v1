@@ -55,6 +55,7 @@ from itertools import pairwise
 from typing import Any, Final, Literal
 
 from app.review.assistant.colour_rule import COLOUR_RULE
+from app.review.assistant.label_origin import ocr_read
 from app.review.assistant.untrusted import fence
 
 #: Set by the roster on a blind pick made by the stronger model at high effort (#1819): only such
@@ -548,7 +549,7 @@ def _axis(label: Mapping[str, Any]) -> tuple[float, float] | None:
     read inside a pasted picture has none (#1830, #1835): a picture's line work is pixels, so it
     never passes a geometry check on a line."""
     line = label.get("dim_line")
-    if not line or len(line) != 2 or label.get("origin") == "picture":
+    if not line or len(line) != 2 or ocr_read(label):
         return None
     index = 0 if label.get("orientation") == "h" else 1
     ends = sorted(float(point[index]) for point in line)
@@ -1281,7 +1282,7 @@ def _line(label: Mapping[str, Any]) -> tuple[float, float, float] | None:
     """(start, end, across) of a label's dimension line along its own axis (never a picture
     label's, #1835)."""
     line = label.get("dim_line")
-    if not line or len(line) != 2 or label.get("origin") == "picture":
+    if not line or len(line) != 2 or ocr_read(label):
         return None
     along = 0 if label.get("orientation") == "h" else 1
     ends = sorted(float(point[along]) for point in line)
