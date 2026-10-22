@@ -578,7 +578,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
     </p>
   ) : null;
   const howChecked = showTrust && !narrow ? (
-    <HowChecked findings={findings} trust={message.trust} coverage={coverage} coverageStrip={coverageStrip} unknowns={message.unknowns} />
+    <HowChecked findings={findings} trust={message.trust} coverage={coverage} coverageStrip={coverageStrip} unknowns={message.unknowns} pagePicture={pagePicture} />
   ) : null;
   const hasResult = fullCheck && (findings.length > 0 || coverage !== null || made.cloud !== null || made.report !== null);
   const resultShown = hasResult && !running && !folding;

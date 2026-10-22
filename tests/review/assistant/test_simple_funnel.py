@@ -282,6 +282,11 @@ def test_the_headline_is_the_block_field() -> None:
         "red": 1,
         "right": 1,
         "not_compared": 3,
+        # No reading coverage in this funnel (a pack made before it was counted, #1862).
+        "vendor_numbers_read": None,
+        "vendor_numbers_printed": None,
+        "architect_numbers_read": None,
+        "architect_numbers_printed": None,
     }
     block = ChatWorkItemsBlock.model_validate(
         {"type": "work_items", "work_items": [], "run": "r1", "funnel": line}
@@ -291,6 +296,23 @@ def test_the_headline_is_the_block_field() -> None:
     assert (
         ChatWorkItemsBlock.model_validate({"type": "work_items", "work_items": []}).funnel is None
     )
+
+
+def test_the_headline_carries_the_reading_coverage() -> None:
+    # #1862: how many printed numbers the set pack read, tracked run to run.
+    reading = {
+        "vendor_read": 90,
+        "vendor_printed": 120,
+        "architect_read": 30,
+        "architect_printed": 31,
+    }
+    line = funnel_module.headline({**_funnel(), "reading": reading})
+    assert (line["vendor_numbers_read"], line["vendor_numbers_printed"]) == (90, 120)
+    assert (line["architect_numbers_read"], line["architect_numbers_printed"]) == (30, 31)
+    block = ChatWorkItemsBlock.model_validate(
+        {"type": "work_items", "work_items": [], "funnel": line}
+    )
+    assert block.funnel is not None and block.funnel.vendor_numbers_printed == 120
 
 
 def test_a_run_writes_its_funnel_and_the_block_carries_the_totals(

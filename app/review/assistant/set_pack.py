@@ -54,6 +54,9 @@ that set-up once per upload, in the background, and the agent sees it read-only 
 - `pairs.json`: architect against vendor dimensions paired by drawn position (`dim_pairs.py`,
   wrapping `extraction/architect/pairing.py`) or by anchors, what both ends land on (`dim_anchors.py`:
   the same wall, floor or outlet on both drawings, no scale used), each `same` or `different`.
+- `reading_coverage.json` (#1862): how many printed numbers the labels read, per set and page,
+  and every unread one with its box and why (`reading_coverage.py`, `reading_ink.py`). Counts
+  only; never shown to the agent (not in the README) and never a verdict's input.
 - `status.json`: `building`, `ready`, `ready_without_labels` (the labels step broke or ran out of
   time) or `failed`, and the steps done. The agent can work before
   the pack is ready (the first message never waits); the `zoom` tool makes the drawings-only copy
@@ -82,6 +85,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -119,7 +123,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 12
+PACK_VERSION: Final = 13
 #: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
@@ -1339,11 +1343,13 @@ def write_dims(
         # Each drawing's printed notes and tags (from the phrases dims.json keeps).
         _write_json(folder / notes.NOTES_FILE, notes.set_notes(document, pages))
 
+    ink: dict[tuple[str, int], Any] = {}
     document = labels.build_dims(
         {name: uploads / name for name in names},
         pages,
         drawn_budget_s=_drawn_budget(),
         on_page=written,
+        ink=ink,
     )
     # The candidate whole-page drawings, decided from every route's labels (#1772); the pack's
     # facts are written again from the settled page map.
@@ -1352,6 +1358,40 @@ def write_dims(
         pages["pages"] = list(settled.get("pages") or [])
         anchored_memo.clear()
         written(document)
+    _write_coverage(folder, document, ink)
+
+
+def _write_coverage(
+    folder: Path, document: Mapping[str, Any], ink: Mapping[tuple[str, int], Any]
+) -> None:
+    """`reading_coverage.json` (#1862): how many printed numbers the labels read, per page, and
+    where the rest are. Counts only; a failure leaves the pack without it, said in the log."""
+    try:
+        coverage = import_module("app.review.assistant.reading_coverage")
+        reading_ink = import_module("app.review.assistant.reading_ink")
+        started = time.process_time()
+        pages = {
+            (str(e.get("file")), int(e.get("page") or 0)): ink.get(
+                (str(e.get("file")), int(e.get("page") or 0))
+            )
+            for e in document.get("pages") or []
+            if isinstance(e, Mapping)
+        }
+        spots = reading_ink.unread_spots(pages)
+        annotations = _read_json(folder / "annotations.json")
+        seconds = sum(float(getattr(page, "seconds", 0.0)) for page in ink.values())
+        seconds += time.process_time() - started
+        coverage.write(
+            folder,
+            coverage.build(
+                document,
+                spots,
+                annotations if isinstance(annotations, list) else [],
+                seconds=seconds,
+            ),
+        )
+    except Exception:  # noqa: BLE001 - the pack works without its reading coverage
+        _log.exception("reading coverage failed; the pack has no reading_coverage.json")
 
 
 def ensure_pack(

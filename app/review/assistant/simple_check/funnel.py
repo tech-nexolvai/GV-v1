@@ -353,10 +353,18 @@ def build(
     }
 
 
-def headline(funnel: Mapping[str, Any]) -> dict[str, int]:
+def headline(funnel: Mapping[str, Any]) -> dict[str, int | None]:
     """The funnel's totals in one line (the `work_items` block's `funnel`, shown under "How this
     was checked"): labels read, paired, left unaccounted, verified different, the resolve loop,
-    the blind second look, and the end."""
+    the blind second look, and the end; and the set pack's reading coverage (#1862, `reading`
+    in the funnel: None on a pack made before it was counted)."""
+    found = funnel.get("reading")
+    reading: Mapping[str, Any] = found if isinstance(found, Mapping) else {}
+
+    def numbers(name: str) -> int | None:
+        value = reading.get(name)
+        return int(value) if isinstance(value, int) else None
+
     totals = funnel.get("totals") or {}
 
     def count(*path: str) -> int:
@@ -377,4 +385,8 @@ def headline(funnel: Mapping[str, Any]) -> dict[str, int]:
         "red": count("final", "red"),
         "right": count("final", "right"),
         "not_compared": count("final", "not_compared"),
+        "vendor_numbers_read": numbers("vendor_read"),
+        "vendor_numbers_printed": numbers("vendor_printed"),
+        "architect_numbers_read": numbers("architect_read"),
+        "architect_numbers_printed": numbers("architect_printed"),
     }

@@ -5381,6 +5381,10 @@ export interface components {
              * @default 0
              */
             agreed: number;
+            /** Architect Numbers Printed */
+            architect_numbers_printed?: number | null;
+            /** Architect Numbers Read */
+            architect_numbers_read?: number | null;
             /**
              * Drawings
              * @description Vendor drawings compared (answered).
@@ -5432,6 +5436,13 @@ export interface components {
              * @default 0
              */
             unaccounted: number;
+            /** Vendor Numbers Printed */
+            vendor_numbers_printed?: number | null;
+            /**
+             * Vendor Numbers Read
+             * @description Reading coverage (#1862): printed numbers code read on the vendor's drawings; null when the set pack has no coverage.
+             */
+            vendor_numbers_read?: number | null;
             /**
              * Verified Different
              * @description Differences code verified (red candidates before the second look).
@@ -6318,6 +6329,117 @@ export interface components {
             /** Wrong So Far */
             wrong_so_far: number;
         };
+        /**
+         * ChatReadingGroupOut
+         * @description A page's unread numbers that share one reason.
+         */
+        ChatReadingGroupOut: {
+            /** Count */
+            count: number;
+            /** Reason */
+            reason: string;
+            /** Spots */
+            spots: components["schemas"]["ChatReadingSpotOut"][];
+            /**
+             * Words
+             * @description The reason in plain words.
+             */
+            words: string;
+        };
+        /**
+         * ChatReadingOut
+         * @description The reading coverage (#1862): how many of the numbers printed on the drawings code read,
+         *     and where the rest are. Counted by code when the set pack is made; never a verdict's input.
+         */
+        ChatReadingOut: {
+            architect?: components["schemas"]["ChatReadingSideOut"] | null;
+            /**
+             * Lines
+             * @description Plain sentences: one per side, the main reasons.
+             */
+            lines: string[];
+            /** Pages */
+            pages?: components["schemas"]["ChatReadingPageOut"][];
+            /**
+             * Pages Not Counted
+             * @default 0
+             */
+            pages_not_counted: number;
+            vendor?: components["schemas"]["ChatReadingSideOut"] | null;
+        };
+        /** ChatReadingPageOut */
+        ChatReadingPageOut: {
+            /**
+             * Architect Printed
+             * @default 0
+             */
+            architect_printed: number;
+            /**
+             * Architect Read
+             * @default 0
+             */
+            architect_read: number;
+            /** File */
+            file?: string | null;
+            /** Not Read */
+            not_read?: components["schemas"]["ChatReadingGroupOut"][];
+            /** Page */
+            page: number;
+            /**
+             * Strokes Counted
+             * @description False: the drawn reader did not reach the page; its pen strokes are uncounted.
+             */
+            strokes_counted: boolean;
+            /**
+             * Vendor Printed
+             * @default 0
+             */
+            vendor_printed: number;
+            /**
+             * Vendor Read
+             * @default 0
+             */
+            vendor_read: number;
+            /**
+             * Viewable
+             * @description The page picture can show it (the set's first file).
+             * @default false
+             */
+            viewable: boolean;
+        };
+        /**
+         * ChatReadingSideOut
+         * @description How many printed numbers code read on one side's drawings (#1862).
+         */
+        ChatReadingSideOut: {
+            /** Percent */
+            percent: number;
+            /**
+             * Printed
+             * @description About how many are printed (counted by code).
+             */
+            printed: number;
+            /** Read */
+            read: number;
+        };
+        /** ChatReadingSpotOut */
+        ChatReadingSpotOut: {
+            /**
+             * Box
+             * @description PDF points of the page as shown: x0, y0, x1, y1.
+             */
+            box: number[];
+            /**
+             * Kind
+             * @description typed | strokes | pictures
+             */
+            kind: string;
+            /**
+             * Side
+             * @description vendor | architect | brand
+             */
+            side: string;
+        };
         /** ChatRecordedDifferenceOut */
         ChatRecordedDifferenceOut: {
             /** Id */
@@ -6995,6 +7117,8 @@ export interface components {
             not_compared?: number | null;
             /** @description The products checked and how many findings of other products code dropped (for the record, not shown); null on older answers. */
             product_scope?: components["schemas"]["ChatProductScopeOut"] | null;
+            /** @description A full check's reading coverage (#1862): numbers read of those printed; null on other answers, older answers and set packs made before it was counted. */
+            reading?: components["schemas"]["ChatReadingOut"] | null;
             recorded_results?: components["schemas"]["ChatRecordedResultsOut"] | null;
             rounds?: components["schemas"]["ChatRoundsOut"] | null;
             /** @description What the counts above cover (null on older answers). */

@@ -215,6 +215,9 @@ class PageLabels:
     unconfirmed}`; `None` when the picture route did not run on the page. `unconfirmed` lists the
     numbers read in a picture that two engines did not confirm (`{text, box, orientation, side,
     why}`): never labels, never a red."""
+    ink: Any = None
+    """With `drawn_labels(count_ink=True)`: the page's pen-stroke ink that may be a printed number
+    code did not read (`reading_ink.PageInk`), for the reading coverage (#1862). Counts only."""
 
 
 # ---- reading the page once -----------------------------------------------------------------------
@@ -1815,10 +1818,12 @@ def drawn_labels(
     budget_s: float,
     readers: Sequence[Any] | None = None,
     clock: Callable[[], float] = monotonic,
+    count_ink: bool = False,
 ) -> PageLabels:
     """Page `page`'s text labels (as `page_labels` gave them) and its picture labels (#1830)
     with its drawn labels added after them, read within `budget_s` seconds: the pack's last
-    reading pass, after every page's text and pictures."""
+    reading pass, after every page's text and pictures. `count_ink`: also count the page's unread
+    pen-stroke numbers (`PageLabels.ink`, #1862) on the page this pass already parsed."""
     started = clock()
     result = PageLabels(
         labels=[
@@ -1828,8 +1833,15 @@ def drawn_labels(
             and not label.get("derived")
         ]
     )
-    _add_drawn(result, _parse(Path(pdf), page - 1), halves, budget_s, readers, clock)
+    parsed = _parse(Path(pdf), page - 1)
+    _add_drawn(result, parsed, halves, budget_s, readers, clock)
     _number(result.labels)
+    if count_ink:
+        try:
+            ink = import_module("app.review.assistant.reading_ink")
+            result.ink = ink.page_ink(parsed, halves, result.labels)
+        except Exception as failed:  # noqa: BLE001 - counting never costs the page its labels
+            _log.warning("dimension labels: reading coverage failed: %s", type(failed).__name__)
     result.seconds = round(clock() - started, 2)
     return result
 
@@ -2633,13 +2645,16 @@ def build_dims(
     drawn_budget_s: float = 0.0,
     on_page: Callable[[dict[str, Any]], None] | None = None,
     pictures_budget_s: float = PICTURES_BUDGET_S,
+    ink: dict[tuple[str, int], Any] | None = None,
 ) -> dict[str, Any]:
     """The set pack's `dims.json`: every page of every upload and its labels. Three passes: the
     text route on every page first (the agent has every printed label in minutes), then the pasted
     pictures (#1830) of the pages that show one, within `pictures_budget_s` seconds (a page read
     gets `pictures`), then the drawn route page by page, sharing `drawn_budget_s` seconds across
     the set (a page it does not reach stays `not_run`; one it leaves half read is `partial`).
-    `on_page` sees the document after each page of each pass (to write it as it grows)."""
+    `on_page` sees the document after each page of each pass (to write it as it grows). `ink`:
+    filled with each page's unread pen-stroke candidates the drawn pass counted (#1862), keyed
+    `(file, page)`; a page it did not reach is not in it."""
     halves: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     pasted: dict[tuple[str, int], list[Sequence[float]]] = {}
     entries = page_map.get("pages") if isinstance(page_map, Mapping) else None
@@ -2734,6 +2749,7 @@ def build_dims(
                 halves.get((name, number), ()),
                 entry["labels"],
                 budget_s=left,
+                count_ink=ink is not None,
             )
         except Exception as failed:  # noqa: BLE001 - the page keeps its text labels
             _log.warning("dimension labels: drawn pass failed: %s", type(failed).__name__)
@@ -2742,6 +2758,8 @@ def build_dims(
         finally:
             left -= monotonic() - started
         entry["drawn"], entry["labels"] = found.drawn, found.labels
+        if ink is not None and found.ink is not None:
+            ink[(name, number)] = found.ink
         if on_page is not None:
             on_page(document)
     # The `EQ` parts last, after every printed label of the page (text and drawn).
