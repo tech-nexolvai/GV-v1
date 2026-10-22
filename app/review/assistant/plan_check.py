@@ -358,17 +358,20 @@ def doubts(
                     )
                 )
         if not labelled and _area_key(entry) is None and not entry.get("section"):
+            # Code could not decide whose drawing is whose here (#1866): said on the page.
+            unknown = entry.get("sides_unknown")
+            sides = f"; sides unknown ({unknown})" if unknown else ""
             found.append(
                 Doubt(
                     f"heading:{tag}",
                     "heading",
                     page,
                     file,
-                    f"Page {page} has drawings but no heading: is it the vendor's drawing to "
-                    "check?",
+                    f"Page {page} has drawings but no heading{sides}: is it the vendor's drawing "
+                    "to check?",
                     (("vendor", "Yes, check it"), ("skip", "No, skip it")),
                     _box(halves[0]),
-                    f"page {page} (drawings, no heading)",
+                    f"page {page} (drawings, no heading{sides})",
                 )
             )
     found = [d for d in found if d.id not in done]

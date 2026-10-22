@@ -495,6 +495,15 @@ def test_labels_come_from_the_pack_or_are_read_now(pdf: Path, tmp_path: Path) ->
         labels.resolve("36", "set.pdf", 1)
 
 
+def test_a_label_named_on_a_page_the_file_does_not_have_is_never_read(pdf: Path) -> None:
+    """#1866: `p3.D5` named on a two-page file read past its end (IndexError in the log)."""
+    labels = DimLabels(None, pdf.parent)
+    assert labels.on_page("set.pdf", 3) is None and labels.on_page("set.pdf", 0) is None
+    with pytest.raises(LookupError, match=r"set\.pdf has no page 3 \(it has 2\)"):
+        labels.resolve("p3.D1", "set.pdf", 1)
+    assert labels.resolve("p2.D1", "set.pdf", 1)["text"] == "24"
+
+
 # ---- zoom ----------------------------------------------------------------------------------------
 
 

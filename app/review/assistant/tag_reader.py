@@ -242,7 +242,8 @@ class _TagTesseract:
     name = "Tesseract"
 
     def __init__(self) -> None:
-        self._tesseract = import_module("pytesseract")
+        vv = import_module("app.review.assistant.verify_value")
+        self._tesseract = vv.lenient_tesseract(import_module("pytesseract"))
         self._tesseract.get_tesseract_version()
 
     def __call__(self, picture: Any) -> str:

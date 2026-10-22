@@ -146,7 +146,7 @@ def _says_retention(error: BaseException) -> bool:
 #: What a failure says about the AI service for this server: `key` (it refused the key, 401/403),
 #: `payment` (402), `account` (the account cannot use the model: data retention), `unreachable`
 #: (no answer: connection refused or lost, timed out). `None`: anything else.
-type FailureKind = Literal["key", "payment", "account", "unreachable"]
+type FailureKind = Literal["key", "payment", "account", "unreachable", "busy"]
 
 
 class ProviderFailure(Exception):
@@ -280,10 +280,13 @@ def failure_from(error: BaseException) -> ProviderFailure:
             kind="key",
         )
     if isinstance(error, anthropic.RateLimitError):
+        # Not "retryable" (a moment's wait does not mend it), but `busy`: the engine asks again
+        # a few times after a longer wait (#1866) before the reviewer sees these words.
         return ProviderFailure(
             "The AI is busy right now (too many requests). Please ask again in a minute.",
             status=status,
             retryable=False,
+            kind="busy",
         )
     if status == 402:
         return ProviderFailure(

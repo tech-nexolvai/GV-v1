@@ -560,6 +560,18 @@ def _judge(
     scale = _scale(members, drawing)
     if scale is None:
         return doubt("the drawing's scale could not be told from its dimensions")
+    # The parts drawn short of (or past) the overall's ends by the difference itself (#1866): two
+    # 21 7/8" doors drawn 1/8" inside each end of a 44" cabinet print 43 3/4" because they are
+    # drawn so (a reveal or an inset), not by a slip. `END_PT` lets such ends pass on a small
+    # drawing (1/8" is 0.2 pt at 1/2" = 1'-0"), so the ends are measured against the difference.
+    short = abs(parts[0].start - overall.start) + abs(parts[-1].end - overall.end)
+    if short > 0 and Fraction(short / scale[0]).limit_denominator(1024) * 2 >= abs(
+        total - overall.inches
+    ):
+        return doubt(
+            "its parts are drawn short of the overall's ends by about the difference (a reveal "
+            "or an inset), so they do not measure the same span"
+        )
     off = _off_scale(members, scale[0])
     if len(off) >= 2:
         return doubt(

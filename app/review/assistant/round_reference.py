@@ -9,8 +9,15 @@ Right, and never counted as decided by itself.
 
 Whose drawing a finding's reference is on (`reference_of`): code's own label side (`dims.json`),
 else the page map's drawing holding the reference box. A reference on a vendor drawing is a round
-match (`round_only`). Pure code, $0, run by the escalation before its free steps
-(`compare_with_architect`), on every item whose reference is the vendor's own drawing:
+match (`round_only`). **Only when code knows** (#1866): a label code read but could not place
+("unknown") is nobody's, and so is a pasted picture with no GV heading, and a drawing on a page
+whose sides code could not decide (`sides_unknown`) or only assumed for the full check (no
+heading, every drawing "the vendor's"). A set with one round has no earlier round
+(`earlier_round`): there a match with the vendor's other drawing is said as such, never as "the
+vendor's earlier round".
+
+Pure code, $0, run by the escalation before its free steps (`compare_with_architect`), on every
+item whose reference is the vendor's own drawing:
 
 1. **The round match is recorded** on the item (`ROUND_MATCH`): the page, the round and the label
    it was compared with, the value there, and whether code reads the same value (`unchanged`).
@@ -45,9 +52,11 @@ __all__ = [
     "LinkResult",
     "applies",
     "compare_with_architect",
+    "earlier_round",
     "match_words",
     "reference_of",
     "round_only",
+    "set_rounds",
     "unchanged",
 ]
 
@@ -141,10 +150,10 @@ def _role(raw: object) -> Role | None:
     return word if word in ("vendor", "architect", "brand") else None  # type: ignore[return-value]
 
 
-def _half(
+def _entry_half(
     page_map: Mapping[str, Any] | None, file: str | None, page: int, box: Sequence[float]
-) -> Mapping[str, Any] | None:
-    """The page map's drawing (`halves`) holding the centre of `box`."""
+) -> tuple[Mapping[str, Any], Mapping[str, Any]] | None:
+    """The page map's page and its drawing (`halves`) holding the centre of `box`."""
     cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
     for entry in (page_map or {}).get("pages") or []:
         if not isinstance(entry, Mapping) or entry.get("page") != page:
@@ -156,8 +165,71 @@ def _half(
             if isinstance(where, Sequence) and len(where) == 4:
                 x0, y0, x1, y1 = (float(v) for v in where)
                 if x0 <= cx <= x1 and y0 <= cy <= y1:
-                    return half if isinstance(half, Mapping) else None
+                    return (entry, half) if isinstance(half, Mapping) else None
     return None
+
+
+def _half(
+    page_map: Mapping[str, Any] | None, file: str | None, page: int, box: Sequence[float]
+) -> Mapping[str, Any] | None:
+    """The page map's drawing (`halves`) holding the centre of `box`."""
+    found = _entry_half(page_map, file, page, box)
+    return None if found is None else found[1]
+
+
+def _sides_known(entry: Mapping[str, Any]) -> bool:
+    """Whether code knows whose drawing is whose on the page (#1866): never on a page whose sides
+    code could not decide (`sides_unknown`: the content reader timed out or could not read it),
+    nor on one where every drawing's role is only code's own assumption for the full check (a
+    page with no heading, "assumed the vendor's drawing, checked": the plan's guess that the page
+    is to be checked, not a reading of which drawing is the architect's)."""
+    if entry.get("sides_unknown"):
+        return False
+    halves = [h for h in entry.get("halves") or [] if isinstance(h, Mapping)]
+    return not halves or any(h.get("heading_by") != "code" for h in halves)
+
+
+def _in_picture(entry: Mapping[str, Any], box: Sequence[float]) -> bool:
+    """Whether the centre of `box` lies in one of the page's pasted pictures."""
+    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    for picture in entry.get("pictures") or []:
+        where = picture.get("box") if isinstance(picture, Mapping) else picture
+        if isinstance(where, Sequence) and len(where) == 4:
+            try:
+                x0, y0, x1, y1 = (float(v) for v in where)
+            except (TypeError, ValueError):
+                continue
+            if x0 <= cx <= x1 and y0 <= cy <= y1:
+                return True
+    return False
+
+
+def set_rounds(page_map: Mapping[str, Any] | None) -> int:
+    """How many vendor rounds the set has (the distinct rounds of its vendor drawings; a set
+    whose drawings say no round has one)."""
+    rounds = {
+        half.get("round")
+        for entry in (page_map or {}).get("pages") or []
+        if isinstance(entry, Mapping)
+        for half in entry.get("halves") or []
+        if isinstance(half, Mapping)
+        and half.get("role") == "vendor"
+        and isinstance(half.get("round"), int)
+    }
+    return max(len(rounds), 1)
+
+
+def earlier_round(match: Mapping[str, Any]) -> bool:
+    """Whether the round match is with an earlier round of the vendor's drawings: never in a set
+    with one round (#1866: one round has no earlier round, by definition); else when the two
+    drawings' rounds say so, or (a match kept before `set_rounds` was recorded) as before."""
+    rounds = _int(match.get("set_rounds"))
+    if rounds is not None and rounds < 2:
+        return False
+    earlier, own = _int(match.get("round")), _int(match.get("vendor_round"))
+    if earlier is not None and own is not None:
+        return earlier < own
+    return True
 
 
 def _round_at(
@@ -200,6 +272,10 @@ def reference_of(
             _round_at(page_map, None if file is None else str(file), page, label.get("box")),
             label,
         )
+    if isinstance(label, Mapping) and label.get("side"):
+        # Code read the label and could not tell whose drawing it is on (a label inside a
+        # pasted picture, or inside both drawings): the drawing around it says no more (#1866).
+        return None
     where = _box(finding.get("arch_box"))
     if where is None or page_map is None:
         return None
@@ -207,9 +283,16 @@ def reference_of(
     page = page if page is not None else _int(finding.get("vs_page"))
     if page is None:
         return None
-    half = _half(page_map, name or main_file, page, box)
-    role = _role(half.get("role")) if half is not None else None
-    if half is None or role is None:
+    found = _entry_half(page_map, name or main_file, page, box)
+    if found is None or not _sides_known(found[0]):
+        return None
+    half = found[1]
+    if not half.get("picture") and _in_picture(found[0], box):
+        # A pasted picture with no GV heading is nobody's (`set_pack`), whatever drawing the
+        # page map puts around it (#1866: the architect's picture on a vendor's whole page).
+        return None
+    role = _role(half.get("role"))
+    if role is None:
         return None
     return Reference(role, page, _int(half.get("round")), None)
 
@@ -228,9 +311,10 @@ def round_only(finding: Mapping[str, Any]) -> bool:
 
 
 def unchanged(finding: Mapping[str, Any]) -> bool:
-    """The item carries a round match whose value code reads the same (information only)."""
+    """The item carries a match with an earlier round whose value code reads the same
+    (information only; never in a set with one round, `earlier_round`)."""
     match = finding.get(ROUND_MATCH)
-    return isinstance(match, Mapping) and match.get("unchanged") is True
+    return isinstance(match, Mapping) and match.get("unchanged") is True and earlier_round(match)
 
 
 def match_words(match: Mapping[str, Any]) -> str:
@@ -238,7 +322,7 @@ def match_words(match: Mapping[str, Any]) -> str:
     since round 1 (was 30")", or the vendor's other drawing on the same round."""
     earlier, own = _int(match.get("round")), _int(match.get("vendor_round"))
     page = match.get("page")
-    if earlier is not None and own is not None and earlier < own:
+    if earlier is not None and own is not None and earlier < own and earlier_round(match):
         if match.get("unchanged"):
             return f"Unchanged since round {earlier}"
         return f"Changed since round {earlier} (was {match.get('value')})"
@@ -297,6 +381,7 @@ def _record(
         ),
         "unchanged": same,
         "compared": None,
+        "set_rounds": set_rounds(page_map),
     }
     match["words"] = match_words(match)
     return match
@@ -384,7 +469,7 @@ def _point_at(
     finding["status"] = "same" if same else "different"
     if by_code:
         finding["paired_by"] = "code"
-    if not same and match.get("unchanged"):
+    if not same and match.get("unchanged") and earlier_round(match):
         # The vendor repeats, on its newest round, a value the architect does not print.
         finding["round_status"] = "still_wrong"
     match["words"] = match_words(match)

@@ -80,7 +80,12 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
-from app.review.assistant.round_reference import ROUND_MATCH, match_words, round_only
+from app.review.assistant.round_reference import (
+    ROUND_MATCH,
+    earlier_round,
+    match_words,
+    round_only,
+)
 from app.review.assistant.rule_notes import RuleNote, rule_note_of
 from app.review.assistant.spot_locate import VENDOR_SEARCH, search_words, spot_words
 
@@ -1001,6 +1006,15 @@ def _reference_problem(finding: Mapping[str, Any]) -> Classified | None:
             if earlier
             else "; code found no architect value of this dimension to compare it with"
         )
+        if isinstance(match, Mapping) and not earlier_round(match):
+            # One round has no earlier round (#1866): the vendor's other drawing of the same
+            # round, said as such; still never Right, never red (`round_only`).
+            return _not(
+                "not_seen",
+                f"{said}compared only with the vendor's own other drawing{where} (the set has "
+                f"one round), never with the architect's{tail}",
+                "the architect's value of {thing}",
+            )
         return _not(
             "round_only",
             f"{said}compared only with the vendor's own drawing{where}, never with the "

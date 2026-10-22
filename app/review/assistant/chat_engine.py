@@ -74,6 +74,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import threading
 from collections import Counter
@@ -388,6 +389,10 @@ SECOND_READ_LIMIT: Final = 30
 _SECOND_READ_PROMPT_TOKENS: Final = 8_000
 SECOND_READ_SYSTEM: Final = READ_SYSTEM
 _RETRY_WAIT_SECONDS: Final = 3.0
+#: The waits before asking again after the AI service said it is busy (429, too many requests;
+#: #1866): a full check starts several helpers at once, and the SDK's own short retries are over
+#: in seconds. Nothing was generated or charged; the call is asked again as it was.
+_BUSY_WAITS_SECONDS: Final = (10.0, 25.0, 45.0)
 _MAX_REPORT_CHARS: Final = 40_000
 _MAX_PROMPT_CHARS: Final = 20_000
 _MAX_DESCRIPTION: Final = 120
@@ -1333,6 +1338,7 @@ class ChatEngine:
         """One call, streamed, asked once more after a provider failure worth retrying. Raises
         `ProviderFailure` or `_Cancelled`."""
         attempts = 0
+        busy = 0
         while True:
             try:
                 inlined = inline_pictures(messages, self.read_picture)
@@ -1427,6 +1433,18 @@ class ChatEngine:
                 attempts += 1
                 _log.warning("assistant chat call failed, asking once more: %s", failure.status)
                 if self._sleep(_RETRY_WAIT_SECONDS):
+                    raise _Cancelled
+                continue
+            if failure.kind == "busy" and busy < len(_BUSY_WAITS_SECONDS):
+                # Spread a little, so helpers that were refused together do not ask together.
+                wait = _BUSY_WAITS_SECONDS[busy] * (1.0 + random.random() / 4)
+                busy += 1
+                _log.warning(
+                    "assistant chat call: the AI service is busy (%s), asking again in %.0f s",
+                    failure.status,
+                    wait,
+                )
+                if self._sleep(wait):
                     raise _Cancelled
                 continue
             raise failure

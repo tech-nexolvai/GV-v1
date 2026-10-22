@@ -19,6 +19,8 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import anthropic
+import httpx
 import pytest
 from PIL import Image
 
@@ -31,7 +33,7 @@ from app.review.assistant.chat_engine import (
     EngineSettings,
     MessageOutcome,
 )
-from app.review.assistant.chat_provider import ProviderFailure
+from app.review.assistant.chat_provider import ProviderFailure, failure_from
 from app.review.assistant.chat_request import MODELS
 from app.review.assistant.chat_tools import HELPER_FOOTER_MARK, ChatTools
 from app.review.assistant.sandbox import ChatWorkspace
@@ -564,6 +566,54 @@ def test_a_helper_whose_final_call_fails_still_reports_from_its_steps(tmp_path: 
     assert "pdfinfo a.pdf" in end["report"]
     result = _sent(provider.lead_calls[1])["messages"][-1]["content"][0]
     assert result["is_error"] is True and "pdfinfo a.pdf" in result["content"][0]["text"]
+
+
+def _busy() -> ProviderFailure:
+    return failure_from(
+        anthropic.RateLimitError(
+            "refused",
+            response=httpx.Response(
+                429, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+            ),
+            body=None,
+        )
+    )
+
+
+def test_a_helper_refused_as_busy_asks_again_after_a_wait(tmp_path: Path) -> None:
+    """#1866: helpers started together were refused with 429 (too many requests) and ended with an
+    error at once; a busy service is asked again after a wait, a few times."""
+    task = "Pages 1-2 numbers"
+    provider = ScriptedProvider(
+        lead=[_agents(task), reply(text("Done."))],
+        helpers={task: [_busy(), _busy(), reply(text("Page 1 report"), model=SONNET)]},
+    )
+    harness = Harness(tmp_path, provider)
+    waits: list[float] = []
+    harness.engine._sleep = lambda seconds: bool(waits.append(seconds))
+    harness.run()
+
+    end = events_named(harness.events, "agent_end")[0]["agent"]
+    assert end["ok"] is True and "Page 1 report" in end["report"]
+    assert len(provider.helper_calls[task]) == 3 and len(waits) == 2
+    assert 10 <= waits[0] <= 12.5 and 25 <= waits[1] <= 31.25
+
+
+def test_a_service_still_busy_after_the_waits_ends_the_helper_with_the_reason(
+    tmp_path: Path,
+) -> None:
+    task = "Pages 3-5 numbers"
+    provider = ScriptedProvider(
+        lead=[_agents(task), reply(text("One helper could not finish."))],
+        helpers={task: [_busy() for _ in range(4)]},
+    )
+    harness = Harness(tmp_path, provider)
+    harness.run()
+
+    end = events_named(harness.events, "agent_end")[0]["agent"]
+    assert end["ok"] is False and end["stopped"] == "error"
+    assert "too many requests" in end["report"]
+    assert len(provider.helper_calls[task]) == 4
 
 
 def test_agents_past_the_parallel_limit_wait_in_the_same_turn(tmp_path: Path) -> None:
