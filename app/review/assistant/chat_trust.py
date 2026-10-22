@@ -507,6 +507,16 @@ def _text_made(finding: Mapping[str, Any]) -> str | None:
     proof = finding.get("text_proof")
     if finding.get("created_by") in _TEXT_MADE_BY and isinstance(proof, Mapping) and proof:
         return "agrees"
+    tag_read = finding.get("tag_read")
+    if (
+        isinstance(tag_read, Mapping)
+        and tag_read.get("outcome") == "wrong"
+        and isinstance(proof, Mapping)
+        and proof
+    ):
+        # The tag reader read both tags at their spots and carries the finish check's proof of
+        # the same change (#1859).
+        return "agrees"
     if isinstance(proof, Mapping) and proof.get("kind") == "missing_item":
         dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
         label = _label_ref((dims or {}).get("architect"))
