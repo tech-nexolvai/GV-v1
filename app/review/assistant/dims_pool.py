@@ -107,6 +107,8 @@ class PageTask:
     count_ink: bool = False
     health: tuple[tuple[str, Any], ...] | None = None
     upload: str = ""
+    line_work: str = ""
+    """The set pack whose `line_work/` keeps the page's line work (#1883); empty: not kept."""
 
 
 # ---- the reading table ---------------------------------------------------------------------------
