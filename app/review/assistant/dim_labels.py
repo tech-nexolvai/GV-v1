@@ -117,7 +117,13 @@ import numpy as np
 import pdfplumber
 from PIL import Image, ImageDraw, ImageFont
 
-from app.review.assistant import hand_labels, ink_labels, ocr_labels, picture_labels
+from app.review.assistant import (
+    hand_labels,
+    ink_labels,
+    ocr_labels,
+    picture_labels,
+    vendor_alphabet,
+)
 from app.review.assistant import verify_value as vv
 from app.review.assistant.finding_checks import inch_first_mm, to_inches, units_check, value_flags
 from app.review.assistant.measure import _pieces
@@ -141,7 +147,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what a label holds or how ids are given changes.
-LABELS_VERSION: Final = 2
+LABELS_VERSION: Final = 3
 #: The most labels one page lists (a schedule page can print hundreds of numbers).
 MAX_LABELS: Final = 400
 #: The picture route's time across a set (seconds, #1830): most sets paste no picture at all.
@@ -149,6 +155,8 @@ PICTURES_BUDGET_S: Final = 240.0
 #: The OCR route's time across a set and on one page (seconds, #1848): a few seconds a page.
 OCR_BUDGET_S: Final = 600.0
 OCR_PAGE_S: Final = 60.0
+#: `read_number` at pack time across a set (seconds, #1860).
+SWEEP_BUDGET_S: Final = 60.0
 #: The most phrases one page lists.
 MAX_PHRASES: Final = 1500
 #: A bare number larger than this is not read as inches (it is a count, a note number, or mm).
@@ -166,7 +174,7 @@ _LINE_MAX_RATIO: Final = 60.0
 _CLUSTER_MIN_PT: Final = 4.0
 _CLUSTER_MAX_PT: Final = 60.0
 _CLUSTER_GAP_PT: Final = 1.5
-_MAX_CLUSTERS: Final = 300
+_MAX_CLUSTERS: Final = 600
 #: A lone path (no ink within the cluster gap) seeds a label when its longer side is between these.
 _LONE_MIN_PT: Final = 3.0
 _LONE_MAX_PT: Final = 12.0
@@ -228,6 +236,10 @@ class PageLabels:
     unconfirmed}`; `None` when the picture route did not run on the page. `unconfirmed` lists the
     numbers read in a picture that two engines did not confirm (`{text, box, orientation, side,
     why}`): never labels, never a red."""
+    sweep_held: list[Any] = field(default_factory=list)
+    """Spots `read_number` read with its OCR pair alone (`SweepHeld`), for the alphabet."""
+    alphabet: list[Any] = field(default_factory=list)
+    """The page's samples of the vendor's alphabet (`alphabet_samples`)."""
     ocr_labels: list[dict[str, Any]] = field(default_factory=list)
     """The OCR route's labels when read with the drawn pass (`drawn_labels`), not yet numbered:
     the pack adds them after every other label of the page (#1848)."""
@@ -1391,12 +1403,34 @@ def _row_label(
     return ink_labels.Label(tuple(glyphs), ink_labels._union([g.box for g in glyphs]))
 
 
+def _merged(row: Sequence[ink_labels.Token], turn: ink_labels.Turn) -> list[ink_labels.Token]:
+    """The row with a character drawn in two pieces made one (#1860): a small mark lying four
+    fifths or more within a glyph's extent along the row (a `5` whose top bar is its own stroke)
+    joins that glyph. Ticks after the last character and a fraction are left as they are."""
+    out: list[ink_labels.Token] = []
+    for token in row:
+        if token.kind == "mark" and out and out[-1].kind == "glyph":
+            mark = ink_labels._frame(token.glyphs[0].box, turn)
+            glyph = ink_labels._frame(out[-1].glyphs[0].box, turn)
+            shared = min(mark[2], glyph[2]) - max(mark[0], glyph[0])
+            if shared >= 0.8 * (mark[2] - mark[0]) > 0:
+                one = out[-1].glyphs[0]
+                paths = (*one.paths, *token.glyphs[0].paths)
+                box = ink_labels._union([one.box, token.glyphs[0].box])
+                joined = ink_labels.Glyph(paths, box)
+                out[-1] = ink_labels.Token("glyph", (joined,), (), out[-1].along, out[-1].middle)
+                continue
+        out.append(token)
+    return out
+
+
 def _mm_rows(label: ink_labels.Label) -> ink_labels.Turn | None:
     """The reading direction in which the label is millimetres over inches in brackets (`305`
     over `[12]`): exactly two rows, the upper all characters (two to five, no fraction, no inch
-    mark), the lower starting and ending in a tall narrow glyph (the brackets); else `None`."""
+    mark; a character drawn in two pieces counts once, `_merged`), the lower starting and ending
+    in a tall narrow glyph (the brackets); else `None`."""
     for turn in ink_labels.turns(label):
-        rows = ink_labels.rows(label, turn)
+        rows = [_merged(row, turn) for row in ink_labels.rows(label, turn)]
         if len(rows) != 2 or any(ink_labels.inch_mark_at_end(row, turn) for row in rows):
             continue
         upper, lower = rows
@@ -1840,6 +1874,8 @@ def drawn_labels(
     clock: Callable[[], float] = monotonic,
     ocr_budget_s: float = 0.0,
     phrases: Sequence[Mapping[str, Any]] = (),
+    sweep_budget_s: float = 0.0,
+    alphabet: bool = False,
     count_ink: bool = False,
 ) -> PageLabels:
     """Page `page`'s text labels (as `page_labels` gave them) and its picture labels (#1830)
@@ -1847,7 +1883,10 @@ def drawn_labels(
     reading pass, after every page's text and pictures. With `ocr_budget_s` (#1848), the groups
     of ink the drawn route left unlabelled are then read by the OCR route on the same reading of
     the page (`_add_ocr`, at most that many seconds): its labels are kept apart in `ocr_labels`
-    (no id), for the pack to number after every other label, and `ocr` says what it did.
+    (no id), for the pack to number after every other label, and `ocr` says what it did. With
+    `sweep_budget_s` (#1860), `read_number` then reads the groups still unlabelled that look like
+    a number (`_sweep`); with `alphabet`, the page's confirmed drawn labels are kept as samples of
+    the vendor's alphabet (`alphabet_samples`).
     `count_ink`: also count the page's unread pen-stroke numbers (`PageLabels.ink`, #1862) on the
     page this pass already parsed, after every route's labels."""
     started = clock()
@@ -1873,6 +1912,20 @@ def drawn_labels(
             read.ocr = {"status": "failed", "spots": 0, "seconds": 0.0, "unconfirmed": []}
         result.ocr_labels = read.labels[len(result.labels) :]
         result.ocr = read.ocr
+        left = sweep_budget_s - (float(read.ocr.get("seconds") or 0.0) if read.ocr else 0.0)
+        if sweep_budget_s > 0 and left > 0 and read.ocr and read.ocr.get("status") != "failed":
+            try:
+                found, held, said = _sweep(
+                    pdf, page, parsed, halves, read.labels, missed, left, readers, clock
+                )
+            except Exception as failed:  # noqa: BLE001 - the page keeps its other labels
+                _log.warning("dimension labels: number sweep failed: %s", type(failed).__name__)
+                found, held, said = [], [], {"status": "failed"}
+            result.ocr_labels += found
+            result.sweep_held = held
+            result.ocr = {**read.ocr, "sweep": said}
+    if alphabet:
+        result.alphabet = alphabet_samples(parsed, result.labels, page)
     if count_ink:
         try:
             ink = import_module("app.review.assistant.reading_ink")
@@ -1881,6 +1934,168 @@ def drawn_labels(
             _log.warning("dimension labels: reading coverage failed: %s", type(failed).__name__)
     result.seconds = round(clock() - started, 2)
     return result
+
+
+# ---- read_number at pack time (#1860) ---------------------------------------------------------------
+
+#: The engines' pool for `read_number` at pack time (Tesseract runs in its own process).
+SWEEP_WORKERS: Final = 4
+
+
+def _number_shaped(label: ink_labels.Label) -> bool:
+    """Whether a group of ink is shaped like a printed dimension by its vectors alone (no
+    engine): a row ending in an inch mark (`_mark_layouts`, `_marked_turns`) or a stacked
+    fraction. A word, a tag or a symbol is neither (millimetres over inches have their
+    cross-check; a bare number with no mark is left out)."""
+    if _mark_layouts(label) or _marked_turns(label):
+        return True
+    for turn in ink_labels.turns(label):
+        if any(t.kind == "fraction" for row in ink_labels.rows(label, turn) for t in row):
+            return True
+    return False
+
+
+@dataclass(slots=True)
+class SweepHeld:
+    """A spot `read_number` read with its OCR pair alone: kept for the vendor's alphabet (learned
+    from the whole set afterwards) to second it, or not."""
+
+    file: str
+    """The PDF's file name."""
+    page: int
+    box: tuple[float, float, float, float]
+    ocr: Decimal
+    shape: Decimal | None
+    ruler: float | None
+    ink: Any
+    turns: tuple[int, ...]
+
+
+def _sweep(
+    pdf: Path,
+    page: int,
+    parsed: _Parsed,
+    halves: Sequence[Mapping[str, Any]],
+    labels: Sequence[Mapping[str, Any]],
+    missed: Sequence[ink_labels.Label],
+    budget_s: float,
+    readers: Sequence[Any] | None,
+    clock: Callable[[], float],
+) -> tuple[list[dict[str, Any]], list[SweepHeld], dict[str, Any]]:
+    """`read_number` on every vendor group of ink the drawn route and the OCR route left
+    unlabelled that its vectors shape like a dimension (`_number_shaped`), within `budget_s` seconds, `SWEEP_WORKERS` at a time. Its rule
+    stands: two families agreeing, or one reader the ruler seconds; the ruler blocks a reading
+    its line disagrees with. A reading is a label after every other one (`origin: "ocr"`, no
+    dimension line, `read_by` its routes). A spot only the OCR pair read is held for the vendor's
+    alphabet (`SweepHeld`)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    read_number = import_module("app.review.assistant.read_number")
+    view_scales = import_module("app.review.assistant.view_scales")
+    started = clock()
+    engines = list(drawn_readers() if readers is None else readers)
+    if len({str(e.name) for e in engines}) < 2:
+        return [], [], {"status": "no_engine", "spots": 0, "read": 0}
+    taken = [tuple(label["box"]) for label in labels]
+    lines = _line_ends(parsed.segments)
+    spots: list[ink_labels.Label] = []
+    looked: list[Box] = []
+    for raw in sorted(missed, key=lambda p: (-len(p.glyphs), p.box[1], p.box[0])):
+        if _side(raw.box, halves) != "vendor":
+            continue
+        if any(_overlap(raw.box, other) > 0.3 for other in [*taken, *looked]):
+            continue
+        looked.append(raw.box)
+        # A number's size and at least two glyphs (a value and its mark), line work left out.
+        piece = _without_line_work(raw, lines)
+        if piece is None or ocr_labels.spot_of(piece) is None:
+            continue
+        if clock() - started > budget_s:
+            break
+        if _number_shaped(piece):
+            spots.append(raw)
+    read_number.seed_page(pdf, page, parsed)
+    scales, _checks = view_scales.page_scales(page, labels)
+    file = Path(pdf).name
+
+    def one(piece: ink_labels.Label) -> Any:
+        if clock() - started > budget_s:
+            return None
+        box = tuple(float(v) for v in piece.box)
+        request = read_number.Request(file, page, "vendor", box=box)
+        return read_number.read_number(
+            request, Path(pdf), labels=labels, halves=halves, scales=scales, engines=engines
+        )
+
+    with ThreadPoolExecutor(max_workers=SWEEP_WORKERS) as pool:
+        found = list(pool.map(one, spots))
+    out: list[dict[str, Any]] = []
+    held: list[SweepHeld] = []
+    for piece, reading in zip(spots, found, strict=True):
+        if reading is None:
+            continue
+        routes = {route.name: route.value for route in reading.routes}
+        if reading.outcome == "read" and reading.value is not None and reading.box:
+            value = Decimal(str(reading.value))
+            box = tuple(float(v) for v in reading.box)
+            turns = read_number._turns(piece)
+            sideways = bool(turns) and all(t != 0 for t in turns)
+            label = _label(
+                _Reading(
+                    text=vv._inches_text(value),
+                    inches=value,
+                    box=box,  # type: ignore[arg-type]
+                    along=(0.0, 1.0) if sideways else (1.0, 0.0),
+                    font=min(box[2] - box[0], box[3] - box[1]),
+                    bare=False,
+                    route="drawn",
+                ),
+                None,
+                "vendor",
+            )
+            label["origin"] = ocr_labels.ORIGIN
+            label["read_by"] = list(reading.agreed)
+            out.append(label)
+        elif reading.code == "one_route" and routes.get("ocr"):
+            ruler = routes.get("ruler")
+            held.append(
+                SweepHeld(
+                    file,
+                    page,
+                    tuple(float(v) for v in piece.box),  # type: ignore[arg-type]
+                    Decimal(str(routes["ocr"])),
+                    None if routes.get("shape") is None else Decimal(str(routes["shape"])),
+                    None if ruler is None else float(ruler),
+                    piece,
+                    tuple(read_number._turns(piece)),
+                )
+            )
+    said = {
+        "status": "done" if clock() - started <= budget_s else "partial",
+        "spots": len(spots),
+        "read": len(out),
+        "seconds": round(clock() - started, 2),
+    }
+    return out, held, said
+
+
+def seconded(
+    held: Sequence[SweepHeld], alphabet: vendor_alphabet.Alphabet
+) -> list[tuple[SweepHeld, Decimal]]:
+    """The held spots the vendor's alphabet seconds (`read_number.decide` with the alphabet beside
+    the OCR pair), with their value."""
+    read_number = import_module("app.review.assistant.read_number")
+    out: list[tuple[SweepHeld, Decimal]] = []
+    for item in held:
+        values = {v for t in item.turns if (v := alphabet.read(item.ink, t)) is not None}
+        if len(values) != 1:
+            continue
+        decided = read_number.decide(
+            ocr=item.ocr, shape=item.shape, ruler=item.ruler, alphabet=values.pop()
+        )
+        if decided.value is not None:
+            out.append((item, decided.value))
+    return out
 
 
 # ---- the picture route (#1830) -------------------------------------------------------------------
@@ -2035,6 +2250,7 @@ def _ocr_spots(
     halves: Sequence[Mapping[str, Any]],
     taken: Sequence[Box],
     missed: Sequence[ink_labels.Label] | None = None,
+    vendor_pieces: list[ink_labels.Label] | None = None,
 ) -> tuple[list[tuple[Box, list[ocr_labels.Spot]]], list[Box]]:
     """The page's vector ink no label and no phrase covers, as spots grouped by the page map's
     drawing they are on (`(drawing box, spots)`), and every group's box (kept from the line work's
@@ -2042,7 +2258,10 @@ def _ocr_spots(
     pieces left out, `_without_line_work`), of a number's size, on one of the drawings, with room
     round it (`_crowded`: a part of a longer number or of a word is never read alone). `missed`:
     the groups the drawn route looked at and left unlabelled (`_add_drawn`), so the page's ink is
-    not grouped twice; without it the page's ink is grouped here."""
+    not grouped twice; without it the page's ink is grouped here. `vendor_pieces` (when given) is
+    filled with every group on a vendor drawing that nothing covers (for `_mm_spots`)."""
+    if vendor_pieces is None:
+        vendor_pieces = []
     page = parsed.page
     lines = _line_ends(parsed.segments)
     every: list[Box] = []
@@ -2060,8 +2279,13 @@ def _ocr_spots(
     # one: where two pieces share most of their ink, the one whose vectors end it in an inch mark
     # is read, else the one with the most glyphs.
     found: list[tuple[ink_labels.Label, ocr_labels.Spot]] = []
+    vendor_pieces.clear()
     for piece in pieces:
         every.append(piece.box)
+        if _side(piece.box, halves) == "vendor" and not any(
+            _overlap(piece.box, o) > 0.1 for o in taken
+        ):
+            vendor_pieces.append(piece)
         bare = _without_line_work(piece, lines)
         if bare is None:
             continue
@@ -2182,7 +2406,7 @@ _MARKED_LINE: Final = re.compile(r'^[\d /"]+$')
 
 
 def _marked_value(spot: ocr_labels.Spot, turn: int, text: str) -> Decimal | None:
-    """A reading with the drawn inch mark dropped or read as `9`s (`46`, `4699`), as inches: only
+    """A reading with the drawn inch mark dropped or read as `9`s (`41`, `4199`), as inches: only
     in a direction in which the vectors draw that mark, and only when the line is digits (a space,
     a slash or the mark at most) and their count is the vectors' (`_laid_out`)."""
     layout = dict(spot.marked).get(turn)
@@ -2212,14 +2436,17 @@ def _add_ocr(
     taken = [tuple(label["box"]) for label in result.labels] + [
         tuple(phrase["box"]) for phrase in result.phrases
     ]
-    areas, every = _ocr_spots(parsed, halves, taken, missed)
-    spots = sum(len(found) for _box, found in areas)
+    pieces: list[ink_labels.Label] = []
+    areas, every = _ocr_spots(parsed, halves, taken, missed, pieces)
+    dual = _mm_spots(pieces)
+    spots = sum(len(found) for _box, found in areas) + len(dual)
     if not spots:
         seconds = round(clock() - started, 2)
         result.ocr = {"status": "done", "spots": 0, "seconds": seconds, "unconfirmed": []}
         return
     engines = list(drawn_readers() if readers is None else readers)
     page = parsed.page
+    crossed = _mm_crossed(dual, engines, started + budget_s, clock)
     read = ocr_labels.read_spots(
         page.vendor_pdf,
         page.size,
@@ -2232,15 +2459,166 @@ def _add_ocr(
         clock=clock,
     )
     added, unconfirmed = _read_labels(
-        read.labels, lambda box: _side(box, halves), ocr_labels.ORIGIN, ocr_labels.UNCONFIRMED
+        [*crossed, *read.labels],
+        lambda box: _side(box, halves),
+        ocr_labels.ORIGIN,
+        ocr_labels.UNCONFIRMED,
     )
     result.labels += added[: max(0, MAX_LABELS - len(result.labels))]
     result.ocr = {
         "status": read.status,
-        "spots": read.spots,
+        "spots": read.spots + len(dual),
         "seconds": round(clock() - started, 2),
         "unconfirmed": unconfirmed,
     }
+
+
+# ---- the vendor's alphabet (#1860) -------------------------------------------------------------------
+
+
+def alphabet_samples(
+    parsed: _Parsed, labels: Sequence[Mapping[str, Any]], page: int
+) -> list[vendor_alphabet.Sample]:
+    """The characters of the page's confirmed drawn vendor labels as learned samples
+    (`vendor_alphabet.samples_of`): read by the drawn route's two engines (never an OCR reading
+    of pixels, never millimetres, never a derived part)."""
+    out: list[vendor_alphabet.Sample] = []
+    for label in labels:
+        if (
+            label.get("route") != "drawn"
+            or label.get("origin")
+            or label.get("derived")
+            or label.get("mm")
+            or label.get("side") != "vendor"
+        ):
+            continue
+        try:
+            value = Decimal(str(label["inches"]))
+            box = tuple(float(v) for v in label["box"])
+        except (KeyError, TypeError, ValueError, ArithmeticError):
+            continue
+        near = vv._ink_paths_near(parsed.page, box)  # type: ignore[arg-type]
+        found = [g for g in ink_labels.labels(near, box) if _overlap(g.box, box) > 0.5]  # type: ignore[arg-type]
+        if not found:
+            continue
+        ink = found[0]
+        if label.get("orientation") == "h":
+            turns: tuple[int, ...] = (0,)
+        else:
+            turns = tuple(t for t in (_marked_turns(ink) or ink_labels.turns(ink)) if t != 0)
+        if len(turns) != 1:
+            continue
+        out += vendor_alphabet.samples_of(ink, turns[0], value, page)
+    return out
+
+
+# ---- millimetres over inches, cross-checked (#1860) ------------------------------------------------
+
+#: A millimetre or inch reading must come back the same at least this many times (two engines,
+#: two sizes, the inch row with and without its brackets) to be one side of the cross-check.
+MM_CROSS_READS: Final = 2
+_INCH_CORE: Final = re.compile(r"(\d+(?:\s+\d+/\d+)?|\d+/\d+)\s*\"?")
+
+
+def _mm_spots(pieces: Sequence[ink_labels.Label]) -> list[tuple[ink_labels.Label, ink_labels.Turn]]:
+    """The groups of vendor ink that are millimetres over inches in brackets (`_mm_rows`), each
+    with its reading direction; where two share most of their ink, the one with more glyphs."""
+    out: list[tuple[ink_labels.Label, ink_labels.Turn]] = []
+    for piece in sorted(pieces, key=lambda p: (-len(p.glyphs), p.box[1], p.box[0])):
+        if any(_overlap(piece.box, other.box) > 0.5 for other, _turn in out):
+            continue
+        turn = _mm_rows(piece)
+        if turn is not None:
+            out.append((piece, turn))
+    return out
+
+
+def _mm_cross(
+    label: ink_labels.Label, turn: ink_labels.Turn, engines: Sequence[Any]
+) -> tuple[Decimal, str] | None:
+    """Millimetres over bracketed inches read by the cross-check (#1860), or `None`: each row
+    re-typeset and read by each engine at two sizes, the inch row also with its brackets dropped
+    (an engine may read nothing with them); a millimetre reading (two to five digits, no leading
+    zero) and an inch reading each come back the same at least `MM_CROSS_READS` times, and exactly
+    one millimetre value and one inch value agree with each other (`units_check`): the two rows
+    are independent witnesses of one value, so a misread on either row is caught by the other."""
+    rows = [_merged(row, turn) for row in ink_labels.rows(label, turn)]
+    if len(rows) != 2:
+        return None
+    upper, lower = rows
+    mains = [i for i, t in enumerate(lower) if t.kind != "mark"]
+    core = lower[mains[0] + 1 : mains[-1]] if len(mains) >= 3 else []
+    mm_reads: dict[str, int] = {}
+    inch_reads: dict[Decimal, int] = {}
+    for reader in engines:
+        for height in ink_labels.HEIGHTS_PX:
+            for row, kind in ((upper, "mm"), (lower, "bracket"), (core, "core")):
+                picture = ink_labels.row_picture(row, turn, height) if row else None
+                if picture is None:
+                    continue
+                line = " ".join(reader(picture, single_line=True)).strip()
+                if kind == "mm":
+                    if _MM_LINE.fullmatch(line) and not line.startswith("0"):
+                        mm_reads[line] = mm_reads.get(line, 0) + 1
+                    continue
+                found = (
+                    _BRACKET_LINE.fullmatch(line)
+                    if kind == "bracket"
+                    else _INCH_CORE.fullmatch(vv._plain(line).strip())
+                )
+                value = None if found is None else to_inches(found.group(1) + '"')
+                if value is not None and 0 < value <= _BARE_MAX_IN:
+                    inch_reads[value] = inch_reads.get(value, 0) + 1
+    pairs = {
+        (mm, value)
+        for mm, seen in mm_reads.items()
+        if seen >= MM_CROSS_READS
+        for value, times in inch_reads.items()
+        if times >= MM_CROSS_READS
+        and units_check(f"{mm} [{vv._inches_text(value).rstrip(chr(34))}]") == "agrees"
+    }
+    if len(pairs) != 1:
+        return None
+    mm, value = pairs.pop()
+    return value, mm
+
+
+def _mm_crossed(
+    dual: Sequence[tuple[ink_labels.Label, ink_labels.Turn]],
+    engines: Sequence[Any],
+    deadline: float,
+    clock: Callable[[], float],
+) -> list[picture_labels.PictureLabel]:
+    """The millimetre-over-inch spots the cross-check reads, as confirmed readings."""
+    out: list[picture_labels.PictureLabel] = []
+    if len({str(reader.name) for reader in engines}) < 2:
+        return out
+    for label, turn in dual:
+        if clock() > deadline:
+            break
+        try:
+            found = _mm_cross(label, turn, engines)
+        except Exception as failed:  # noqa: BLE001 - an unread spot is left out
+            _log.warning("dimension labels: mm cross-check failed: %s", type(failed).__name__)
+            continue
+        if found is None:
+            continue
+        value, mm = found
+        box = tuple(round(v, 2) for v in label.box)
+        inches = vv._inches_text(value).rstrip(chr(34))
+        out.append(
+            picture_labels.PictureLabel(
+                text=f"{mm} [{inches}]",
+                inches=value,
+                box=box,  # type: ignore[arg-type]
+                turn=int(turn),
+                font=round(min(box[2] - box[0], box[3] - box[1]), 2),
+                kind=f"mm {mm}",
+                confirmed=True,
+                reads=(),
+            )
+        )
+    return out
 
 
 def ocr_pass(
@@ -2962,6 +3340,7 @@ def build_dims(
     on_page: Callable[[dict[str, Any]], None] | None = None,
     pictures_budget_s: float = PICTURES_BUDGET_S,
     ocr_budget_s: float = OCR_BUDGET_S,
+    sweep_budget_s: float = SWEEP_BUDGET_S,
     ink: dict[tuple[str, int], Any] | None = None,
 ) -> dict[str, Any]:
     """The set pack's `dims.json`: every page of every upload and its labels. Three passes: the
@@ -2971,10 +3350,13 @@ def build_dims(
     the set (a page it does not reach stays `not_run`; one it leaves half read is `partial`). With
     each page's drawn route, the OCR route (#1848) reads the groups of ink it left unlabelled,
     sharing `ocr_budget_s` seconds, at most `OCR_PAGE_S` a page (a page read gets `ocr`, with its
-    seconds); after the `EQ` parts its labels are numbered after every other label, so no id
-    moves. `on_page` sees the document after each page of each pass (to write it as it grows).
-    `ink`: filled with each page's unread pen-stroke candidates the drawn pass counted (#1862),
-    keyed `(file, page)`; a page it did not reach is not in it."""
+    seconds), then `read_number` reads the groups still unlabelled that look like numbers, sharing
+    `sweep_budget_s` seconds (#1860); the vendor's alphabet is learned from every page's confirmed
+    drawn labels (`dims.json`'s `alphabet`) and seconds the sweep's OCR-only readings. After the
+    `EQ` parts these labels are numbered after every other label, so no id moves. `on_page` sees
+    the document after each page of each pass (to write it as it grows). `ink`: filled with each
+    page's unread pen-stroke candidates the drawn pass counted (#1862), keyed `(file, page)`; a
+    page it did not reach is not in it."""
     halves: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     pasted: dict[tuple[str, int], list[Sequence[float]]] = {}
     entries = page_map.get("pages") if isinstance(page_map, Mapping) else None
@@ -3056,7 +3438,10 @@ def build_dims(
                 on_page(document)
     left = drawn_budget_s
     ocr_left = ocr_budget_s
+    sweep_left = sweep_budget_s
     pending: dict[tuple[str, int], PageLabels] = {}
+    samples: list[vendor_alphabet.Sample] = []
+    held: list[SweepHeld] = []
     for entry in document["pages"]:
         if left <= 0:
             break
@@ -3073,6 +3458,8 @@ def build_dims(
                 budget_s=left,
                 ocr_budget_s=min(ocr_left, OCR_PAGE_S),
                 phrases=entry.get("phrases") or [],
+                sweep_budget_s=sweep_left,
+                alphabet=True,
                 count_ink=ink is not None,
             )
         except Exception as failed:  # noqa: BLE001 - the page keeps its text labels
@@ -3082,8 +3469,11 @@ def build_dims(
         finally:
             left -= monotonic() - started
         entry["drawn"], entry["labels"] = found.drawn, found.labels
+        samples += found.alphabet
+        held += found.sweep_held
         if found.ocr is not None:
             ocr_left -= float(found.ocr.get("seconds") or 0.0)
+            sweep_left -= float((found.ocr.get("sweep") or {}).get("seconds") or 0.0)
             pending[(name, number)] = found
         if ink is not None and found.ink is not None:
             ink[(name, number)] = found.ink
@@ -3105,6 +3495,36 @@ def build_dims(
         entry["labels"] = result.labels
         if on_page is not None:
             on_page(document)
+    # The vendor's alphabet (#1860), learned from every page's confirmed drawn labels: kept in
+    # the pack (`read_number` reads with it on demand) and seconding the spots the sweep read with
+    # its OCR pair alone.
+    alphabet = vendor_alphabet.Alphabet(samples)
+    if samples:
+        document["alphabet"] = alphabet.as_json()
+    for item, value in seconded(held, alphabet):
+        for (name, number), found in pending.items():
+            if number != item.page or Path(pdfs[name]).name != item.file:
+                continue
+            if not any(_overlap(item.box, tuple(lab["box"])) > 0.3 for lab in found.ocr_labels):
+                turns = item.turns
+                sideways = bool(turns) and all(t != 0 for t in turns)
+                label = _label(
+                    _Reading(
+                        text=vv._inches_text(value),
+                        inches=value,
+                        box=item.box,
+                        along=(0.0, 1.0) if sideways else (1.0, 0.0),
+                        font=min(item.box[2] - item.box[0], item.box[3] - item.box[1]),
+                        bare=False,
+                        route="drawn",
+                    ),
+                    None,
+                    "vendor",
+                )
+                label["origin"] = ocr_labels.ORIGIN
+                label["read_by"] = ["ocr", "alphabet"]
+                found.ocr_labels.append(label)
+            break
     # The OCR route's labels last (#1848): read with the drawn pass on the same reading of each
     # page, numbered after every other label (the `EQ` parts too), so no id moves.
     for entry in document["pages"]:

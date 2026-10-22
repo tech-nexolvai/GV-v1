@@ -70,12 +70,13 @@ __all__ = [
     "decide",
     "read_number",
     "reader_for_pack",
+    "seed_page",
 ]
 
 _log = logging.getLogger(__name__)
 
 #: Changes when what a reading holds or how it is decided changes (old cache entries then miss).
-READER_VERSION: Final = 1
+READER_VERSION: Final = 2
 #: The set pack's cache of readings.
 READINGS_FILE: Final = "readings.json"
 #: The ruler seconds a value within max(1/4", 1.5%) and blocks one more than max(1/2", 3%) off.
@@ -124,7 +125,7 @@ class Route:
     """One route's answer."""
 
     name: str
-    """text, ocr, shape or ruler."""
+    """text, ocr, shape, alphabet or ruler."""
     value: str | None
     """Inches as a decimal string (the ruler's measured inches), or none."""
     words: str
@@ -268,11 +269,30 @@ def decide(
     ocr: Decimal | None = None,
     shape: Decimal | None = None,
     ruler: float | None = None,
+    alphabet: Decimal | None = None,
 ) -> Decision:
     """The research's agreement rule: two families of different kinds agree and no reader
-    disagrees; the ruler seconds one reader or blocks it, and never supplies a value."""
+    disagrees; the ruler seconds one reader or blocks it, and never supplies a value. The vendor's
+    learned alphabet (#1860) is a second witness only: it counts beside the OCR pair (agreeing, the
+    two are a reading; differing, no reading), never alone and never with the ruler alone."""
     if text is not None:
         return Decision(text, ("text",), "text", "printed as text")
+    if alphabet is not None and ocr is not None:
+        if alphabet != ocr:
+            return Decision(
+                None,
+                (),
+                "readers_disagree",
+                f"code read it two different ways: {_inch_words(ocr)} (ocr) and "
+                f"{_inch_words(alphabet)} (alphabet)",
+            )
+        if shape is None or shape == ocr:
+            agreed = ("ocr", "shape", "alphabet") if shape is not None else ("ocr", "alphabet")
+            ruler_says = _ruler_says(ocr, ruler)
+            if ruler_says == "agrees":
+                agreed = (*agreed, "ruler")
+            code = "ocr_shape" if shape is not None else "ocr_alphabet"
+            return Decision(ocr, agreed, code, "two readers agree")
     readers = {name: value for name, value in (("ocr", ocr), ("shape", shape)) if value is not None}
     values = set(readers.values())
     if len(values) > 1:
@@ -399,6 +419,16 @@ class _Pages:
 
 
 _PAGES: Final = _Pages()
+
+
+def seed_page(pdf: Path, page: int, parsed: Any) -> None:
+    """Keep a page already parsed (`dim_labels._parse`) so a read of it does not parse it again:
+    the set pack's sweep reads the page it has just read (#1860)."""
+    with _PAGES.lock:
+        _PAGES.kept[(str(pdf), page)] = parsed
+        _PAGES.kept.move_to_end((str(pdf), page))
+        while len(_PAGES.kept) > _PAGES_KEPT:
+            _PAGES.kept.popitem(last=False)
 
 
 def _turns(label: Any) -> tuple[int, ...]:
@@ -579,10 +609,13 @@ def read_number(
     halves: Sequence[Mapping[str, Any]] = (),
     scales: Sequence[Any] = (),
     engines: Sequence[Any] | None = None,
+    alphabet: Any = None,
 ) -> Reading:
     """Read one number (see the module). `pdf`: the page's PDF (the set pack's markup-free copy);
     `labels`, `halves`, `scales`: the page's labels (`dims.json`), drawing halves (the page map)
-    and measured scales (`scales.json`); `engines`: the OCR engines (default: the drawn route's)."""
+    and measured scales (`scales.json`); `engines`: the OCR engines (default: the drawn route's);
+    `alphabet`: the vendor's learned digit shapes (`vendor_alphabet.Alphabet`, #1860), a second
+    witness beside the OCR pair on the vendor's side."""
     label, ended = _find(request, labels, halves)
     if ended is not None:
         return ended
@@ -695,7 +728,28 @@ def read_number(
         routes.append(Route("ruler", None if ruler is None else str(ruler), said))
     shape, said = _shape(ink)
     routes.append(Route("shape", None if shape is None else str(shape), said))
-    return _reading(request, label, box, routes, decide(ocr=ocr, shape=shape, ruler=ruler))
+    learned: Decimal | None = None
+    if alphabet is not None and request.side == "vendor":
+        learned, said = _alphabet(ink, alphabet)
+        routes.append(Route("alphabet", None if learned is None else str(learned), said))
+    decided = decide(ocr=ocr, shape=shape, ruler=ruler, alphabet=learned)
+    return _reading(request, label, box, routes, decided)
+
+
+def _alphabet(label: Any, alphabet: Any) -> tuple[Decimal | None, str]:
+    """The vendor's learned alphabet, in each way the label may read; ways that spell different
+    values give none."""
+    values: set[Decimal] = set()
+    for turn in _turns(label):
+        found = alphabet.read(label, turn)
+        if found is not None:
+            values.add(found)
+    if len(values) == 1:
+        value = values.pop()
+        return value, f"{_inch_words(value)}, every character a learned shape"
+    if len(values) > 1:
+        return None, "the reading directions spell different values"
+    return None, "not every character is a learned shape"
 
 
 def _reading(
@@ -705,7 +759,7 @@ def _reading(
     routes: Sequence[Route],
     decided: Decision,
 ) -> Reading:
-    order = {"text": 0, "ocr": 1, "shape": 2, "ruler": 3}
+    order = {"text": 0, "ocr": 1, "shape": 2, "alphabet": 3, "ruler": 4}
     ordered = tuple(sorted(routes, key=lambda r: order.get(r.name, 9)))
     common = {
         "label": None if label is None else str(label.get("id")),
@@ -755,6 +809,7 @@ class NumberReader:
     engines: Sequence[Any] | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
     _cache: dict[str, dict[str, Any]] | None = None
+    _alphabet: Any = None
 
     def __call__(self, request: Request) -> Reading:
         key = request.key()
@@ -777,10 +832,27 @@ class NumberReader:
             halves=halves,
             scales=scales,
             engines=self.engines,
+            alphabet=self.alphabet(),
         )
         if found.code != "no_page":
             self._store(key, found)
         return found
+
+    def alphabet(self) -> Any:
+        """The vendor's learned alphabet the set pack keeps (`dims.json`'s `alphabet`, #1860)."""
+        with self.lock:
+            if self._alphabet is None:
+                vendor_alphabet = import_module("app.review.assistant.vendor_alphabet")
+                raw = None
+                if self.pack is not None:
+                    try:
+                        raw = json.loads((self.pack / "dims.json").read_text("utf-8")).get(
+                            "alphabet"
+                        )
+                    except (OSError, ValueError, AttributeError):
+                        raw = None
+                self._alphabet = vendor_alphabet.Alphabet.from_json(raw)
+            return self._alphabet
 
     def check(
         self, file: str, page: int, box: Sequence[float], claim: str, side: str
