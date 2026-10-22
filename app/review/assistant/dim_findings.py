@@ -32,6 +32,8 @@ __all__ = [
     "fill_from_labels",
     "label_checks",
     "label_for_cite",
+    "own_architect_page",
+    "typed_architect_spot",
 ]
 
 #: A finding's label fields: (field, side, box field).
@@ -40,6 +42,66 @@ DIM_FIELDS: Final = (
     ("vendor_dim", "vendor", "vendor_box"),
 )
 _EXPECTED: Final = {"architect": ("architect", "brand"), "vendor": ("vendor",)}
+#: The work list numbers a separate file's pages after a round thousand (`set_pages.BLOCK`): the
+#: architect's page 12 is `p1012` there, and the helpers are shown it so.
+_BLOCK: Final = 1000
+
+
+def own_architect_page(page: int) -> int:
+    """An architect page as its own file's page: `1012` (the work list's number, `p1012`) is 12;
+    a page under 1000 is already its own."""
+    return (page - 1) % _BLOCK + 1 if page > _BLOCK else page
+
+
+def _separate(vendor_file: str | None, architect_file: str | None) -> bool:
+    """The set is two files: the architect's drawings are not in the vendor's file."""
+    return architect_file is not None and vendor_file is not None and architect_file != vendor_file
+
+
+def _never_the_vendors(field: str, architect_file: str, page: object) -> LabelRefused:
+    return LabelRefused(
+        f"{field}: the architect's drawings are their own file ({architect_file}), so say which "
+        "of its pages you mean: vs_page (its own page number: 12 for its page 12, or p1012), or "
+        f"the label with that page (p12.D7). Page {page} is the vendor's page number and is "
+        "never read as the architect's."
+    )
+
+
+def typed_architect_spot(
+    raw: Mapping[str, Any],
+    current: Mapping[str, Any] | None,
+    *,
+    vendor_file: str | None,
+    architect_file: str | None,
+) -> dict[str, Any]:
+    """`raw` (a report or an update) with its architect page numbers made the architect file's own
+    in a two-file set (`p1012` and 1012 are page 12), refused (`LabelRefused`) when a box typed for
+    the architect (no `architect_dim`) would land on the vendor's own page number by default: no
+    `vs_page`, no file named, and its page missing or the vendor's. A label (`architect_dim`) is
+    looked up by `fill_from_labels`, which applies the same rule. A combined set: `raw` as given."""
+    out = dict(raw)
+    if not _separate(vendor_file, architect_file):
+        return out
+    assert architect_file is not None
+    vs_page = out.get("vs_page")
+    if isinstance(vs_page, int) and not isinstance(vs_page, bool):
+        out["vs_page"] = vs_page = own_architect_page(vs_page)
+    box = out.get("arch_box")
+    if not isinstance(box, Mapping):
+        return out
+    box = dict(box)
+    named = box.get("page")
+    if isinstance(named, int) and not isinstance(named, bool):
+        box["page"] = named = own_architect_page(named)
+    out["arch_box"] = box
+    if out.get("architect_dim") is not None or box.get("file"):
+        return out  # a label is looked up by its own rule; a named file is the model's word
+    page = out.get("page", (current or {}).get("page"))
+    if vs_page is None and "vs_page" not in out:
+        vs_page = (current or {}).get("vs_page")
+    if vs_page is None and (named is None or named == page):
+        raise _never_the_vendors("arch_box", architect_file, page)
+    return out
 
 
 class LabelRefused(ValueError):
@@ -94,6 +156,7 @@ def fill_from_labels(
     notes: list[str] = []
     page = out.get("page", (current or {}).get("page"))
     vs_page = out.get("vs_page", (current or {}).get("vs_page"))
+    separate = _separate(vendor_file, architect_file)
     for field, side, box_field in DIM_FIELDS:
         ref = raw.get(field)
         if ref is None:
@@ -102,6 +165,8 @@ def fill_from_labels(
             continue
         file = vendor_file if side == "vendor" else (architect_file or vendor_file)
         where = page if side == "vendor" else (vs_page or page)
+        if side == "architect" and separate:
+            ref, where = _architect_ref(field, ref, page, vs_page, str(architect_file))
         if file is None or not isinstance(where, int):
             raise LabelRefused(f"{field}: give the page first (the label is looked up on it)")
         try:
@@ -154,6 +219,34 @@ def fill_from_labels(
             notes.append(f"{label['id']} was read from drawn ink by OCR: look at it once")
         dims[side] = _provenance(label)
     return out, (dims or None), notes
+
+
+def _architect_ref(
+    field: str, ref: object, page: object, vs_page: object, architect_file: str
+) -> tuple[object, int]:
+    """In a two-file set: the architect label `ref` and the architect file's page it is on. The
+    page is the one the label names (`p12.D7`; `p1012.D7`, the work list's number, is page 12)
+    or the finding's `vs_page`; never the vendor's own page by default (a helper's label read on
+    the architect's own page was once looked up on the architect page with the vendor's page
+    number). Raises `LabelRefused` when no architect page is given, or when the label names
+    the vendor's own page number with no `vs_page`, or a page other than `vs_page`."""
+    parsed = parse_ref(ref)
+    if parsed is None:
+        return ref, -1  # not a label id: `resolve` says so
+    named, number = parsed
+    if named is not None:
+        named = own_architect_page(named)
+        ref = f"p{named}.D{number}"
+    vs = own_architect_page(vs_page) if isinstance(vs_page, int) else None
+    if named is not None and vs is not None and named != vs:
+        raise LabelRefused(
+            f"{field}: {ref} is on the architect's page {named} but vs_page says {vs}: name one "
+            "architect page"
+        )
+    where = named if named is not None else vs
+    if where is None or (vs is None and where == page):
+        raise _never_the_vendors(field, architect_file, page)
+    return ref, where
 
 
 def _claims(

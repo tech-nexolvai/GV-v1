@@ -17,7 +17,8 @@ and page map (`page_map.json`). Three checks, each built to report only what cod
    at least `MIN_SCALE_SUPPORT` printed dimensions of that drawing): when two or more of the
    string's dimensions are not drawn to their own values, the labels may belong to other lines (or
    the view is not to scale), so it is not a finding (`doubt`). One that is off names the likely
-   wrong number.
+   wrong number. A string that misses its overall only by the drawing's own CAD rounding (each
+   value its drawn length rounded to 1/8", `_cad_rounding`, #1887) is not a finding (`rounding`).
 2. **The same span printed twice.** Two of the vendor's dimension lines in one view (on the same
    pasted drawing, along the same axis, and proved to be in one projection: at each end one
    extension line runs across both lines, `_one_view`) that end on exactly the same two extension
@@ -35,9 +36,11 @@ and page map (`page_map.json`). Three checks, each built to report only what cod
 Every finding is in the chat finding shape (CONTRACT2, `created_by: "consistency"`) with its code
 witnesses: a string carries its parts and printed overall (code's `arithmetic` check) and the
 overall's label (`dims`, the `printed` check); a contradiction carries both labels (`printed` on
-both spots) and `reference_side: vendor`. The "should be" is the parts' sum for a string and the
-reference value for a contradiction, so the red/green cloud drawing, the screen, the CSV and the
-trust rule use them like any other finding.
+both spots) and `reference_side: vendor`. The "should be" is the parts' sum for a string (the red
+round the printed overall), or, when the drawing names a part as the wrong number, that part with
+the overall less the other parts (`wrong_part`, #1887: the overall is right); and the reference
+value for a contradiction, so the red/green cloud drawing, the screen, the CSV and the trust rule
+use them like any other finding.
 
 Labels read from the vendor's drawn ink (`route: drawn`, OCR) are used when the pack has them; a
 finding resting on one says so, and the trust rule keeps it below Confirmed until a second read
@@ -66,6 +69,7 @@ from time import monotonic
 from typing import Any, Final, Literal
 from uuid import uuid4
 
+from app.review.assistant.finding_checks import WRONG_PART
 from app.review.assistant.ledger import add_up, format_inches
 
 __all__ = [
@@ -135,6 +139,19 @@ _CLEAN: Final = re.compile(
     r"\d{1,3}' ?-? ?\d{1,2}(?: \d{1,2}/\d{1,2})?\"|\d{1,3}'|"
     r"\d{2,5} \[\d{1,4}(?: \d{1,2}/\d{1,2})?\])$"
 )
+#: CAD rounding (a real two-file upload, 2026-10-23): a CAD program prints each dimension rounded to
+#: the drawing's step (1/8", or 1/16" where the drawing prints sixteenths), so three 57 1/3" bays
+#: print 57 3/8" each under a 172" overall. A string whose printed sum misses its overall by at
+#: most half a step a part (`_ROUNDING_MOST_IN` at most), on a drawing where one true scale makes
+#: every one of its printed values the rounding of its own drawn length, is that rounding: never a
+#: finding. A part drawn a length its printed value cannot round from stays a Wrong.
+_ROUNDING_STEP_IN: Final = Fraction(1, 8)
+_ROUNDING_FINE_IN: Final = Fraction(1, 16)
+_ROUNDING_MOST_IN: Final = Fraction(1, 4)
+#: How far the true scale may sit from the drawing's (its printed dimensions share it within 1 %).
+_ROUNDING_SCALE_SHARE: Final = 0.01
+#: Where a line's end is, give or take (points): a joint's own gap is measured from its middle.
+_ROUNDING_END_PT: Final = 0.05
 #: An extension line reaches a dimension line (or its end) when within this many points.
 _EXTENSION_PT: Final = 1.0
 #: A label belongs to a drawing on the page when within this of its box (points), as `dim_labels`.
@@ -145,7 +162,7 @@ MAX_UNKNOWNS: Final = 60
 #: The page texts' cache in the set pack (the sheet index reads them once per set).
 TEXTS_FILE: Final = "page_texts.json"
 
-type Verdict = Literal["adds_up", "does_not_add_up", "doubt"]
+type Verdict = Literal["adds_up", "does_not_add_up", "doubt", "rounding"]
 type Box = tuple[float, float, float, float]
 type Point = tuple[float, float]
 type Segment = tuple[Point, Point]
@@ -460,6 +477,19 @@ class StringCheck:
     def off_by(self) -> Fraction:
         return self.overall.inches - self.parts_sum
 
+    @property
+    def wrong_part(self) -> tuple[_Label, Fraction] | None:
+        """The part the drawing names as the wrong number and what it should be: the overall,
+        drawn to its own value, less the other parts (`20" - 2 5/8" - 3"` = `14 3/8"` for a 15"
+        part drawn 14 3/8"). None when the likely wrong number is the overall (its should-be is
+        the parts' sum) or the drawing names none."""
+        culprit = self.culprit
+        if culprit is None or culprit is self.overall or culprit not in self.parts:
+            return None
+        rest = sum((p.inches for p in self.parts if p is not culprit), Fraction(0))
+        should = self.overall.inches - rest
+        return (culprit, should) if should > 0 else None
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "page": self.overall.page,
@@ -572,13 +602,22 @@ def _judge(
             "its parts are drawn short of the overall's ends by about the difference (a reveal "
             "or an inset), so they do not measure the same span"
         )
+    if _cad_rounding(overall, parts, drawing, scale[0]):
+        return StringCheck(
+            overall,
+            tuple(parts),
+            "rounding",
+            total,
+            "the difference is the drawing's own rounding: each value is its drawn length "
+            "rounded to the drawing's step",
+        )
     off = _off_scale(members, scale[0])
     if len(off) >= 2:
         return doubt(
             "more than one of its dimensions is not drawn to its value (the labels may belong to "
             "other lines, or the view is not to scale)"
         )
-    culprit = off[0] if off else None
+    culprit = off[0] if off else _odd_one(overall, parts, drawing, scale[0])
     drawn = _drawn(culprit, scale[0]) if culprit is not None else None
     if (
         culprit is not None
@@ -596,6 +635,90 @@ def _judge(
         else ""
     )
     return StringCheck(overall, tuple(parts), "does_not_add_up", total, reason, culprit, drawn)
+
+
+def _rounding_step(drawing: Sequence[_Label]) -> Fraction:
+    """The step the drawing's CAD program rounds its printed values to: 1/16" when it prints a
+    sixteenth, else 1/8" (never coarser: a drawing of whole inches is not taken to round to 1")."""
+    if any(label.inches.denominator % 16 == 0 for label in drawing):
+        return _ROUNDING_FINE_IN
+    return _ROUNDING_STEP_IN
+
+
+type _Drawn = tuple[_Label, float, float]
+"""A member of a string as drawn: its label, its length (points) and how far off that may be."""
+
+
+def _drawn_members(overall: _Label, parts: Sequence[_Label]) -> list[_Drawn]:
+    """The overall and each part as drawn: each part measured between the middles of its joints
+    (`_ROUNDING_END_PT` give or take, plus half the joint's own gap)."""
+    bounds = [overall.start]
+    slack = [_ROUNDING_END_PT]
+    for a, b in pairwise(parts):
+        bounds.append((a.end + b.start) / 2)
+        slack.append(_ROUNDING_END_PT + abs(b.start - a.end) / 2)
+    bounds.append(overall.end)
+    slack.append(_ROUNDING_END_PT)
+    return [(overall, overall.span, 2 * _ROUNDING_END_PT)] + [
+        (part, bounds[i + 1] - bounds[i], slack[i] + slack[i + 1]) for i, part in enumerate(parts)
+    ]
+
+
+def _one_scale(members: Sequence[_Drawn], step: Fraction, pt_per_inch: float) -> bool:
+    """One true scale, within `_ROUNDING_SCALE_SHARE` of the drawing's, makes every member's
+    printed value the rounding (to `step`) of its drawn length."""
+    half = float(step) / 2
+    low = pt_per_inch * (1 - _ROUNDING_SCALE_SHARE)
+    high = pt_per_inch * (1 + _ROUNDING_SCALE_SHARE)
+    for label, span, give in members:
+        printed = float(label.inches)
+        if printed - half <= 0 or span - give <= 0:
+            return False
+        low = max(low, (span - give) / (printed + half))
+        high = min(high, (span + give) / (printed - half))
+    return low <= high
+
+
+def _cad_rounding(
+    overall: _Label, parts: Sequence[_Label], drawing: Sequence[_Label], pt_per_inch: float
+) -> bool:
+    """The string misses its overall only by the drawing's rounding (see `_ROUNDING_STEP_IN`):
+
+    - the printed difference is at most half the drawing's step a part (and `_ROUNDING_MOST_IN`);
+    - every value is plain inches (a millimetre value's inches are a conversion, not the CAD's
+      rounding);
+    - one true scale, within `_ROUNDING_SCALE_SHARE` of the drawing's, makes each value (the
+      overall and every part) the rounding of its drawn length (`_one_scale`).
+
+    A part drawn a length its printed value cannot round from (a 15" part drawn 14 3/8") leaves no
+    such scale: not rounding."""
+    off = abs(sum((p.inches for p in parts), Fraction(0)) - overall.inches)
+    step = _rounding_step(drawing)
+    if off > min(step * len(parts) / 2, _ROUNDING_MOST_IN):
+        return False
+    if any(m.units is not None for m in (overall, *parts)):
+        return False
+    return _one_scale(_drawn_members(overall, parts), step, pt_per_inch)
+
+
+def _odd_one(
+    overall: _Label, parts: Sequence[_Label], drawing: Sequence[_Label], pt_per_inch: float
+) -> _Label | None:
+    """The one member of a string that does not add up whose printed value is not the rounding
+    of its drawn length, when every other member's is (one true scale makes them all so,
+    `_one_scale`) and no other member could be left out instead. A slip too small for the
+    drawing's scale to show alone (`_OFF_IN`: an 8 1/8" part drawn 8 1/4"), named by the
+    string's own lines. None when it is not just one."""
+    if any(m.units is not None for m in (overall, *parts)):
+        return None
+    step = _rounding_step(drawing)
+    members = _drawn_members(overall, parts)
+    odd = [
+        member[0]
+        for member in members
+        if _one_scale([m for m in members if m is not member], step, pt_per_inch)
+    ]
+    return odd[0] if len(odd) == 1 else None
 
 
 def _slip(printed: Fraction, other: Fraction) -> bool:
@@ -827,27 +950,46 @@ def _string_finding(
         f"The vendor's parts don't add up: {sum_text}. Code checked the drawing: the parts touch "
         "end to end and end on the overall's own extension lines, so they are one string."
     )
-    if check.reason:
+    wrong = check.wrong_part
+    if wrong is not None:
+        part, should = wrong
+        rest = " - ".join(p.text for p in parts if p is not part)
+        why += (
+            f" The drawing names the wrong number: {check.reason}, and the {overall.text} overall "
+            f"is drawn to its value, so the {part.text} part should be {format_inches(should)} "
+            f"({overall.text} - {rest})."
+        )
+    elif check.reason:
         why += f" A hint: {check.reason}."
     why += _drawn_note([overall, *parts])
-    return {
+    # The red cloud goes round the wrong number and the green says what it should be: the part
+    # the drawing names, else the printed overall against the parts' sum.
+    marked = overall if wrong is None else wrong[0]
+    finding: dict[str, Any] = {
         "page": overall.page,
         "item": f"{place}dimension string ({_direction(overall)}{_round_words(overall, entries)})",
         "category": "other",
-        "architect": total,
-        "vendor": overall.text,
+        "architect": total if wrong is None else format_inches(wrong[1]),
+        "vendor": marked.text,
         "status": "different",
         "why": why,
         "verified": False,
         "source": "vendor_arithmetic",
         "parts": [p.text for p in parts],
         "printed_total": overall.text,
-        "vendor_box": _box_dict(overall),
-        "dims": {"vendor": _provenance(overall)},
+        "vendor_box": _box_dict(marked),
+        "dims": {"vendor": _provenance(marked)},
         "sum_text": sum_text,
         "created_by": CREATED_BY,
         "ledger_ids": [p.ref for p in (overall, *parts)],
     }
+    if wrong is not None:
+        finding[WRONG_PART] = {
+            "text": wrong[0].text,
+            "should_be": str(Decimal(wrong[1].numerator) / Decimal(wrong[1].denominator)),
+            "label": wrong[0].ref,
+        }
+    return finding
 
 
 def _contradiction_finding(
@@ -1142,6 +1284,7 @@ def check_set(
         "adds_up": sum(1 for c in checks if c.verdict == "adds_up"),
         "does_not_add_up": sum(1 for c in checks if c.verdict == "does_not_add_up"),
         "doubt": sum(1 for c in checks if c.verdict == "doubt"),
+        "rounding": sum(1 for c in checks if c.verdict == "rounding"),
     }
     reported: set[tuple[str, int, Fraction]] = set()
     for check in checks:
@@ -1432,8 +1575,11 @@ def judge_strings(
     check's own), against code's strings of the same span: the same page, the same printed overall
     (at the finding's spot when it has one, else the only one with that value on the page).
 
-    - code's string does not add up and has the same parts: verified (the geometry is code's);
+    - code's string does not add up and has the same parts: verified (the geometry is code's),
+      unless the drawing names one part as the wrong number: dropped (code's own finding, red at
+      that part with what it should be, replaces it);
     - code's string adds up: dropped (the reading grouped dimensions of another chain);
+    - code's string misses only by the drawing's rounding: dropped (no finding: CAD rounding);
     - code's string does not add up with other parts: dropped (code's own finding replaces it);
     - no string of code's, or a doubt: left as it is (never red: Not compared)."""
     to_inches = import_module("app.review.assistant.finding_checks").to_inches
@@ -1452,7 +1598,7 @@ def judge_strings(
             for check in checks
             if check.overall.page == finding.get("page")
             and Fraction(printed) == check.overall.inches
-            and check.verdict in ("adds_up", "does_not_add_up")
+            and check.verdict in ("adds_up", "does_not_add_up", "rounding")
         ]
         placed = [c for c in same if _overlaps(finding.get("vendor_box"), c.overall)]
         if placed:
@@ -1470,7 +1616,13 @@ def judge_strings(
                 f"Code measured this string on the drawing: {listed} = {overall} printed, it adds "
                 "up; the reading grouped dimensions of another chain."
             )
-        elif None not in read and parts == ours:
+        elif check.verdict == "rounding":
+            dropped[str(finding["id"])] = (
+                f"Code measured this string on the drawing: {listed} against {overall} printed "
+                "differs only by the drawing's rounding (each value is its drawn length rounded), "
+                "so it is not a mistake."
+            )
+        elif None not in read and parts == ours and check.wrong_part is None:
             verified.append(str(finding["id"]))
         else:
             dropped[str(finding["id"])] = (
