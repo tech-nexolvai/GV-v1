@@ -3,6 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { chatEventOf } from '@/lib/chat-api';
 import {
   applyLive,
+  drawingCounts,
+  isMatching,
+  progressOf,
+  usualWords,
   badgesByDrawing,
   barShare,
   barWords,
@@ -26,6 +30,7 @@ const AT = '2026-10-19T10:00:00.000Z';
 const at = (seconds: number) => Date.parse(AT) + seconds * 1000;
 
 const phase = (over: Partial<LivePhase> = {}): LivePhase => ({ phase: 'comparing', step: null, done: 0, total: 39, unit: 'drawings', started_at: AT, phase_started_at: AT, stopping: false, ...over });
+const USUAL = { low_minutes: 35, high_minutes: 60, pages: 99, matched: 96 };
 const drawing = (id: string, page: number, status: LiveDrawing['status'], area = 'Kitchen'): LiveDrawing => ({ id, page, status, area, round: 1, reason: null });
 const finding = (key: string, over: Partial<LiveFinding> = {}): LiveFinding => ({
   key, id: null, outcome: 'wrong', proved_by: 'code', page: 16, area: 'Kitchen', item: 'Kitchen: overall width', vendor: '24', architect: '25', should_be: '25"', product: 'countertops',
@@ -131,7 +136,8 @@ describe('the words', () => {
   it('counts the bar in plain words', () => {
     expect(barWords(run(ev('check_phase', { phase: phase({ done: 23 }) })))).toBe('23 of\u00a039 drawings compared');
     expect(barWords(run(ev('check_phase', { phase: phase({ phase: 'double_checking', step: 'second_looks', done: 1, total: 4, unit: 'looks' }) })))).toBe('All drawings compared · second look 1 of\u00a04');
-    expect(barWords(run(ev('check_phase', { phase: phase({ phase: 'getting_ready', done: null, total: null }) })))).toMatch(/^Usually 4–5 minutes/);
+    expect(barWords(run(ev('check_phase', { phase: phase({ phase: 'getting_ready', done: null, total: null }) })))).toBe('');
+    expect(barWords(run(ev('check_phase', { phase: phase({ phase: 'getting_ready', done: null, total: null, usual: USUAL }) })))).toBe('Usually 35–60 min for 99\u00a0content pages');
   });
 
   it('gives time left only from the server, or from the pace once 3 drawings are done', () => {
@@ -166,5 +172,45 @@ describe('the words', () => {
     expect(tabTitle(run(ev('check_phase', { phase: phase({ done: 23 }) })))).toBe('(23/39) Checking · GV Review');
     expect(tabTitle(run(ev('check_phase', { phase: phase({ phase: 'making_files', done: 1, total: 5 }) })))).toBe('Checking · GV Review');
     expect(tabTitle(null)).toBe('GV Review');
+  });
+});
+
+describe('matching pages first (#1883)', () => {
+  const matching = (done: number, over: Partial<LivePhase> = {}) => ev('check_phase', { phase: phase({ step: 'matching', done, total: 96, unit: 'drawings', ...over }) });
+
+  it('names the matching step with its count, and what happens meanwhile', () => {
+    const live = run(matching(74));
+    expect(isMatching(live)).toBe(true);
+    expect(phaseTitle(live)).toBe('Matching pages');
+    expect(barWords(live)).toBe('74 of\u00a096 drawings matched to the architect’s');
+    expect(nowWords(live).words).toBe('Pairing vendor pages with the architect’s; each starts once paired');
+    expect(tabTitle(live)).toBe('Matching pages · GV Review');
+  });
+
+  it('keeps the bar in its first few percent and never steps back when comparing starts', () => {
+    expect(barShare(run(matching(0)))).toBe(2);
+    expect(barShare(run(matching(96)))).toBe(5);
+    const pages = run(ev('check_phase', { phase: phase({ done: 0, total: 109, unit: 'pages' }) }));
+    expect(barShare(pages)).toBe(5);
+    expect(progressOf(run(matching(96)))).toBeLessThan(progressOf(pages));
+  });
+
+  it('gives no pace-based time while matching, and the usual range for this set instead', () => {
+    const live = run(matching(50, { usual: USUAL }));
+    expect(secondsLeft(live, at(600), null)).toBeNull();
+    expect(usualWords(live)).toBe('usually 35–60 min for 99\u00a0content pages');
+    // Comparing, before 3 pages: the range (the bar counts the pages); after: the estimate.
+    expect(usualWords(run(ev('check_phase', { phase: phase({ done: 1, total: 109, unit: 'pages', usual: USUAL }) })))).toBe('usually 35–60 min');
+    expect(usualWords(run(ev('check_phase', { phase: phase({ done: 5, total: 109, unit: 'pages', usual: USUAL }) })))).toBeNull();
+  });
+
+  it('says no time rather than a wrong one when the server gives no range', () => {
+    expect(usualWords(run(matching(10)))).toBeNull();
+    expect(usualWords(run(ev('check_phase', { phase: phase({ done: 0 }) })))).toBeNull();
+  });
+
+  it('never counts the matcher’s drawings as drawings compared in the sidebar', () => {
+    const live = run(matching(74), ev('check_drawings', { drawings: [drawing('p3.v1', 3, 'answered'), drawing('p4.v1', 4, 'waiting')] }));
+    expect(drawingCounts(live)).toEqual({ done: 1, total: 2 });
   });
 });

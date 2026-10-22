@@ -5892,9 +5892,9 @@ export interface components {
             started_at: string;
             /**
              * Step
-             * @description Within double_checking: code_checks (code's own checks of the whole set, no count), verifying (code checks each answered drawing), second_looks, final_checks (no count); `stopped` on a done check that was stopped.
+             * @description Within comparing: matching (the AI page matcher pairs the vendor's drawings with a separate architect's file, n of m drawings; the comparing starts page by page as they are paired). Within double_checking: code_checks (code's own checks of the whole set, no count), verifying (code checks each answered drawing), second_looks, final_checks (no count); `stopped` on a done check that was stopped.
              */
-            step?: ("code_checks" | "verifying" | "second_looks" | "final_checks" | "stopped") | null;
+            step?: ("matching" | "code_checks" | "verifying" | "second_looks" | "final_checks" | "stopped") | null;
             /**
              * Stopping
              * @description Stop was pressed (`check_stopping`).
@@ -5911,6 +5911,8 @@ export interface components {
              * @description What `done` and `total` count (pages: the roster check).
              */
             unit?: ("drawings" | "pages" | "looks" | "files") | null;
+            /** @description How long a check of this set usually takes, once code knows its pages (null: no honest range; the screen then says no time). */
+            usual?: components["schemas"]["ChatLiveUsualOut"] | null;
         };
         /**
          * ChatLiveStateOut
@@ -5986,6 +5988,35 @@ export interface components {
             waiting_second_look: number;
             /** Wrong */
             wrong: number;
+        };
+        /**
+         * ChatLiveUsualOut
+         * @description How long a full check of this set usually takes (#1883): a range from measured runs,
+         *     by its content pages and whether its pages must first be matched with a separate architect's
+         *     file (`check_time.usual_minutes`). Absent when no honest range can be given.
+         */
+        ChatLiveUsualOut: {
+            /**
+             * High Minutes
+             * @description The range's high end, whole minutes.
+             */
+            high_minutes: number;
+            /**
+             * Low Minutes
+             * @description The range's low end, whole minutes.
+             */
+            low_minutes: number;
+            /**
+             * Matched
+             * @description The vendor drawings the AI page matcher pairs with the architect's file first (0: a combined set, or every answer saved).
+             * @default 0
+             */
+            matched: number;
+            /**
+             * Pages
+             * @description The content pages the check compares.
+             */
+            pages: number;
         };
         /**
          * ChatMessageIn
