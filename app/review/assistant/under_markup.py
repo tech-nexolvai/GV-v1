@@ -36,11 +36,11 @@ from typing import Any, Final
 
 import pdfplumber
 import pikepdf
-import pypdfium2 as pdfium  # type: ignore[import-untyped]
 from PIL import Image
 
 from app.review.assistant.chat_drawing import PDFIUM_LOCK
 from app.review.assistant.page_pictures import fitting_dpi
+from extraction.pdfium_guard import pdfium
 from extraction.reader import pixel_placement
 from extraction.stamp_text import carries_drawing
 

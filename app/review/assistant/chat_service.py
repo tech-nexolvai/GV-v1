@@ -410,7 +410,23 @@ def _size_words(size: int) -> str:
     return f"{max(1, round(size / 1000))} KB"
 
 
+#: One copy of a folder's PDFs at a time (`sync_uploads`): the plan check asked again while the
+#: first ask still copies a big set waits for it, instead of copying the set again beside it.
+_SYNC_LOCKS: dict[Path, threading.Lock] = {}
+_SYNC_LOCKS_GUARD: Final = threading.Lock()
+
+
 def sync_uploads(
+    workspace: ChatWorkspace, sources: Sequence[UploadSource]
+) -> tuple[list[dict[str, Any]], bool]:
+    """`_sync_uploads`, one at a time for the same folder (`_SYNC_LOCKS`)."""
+    with _SYNC_LOCKS_GUARD:
+        lock = _SYNC_LOCKS.setdefault(workspace.root.resolve(), threading.Lock())
+    with lock:
+        return _sync_uploads(workspace, sources)
+
+
+def _sync_uploads(
     workspace: ChatWorkspace, sources: Sequence[UploadSource]
 ) -> tuple[list[dict[str, Any]], bool]:
     """The chat's uploads made equal to the drawing set's latest PDFs (read-only, their uploaded
