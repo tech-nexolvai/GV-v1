@@ -5759,7 +5759,8 @@
                 "enum": [
                   "carrier",
                   "code_pair",
-                  "earlier_round"
+                  "earlier_round",
+                  "round_pick"
                 ],
                 "type": "string"
               },
@@ -5767,7 +5768,7 @@
                 "type": "null"
               }
             ],
-            "description": "How code compared the item with the architect instead (None: it could not, so the item is Not compared).",
+            "description": "How code compared the item with the architect instead (None: it could not, so the item is Not compared); round_pick: a cheap blind pick named the architect's label and code compared the values (#1861).",
             "title": "Compared"
           },
           "label": {

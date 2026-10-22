@@ -63,7 +63,7 @@ def _asked(monkeypatch: pytest.MonkeyPatch, answer: dict[str, Any] | None = None
     asked: list[str] = []
 
     def held(self: Any, finding: Any, vendor: Any, architect: Any, page_map: Any, model: Any,
-             effort: str = "medium") -> dict[str, Any]:  # fmt: skip
+             effort: str = "medium", kind: str = "advocate") -> dict[str, Any]:  # fmt: skip
         asked.append(str(vendor["id"]))
         reply = dict(answer or _ANSWER)
         reply["pick"] = f"p{architect['page']}.{reply.get('architect_pick')}"
@@ -86,7 +86,7 @@ def test_a_pick_that_does_not_fit_waits_for_the_running_pick_and_is_then_asked(
     most: list[int] = [0]
 
     def held(self: Any, finding: Any, vendor: Any, architect: Any, page_map: Any, model: Any,
-             effort: str = "medium") -> dict[str, Any]:  # fmt: skip
+             effort: str = "medium", kind: str = "advocate") -> dict[str, Any]:  # fmt: skip
         running.append(1)
         most[0] = max(most[0], len(running))
         started.set()

@@ -18,6 +18,13 @@ checkers decide what may be red:
 - **P3.** A **verifier** (fresh context, Sonnet, medium) per page group with AI-only Wrongs: it
   finds the labels (or the tightest boxes) of the values claimed, and never says Wrong or Right.
   Code then reads those spots: a value code reads equal to the architect's turns the item Right.
+- **P3b, the round-only leftovers (#1861).** An item a helper compared only with the vendor's own
+  earlier round that code could not link to the architect for free gets ONE cheap blind pick
+  (Sonnet, the devil's advocate's question, one per vendor label, the biggest first, kept picks
+  reused at $0) naming the architect's label (`round_picks`); code then compares the values. A
+  hard cap per run (`GV_ASSISTANT_ROUND_PICK_CAP_USD`, default $2) reserved inside the fixed
+  price. A different value is a red candidate whose devil's advocate pick is always the stronger
+  model: a cheap pick never makes a red alone.
 - **P4.** The **devil's advocate** (`full_check_advocate`): code checks on every red candidate and
   a blind second pick of the architect label; it writes `passed` or `objects` through the
   finding's critic fields, so the trust rule and the red/green drawing pick it up.
@@ -70,7 +77,7 @@ import json
 import logging
 import re
 import threading
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -80,7 +87,14 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
-from app.review.assistant import classification, dim_anchors, pick_cache, same_ends, witness
+from app.review.assistant import (
+    classification,
+    dim_anchors,
+    pick_cache,
+    round_picks,
+    same_ends,
+    witness,
+)
 from app.review.assistant import proof as proof_rule
 from app.review.assistant.chat_findings import UPDATE_FINDING
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
@@ -176,7 +190,7 @@ PROTECTED: Final = ("provers", "advocate", "lead", "escalation", "summary", "rea
 #: The later steps in the order they run (#1805): each may take all that is left under the price
 #: except the shares of the steps after it. The second reads run alongside everything, so their
 #: share (and the summary's) is kept to the end.
-LATER_ORDER: Final = ("gaps", "provers", "lead", "advocate", "escalation", "summary")
+LATER_ORDER: Final = ("gaps", "provers", "lead", "round_picks", "advocate", "escalation", "summary")
 _KEPT_TO_THE_END: Final = ("reads",)
 #: The timings phase each share is shown on (`Timings.set_budget`).
 TIMINGS_PHASES: Final[Mapping[str, tuple[str, ...]]] = {
@@ -223,7 +237,14 @@ SHARPER_GROUP_MICROS: Final = 80_000
 #: that (a page never compared is worse than an item not proved).
 FINISH_MOST_SHARE: Final = 0.35
 #: The steps whose need is worked out from the red candidates (the rest keep their shares).
-NEED_STEPS: Final = ("advocate", "escalation")
+NEED_STEPS: Final = ("advocate", "escalation", "round_picks")
+#: The cheap picks for the round-only leftovers (#1861) have no share of the price: their money is
+#: what they need (`finish_needs`), at most their cap. Until the helpers have found the items, a set
+#: with a vendor round after the first keeps this share of the price for them (at most the cap), so
+#: the page helpers never spend it; a set with one round keeps nothing.
+ROUND_PICK_SHARE: Final = 0.10
+#: The phase the cheap picks are charged to (their cap, not a share).
+ROUND_PHASE: Final = "round_picks"
 #: Why a page code stopped sending on was left unchecked when the money was really short.
 OUT_OF_MONEY: Final = "out of money (the fixed price left too little for another look)"
 #: The most gap closers at once (one per run of pages; the engine's parallel agents bound it too).
@@ -261,6 +282,9 @@ _READ_AGAINST: Final = frozenset({"readers_disagree", "ruler_blocks", "units_dis
 _NEAR_LABELS: Final = 8
 _NEAR_PT: Final = 60.0
 _ADVOCATE_PROMPT_ID: Final = "review-assistant-chat-advocate-{provider}-{harness}"
+#: The cheap picks on the round-only leftovers (#1861): the advocate's question, its own prompt id
+#: so their tokens and cost are told apart in the calls' record.
+_ROUND_PICK_PROMPT_ID: Final = "review-assistant-chat-round-pick-{provider}-{harness}"
 _STRING_PROMPT_ID: Final = "review-assistant-chat-string-{provider}-{harness}"
 #: Code's estimate of one blind string reading (one hi-res crop and the question) and its reply.
 _STRING_PROMPT_TOKENS: Final = 5_000
@@ -382,7 +406,7 @@ class PricePlan:
     def after(self, phase: str) -> int:
         """The shares kept for the steps after `phase` (`LATER_ORDER`) and to the end (#1805)."""
         later = LATER_ORDER[LATER_ORDER.index(phase) + 1 :] if phase in LATER_ORDER else ()
-        return sum(self.budgets[name] for name in (*later, *_KEPT_TO_THE_END))
+        return sum(self.budgets.get(name, 0) for name in (*later, *_KEPT_TO_THE_END))
 
     def cap_for(self, kind: str, pages: int) -> int:
         """A specialist's cap: for a page-group helper its phase's budget over the set's pages,
@@ -1200,6 +1224,18 @@ class _Run:
     #: What the finishing steps need (#1821), by step (`NEED_STEPS`), from the red candidates when
     #: last worked out (`_refresh_needs`): kept before any extra pass spends.
     needs: dict[str, int] = field(default_factory=dict)
+    #: The set has a vendor round after the first (#1861): the cheap picks' money is kept from the
+    #: start (`ROUND_PICK_SHARE`).
+    later_rounds: bool = False
+    #: The cheap questions not kept from an earlier run, once code knows them (`None`: not yet).
+    round_unpaid: int | None = None
+    #: The cheap picks are done: they need nothing more.
+    round_done: bool = False
+    #: Every blind pick asked of a model in this run (#1861): its kind, the vendor label, the
+    #: model, the tokens and the cost (millionths of $), so a run's picks can be told apart.
+    pick_log: list[dict[str, Any]] = field(default_factory=list)
+    #: What the cheap picks did (`_round_picks`): counted for the log and the answer's trust block.
+    round_block: dict[str, Any] = field(default_factory=dict)
     #: The proving reads already made this run (#1850), by spot, value, side and the pack's label
     #: files: the same read is never made twice (the look-again's, or one read ahead).
     proof_reads: dict[tuple[Any, ...], dict[str, Any]] = field(default_factory=dict)
@@ -1215,6 +1251,14 @@ class _Run:
         later steps' shares, whichever is more (#1805: money a phase leaves rolls forward)."""
         assert self.plan is not None
         used = self.spent.get(phase, 0)
+        if phase == ROUND_PHASE:
+            # The cheap picks' hard cap (#1861), and never the later steps' money.
+            return (
+                used + estimate <= self._round_cap()
+                and estimate <= self._room(phase)
+                and estimate <= self._left()
+                and self.engine._fits(estimate)
+            )
         fits = used + estimate <= self.plan.budgets[phase] or estimate <= self._room(phase)
         return fits and estimate <= self._left() and self.engine._fits(estimate)
 
@@ -1280,12 +1324,39 @@ class _Run:
             )
             for f in unread
         }
-        needs = {"advocate": advocate, "escalation": len(groups) * SHARPER_GROUP_MICROS}
+        needs = {
+            "advocate": advocate,
+            "escalation": len(groups) * SHARPER_GROUP_MICROS,
+            ROUND_PHASE: self._round_need(),
+        }
         most = int(self.plan.price * FINISH_MOST_SHARE)
         total = sum(needs.values())
         if total > most:
             needs = {name: need * most // total for name, need in needs.items()}
         return needs
+
+    def _round_cap(self) -> int:
+        """The cheap picks' hard cap for this run (#1861; 0: off)."""
+        return max(0, int(getattr(self.engine.settings, "round_pick_cap_micros", 0) or 0))
+
+    def _round_need(self) -> int:
+        """What the cheap picks need (#1861), at most their cap: before the helpers found the
+        items, `ROUND_PICK_SHARE` of the price when the set has a vendor round after the first
+        (else nothing); then a pick per question not kept from an earlier run, at least the holds
+        of the picks that run at once; nothing once they are done."""
+        cap = self._round_cap()
+        if cap == 0 or self.round_done or self.plan is None:
+            return 0
+        if self.round_unpaid is None:
+            return min(cap, int(self.plan.price * ROUND_PICK_SHARE)) if self.later_rounds else 0
+        worst = (
+            self.engine._price(
+                BY_SHORT[round_picks.CHEAP_MODEL], _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS
+            )
+            or 0
+        )
+        unpaid = self.round_unpaid
+        return min(cap, max(unpaid * PICK_MICROS, min(_ADVOCATE_WORKERS, unpaid) * worst))
 
     def _refresh_needs(self, before: str) -> None:
         """`needs` worked out again (`finish_needs`) before `before` spends, and logged."""
@@ -1298,9 +1369,10 @@ class _Run:
             return
         _log.warning(
             "assistant roster money kept before %s: $%.2f for the steps after it "
-            "(needs: advocate $%.2f, escalation $%.2f)",
+            "(needs: round picks $%.2f, advocate $%.2f, escalation $%.2f)",
             before,
             self._kept_after(before if before in LATER_ORDER else "gaps") / _MICROS,
+            self.needs.get(ROUND_PHASE, 0) / _MICROS,
             self.needs.get("advocate", 0) / _MICROS,
             self.needs.get("escalation", 0) / _MICROS,
         )
@@ -1565,6 +1637,8 @@ class _Run:
             plan = with_lenses(plan, settings.numbers_pages, page_map)
         engine._plan = plan
         self.no_vendor = no_vendor_pages(page_map, engine.book.main_file)
+        # A vendor round after the first: the cheap picks' money is kept from the start (#1861).
+        self.later_rounds = _later_rounds(page_map)
         # The page groups: the drawn-things helpers' (the plan's own), never the numbers'.
         groups = len({job.pages for job in plan.jobs if job.lens != "numbers"})
         # The fixed price (#1823): base + per content page the plan compares (the products in
@@ -1642,6 +1716,8 @@ class _Run:
         # what the finishing steps need for the red candidates already there (#1821).
         self._refresh_needs("helpers")
         protected = sum(max(self.plan.budgets[name], self.needs.get(name, 0)) for name in PROTECTED)
+        # The cheap round picks have no share of the price: what they need is kept too (#1861).
+        protected += self.needs.get(ROUND_PHASE, 0)
         engine.helper_ceiling = engine.spent + max(0, price - protected)
         try:
             entries = self._launched(agents, on_done=engine._helper_done)
@@ -1698,6 +1774,15 @@ class _Run:
             _log.exception("assistant roster escalation's free steps failed")
         if engine.cancel.is_set():
             return
+        with engine.timings.phase(ROUND_PHASE):
+            try:
+                self._round_picks(page_map)
+            except Exception:  # noqa: BLE001 - the leftovers stay Not compared, as before
+                _log.exception("assistant roster's cheap round picks failed")
+            finally:
+                self.round_done = True
+        if engine.cancel.is_set():
+            return
         with engine.timings.phase("provers"):
             self._prove_values("verifier")
         # The final red candidates: what the advocate and the escalation need, kept in that order.
@@ -1714,6 +1799,202 @@ class _Run:
                 self._escalate(plan, page_map)
         else:
             self._note_unverified()
+
+    # -- P3b: the round-only leftovers' cheap picks (#1861) --
+
+    def _round_picks(self, page_map: Mapping[str, Any] | None) -> None:
+        """Layer 2 for the items compared only with the vendor's earlier round (Anant,
+        2026-10-22, "go with hybrid, with both, but less cost"; `round_picks`): after the free
+        steps, each leftover's vendor label gets ONE cheap blind pick of the architect's label,
+        the kept picks first ($0), then the biggest items first, within the hard cap
+        (`GV_ASSISTANT_ROUND_PICK_CAP_USD`) and what the later steps keep. Code compares the
+        values; a different value becomes a red candidate for the devil's advocate, whose own
+        pick is then the stronger model's (`_judge`). What is not asked within the cap, or
+        named no label code accepts, stays Not compared with that reason."""
+        engine = self.engine
+        if self._round_cap() == 0 or engine.tools.workspace.set_pack is None:
+            return
+        from app.review.assistant.escalation import context_from_pack
+
+        book = engine.book
+        ctx = context_from_pack(engine.tools.workspace.set_pack, book.main_file, page_map=page_map)
+        asked = round_picks.questions(
+            [judged(f) for f in book.live()],
+            labels=ctx.labels,
+            page_map=page_map,
+            main_file=book.main_file,
+        )
+        self.round_block = {"questions": len(asked), "kept": 0, "asked": 0, "not_asked": 0}
+        if not asked:
+            return
+        by_id = {str(f["id"]): f for f in book.live()}
+        kept = [q for q in asked if self._round_kept(q, page_map)]
+        unpaid = [q for q in asked if q not in kept]
+        self.round_unpaid = len(unpaid)
+        self._refresh_needs(ROUND_PHASE)
+
+        ordered = [*kept, *unpaid]
+        turn = threading.Condition()
+        next_up = [0]
+
+        def ask(index: int) -> dict[str, Any] | None:
+            # Each pick holds its money in this order (kept picks first, $0; then the biggest
+            # items first), so what the cap does not reach is always the smallest.
+            def done() -> None:
+                with turn:
+                    next_up[0] = max(next_up[0], index + 1)
+                    turn.notify_all()
+
+            with turn:
+                turn.wait_for(lambda: next_up[0] >= index)
+            try:
+                if engine.cancel.is_set():
+                    return None
+                question = ordered[index]
+                finding = by_id.get(question.findings[0]) or {"item": question.item}
+                return self._blind_pick(
+                    finding,
+                    question.vendor,
+                    question.architect,
+                    page_map,
+                    kind=round_picks.CHEAP_LINK,
+                    on_hold=done,
+                )
+            finally:
+                done()
+
+        self.pick_phase = ROUND_PHASE
+        try:
+            with ThreadPoolExecutor(max_workers=_ADVOCATE_WORKERS) as pool:
+                answers = list(pool.map(ask, range(len(ordered))))
+        finally:
+            self.pick_phase = "advocate"
+        annotations = _annotations(engine)
+        outcomes: dict[str, int] = {}
+        for question, answer in zip(ordered, answers, strict=True):
+            said = self._round_said(question, answer)
+            outcome = self._apply_round_pick(question, answer, said, ctx, page_map, annotations)
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+            if answer is None:
+                self.round_block["not_asked"] += 1
+            elif answer.get(pick_cache.CACHED):
+                self.round_block["kept"] += 1
+            else:
+                self.round_block["asked"] += 1
+        self.round_block["outcomes"] = outcomes
+        self.round_block["cost_usd"] = round(self.spent.get(ROUND_PHASE, 0) / _MICROS, 4)
+        if self.round_block["not_asked"]:
+            self._note(
+                f"the cheap picks for items compared only with the vendor's earlier round: "
+                f"{self.round_block['not_asked']} not asked within their cap"
+            )
+        _log.warning("assistant roster round picks: %s", self.round_block)
+
+    def _round_kept(
+        self, question: round_picks.Question, page_map: Mapping[str, Any] | None
+    ) -> bool:
+        """The question's pick is already decided on the same drawings (this run, or kept in the
+        set pack from an earlier run): it costs nothing."""
+        key = self._pick_key(
+            question.vendor,
+            question.architect,
+            page_map,
+            BY_SHORT[round_picks.CHEAP_MODEL].id,
+            round_picks.CHEAP_EFFORT,
+            round_picks.CHEAP_LINK,
+        )
+        if key is None:
+            return False
+        return key in self.picks or pick_cache.load(self._pack_folder(), key) is not None
+
+    def _round_said(
+        self, question: round_picks.Question, answer: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        """What the finding keeps about its cheap pick: the model, kept or asked, its cost."""
+        said: dict[str, Any] = {
+            "vendor": question.ref,
+            "architect_page": question.architect.get("page"),
+            "model": BY_SHORT[round_picks.CHEAP_MODEL].id,
+            "effort": round_picks.CHEAP_EFFORT,
+        }
+        if answer is None:
+            return said
+        said["kept"] = bool(answer.get(pick_cache.CACHED))
+        if not said["kept"]:
+            with self.held_lock:
+                paid = [
+                    e
+                    for e in self.pick_log
+                    if e["kind"] == round_picks.CHEAP_LINK and e["vendor"] == question.ref
+                ]
+            if paid:
+                said["cost_usd"] = round(paid[-1]["cost_micros"] / _MICROS, 4)
+                said["tokens"] = [paid[-1]["input_tokens"], paid[-1]["output_tokens"]]
+        return said
+
+    def _apply_round_pick(
+        self,
+        question: round_picks.Question,
+        answer: Mapping[str, Any] | None,
+        said: Mapping[str, Any],
+        ctx: Any,
+        page_map: Mapping[str, Any] | None,
+        annotations: Sequence[Mapping[str, Any]],
+    ) -> str:
+        """Code's answer to one cheap pick on the question's findings (`round_picks.link`): the
+        biggest is compared with the architect's label; the others printing the same vendor
+        label are folded into it when it was linked, else they keep the same reason."""
+        engine = self.engine
+        book = engine.book
+
+        def checks(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> Sequence[Any]:
+            # The advocate's code checks, and code's geometry: two dimensions it shows ending in
+            # different places are never compared, for a Right as for a red.
+            found = code_checks(
+                vendor,
+                architect,
+                annotations=annotations,
+                page_map=page_map,
+                vendor_ink=self._ink(vendor),
+                newer_same=self._newer_same(vendor, page_map),
+            )
+            return found
+
+        def ends(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> tuple[str, str]:
+            state, why = self._extent(vendor, architect, page_map)
+            return str(state), why
+
+        first: str | None = None
+        outcome = "none"
+        with engine.finding_lock:
+            for finding_id in question.findings:
+                current = next((f for f in book.live() if str(f["id"]) == finding_id), None)
+                if current is None:
+                    continue
+                if first is not None and outcome == "linked":
+                    if book.absorb(finding_id):
+                        engine._show_dropped(
+                            finding_id,
+                            f"Same vendor dimension as {first} (page {question.vendor.get('page')}"
+                            "), which a blind pick compares with the architect's drawing.",
+                        )
+                    continue
+                updated, outcome_now = round_picks.link(
+                    current,
+                    answer,
+                    vendor=question.vendor,
+                    labels=ctx.labels,
+                    main_file=book.main_file,
+                    checks=checks,
+                    ends=ends,
+                    said=said,
+                )
+                if first is None:
+                    first, outcome = finding_id, outcome_now
+                updated = judged(updated)
+                if book.replace(updated):
+                    engine._show_finding(updated)
+        return outcome
 
     def _note_unverified(self) -> None:
         """A red candidate still without the blind pick it needed, after the escalation tried it
@@ -3191,14 +3472,26 @@ class _Run:
                 faces = face_doubt(
                     item=str(finding.get("item") or ""), words=finding_words(finding)
                 )
-                if extent[0] in ("same_extent", "cannot_tell") and faces is None:
+                # A pairing a cheap round pick named is red only on code's proof of the same ends
+                # (#1861, option C): where code cannot tell, no pick is asked at all.
+                cheap = round_picks.cheap_linked(finding)
+                worth_a_pick = extent[0] == "same_extent" or (
+                    not cheap and extent[0] == "cannot_tell"
+                )
+                if worth_a_pick and faces is None:
                     # Geometry that shows different points spends no call (#1641). Where it cannot
                     # tell (a sheet not to scale), the stronger model makes the blind pick, as the
                     # simple check's blind look (#1819: a cabinet template, two planted mistakes
                     # stayed grey here and were red in the simple check).
                     # An item naming a top's underside (#1837) is never proved by picks: no pick.
+                    # A pairing a cheap round pick named (#1861) is never red on that pick: the
+                    # devil's advocate's own pick is then always the stronger model's.
                     reply = self._blind_pick(
-                        finding, vendor, architect, page_map, strong=extent[0] == "cannot_tell"
+                        finding,
+                        vendor,
+                        architect,
+                        page_map,
+                        strong=extent[0] == "cannot_tell" or cheap,
                     )
             verdict = decide(
                 mode=mode,
@@ -3211,6 +3504,8 @@ class _Run:
                 item=str(finding.get("item") or ""),
                 words=finding_words(finding),
                 twins=self._twins(reply, architect, page_map),
+                first_spans=round_picks.first_spans(finding),
+                code_ends=round_picks.cheap_linked(finding),
             )
             pairing = {
                 "labels": {
@@ -3382,10 +3677,15 @@ class _Run:
         page_map: Mapping[str, Any] | None,
         *,
         strong: bool = False,
+        kind: str = "advocate",
+        on_hold: Callable[[], None] | None = None,
     ) -> dict[str, Any] | None:
         """One blind call: the vendor's drawing with its label marked, the architect's whole
         drawing with every label numbered; `None` when the price leaves no room. `strong`: the
-        stronger model at high effort (code's geometry cannot tell, #1819).
+        stronger model at high effort (code's geometry cannot tell, #1819). `kind`: `advocate`, or
+        `round_pick` for a cheap pick on a round-only leftover (#1861: its own prompt id, the
+        same question and kept picks). `on_hold`: called once the pick's money is held (or
+        refused), so the caller can let the next pick in its order try (#1861).
 
         #1829: a pick already decided on the same vendor label and architect crop (this run's,
         or one kept in the set pack, `pick_cache`) is reused at $0, so the same drawings get the
@@ -3395,9 +3695,13 @@ class _Run:
         happened to start first."""
         model = BY_SHORT["opus"] if strong else BY_SHORT["sonnet"]
         effort = "high" if strong else "medium"
-        key = self._pick_key(vendor, architect, page_map, model.id, effort)
+        if kind == round_picks.CHEAP_LINK and not strong:
+            model, effort = BY_SHORT[round_picks.CHEAP_MODEL], round_picks.CHEAP_EFFORT
+        key = self._pick_key(vendor, architect, page_map, model.id, effort, kind)
         if key is None:
-            return self._asked_pick(finding, vendor, architect, page_map, model, effort, strong)
+            return self._asked_pick(
+                finding, vendor, architect, page_map, model, effort, strong, kind, on_hold
+            )
         with self.held_lock:
             lock = self.pick_locks.setdefault(key, threading.Lock())
         with lock:
@@ -3408,7 +3712,9 @@ class _Run:
                 self.picks[key] = kept
                 # Code's own marks, never the model's.
                 return {**kept, STRONG_PICK: strong, pick_cache.CACHED: True}
-            answer = self._asked_pick(finding, vendor, architect, page_map, model, effort, strong)
+            answer = self._asked_pick(
+                finding, vendor, architect, page_map, model, effort, strong, kind, on_hold
+            )
             if pick_cache.decided(answer):
                 assert answer is not None
                 self.picks[key] = {k: v for k, v in answer.items() if k != STRONG_PICK}
@@ -3424,6 +3730,8 @@ class _Run:
         model: Any,
         effort: str,
         strong: bool,
+        kind: str = "advocate",
+        on_hold: Callable[[], None] | None = None,
     ) -> dict[str, Any] | None:
         """The pick asked of the model, its worst case held while it runs (`_blind_pick`)."""
         estimate = self.engine._price(model, _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS) or 0
@@ -3431,11 +3739,15 @@ class _Run:
         with self.held_lock:
             while not self._phase_room(self.pick_phase, self.held + estimate):
                 if self.held <= 0 or (cancel is not None and cancel.is_set()):
+                    if on_hold is not None:
+                        on_hold()
                     return None  # nothing running frees money: the price is really used up
                 self.held_lock.wait(timeout=_PICK_WAIT_S)
             self.held += estimate
+        if on_hold is not None:
+            on_hold()
         try:
-            answer = self._held_pick(finding, vendor, architect, page_map, model, effort)
+            answer = self._held_pick(finding, vendor, architect, page_map, model, effort, kind)
             if answer is not None:
                 # Code's own mark, never the model's: a reply's own "strong" is overwritten.
                 answer[STRONG_PICK] = strong
@@ -3458,9 +3770,11 @@ class _Run:
         page_map: Mapping[str, Any] | None,
         model: str,
         effort: str,
+        kind: str = "advocate",
     ) -> str | None:
         """What one blind pick is shown and asked (`pick_cache.pick_key`), or `None` when it
-        cannot be worked out (the pick is then asked as before, never reused)."""
+        cannot be worked out (the pick is then asked as before, never reused). A cheap round pick
+        (#1861) is shown smaller pictures: its key says so (`round_picks.prompt_text`)."""
         try:
             labels = self.engine.book.dim_labels.on_page(
                 str(architect.get("file")), int(architect["page"]), read_now=False
@@ -3474,7 +3788,11 @@ class _Run:
                 crops=[self._half_box(page_map, vendor), self._half_box(page_map, architect)],
                 model=model,
                 effort=effort,
-                prompt=pick_prompt(),
+                prompt=(
+                    round_picks.prompt_text(pick_prompt())
+                    if kind == round_picks.CHEAP_LINK
+                    else pick_prompt()
+                ),
             )
         except Exception:  # noqa: BLE001 - no key: the pick is asked, never reused
             _log.info("assistant roster could not key the blind pick for %s", vendor.get("id"))
@@ -3488,8 +3806,10 @@ class _Run:
         page_map: Mapping[str, Any] | None,
         model: Any,
         effort: str = "medium",
+        kind: str = "advocate",
     ) -> dict[str, Any] | None:
-        """The blind pick's crops and call, its price already held (`_blind_pick`)."""
+        """The blind pick's crops and call, its price already held (`_blind_pick`). Each call's
+        tokens and cost are logged and kept in `pick_log` (#1861)."""
         engine = self.engine
         tools = engine.tools
 
@@ -3502,7 +3822,14 @@ class _Run:
             }
             if not marks:
                 item["guides"] = [str(label["id"])]
-            raw = {"crops": [item], "marks": marks, "description": "Devil's advocate"}
+            raw: dict[str, Any] = {
+                "crops": [item],
+                "marks": marks,
+                "description": "Devil's advocate",
+            }
+            if kind == round_picks.CHEAP_LINK:
+                # The cheap pick's smaller pictures (#1861): the labels are listed as text too.
+                raw["dpi"] = round_picks.crop_dpi((x0, y0, x1, y1))
             result = tools.zoom(raw, new_step(f"adv-{uuid4().hex[:8]}", "zoom", raw), "advocate")
             # The marked copy and its list of numbered labels: the plain crop of the same area adds
             # nothing.
@@ -3535,9 +3862,9 @@ class _Run:
                 messages=[{"role": "user", "content": content}],
                 final=False,
                 max_tokens=_ADVOCATE_MAX_TOKENS,
-                prompt_id=_ADVOCATE_PROMPT_ID.format(
-                    provider=engine.provider.name, harness=HARNESS_ID
-                ),
+                prompt_id=(
+                    _ROUND_PICK_PROMPT_ID if kind == round_picks.CHEAP_LINK else _ADVOCATE_PROMPT_ID
+                ).format(provider=engine.provider.name, harness=HARNESS_ID),
                 display=None,
                 output_format=ADVOCATE_SCHEMA,
             )
@@ -3546,6 +3873,7 @@ class _Run:
             return None
         finally:
             self._charge(self.pick_phase, max(0, engine.spent - before))
+        self._log_pick(kind, vendor, architect, model, effort, reply)
         text = reply.text()
         try:
             answer = json_of_reply(text)
@@ -3560,6 +3888,48 @@ class _Run:
             f"p{found.group(1) or architect['page']}.{found.group(2).upper()}" if found else "none"
         )
         return answer
+
+    def _log_pick(
+        self,
+        kind: str,
+        vendor: Mapping[str, Any],
+        architect: Mapping[str, Any],
+        model: Any,
+        effort: str,
+        reply: Any,
+    ) -> None:
+        """One pick's tokens and cost (#1861), logged and kept in `pick_log`."""
+        usage = getattr(reply, "usage", None)
+        usage = usage if isinstance(usage, Mapping) else {}
+        try:
+            cost = int(self.engine._cost(model, usage)) if usage else 0
+        except Exception:  # noqa: BLE001 - an unknown price is logged as nothing
+            cost = 0
+        entry = {
+            "kind": kind,
+            "vendor": f"p{vendor.get('page')}.{vendor.get('id')}",
+            "architect_page": architect.get("page"),
+            "model": getattr(model, "id", str(model)),
+            "effort": effort,
+            "input_tokens": int(usage.get("input_tokens") or 0)
+            + int(usage.get("cache_creation_input_tokens") or 0)
+            + int(usage.get("cache_read_input_tokens") or 0),
+            "output_tokens": int(usage.get("output_tokens") or 0),
+            "cost_micros": cost,
+        }
+        with self.held_lock:
+            self.pick_log.append(entry)
+        _log.info(
+            "assistant roster %s pick on %s (architect page %s, %s %s): %d in, %d out, $%.4f",
+            kind,
+            entry["vendor"],
+            entry["architect_page"],
+            entry["model"],
+            effort,
+            entry["input_tokens"],
+            entry["output_tokens"],
+            cost / _MICROS,
+        )
 
     # -- P4b: the escalation's one deeper look (#1619) --
 
@@ -3896,6 +4266,20 @@ class _Run:
             cap_hit=cap_hit,
             seen=[dict(entry) for entry in engine.tools.seen],
         )
+
+
+def _later_rounds(page_map: Mapping[str, Any] | None) -> bool:
+    """The page map shows a vendor drawing of a round after the first (#1861)."""
+    for entry in (page_map or {}).get("pages") or []:
+        for half in (entry.get("halves") or []) if isinstance(entry, Mapping) else []:
+            if (
+                isinstance(half, Mapping)
+                and half.get("role") == "vendor"
+                and isinstance(half.get("round"), int)
+                and half["round"] > 1
+            ):
+                return True
+    return False
 
 
 def _annotations(engine: ChatEngine) -> list[Mapping[str, Any]]:

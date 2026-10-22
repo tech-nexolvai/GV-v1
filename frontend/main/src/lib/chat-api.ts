@@ -730,7 +730,7 @@ export interface RoundMatch {
   value?: string;
   unchanged?: boolean;
   /** How code compared the item with the architect instead (null: it could not). */
-  compared?: 'carrier' | 'code_pair' | 'earlier_round' | null;
+  compared?: 'carrier' | 'code_pair' | 'earlier_round' | 'round_pick' | null;
   via?: string | null;
   architect?: string | null;
   words?: string;

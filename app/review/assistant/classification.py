@@ -80,6 +80,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
+from app.review.assistant.round_picks import pick_words
 from app.review.assistant.round_reference import ROUND_MATCH, match_words, round_only
 from app.review.assistant.rule_notes import RuleNote, rule_note_of
 from app.review.assistant.spot_locate import VENDOR_SEARCH, search_words, spot_words
@@ -1001,6 +1002,10 @@ def _reference_problem(finding: Mapping[str, Any]) -> Classified | None:
             if earlier
             else "; code found no architect value of this dimension to compare it with"
         )
+        picked = pick_words(match) if isinstance(match, Mapping) and not earlier else None
+        if picked:
+            # The cheap pick for the leftovers (#1861): what it said, or that it was not asked.
+            tail += f", and {picked}"
         return _not(
             "round_only",
             f"{said}compared only with the vendor's own drawing{where}, never with the "
