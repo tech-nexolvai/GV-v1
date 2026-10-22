@@ -1025,9 +1025,13 @@ dims.json              every printed dimension code found, numbered per page (D1
                        GV's heading over the picture, else unknown. A number read there that
                        the engines did not agree on is never a label: the page's "pictures"
                        lists it as unconfirmed.
-                       "derived": an EQ part, numbered last: the printed overall (less
-                       the chain's printed parts) shared equally, by code; "from" names
-                       the overall (36" wall to wall marked EQ / EQ is 18" each side).
+                       "derived": an EQ part: the printed overall (less the chain's
+                       printed parts) shared equally, by code; "from" names the overall
+                       (36" wall to wall marked EQ / EQ is 18" each side).
+                       "origin": "ocr": a number no label reader read, read at its spot
+                       by two OCR engines that agree (numbered last; same trust as
+                       "picture": no dimension line). What one engine read alone is
+                       never a label: the page's "ocr" lists it as unconfirmed.
 scales.json            each drawing's scale measured from its own printed dimensions (labels
                        that agree within 1%), its box, and the printed scale note beside it
                        (note_agrees false: GV resized the drawing; trust the measured scale).

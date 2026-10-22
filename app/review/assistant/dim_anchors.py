@@ -65,6 +65,8 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
 
+from app.review.assistant.label_origin import ocr_read
+
 __all__ = [
     "FIT",
     "MAX_SHIFT_IN",
@@ -262,7 +264,7 @@ def _spans(lines: _Lines, labels: Sequence[Label], box: Box) -> tuple[dict[str, 
         raw = label.get("box")
         if axis not in ("h", "v") or value is None or not raw or len(raw) != 4:
             continue
-        if label.get("origin") == "picture":
+        if ocr_read(label):  # pixels, never a line (#1835, #1848)
             continue
         centre = ((float(raw[0]) + float(raw[2])) / 2, (float(raw[1]) + float(raw[3])) / 2)
         if not _inside(centre, box):
