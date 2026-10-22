@@ -1958,11 +1958,11 @@ class _Run:
                 vendor_ink=self._ink(vendor),
                 newer_same=self._newer_same(vendor, page_map),
             )
-            if all(check.outcome == "pass" for check in found):
-                state, why = self._extent(vendor, architect, page_map)
-                if state == "different_extent":
-                    found.append(Check("extent", "fail", why))
             return found
+
+        def ends(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> tuple[str, str]:
+            state, why = self._extent(vendor, architect, page_map)
+            return str(state), why
 
         first: str | None = None
         outcome = "none"
@@ -1986,6 +1986,7 @@ class _Run:
                     labels=ctx.labels,
                     main_file=book.main_file,
                     checks=checks,
+                    ends=ends,
                     said=said,
                 )
                 if first is None:
@@ -3471,7 +3472,13 @@ class _Run:
                 faces = face_doubt(
                     item=str(finding.get("item") or ""), words=finding_words(finding)
                 )
-                if extent[0] in ("same_extent", "cannot_tell") and faces is None:
+                # A pairing a cheap round pick named is red only on code's proof of the same ends
+                # (#1861, option C): where code cannot tell, no pick is asked at all.
+                cheap = round_picks.cheap_linked(finding)
+                worth_a_pick = extent[0] == "same_extent" or (
+                    not cheap and extent[0] == "cannot_tell"
+                )
+                if worth_a_pick and faces is None:
                     # Geometry that shows different points spends no call (#1641). Where it cannot
                     # tell (a sheet not to scale), the stronger model makes the blind pick, as the
                     # simple check's blind look (#1819: a cabinet template, two planted mistakes
@@ -3484,7 +3491,7 @@ class _Run:
                         vendor,
                         architect,
                         page_map,
-                        strong=extent[0] == "cannot_tell" or round_picks.cheap_linked(finding),
+                        strong=extent[0] == "cannot_tell" or cheap,
                     )
             verdict = decide(
                 mode=mode,
@@ -3498,6 +3505,7 @@ class _Run:
                 words=finding_words(finding),
                 twins=self._twins(reply, architect, page_map),
                 first_spans=round_picks.first_spans(finding),
+                code_ends=round_picks.cheap_linked(finding),
             )
             pairing = {
                 "labels": {

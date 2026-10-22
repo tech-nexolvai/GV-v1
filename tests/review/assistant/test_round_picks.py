@@ -155,9 +155,22 @@ def _answer(pick: str, **changes: Any) -> dict[str, Any]:
     return reply
 
 
-def _link(finding: dict[str, Any], answer: Mapping[str, Any] | None, checks: Any = _passing):
+def _same_ends(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> tuple[str, str]:
+    return "same_extent", "both ends land on the same drawn lines"
+
+
+def _cannot_tell(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> tuple[str, str]:
+    return "cannot_tell", "a dimension line's ends were not found"
+
+
+def _link(
+    finding: dict[str, Any],
+    answer: Mapping[str, Any] | None,
+    checks: Any = _passing,
+    ends: Any = _same_ends,
+):
     return round_picks.link(
-        finding, answer, vendor=ROUND2, labels=LABELS, main_file=FILE, checks=checks
+        finding, answer, vendor=ROUND2, labels=LABELS, main_file=FILE, checks=checks, ends=ends
     )
 
 
@@ -389,7 +402,7 @@ def _run(pack: Path, findings: list[dict[str, Any]], cap: int) -> full_check_ros
 
 
 def _fake_picks(
-    monkeypatch: pytest.MonkeyPatch, answers: Mapping[str, str], extent: str = "cannot_tell"
+    monkeypatch: pytest.MonkeyPatch, answers: Mapping[str, str], extent: str = "same_extent"
 ) -> list[str]:
     asked: list[str] = []
 
@@ -505,3 +518,79 @@ def test_a_pick_code_geometry_shows_ending_elsewhere_is_never_compared(
     for finding in run.engine.book.live():
         said = proof.proof_of(judged(finding))
         assert said["group"] == "not_compared" and "the drawn run" in said["reason"]
+
+
+# ---- option C (Anant, 2026-10-22): off by default; only code-proved ends compare an item ---------
+
+
+def test_the_step_is_off_by_default_no_pick_no_money() -> None:
+    from app.config import Settings
+    from app.review.assistant.chat_engine import EngineSettings
+    from app.review.assistant.chat_service import MessageJob
+
+    assert Settings.model_fields["assistant_round_pick_cap_usd"].default == 0
+    assert EngineSettings.__dataclass_fields__["round_pick_cap_micros"].default == 0
+    assert MessageJob.__dataclass_fields__["round_pick_cap_micros"].default == 0
+
+
+def test_with_the_cap_at_nothing_no_money_is_kept_even_with_later_rounds(tmp_path: Path) -> None:
+    run = _run(_pack(tmp_path), _two_leftovers(), cap=0)
+    run.later_rounds = True
+    assert run._round_need() == 0
+
+
+@pytest.mark.parametrize("pick", ["p7.D3", "p7.D2"])
+def test_a_number_that_only_matches_is_no_right_and_no_red(pick: str) -> None:
+    """Code cannot prove the two dimensions end at the same places: neither a Right (an equal
+    number) nor a red candidate (a different one); Not compared, with the reason."""
+    (found,) = _leftovers(_item())
+    kept, outcome = _link(found, _answer(pick), ends=_cannot_tell)
+    assert outcome == "refused" and kept["status"] == "same"
+    said = proof.proof_of(judged(kept))
+    assert said["group"] == "not_compared" and said["not_compared"] == "round_only"
+    assert "could not prove both dimensions end at the same places" in said["reason"]
+
+
+def test_agreeing_picks_alone_never_prove_a_cheap_pairing() -> None:
+    """The stronger pick agrees on the label and the ends, but code's geometry cannot tell: not
+    red. With code's proof of the same ends (and the pick agreeing) it may be."""
+    refused = decide(
+        advocate=_STRONG, extent=_CANNOT, first_spans=(_SPANS, _SPANS), code_ends=True, **_COMMON
+    )
+    assert refused.result == "objects" and "only when code proves" in refused.reason
+    proved = decide(
+        advocate=_STRONG,
+        extent=("same_extent", "the anchors line up"),
+        first_spans=(_SPANS, _SPANS),
+        code_ends=True,
+        **_COMMON,
+    )
+    assert proved.result == "passed" and proved.answers["pairing"] == "proved"
+
+
+def test_no_pick_is_asked_for_a_cheap_pairing_code_cannot_prove(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (found,) = _leftovers(_item())
+    linked, _ = _link(found, _answer("p7.D2"))
+    picked: list[bool] = []
+
+    def pick(self: Any, *given: Any, strong: bool = False, kind: str = "advocate") -> Any:
+        picked.append(strong)
+        return {**_answer("p7.D2"), STRONG_PICK: strong}
+
+    def label(self: Any, provenance: Any) -> dict[str, Any] | None:
+        page = LABELS[(FILE, provenance["page"])]
+        return next(dict(item) for item in page if item["id"] == provenance["id"])
+
+    monkeypatch.setattr(full_check_roster._Run, "_blind_pick", pick)
+    monkeypatch.setattr(full_check_roster._Run, "_label", label)
+    monkeypatch.setattr(full_check_roster._Run, "_ink", lambda self, label: (100, 0.0))
+    monkeypatch.setattr(full_check_roster._Run, "_newer_same", lambda self, v, pm: None)
+    monkeypatch.setattr(full_check_roster._Run, "_twins", lambda self, r, a, pm: ())
+    monkeypatch.setattr(full_check_roster._Run, "_extent", lambda self, v, a, pm=None: _CANNOT)
+    engine = SimpleNamespace(settings=SimpleNamespace(pairing_proof="ai_pair_plus_code"))
+    run = full_check_roster._Run(engine=engine)  # type: ignore[arg-type]
+    verdict = run._judge(linked, PAGE_MAP, [])
+    assert picked == []  # no money spent on a pairing code cannot prove
+    assert verdict is not None and verdict[0]["result"] == "objects"

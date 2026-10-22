@@ -85,6 +85,11 @@ _SAME_IN: Final = Decimal(1) / Decimal(32)
 type Outcome = Literal["linked", "none", "refused", "not_asked"]
 #: (vendor label, architect label) -> the advocate's code checks (`full_check_advocate.Check`).
 type Checks = Callable[[Mapping[str, Any], Mapping[str, Any]], Sequence[Any]]
+#: (vendor label, architect label) -> code's geometry (`full_check_roster._extent`): its state
+#: (`same_extent`, `different_extent`, `cannot_tell`) and why.
+type Ends = Callable[[Mapping[str, Any], Mapping[str, Any]], tuple[str, str]]
+#: The only geometry that lets a cheap pick compare an item (Anant, 2026-10-22, option C).
+SAME_ENDS: Final = "same_extent"
 
 
 @dataclass(slots=True)
@@ -337,6 +342,7 @@ def link(
     labels: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]],
     main_file: str | None,
     checks: Checks,
+    ends: Ends,
     said: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Outcome]:
     """The item with code's answer to the cheap pick (`answer`: the blind pick's reply, its `pick`
@@ -373,6 +379,15 @@ def link(
         first = failed[0]
         reason = getattr(first, "why", "") or f"the {getattr(first, 'name', 'code')} check failed"
         why = f"a blind pick named {pick}, but {reason}"
+        return _record(finding, "refused", why, kept), "refused"
+    state, said_ends = ends(vendor, label)
+    if state != SAME_ENDS:
+        # Option C (Anant, 2026-10-22): a cheap pick compares an item only where code itself proves
+        # both dimensions end at the same places; a number that only happens to match is no Right.
+        why = (
+            f"a blind pick named {pick}, but code could not prove both dimensions end at the "
+            f"same places ({said_ends})"
+        )
         return _record(finding, "refused", why, kept), "refused"
     kept["spans"] = [vendor_spans, architect_spans]
     out = dict(finding)

@@ -758,6 +758,7 @@ def decide(
     words: str | None = None,
     twins: Collection[str] = (),
     first_spans: tuple[object, object] | None = None,
+    code_ends: bool = False,
 ) -> Verdict:
     """The verdict on one red candidate under D1 (see the module). `printed`: code read both
     values at their spots. `helper_pick`: the helper's architect label (`p23.D10`). `advocate`: the
@@ -769,7 +770,9 @@ def decide(
     dimension printed again on the same drawing (`same_dimension`, #1840): a pick naming one of
     them names the helper's dimension. `first_spans`: where the first blind pick said the two
     dimensions' ends land (vendor's, architect's), when the first pick was a blind pick too (a
-    cheap round pick, #1861): the second pick must say the same."""
+    cheap round pick, #1861): the second pick must say the same. `code_ends`: the pairing may be
+    proved only by code's geometry showing the same ends (a pairing a cheap round pick named,
+    option C): agreeing picks alone never prove it."""
     answers: dict[str, str] = {check.name: str(check.outcome) for check in checks}
     failed = [check for check in checks if check.outcome != "pass"]
     if failed:
@@ -796,6 +799,16 @@ def decide(
         # Code's geometry is checked first (#1641): an item it shows apart spends no AI call.
         answers["extent"] = extent[0]
         return Verdict("objects", f"Not proved: {extent[1]}.", answers)
+    if code_ends and (extent is None or extent[0] != "same_extent"):
+        # A cheap pick's pairing (#1861, option C): no red unless code proves both ends.
+        answers["extent"] = extent[0] if extent is not None else "not_measured"
+        why = extent[1] if extent is not None else "not measured"
+        return Verdict(
+            "objects",
+            "Not proved: a pairing a cheap pick named is red only when code proves both "
+            f"dimensions end at the same places ({why}).",
+            answers,
+        )
     said = face_doubt(item=item, words=words)
     thing = room_end(item=item, words=words)
     if said is not None and thing is not None and not (extent and extent[0] == "same_extent"):

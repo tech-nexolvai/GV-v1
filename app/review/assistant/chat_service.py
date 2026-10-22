@@ -822,8 +822,9 @@ class MessageJob:
     """The roster's numbers page helpers' most pages each (`GV_ASSISTANT_NUMBERS_HELPER_PAGES`)."""
     pairing_proof: str = "ai_pair_plus_code"
     """What proves a pairing for a red cloud (`full_check_roster`)."""
-    round_pick_cap_micros: int = 2_000_000
-    """The roster's hard cap for the cheap picks on the round-only leftovers (#1861); 0: off."""
+    round_pick_cap_micros: int = 0
+    """The roster's hard cap for the cheap picks on the round-only leftovers (#1861); 0: off (the
+    default, Anant 2026-10-22)."""
     full_check_mode: str = "roster"
     """Which full check runs: `roster` or `simple` (`simple_check/`, #1665)."""
     simple: Mapping[str, Any] | None = None
