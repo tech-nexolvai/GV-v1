@@ -1,5 +1,5 @@
 import { useId, useState } from 'react';
-import { ArrowRight, Check, ChevronRight, CircleDashed, Download, ExternalLink, FileCheck2, FileText, ListMinus, Minus, Package, RefreshCw, RotateCw, Stamp, X } from 'lucide-react';
+import { ArrowRight, Check, ChevronRight, CircleDashed, Download, ExternalLink, FileCheck2, FileText, ListMinus, Minus, Package, RefreshCw, RotateCw, Stamp, UserRoundSearch, X } from 'lucide-react';
 
 import { CloudPreview, type CloudReview } from '@/components/chat/chat-full-check';
 import { Collapse, GVSpark } from '@/components/chat/chat-motion';
@@ -285,9 +285,9 @@ function ResultHead({ files, chatId, reviewAction, previewPage, onRunAgain, revi
               data-slot="chat-review-action"
               data-action={reviewAction?.action}
               role={verdict.draft ? 'status' : undefined}
-              className={cn('inline-flex w-fit max-w-full items-center gap-2 rounded-[7px] border-[1.5px] px-2.5 py-1 text-[12.5px] font-semibold tracking-[0.06em] uppercase', verdict.draft ? 'border-dashed border-muted-foreground text-muted-foreground' : 'border-foreground text-foreground')}
+              className={cn('inline-flex w-fit max-w-full items-center gap-2 rounded-[7px] border-[1.5px] px-2.5 py-1 text-[12.5px] font-semibold tracking-[0.06em] uppercase', verdict.draft ? 'border-dashed border-muted-foreground text-muted-foreground' : verdict.pending ? 'border-dashed border-foreground/70 text-foreground' : 'border-foreground text-foreground')}
             >
-              {verdict.draft ? <CircleDashed className="size-4 shrink-0" aria-hidden="true" /> : <Stamp className="size-4 shrink-0" aria-hidden="true" />}
+              {verdict.draft ? <CircleDashed className="size-4 shrink-0" aria-hidden="true" /> : verdict.pending ? <UserRoundSearch className="size-4 shrink-0" aria-hidden="true" /> : <Stamp className="size-4 shrink-0" aria-hidden="true" />}
               {verdict.stamp}
             </p>
             <p data-slot="chat-review-sentence" className="max-w-prose text-[14.5px] leading-relaxed text-muted-foreground">{verdict.sentence}</p>

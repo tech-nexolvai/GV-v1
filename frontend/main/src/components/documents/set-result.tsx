@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, CircleX, Clock3, LoaderCircle, PencilLine, RotateCcw } from 'lucide-react';
+import { CircleAlert, CircleCheck, CircleX, Clock3, LoaderCircle, PencilLine, RotateCcw, UserRoundSearch } from 'lucide-react';
 
 import { OutcomeGlyph } from '@/components/chat/chat-result';
 import { countParts, countSentence, setResult, type FullCheckCounts, type ResultKind, type SetCheck } from '@/lib/set-check';
@@ -7,13 +7,15 @@ import { cn } from '@/lib/utils';
 /**
  * The review result's look: the chat package card's glyphs (#1622). Outcome colour only with its
  * glyph and word (decision 2026-10-08), and never amber: "Approved as noted" is plain text with its
- * pencil; what is not a result (running, unfinished, none) is grey.
+ * pencil; "Review needed" (too many items Not compared to approve, a person decides them) is plain
+ * text with a person glyph; what is not a result (running, unfinished, none) is grey.
  */
 const LOOK: Record<ResultKind, { Icon: typeof RotateCcw; tone: string }> = {
   revise_resubmit: { Icon: RotateCcw, tone: 'text-outcome-fail-fg' },
   rejected: { Icon: CircleX, tone: 'text-outcome-fail-fg' },
   approved_as_noted: { Icon: PencilLine, tone: 'text-foreground' },
   approved: { Icon: CircleCheck, tone: 'text-outcome-pass-fg' },
+  review_needed: { Icon: UserRoundSearch, tone: 'text-foreground' },
   not_for_sending: { Icon: CircleAlert, tone: 'text-muted-foreground' },
   unfinished: { Icon: CircleAlert, tone: 'text-muted-foreground' },
   checking: { Icon: LoaderCircle, tone: 'text-muted-foreground' },

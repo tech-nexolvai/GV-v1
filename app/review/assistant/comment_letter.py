@@ -56,12 +56,13 @@ _RED: Final = Color(0.75, 0.1, 0.1)
 _GREEN: Final = Color(0.0, 0.47, 0.2)
 _AMBER: Final = Color(0.63, 0.29, 0.02)
 #: The review result's bar colour: red (resubmit, rejected), dark amber (as noted), green
-#: (approved), grey (the check did not finish).
+#: (approved), grey (under review: GV's person decides the rest; the check did not finish).
 ACTION_COLOURS: Final[Mapping[str, Color]] = {
     "revise_resubmit": _RED,
     "rejected": _RED,
     "approved_as_noted": _AMBER,
     "approved": _GREEN,
+    "review_needed": _GREY,
     "not_for_sending": _GREY,
 }
 _MARGIN: Final = 54.0
@@ -139,10 +140,14 @@ def _head(letter: Letter, styles: Mapping[str, ParagraphStyle], width: float) ->
 def _action_box(letter: Letter, styles: Mapping[str, ParagraphStyle], width: float) -> Table:
     action = letter.action
     colour = ACTION_COLOURS[action.action]
-    why = f"{action.reason} {action.note}" if action.note else action.reason
+    # The vendor's words: a check waiting for GV's person is "Under review", never an approval.
+    reason = action.vendor_reason
+    why = f"{reason} {action.note}" if action.note else reason
     inner = [
         Paragraph("Review result", styles["label"]),
-        Paragraph(f'<font color="{_hex(colour)}">{escape(action.words)}</font>', styles["action"]),
+        Paragraph(
+            f'<font color="{_hex(colour)}">{escape(action.vendor_words)}</font>', styles["action"]
+        ),
         Paragraph(escape(why), styles["body"]),
         Paragraph(f"<b>Action required by:</b> {escape(action.required_by)}", styles["body"]),
         Spacer(1, 6),

@@ -956,8 +956,9 @@ def submittal_rows(letter: Letter) -> list[list[str]]:
         ["Round", str(letter.round_no)],
         ["Received", identity.received],
         ["Reviewed", letter.date],
-        ["Review result", letter.action.words],
-        ["Why", letter.action.reason],
+        # The vendor's words ("Under review" while GV's person decides the rest).
+        ["Review result", letter.action.vendor_words],
+        ["Why", letter.action.vendor_reason],
         ["Action required by", letter.action.required_by],
         ["Reviewer", letter.reviewer_line],
         ["Comments", str(len(letter.corrections))],

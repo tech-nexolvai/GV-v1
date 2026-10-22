@@ -95,15 +95,38 @@ describe('a row’s words (#1717)', () => {
 
 describe('the review result (#1717)', () => {
   it('a finished check: AWI’s words, and a sentence with only what no count says', () => {
-    expect(verdictOf(action())).toEqual({ stamp: 'Revise and resubmit', draft: false, sentence: '2 of the wrong values change fabrication. Correct the drawings and send them again.' });
+    expect(verdictOf(action())).toEqual({ stamp: 'Revise and resubmit', draft: false, pending: false, sentence: '2 of the wrong values change fabrication. Correct the drawings and send them again.' });
     expect(verdictOf(action({ fabrication: 0, action: 'approved_as_noted', words: 'Approved as noted' }))?.sentence).toBe('Correct the drawings and send them again.');
   });
 
   it('an unfinished check: a dashed stamp and a draft package, never "send"', () => {
     const verdict = verdictOf(action({ action: 'not_for_sending', rule: 'S0', words: 'Check incomplete: not for sending', reason: 'The check did not finish: it was stopped before the end.' }));
-    expect(verdict).toEqual({ stamp: 'Check incomplete · not for sending', draft: true, sentence: 'The check did not finish: it was stopped before the end. This package is a draft: do not send it yet.' });
+    expect(verdict).toEqual({ stamp: 'Check incomplete · not for sending', draft: true, pending: false, sentence: 'The check did not finish: it was stopped before the end. This package is a draft: do not send it yet.' });
     expect(verdict?.sentence).not.toMatch(/\bsend (?:it|the)\b(?! yet)/);
     expect(verdictOf(null)).toBeNull();
+  });
+
+  it('review needed: a pending stamp, the count a person decides, never "approved" or "send"', () => {
+    const verdict = verdictOf(action({
+      action: 'review_needed',
+      rule: 'RN',
+      words: 'Review needed',
+      vendor_words: 'Under review',
+      fabrication: 0,
+      corrections: 0,
+      not_compared: 5,
+      items: 6,
+      reason: '5 items need a person before this can be approved: 5 of 6 items (83.3%) were not compared, more than the 10% allowed.',
+      next_step: 'Under review: GV will confirm the remaining items and then send its review result. Please wait for it before fabrication.',
+    }));
+    expect(verdict).toEqual({
+      stamp: 'Review needed',
+      draft: false,
+      pending: true,
+      sentence: '5 items need a person before this can be approved: 5 of 6 items (83.3%) were not compared, more than the 10% allowed. Decide them below; until then the package tells the vendor “Under review”.',
+    });
+    expect(verdict?.stamp).not.toMatch(/approved/i);
+    expect(verdict?.sentence).not.toMatch(/\bsend (?:it|the)\b/);
   });
 });
 

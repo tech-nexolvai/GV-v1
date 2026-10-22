@@ -3,6 +3,9 @@
 Every reviewed submittal gets one result on its cover. GV uses the woodwork trade's own four (AWI,
 Architectural Woodwork Standards Section 1; also Procore's defaults): **Approved**, **Approved as
 noted**, **Revise and resubmit**, **Rejected**. A check that did not finish gets **no stamp** at all.
+A finished check that would approve while too many items were Not compared gets **Review needed**
+(Anant, 2026-10-22: never "Approved" just because the system could not look): a person decides
+those items first, and the vendor reads only "Under review".
 
 The rules are checked top to bottom and **the first that matches wins** (research note
 INDUSTRY-REVIEW.md, section 1.2). "Corrections" are the Wrong items clouded on the GV cloud drawing
@@ -19,6 +22,12 @@ not, and a previous round's comment this round fixed is Closed, not a correction
   not addressed";
 - **S4** a correction changes fabrication (`changes_fabrication`), or more than `MAX_NOTED`
   corrections: Revise and resubmit;
+- **RN** the result would be an approval (S5, S6 or S7) but more than `review_needed_share()` of
+  all items (Wrong + Right + Ask the architect + Not compared, a reviewer's decided items included)
+  are Not compared: Review needed, "N items need a person before this can be approved". Ask the
+  architect items (#1839) are decided, so they never count as not checked. The reviewer's
+  decisions on Not compared items (#1814) take them out of the Not compared count, so deciding
+  enough of them turns it into Approved as noted (the result is worked out again on every read);
 - **S5** 1 to `MAX_NOTED` corrections, all minor: Approved as noted;
 - **S6** no correction, but items code could not prove or compare (other than "the architect gives
   no information"), or sizes the architect specifies that break a GV rule (#1839: GV asks the
@@ -39,6 +48,7 @@ all take the result from `review_action`.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -56,7 +66,10 @@ __all__ = [
     "MINOR_IN",
     "NEXT_STEP",
     "NOT_REVIEWED_NOTE",
+    "REVIEW_NEEDED_SHARE",
+    "REVIEW_NEEDED_VARIABLE",
     "RULE_NOTE_NOTE",
+    "VENDOR_WORDS",
     "Action",
     "CheckState",
     "ReviewAction",
@@ -64,26 +77,41 @@ __all__ = [
     "corrections",
     "item_action",
     "review_action",
+    "review_needed_share",
     "stamp_words",
 ]
 
 type Action = Literal[
-    "approved", "approved_as_noted", "revise_resubmit", "rejected", "not_for_sending"
+    "approved",
+    "approved_as_noted",
+    "review_needed",
+    "revise_resubmit",
+    "rejected",
+    "not_for_sending",
 ]
-type Rule = Literal["S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7"]
+type Rule = Literal["S0", "S1", "S2", "S3", "S4", "RN", "S5", "S6", "S7"]
 
 #: The results as the letter, the cover and the screen print them (AWI's four, and no stamp).
 ACTION_WORDS: Final[Mapping[Action, str]] = {
     "approved": "Approved",
     "approved_as_noted": "Approved as noted",
+    "review_needed": "Review needed",
     "revise_resubmit": "Revise and resubmit",
     "rejected": "Rejected",
     "not_for_sending": "Check incomplete: not for sending",
+}
+#: The result as the vendor reads it (the letter, the cloud drawing's cover, the register, the
+#: stamp line): the same, except that a check waiting for GV's person is only "Under review",
+#: never an approval.
+VENDOR_WORDS: Final[Mapping[Action, str]] = {
+    **ACTION_WORDS,
+    "review_needed": "Under review",
 }
 #: Who must act now (the submittal log's "ball in court").
 ACTION_REQUIRED_BY: Final[Mapping[Action, str]] = {
     "approved": "No action required",
     "approved_as_noted": "Vendor: make the corrections noted",
+    "review_needed": "GV: confirm the remaining items",
     "revise_resubmit": "Vendor: revise and resubmit",
     "rejected": "Vendor: make a new submittal",
     "not_for_sending": "GV: finish the check before sending",
@@ -99,9 +127,15 @@ NEXT_STEP: Final[Mapping[Action, str]] = {
         "Please revise the drawings, answer each comment in writing, cloud every change, and "
         "resubmit them for review before fabrication."
     ),
+    "review_needed": (
+        "Under review: GV will confirm the remaining items and then send its review result. "
+        "Please wait for it before fabrication."
+    ),
     "rejected": "Please make a new submittal of the specified product.",
     "not_for_sending": "This check did not finish. It is not to be sent.",
 }
+#: What a Review needed letter tells the vendor in place of the reason (never an approval).
+_UNDER_REVIEW_REASON: Final = "GV will confirm the remaining items before giving its review result."
 #: S6's note: what was not reviewed, said plainly.
 NOT_REVIEWED_NOTE: Final = (
     "Items in the Not-compared list were not reviewed; each is listed with the reason and what is "
@@ -143,6 +177,25 @@ _SPECIFIED: Final = re.compile(
 )
 #: Not-compared reasons that only say the architect gives no information (S7 allows them).
 _NO_INFORMATION: Final = frozenset({"nothing_to_compare"})
+#: Above this share of all items Not compared, a finished check that would approve is Review
+#: needed instead (Anant, 2026-10-22: "more than 10% of all items"). The environment variable
+#: `GV_REVIEW_NEEDED_SHARE` (a number from 0 to 1, `Settings.review_needed_share`) changes it.
+REVIEW_NEEDED_SHARE: Final = Decimal("0.10")
+REVIEW_NEEDED_VARIABLE: Final = "GV_REVIEW_NEEDED_SHARE"
+_TENTH: Final = Decimal("0.1")
+
+
+def review_needed_share(environ: Mapping[str, str] | None = None) -> Decimal:
+    """The share of Not compared items above which an approval is Review needed: the environment's
+    `GV_REVIEW_NEEDED_SHARE` when it is a number from 0 to 1, else `REVIEW_NEEDED_SHARE`."""
+    raw = (os.environ if environ is None else environ).get(REVIEW_NEEDED_VARIABLE, "").strip()
+    if not raw:
+        return REVIEW_NEEDED_SHARE
+    try:
+        share = Decimal(raw)
+    except ArithmeticError:
+        return REVIEW_NEEDED_SHARE
+    return share if share.is_finite() and 0 <= share <= 1 else REVIEW_NEEDED_SHARE
 
 
 def item_action(finding: Mapping[str, Any]) -> str:
@@ -236,7 +289,11 @@ class ReviewAction:
     fabrication: int
     """How many corrections change fabrication."""
     note: str | None = None
-    """S6: what was not reviewed."""
+    """S6 and RN: what was not reviewed."""
+    not_compared: int = 0
+    """Items Not compared (the reviewer's decided items are no longer counted)."""
+    items: int = 0
+    """All items: Wrong + Right + Ask the architect + Not compared (decided items included)."""
     disclaimer: str = DISCLAIMER
 
     @property
@@ -247,6 +304,17 @@ class ReviewAction:
     @property
     def next_step(self) -> str:
         return NEXT_STEP[self.action]
+
+    @property
+    def vendor_words(self) -> str:
+        """The result as the vendor reads it ("Under review" for Review needed)."""
+        return VENDOR_WORDS[self.action]
+
+    @property
+    def vendor_reason(self) -> str:
+        """Why, as the vendor reads it: Review needed says only that GV is confirming the
+        remaining items (its reason counts what GV's person must decide)."""
+        return _UNDER_REVIEW_REASON if self.action == "review_needed" else self.reason
 
     @property
     def required_by(self) -> str:
@@ -261,6 +329,9 @@ class ReviewAction:
             "corrections": self.corrections,
             "fabrication": self.fabrication,
             "note": self.note,
+            "not_compared": self.not_compared,
+            "items": self.items,
+            "vendor_words": self.vendor_words,
             "next_step": self.next_step,
             "required_by": self.required_by,
             "disclaimer": self.disclaimer,
@@ -272,7 +343,7 @@ def stamp_words(action: ReviewAction, date: str, submittal: str = "", round_no: 
     2026-10-18. Submittal 25A, round 2." """
     identity = f"Submittal {submittal}, round {round_no}." if submittal else f"Round {round_no}."
     return (
-        f"GV REVIEW: {action.words.upper()}. Checked automatically by GV Review on {date}. "
+        f"GV REVIEW: {action.vendor_words.upper()}. Checked automatically by GV Review on {date}. "
         f"{identity}"
     )
 
@@ -302,15 +373,44 @@ def _illegible(findings: Sequence[Mapping[str, Any]]) -> bool:
     return unreadable >= _ILLEGIBLE_MIN and unreadable > _ILLEGIBLE_SHARE * len(findings)
 
 
+def _review_needed(not_compared: int, items: int, share: Decimal) -> bool:
+    """More than `share` of all items Not compared (exact: 1 of 10 is not more than 10%)."""
+    return items > 0 and Decimal(not_compared) > share * items
+
+
+def _percent(value: Decimal) -> str:
+    return f"{(value * 100).quantize(_TENTH).normalize():f}%"
+
+
+def _review_needed_reason(not_compared: int, items: int, share: Decimal, noted: int) -> str:
+    """ "52 items need a person before this can be approved: 52 of 55 items (95%) were not
+    compared, more than the 10% allowed." """
+    need = "needs" if not_compared == 1 else "need"
+    reason = (
+        f"{_plural(not_compared, 'item')} {need} a person before this can be approved: "
+        f"{not_compared} of {_plural(items, 'item')} "
+        f"({_percent(Decimal(not_compared) / items)}) {'was' if not_compared == 1 else 'were'} "
+        f"not compared, more than the {_percent(share)} allowed."
+    )
+    if noted:
+        reason += f" {_plural(noted, 'minor correction')} noted as well."
+    return reason
+
+
 def review_action(
-    findings: Iterable[Mapping[str, Any]], state: CheckState | None = None
+    findings: Iterable[Mapping[str, Any]],
+    state: CheckState | None = None,
+    share: Decimal | None = None,
 ) -> ReviewAction:
     """The review result for one final finding list and what the check knew (see the module's
-    rules S0 to S7; the first that matches wins)."""
+    rules S0 to S7 and RN; the first that matches wins). `share`: the Review needed threshold
+    (`review_needed_share()` when not given)."""
     given = list(findings)
     state = state or CheckState()
     sent = corrections(given, state.closed)
     fabrication = sum(1 for finding in sent if changes_fabrication(finding))
+    not_compared = sum(1 for finding in given if proof_group(finding) == "not_compared")
+    items = len(given)
 
     def result(action: Action, rule: Rule, reason: str, note: str | None = None) -> ReviewAction:
         return ReviewAction(
@@ -321,6 +421,8 @@ def review_action(
             corrections=len(sent),
             fabrication=fabrication,
             note=note,
+            not_compared=not_compared,
+            items=items,
         )
 
     if state.incomplete:
@@ -364,6 +466,19 @@ def review_action(
             "S4",
             f"{len(sent)} corrections: more than {MAX_NOTED} to make as noted.",
         )
+    limit = review_needed_share() if share is None else share
+    unreviewed = _not_reviewed(given)
+    asked = sum(1 for finding in given if proof_group(finding) == "rule_note")
+    if _review_needed(not_compared, items, limit):
+        notes = [NOT_REVIEWED_NOTE]
+        if asked:
+            notes.append(RULE_NOTE_NOTE)
+        return result(
+            "review_needed",
+            "RN",
+            _review_needed_reason(not_compared, items, limit, len(sent)),
+            " ".join(notes),
+        )
     if sent:
         return result(
             "approved_as_noted",
@@ -374,8 +489,6 @@ def review_action(
                 else f"{len(sent)} corrections, all minor (no change to fabrication)."
             ),
         )
-    unreviewed = _not_reviewed(given)
-    asked = sum(1 for finding in given if proof_group(finding) == "rule_note")
     if unreviewed or asked:
         parts = [f"{_plural(unreviewed, 'item')} not reviewed by code"] if unreviewed else []
         if asked:

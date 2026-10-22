@@ -87,6 +87,8 @@ describe('reviewer words (#1712)', () => {
     expect(sidebarWords({ full_check: { ...check, counts: { ...counts, wrong: 0 }, review_result: { action: 'approved', words: 'Approved' } } })).toBe('Approved');
     expect(sidebarWords({ full_check: { ...check, review_result: { action: 'not_for_sending', words: 'Check incomplete: not for sending' } } })).toBe('Check incomplete · 5 wrong');
     expect(sidebarWords({ full_check: { ...check, review_result: null, stopped: 'cost_cap' } })).toBe('Check did not finish · 5 wrong');
+    // Review needed: how many items a person decides before it can be approved.
+    expect(sidebarWords({ full_check: { ...check, counts: { ...counts, wrong: 0 }, review_result: { action: 'review_needed', words: 'Review needed' } } })).toBe('Review needed · 30 to decide');
     // "Reading the drawings…" only while the set pack is really being made.
     expect(sidebarWords({ drawings: 'reading' })).toBe('Reading the drawings…');
     expect(sidebarWords({ drawings: 'read' })).toBe('Drawings read · Not checked yet');

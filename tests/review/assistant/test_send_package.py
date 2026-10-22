@@ -33,6 +33,7 @@ from app.review.assistant.review_action import (
     DISCLAIMER,
     MAX_NOTED,
     NOT_REVIEWED_NOTE,
+    VENDOR_WORDS,
     CheckState,
     changes_fabrication,
     item_action,
@@ -110,6 +111,16 @@ def _second(**changes: Any) -> dict[str, Any]:
     return _proved(**{**given, **changes})
 
 
+def _rights(count: int) -> list[dict[str, Any]]:
+    """`count` compared items that match (made-up ids)."""
+    return [_right(id=f"R{n}") for n in range(count)]
+
+
+def _not_compared(count: int) -> list[dict[str, Any]]:
+    """`count` items code could not prove the same end points of (made-up ids): Not compared."""
+    return [_decision(id=f"N{n}", keep_reason="measures_something_else") for n in range(count)]
+
+
 # ---- the review result -----------------------------------------------------------------------
 
 
@@ -118,17 +129,25 @@ def _second(**changes: Any) -> dict[str, Any]:
     [
         ([], CheckState(), "approved", "S7"),
         ([_right()], CheckState(), "approved", "S7"),
-        # The architect gives no information: still Approved (the list is attached).
-        ([_decision()], CheckState(), "approved", "S7"),
+        # The architect gives no information: still Approved (the list is attached), when no
+        # more than 10% of the items are Not compared.
+        ([_decision(), *_rights(9)], CheckState(), "approved", "S7"),
         # Something code could not prove or compare: Approved as noted, with the note.
         (
-            [_decision(keep_reason="measures_something_else")],
+            [_decision(keep_reason="measures_something_else"), *_rights(9)],
             CheckState(),
             "approved_as_noted",
             "S6",
         ),
-        ([_ai_only()], CheckState(), "approved_as_noted", "S6"),
+        ([_ai_only(), *_rights(9)], CheckState(), "approved_as_noted", "S6"),
         ([_minor()], CheckState(), "approved_as_noted", "S5"),
+        # More than 10% Not compared: Review needed instead of any approval (S5, S6 or S7).
+        ([_decision()], CheckState(), "review_needed", "RN"),
+        ([_ai_only()], CheckState(), "review_needed", "RN"),
+        ([_minor(), _ai_only()], CheckState(), "review_needed", "RN"),
+        # Not for a result that is not an approval: Revise and resubmit and no stamp stay.
+        ([_proved(), *_not_compared(5)], CheckState(), "revise_resubmit", "S4"),
+        ([*_not_compared(5)], CheckState(incomplete="x"), "not_for_sending", "S0"),
         ([_proved()], CheckState(), "revise_resubmit", "S4"),
         ([_minor(id=f"M{n}") for n in range(MAX_NOTED + 1)], CheckState(), "revise_resubmit", "S4"),
         ([_minor()], CheckState(still_open=1), "revise_resubmit", "S3"),
@@ -171,15 +190,21 @@ def test_the_first_rule_that_matches_decides_the_result(
     assert found.disclaimer == DISCLAIMER
 
 
-def test_the_words_are_awis_four_and_no_stamp() -> None:
+def test_the_words_are_awis_four_review_needed_and_no_stamp() -> None:
     assert set(ACTION_WORDS.values()) == {
         "Approved",
         "Approved as noted",
+        "Review needed",
         "Revise and resubmit",
         "Rejected",
         "Check incomplete: not for sending",
     }
-    noted = review_action([_ai_only()])
+    # The vendor never reads "Review needed" or an approval for it: only "Under review".
+    assert VENDOR_WORDS["review_needed"] == "Under review"
+    assert {k: v for k, v in VENDOR_WORDS.items() if k != "review_needed"} == {
+        k: v for k, v in ACTION_WORDS.items() if k != "review_needed"
+    }
+    noted = review_action([_ai_only(), *_rights(9)])
     assert noted.note == NOT_REVIEWED_NOTE
     assert noted.required_by == "Vendor: make the corrections noted"
     assert review_action([]).required_by == "No action required"

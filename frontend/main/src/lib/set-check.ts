@@ -27,6 +27,7 @@ export type ResultKind =
   | 'rejected'
   | 'approved_as_noted'
   | 'approved'
+  | 'review_needed'
   | 'not_for_sending'
   | 'unfinished'
   | 'checking'
@@ -107,23 +108,27 @@ export function countSentence(counts: FullCheckCounts): string {
  * The sidebar's grey line for a set (#1712: plain words, no pill), first match wins: a check running,
  * the drawings being read, the newest check's result (with its Wrong count when there are any), the
  * drawings failing, then "Drawings read · Not checked yet" or "Not checked yet". `wrong` is shown
- * after the words as "· 5 wrong", its number in Plex Mono.
+ * after the words as "· 5 wrong", its number in Plex Mono; `toDecide` (Review needed only: the items
+ * Not compared a person decides before it can be approved) as "· 52 to decide".
  */
-export function sidebarLine(set: SetCheck): { words: string; wrong: number | null } {
-  if (set.checking) return { words: 'Full check running…', wrong: null };
-  if (set.drawings === 'reading') return { words: 'Reading the drawings…', wrong: null };
+export function sidebarLine(set: SetCheck): { words: string; wrong: number | null; toDecide: number | null } {
+  if (set.checking) return { words: 'Full check running…', wrong: null, toDecide: null };
+  if (set.drawings === 'reading') return { words: 'Reading the drawings…', wrong: null, toDecide: null };
   if (set.full_check) {
-    const wrong = set.full_check.counts.wrong;
-    return { words: setResult(set).words, wrong: wrong > 0 ? wrong : null };
+    const { wrong, not_compared: notCompared } = set.full_check.counts;
+    const result = setResult(set);
+    return { words: result.words, wrong: wrong > 0 ? wrong : null, toDecide: result.kind === 'review_needed' ? notCompared : null };
   }
-  if (set.drawings === 'failed') return { words: 'Could not read the drawings', wrong: null };
-  return { words: set.drawings === 'read' ? 'Drawings read · Not checked yet' : 'Not checked yet', wrong: null };
+  if (set.drawings === 'failed') return { words: 'Could not read the drawings', wrong: null, toDecide: null };
+  return { words: set.drawings === 'read' ? 'Drawings read · Not checked yet' : 'Not checked yet', wrong: null, toDecide: null };
 }
 
-/** The sidebar line as one string ("Revise and resubmit · 5 wrong"). */
+/** The sidebar line as one string ("Revise and resubmit · 5 wrong", "Review needed · 52 to decide"). */
 export function sidebarWords(set: SetCheck): string {
   const line = sidebarLine(set);
-  return line.wrong === null ? line.words : `${line.words} · ${line.wrong} ${OUTCOME_WORDS.wrong.toLowerCase()}`;
+  const wrong = line.wrong === null ? '' : ` · ${line.wrong} ${OUTCOME_WORDS.wrong.toLowerCase()}`;
+  const toDecide = line.toDecide === null ? '' : ` · ${line.toDecide} to decide`;
+  return `${line.words}${wrong}${toDecide}`;
 }
 
 /** "21 Oct 2026, 14:02": when the check ended, in the reviewer's own time zone. */

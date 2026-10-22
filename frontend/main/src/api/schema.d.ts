@@ -6500,7 +6500,7 @@ export interface components {
         };
         /**
          * ChatReviewActionOut
-         * @description A full check's review result (#1622, `review_action.review_action`, rules S0 to S7),
+         * @description A full check's review result (#1622, `review_action.review_action`, rules S0 to S7 and RN),
          *     decided by code on read from its findings with the reviewer's latest decisions and the state
          *     kept with its package; the comment letter and the cloud drawing's cover say the same.
          */
@@ -6509,7 +6509,7 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "approved" | "approved_as_noted" | "revise_resubmit" | "rejected" | "not_for_sending";
+            action: "approved" | "approved_as_noted" | "review_needed" | "revise_resubmit" | "rejected" | "not_for_sending";
             /**
              * Corrections
              * @description Comments sent (the clouds).
@@ -6526,13 +6526,25 @@ export interface components {
              */
             fabrication: number;
             /**
+             * Items
+             * @description All items: Wrong + Right + Ask the architect + Not compared (decided ones included); Review needed when more than the set share of them are Not compared.
+             * @default 0
+             */
+            items: number;
+            /**
              * Next Step
              * @description What the vendor does next (the letter's closing line).
              */
             next_step: string;
             /**
+             * Not Compared
+             * @description Items Not compared (decided items no longer count).
+             * @default 0
+             */
+            not_compared: number;
+            /**
              * Note
-             * @description S6: what was not reviewed.
+             * @description S6 and RN: what was not reviewed.
              */
             note?: string | null;
             /**
@@ -6550,10 +6562,16 @@ export interface components {
              * @description The rule that decided it (the first that matches wins).
              * @enum {string}
              */
-            rule: "S0" | "S1" | "S2" | "S3" | "S4" | "S5" | "S6" | "S7";
+            rule: "S0" | "S1" | "S2" | "S3" | "S4" | "RN" | "S5" | "S6" | "S7";
+            /**
+             * Vendor Words
+             * @description The result as the vendor reads it: the same words, but "Under review" for Review needed (never an approval).
+             * @default
+             */
+            vendor_words: string;
             /**
              * Words
-             * @description "Approved as noted", "Revise and resubmit", …
+             * @description "Approved as noted", "Review needed", "Revise and resubmit", …
              */
             words: string;
         };
@@ -6772,7 +6790,7 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "approved" | "approved_as_noted" | "revise_resubmit" | "rejected" | "not_for_sending";
+            action: "approved" | "approved_as_noted" | "review_needed" | "revise_resubmit" | "rejected" | "not_for_sending";
             /**
              * Words
              * @description "Revise and resubmit", "Check incomplete: not for sending", …
@@ -8617,7 +8635,7 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "approved" | "approved_as_noted" | "revise_resubmit" | "rejected" | "not_for_sending";
+            action: "approved" | "approved_as_noted" | "review_needed" | "revise_resubmit" | "rejected" | "not_for_sending";
             /**
              * Words
              * @description "Revise and resubmit", "Check incomplete: not for sending", …

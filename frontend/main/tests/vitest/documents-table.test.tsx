@@ -67,6 +67,8 @@ describe('documents table words', () => {
       .toEqual({ kind: 'not_for_sending', words: 'Check incomplete', title: 'Check incomplete: not for sending' });
     expect(setResult({ full_check: check({ review_result: null, stopped: 'cost_cap' }) }))
       .toEqual({ kind: 'unfinished', words: 'Check did not finish', title: 'It stopped at its price limit.' });
+    expect(setResult({ full_check: check({ review_result: { action: 'review_needed', words: 'Review needed' } }) }))
+      .toEqual({ kind: 'review_needed', words: 'Review needed', title: null });
     expect(setResult({}).words).toBe('Not checked yet');
     expect(setResult({ checking: true, full_check: check() }).words).toBe('Full check running…');
   });
@@ -80,6 +82,10 @@ describe('documents table words', () => {
     expect(resultRank({ full_check: check({ review_result: { action: 'rejected', words: 'Rejected' } }) })).toBeLessThan(resultRank({ full_check: check() }));
     expect(resultRank({ full_check: check() })).toBeLessThan(resultRank({ full_check: check({ review_result: { action: 'approved', words: 'Approved' } }) }));
     expect(resultRank({ full_check: check() })).toBeLessThan(resultRank({}));
+    // Review needed sorts before any approval: a person decides first.
+    const pending = resultRank({ full_check: check({ review_result: { action: 'review_needed', words: 'Review needed' } }) });
+    expect(resultRank({ full_check: check() })).toBeLessThan(pending);
+    expect(pending).toBeLessThan(resultRank({ full_check: check({ review_result: { action: 'approved_as_noted', words: 'Approved as noted' } }) }));
   });
 
   it('searches the vendor and the product, ignoring case and spaces around', () => {
@@ -114,7 +120,7 @@ describe('DocumentsTable', () => {
   });
 
   it('paints a result with its glyph and outcome colour, never amber', () => {
-    render(<DocumentsTable rows={[summary('n', { full_check: check({ review_result: { action: 'approved_as_noted', words: 'Approved as noted' } }) }), ...ROWS]} onOpen={() => {}} morePages={false} />);
+    render(<DocumentsTable rows={[summary('n', { full_check: check({ review_result: { action: 'approved_as_noted', words: 'Approved as noted' } }) }), summary('rn', { full_check: check({ review_result: { action: 'review_needed', words: 'Review needed' } }) }), ...ROWS]} onOpen={() => {}} morePages={false} />);
     const results = [...document.querySelectorAll('[data-slot="set-result"]')] as HTMLElement[];
     for (const result of results) {
       expect(result.className).not.toMatch(/review|amber/);
@@ -123,6 +129,11 @@ describe('DocumentsTable', () => {
     expect(results.find((result) => result.dataset.result === 'revise_resubmit')?.className).toContain('text-outcome-fail-fg');
     expect(results.find((result) => result.dataset.result === 'approved')?.className).toContain('text-outcome-pass-fg');
     expect(results.find((result) => result.dataset.result === 'approved_as_noted')?.className).toContain('text-foreground');
+    // Review needed: neutral words with a person glyph, never an outcome colour.
+    const pending = results.find((result) => result.dataset.result === 'review_needed');
+    expect(pending?.className).toContain('text-foreground');
+    expect(pending?.className).not.toMatch(/outcome/);
+    expect(pending?.textContent).toBe('Review needed');
   });
 
   it('sorts by a column on click: name A→Z with untitled last, result by what it asks', async () => {
