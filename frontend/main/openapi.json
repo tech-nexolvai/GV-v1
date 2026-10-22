@@ -7160,6 +7160,7 @@
             "anyOf": [
               {
                 "enum": [
+                  "matching",
                   "code_checks",
                   "verifying",
                   "second_looks",
@@ -7172,7 +7173,7 @@
                 "type": "null"
               }
             ],
-            "description": "Within double_checking: code_checks (code's own checks of the whole set, no count), verifying (code checks each answered drawing), second_looks, final_checks (no count); `stopped` on a done check that was stopped.",
+            "description": "Within comparing: matching (the AI page matcher pairs the vendor's drawings with a separate architect's file, n of m drawings; the comparing starts page by page as they are paired). Within double_checking: code_checks (code's own checks of the whole set, no count), verifying (code checks each answered drawing), second_looks, final_checks (no count); `stopped` on a done check that was stopped.",
             "title": "Step"
           },
           "stopping": {
@@ -7210,6 +7211,17 @@
             ],
             "description": "What `done` and `total` count (pages: the roster check).",
             "title": "Unit"
+          },
+          "usual": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatLiveUsualOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How long a check of this set usually takes, once code knows its pages (null: no honest range; the screen then says no time)."
           }
         },
         "required": [
@@ -7363,6 +7375,39 @@
           "waiting_second_look"
         ],
         "title": "ChatLiveTallyOut",
+        "type": "object"
+      },
+      "ChatLiveUsualOut": {
+        "description": "How long a full check of this set usually takes (#1883): a range from measured runs,\nby its content pages and whether its pages must first be matched with a separate architect's\nfile (`check_time.usual_minutes`). Absent when no honest range can be given.",
+        "properties": {
+          "high_minutes": {
+            "description": "The range's high end, whole minutes.",
+            "title": "High Minutes",
+            "type": "integer"
+          },
+          "low_minutes": {
+            "description": "The range's low end, whole minutes.",
+            "title": "Low Minutes",
+            "type": "integer"
+          },
+          "matched": {
+            "default": 0,
+            "description": "The vendor drawings the AI page matcher pairs with the architect's file first (0: a combined set, or every answer saved).",
+            "title": "Matched",
+            "type": "integer"
+          },
+          "pages": {
+            "description": "The content pages the check compares.",
+            "title": "Pages",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "low_minutes",
+          "high_minutes",
+          "pages"
+        ],
+        "title": "ChatLiveUsualOut",
         "type": "object"
       },
       "ChatMessageIn": {

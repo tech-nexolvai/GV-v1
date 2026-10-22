@@ -76,6 +76,7 @@ __all__ = [
     "wait_for_page_map",
     "wait_for_reading",
     "with_lenses",
+    "with_pairs",
 ]
 
 _log = logging.getLogger(__name__)
@@ -583,27 +584,38 @@ def plan_jobs(
             for e in others
             if isinstance(e.get("page"), int) and (_area(e) or "").lower() in wanted
         ]
-        paired_pages: list[tuple[int, tuple[tuple[str, int], ...]]] = []
-        unpaired: list[tuple[int, str]] = []
-        if across is not None:
-            for page in pages:
-                if page in across.pairs:
-                    paired_pages.append((page, across.pairs[page]))
-                    reference += [p for p in across.pairs[page] if p not in reference]
-                elif page in across.unpaired:
-                    unpaired.append((page, across.unpaired[page]))
         jobs.append(
-            HelperJob(
-                number,
-                pages,
-                file,
-                tuple(dict.fromkeys(reference)),
-                tuple(areas),
-                pairs=tuple(paired_pages),
-                unpaired=tuple(unpaired),
+            with_pairs(
+                HelperJob(number, pages, file, tuple(dict.fromkeys(reference)), tuple(areas)),
+                across,
             )
         )
     return FanOutPlan(tuple(jobs), skipped)
+
+
+def with_pairs(job: HelperJob, across: CrossPairs | None) -> HelperJob:
+    """The job told which of its pages are paired across separate uploads (#1798) and with
+    which architect pages (those pages added to what it looks at), and which are not paired and
+    why. A full check plans its jobs without them and adds them as each job starts, once the AI
+    page matcher has decided its pages (#1883); `plan_jobs(across=...)` gives the same jobs.
+    """
+    if across is None:
+        return job
+    reference = list(job.reference)
+    paired_pages: list[tuple[int, tuple[tuple[str, int], ...]]] = []
+    unpaired: list[tuple[int, str]] = []
+    for page in job.pages:
+        if page in across.pairs:
+            paired_pages.append((page, across.pairs[page]))
+            reference += [p for p in across.pairs[page] if p not in reference]
+        elif page in across.unpaired:
+            unpaired.append((page, across.unpaired[page]))
+    return replace(
+        job,
+        reference=tuple(dict.fromkeys(reference)),
+        pairs=tuple(paired_pages),
+        unpaired=tuple(unpaired),
+    )
 
 
 def scoped_plan(

@@ -94,6 +94,8 @@ _OUTCOME: Final[Mapping[str, str]] = {
     "rule_note": "rule_note",
     "not_compared": "not_compared",
 }
+#: What a phase is (shown again after the page matcher's step).
+_PHASE_KEYS: Final = ("phase", "step", "done", "total", "unit", "phase_started_at")
 #: The roster's progress phases as the live phases.
 _ROSTER_PHASE: Final[Mapping[str, str]] = {
     "reading": "comparing",
@@ -179,6 +181,10 @@ class LiveCheck:
         self._last_tally: dict[str, int] | None = None
         self._started = False
         self._ended = False
+        self._before_matching: dict[str, Any] | None = None
+        """The phase shown before the page matcher's step (#1883), shown again after it."""
+        self._pages: tuple[Any, Any] | None = None
+        """The roster's latest pages compared (done, total), held while the matcher's step shows."""
         self.withdrawn = 0
         """Wrongs a later check took back (should stay 0; each is logged)."""
 
@@ -210,6 +216,43 @@ class LiveCheck:
             )
             if changed:
                 self._phase["phase_started_at"] = _iso(self._now())
+            self._send_phase()
+
+    def matching(self, done: int, total: int) -> None:
+        """The AI page matcher's progress (#1883): "Matching pages", `done` of `total` vendor
+        drawings paired with a separate architect's file. It is part of comparing: the pages it
+        has paired are compared beside it."""
+        with self._lock:
+            if self._ended:
+                return
+            if self._before_matching is None:
+                self._before_matching = dict(self._phase)
+            self.phase("comparing", step="matching", done=done, total=total, unit="drawings")
+
+    def matched(self) -> None:
+        """The matcher has asked about every drawing: the phase it hid is shown again (the roster's
+        pages compared so far)."""
+        with self._lock:
+            before, self._before_matching = self._before_matching, None
+            if before is None or self._ended or self._phase.get("step") != "matching":
+                return
+            if self.mode == "roster" and self._pages is not None:
+                done, total = self._pages
+                self.phase("comparing", done=done, total=total, unit="pages")
+                return
+            self._phase.update({key: before.get(key) for key in _PHASE_KEYS})
+            self._send_phase()
+
+    def usual(self, low: int, high: int, pages: int, matched: int = 0) -> None:
+        """How long a check of this set usually takes (`check_time.usual_minutes`, #1883):
+        sent with every phase from now on."""
+        with self._lock:
+            self._phase["usual"] = {
+                "low_minutes": int(low),
+                "high_minutes": int(high),
+                "pages": int(pages),
+                "matched": int(matched),
+            }
             self._send_phase()
 
     def making_files(self, findings: Sequence[Mapping[str, Any]]) -> None:
@@ -567,6 +610,9 @@ class LiveCheck:
             return
         if name == "comparing":
             done, total = progress.get("pages_done"), progress.get("pages_total")
+            self._pages = (done, total)
+            if self._phase.get("step") == "matching":
+                return  # shown when the matcher's step ends (`matched`)
             if (self._phase["phase"], self._phase["done"], self._phase["total"]) != (
                 name,
                 done,
