@@ -227,6 +227,9 @@ export interface ChatProgress {
   /** The simple full check (#1665): vendor drawings compared so far, of its work list. */
   drawings_done?: number | null;
   drawings_total?: number | null;
+  /** #1872: pages read so far while the check waits for the drawings (no AI step meanwhile). */
+  reading_done?: number | null;
+  reading_total?: number | null;
 }
 
 /**
@@ -1084,6 +1087,8 @@ export interface ChatFullCheckPlan {
   price_usd?: string | null;
   /** The content pages in scope it counts (drawings of those products; title and divider pages left out). */
   price_pages?: number | null;
+  /** #1872: how far the drawings are read; the check's AI steps start only once every page is read. */
+  reading?: { state: 'reading' | 'ready' | 'failed'; done: number; total: number; unreadable: number; why?: string | null } | null;
 }
 
 /** `POST /chats/{id}/messages`. */

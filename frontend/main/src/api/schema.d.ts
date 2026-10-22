@@ -5416,6 +5416,8 @@ export interface components {
              * @description The full check's fixed price for the products asked (`products`), when the page map is read (#1823): base + per content page in scope, at least the minimum, never above the set's budget left. A roster full check's own cap; `null` until then.
              */
             price_usd?: string | null;
+            /** @description How far the drawings are read (#1872): a full check starts its AI steps only once every page is read (`state` ready); `null` before the reading starts. */
+            reading?: components["schemas"]["ChatPagesReadOut"] | null;
             /**
              * State
              * @description ready: the page map is read; building: ask again in a moment; none: no page map can be made (no PDFs): run without questions.
@@ -6267,6 +6269,41 @@ export interface components {
             wrong_product: boolean;
         };
         /**
+         * ChatPagesReadOut
+         * @description How far the reading of the drawings has got (#1872): pages read of all the set's pages.
+         */
+        ChatPagesReadOut: {
+            /**
+             * Done
+             * @description Pages read, or known unreadable, so far.
+             * @default 0
+             */
+            done: number;
+            /**
+             * State
+             * @description reading: pages are being read; ready: every page is read (or known unreadable); failed: the drawings could not be read (`why`).
+             * @enum {string}
+             */
+            state: "reading" | "ready" | "failed";
+            /**
+             * Total
+             * @description The set's pages.
+             * @default 0
+             */
+            total: number;
+            /**
+             * Unreadable
+             * @description Pages that could not be read (skipped).
+             * @default 0
+             */
+            unreadable: number;
+            /**
+             * Why
+             * @description Why the drawings could not be read.
+             */
+            why?: string | null;
+        };
+        /**
          * ChatPlanAnswerIn
          * @description The reviewer's answer to one plan-check question (#1569).
          */
@@ -6377,6 +6414,16 @@ export interface components {
              * @enum {string}
              */
             phase: "reading" | "checking" | "writing";
+            /**
+             * Reading Done
+             * @description While the check waits for the drawings to be read (#1872): pages read so far ('Reading the drawings: 40 of 188 pages'); no AI step runs meanwhile.
+             */
+            reading_done?: number | null;
+            /**
+             * Reading Total
+             * @description The set's pages to read.
+             */
+            reading_total?: number | null;
             /** Right So Far */
             right_so_far: number;
             /**
