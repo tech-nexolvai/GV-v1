@@ -138,6 +138,15 @@ def _flat(text: object, limit: int = 160) -> str:
 def _architect_shows(finding: Mapping[str, Any], reason: str) -> str:
     """What the architect shows, plainly: "not shown", "no size printed", or its value(s)."""
     words = _flat(finding.get("architect"), 120)
+    if finding.get("source") == "vendor_arithmetic":
+        # The vendor's own string (#1885): its "should be" is the sum of its parts, never a
+        # value of the architect's.
+        total = _flat(finding.get("architect"), 60)
+        return (
+            f"not used (the vendor's own parts add up to {total})"
+            if total
+            else "not used (the vendor's own string)"
+        )
     if reason == "nothing_to_compare":
         if not words or words.lower() in ("n/a", "none", "-"):
             return "not shown"

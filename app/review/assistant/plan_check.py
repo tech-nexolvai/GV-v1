@@ -10,7 +10,8 @@ sure of:
 - **prototype**: a drawing headed as a brand prototype in an area with no architect's drawing
   anywhere (is it really the prototype, or the architect's?);
 - **pair**: a vendor page whose area has no architect's drawing (compare it with the nearest
-  architect page before it, or skip it?);
+  architect page before it, or skip it?), only in a set with no separate architect's file: with
+  one, code pairs each vendor drawing across the files itself (#1723, #1798), never by a question;
 - **round**: a vendor drawing with no round in an area that has more than one;
 - **heading**: a page with pasted drawings and no heading or area at all.
 
@@ -180,6 +181,24 @@ def _area_roles(entry: Mapping[str, Any], by_area: Mapping[tuple[Any, Any], set[
     return set(by_area.get(key, set())) | set(by_area.get((None, key[1]), set()))
 
 
+def _architect_upload(page_map: Mapping[str, Any], main_file: str) -> bool:
+    """Whether a separate file read by its upload (`upload_roles`, #1719) holds an architect
+    drawing: the work list then pairs every vendor drawing with no architect drawing of its own
+    across the files (`worklist.separate_items`, #1723, #1798), so the plan never pairs one with
+    an architect page of the vendor's own file."""
+    roles = page_map.get("upload_roles")
+    joined = set(roles) if isinstance(roles, Mapping) else set()
+    return any(
+        isinstance(e, Mapping)
+        and str(e.get("file")) != main_file
+        and str(e.get("file")) in joined
+        and isinstance(e.get("page"), int)
+        and not e.get("skip")
+        and any(h.get("role") == "architect" and _box(h) is not None for h in _halves(e))
+        for e in page_map.get("pages") or []
+    )
+
+
 def architect_in_area(page_map: Mapping[str, Any] | None, file: str | None, page: int) -> bool:
     """Whether the architect gives an elevation of the area of `file`'s page `page` (R1, Anant
     2026-10-20): an architect drawing on the page or anywhere in its typed area (an architect's
@@ -247,6 +266,8 @@ def doubts(
     files = [str(name) for name in page_map.get("files") or []]
     done = set(answered)
     by_area = _roles_by_area(page_map)
+    # A separate architect's file: code pairs across the files at run time, nothing to ask.
+    across = _architect_upload(page_map, str(entries[0].get("file")))
     architect_pages = [
         int(e["page"]) for e in entries if any(h.get("role") == "architect" for h in _halves(e))
     ]
@@ -334,7 +355,8 @@ def doubts(
                         )
                     )
         if (
-            "vendor" in roles
+            not across
+            and "vendor" in roles
             and "architect" not in area_roles
             and "brand_prototype" not in roles
             and entry.get("pair_page") is None
@@ -380,7 +402,8 @@ def doubts(
 
 
 def plan_summary(page_map: Mapping[str, Any] | None, main_file: str | None) -> str | None:
-    """Code's plan in one line: "60 pages · 22 pairs · rounds 1-2 · 3 general pages"."""
+    """Code's plan in one line: "60 pages · 22 pairs · rounds 1-2 · 3 general pages". With a
+    separate architect's file the pairs are made when the check runs, and said so."""
     if not page_map:
         return None
     entries = _main_entries(page_map, main_file)
@@ -396,7 +419,11 @@ def plan_summary(page_map: Mapping[str, Any] | None, main_file: str | None) -> s
         {int(h["round"]) for e in entries for h in _halves(e) if isinstance(h.get("round"), int)}
     )
     general = sum(1 for e in entries if not _halves(e) or e.get("skip"))
-    parts = [f"{len(entries)} pages", f"{pairs} pair{'s' if pairs != 1 else ''}"]
+    pairs_words = f"{pairs} pair{'s' if pairs != 1 else ''}"
+    if _architect_upload(page_map, str(entries[0].get("file"))):
+        later = "paired with the architect's file when the check runs"
+        pairs_words = f"{pairs_words} · the rest {later}" if pairs else later
+    parts = [f"{len(entries)} pages", pairs_words]
     if rounds:
         parts.append(
             f"round {rounds[0]}" if len(rounds) == 1 else f"rounds {rounds[0]}-{rounds[-1]}"

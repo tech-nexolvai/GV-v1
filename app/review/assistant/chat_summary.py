@@ -9,14 +9,14 @@ trust report, with no AI call. Pure functions: no I/O, no money.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Any, Final
 
 from app.review.assistant.chat_findings import products_words
 from app.review.assistant.chat_trust import cloud_kind
 from app.review.assistant.classification import not_compared_line
 from app.review.assistant.impact import by_impact
-from app.review.assistant.proof import classified, proof_counts, proof_group
+from app.review.assistant.proof import classified, proof_counts, proof_group, vendor_own
 from app.review.assistant.review_action import review_action
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.vendor_text import vendor_text
@@ -67,7 +67,7 @@ def _pages(pages: Sequence[int]) -> str:
 
 def _issue_words(findings: Sequence[Mapping[str, Any]]) -> list[str]:
     """The top issues, the same item and values on several pages said once."""
-    groups: dict[tuple[str, str, str], list[int]] = {}
+    groups: dict[tuple[str, str, str, bool], list[int]] = {}
     for finding in top_issues(findings, limit=len(findings)):
         # The guard on internal words (#1622, `vendor_text`): no record id or "see GV Review's
         # record" in the summary either.
@@ -75,13 +75,20 @@ def _issue_words(findings: Sequence[Mapping[str, Any]]) -> list[str]:
             vendor_text(finding.get("item"), f"Item on page {finding.get('page')}") or "Item",
             vendor_text(finding.get("vendor"), "?") or "?",
             vendor_text(finding.get("architect"), "no stated value") or "no stated value",
+            # A vendor string's "should be" is the sum of its own parts, never the architect's
+            # (#1885): said as such.
+            vendor_own(finding) == "sum",
         )
         groups.setdefault(key, []).append(int(finding.get("page") or 0))
         if len(groups) > TOP_ISSUES:
             break
     return [
-        f"{item}: vendor {vendor}, architect {architect} ({_pages(pages)})"
-        for (item, vendor, architect), pages in list(groups.items())[:TOP_ISSUES]
+        (
+            f"{item}: vendor's parts add up to {other}, vendor prints {vendor} ({_pages(pages)})"
+            if own
+            else f"{item}: vendor {vendor}, architect {other} ({_pages(pages)})"
+        )
+        for (item, vendor, other, own), pages in list(groups.items())[:TOP_ISSUES]
     ]
 
 
@@ -116,6 +123,26 @@ def _stop_words(
     return None
 
 
+def _own_only_pages(
+    findings: Sequence[Mapping[str, Any]], compared: Collection[int] | None, checked: int
+) -> int:
+    """How many pages have a result code decided (Wrong or Right) but were not compared with
+    the architect: the vendor's own checks only (#1885). Without the compared pages, only when no
+    page was compared (else they cannot be told apart)."""
+    if compared is None and checked:
+        return 0
+    seen = set(compared or ())
+    return len(
+        {
+            int(f["page"])
+            for f in findings
+            if isinstance(f.get("page"), int)
+            and int(f["page"]) not in seen
+            and proof_group(f) in ("clouded", "right")
+        }
+    )
+
+
 def _plural(count: int, one: str, many: str) -> str:
     return f"{count} {one if count == 1 else many}"
 
@@ -134,12 +161,16 @@ def code_summary(
     files: Sequence[str] = (),
     also: Sequence[str] = (),
     reasons: Sequence[str] | None = None,
+    compared_pages: Collection[int] | None = None,
 ) -> str:
     """The 5-6 line summary: what was checked, the verdict, the biggest issues, the one line on
     what could not be compared (#1619), why it stopped (if it did) and the next step; then the
     small note. `also`: code's own lines to add before the next step (the vendor consistency
     check's, #1584). `reasons`: the Not-compared list's rows' reasons (its product scope), else
-    worked out from `findings`."""
+    worked out from `findings`. `compared_pages`: the pages the coverage counts as compared,
+    so a page whose only results are code's checks of the vendor's own drawing (its strings,
+    GV's rules) is said apart (#1885); without it, such pages are said only when no page was
+    compared."""
     # The cloud drawing's own counts (#1581, #1619): Wrong = proved by code (clouded), Right, and
     # what could not be compared; the screen and the files count the same final list.
     counts = proof_counts(findings)
@@ -160,12 +191,30 @@ def code_summary(
         total = int(coverage.get("total") or 0)
         checked = int(coverage.get("same") or 0) + int(coverage.get("different") or 0)
         rest = max(0, total - checked)
-        first = f"Checked {checked} of {total} pages ({scope})" + (
-            f"; {rest} {'page was' if rest == 1 else 'pages were'} not compared (title or divider "
-            "sheets, pages with no drawing to compare, or not reached)."
-            if rest
-            else "."
-        )
+        own = _own_only_pages(findings, compared_pages, checked)
+        if own:
+            # #1885: "Checked 0 of 109 pages ... 8 wrong" said two things at once; the pages with
+            # only the vendor's own checks are counted apart from those compared.
+            rest = max(0, rest - own)
+            first = (
+                f"Checked {checked + own} of {total} pages ({scope}): {checked} compared with "
+                f"the architect, {own} only by code's checks of the vendor's own drawing (its "
+                "dimension strings, GV's rules)"
+                + (
+                    f"; the other {rest} {'page was' if rest == 1 else 'pages were'} not "
+                    "compared (title or divider sheets, pages with no drawing to compare, or "
+                    "not reached)."
+                    if rest
+                    else "."
+                )
+            )
+        else:
+            first = f"Checked {checked} of {total} pages ({scope})" + (
+                f"; {rest} {'page was' if rest == 1 else 'pages were'} not compared (title or "
+                "divider sheets, pages with no drawing to compare, or not reached)."
+                if rest
+                else "."
+            )
     else:
         pages = len({f.get("page") for f in findings})
         of = f" of {page_count}" if page_count else ""

@@ -44,14 +44,16 @@ import math
 import os
 import re
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
+from app.review.assistant.full_check_plan import CrossPairs
 from app.review.assistant.reply_json import json_of_reply
 from app.review.assistant.simple_check.pairing import MatchAnswer
 from app.review.assistant.simple_check.schema import AcrossCandidate, AcrossPair, Drawing
@@ -67,15 +69,18 @@ __all__ = [
     "SYSTEM",
     "AskReply",
     "MatchReport",
+    "MatchRun",
     "PictureMaker",
     "Pictures",
     "engine_asker",
     "load_answers",
     "match_pairs",
     "parse",
+    "prepare_run",
     "question",
     "reply_schema",
     "run_for_engine",
+    "to_ask",
     "wait_ready",
 ]
 
@@ -92,8 +97,10 @@ VENDOR_TOKENS: Final = 3_200
 MAX_TOKENS: Final = 1_200
 #: The request's text (the system prompt, captions, the question) held for the runaway guard.
 _TEXT_TOKENS: Final = 2_500
-#: Calls at once after each group's first (its cache entry) has answered.
-PARALLEL: Final = 4
+#: Calls at once (#1883: was 4; one call takes about 40 s, so 96 drawings took 17 minutes). A group's
+#: first call still runs before the others of its group (it writes the pictures' cache entry), and
+#: each call is still asked only when it fits the run's money (`fits`).
+PARALLEL: Final = 8
 _MAX_REASON: Final = 200
 _DPI_RANGE: Final = (18, 200)
 _LABEL: Final = re.compile(r"^A\d{1,3}$")
@@ -442,6 +449,22 @@ def _still_good(entry: Mapping[str, Any] | None, pair: AcrossPair) -> bool:
     )
 
 
+def to_ask(pairs: Sequence[AcrossPair], folder: Path) -> tuple[list[AcrossPair], int]:
+    """The vendor drawings the matcher must be asked about (shown some candidates, no good saved
+    answer), and how many have a good saved answer."""
+    saved = load_answers(folder)
+    todo: list[AcrossPair] = []
+    reused = 0
+    for pair in pairs:
+        if not pair.asked:
+            continue
+        if _still_good(saved.get(pair.vendor.ref), pair):
+            reused += 1
+            continue
+        todo.append(pair)
+    return todo, reused
+
+
 def match_pairs(
     pairs: Sequence[AcrossPair],
     folder: Path,
@@ -451,25 +474,21 @@ def match_pairs(
     fits: Callable[[int], bool] | None = None,
     stop: threading.Event | None = None,
     parallel: int = PARALLEL,
+    first: Callable[[AcrossPair], Any] | None = None,
+    on_done: Callable[[str], None] | None = None,
 ) -> MatchReport:
     """Ask the matcher for every vendor drawing paired across the uploads that has no good saved
     answer, and save each answer in the pack. `fits(tokens)`: whether a call of about this many
     input tokens still fits the run's money (else it is not asked: code decides alone). The first
-    call of each group of drawings shown the same items runs alone (it writes the pictures' cache
-    entry); the others follow, `parallel` at a time."""
+    call of each group of drawings shown the same items runs before the others of its group (it
+    writes the pictures' cache entry); the others follow as soon as it has answered, `parallel`
+    calls at a time in all. `first(pair)`: the order to ask in (a full check asks first about the
+    pages its first helpers compare, #1883); `on_done(ref)`: called once for every drawing asked
+    about, as soon as it has its answer or is left to code (failed, money, stop)."""
     report = MatchReport()
-    saved = load_answers(folder)
-    todo: list[AcrossPair] = []
-    for pair in pairs:
-        if not pair.asked:
-            continue
-        if _still_good(saved.get(pair.vendor.ref), pair):
-            report.reused += 1
-            continue
-        todo.append(pair)
-    groups: dict[tuple[str, ...], list[AcrossPair]] = {}
-    for pair in todo:
-        groups.setdefault(tuple(sorted(pair.asked)), []).append(pair)
+    todo, report.reused = to_ask(pairs, folder)
+    if first is not None:
+        todo.sort(key=first)
     lock = threading.Lock()
 
     def one(pair: AcrossPair) -> None:
@@ -502,14 +521,67 @@ def match_pairs(
             report.answered += 1
         _save(folder, pair.vendor.ref, entry)
 
-    firsts = [members[0] for members in groups.values()]
-    rest = [pair for members in groups.values() for pair in members[1:]]
-    with ThreadPoolExecutor(
-        max_workers=max(1, parallel), thread_name_prefix="gv-page-match"
-    ) as pool:
-        list(pool.map(one, firsts))
-        list(pool.map(one, rest))
+    _dispatch(todo, one, max(1, parallel), on_done)
     return report
+
+
+def _dispatch(
+    todo: Sequence[AcrossPair],
+    one: Callable[[AcrossPair], None],
+    parallel: int,
+    on_done: Callable[[str], None] | None,
+) -> None:
+    """Runs `one` for each drawing in `todo`'s order, `parallel` at a time; a group's later
+    drawings (shown the same items) wait until its first has answered (the cache entry)."""
+
+    def group(pair: AcrossPair) -> tuple[str, ...]:
+        return tuple(sorted(pair.asked))
+
+    leader: dict[tuple[str, ...], str] = {}
+    for pair in todo:
+        leader.setdefault(group(pair), pair.vendor.ref)
+    opened: set[tuple[str, ...]] = set()
+    queue = list(todo)
+    running = 0
+    ready = threading.Condition()
+
+    def task(pair: AcrossPair) -> None:
+        nonlocal running
+        try:
+            one(pair)
+        finally:
+            with ready:
+                running -= 1
+                opened.add(group(pair))  # its first has answered (or was left to code)
+                ready.notify_all()
+            if on_done is not None:
+                try:
+                    on_done(pair.vendor.ref)
+                except Exception:  # noqa: BLE001 - the answer is saved; only the news is lost
+                    _log.exception("page matcher: the answer's follow-up failed")
+
+    with ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="gv-page-match") as pool:
+        while True:
+            with ready:
+                while True:
+                    if not queue and running == 0:
+                        return
+                    chosen = None
+                    if running < parallel:
+                        chosen = next(
+                            (
+                                p
+                                for p in queue
+                                if group(p) in opened or leader[group(p)] == p.vendor.ref
+                            ),
+                            None,
+                        )
+                    if chosen is not None:
+                        queue.remove(chosen)
+                        running += 1
+                        break
+                    ready.wait()
+            pool.submit(task, chosen)
 
 
 # ---- in the app --------------------------------------------------------------------------------
@@ -573,19 +645,43 @@ def wait_ready(
             return False
 
 
-def run_for_engine(engine: ChatEngine, folder: Path, main_file: str | None) -> MatchReport | None:
-    """A full check's page matcher (both modes, before their planning): every vendor drawing the
-    work list pairs across the uploads is asked about once (answers saved in the pack), within the
-    answer's runaway guard. `None` when it is off, there is nothing to pair, or no provider."""
+def _live(engine: Any, step: str, *counts: int) -> None:
+    """The matcher's progress on the live screen (`live_check.LiveCheck.matching`), when there is
+    one; a screen that is gone never stops the matcher."""
+    live = getattr(engine, "live", None)
+    hook = getattr(live, step, None)
+    if hook is None:
+        return
+    try:
+        hook(*counts)
+    except Exception:  # noqa: BLE001 - only the screen misses it
+        _log.debug("page matcher: the live screen was not told")
+
+
+def run_for_engine(
+    engine: ChatEngine,
+    folder: Path,
+    main_file: str | None,
+    *,
+    work: Any = None,
+    first: Callable[[AcrossPair], Any] | None = None,
+    on_done: Callable[[str], None] | None = None,
+) -> MatchReport | None:
+    """A full check's page matcher (every mode): every vendor drawing the work list pairs across
+    the uploads is asked about once (answers saved in the pack), within the answer's runaway
+    guard, the live screen counting them ("Matching pages", #1883). `work`: the work list
+    already built (else it is built here); `first`, `on_done`: as `match_pairs`. `None` when it is
+    off, there is nothing to pair, or no provider."""
     model_name = getattr(engine.settings, "page_match_model", None)
     if not model_name or folder is None:
         return None
-    worklist = import_module("app.review.assistant.simple_check.worklist")
-    try:
-        work = worklist.build_worklist(folder, main_file)
-    except Exception:  # noqa: BLE001 - nothing to pair: the check goes on without the matcher
-        _log.warning("page matcher: no work list")
-        return None
+    if work is None:
+        worklist = import_module("app.review.assistant.simple_check.worklist")
+        try:
+            work = worklist.build_worklist(folder, main_file)
+        except Exception:  # noqa: BLE001 - nothing to pair: the check goes on without the matcher
+            _log.warning("page matcher: no work list")
+            return None
     pairs = [pair for pair in work.across if pair.asked]
     if not pairs:
         return None
@@ -596,10 +692,35 @@ def run_for_engine(engine: ChatEngine, folder: Path, main_file: str | None) -> M
     def fits(tokens: int) -> bool:
         return bool(engine._fits(engine._price(model, tokens, MAX_TOKENS) or 0))
 
+    total = len(to_ask(pairs, folder)[0])
+    done = [0]
+    count_lock = threading.Lock()
+
+    def answered(ref: str) -> None:
+        with count_lock:
+            done[0] += 1
+            now = done[0]
+        _live(engine, "matching", now, total)
+        if on_done is not None:
+            on_done(ref)
+
+    if total:
+        _live(engine, "matching", 0, total)
     pictures = Pictures(folder, engine.tools.workspace.uploads)
-    report = match_pairs(
-        pairs, folder, engine_asker(engine, model_name), pictures, fits=fits, stop=engine.cancel
-    )
+    try:
+        report = match_pairs(
+            pairs,
+            folder,
+            engine_asker(engine, model_name),
+            pictures,
+            fits=fits,
+            stop=engine.cancel,
+            first=first,
+            on_done=answered,
+        )
+    finally:
+        if total:
+            _live(engine, "matched")
     _log.info(
         "page matcher: %d asked, %d answered, %d reused, %d without an answer, $%.3f",
         report.asked,
@@ -609,3 +730,192 @@ def run_for_engine(engine: ChatEngine, folder: Path, main_file: str | None) -> M
         report.cost_usd,
     )
     return report
+
+
+class MatchRun:
+    """A full check's page matcher running beside its helpers (#1883).
+
+    The matcher took 17 minutes on a 96-drawing two-file set, and no helper started until every
+    answer was in. Now code's pairs (its own ranking and the pack's saved answers) are known at
+    once (`cross`); the matcher runs in its own thread (`start`), asking first about the pages the
+    first helpers compare; each helper waits only for its own pages (`wait_pages`): a page is
+    decided once its drawings' answers are in, or the matcher left them to code (a failed call,
+    the money, a stop), exactly as when the whole matcher had ended. The agreement rule is the
+    same (`pairing.agree`, in the work list), so a page is paired with the same architect pages
+    as before, or Not compared with code's reason. `finish` waits for the last answer (pages no
+    helper compares are asked last) and gives the final pairs."""
+
+    def __init__(
+        self,
+        engine: ChatEngine,
+        folder: Path,
+        main_file: str | None,
+        work: Any,
+        memo: dict[Any, Any],
+    ) -> None:
+        self._engine = engine
+        self.folder = folder
+        self.main_file = main_file
+        self._work = work
+        self._memo = memo
+        self._cross = CrossPairs.of(work)
+        asked = [pair for pair in work.across if pair.asked]
+        todo = (
+            to_ask(asked, folder)[0] if getattr(engine.settings, "page_match_model", None) else []
+        )
+        #: The drawings still waiting for the matcher -> their page in the vendor's file (or None).
+        self._pending: dict[str, int | None] = {
+            pair.vendor.ref: (pair.vendor.own_page if pair.vendor.file == work.file else None)
+            for pair in todo
+        }
+        #: Each asked drawing's page in the vendor's file (fixed): `unanswered_pages` reads it.
+        self._page_of: dict[str, int | None] = dict(self._pending)
+        #: The drawings the matcher left with no saved answer (a failed call, the money, a stop,
+        #: the matcher broke): their pages are not decided for good (#1885), Continue asks again.
+        self._unanswered: set[str] = set()
+        self.total = len(self._pending)
+        #: The vendor's pages the matcher is asked about (fixed): a helper comparing any of them
+        #: waits for their answers (`wait_pages`); every other page is decided already.
+        self.to_answer: frozenset[int] = frozenset(
+            page for page in self._pending.values() if page is not None
+        )
+        self._cond = threading.Condition()
+        self._fresh = True
+        self._build_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self.report: MatchReport | None = None
+
+    @property
+    def cross(self) -> CrossPairs:
+        """The pairs as they stand now (code's, and the answers in so far)."""
+        return self._cross
+
+    def waiting(self) -> frozenset[int]:
+        """The vendor's pages still waiting for a matcher answer."""
+        with self._cond:
+            return frozenset(p for p in self._pending.values() if p is not None)
+
+    def start(self, first_pages: Sequence[int] = ()) -> None:
+        """Starts the matcher (nothing to ask: nothing runs). `first_pages`: the order its
+        drawings are asked in (the first helpers' pages first); other pages after them."""
+        if not self._pending or self._thread is not None:
+            return
+        order = {page: n for n, page in enumerate(dict.fromkeys(first_pages))}
+        main = self._work.file
+
+        def first(pair: AcrossPair) -> tuple[int, int, str]:
+            page = pair.vendor.own_page if pair.vendor.file == main else 0
+            return (order.get(page, len(order)), page, pair.vendor.ref)
+
+        self._thread = threading.Thread(
+            target=self._run, args=(first,), name="gv-page-match-run", daemon=True
+        )
+        self._thread.start()
+
+    def _run(self, first: Callable[[AcrossPair], Any]) -> None:
+        timings = getattr(self._engine, "timings", None)
+        try:
+            with timings.phase("page_match") if timings is not None else _no_phase():
+                self.report = run_for_engine(
+                    self._engine,
+                    self.folder,
+                    self.main_file,
+                    work=self._work,
+                    first=first,
+                    on_done=self._answered,
+                )
+        except Exception:  # noqa: BLE001 - code then pairs alone (its saved answers, if any)
+            _log.exception("assistant full check: the page matcher failed")
+        finally:
+            with self._cond:
+                if self._pending:
+                    self._unanswered.update(self._pending)
+                    self._pending.clear()
+                    self._fresh = False
+                self._cond.notify_all()
+
+    def _answered(self, ref: str) -> None:
+        # Told for every drawing, answered or left to code: one with no saved answer is noted.
+        saved = ref in load_answers(self.folder)
+        with self._cond:
+            if not saved:
+                self._unanswered.add(ref)
+            if self._pending.pop(ref, False) is not False:
+                self._fresh = False
+            self._cond.notify_all()
+
+    def unanswered_pages(self) -> frozenset[int]:
+        """The vendor's pages with a drawing the matcher left with no answer (#1885): code
+        decided them alone this time, so they are not unpaired for good."""
+        with self._cond:
+            return frozenset(
+                page for ref in self._unanswered if (page := self._page_of.get(ref)) is not None
+            )
+
+    def wait_pages(self, pages: Sequence[int], cancel: threading.Event | None = None) -> CrossPairs:
+        """The pairs once none of `pages` waits for the matcher any more (or the check stops)."""
+        wanted = set(pages)
+        with self._cond:
+            while any(page in wanted for page in self._pending.values()):
+                if cancel is not None and cancel.is_set():
+                    break
+                self._cond.wait(1.0)
+        return self.current()
+
+    def current(self) -> CrossPairs:
+        """The pairs with every answer saved so far: the work list is built again (code's ranking
+        is kept, `worklist.RankMemo`: only the agreement rule runs again)."""
+        with self._build_lock:
+            with self._cond:
+                if self._fresh:
+                    return self._cross
+                # An answer landing while this builds marks it stale again.
+                self._fresh = True
+            worklist = import_module("app.review.assistant.simple_check.worklist")
+            try:
+                work = worklist.build_worklist(self.folder, self.main_file, memo=self._memo)
+            except Exception:  # noqa: BLE001 - the pairs so far stand
+                _log.exception("assistant full check: the cross-file pairs were not built again")
+                with self._cond:
+                    self._fresh = False
+                return self._cross
+            self._cross = CrossPairs.of(work)
+            return self._cross
+
+    def finish(self) -> CrossPairs:
+        """The final pairs, once the matcher has asked about every drawing."""
+        if self._thread is not None:
+            self._thread.join()
+        return self.current()
+
+
+@contextmanager
+def _no_phase() -> Iterator[None]:
+    yield
+
+
+def prepare_run(engine: ChatEngine, page_map: Mapping[str, Any] | None) -> MatchRun | None:
+    """A full check's page matching, not started yet (`MatchRun`): when the set has an
+    architect's upload apart from the vendor's, the whole pack is waited for (its labels) and the
+    work list gives code's pairs at once. `None` when the set has no separate architect's upload
+    or the pack is not there."""
+    folder = engine.tools.workspace.set_pack
+    main = engine.book.main_file
+    roles = (page_map or {}).get("upload_roles") or {}
+    separate = any(
+        role == "architect" and name != main
+        for name, role in (roles.items() if isinstance(roles, Mapping) else ())
+    )
+    if folder is None or not separate:
+        return None
+    if not wait_ready(folder, engine.cancel):
+        _log.warning("assistant full check: the set pack is not ready; no cross-file pairs")
+        return None
+    worklist = import_module("app.review.assistant.simple_check.worklist")
+    memo: dict[Any, Any] = {}
+    try:
+        work = worklist.build_worklist(folder, main, memo=memo)
+    except Exception:  # noqa: BLE001 - the helpers are planned without the pairs
+        _log.exception("assistant full check: no work list for the cross-file pairs")
+        return None
+    return MatchRun(engine, folder, main, work, memo)

@@ -66,10 +66,18 @@ from app.review.assistant.simple_check.set_pages import set_pages
 #: The AI page matcher's saved answers in the set pack (`page_match.py`, #1798).
 MATCH_FILE: Final = "page_match.json"
 
+#: Code's ranking of the architect items for each vendor drawing paired across the uploads, kept
+#: between builds of one unchanged set pack (a full check builds its work list again as each
+#: matcher answer lands): (vendor drawing, its candidates) -> (the ranking, code's own pick).
+type RankMemo = dict[
+    tuple[str, tuple[str, ...]], tuple[tuple[pairing_module.Scored, ...], str | None]
+]
+
 __all__ = [
     "DENSE_LABELS",
     "MATCH_FILE",
     "MIN_DRAWING_PT",
+    "RankMemo",
     "build_worklist",
     "combined_files",
     "worklist_from",
@@ -424,10 +432,13 @@ def _main_file(page_map: Mapping[str, Any], main_file: str | None) -> str | None
     return files[0] if files else (next(iter(seen)) if len(seen) == 1 else None)
 
 
-def build_worklist(folder: Path, main_file: str | None = None) -> WorkList:
+def build_worklist(
+    folder: Path, main_file: str | None = None, *, memo: RankMemo | None = None
+) -> WorkList:
     """The work list of the set pack in `folder` (its page map with the plan check's answers and
     code's assumptions laid over it, its labels, scales and notes). Raises `FileNotFoundError` when
-    the pack has no page map yet."""
+    the pack has no page map yet. `memo`: code's ranking across the uploads kept between builds of
+    one unchanged pack (`RankMemo`)."""
     page_map = read_page_map(folder, assume=True, main_file=main_file)
     if page_map is None:
         raise FileNotFoundError(f"no page map in {folder}")
@@ -441,6 +452,7 @@ def build_worklist(folder: Path, main_file: str | None = None) -> WorkList:
         matches=_read(folder / MATCH_FILE),
         main_file=main_file,
         combined=combined_files(page_map, annotations),
+        memo=memo,
     )
 
 
@@ -481,12 +493,15 @@ def worklist_from(
     matches: Any = None,
     main_file: str | None = None,
     combined: Mapping[str, bool] | None = None,
+    memo: RankMemo | None = None,
 ) -> WorkList:
     """The work list from the pack's documents (pure: `build_worklist` reads them). `annotations`
     (the pack's `annotations.json`): GV's typed item titles are read from it, only where one is
     exactly an architect item's title (never a review comment). `matches`: the AI page
     matcher's saved answers (`page_match.MATCH_FILE`). `combined`: each file's kind
-    (`combined_files`); a file it does not name is of unknown kind."""
+    (`combined_files`); a file it does not name is of unknown kind. `memo`: code's ranking across
+    the uploads from an earlier build of the same pack (`RankMemo`), so a build that only has new
+    matcher answers ranks nothing again."""
     file = _main_file(page_map, main_file)
     if file is None:
         return WorkList(file="", items=(), skipped=(), pages=())
@@ -802,6 +817,7 @@ def worklist_from(
             typed.get((half.file, half.file_page or half.page), frozenset()),
             answers.get(half.ref),
             _plain(by_set_page[half.page].get("section")) or None,
+            memo=memo,
         )
         if decided is None:
             continue
@@ -1123,16 +1139,66 @@ def _pair_across(
     typed: frozenset[str],
     saved: tuple[tuple[str, ...], pairing_module.MatchAnswer] | None,
     section: str | None = None,
+    *,
+    memo: RankMemo | None = None,
 ) -> AcrossPair | None:
     """How a vendor drawing is paired across the uploads (#1798), or `None` when there is no
     architect item to pair it with. Code ranks every item (`pairing.rank`): a title GV typed or
     the vendor printed that is an item's title, the same section of the divider pages, printed
     references, spans lined up, tags and naming words, sizes. Its own clear pick
     (`pairing.clear_winner`, or a printed reference / the same printed values, `pairing.decide`)
-    and the AI page matcher's saved answer then meet in `pairing.agree`."""
+    and the AI page matcher's saved answer then meet in `pairing.agree`. `memo`: the ranking of an
+    earlier build (only the answer is new: the agreement rule runs again on it)."""
     pool = [c for c in candidates if c.drawings and all(d.ref != vendor.ref for d in c.drawings)]
     if not pool:
         return None
+    key = (vendor.ref, tuple(c.id for c in pool))
+    known = memo.get(key) if memo is not None else None
+    if known is None:
+        known = _ranked_across(vendor, pool, facts_of, typed)
+        if memo is not None:
+            memo[key] = known
+    ranked, code_pick = known
+    asked = tuple(s.ref for s in ranked if s.contradicts is None)
+    answer = None
+    if saved is not None and tuple(sorted(saved[0])) == tuple(sorted(asked)):
+        answer = saved[1]
+    if not asked:
+        chosen: tuple[str, ...] = ()
+        why = f"{pairing_module.UNPAIRED}: every architect item is ruled out by code ({ranked[0].contradicts})"
+    else:
+        chosen, why = pairing_module.agree(ranked, code_pick, answer)
+    by_id = {c.id: c for c in pool}
+    return AcrossPair(
+        vendor=vendor,
+        section=section if facts_of(vendor).section is not None else None,
+        candidates=tuple(
+            by_id[s.ref].model_copy(
+                update={
+                    "score": s.score,
+                    "evidence": s.evidence,
+                    "contradicts": s.contradicts,
+                    "strong": s.strong,
+                }
+            )
+            for s in ranked
+        ),
+        code_pick=code_pick,
+        asked=asked,
+        answer=None if answer is None else answer.matches,
+        chosen=chosen,
+        why=why,
+    )
+
+
+def _ranked_across(
+    vendor: Drawing,
+    pool: Sequence[AcrossCandidate],
+    facts_of: Callable[[Drawing], pairing_module.Facts],
+    typed: frozenset[str],
+) -> tuple[tuple[pairing_module.Scored, ...], str | None]:
+    """Code's ranking of the architect items for a vendor drawing (`pairing.rank`) and its own
+    clear pick (`pairing.clear_winner`, or `pairing.decide`): the slow part of `_pair_across`."""
     mine = facts_of(vendor)
     built = {c.id: _item_facts(c, facts_of, _section_of(c, facts_of)) for c in pool}
     spans = mine.spans
@@ -1172,36 +1238,7 @@ def _pair_across(
             owner = next(c.id for c in pool if any(d.ref == legacy.chosen for d in c.drawings))
             if by_rank[owner].contradicts is None:
                 code_pick = owner
-    asked = tuple(s.ref for s in ranked if s.contradicts is None)
-    answer = None
-    if saved is not None and tuple(sorted(saved[0])) == tuple(sorted(asked)):
-        answer = saved[1]
-    if not asked:
-        chosen: tuple[str, ...] = ()
-        why = f"{pairing_module.UNPAIRED}: every architect item is ruled out by code ({ranked[0].contradicts})"
-    else:
-        chosen, why = pairing_module.agree(ranked, code_pick, answer)
-    by_id = {c.id: c for c in pool}
-    return AcrossPair(
-        vendor=vendor,
-        section=section if mine.section is not None else None,
-        candidates=tuple(
-            by_id[s.ref].model_copy(
-                update={
-                    "score": s.score,
-                    "evidence": s.evidence,
-                    "contradicts": s.contradicts,
-                    "strong": s.strong,
-                }
-            )
-            for s in ranked
-        ),
-        code_pick=code_pick,
-        asked=asked,
-        answer=None if answer is None else answer.matches,
-        chosen=chosen,
-        why=why,
-    )
+    return ranked, code_pick
 
 
 def _section_of(
