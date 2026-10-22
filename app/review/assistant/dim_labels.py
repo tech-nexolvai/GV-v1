@@ -1928,22 +1928,19 @@ def drawn_labels(
 
 #: The engines' pool for `read_number` at pack time (Tesseract runs in its own process).
 SWEEP_WORKERS: Final = 4
-_INCH_SIGNS: Final = "\"”″“'’"
 
 
-def _looks_like_number(text: str, glyphs: int) -> bool:
-    """Whether one engine's quick reading of a group of ink looks like a printed dimension (the
-    2026-10-22 study's probe): digits and no word, and an inch mark, a fraction or two digits that
-    are not all `1`s and `7`s (a tick or a stroke read as a digit)."""
-    digits = [ch for ch in text if ch.isdigit()]
-    letters = sum(ch.isalpha() for ch in text)
-    if not digits or letters >= 2:
-        return False
-    if any(ch in _INCH_SIGNS for ch in text) and not set(digits) <= {"1"}:
+def _number_shaped(label: ink_labels.Label) -> bool:
+    """Whether a group of ink is shaped like a printed dimension by its vectors alone (no
+    engine): a row ending in an inch mark (`_mark_layouts`, `_marked_turns`) or a stacked
+    fraction. A word, a tag or a symbol is neither (millimetres over inches have their
+    cross-check; a bare number with no mark is left out)."""
+    if _mark_layouts(label) or _marked_turns(label):
         return True
-    if re.search(r"\d\s*/\s*\d", text) and len(digits) >= 3:
-        return True
-    return len(digits) >= 2 and not set(digits) <= {"1", "7"} and glyphs >= 2
+    for turn in ink_labels.turns(label):
+        if any(t.kind == "fraction" for row in ink_labels.rows(label, turn) for t in row):
+            return True
+    return False
 
 
 @dataclass(slots=True)
@@ -1974,8 +1971,7 @@ def _sweep(
     clock: Callable[[], float],
 ) -> tuple[list[dict[str, Any]], list[SweepHeld], dict[str, Any]]:
     """`read_number` on every vendor group of ink the drawn route and the OCR route left
-    unlabelled that one engine's quick reading says looks like a dimension
-    (`_looks_like_number`), within `budget_s` seconds, `SWEEP_WORKERS` at a time. Its rule
+    unlabelled that its vectors shape like a dimension (`_number_shaped`), within `budget_s` seconds, `SWEEP_WORKERS` at a time. Its rule
     stands: two families agreeing, or one reader the ruler seconds; the ruler blocks a reading
     its line disagrees with. A reading is a label after every other one (`origin: "ocr"`, no
     dimension line, `read_by` its routes). A spot only the OCR pair read is held for the vendor's
@@ -1988,26 +1984,24 @@ def _sweep(
     engines = list(drawn_readers() if readers is None else readers)
     if len({str(e.name) for e in engines}) < 2:
         return [], [], {"status": "no_engine", "spots": 0, "read": 0}
-    probe = engines[0]
     taken = [tuple(label["box"]) for label in labels]
+    lines = _line_ends(parsed.segments)
     spots: list[ink_labels.Label] = []
-    for piece in sorted(missed, key=lambda p: (-len(p.glyphs), p.box[1], p.box[0])):
-        if _side(piece.box, halves) != "vendor":
+    looked: list[Box] = []
+    for raw in sorted(missed, key=lambda p: (-len(p.glyphs), p.box[1], p.box[0])):
+        if _side(raw.box, halves) != "vendor":
             continue
-        if any(_overlap(piece.box, other) > 0.3 for other in [*taken, *(s.box for s in spots)]):
+        if any(_overlap(raw.box, other) > 0.3 for other in [*taken, *looked]):
+            continue
+        looked.append(raw.box)
+        # A number's size and at least two glyphs (a value and its mark), line work left out.
+        piece = _without_line_work(raw, lines)
+        if piece is None or ocr_labels.spot_of(piece) is None:
             continue
         if clock() - started > budget_s:
             break
-        texts: list[str] = []
-        for turn in _marked_turns(piece) or ink_labels.turns(piece):
-            parts = []
-            for row in ink_labels.rows(piece, turn):
-                picture = ink_labels.row_picture(row, turn, ink_labels.HEIGHTS_PX[0])
-                if picture is not None:
-                    parts.append(" ".join(probe(picture, single_line=True)))
-            texts.append(" ".join(parts))
-        if any(_looks_like_number(text, len(piece.glyphs)) for text in texts):
-            spots.append(piece)
+        if _number_shaped(piece):
+            spots.append(raw)
     read_number.seed_page(pdf, page, parsed)
     scales, _checks = view_scales.page_scales(page, labels)
     file = Path(pdf).name

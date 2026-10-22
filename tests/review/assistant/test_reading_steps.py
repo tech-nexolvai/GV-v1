@@ -248,25 +248,6 @@ def test_a_character_drawn_in_two_pieces_counts_once() -> None:
 # ---- read_number at pack time --------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("text", "glyphs", "number"),
-    [
-        ('23"', 4, True),
-        ("1 3/8", 4, True),
-        ("203", 3, True),
-        ("WD-02", 5, False),
-        ("11", 2, False),
-        ('1"', 3, False),
-        ("TYP 23", 6, False),
-        ("", 3, False),
-    ],
-)
-def test_the_quick_look_keeps_what_looks_like_a_number(
-    text: str, glyphs: int, number: bool
-) -> None:
-    assert dl._looks_like_number(text, glyphs) is number
-
-
 def test_an_ocr_only_reading_is_seconded_only_by_a_matching_alphabet() -> None:
     alphabet = _taught('18"', '32"', '64"')
     ink = _label('23"')
