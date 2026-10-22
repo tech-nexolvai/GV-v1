@@ -65,6 +65,13 @@ answer carries a `resume` block: Continue keeps the findings and compared pages,
 on the pages left (`carried_done`, `remaining_plan`), and is priced for those pages plus what the
 finishing steps need.
 
+**Pages with no architect drawing (#1885).** With a separate architect's file, a vendor page the
+cross-file pairing leaves unpaired is "Not compared with the architect: no architect drawing found
+for it (why)" as soon as the pairs are final: no gap closer, lead review, look-again or Continue
+is sent to compare it with an architect (only a changed pairing, a reviewer's hand pair or a new
+matcher answer, opens it again). Its helpers still do the checks that need no architect (the
+vendor's own strings). When more than half the vendor pages are unpaired, the summary says so first.
+
 Most of the work is the engine's own (helpers, second reads, the finish); this module plans the
 phases, briefs the new specialists and applies their structured replies. Source: the prompts and
 specialists design (local), decision D1 (vault, 2026-10-18).
@@ -1119,10 +1126,41 @@ def carried_done(coverage: Mapping[str, Any] | None) -> frozenset[int]:
         if entry.get("by") != CARRIED_BY or entry.get("status") not in _DONE_STATUSES:
             continue
         note = " ".join(str(entry.get("note") or "").split())
+        if unpaired_note(note):
+            # #1885: handled (no architect drawing to compare with; its own checks are done).
+            # The run opens it again only when it is paired now (`reopened`).
+            done.add(int(entry["page"]))
+            continue
         if _unreached(note) or note.lower().startswith("not compared"):
             continue
         done.add(int(entry["page"]))
     return frozenset(done)
+
+
+def unpaired_note(note: str) -> bool:
+    """Whether a coverage note is the final "no architect drawing found" one (#1885)."""
+    from app.review.assistant.full_check_plan import UNPAIRED_NOTE
+
+    return note.startswith(UNPAIRED_NOTE.split("{", 1)[0].strip())
+
+
+def reopened(
+    coverage: Mapping[str, Any] | None, across: Any, waiting: Collection[int] = ()
+) -> frozenset[int]:
+    """The pages an earlier answer left "no architect drawing found" (#1885) that are no longer
+    decided unpaired (paired now, by the matcher or a reviewer's hand pair, or still waiting for
+    an answer): a Continue compares them again."""
+    out: set[int] = set()
+    unpaired = getattr(across, "unpaired", None) or {}
+    for entry in (coverage or {}).get("pages") or []:
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("page"), int):
+            continue
+        if not unpaired_note(" ".join(str(entry.get("note") or "").split())):
+            continue
+        page = int(entry["page"])
+        if page not in unpaired or page in waiting:
+            out.add(page)
+    return frozenset(out)
 
 
 def _say_usual_time(engine: ChatEngine, pages: int, matched: int) -> None:
@@ -1190,6 +1228,11 @@ CONTINUE_WORDS: Final = (
 )
 
 
+def _page_list(pages: Sequence[int], most: int = 8) -> str:
+    """`p3, p5, p6 …`: at most `most` pages named."""
+    return ", ".join(f"p{page}" for page in pages[:most]) + (" …" if len(pages) > most else "")
+
+
 def _count(number: int, one: str, many: str) -> str:
     return f"{number} {one if number == 1 else many}"
 
@@ -1218,6 +1261,17 @@ class _Run:
     #: The planned pages with no vendor drawing (`full_check_plan.no_vendor_pages`, #1837): never
     #: a page left, never sent on again; said "no vendor drawing to compare" at the finish.
     no_vendor: frozenset[int] = frozenset()
+    #: The vendor pages the check compares (no title, divider or architect-only page), the whole
+    #: plan's, a Continue's carried pages too: what "Only N of M vendor pages" counts (#1885).
+    vendor_pages: frozenset[int] = frozenset()
+    #: The pages decided unpaired across the uploads (#1885, `CrossPairs.unpaired`), with why:
+    #: "Not compared with the architect" from the start, final. No gap closer, lead review,
+    #: look-again or Continue tries to compare them with an architect; the helpers still do the
+    #: checks that need no architect there (the vendor's own strings).
+    unpaired: dict[int, str] = field(default_factory=dict)
+    #: Unpaired pages the page matcher had no answer for (a failed call, the money, a stop): not
+    #: compared this time either, but Continue asks the matcher again.
+    retry: dict[int, str] = field(default_factory=dict)
     pairs: dict[str, str] = field(default_factory=dict)
     #: The drawn run's drawings and line work (`same_ends`), read once per run.
     _drawn_sides: dict[Any, Any] = field(default_factory=dict)
@@ -1477,21 +1531,36 @@ class _Run:
         left = self._pages_left()
         if not left:
             return None
-        pages = ", ".join(f"p{page}" for page in left[:8]) + (" …" if len(left) > 8 else "")
-        return (
-            f"{len(left)} vendor {'page was' if len(left) == 1 else 'pages were'} not compared "
-            f"({pages})"
-        )
+        lone = self._not_pairable()
+        alone = [page for page in left if page in lone]
+        others = [page for page in left if page not in lone]
+        parts: list[str] = []
+        if alone:
+            # #1885: said apart; no more looks would compare them (no architect drawing).
+            parts.append(
+                f"{len(alone)} vendor {'page has' if len(alone) == 1 else 'pages have'} no "
+                f"architect drawing to compare with ({_page_list(alone)})"
+            )
+        if others:
+            parts.append(
+                f"{len(others)} vendor {'page was' if len(others) == 1 else 'pages were'} not "
+                f"compared ({_page_list(others)})"
+            )
+        return "; ".join(parts)
 
-    def _pages_left(self) -> list[int]:
+    def _pages_left(self, *, for_continue: bool = False) -> list[int]:
         """The vendor pages not compared (`_not_for_sending`'s pages): code's own skipped pages
         (dividers, products out of scope) do not count; a page still "same"/"different" whose
-        note says it was not reached or only partly compared does (#1654's pattern)."""
+        note says it was not reached or only partly compared does (#1654's pattern).
+        `for_continue`: the pages a Continue would compare, so not those no architect drawing
+        was paired with (#1885: it would only find them unpaired again)."""
         plan = getattr(self.engine, "_plan", None)
         if plan is None or not self.engine.book.coverage_used:
             return []
         # A page with no vendor drawing has nothing to compare (#1837): never a page left.
         skipped = {int(page) for page, _why in getattr(plan, "skipped", ())} | set(self.no_vendor)
+        if for_continue:
+            skipped |= set(self.unpaired)
         coverage = self.engine.book.coverage_map()
         planned = [int(e["page"]) for e in coverage["pages"] if int(e["page"]) not in skipped]
         unfinished = set(unfinished_pages(planned, coverage))
@@ -1526,11 +1595,108 @@ class _Run:
             engine.book.set_coverage({"pages": pages}, "code")
             engine._show_coverage()
 
+    def _not_pairable(self) -> frozenset[int]:
+        """The pages no architect drawing is paired with this time (#1885): never sent to a gap
+        closer, the lead review or a look-again to compare with an architect."""
+        return frozenset((*self.unpaired, *self.retry))
+
+    def _settle_unpaired(self, matching: Any) -> None:
+        """The pages the final cross-file pairs leave unpaired (#1885), each said on its
+        coverage ("Not compared with the architect: no architect drawing found for it (why)")
+        and listed in the Not-compared list with what would settle it. A page whose drawing the
+        page matcher had no answer for is not final: Continue asks again."""
+        from app.review.assistant.full_check_plan import UNPAIRED_NEEDS, unpaired_words
+
+        engine = self.engine
+        across = engine._cross
+        if across is None or not across.unpaired:
+            return
+        unanswered = getattr(matching, "unanswered_pages", None)
+        again = unanswered() if callable(unanswered) else frozenset()
+        for page, why in across.unpaired.items():
+            if page not in self.vendor_pages:
+                continue
+            (self.retry if page in again else self.unpaired)[page] = why
+        if not self.unpaired and not self.retry:
+            return
+        _log.warning(
+            "assistant roster: %d of %d vendor pages have no architect drawing paired across "
+            "the uploads (%d to ask again)",
+            len(self.unpaired) + len(self.retry),
+            len(self.vendor_pages),
+            len(self.retry),
+        )
+        for page in sorted(self._not_pairable()):
+            plain = unpaired_words(self.unpaired.get(page) or self.retry.get(page) or "")
+            engine.extra_gaps.append(
+                {
+                    "page": page,
+                    "what": (
+                        f"Vendor page {page}: not compared with the architect, no architect "
+                        f"drawing found for it ({plain})"
+                    ),
+                    "why": "pairing_uncertain",
+                    "needs": (
+                        UNPAIRED_NEEDS
+                        if page in self.unpaired
+                        else "the check continued, so the pages are paired again"
+                    ),
+                    "scope": "set",
+                    "item": f"Page {page}: not compared with the architect",
+                    "category": "other",
+                }
+            )
+        self._class_unpaired()
+
+    def _class_unpaired(self) -> None:
+        """Each unpaired page's coverage says so (#1885), whatever a helper set there: the
+        vendor's own checks on it are its findings, never a comparison with the architect."""
+        from app.review.assistant.full_check_plan import (
+            UNPAIRED_NOTE,
+            UNPAIRED_RETRY_NOTE,
+            unpaired_words,
+        )
+
+        engine = self.engine
+        pages = [
+            {
+                "page": page,
+                "status": "not_comparable",
+                "note": UNPAIRED_NOTE.format(why=unpaired_words(why)),
+            }
+            for page, why in sorted(self.unpaired.items())
+        ] + [
+            {
+                "page": page,
+                "status": "not_comparable",
+                "note": UNPAIRED_RETRY_NOTE.format(why=unpaired_words(why)),
+            }
+            for page, why in sorted(self.retry.items())
+        ]
+        if pages:
+            engine.book.set_coverage({"pages": pages}, "code")
+            engine._show_coverage()
+
+    def _unpaired_line(self) -> str | None:
+        """The summary's first line when most vendor pages have no architect drawing paired with
+        them (#1885, `mostly_unpaired`), else `None`."""
+        from app.review.assistant.full_check_plan import mostly_unpaired
+
+        total = len(self.vendor_pages)
+        alone = len(self._not_pairable() & self.vendor_pages)
+        if not mostly_unpaired(alone, total):
+            return None
+        return (
+            f"Only {total - alone} of {total} vendor pages have an architect drawing in this "
+            "upload; add the architect's drawings of these items, or check that the "
+            "architect's file is for the same project."
+        )
+
     def _unfinished(self, stopped: str | None) -> tuple[list[int], list[dict[str, Any]], str]:
         """What this check did not finish (#1821): the vendor pages not compared, the red
         candidates that never got their proof steps (only when it stopped or ran out of money:
         a check that ran to its end gave each its one look), and why, in plain words."""
-        pages = self._pages_left()
+        pages = self._pages_left(for_continue=True)
         short = (
             stopped == "cost_cap"
             or self.stopped_for_money
@@ -1556,10 +1722,13 @@ class _Run:
         live = engine.book.live()
         findings = [f for f in live if not f.get("record_id")]
         coverage = engine.book.coverage_map() if engine.book.coverage_used else {"pages": []}
+        alone = self._not_pairable()
         done = [
             int(e["page"])
             for e in coverage["pages"]
-            if e.get("status") in _DONE_STATUSES and int(e["page"]) not in set(pages)
+            if e.get("status") in _DONE_STATUSES
+            and int(e["page"]) not in set(pages)
+            and int(e["page"]) not in alone  # no architect drawing: not "compared" (#1885)
         ]
         words = CONTINUE_WORDS.format(
             findings=_count(len(findings), "finding", "findings"),
@@ -1661,11 +1830,14 @@ class _Run:
         if engine.cancel.is_set():
             engine.finish_page_matching(matching)  # its calls in flight end before the answer
             return self._finish("cancelled")
-        carried = (
-            carried_done(engine.book.coverage_map() if engine.book.coverage_used else None)
-            if engine.continuing
-            else frozenset()
-        )
+        coverage_before = engine.book.coverage_map() if engine.book.coverage_used else None
+        carried = carried_done(coverage_before) if engine.continuing else frozenset()
+        if carried:
+            # #1885: a page left with no architect drawing is compared again only when the
+            # pairing changed (a reviewer's hand pair, a matcher answer); else it stays as it is.
+            waiting = matching.waiting() if matching is not None else frozenset()
+            carried = carried - reopened(coverage_before, engine._cross, waiting)
+        whole_plan = frozenset(page for job in plan.jobs for page in job.pages)
         if carried:
             # Continue (#1821): the pages the earlier answer compared are never opened again.
             plan = remaining_plan(plan, carried)
@@ -1676,6 +1848,7 @@ class _Run:
         engine._plan = plan
         _say_usual_time(engine, plan.pages, 0 if matching is None else matching.total)
         self.no_vendor = no_vendor_pages(page_map, engine.book.main_file)
+        self.vendor_pages = whole_plan - self.no_vendor
         # A vendor round after the first: the cheap picks' money is kept from the start (#1861).
         self.later_rounds = _later_rounds(page_map)
         # The page groups: the drawn-things helpers' (the plan's own), never the numbers'.
@@ -1775,6 +1948,12 @@ class _Run:
             finally:
                 # Every answer in: the gap closers and the finishing steps read the final pairs.
                 engine.finish_page_matching(matching)
+            # The pages no architect drawing was paired with: Not compared with the architect,
+            # said from now on, never sent on to compare again (#1885).
+            try:
+                self._settle_unpaired(matching)
+            except Exception:  # noqa: BLE001 - the pages stay as their helpers left them
+                _log.exception("assistant roster could not settle the unpaired pages")
             tag_reports: list[tuple[Any, str]] = []
             for agent, entry in zip(agents, entries, strict=True):
                 if agent.lens == "tags":
@@ -2181,20 +2360,28 @@ class _Run:
         engine = self.engine
         assert self.plan is not None
         numbers = {agent.number for agent in self.agents if agent.lens not in ("drawn", "tags")}
+        # A page no architect drawing is paired with is never sent on to compare (#1885).
+        alone = self._not_pairable()
         with engine._lock:
-            any_open = {page for gaps in engine._checklist_gaps.values() for page in gaps}
+            any_open = {page for gaps in engine._checklist_gaps.values() for page in gaps} - alone
             open_gaps = {
                 page: why
                 for number, gaps in engine._checklist_gaps.items()
                 if number in numbers
                 for page, why in gaps.items()
+                if page not in alone
             }
         unboxed = [
-            f for f in engine.book.live() if f.get("created_by") == "gv_review" and code_spotted(f)
+            f
+            for f in engine.book.live()
+            if f.get("created_by") == "gv_review"
+            and code_spotted(f)
+            and int(f.get("page") or 0) not in alone
         ]
         pages: dict[int, list[str]] = {}
         planned = sorted(
             {page for job in (engine._plan.jobs if engine._plan else ()) for page in job.pages}
+            - alone
         )
         coverage = engine.book.coverage_map() if engine.book.coverage_used else None
         for page, why in unfinished_pages(planned, coverage).items():
@@ -2353,6 +2540,7 @@ class _Run:
         planned = sorted(
             {page for job in (engine._plan.jobs if engine._plan else ()) for page in job.pages}
             - set(self.no_vendor)  # nothing to compare there (#1837): never sent on again
+            - self._not_pairable()  # no architect drawing paired with it (#1885): the same
         )
         coverage = engine.book.coverage_map() if engine.book.coverage_used else None
         with engine._lock:
@@ -2901,9 +3089,11 @@ class _Run:
             key=lambda page: (-self._architect_weight(page, page_map), page),
         )
         order: list[int] = []
+        # A page no architect drawing is paired with is not the lead's to compare (#1885).
+        alone = self._not_pairable()
 
         def take(page: int) -> None:
-            if page not in order and (not planned or page in planned):
+            if page not in order and page not in alone and (not planned or page in planned):
                 order.append(page)
 
         for finding in unplaced:
@@ -4170,6 +4360,7 @@ class _Run:
             files=files,
             # The Not-compared list's own rows (its product scope), when its files were made.
             reasons=[row.reason for row in engine.not_compared] or None,
+            compared_pages=self._compared_pages(),
         )
         # Code's summary is the roster's own, not a fallback: its "AI did not finish" note goes.
         text = "\n".join(
@@ -4189,6 +4380,10 @@ class _Run:
         if unsendable and reworded and _SAYS_SEND.search(reworded):
             reworded = None  # the wording never turns it back into "send it"
         lines = [reworded or text]
+        unpaired = self._unpaired_line()
+        if unpaired is not None:
+            # #1885: most pages could not be compared with the architect at all; said first.
+            lines.insert(0, unpaired)
         if unsendable:
             lines.append(f"**Check incomplete: {unsendable}. Not for sending until it is.**")
         # The price for the content pages in scope (`PriceRule`, #1823), else the message's cap.
@@ -4216,6 +4411,18 @@ class _Run:
                 "is done."
             )
         return "\n\n".join(lines)
+
+    def _compared_pages(self) -> list[int] | None:
+        """The pages the coverage counts as compared (same or different), for the summary's
+        first line (#1885); `None` when no coverage was recorded."""
+        book = self.engine.book
+        if not book.coverage_used:
+            return None
+        return [
+            int(e["page"])
+            for e in book.coverage_map()["pages"]
+            if e.get("status") in ("same", "different")
+        ]
 
     def _reword(self, text: str) -> str | None:
         """Haiku's plain-English wording of code's summary, kept only when it states exactly the
@@ -4278,6 +4485,10 @@ class _Run:
             self._class_no_vendor()
         except Exception:  # noqa: BLE001 - the pages keep their helpers' coverage
             _log.exception("assistant roster could not class the pages with no vendor drawing")
+        try:
+            self._class_unpaired()
+        except Exception:  # noqa: BLE001 - the pages keep their helpers' coverage
+            _log.exception("assistant roster could not class the pages with no architect pair")
         if engine.incomplete_note is None:
             try:
                 engine.incomplete_note = self._not_for_sending()
