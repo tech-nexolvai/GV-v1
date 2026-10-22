@@ -6138,6 +6138,28 @@
             "title": "Agreed",
             "type": "integer"
           },
+          "architect_numbers_printed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architect Numbers Printed"
+          },
+          "architect_numbers_read": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architect Numbers Read"
+          },
           "drawings": {
             "default": 0,
             "description": "Vendor drawings compared (answered).",
@@ -6188,6 +6210,29 @@
             "description": "Vendor labels the AI left unaccounted or never named.",
             "title": "Unaccounted",
             "type": "integer"
+          },
+          "vendor_numbers_printed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor Numbers Printed"
+          },
+          "vendor_numbers_read": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Reading coverage (#1862): printed numbers code read on the vendor's drawings; null when the set pack has no coverage.",
+            "title": "Vendor Numbers Read"
           },
           "verified_different": {
             "default": 0,
@@ -8327,6 +8372,206 @@
         "title": "ChatProgressOut",
         "type": "object"
       },
+      "ChatReadingGroupOut": {
+        "description": "A page's unread numbers that share one reason.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "spots": {
+            "items": {
+              "$ref": "#/components/schemas/ChatReadingSpotOut"
+            },
+            "title": "Spots",
+            "type": "array"
+          },
+          "words": {
+            "description": "The reason in plain words.",
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "words",
+          "count",
+          "spots"
+        ],
+        "title": "ChatReadingGroupOut",
+        "type": "object"
+      },
+      "ChatReadingOut": {
+        "description": "The reading coverage (#1862): how many of the numbers printed on the drawings code read,\nand where the rest are. Counted by code when the set pack is made; never a verdict's input.",
+        "properties": {
+          "architect": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatReadingSideOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lines": {
+            "description": "Plain sentences: one per side, the main reasons.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatReadingPageOut"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "pages_not_counted": {
+            "default": 0,
+            "title": "Pages Not Counted",
+            "type": "integer"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatReadingSideOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "title": "ChatReadingOut",
+        "type": "object"
+      },
+      "ChatReadingPageOut": {
+        "properties": {
+          "architect_printed": {
+            "default": 0,
+            "title": "Architect Printed",
+            "type": "integer"
+          },
+          "architect_read": {
+            "default": 0,
+            "title": "Architect Read",
+            "type": "integer"
+          },
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "not_read": {
+            "items": {
+              "$ref": "#/components/schemas/ChatReadingGroupOut"
+            },
+            "title": "Not Read",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "strokes_counted": {
+            "description": "False: the drawn reader did not reach the page; its pen strokes are uncounted.",
+            "title": "Strokes Counted",
+            "type": "boolean"
+          },
+          "vendor_printed": {
+            "default": 0,
+            "title": "Vendor Printed",
+            "type": "integer"
+          },
+          "vendor_read": {
+            "default": 0,
+            "title": "Vendor Read",
+            "type": "integer"
+          },
+          "viewable": {
+            "default": false,
+            "description": "The page picture can show it (the set's first file).",
+            "title": "Viewable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "page",
+          "strokes_counted"
+        ],
+        "title": "ChatReadingPageOut",
+        "type": "object"
+      },
+      "ChatReadingSideOut": {
+        "description": "How many printed numbers code read on one side's drawings (#1862).",
+        "properties": {
+          "percent": {
+            "title": "Percent",
+            "type": "integer"
+          },
+          "printed": {
+            "description": "About how many are printed (counted by code).",
+            "title": "Printed",
+            "type": "integer"
+          },
+          "read": {
+            "title": "Read",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "read",
+          "printed",
+          "percent"
+        ],
+        "title": "ChatReadingSideOut",
+        "type": "object"
+      },
+      "ChatReadingSpotOut": {
+        "properties": {
+          "box": {
+            "description": "PDF points of the page as shown: x0, y0, x1, y1.",
+            "items": {
+              "type": "number"
+            },
+            "title": "Box",
+            "type": "array"
+          },
+          "kind": {
+            "description": "typed | strokes | pictures",
+            "title": "Kind",
+            "type": "string"
+          },
+          "side": {
+            "description": "vendor | architect | brand",
+            "title": "Side",
+            "type": "string"
+          }
+        },
+        "required": [
+          "side",
+          "box",
+          "kind"
+        ],
+        "title": "ChatReadingSpotOut",
+        "type": "object"
+      },
       "ChatRecordedDifferenceOut": {
         "properties": {
           "id": {
@@ -9958,6 +10203,17 @@
               }
             ],
             "description": "The products checked and how many findings of other products code dropped (for the record, not shown); null on older answers."
+          },
+          "reading": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatReadingOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A full check's reading coverage (#1862): numbers read of those printed; null on other answers, older answers and set packs made before it was counted."
           },
           "recorded_results": {
             "anyOf": [
