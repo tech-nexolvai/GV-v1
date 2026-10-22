@@ -2862,9 +2862,8 @@ class ChatEngine:
             ]
         self._ledger_trust(report)
         self._diff_rounds(report)
-        reading = self._reading_report()
-        if reading is not None:
-            report["reading"] = reading
+        # Always present (null when not counted), so the live event and the stored block agree.
+        report["reading"] = self._reading_report()
         index = self._add_block({"type": "trust", "trust": report})
         self._trust_index = index
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(report))})
