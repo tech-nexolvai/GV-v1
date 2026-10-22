@@ -157,7 +157,7 @@ def test_the_strong_mark_is_codes_never_the_models(monkeypatch: pytest.MonkeyPat
     asked: list[tuple[str, str]] = []
 
     def held(self: Any, finding: Any, vendor: Any, architect: Any, page_map: Any, model: Any,
-             effort: str = "medium") -> dict[str, Any]:  # fmt: skip
+             effort: str = "medium", kind: str = "advocate") -> dict[str, Any]:  # fmt: skip
         asked.append((model.id, effort))
         return {**_AGREE, STRONG_PICK: True}  # the model claims to be the strong pick
 

@@ -77,7 +77,7 @@ import json
 import logging
 import re
 import threading
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -1350,8 +1350,9 @@ class _Run:
         if self.round_unpaid is None:
             return min(cap, int(self.plan.price * ROUND_PICK_SHARE)) if self.later_rounds else 0
         worst = (
-            self.engine._price(BY_SHORT[round_picks.CHEAP_MODEL], _ADVOCATE_PROMPT_TOKENS,
-                               _ADVOCATE_MAX_TOKENS)
+            self.engine._price(
+                BY_SHORT[round_picks.CHEAP_MODEL], _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS
+            )
             or 0
         )
         unpaid = self.round_unpaid
@@ -1832,25 +1833,45 @@ class _Run:
         self.round_unpaid = len(unpaid)
         self._refresh_needs(ROUND_PHASE)
 
-        def ask(question: round_picks.Question) -> dict[str, Any] | None:
-            if engine.cancel.is_set():
-                return None
-            finding = by_id.get(question.findings[0]) or {"item": question.item}
-            return self._blind_pick(
-                finding, question.vendor, question.architect, page_map, kind=round_picks.CHEAP_LINK
-            )
+        ordered = [*kept, *unpaid]
+        turn = threading.Condition()
+        next_up = [0]
+
+        def ask(index: int) -> dict[str, Any] | None:
+            # Each pick holds its money in this order (kept picks first, $0; then the biggest
+            # items first), so what the cap does not reach is always the smallest.
+            def done() -> None:
+                with turn:
+                    next_up[0] = max(next_up[0], index + 1)
+                    turn.notify_all()
+
+            with turn:
+                turn.wait_for(lambda: next_up[0] >= index)
+            try:
+                if engine.cancel.is_set():
+                    return None
+                question = ordered[index]
+                finding = by_id.get(question.findings[0]) or {"item": question.item}
+                return self._blind_pick(
+                    finding,
+                    question.vendor,
+                    question.architect,
+                    page_map,
+                    kind=round_picks.CHEAP_LINK,
+                    on_hold=done,
+                )
+            finally:
+                done()
 
         self.pick_phase = ROUND_PHASE
         try:
-            # Kept picks first ($0), then the biggest items first: the workers take the questions
-            # in this order, so what the cap does not reach is the smallest.
             with ThreadPoolExecutor(max_workers=_ADVOCATE_WORKERS) as pool:
-                answers = list(pool.map(ask, [*kept, *unpaid]))
+                answers = list(pool.map(ask, range(len(ordered))))
         finally:
             self.pick_phase = "advocate"
         annotations = _annotations(engine)
         outcomes: dict[str, int] = {}
-        for question, answer in zip([*kept, *unpaid], answers, strict=True):
+        for question, answer in zip(ordered, answers, strict=True):
             said = self._round_said(question, answer)
             outcome = self._apply_round_pick(question, answer, said, ctx, page_map, annotations)
             outcomes[outcome] = outcomes.get(outcome, 0) + 1
@@ -1869,7 +1890,9 @@ class _Run:
             )
         _log.warning("assistant roster round picks: %s", self.round_block)
 
-    def _round_kept(self, question: round_picks.Question, page_map: Mapping[str, Any] | None) -> bool:
+    def _round_kept(
+        self, question: round_picks.Question, page_map: Mapping[str, Any] | None
+    ) -> bool:
         """The question's pick is already decided on the same drawings (this run, or kept in the
         set pack from an earlier run): it costs nothing."""
         key = self._pick_key(
@@ -3640,12 +3663,14 @@ class _Run:
         *,
         strong: bool = False,
         kind: str = "advocate",
+        on_hold: Callable[[], None] | None = None,
     ) -> dict[str, Any] | None:
         """One blind call: the vendor's drawing with its label marked, the architect's whole
         drawing with every label numbered; `None` when the price leaves no room. `strong`: the
         stronger model at high effort (code's geometry cannot tell, #1819). `kind`: `advocate`, or
         `round_pick` for a cheap pick on a round-only leftover (#1861: its own prompt id, the
-        same question and kept picks).
+        same question and kept picks). `on_hold`: called once the pick's money is held (or
+        refused), so the caller can let the next pick in its order try (#1861).
 
         #1829: a pick already decided on the same vendor label and architect crop (this run's,
         or one kept in the set pack, `pick_cache`) is reused at $0, so the same drawings get the
@@ -3660,7 +3685,7 @@ class _Run:
         key = self._pick_key(vendor, architect, page_map, model.id, effort, kind)
         if key is None:
             return self._asked_pick(
-                finding, vendor, architect, page_map, model, effort, strong, kind
+                finding, vendor, architect, page_map, model, effort, strong, kind, on_hold
             )
         with self.held_lock:
             lock = self.pick_locks.setdefault(key, threading.Lock())
@@ -3673,7 +3698,7 @@ class _Run:
                 # Code's own marks, never the model's.
                 return {**kept, STRONG_PICK: strong, pick_cache.CACHED: True}
             answer = self._asked_pick(
-                finding, vendor, architect, page_map, model, effort, strong, kind
+                finding, vendor, architect, page_map, model, effort, strong, kind, on_hold
             )
             if pick_cache.decided(answer):
                 assert answer is not None
@@ -3691,6 +3716,7 @@ class _Run:
         effort: str,
         strong: bool,
         kind: str = "advocate",
+        on_hold: Callable[[], None] | None = None,
     ) -> dict[str, Any] | None:
         """The pick asked of the model, its worst case held while it runs (`_blind_pick`)."""
         estimate = self.engine._price(model, _ADVOCATE_PROMPT_TOKENS, _ADVOCATE_MAX_TOKENS) or 0
@@ -3698,9 +3724,13 @@ class _Run:
         with self.held_lock:
             while not self._phase_room(self.pick_phase, self.held + estimate):
                 if self.held <= 0 or (cancel is not None and cancel.is_set()):
+                    if on_hold is not None:
+                        on_hold()
                     return None  # nothing running frees money: the price is really used up
                 self.held_lock.wait(timeout=_PICK_WAIT_S)
             self.held += estimate
+        if on_hold is not None:
+            on_hold()
         try:
             answer = self._held_pick(finding, vendor, architect, page_map, model, effort, kind)
             if answer is not None:
@@ -3777,7 +3807,11 @@ class _Run:
             }
             if not marks:
                 item["guides"] = [str(label["id"])]
-            raw: dict[str, Any] = {"crops": [item], "marks": marks, "description": "Devil's advocate"}
+            raw: dict[str, Any] = {
+                "crops": [item],
+                "marks": marks,
+                "description": "Devil's advocate",
+            }
             if kind == round_picks.CHEAP_LINK:
                 # The cheap pick's smaller pictures (#1861): the labels are listed as text too.
                 raw["dpi"] = round_picks.crop_dpi((x0, y0, x1, y1))
