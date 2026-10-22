@@ -228,6 +228,9 @@ class PageLabels:
     unconfirmed}`; `None` when the picture route did not run on the page. `unconfirmed` lists the
     numbers read in a picture that two engines did not confirm (`{text, box, orientation, side,
     why}`): never labels, never a red."""
+    ocr_labels: list[dict[str, Any]] = field(default_factory=list)
+    """The OCR route's labels when read with the drawn pass (`drawn_labels`), not yet numbered:
+    the pack adds them after every other label of the page (#1848)."""
     ocr: dict[str, Any] | None = None
     """The OCR route's spots (#1848): `{status, spots, seconds, unconfirmed}`; `None` when it did
     not run on the page. `unconfirmed` lists what one engine read, or the two read differently:
@@ -1832,10 +1835,15 @@ def drawn_labels(
     budget_s: float,
     readers: Sequence[Any] | None = None,
     clock: Callable[[], float] = monotonic,
+    ocr_budget_s: float = 0.0,
+    phrases: Sequence[Mapping[str, Any]] = (),
 ) -> PageLabels:
     """Page `page`'s text labels (as `page_labels` gave them) and its picture labels (#1830)
     with its drawn labels added after them, read within `budget_s` seconds: the pack's last
-    reading pass, after every page's text and pictures."""
+    reading pass, after every page's text and pictures. With `ocr_budget_s` (#1848), the groups
+    of ink the drawn route left unlabelled are then read by the OCR route on the same reading of
+    the page (`_add_ocr`, at most that many seconds): its labels are kept apart in `ocr_labels`
+    (no id), for the pack to number after every other label, and `ocr` says what it did."""
     started = clock()
     result = PageLabels(
         labels=[
@@ -1845,8 +1853,20 @@ def drawn_labels(
             and not label.get("derived")
         ]
     )
-    _add_drawn(result, _parse(Path(pdf), page - 1), halves, budget_s, readers, clock)
+    parsed = _parse(Path(pdf), page - 1)
+    missed: list[ink_labels.Label] = []
+    _add_drawn(result, parsed, halves, budget_s, readers, clock, missed)
     _number(result.labels)
+    if ocr_budget_s > 0 and result.drawn in ("done", "partial"):
+        read = PageLabels(labels=list(result.labels), phrases=[dict(p) for p in phrases])
+        try:
+            _add_ocr(read, parsed, halves, ocr_budget_s, readers, clock, missed)
+        except Exception as failed:  # noqa: BLE001 - the page keeps its other labels
+            _log.warning("dimension labels: OCR route failed: %s", type(failed).__name__)
+            read.labels = list(result.labels)
+            read.ocr = {"status": "failed", "spots": 0, "seconds": 0.0, "unconfirmed": []}
+        result.ocr_labels = read.labels[len(result.labels) :]
+        result.ocr = read.ocr
     result.seconds = round(clock() - started, 2)
     return result
 
@@ -2002,18 +2022,21 @@ def _ocr_spots(
     parsed: _Parsed,
     halves: Sequence[Mapping[str, Any]],
     taken: Sequence[Box],
+    missed: Sequence[ink_labels.Label] | None = None,
 ) -> tuple[list[tuple[Box, list[ocr_labels.Spot]]], list[Box]]:
     """The page's vector ink no label and no phrase covers, as spots grouped by the page map's
     drawing they are on (`(drawing box, spots)`), and every group's box (kept from the line work's
     whitening). A spot is a group of the ink split by `ink_labels` (the dimension line's own
     pieces left out, `_without_line_work`), of a number's size, on one of the drawings, with room
-    round it (`_crowded`: a part of a longer number or of a word is never read alone)."""
+    round it (`_crowded`: a part of a longer number or of a word is never read alone). `missed`:
+    the groups the drawn route looked at and left unlabelled (`_add_drawn`), so the page's ink is
+    not grouped twice; without it the page's ink is grouped here."""
     page = parsed.page
-    clusters, lone = _clusters(page.paths, taken)
     lines = _line_ends(parsed.segments)
     every: list[Box] = []
-    pieces: list[ink_labels.Label] = []
+    pieces: list[ink_labels.Label] = list(missed or ())
     vendor = [h["box"] for h in halves if h.get("role") == "vendor" and h.get("box")]
+    clusters, lone = _clusters(page.paths, taken) if missed is None else ([], [])
     for cluster in [*clusters, *lone]:
         if not any(_within(_centre(cluster), box) for box in vendor):
             continue  # read only on the vendor's drawings (below): no time spent elsewhere
@@ -2033,7 +2056,9 @@ def _ocr_spots(
         spot = ocr_labels.spot_of(
             bare, _mark_layouts(bare), lambda turn, label=bare: _one_row_layout(label, turn)
         )
-        if spot is not None and not any(_overlap(spot.box, other) > 0.1 for other in taken):
+        # Only a row of digits the vectors end in an inch mark (two twin ticks) is read: a word, a
+        # tag, a symbol or hatching never is, so the engines read a few spots a page, not dozens.
+        if spot is not None and spot.marked and not any(_overlap(spot.box, o) > 0.1 for o in taken):
             found.append((bare, spot))
     found.sort(
         key=lambda item: (not item[1].marked, -len(item[0].glyphs), item[1].box[1], item[1].box[0])
@@ -2071,12 +2096,17 @@ def _mark_layouts(label: ink_labels.Label) -> tuple[tuple[int, _Layout], ...]:
     digits counted by the vectors (`_layout`). A row with any other mark (a foot mark, a dash:
     `7'-3"`) is none: its digits alone are not its value."""
     out: list[tuple[int, _Layout]] = []
-    for turn in _marked_turns(label):
+    for turn in _marked_turns(label) or tuple(t for t in (0, 90, 270) if _end_ticks(label, t)):
         rows = ink_labels.rows(label, turn)
-        if len(rows) != 1 or not _twin_ticks(rows[0], turn):
+        if len(rows) != 1:
             continue
         row = rows[0]
-        end = len(row) - ink_labels.inch_mark_at_end(row, turn)
+        if _twin_ticks(row, turn):
+            end = len(row) - ink_labels.inch_mark_at_end(row, turn)
+        elif _end_ticks(label, turn):
+            end = len(row) - 2
+        else:
+            continue
         if any(token.kind == "mark" for token in row[:end]):
             continue
         layout = _layout(row, turn)
@@ -2109,6 +2139,33 @@ def _fits_vectors(spot: ocr_labels.Spot, turn: int, text: str, parsed: tuple[str
     return _laid_out(plain, layout) == value
 
 
+def _end_ticks(label: ink_labels.Label, turn: int) -> bool:
+    """Whether the label, read as `turn`, is one row ending in two small marks of the same size,
+    side by side with their tops level, in the row's upper half: an inch mark drawn as two outlined
+    ticks (each its own closed outline, so `_twin_ticks`, which wants two single strokes, does not
+    see it)."""
+    rows = ink_labels.rows(label, turn)  # type: ignore[arg-type]
+    if len(rows) != 1 or len(rows[0]) < 3:
+        return False
+    row = rows[0]
+    if [t.kind for t in row[-2:]] != ["mark", "mark"] or any(t.kind == "mark" for t in row[:-2]):
+        return False
+    frames = [ink_labels._frame(t.glyphs[0].box, turn) for t in row]  # type: ignore[arg-type]
+    top = min(f[1] for f in frames)
+    bottom = max(f[3] for f in frames)
+    (a0, a1, a2, a3), (b0, b1, b2, b3) = frames[-2:]
+    size = max(a3 - a1, b3 - b1)
+    return (
+        size > 0
+        and a3 - a1 >= a2 - a0
+        and b3 - b1 >= b2 - b0
+        and abs((a3 - a1) - (b3 - b1)) <= 0.25 * size
+        and abs(a1 - b1) <= 0.25 * size
+        and b0 >= a2 - 0.1 * size
+        and max(a3, b3) <= top + 0.6 * (bottom - top)
+    )
+
+
 _MARKED_LINE: Final = re.compile(r'^[\d /"]+$')
 
 
@@ -2133,6 +2190,7 @@ def _add_ocr(
     budget_s: float,
     readers: Sequence[Any] | None,
     clock: Callable[[], float],
+    missed: Sequence[ink_labels.Label] | None = None,
 ) -> None:
     """The OCR route (`ocr_labels`): the numbers the label readers missed on the page's drawings,
     read at their spots by two OCR engines. A confirmed reading is a label (`origin: "ocr"`, no
@@ -2142,10 +2200,11 @@ def _add_ocr(
     taken = [tuple(label["box"]) for label in result.labels] + [
         tuple(phrase["box"]) for phrase in result.phrases
     ]
-    areas, every = _ocr_spots(parsed, halves, taken)
+    areas, every = _ocr_spots(parsed, halves, taken, missed)
     spots = sum(len(found) for _box, found in areas)
     if not spots:
-        result.ocr = {"status": "done", "spots": 0, "seconds": 0.0, "unconfirmed": []}
+        seconds = round(clock() - started, 2)
+        result.ocr = {"status": "done", "spots": 0, "seconds": seconds, "unconfirmed": []}
         return
     engines = list(drawn_readers() if readers is None else readers)
     page = parsed.page
@@ -2493,6 +2552,7 @@ def _add_drawn(
     budget_s: float,
     readers: Sequence[Any] | None,
     clock: Callable[[], float],
+    missed: list[ink_labels.Label] | None = None,
 ) -> None:
     """The drawn route: character-sized ink outside the text labels, grouped into clusters, each
     split into labels by its vectors (`ink_labels`); a label beside a dimension line of its own is
@@ -2508,6 +2568,10 @@ def _add_drawn(
         return
     result.drawn = "done"
     labels = result.labels
+
+    def side_of_box(box: Box) -> str:
+        return _side(box, halves)
+
     skip = [tuple(label["box"]) for label in labels]
     seen: list[Box] = []
     drawn: list[tuple[dict[str, Any], _Part]] = []
@@ -2527,6 +2591,8 @@ def _add_drawn(
                 break
             label = _whole_label(parsed.page, piece, cluster)
             if label is None:
+                if missed is not None and side_of_box(piece.box) == "vendor":
+                    missed.append(piece)  # the OCR route's (#1848): the vectors never closed
                 continue
             box = label.box
             # Clusters gather their neighbours' ink too: a label is read once.
@@ -2539,10 +2605,14 @@ def _add_drawn(
             bare = _without_line_work(label, lines)
             if bare is None:
                 continue
+            read = False
             for part in _parts(bare):
                 found_label = _drawn_label(parsed, part, engines, side)
                 if found_label is not None:
                     drawn.append((found_label, part))
+                    read = True
+            if not read and missed is not None:
+                missed.append(label)  # the OCR route's (#1848): no part of it was read
         if result.drawn == "partial" or len(labels) + len(drawn) >= MAX_LABELS:
             break
     if result.drawn != "partial":
@@ -2881,15 +2951,15 @@ def build_dims(
     pictures_budget_s: float = PICTURES_BUDGET_S,
     ocr_budget_s: float = OCR_BUDGET_S,
 ) -> dict[str, Any]:
-    """The set pack's `dims.json`: every page of every upload and its labels. Four passes: the
+    """The set pack's `dims.json`: every page of every upload and its labels. Three passes: the
     text route on every page first (the agent has every printed label in minutes), then the pasted
     pictures (#1830) of the pages that show one, within `pictures_budget_s` seconds (a page read
     gets `pictures`), then the drawn route page by page, sharing `drawn_budget_s` seconds across
-    the set (a page it does not reach stays `not_run`; one it leaves half read is `partial`), and
-    after the `EQ` parts, the OCR route (#1848) on the pages the drawn route read, sharing
-    `ocr_budget_s` seconds, at most `OCR_PAGE_S` a page (a page read gets `ocr`, with its seconds; its labels are numbered
-    after every other label, so no id moves). `on_page` sees the document after each page of each
-    pass (to write it as it grows)."""
+    the set (a page it does not reach stays `not_run`; one it leaves half read is `partial`). With
+    each page's drawn route, the OCR route (#1848) reads the groups of ink it left unlabelled,
+    sharing `ocr_budget_s` seconds, at most `OCR_PAGE_S` a page (a page read gets `ocr`, with its
+    seconds); after the `EQ` parts its labels are numbered after every other label, so no id
+    moves. `on_page` sees the document after each page of each pass (to write it as it grows)."""
     halves: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     pasted: dict[tuple[str, int], list[Sequence[float]]] = {}
     entries = page_map.get("pages") if isinstance(page_map, Mapping) else None
@@ -2970,6 +3040,8 @@ def build_dims(
             if on_page is not None:
                 on_page(document)
     left = drawn_budget_s
+    ocr_left = ocr_budget_s
+    pending: dict[tuple[str, int], PageLabels] = {}
     for entry in document["pages"]:
         if left <= 0:
             break
@@ -2984,6 +3056,8 @@ def build_dims(
                 halves.get((name, number), ()),
                 entry["labels"],
                 budget_s=left,
+                ocr_budget_s=min(ocr_left, OCR_PAGE_S),
+                phrases=entry.get("phrases") or [],
             )
         except Exception as failed:  # noqa: BLE001 - the page keeps its text labels
             _log.warning("dimension labels: drawn pass failed: %s", type(failed).__name__)
@@ -2992,6 +3066,9 @@ def build_dims(
         finally:
             left -= monotonic() - started
         entry["drawn"], entry["labels"] = found.drawn, found.labels
+        if found.ocr is not None:
+            ocr_left -= float(found.ocr.get("seconds") or 0.0)
+            pending[(name, number)] = found
         if on_page is not None:
             on_page(document)
     # The `EQ` parts last, after every printed label of the page (text and drawn).
@@ -3010,30 +3087,17 @@ def build_dims(
         entry["labels"] = result.labels
         if on_page is not None:
             on_page(document)
-    # The OCR route last (#1848): the numbers every route above missed, on the pages the drawn
-    # route read (it needs the vector ink read first; a page left `not_run` keeps what it has).
-    ocr_left = ocr_budget_s
+    # The OCR route's labels last (#1848): read with the drawn pass on the same reading of each
+    # page, numbered after every other label (the `EQ` parts too), so no id moves.
     for entry in document["pages"]:
-        if ocr_left <= 0:
-            break
-        if entry["drawn"] not in ("done", "partial"):
+        found = pending.get((entry["file"], entry["page"]))
+        if found is None:
             continue
-        name, number = entry["file"], entry["page"]
-        started = monotonic()
-        try:
-            found = ocr_pass(
-                pdfs[name],
-                number,
-                halves.get((name, number), ()),
-                entry["labels"],
-                entry.get("phrases") or [],
-                budget_s=min(ocr_left, OCR_PAGE_S),
-            )
-        finally:
-            ocr_left -= monotonic() - started
-        if found.ocr is None:
-            continue
-        entry["labels"], entry["ocr"] = found.labels, found.ocr
+        labels = entry["labels"]
+        room = max(0, MAX_LABELS - len(labels))
+        for number, label in enumerate(found.ocr_labels[:room], start=len(labels) + 1):
+            labels.append({**label, "id": f"D{number}"})
+        entry["ocr"] = found.ocr
         if on_page is not None:
             on_page(document)
     return document
