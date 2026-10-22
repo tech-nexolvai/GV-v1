@@ -118,6 +118,7 @@ import pdfplumber
 from PIL import Image, ImageDraw, ImageFont
 
 from app.review.assistant import (
+    dims_pool,
     hand_labels,
     ink_labels,
     ocr_labels,
@@ -3332,6 +3333,138 @@ def _add_equal_parts(
         _number(result.labels)
 
 
+@dataclass(slots=True)
+class PageRead:
+    """One page read whole by `read_page`: its `dims.json` entry, its drawn pass's result (the
+    alphabet's samples, the sweep's held spots, the OCR labels still to number) and the seconds it
+    took of each of the set's budgets."""
+
+    entry: dict[str, Any]
+    found: PageLabels | None = None
+    spent: dict[str, float] = field(default_factory=dict)
+    ink: Any = None
+
+
+def unreadable_page(task: dims_pool.PageTask, why: str) -> PageRead:
+    """A page code could not read at all: no labels, and why (`page N could not be read: ...`)."""
+    _log.warning(
+        "dimension labels: page %d of %s could not be read: %s", task.number, task.name, why
+    )
+    return PageRead(
+        {
+            "file": task.name,
+            "page": task.number,
+            "drawn": "failed",
+            "labels": [],
+            "scale_notes": [],
+            "phrases": [],
+            "error": f"page {task.number} could not be read: {why}",
+        }
+    )
+
+
+def read_page(task: dims_pool.PageTask, given: Mapping[str, float]) -> PageRead:
+    """One page read whole, as the set pack reads it (`build_dims`): its text route, its pasted
+    pictures (`given["pictures"]` seconds, when it shows one), then its drawn ink (`given["drawn"]`
+    seconds, the OCR route within `min(given["ocr"], OCR_PAGE_S)`, the sweep within
+    `given["sweep"]`)."""
+    pdf, name, number = Path(task.pdf), task.name, task.number
+    halves = list(task.halves)
+    spent: dict[str, float] = {}
+    try:
+        found = page_labels(pdf, number, halves, equal_parts=False)
+    except Exception as failed:  # noqa: BLE001 - a page code cannot read has no labels
+        _log.warning("dimension labels: page failed: %s", type(failed).__name__)
+        found = PageLabels(drawn="failed")
+    entry: dict[str, Any] = {
+        "file": name,
+        "page": number,
+        "drawn": found.drawn,
+        "labels": found.labels,
+        "scale_notes": found.scale_notes,
+        "phrases": found.phrases,
+        **({"metric": found.metric} if found.metric else {}),
+    }
+    # The pasted pictures (#1830), after the page's text and before the drawn ink.
+    if task.with_pictures and given.get("pictures", 0.0) > 0:
+        started = monotonic()
+        seen: PageLabels | None = None
+        try:
+            seen = picture_pass(
+                pdf,
+                number,
+                halves,
+                entry["labels"],
+                entry.get("phrases") or [],
+                budget_s=float(given["pictures"]),
+                pasted=task.pasted,
+            )
+        except Exception as failed:  # noqa: BLE001 - the page keeps its text labels
+            _log.warning("dimension labels: picture pass failed: %s", type(failed).__name__)
+        finally:
+            spent["pictures"] = monotonic() - started
+        if seen is not None and seen.pictures is not None:
+            entry["labels"], entry["pictures"] = seen.labels, seen.pictures
+    if entry["drawn"] != "not_run" or given.get("drawn", 0.0) <= 0:
+        return _finish_page(PageRead(entry, None, spent), pdf, halves)
+    started = monotonic()
+    try:
+        drawn = drawn_labels(
+            pdf,
+            number,
+            halves,
+            entry["labels"],
+            budget_s=float(given["drawn"]),
+            ocr_budget_s=min(float(given.get("ocr", 0.0)), OCR_PAGE_S),
+            phrases=entry.get("phrases") or [],
+            sweep_budget_s=float(given.get("sweep", 0.0)),
+            alphabet=True,
+            count_ink=task.count_ink,
+        )
+    except Exception as failed:  # noqa: BLE001 - the page keeps its text labels
+        _log.warning("dimension labels: drawn pass failed: %s", type(failed).__name__)
+        entry["drawn"] = "failed"
+        spent["drawn"] = monotonic() - started
+        return _finish_page(PageRead(entry, None, spent), pdf, halves)
+    spent["drawn"] = monotonic() - started
+    entry["drawn"], entry["labels"] = drawn.drawn, drawn.labels
+    if drawn.ocr is not None:
+        spent["ocr"] = float(drawn.ocr.get("seconds") or 0.0)
+        spent["sweep"] = float((drawn.ocr.get("sweep") or {}).get("seconds") or 0.0)
+    ink, drawn.ink = drawn.ink, None
+    return _finish_page(PageRead(entry, drawn, spent, ink), pdf, halves)
+
+
+def _finish_page(read: PageRead, pdf: Path, halves: Sequence[Mapping[str, Any]]) -> PageRead:
+    """The page's `EQ` parts, after every printed label of the page (text and drawn), then the OCR
+    route's labels (#1848), numbered after every other label so no id moves. Only what the vendor's
+    alphabet seconds (learned from the whole set) is added later, numbered after these."""
+    entry = read.entry
+    phrases = [(str(p["text"]), tuple(p["box"])) for p in entry.get("phrases") or []]
+    if any(_EQUAL_MARK.match(text.strip()) for text, _box in phrases):
+        try:
+            result = PageLabels(labels=list(entry["labels"]))
+            parsed = _parse(pdf, int(entry["page"]) - 1)
+            _add_equal_parts(result, parsed, halves, phrases)
+        except Exception as failed:  # noqa: BLE001 - the page keeps its printed labels
+            _log.warning("dimension labels: equal parts failed: %s", type(failed).__name__)
+        else:
+            entry["labels"] = result.labels
+    found = read.found
+    if found is not None and found.ocr is not None:
+        _number_ocr(entry, found.ocr_labels)
+        entry["ocr"] = found.ocr
+    return read
+
+
+def _number_ocr(entry: dict[str, Any], labels: Sequence[Mapping[str, Any]]) -> None:
+    """`labels` (the OCR route's) added to the page's, numbered after them, up to `MAX_LABELS`."""
+    page = entry["labels"]
+    room = max(0, MAX_LABELS - len(page))
+    for number, label in enumerate(labels[:room], start=len(page) + 1):
+        page.append({**label, "id": f"D{number}"})
+
+
 def build_dims(
     pdfs: Mapping[str, Path],
     page_map: Mapping[str, Any] | None,
@@ -3342,6 +3475,8 @@ def build_dims(
     ocr_budget_s: float = OCR_BUDGET_S,
     sweep_budget_s: float = SWEEP_BUDGET_S,
     ink: dict[tuple[str, int], Any] | None = None,
+    workers: int = 1,
+    keep: Path | None = None,
 ) -> dict[str, Any]:
     """The set pack's `dims.json`: every page of every upload and its labels. Three passes: the
     text route on every page first (the agent has every printed label in minutes), then the pasted
@@ -3356,7 +3491,13 @@ def build_dims(
     `EQ` parts these labels are numbered after every other label, so no id moves. `on_page` sees
     the document after each page of each pass (to write it as it grows). `ink`: filled with each
     page's unread pen-stroke candidates the drawn pass counted (#1862), keyed `(file, page)`; a
-    page it did not reach is not in it."""
+    page it did not reach is not in it.
+
+    Since #1871 each page is read whole (text, pictures, drawn ink) by `read_page`, `workers`
+    pages at once in worker processes (`dims_pool`; 1: in this process, in order), the budgets
+    still shared by the set's pages (each page is given what is left when it starts); `keep`: the
+    folder the finished pages are kept in, so a stopped run resumes. A page that crashed the PDF
+    reader twice has no labels and says so (`error`)."""
     halves: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     pasted: dict[tuple[str, int], list[Sequence[float]]] = {}
     entries = page_map.get("pages") if isinstance(page_map, Mapping) else None
@@ -3376,131 +3517,73 @@ def build_dims(
             if isinstance(candidate, Mapping):
                 halves[key].append(candidate)
     document: dict[str, Any] = {"version": LABELS_VERSION, "files": list(pdfs), "pages": []}
+    # Each page read whole (its text, its pasted pictures, its drawn ink), in worker processes
+    # (`dims_pool`, #1871); the set's budgets shared by the pages as they start.
+    tasks: list[dims_pool.PageTask] = []
     for name, pdf in pdfs.items():
         count = 0
         if pdf.is_file():
             with pdfplumber.open(str(pdf)) as opened:
                 count = len(opened.pages)
-        for number in range(1, count + 1):
+        with_pictures: set[int] = set()
+        if count and pictures_budget_s > 0:
             try:
-                found = page_labels(pdf, number, halves.get((name, number), ()), equal_parts=False)
-            except Exception as failed:  # noqa: BLE001 - a page code cannot read has no labels
-                _log.warning("dimension labels: page failed: %s", type(failed).__name__)
-                found = PageLabels(drawn="failed")
-            document["pages"].append(
-                {
-                    "file": name,
-                    "page": number,
-                    "drawn": found.drawn,
-                    "labels": found.labels,
-                    "scale_notes": found.scale_notes,
-                    "phrases": found.phrases,
-                    **({"metric": found.metric} if found.metric else {}),
-                }
+                with_pictures = set(picture_labels.pages_with_pictures(pdf))
+            except Exception as failed:  # noqa: BLE001 - the pages keep their text labels
+                _log.warning("dimension labels: pictures not listed: %s", type(failed).__name__)
+        tasks += [
+            dims_pool.PageTask(
+                name,
+                str(pdf),
+                number,
+                tuple(halves.get((name, number), ())),
+                tuple(tuple(b) for b in pasted.get((name, number), ())),
+                number in with_pictures,
+                ink is not None,
             )
-            if on_page is not None:
-                on_page(document)
-    # The pasted pictures (#1830), after every page's text and before the drawn ink: most pages
-    # have none (`pages_with_pictures` draws nothing), and a picture page is read in seconds.
-    pictures_left = pictures_budget_s
-    for name, pdf in pdfs.items():
-        if pictures_left <= 0 or not pdf.is_file():
-            continue
-        try:
-            with_pictures = set(picture_labels.pages_with_pictures(pdf))
-        except Exception as failed:  # noqa: BLE001 - the pages keep their text labels
-            _log.warning("dimension labels: pictures not listed: %s", type(failed).__name__)
-            continue
-        for entry in document["pages"]:
-            if entry["file"] != name or entry["page"] not in with_pictures or pictures_left <= 0:
-                continue
-            number = entry["page"]
-            started = monotonic()
-            try:
-                found = picture_pass(
-                    pdf,
-                    number,
-                    halves.get((name, number), ()),
-                    entry["labels"],
-                    entry.get("phrases") or [],
-                    budget_s=pictures_left,
-                    pasted=pasted.get((name, number), ()),
-                )
-            except Exception as failed:  # noqa: BLE001 - the page keeps its text labels
-                _log.warning("dimension labels: picture pass failed: %s", type(failed).__name__)
-                continue
-            finally:
-                pictures_left -= monotonic() - started
-            if found.pictures is None:
-                continue
-            entry["labels"], entry["pictures"] = found.labels, found.pictures
-            if on_page is not None:
-                on_page(document)
-    left = drawn_budget_s
-    ocr_left = ocr_budget_s
-    sweep_left = sweep_budget_s
+            for number in range(1, count + 1)
+        ]
+    budgets = dims_pool.Budgets(pictures_budget_s, drawn_budget_s, ocr_budget_s, sweep_budget_s)
+    reads: dict[int, PageRead] = {}
+
+    def finished(index: int, read: PageRead) -> None:
+        reads[index] = read
+        document["pages"] = [reads[i].entry for i in sorted(reads)]
+        if on_page is not None:
+            on_page(document)
+
+    dims_pool.read_pages(
+        tasks,
+        budgets,
+        read_page,
+        finished,
+        unreadable=unreadable_page,
+        count=workers,
+        keep=keep,
+        version=f"labels {LABELS_VERSION}",
+    )
     pending: dict[tuple[str, int], PageLabels] = {}
     samples: list[vendor_alphabet.Sample] = []
     held: list[SweepHeld] = []
-    for entry in document["pages"]:
-        if left <= 0:
-            break
-        if entry["drawn"] != "not_run":
+    for index in sorted(reads):
+        read = reads[index]
+        if ink is not None and read.ink is not None:
+            ink[(read.entry["file"], read.entry["page"])] = read.ink
+        found = read.found
+        if found is None:
             continue
-        name, number = entry["file"], entry["page"]
-        started = monotonic()
-        try:
-            found = drawn_labels(
-                pdfs[name],
-                number,
-                halves.get((name, number), ()),
-                entry["labels"],
-                budget_s=left,
-                ocr_budget_s=min(ocr_left, OCR_PAGE_S),
-                phrases=entry.get("phrases") or [],
-                sweep_budget_s=sweep_left,
-                alphabet=True,
-                count_ink=ink is not None,
-            )
-        except Exception as failed:  # noqa: BLE001 - the page keeps its text labels
-            _log.warning("dimension labels: drawn pass failed: %s", type(failed).__name__)
-            entry["drawn"] = "failed"
-            continue
-        finally:
-            left -= monotonic() - started
-        entry["drawn"], entry["labels"] = found.drawn, found.labels
         samples += found.alphabet
         held += found.sweep_held
         if found.ocr is not None:
-            ocr_left -= float(found.ocr.get("seconds") or 0.0)
-            sweep_left -= float((found.ocr.get("sweep") or {}).get("seconds") or 0.0)
-            pending[(name, number)] = found
-        if ink is not None and found.ink is not None:
-            ink[(name, number)] = found.ink
-        if on_page is not None:
-            on_page(document)
-    # The `EQ` parts last, after every printed label of the page (text and drawn).
-    for entry in document["pages"]:
-        phrases = [(str(p["text"]), tuple(p["box"])) for p in entry.get("phrases") or []]
-        if not any(_EQUAL_MARK.match(text.strip()) for text, _box in phrases):
-            continue
-        name, number = entry["file"], entry["page"]
-        try:
-            result = PageLabels(labels=list(entry["labels"]))
-            parsed = _parse(pdfs[name], number - 1)
-            _add_equal_parts(result, parsed, halves.get((name, number), ()), phrases)
-        except Exception as failed:  # noqa: BLE001 - the page keeps its printed labels
-            _log.warning("dimension labels: equal parts failed: %s", type(failed).__name__)
-            continue
-        entry["labels"] = result.labels
-        if on_page is not None:
-            on_page(document)
+            pending[(read.entry["file"], read.entry["page"])] = found
+    # The `EQ` parts and the OCR route's labels were added with each page (`_finish_page`).
     # The vendor's alphabet (#1860), learned from every page's confirmed drawn labels: kept in
     # the pack (`read_number` reads with it on demand) and seconding the spots the sweep read with
-    # its OCR pair alone.
+    # its OCR pair alone, numbered after the page's other labels.
     alphabet = vendor_alphabet.Alphabet(samples)
     if samples:
         document["alphabet"] = alphabet.as_json()
+    entries = {(str(e["file"]), int(e["page"])): e for e in document["pages"]}
     for item, value in seconded(held, alphabet):
         for (name, number), found in pending.items():
             if number != item.page or Path(pdfs[name]).name != item.file:
@@ -3524,20 +3607,10 @@ def build_dims(
                 label["origin"] = ocr_labels.ORIGIN
                 label["read_by"] = ["ocr", "alphabet"]
                 found.ocr_labels.append(label)
+                _number_ocr(entries[(name, number)], [label])
+                if on_page is not None:
+                    on_page(document)
             break
-    # The OCR route's labels last (#1848): read with the drawn pass on the same reading of each
-    # page, numbered after every other label (the `EQ` parts too), so no id moves.
-    for entry in document["pages"]:
-        found = pending.get((entry["file"], entry["page"]))
-        if found is None:
-            continue
-        labels = entry["labels"]
-        room = max(0, MAX_LABELS - len(labels))
-        for number, label in enumerate(found.ocr_labels[:room], start=len(labels) + 1):
-            labels.append({**label, "id": f"D{number}"})
-        entry["ocr"] = found.ocr
-        if on_page is not None:
-            on_page(document)
     return document
 
 

@@ -1320,8 +1320,17 @@ def _drawn_budget() -> float:
 
 
 #: The most seconds the labels' own process may take for one set: the text route and the drawn
-#: route's budget, with room to spare.
+#: route's budget, with room to spare; plus `DIMS_PAGE_S` for each page past the first 60 (#1871:
+#: a 188-page set ran out of the fixed 40 minutes).
 DIMS_TIMEOUT_S: Final = 2400
+DIMS_PAGE_S: Final = 20
+
+
+def dims_timeout(pages: int) -> float:
+    """The labels' process's time limit for a set of `pages` pages."""
+    return float(DIMS_TIMEOUT_S + DIMS_PAGE_S * max(0, pages - 60))
+
+
 #: The most seconds the content-sides process (#1825) may take: this, plus `SIDES_PAGE_S` for each
 #: page it reads (the reader takes a few seconds a page).
 SIDES_TIMEOUT_S: Final = 90
@@ -1379,7 +1388,7 @@ def _dims(
         cwd=root,
         env=child_environment(root),
         check=True,
-        timeout=DIMS_TIMEOUT_S,
+        timeout=dims_timeout(len(page_map)),
         capture_output=True,
         stdin=subprocess.DEVNULL,
     )
@@ -1432,12 +1441,17 @@ def write_dims(
         _write_json(folder / notes.NOTES_FILE, notes.set_notes(document, pages))
 
     ink: dict[tuple[str, int], Any] = {}
+    pool = import_module("app.review.assistant.dims_pool")
+    in_process = os.environ.get("GV_DIM_LABELS_IN_PROCESS") == "1"
     document = labels.build_dims(
         {name: uploads / name for name in names},
         pages,
         drawn_budget_s=_drawn_budget(),
         on_page=written,
         ink=ink,
+        # Pages read at once in worker processes (#1871); tests read in this process unless set.
+        workers=(1 if in_process and not os.environ.get(pool.WORKERS_SETTING) else pool.workers()),
+        keep=folder / pool.PAGES_FOLDER,
     )
     # The candidate whole-page drawings, decided from every route's labels (#1772); the pack's
     # facts are written again from the settled page map.
@@ -1536,6 +1550,9 @@ PACK_IN_PROCESS_SETTING: Final = "GV_ASSISTANT_PACK_IN_PROCESS"
 #: The most seconds the pack's own process may take: its labels' own limit, plus an hour for the
 #: rest (the text, the health check and the pictures of a few hundred pages).
 PACK_TIMEOUT_S: Final = DIMS_TIMEOUT_S + 3600
+#: And for each page past the first 60, what the labels get (`dims_timeout`) and a minute for the
+#: rest.
+PACK_PAGE_S: Final = DIMS_PAGE_S + 60
 #: The listing the pack's own process reads (in the pack's folder).
 _LISTING_FILE: Final = ".listing.json"
 
@@ -1576,18 +1593,20 @@ def _build_in_child(folder: Path, uploads: Path, listing: Sequence[Mapping[str, 
     _write_json(listing_file, [dict(item) for item in listing])
     (folder / PROGRESS_FILE).unlink(missing_ok=True)
     names = [str(item["name"]) for item in listing]
+    pages = sum(int(item.get("pages") or 0) for item in listing)
+    limit = PACK_TIMEOUT_S + PACK_PAGE_S * max(0, pages - 60)
     try:
         done = subprocess.run(
             pack_command(folder, uploads, listing_file),
             cwd=root,
             env=child_environment(root),
-            timeout=PACK_TIMEOUT_S,
+            timeout=limit,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             check=False,
         )
     except subprocess.TimeoutExpired as late:
-        reason = f"the drawing set took longer than {PACK_TIMEOUT_S // 60} minutes to read"
+        reason = f"the drawing set took longer than {round(limit / 60)} minutes to read"
         status = read_status(folder)
         _set_status(
             folder,

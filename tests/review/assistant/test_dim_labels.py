@@ -418,7 +418,7 @@ def test_the_one_line_reader_reads_rapidocrs_recogniser_only() -> None:
     ]
 
 
-def test_build_dims_reads_every_pages_text_first_then_the_drawn_ink(
+def test_build_dims_reads_each_page_whole_and_writes_it_as_it_finishes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "drawn.pdf"
@@ -433,16 +433,9 @@ def test_build_dims_reads_every_pages_text_first_then_the_drawn_ink(
         on_page=lambda doc: seen.append([e["drawn"] for e in doc["pages"]]),
     )
     none = dl.build_dims({"set.pdf": path}, page_map, drawn_budget_s=0)
-    # Every page's text labels are written before any drawn ink is read; the OCR route (#1848)
-    # writes each page again last.
-    assert seen == [
-        ["not_run"],
-        ["not_run", "not_run"],
-        ["done", "not_run"],
-        ["done", "done"],
-        ["done", "done"],
-        ["done", "done"],
-    ]
+    # Each page is read whole (text, pictures, drawn ink, its OCR labels: #1871, so pages can be
+    # read at once in worker processes) and written as it finishes.
+    assert seen == [["done"], ["done", "done"]]
     first = document["pages"][0]["labels"]
     assert [label["text"] for label in first if label["route"] == "drawn"] == ['24"']
     assert [label["id"] for label in first] == [f"D{n}" for n in range(1, len(first) + 1)]
