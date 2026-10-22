@@ -184,7 +184,9 @@ def test_a_collected_object_never_waits_for_the_lock() -> None:
         started = time.monotonic()
         del bitmap, page
         gc.collect()
-        assert time.monotonic() - started < 1.0  # it did not wait for the holder
+        # It did not wait for the holder (who holds the lock for up to 10 s); a slow machine's
+        # collection alone may take a second.
+        assert time.monotonic() - started < 5.0
         assert pdfium_guard.queued_closes() >= 2
     finally:
         release.set()
