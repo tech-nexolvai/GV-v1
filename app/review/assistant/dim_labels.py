@@ -147,7 +147,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what a label holds or how ids are given changes.
-LABELS_VERSION: Final = 2
+LABELS_VERSION: Final = 3
 #: The most labels one page lists (a schedule page can print hundreds of numbers).
 MAX_LABELS: Final = 400
 #: The picture route's time across a set (seconds, #1830): most sets paste no picture at all.
