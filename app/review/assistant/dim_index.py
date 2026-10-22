@@ -118,6 +118,7 @@ class DimLabels:
         self._page_locks: dict[tuple[str, int], threading.Lock] = {}
         self._read: dict[tuple[str, int], list[dict[str, Any]]] = {}
         self._dims: tuple[float, dict[tuple[str, int], list[dict[str, Any]]]] | None = None
+        self._counts: dict[tuple[str, float], int] = {}
 
     def _from_pack(self) -> dict[tuple[str, int], list[dict[str, Any]]]:
         if self.folder is None:
@@ -189,6 +190,10 @@ class DimLabels:
                 pdf = self.uploads / file
                 if not pdf.is_file():
                     return None
+                if not 1 <= page <= self._page_count(pdf):
+                    # A page the file does not have (`p3.D5` named on a one-page file): no labels,
+                    # never a read past its end (#1866: it raised IndexError).
+                    return None
                 with lock:
                     with self._lock:
                         found = self._read.get(key)
@@ -209,6 +214,25 @@ class DimLabels:
             return None
         return [{**label, "file": file, "page": page} for label in found]
 
+    def _page_count(self, pdf: Path) -> int:
+        """How many pages `pdf` has (kept per file and change); 0 when it cannot be opened."""
+        try:
+            stamp = pdf.stat().st_mtime
+        except OSError:
+            return 0
+        key = (str(pdf), stamp)
+        with self._lock:
+            known = self._counts.get(key)
+        if known is not None:
+            return known
+        try:
+            count = len(import_module("pypdf").PdfReader(str(pdf)).pages)
+        except Exception:  # noqa: BLE001 - an unreadable file has no page to read
+            count = 0
+        with self._lock:
+            self._counts[key] = count
+        return count
+
     def resolve(self, ref: object, file: str, page: int) -> dict[str, Any]:
         """The label `ref` names (`D17` on `page`, or `p23.D17`). Raises `LookupError` with a
         plain reason the model can act on."""
@@ -219,6 +243,13 @@ class DimLabels:
         where = named_page or page
         labels = self.on_page(file, where)
         if labels is None:
+            pdf = self.uploads / file
+            count = self._page_count(pdf) if pdf.is_file() else 0
+            if count and not 1 <= where <= count:
+                raise LookupError(
+                    f"{file} has no page {where} (it has {count}): name the label on its own "
+                    "page and file"
+                )
             raise LookupError(
                 f"the labels of page {where} cannot be read: give the value and its box instead"
             )

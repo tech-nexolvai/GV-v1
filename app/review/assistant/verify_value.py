@@ -99,6 +99,7 @@ __all__ = [
     "claim_value",
     "default_readers",
     "dimension_tokens",
+    "lenient_tesseract",
     "near_miss",
     "printed_spots",
     "verify_value",
@@ -809,6 +810,35 @@ TESSERACT_THREADS: Final = "OMP_THREAD_LIMIT"
 _WHITELIST: Final = "0123456789/'\"-[]. "
 
 
+def lenient_tesseract(module: Any) -> Any:
+    """`pytesseract` (the module) decoding Tesseract's bytes leniently (#1866), once per process.
+
+    pytesseract 0.3.13 decodes Tesseract's output file and, when Tesseract fails, its error
+    message as strict UTF-8: a failure whose message holds one byte that is not (a crash, a full
+    disk) raised `UnicodeDecodeError`, which hid Tesseract's own words; the drawn-ink check and
+    `verify_value` then logged only "UnicodeDecodeError" (10 such lines, 18 Oct). A byte that is
+    not text now reads as the replacement character: a failure says Tesseract's words, and a read
+    is the same as before for every valid output (Tesseract writes UTF-8)."""
+    inner = getattr(module, "pytesseract", None)
+    if inner is None or getattr(inner, "_gv_lenient", False):
+        return module
+
+    def errors(error_string: bytes) -> str:
+        return " ".join(bytes(error_string).decode("utf-8", "replace").splitlines()).strip()
+
+    def read_output(filename: str, return_bytes: bool = False) -> Any:
+        with open(filename, "rb") as handle:
+            data = handle.read()
+        return data if return_bytes else data.decode("utf-8", "replace")
+
+    if callable(getattr(inner, "get_errors", None)):
+        inner.get_errors = errors
+    if callable(getattr(inner, "_read_output", None)):
+        inner._read_output = read_output
+    inner._gv_lenient = True
+    return module
+
+
 class TesseractReader:
     """Tesseract (Apache-2.0) through pytesseract, sparse text or one line."""
 
@@ -820,7 +850,7 @@ class TesseractReader:
         # One thread per Tesseract process (#1850): code's pool runs a few reads at once, each
         # its own process; without this each would start a thread per core and fight for them.
         os.environ.setdefault(TESSERACT_THREADS, "1")
-        self._tesseract = import_module("pytesseract")
+        self._tesseract = lenient_tesseract(import_module("pytesseract"))
         self._tesseract.get_tesseract_version()  # raises when the program is not installed
 
     def __call__(self, picture: np.ndarray, *, single_line: bool) -> list[str]:

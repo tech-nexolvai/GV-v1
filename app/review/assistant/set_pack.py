@@ -125,7 +125,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 15
+PACK_VERSION: Final = 16
 #: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
@@ -1002,6 +1002,9 @@ page_map.json          per page: whose drawing each pasted drawing is (from GV's
                        own content (feet-and-inches labels and scale against the vendor's
                        inch/millimetre labels and ratio scale); role_by: "content" marks them.
                        Compare its architect drawing with its vendor drawing on the same sheet.
+                       sides_unknown (e.g. "code timed out"): code could not decide whose
+                       drawing is whose on that page; look at both drawings before you
+                       compare, and say which one you took for the architect's.
                        pictures: boxes of drawings pasted as pictures (code lists only the
                        numbers two OCR engines agree on in them; look at them). A picture GV
                        headed is also a drawing (picture: true) with its heading's role; one
@@ -1094,7 +1097,7 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
             if any(h.get("from_upload") for e in entries for h in e["halves"]):
                 used[name] = roles[name]
             # A sheet with no GV heading (#1825): its drawings' roles from their own content.
-            _content_sides(uploads / name, entries)
+            _content_sides(uploads / name, entries, folder.parent / SIDES_CACHE)
             page_map += entries
         _write_json(folder / "annotations.json", annotations)
         _write_json(
@@ -1138,39 +1141,66 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
     _set_status(folder, "ready", done, files=names)
 
 
-def _content_sides(pdf: Path, entries: list[dict[str, Any]]) -> None:
+def _content_sides(pdf: Path, entries: list[dict[str, Any]], cache: Path) -> None:
     """The roles of the drawings on `pdf`'s pages that print no GV heading, decided by the content
     of both drawings (`content_sides`, #1825), set on `entries` in place. Read in a process of its
-    own, as the labels are (`GV_DIM_LABELS_IN_PROCESS=1`: here); a failure or a time-out keeps
-    every drawing as it was, said in the log."""
+    own, as the labels are (`GV_DIM_LABELS_IN_PROCESS=1`: here), with a time limit that grows with
+    the pages to read. A page read before (`cache`: the answers kept beside the packs, by the
+    PDF's bytes and the reader's code) is never read again (#1866). A page the process did not
+    reach in time, or could not read, keeps every drawing as it was and says its sides are unknown
+    (`content_sides.SIDES_UNKNOWN`), said in the log too."""
     sides = import_module("app.review.assistant.content_sides")
     pages = sides.unheaded_pages(entries)
     if not pages:
         return
-    try:
-        if os.environ.get("GV_DIM_LABELS_IN_PROCESS") == "1":
-            decided = sides.decide_sides(pdf, pages)
-        else:
-            root = Path(__file__).resolve().parents[3]
-            done = subprocess.run(
-                [sys.executable, "-m", sides.__name__, str(pdf), *map(str, pages)],
-                cwd=root,
-                env=child_environment(root),
-                check=True,
-                timeout=SIDES_TIMEOUT_S + SIDES_PAGE_S * len(pages),
-                capture_output=True,
-                stdin=subprocess.DEVNULL,
-            )
-            decided = {int(k): v for k, v in json.loads(done.stdout or b"{}").items()}
-    except Exception as failed:  # noqa: BLE001 - the drawings keep no role, as before
-        _log.warning("assistant set pack content sides failed: %s", type(failed).__name__)
-        return
-    changed = sides.apply_sides(entries, decided)
+    key = sides.cache_key(pdf)
+    kept = sides.read_cache(cache, key)
+    read: dict[int, list[dict[str, Any]] | None] = {p: kept[p] for p in pages if p in kept}
+    todo = [p for p in pages if p not in read]
+    why = sides.NOT_READ
+    if todo:
+        try:
+            if os.environ.get("GV_DIM_LABELS_IN_PROCESS") == "1":
+                read.update(sides.each_page(pdf, todo))
+            else:
+                root = Path(__file__).resolve().parents[3]
+                done = subprocess.run(
+                    [sys.executable, "-m", sides.__name__, str(pdf), *map(str, todo)],
+                    cwd=root,
+                    env=child_environment(root),
+                    check=True,
+                    timeout=sides_timeout(len(todo)),
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                )
+                read.update(sides.parse_lines(done.stdout))
+        except Exception as failed:  # noqa: BLE001 - the pages read so far are kept
+            _log.warning("assistant set pack content sides failed: %s", type(failed).__name__)
+            if isinstance(failed, subprocess.TimeoutExpired):
+                why = sides.TIMED_OUT
+            # A time-out keeps the pages the process finished (it writes each as it is read).
+            read.update(sides.parse_lines(getattr(failed, "stdout", None)))
+        sides.write_cache(
+            cache, key, {p: d for p, d in read.items() if p in todo and d is not None}
+        )
+    # A page the reader could not read says so; one the process never reached, why it stopped.
+    unknown = {p: sides.NOT_READ if p in read else why for p in pages if read.get(p) is None}
+    changed = sides.apply_sides(entries, {p: d for p, d in read.items() if d})
+    sides.mark_unknown(entries, unknown)
     _log.warning(
-        "assistant set pack: %d of %d pages with no heading decided by their drawings' content",
+        "assistant set pack: %d of %d pages with no heading decided by their drawings' content"
+        " (%d kept from before, %d sides unknown)",
         len(changed),
         len(pages),
+        len(pages) - len(todo),
+        len(unknown),
     )
+
+
+def sides_timeout(pages: int) -> float:
+    """The content-sides process's time limit for `pages` pages (#1866): a fixed start (Python
+    and the reader's imports) plus a page's worst time on a busy machine, each."""
+    return float(SIDES_TIMEOUT_S + SIDES_PAGE_S * max(pages, 1))
 
 
 def _read_json(path: Path) -> Any:
@@ -1256,8 +1286,11 @@ def _drawn_budget() -> float:
 DIMS_TIMEOUT_S: Final = 2400
 #: The most seconds the content-sides process (#1825) may take: this, plus `SIDES_PAGE_S` for each
 #: page it reads (the reader takes a few seconds a page).
-SIDES_TIMEOUT_S: Final = 60
-SIDES_PAGE_S: Final = 30
+SIDES_TIMEOUT_S: Final = 90
+SIDES_PAGE_S: Final = 60
+#: The content-sides answers kept beside the packs (`content_sides.read_cache`, #1866): a folder
+#: of the chat root's `set-packs/`, never a pack (no `hires/` in it).
+SIDES_CACHE: Final = ".content-sides"
 
 
 #: What the labels' own process gets of the server's environment: enough to run Python, find this

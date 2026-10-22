@@ -716,3 +716,80 @@ def test_a_filled_grey_or_black_path_keeps_how_light_its_fill_is() -> None:
         (Decimal(100), Decimal(0)),
         (Decimal(200), None),
     ]
+
+
+def _naive_overall(row, rows, settings, labelled):  # type: ignore[no-untyped-def]
+    """The overall's pick before #1866: every line within reach ranked first (labels read on
+    each), then the first with coincident ends, else the first enclosing one."""
+    from extraction.geometry import rows as module
+
+    x0, x1, y = row.ticks[0], row.ticks[-1], row.run.y
+    end = settings.overall_end_pt
+    others = sorted(
+        (
+            other
+            for other in rows
+            if other is not row
+            and len(other.ticks) == 2
+            and settings.same_row_pt < abs(other.run.y - y) <= settings.overall_reach_pt
+        ),
+        key=lambda other: (not labelled(other), abs(other.run.y - y), other.run.y),
+    )
+    for other in others:
+        if abs(other.ticks[0] - x0) <= end and abs(other.ticks[-1] - x1) <= end:
+            return other, module.Tiling.COINCIDENT
+    width = x1 - x0
+    allowed = settings.overall_excess_fraction * width
+    for other in others:
+        left, right = other.ticks[0], other.ticks[-1]
+        if (
+            left <= x0 + end
+            and right >= x1 - end
+            and (right - left) > width + end
+            and x0 - left <= allowed
+            and right - x1 <= allowed
+        ):
+            return other, module.Tiling.PIECES_DO_NOT_TILE
+    return None
+
+
+def test_the_overall_is_picked_as_before_reading_labels_only_where_it_can_be() -> None:
+    """#1866: the overall's pick read the labels over every line within reach of every chain (most
+    of a busy page's time); it reads them only over lines whose ends could be the overall, and
+    picks the same line."""
+    import random
+
+    from extraction.geometry import rows as module
+
+    rng = random.Random(1866)
+    settings = MEASURED_SETTINGS
+    for _round in range(40):
+        made = []
+        for _ in range(30):
+            x0 = Decimal(rng.choice(range(0, 200, 5)))
+            width = Decimal(rng.choice((40, 60, 80, 100, 120)))
+            ticks = (x0, x0 + width) if rng.random() < 0.6 else (x0, x0 + width / 2, x0 + width)
+            y = Decimal(rng.choice(range(0, 200, 3)))
+            run = module._Run(y=y, x0=ticks[0], x1=ticks[-1], ends=ticks)
+            made.append(module._Row(run=run, source=TickSource.SLASH, ticks=ticks))
+        made.sort(key=lambda row: (row.run.y, row.run.x0))
+        printed = {id(row) for row in made if rng.random() < 0.5}
+        for row in made:
+            asked: list[object] = []
+
+            def labelled(
+                other: object, asked: list[object] = asked, printed: set[int] = printed
+            ) -> bool:
+                asked.append(other)
+                return id(other) in printed
+
+            def naive(other: object, printed: set[int] = printed) -> bool:
+                return id(other) in printed
+
+            found = module._overall_for(row, made, settings, labelled=labelled)
+            expected = _naive_overall(row, made, settings, naive)
+            assert (None if found is None else found[:2]) == expected
+            x0, x1 = row.ticks[0], row.ticks[-1]
+            end = settings.overall_end_pt
+            for other in asked:  # only lines that could be the overall were read
+                assert other.ticks[0] <= x0 + end and other.ticks[-1] >= x1 - end  # type: ignore[attr-defined]

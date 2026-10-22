@@ -43,6 +43,7 @@ Verification: `tests/extraction/geometry/test_rows.py`
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, fields
@@ -1058,7 +1059,11 @@ def _is_tick(box: Box, row_ys: Sequence[Decimal], settings: RowSettings) -> bool
     """
     if box.width > settings.slash_maximum_pt or box.height > settings.slash_maximum_pt:
         return False
-    return any(abs(box.centre_y - y) <= settings.slash_reach_pt for y in row_ys)
+    # `row_ys` is in order (`build_rows` sorts the rows by height): the nearest rows are looked
+    # up, not every row (#1866). The same answer as asking each row.
+    centre, reach = box.centre_y, settings.slash_reach_pt
+    first = bisect_left(row_ys, centre - reach)
+    return first < len(row_ys) and row_ys[first] <= centre + reach
 
 
 def _overlap(first: Box, second: Box) -> bool:
@@ -1133,31 +1138,44 @@ def _overall_for(
     """
     x0, x1, y = row.ticks[0], row.ticks[-1], row.run.y
     end = settings.overall_end_pt
-    others = sorted(
-        (
-            other
-            for other in rows
-            if other is not row
-            and len(other.ticks) == 2
-            and settings.same_row_pt < abs(other.run.y - y) <= settings.overall_reach_pt
-        ),
-        key=lambda other: (not labelled(other), abs(other.run.y - y), other.run.y),
-    )
-    for other in others:
-        if abs(other.ticks[0] - x0) <= end and abs(other.ticks[-1] - x1) <= end:
-            return other, Tiling.COINCIDENT, _ZERO, _ZERO
+    near = [
+        other
+        for other in rows
+        if other is not row
+        and len(other.ticks) == 2
+        and settings.same_row_pt < abs(other.run.y - y) <= settings.overall_reach_pt
+    ]
+
+    def ranked(found: list[_Row]) -> list[_Row]:
+        # `labelled` reads the labels over a line: only the lines that could be the overall are
+        # asked (#1866). The ranking and the pick are the same as sorting every line within reach
+        # first: a stable sort of a subset keeps the subset's order.
+        return sorted(
+            found, key=lambda other: (not labelled(other), abs(other.run.y - y), other.run.y)
+        )
+
+    coincident = [
+        other
+        for other in near
+        if abs(other.ticks[0] - x0) <= end and abs(other.ticks[-1] - x1) <= end
+    ]
+    if coincident:
+        return ranked(coincident)[0], Tiling.COINCIDENT, _ZERO, _ZERO
     width = x1 - x0
     allowed = settings.overall_excess_fraction * width
-    for other in others:
+    enclosing = [
+        other
+        for other in near
+        if other.ticks[0] <= x0 + end
+        and other.ticks[-1] >= x1 - end
+        and (other.ticks[-1] - other.ticks[0]) > width + end
+        and x0 - other.ticks[0] <= allowed
+        and other.ticks[-1] - x1 <= allowed
+    ]
+    if enclosing:
+        other = ranked(enclosing)[0]
         left, right = other.ticks[0], other.ticks[-1]
-        if (
-            left <= x0 + end
-            and right >= x1 - end
-            and (right - left) > width + end
-            and x0 - left <= allowed
-            and right - x1 <= allowed
-        ):
-            return other, Tiling.PIECES_DO_NOT_TILE, max(_ZERO, x0 - left), max(_ZERO, right - x1)
+        return other, Tiling.PIECES_DO_NOT_TILE, max(_ZERO, x0 - left), max(_ZERO, right - x1)
     return None
 
 

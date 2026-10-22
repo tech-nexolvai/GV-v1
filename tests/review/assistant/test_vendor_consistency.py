@@ -193,6 +193,39 @@ def test_an_overhang_is_never_added_up(tmp_path: Path) -> None:
     assert result.findings == []
 
 
+def _sheet_doors(inset: float) -> bytes:
+    """A 120" cabinet drawn at 1 pt per inch with two 59 7/8" doors under it, drawn `inset` points
+    inside each end of the cabinet (the doors' reveal). A 25" dimension elsewhere shares the
+    scale. Made-up values."""
+    return (
+        _dim(300, 420, 300, '120"')
+        + _dim(300 + inset, 360, 280, '59 7/8"')
+        + _dim(360, 420 - inset, 280, '59 7/8"')
+        + _dim(450, 475, 150, '25"')
+        + _dim(450, 490, 120, '40"')
+    )
+
+
+def test_parts_drawn_short_of_the_overall_by_the_difference_are_not_its_string(
+    tmp_path: Path,
+) -> None:
+    """#1866: two doors drawn 1/8" inside each end of their cabinet print 1/4" less than it,
+    because they are drawn so; at a small scale that is under `END_PT`, and it was a false red."""
+    result = _check(tmp_path, _sheet_doors(0.125))
+    assert result.strings["found"] == 1 and result.strings["doubt"] == 1
+    assert result.findings == []
+    assert "drawn short of the overall's ends" in result.checks[0].reason
+
+
+def test_parts_drawn_to_the_overall_s_ends_that_do_not_add_up_are_still_a_wrong(
+    tmp_path: Path,
+) -> None:
+    result = _check(tmp_path, _sheet_doors(0.0))
+    assert result.strings["does_not_add_up"] == 1
+    (finding,) = result.findings
+    assert finding["parts"] == ['59 7/8"', '59 7/8"']
+
+
 def test_lines_with_no_end_marks_are_a_doubt_not_a_finding(tmp_path: Path) -> None:
     result = _check(tmp_path, _sheet_wrong(ticks=False))
     assert result.strings["doubt"] == 1
