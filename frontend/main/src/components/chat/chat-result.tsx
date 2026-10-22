@@ -385,6 +385,10 @@ function Where({ finding, number }: { finding: ChatFinding; number?: string | nu
       )}
       {area && <span className="min-w-0">{area}</span>}
       <span className="num text-xs">p.{finding.page}</span>
+      {finding.round_match?.words && (
+        // Information only (2026-10-22): the vendor's own earlier round is never counted as right.
+        <span data-slot="chat-result-round-match" className="rounded border border-dashed px-1 text-xs leading-4">{finding.round_match.words}</span>
+      )}
     </span>
   );
 }

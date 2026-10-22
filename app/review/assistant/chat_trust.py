@@ -55,7 +55,7 @@ from time import monotonic
 from types import ModuleType
 from typing import Any, Final
 
-from app.review.assistant import witness
+from app.review.assistant import round_reference, witness
 from app.review.assistant.chat_findings import finding_categories, live_findings, page_ranges
 from app.review.assistant.classification import READER_ERROR, READER_ERROR_WORDS
 from app.review.assistant.dim_findings import label_checks
@@ -501,10 +501,20 @@ _TEXT_MADE_BY: Final = frozenset({"architect_items", "simple_check"})
 
 def _text_made(finding: Mapping[str, Any]) -> str | None:
     """A finding a code check made from the drawings' text (what it read and the vendor sheets it
-    searched are in `text_proof`): an observed code witness."""
+    searched are in `text_proof`): an observed code witness. So is a missing millwork item the
+    escalation proved (`missing_items`, kind `missing_item`), while the finding still rests on the
+    architect label code searched for and still says the vendor does not show it."""
     proof = finding.get("text_proof")
     if finding.get("created_by") in _TEXT_MADE_BY and isinstance(proof, Mapping) and proof:
         return "agrees"
+    if isinstance(proof, Mapping) and proof.get("kind") == "missing_item":
+        dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+        label = _label_ref((dims or {}).get("architect"))
+        first = next(iter(proof.get("architect") or []), None)
+        searched = f"p{first.get('page')}.{first.get('id')}" if isinstance(first, Mapping) else None
+        shown = " ".join(str(finding.get("vendor") or "").split()).lower()
+        if label is not None and label == searched and shown.startswith("not shown"):
+            return "agrees"
     return None
 
 
@@ -842,7 +852,7 @@ def round_statuses(findings: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     """Each finding's `round_status`, linking the same item across rounds."""
     rounds = {int(f.get("round") or 1) for f in findings}
     if len(rounds) <= 1:
-        return {str(f["id"]): "single_round" for f in findings}
+        return _still_wrong(findings, {str(f["id"]): "single_round" for f in findings})
     by_key: dict[str, list[Mapping[str, Any]]] = {}
     for finding in findings:
         by_key.setdefault(_key(finding), []).append(finding)
@@ -851,12 +861,29 @@ def round_statuses(findings: Sequence[Mapping[str, Any]]) -> dict[str, str]:
         seen = {int(f.get("round") or 1) for f in group}
         if len(seen) > 1:
             latest = max(group, key=lambda f: int(f.get("round") or 1))
-            status = "fixed_in_later_round" if latest.get("status") == "same" else "still_wrong"
+            # A later "same" against the vendor's own earlier round fixes nothing (2026-10-22).
+            fixed = latest.get("status") == "same" and not round_reference.round_only(latest)
+            status = "fixed_in_later_round" if fixed else "still_wrong"
             out.update({str(f["id"]): status for f in group})
         elif seen == {min(rounds)}:
             out.update({str(f["id"]): "not_in_later_round" for f in group})
         else:
             out.update({str(f["id"]): "new_in_later_round" for f in group})
+    return _still_wrong(findings, out)
+
+
+def _still_wrong(findings: Sequence[Mapping[str, Any]], out: dict[str, str]) -> dict[str, str]:
+    """`out` with "still wrong" for a proved Wrong whose value the vendor did not change since an
+    earlier round: it repeats on its newest round a value the architect does not print (Anant,
+    2026-10-22: wrong "no matter how many rounds it took"; `round_reference`)."""
+    proof = import_module("app.review.assistant.proof")  # proof reads this module
+    for finding in findings:
+        if (
+            finding.get("status") == "different"
+            and round_reference.unchanged(finding)
+            and proof.proof_group(finding) == "clouded"
+        ):
+            out[str(finding["id"])] = "still_wrong"
     return out
 
 
@@ -873,6 +900,9 @@ def _rounds_summary(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any] | N
         for status in ("fixed_in_later_round", "still_wrong", "not_in_later_round")
     }
     new = sum(1 for f in findings if f.get("round_status") == "new_in_later_round")
+    # Information only (Anant, 2026-10-22): a value the vendor did not change since an earlier
+    # round is never Right by itself (`round_reference`).
+    unchanged = sum(1 for f in findings if round_reference.unchanged(f))
     # The comment letter's words (Closed / Previous comment not addressed / New, #1766).
     line = (
         f"Round {first} comments: {counts['fixed_in_later_round']} of {len(earlier)} closed; "
@@ -883,6 +913,11 @@ def _rounds_summary(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any] | N
         line += f"; {counts['not_in_later_round']} not found in a later round"
     if new:
         line += f"; {new} new in a later round"
+    if unchanged:
+        line += (
+            f"; {unchanged} unchanged since an earlier round (information only, not counted as "
+            "right)"
+        )
     return {
         "rounds": rounds,
         "earlier_items": len(earlier),
@@ -890,6 +925,7 @@ def _rounds_summary(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any] | N
         "still_wrong": counts["still_wrong"],
         "not_in_later_round": counts["not_in_later_round"],
         "new": new,
+        "unchanged": unchanged,
         "line": line,
     }
 

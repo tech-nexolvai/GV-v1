@@ -54,10 +54,28 @@ export function ConfidenceLine({ findings, trust }: { findings: readonly ChatFin
   );
 }
 
-/** The round chip ("Still wrong") when a set has rounds of comments; nothing for a single round. */
-export function RoundChip({ finding }: { finding: Pick<ChatFinding, 'round_status'> }) {
+/**
+ * The round chip ("Still wrong") when a set has rounds of comments; nothing for a single round.
+ * An item compared with the vendor's own earlier round also says so ("Unchanged since round 1"):
+ * information only, never a Right (2026-10-22).
+ */
+export function RoundChip({ finding }: { finding: Pick<ChatFinding, 'round_status' | 'round_match'> }) {
   const words = finding.round_status ? ROUND_WORDS[finding.round_status] : null;
-  if (!words) return null;
+  const match = finding.round_match?.words || null;
+  if (!words && !match) return null;
+  return (
+    <>
+      {words && <RoundStatusChip finding={finding} words={words} />}
+      {match && (
+        <span data-slot="chat-round-match" title="Information only: the vendor’s own earlier round is never counted as right" className="inline-flex w-fit rounded border border-dashed px-1 text-xs leading-4 text-muted-foreground">
+          {match}
+        </span>
+      )}
+    </>
+  );
+}
+
+function RoundStatusChip({ finding, words }: { finding: Pick<ChatFinding, 'round_status'>; words: string }) {
   return (
     <span
       data-slot="chat-round"

@@ -50,6 +50,7 @@ from app.review.assistant.chat_trust import judged
 from app.review.assistant.filler_range import covered_labels
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.full_check_advocate import code_checks, decide, ink_colour, needs_pairing
+from app.review.assistant.label_origin import ocr_read
 from app.review.assistant.product_scope import refiled
 from app.review.assistant.run_fit import covered_labels as run_fit_labels
 from app.review.assistant.simple_check import funnel as funnel_module
@@ -599,7 +600,7 @@ class _Run:
             # drew over it (`verify._ink_check`); any other label's own spot is looked at.
             vendor_ink=(
                 (1, 0.0)
-                if vendor.get("route") in ("text", "drawn") and vendor.get("origin") != "picture"
+                if vendor.get("route") in ("text", "drawn") and not ocr_read(vendor)
                 else self._ink(vendor)
             ),
             newer_same=same,

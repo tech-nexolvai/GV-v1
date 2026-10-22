@@ -284,18 +284,21 @@ def test_the_set_pack_writes_the_coverage_beside_its_labels(
     uploads, folder = tmp_path / "uploads", tmp_path / "pack"
     uploads.mkdir()
     folder.mkdir()
-    (uploads / "set.pdf").write_bytes(_pdf([READ + stroke_ops('48"', 450, 150)]))
+    # 36" on its line (the drawn route), 48" with no line (the OCR route reads it, #1848), and an
+    # unmarked 63 no reader reads (counted by the set's own digit shapes).
+    body = READ + stroke_ops('48"', 450, 150) + stroke_ops("63", 300, 80)
+    (uploads / "set.pdf").write_bytes(_pdf([body]))
     monkeypatch.setattr(set_pack, "_drawn_budget", lambda: 60.0)
     monkeypatch.setattr(dl, "drawn_readers", _engines)
     pages = [{"file": "set.pdf", "page": 1, "halves": HALVES}]
     set_pack.write_dims(folder, uploads, ["set.pdf"], pages)
     labels = json.loads((folder / "dims.json").read_text())["pages"][0]["labels"]
-    assert [label["text"] for label in labels] == ['36"']  # the labels as ever
+    assert sorted(label["text"] for label in labels) == ['36"', '48"']  # the labels as ever
     coverage = rc.load(folder)
     assert coverage is not None
-    assert coverage["sides"]["vendor"]["strokes"] == {"read": 1, "printed": 2}
+    assert coverage["sides"]["vendor"]["strokes"] == {"read": 2, "printed": 3}
     assert rc.summary_line(coverage, "vendor") == (
-        "Numbers read: 1 of about 2 printed on the vendor's drawings (50%)"
+        "Numbers read: 2 of about 3 printed on the vendor's drawings (67%)"
     )
     assert coverage["seconds"] >= 0
 

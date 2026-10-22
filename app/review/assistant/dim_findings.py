@@ -130,13 +130,26 @@ def fill_from_labels(
             out["vs_page"] = label["page"]
             vs_page = label["page"]
         found_side = str(label.get("side") or "unknown")
-        if found_side != "unknown" and found_side not in _EXPECTED[side]:
+        if side == "architect" and found_side == "vendor":
+            # A match with the vendor's own earlier round is never Right (2026-10-22): the item
+            # is compared with the architect only through the architect's own label.
+            notes.append(
+                f"{label['id']} is on the vendor's own drawing (an earlier round or another "
+                "view), not the architect's: a match with it is never counted as right; give "
+                "the architect's label for the same dimension"
+            )
+        elif found_side != "unknown" and found_side not in _EXPECTED[side]:
             notes.append(
                 f"{label['id']} is on the drawing the page map calls the {found_side}'s: check "
                 f"it is the {side}'s"
             )
         if label.get("origin") == "picture":
             notes.append(f"{label['id']} was read from a pasted picture by OCR: look at it once")
+        elif label.get("origin") == "ocr":
+            notes.append(
+                f"{label['id']} was read at its spot by two OCR engines (no label reader read "
+                "it): look at it once"
+            )
         elif label.get("route") == "drawn":
             notes.append(f"{label['id']} was read from drawn ink by OCR: look at it once")
         dims[side] = _provenance(label)
@@ -178,9 +191,13 @@ def label_checks(finding: Mapping[str, Any], checks: Mapping[str, Any]) -> dict[
             f"the {side}'s pasted picture (two OCR engines)"
             if label.get("origin") == "picture"
             else (
-                f"the {side}'s drawn ink (two OCR engines)"
-                if route == "drawn"
-                else "the drawing's text"
+                f"the {side}'s drawing, read at its spot (two OCR engines)"
+                if label.get("origin") == "ocr"
+                else (
+                    f"the {side}'s drawn ink (two OCR engines)"
+                    if route == "drawn"
+                    else "the drawing's text"
+                )
             )
         )
         out[key] = {

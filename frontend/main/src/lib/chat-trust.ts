@@ -551,6 +551,8 @@ export interface RoundCounts {
   still_wrong: number;
   new: number;
   not_in_later?: number | null;
+  /** Unchanged since an earlier round: information only, never counted as right (2026-10-22). */
+  unchanged?: number | null;
   unrequested?: number | null;
   /** The line code wrote (compare_rounds), shown as it is. */
   line?: string | null;
@@ -582,6 +584,7 @@ export function roundWords(counts: RoundCounts): string {
   if (counts.still_wrong) parts.push(`${counts.still_wrong} previous ${counts.still_wrong === 1 ? 'comment' : 'comments'} not addressed`);
   if (notInLater) parts.push(`${notInLater} not in the later round`);
   if (counts.new) parts.push(`${counts.new} new`);
+  if (counts.unchanged) parts.push(`${counts.unchanged} unchanged since an earlier round (information only)`);
   if (counts.unrequested) parts.push(`${counts.unrequested} ${counts.unrequested === 1 ? 'change' : 'changes'} nobody asked for`);
   return parts.join(' · ');
 }
