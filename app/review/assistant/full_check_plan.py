@@ -62,6 +62,7 @@ __all__ = [
     "CrossPairs",
     "FanOutPlan",
     "HelperJob",
+    "Reading",
     "drawn_job_cap",
     "no_vendor_pages",
     "pack_ready",
@@ -69,9 +70,11 @@ __all__ = [
     "plan_assumptions",
     "plan_jobs",
     "read_page_map",
+    "reading_of",
     "rules_summary",
     "scoped_plan",
     "wait_for_page_map",
+    "wait_for_reading",
     "with_lenses",
 ]
 
@@ -226,6 +229,13 @@ def read_page_map(
     loaded = _raw_page_map(folder)
     if loaded is None:
         return None
+    # A page the reading could not read (#1871) is never compared blind: it is skipped, with why.
+    unreadable = reading_of(folder).unreadable
+    for entry in loaded.get("pages") or []:
+        if isinstance(entry, dict):
+            why = unreadable.get((str(entry.get("file")), int(entry.get("page") or 0)))
+            if why and not entry.get("skip"):
+                entry["skip"] = why
     if assume:
         return with_assumptions(loaded, main_file, read_answers(folder))
     return apply_answers(loaded, read_answers(folder))
@@ -253,6 +263,105 @@ def _pack_state(folder: Path) -> tuple[str | None, list[str]]:
         return None, []
     done = status.get("done")
     return status.get("state"), [str(d) for d in done] if isinstance(done, list) else []
+
+
+# ---- the reading, page by page (#1871) -------------------------------------------------------
+
+#: The set pack's reading table (`set_pack.READING_FILE`; that module is not imported here).
+READING_FILE: Final = "reading.json"
+#: How often a wait for the reading looks again (seconds).
+READING_POLL_SECONDS: Final = 2.0
+
+
+@dataclass(frozen=True, slots=True)
+class Reading:
+    """Where the reading of a set stands (`reading_of`): `state` is `reading` (pages still being
+    read), `ready` (every page read or known unreadable: the labels are settled), `failed` (the
+    pack could not be made, or not one page was read: `why`), or `none` (no pack). `done` of
+    `total` pages are read or known unreadable; `ready` holds the pages read (file, page) and
+    `unreadable` each page that could not be read, with why ("page N could not be read: ...")."""
+
+    state: str
+    done: int = 0
+    total: int = 0
+    ready: frozenset[tuple[str, int]] = frozenset()
+    unreadable: dict[tuple[str, int], str] = field(default_factory=dict)
+    why: str | None = None
+
+
+def reading_of(folder: Path | None) -> Reading:
+    """The reading's state now, from the pack's `status.json` and its reading table: the one
+    place a full check (and the plan, and the live card) asks whether a page may be compared."""
+    if folder is None or not Path(folder).is_dir():
+        return Reading("none")
+    status: dict[str, Any] = {}
+    try:
+        loaded = json.loads((folder / "status.json").read_text(encoding="utf-8"))
+        status = loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError):
+        pass
+    try:
+        table = json.loads((folder / READING_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        table = None
+    rows = table.get("pages") if isinstance(table, dict) else None
+    ready: set[tuple[str, int]] = set()
+    unreadable: dict[tuple[str, int], str] = {}
+    waiting: list[tuple[str, int]] = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, Mapping):
+            continue
+        key = (str(row.get("file")), int(row.get("page") or 0))
+        if row.get("state") == "ready":
+            ready.add(key)
+        elif row.get("state") == "failed":
+            unreadable[key] = str(row.get("error") or f"page {key[1]} could not be read")
+        else:
+            waiting.append(key)
+    state = status.get("state")
+    total = len(rows) if isinstance(rows, list) else 0
+    if not total:
+        mapped = _raw_page_map(folder)
+        total = len((mapped or {}).get("pages") or [])
+    if state == "failed":
+        why = str(status.get("reason") or status.get("error") or "the drawings could not be read")
+        return Reading("failed", len(ready) + len(unreadable), total, frozenset(), {}, why)
+    if state in ("ready", "ready_without_labels"):
+        if state == "ready_without_labels":
+            # The labels stopped (a time limit): the pages not read by then are unreadable.
+            stopped = str(status.get("labels_error") or "stopped")
+            for key in waiting:
+                unreadable[key] = f"page {key[1]} could not be read: the reading {stopped}"
+            if rows is None or not ready:
+                why = f"the drawings could not be read in full (the reading {stopped})"
+                return Reading("failed", 0, total, frozenset(), unreadable, why)
+        return Reading("ready", total, total, frozenset(ready), unreadable)
+    return Reading("reading", len(ready) + len(unreadable), total, frozenset(ready), unreadable)
+
+
+def wait_for_reading(
+    folder: Path | None,
+    stop: threading.Event,
+    *,
+    on_progress: Callable[[Reading], None] | None = None,
+    poll: float = READING_POLL_SECONDS,
+) -> Reading:
+    """Wait until the reading of the set is finished (`ready`) or `failed`, telling `on_progress`
+    each time the count of pages read changes. Returns the reading (`state` `stopped` when `stop`
+    was set first). Costs nothing: no AI call is made while it waits. The pack's own time limits
+    end every reading, so this ends too."""
+    seen = -1
+    while True:
+        reading = reading_of(folder)
+        if reading.state in ("ready", "failed", "none"):
+            if on_progress is not None and reading.state == "ready":
+                on_progress(reading)
+            return reading
+        if on_progress is not None and reading.done != seen:
+            seen = reading.done
+            on_progress(reading)
+        if stop.wait(poll):
+            return Reading("stopped", reading.done, reading.total)
 
 
 def pack_ready(folder: Path | None) -> bool:

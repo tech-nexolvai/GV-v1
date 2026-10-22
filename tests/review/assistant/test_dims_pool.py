@@ -66,7 +66,7 @@ def test_a_page_that_crashes_its_worker_twice_is_unreadable_and_the_rest_is_read
     results: dict[int, Any] = {}
     dims_pool.read_pages(
         tasks,
-        dims_pool.Budgets(0, 0, 0, 0),
+        {"pictures": 0, "drawn": 0, "ocr": 0, "sweep": 0},
         crashing_read,
         results.__setitem__,
         unreadable=dl.unreadable_page,
@@ -102,7 +102,7 @@ def test_finished_pages_are_kept_and_a_run_resumes_without_reading_them_again(
     results: dict[int, Any] = {}
     dims_pool.read_pages(
         tasks,
-        dims_pool.Budgets(0, 60, 0, 0),
+        {"pictures": 0, "drawn": 60, "ocr": 0, "sweep": 0},
         counting,
         results.__setitem__,
         unreadable=dl.unreadable_page,
@@ -116,7 +116,7 @@ def test_finished_pages_are_kept_and_a_run_resumes_without_reading_them_again(
     pdf.write_bytes(_pdf([_page_two(), _page_two(), _page_two()]))
     dims_pool.read_pages(
         tasks,
-        dims_pool.Budgets(0, 60, 0, 0),
+        {"pictures": 0, "drawn": 60, "ocr": 0, "sweep": 0},
         counting,
         results.__setitem__,
         unreadable=dl.unreadable_page,

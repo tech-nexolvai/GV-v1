@@ -151,13 +151,14 @@ _log = logging.getLogger(__name__)
 LABELS_VERSION: Final = 3
 #: The most labels one page lists (a schedule page can print hundreds of numbers).
 MAX_LABELS: Final = 400
-#: The picture route's time across a set (seconds, #1830): most sets paste no picture at all.
-PICTURES_BUDGET_S: Final = 240.0
-#: The OCR route's time across a set and on one page (seconds, #1848): a few seconds a page.
-OCR_BUDGET_S: Final = 600.0
+#: Time limits for ONE page (seconds; #1871: per page, so a set of any size reads in about its
+#: pages' time over the workers): the picture route (#1830), the OCR route (#1848: a few seconds a
+#: page) and `read_number` at pack time (#1860). The drawn route's is the set pack's
+#: (`set_pack.DIMS_DRAWN_BUDGET_S`).
+PICTURES_BUDGET_S: Final = 120.0
+OCR_BUDGET_S: Final = 60.0
 OCR_PAGE_S: Final = 60.0
-#: `read_number` at pack time across a set (seconds, #1860).
-SWEEP_BUDGET_S: Final = 60.0
+SWEEP_BUDGET_S: Final = 30.0
 #: The most phrases one page lists.
 MAX_PHRASES: Final = 1500
 #: A bare number larger than this is not read as inches (it is a count, a note number, or mm).
@@ -3501,8 +3502,8 @@ def build_dims(
     page it did not reach is not in it.
 
     Since #1871 each page is read whole (text, pictures, drawn ink) by `read_page`, `workers`
-    pages at once in worker processes (`dims_pool`; 1: in this process, in order), the budgets
-    still shared by the set's pages (each page is given what is left when it starts); `keep`: the
+    pages at once in worker processes (`dims_pool`; 1: in this process, in order), every budget
+    now a limit for ONE page (`drawn_budget_s` too); `keep`: the
     folder the finished pages are kept in, so a stopped run resumes. A page that crashed the PDF
     reader twice has no labels and says so (`error`). `reader`: what reads a page (default
     `read_page`; the set pack's adds the page's health check, given `health`, each upload's listing
@@ -3529,7 +3530,7 @@ def build_dims(
                 halves[key].append(candidate)
     document: dict[str, Any] = {"version": LABELS_VERSION, "files": list(pdfs), "pages": []}
     # Each page read whole (its text, its pasted pictures, its drawn ink), in worker processes
-    # (`dims_pool`, #1871); the set's budgets shared by the pages as they start.
+    # (`dims_pool`, #1871), each within its own time limits.
     tasks: list[dims_pool.PageTask] = []
     for name, pdf in pdfs.items():
         count = 0
@@ -3556,7 +3557,12 @@ def build_dims(
             )
             for number in range(1, count + 1)
         ]
-    budgets = dims_pool.Budgets(pictures_budget_s, drawn_budget_s, ocr_budget_s, sweep_budget_s)
+    limits = {
+        "pictures": pictures_budget_s,
+        "drawn": drawn_budget_s,
+        "ocr": ocr_budget_s,
+        "sweep": sweep_budget_s,
+    }
     reads = {} if reads is None else reads
 
     def finished(index: int, read: PageRead) -> None:
@@ -3567,7 +3573,7 @@ def build_dims(
 
     dims_pool.read_pages(
         tasks,
-        budgets,
+        limits,
         reader or read_page,
         finished,
         unreadable=unreadable_page,
@@ -3575,6 +3581,7 @@ def build_dims(
         keep=keep,
         version=f"labels {LABELS_VERSION}",
         table=dims_pool.Table(tasks, on_status),
+        finished=lambda read: read.entry.get("drawn") not in ("not_run", "partial"),
     )
     pending: dict[tuple[str, int], PageLabels] = {}
     samples: list[vendor_alphabet.Sample] = []

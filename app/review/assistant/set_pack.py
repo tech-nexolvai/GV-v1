@@ -135,11 +135,11 @@ PACK_VERSION: Final = 16
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
 RENDER_DPI: Final = 100
-#: Seconds the dimension labels' drawn-ink route (OCR) may spend on one set, after every page's
-#: text labels (`GV_DIM_LABELS_DRAWN_BUDGET_S`; 0 turns it off). It reads the vendor's drawn
-#: numbers label by label in the labels' own low-priority process (#1571); pages it does not reach
-#: stay `not_run`, and their drawn values keep `verify_value`.
-DIMS_DRAWN_BUDGET_S: Final = 1200.0
+#: Seconds the dimension labels' drawn-ink route (OCR) may spend on ONE page (#1871: a limit per
+#: page, read in worker processes; `GV_DIM_LABELS_DRAWN_BUDGET_S`; 0 turns it off). It reads the
+#: vendor's drawn numbers label by label (#1571); a page it does not finish is `partial`, and its
+#: drawn values keep `verify_value`.
+DIMS_DRAWN_BUDGET_S: Final = 300.0
 #: The hi-res page cache's folder inside the pack (`page_cache`, #1548): 300-dpi tiles of each page
 #: a crop was cut from, made on first need.
 HIRES: Final = "hires"

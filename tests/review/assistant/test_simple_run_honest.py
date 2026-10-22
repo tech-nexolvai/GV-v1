@@ -146,8 +146,11 @@ def test_a_pack_without_labels_compares_nothing_and_is_not_for_sending(
 
     monkeypatch.setattr(compare_module, "compare_all", no_call)
     outcome = run.engine.run()
-    assert outcome.text.startswith(f"**The check could not run: {run_module.LABELS_NOT_READ}.")
-    assert outcome.stopped == "error" and _state(outcome).get("incomplete")  # S0
+    # #1871: the full check never starts before the drawings are read; a pack whose reading
+    # stopped is refused before any step, plainly, with nothing spent.
+    assert outcome.text.startswith("The drawings could not be read (")
+    assert "nothing was spent" in outcome.text
+    assert outcome.stopped == "error" and outcome.cost_micros == 0
     assert SEND not in outcome.text
 
 
