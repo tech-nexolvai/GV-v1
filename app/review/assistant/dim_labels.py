@@ -3343,6 +3343,8 @@ class PageRead:
     found: PageLabels | None = None
     spent: dict[str, float] = field(default_factory=dict)
     ink: Any = None
+    health: dict[str, Any] | None = None
+    """The page's health check (`extraction/page_health`), when the task asked for it."""
 
 
 def unreadable_page(task: dims_pool.PageTask, why: str) -> PageRead:
@@ -3477,6 +3479,11 @@ def build_dims(
     ink: dict[tuple[str, int], Any] | None = None,
     workers: int = 1,
     keep: Path | None = None,
+    reader: Callable[[dims_pool.PageTask, Mapping[str, float]], PageRead] | None = None,
+    health: Mapping[str, Mapping[str, Any]] | None = None,
+    uploads: Mapping[str, Path] | None = None,
+    on_status: Callable[[dict[str, Any]], None] | None = None,
+    reads: dict[int, PageRead] | None = None,
 ) -> dict[str, Any]:
     """The set pack's `dims.json`: every page of every upload and its labels. Three passes: the
     text route on every page first (the agent has every printed label in minutes), then the pasted
@@ -3497,7 +3504,11 @@ def build_dims(
     pages at once in worker processes (`dims_pool`; 1: in this process, in order), the budgets
     still shared by the set's pages (each page is given what is left when it starts); `keep`: the
     folder the finished pages are kept in, so a stopped run resumes. A page that crashed the PDF
-    reader twice has no labels and says so (`error`)."""
+    reader twice has no labels and says so (`error`). `reader`: what reads a page (default
+    `read_page`; the set pack's adds the page's health check, given `health`, each upload's listing
+    entry, and `uploads`, the uploads themselves); `on_status`: the reading table
+    (`dims_pool.Table`) each time a page's state changes; `reads`: filled with each page's
+    `PageRead`, by its place in the set."""
     halves: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     pasted: dict[tuple[str, int], list[Sequence[float]]] = {}
     entries = page_map.get("pages") if isinstance(page_map, Mapping) else None
@@ -3540,11 +3551,13 @@ def build_dims(
                 tuple(tuple(b) for b in pasted.get((name, number), ())),
                 number in with_pictures,
                 ink is not None,
+                None if health is None else tuple(sorted(dict(health.get(name) or {}).items())),
+                str((uploads or {}).get(name, "")),
             )
             for number in range(1, count + 1)
         ]
     budgets = dims_pool.Budgets(pictures_budget_s, drawn_budget_s, ocr_budget_s, sweep_budget_s)
-    reads: dict[int, PageRead] = {}
+    reads = {} if reads is None else reads
 
     def finished(index: int, read: PageRead) -> None:
         reads[index] = read
@@ -3555,12 +3568,13 @@ def build_dims(
     dims_pool.read_pages(
         tasks,
         budgets,
-        read_page,
+        reader or read_page,
         finished,
         unreadable=unreadable_page,
         count=workers,
         keep=keep,
         version=f"labels {LABELS_VERSION}",
+        table=dims_pool.Table(tasks, on_status),
     )
     pending: dict[tuple[str, int], PageLabels] = {}
     samples: list[vendor_alphabet.Sample] = []

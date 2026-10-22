@@ -39,6 +39,7 @@ __all__ = [
     "PAGES_FOLDER",
     "WORKERS_SETTING",
     "PageTask",
+    "Table",
     "read_pages",
     "workers",
 ]
@@ -80,6 +81,10 @@ class PageTask:
     pasted: tuple[Any, ...] = ()
     with_pictures: bool = False
     count_ink: bool = False
+    health: tuple[tuple[str, Any], ...] | None = None
+    """With the page's health check (`extraction/page_health`): its upload's listing entry."""
+    upload: str = ""
+    """The upload itself (the health check reads the original, not the drawings-only copy)."""
 
 
 @dataclass(slots=True)
@@ -182,6 +187,53 @@ def _serve(connection: Connection, reader: str) -> None:
         connection.send(("done", result))
 
 
+#: A page's states in the reading table (`Table`): not started, being read, read, could not be read.
+WAITING: Final = "waiting"
+READING: Final = "reading"
+READY: Final = "ready"
+FAILED: Final = "failed"
+
+
+class Table:
+    """The reading's status table: each page's state (`WAITING`, `READING`, `READY`, `FAILED`
+    with why), published whole (`on_change`) each time one changes. The set pack writes it as
+    `reading.json`; a full check starts on a page only when it is ready (`page_states`)."""
+
+    def __init__(
+        self,
+        tasks: Sequence[PageTask],
+        on_change: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        self._rows = [{"file": task.name, "page": task.number, "state": WAITING} for task in tasks]
+        self._on_change = on_change
+
+    def set(self, index: int, state: str, error: str | None = None) -> None:
+        row = self._rows[index]
+        row["state"] = state
+        if error:
+            row["error"] = error
+        if self._on_change is not None:
+            try:
+                self._on_change(self.snapshot())
+            except Exception as failed:  # noqa: BLE001 - the table never stops the reading
+                _log.warning("dimension labels: reading table not written: %s", failed)
+
+    def snapshot(self) -> dict[str, Any]:
+        states = [row["state"] for row in self._rows]
+        return {
+            "total": len(states),
+            "ready": states.count(READY),
+            "failed": states.count(FAILED),
+            "pages": [dict(row) for row in self._rows],
+        }
+
+
+def _state_of(result: Any) -> tuple[str, str | None]:
+    entry = getattr(result, "entry", None) or {}
+    error = entry.get("error")
+    return (FAILED, str(error)) if error else (READY, None)
+
+
 def read_pages(
     tasks: Sequence[PageTask],
     budgets: Budgets,
@@ -192,11 +244,19 @@ def read_pages(
     count: int | None = None,
     keep: Path | None = None,
     version: str = "",
+    table: Table | None = None,
 ) -> None:
     """Read every task's page; `on_result(index, result)` as each one finishes (any order). A
     page that crashed two workers gets `unreadable(task, CRASHED)` as its result; a page whose
     reading raised gets `unreadable(task, <error>)`. `keep`: the folder the finished pages are
     kept in (and read back from, so a run resumes)."""
+    table = table if table is not None else Table(tasks)
+    told = on_result
+
+    def on_result(index: int, result: Any) -> None:
+        told(index, result)
+        table.set(index, *_state_of(result))
+
     digests = {pdf: _digest(pdf) for pdf in {task.pdf for task in tasks}}
     keys = [_key(task, version, digests) for task in tasks]
     todo: list[int] = []
@@ -209,6 +269,7 @@ def read_pages(
     count = workers() if count is None else max(1, count)
     if count <= 1 or len(todo) <= 1:
         for index in todo:
+            table.set(index, READING)
             try:
                 result = read_page(tasks[index], budgets.given())
             except Exception as failed:  # noqa: BLE001 - the page says why; the rest is read
@@ -218,7 +279,18 @@ def read_pages(
             on_result(index, result)
         return
     reader = f"{read_page.__module__}:{read_page.__qualname__}"
-    _pool(tasks, todo, keys, budgets, on_result, unreadable, min(count, len(todo)), keep, reader)
+    _pool(
+        tasks,
+        todo,
+        keys,
+        budgets,
+        on_result,
+        unreadable,
+        min(count, len(todo)),
+        keep,
+        reader,
+        table,
+    )
 
 
 def _start(context: Any, reader: str) -> _Worker:
@@ -239,6 +311,7 @@ def _pool(
     count: int,
     keep: Path | None,
     reader: str,
+    table: Table,
 ) -> None:
     context = multiprocessing.get_context("spawn")
     queue = list(todo)
@@ -251,6 +324,7 @@ def _pool(
             return
         index = queue.pop(0)
         worker.task = index
+        table.set(index, READING)
         worker.connection.send((tasks[index], budgets.given()))
 
     try:

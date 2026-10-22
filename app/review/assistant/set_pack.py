@@ -1097,6 +1097,7 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
     done: list[str] = []
     _set_status(folder, "building", done, files=names)
     _write_bytes(folder / "README.txt", _README.encode("utf-8"))
+    _write_json(folder / _LISTING_FILE, [dict(item) for item in listing])
     try:
         copies = {}
         for name in names:
@@ -1137,25 +1138,18 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         )
         done.append("page_map")
         _set_status(folder, "building", done, files=names)
-        try:
-            _health(folder, uploads, listing)
-            done.append("health")
-        except Exception as failed:  # noqa: BLE001 - the pack works without the health check
-            _log.warning("assistant set pack health check failed: %s", type(failed).__name__)
-        for name in names:
-            pages = _render_pages(
-                copies[name],
-                folder / "pages" / stem(name),
-                RENDER_DPI,
-                _note(folder, "drawing", name),
-            )
-            _contact_sheets(name, pages, folder / "contact")
-        done += ["pages", "contact_sheets"]
-        _set_status(folder, "building", done, files=names)
+        # The labels (with each page's health check) in their own process, its pages read at once
+        # by worker processes (#1871); the page pictures drawn here meanwhile.
         labels_error: str | None = None
+        drawn: list[str] = []
+        reading = threading.Thread(
+            target=_pictures, args=(folder, names, copies, drawn), name="gv-set-pack-pictures"
+        )
+        reading.start()
+        labelled = False
         try:
             _dims(folder, uploads, names, page_map)
-            done.append("dims")
+            labelled = True
         except Exception as failed:  # noqa: BLE001 - the pack works without labels, said so
             _log.warning("assistant set pack labels failed: %s", type(failed).__name__)
             labels_error = (
@@ -1163,6 +1157,14 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
                 if isinstance(failed, subprocess.TimeoutExpired)
                 else type(failed).__name__
             )
+        reading.join()
+        done += drawn
+        if labelled:
+            done.append("dims")
+        if (folder / "health.json").is_file():
+            done.append("health")
+        if "pages" not in done:
+            raise RuntimeError("the page pictures could not be drawn")
         # The labels' process decides the candidate drawings; if it stopped first, they are
         # decided here from the labels it wrote (never left undecided in a ready pack).
         _settle_folder(folder)
@@ -1175,6 +1177,25 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         _set_status(folder, READY_WITHOUT_LABELS, done, files=names, labels_error=labels_error)
         return
     _set_status(folder, "ready", done, files=names)
+
+
+def _pictures(
+    folder: Path, names: Sequence[str], copies: Mapping[str, Path], done: list[str]
+) -> None:
+    """Each page's picture and the contact sheets (`done` gets `pages`, `contact_sheets`)."""
+    try:
+        for name in names:
+            pages = _render_pages(
+                copies[name],
+                folder / "pages" / stem(name),
+                RENDER_DPI,
+                _note(folder, "drawing", name),
+            )
+            _contact_sheets(name, pages, folder / "contact")
+    except Exception as failed:  # noqa: BLE001 - said by the pack's step list
+        _log.warning("assistant set pack pictures failed: %s", type(failed).__name__)
+        return
+    done += ["pages", "contact_sheets"]
 
 
 def _content_sides(pdf: Path, entries: list[dict[str, Any]], cache: Path) -> None:
@@ -1293,25 +1314,6 @@ def _settle_folder(
     return True
 
 
-def _health(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]) -> None:
-    """`health.json`: each page's facts and plain sentences (`extraction/page_health`, #1745)."""
-    health = import_module("extraction.page_health")
-    pages: list[dict[str, Any]] = []
-    for item in listing:
-        name = str(item["name"])
-        data = (uploads / name).read_bytes()
-        with PDFIUM_LOCK:
-            document = pdfium.PdfDocument(data)
-            count = len(document)
-            document.close()
-        progress = _note(folder, "checking the health of", name)
-        for number in range(1, count + 1):
-            progress(number)
-            with PDFIUM_LOCK:
-                pages.append(health.page_health(data, name, number, item))
-    _write_json(folder / "health.json", {"version": PACK_VERSION, "pages": pages})
-
-
 def _drawn_budget() -> float:
     try:
         return max(0.0, float(os.environ.get("GV_DIM_LABELS_DRAWN_BUDGET_S", DIMS_DRAWN_BUDGET_S)))
@@ -1396,6 +1398,31 @@ def _dims(
         raise RuntimeError("the labels' process wrote no dims.json")
 
 
+#: The reading table (`dims_pool.Table`): each page's state (`waiting`, `reading`, `ready`,
+#: `failed` with why), `total`, `ready`, `failed`, and `complete` once the set's labels are settled.
+#: A full check starts on a page only when it is ready (#1871).
+READING_FILE: Final = "reading.json"
+#: The most often (seconds) the labels' facts are written while pages finish.
+WRITE_EVERY_S: Final = 10.0
+
+
+def read_pack_page(task: Any, given: Mapping[str, float]) -> Any:
+    """One page as the set pack reads it, in a worker process (#1871): its health check
+    (`extraction/page_health`, #1745) and its labels (`dim_labels.read_page`)."""
+    labels = import_module("app.review.assistant.dim_labels")
+    health: dict[str, Any] | None = None
+    if task.health is not None and task.upload:
+        try:
+            checker = import_module("extraction.page_health")
+            data = Path(task.upload).read_bytes()
+            health = checker.page_health(data, task.name, task.number, dict(task.health))
+        except Exception as failed:  # noqa: BLE001 - the page is read without its health check
+            _log.warning("assistant set pack health check failed: %s", type(failed).__name__)
+    read = labels.read_page(task, given)
+    read.health = health
+    return read
+
+
 def write_dims(
     folder: Path,
     uploads: Path,
@@ -1421,9 +1448,17 @@ def write_dims(
             line_work[(name, page)] = anchors.page_segments(uploads / name, page - 1)
         return line_work[(name, page)]
 
-    def written(document: dict[str, Any]) -> None:
+    table: dict[str, Any] = {}
+    last = [0.0]
+
+    def written(document: dict[str, Any], *, now: bool = False) -> None:
         if parent is not None and os.getppid() != parent:
             raise SystemExit(0)
+        # A big set's pages finish every second or two: its facts are written at most every
+        # `WRITE_EVERY_S` seconds (they are worked out from the whole document), and at the end.
+        if not now and time.monotonic() - last[0] < WRITE_EVERY_S:
+            return
+        last[0] = time.monotonic()
         _write_json(folder / "dims.json", document)
         # Each drawing's scale, measured from its printed dimensions (a few milliseconds).
         measured = scales.set_scales(document)
@@ -1439,8 +1474,18 @@ def write_dims(
         _write_json(folder / pairs.PAIRS_FILE, pairs.set_pairs(document, measured, anchored))
         # Each drawing's printed notes and tags (from the phrases dims.json keeps).
         _write_json(folder / notes.NOTES_FILE, notes.set_notes(document, pages))
+        # The reading table last: a page it says is ready has its labels in what was just written.
+        if table:
+            _write_json(folder / READING_FILE, {**table, "complete": False})
 
+    listing = _read_json(folder / _LISTING_FILE)
+    items = {
+        str(item.get("name")): item
+        for item in (listing if isinstance(listing, list) else [{"name": n} for n in names])
+        if isinstance(item, dict)
+    }
     ink: dict[tuple[str, int], Any] = {}
+    reads: dict[int, Any] = {}
     pool = import_module("app.review.assistant.dims_pool")
     in_process = os.environ.get("GV_DIM_LABELS_IN_PROCESS") == "1"
     document = labels.build_dims(
@@ -1452,15 +1497,27 @@ def write_dims(
         # Pages read at once in worker processes (#1871); tests read in this process unless set.
         workers=(1 if in_process and not os.environ.get(pool.WORKERS_SETTING) else pool.workers()),
         keep=folder / pool.PAGES_FOLDER,
+        reader=read_pack_page,
+        health={name: items.get(name) or {"name": name} for name in names},
+        uploads={name: uploads / name for name in names},
+        on_status=table.update,
+        reads=reads,
     )
+    written(document, now=True)
+    # Each page's health check (#1745), read with its labels (#1871).
+    checked = [reads[i].health for i in sorted(reads) if reads[i].health is not None]
+    if checked:
+        _write_json(folder / "health.json", {"version": PACK_VERSION, "pages": checked})
     # The candidate whole-page drawings, decided from every route's labels (#1772); the pack's
     # facts are written again from the settled page map.
     if _settle_folder(folder, document, labels._side):
         settled = _read_json(folder / "page_map.json") or {}
         pages["pages"] = list(settled.get("pages") or [])
         anchored_memo.clear()
-        written(document)
+        written(document, now=True)
     _write_coverage(folder, document, ink)
+    if table:
+        _write_json(folder / READING_FILE, {**table, "complete": True})
 
 
 def _write_coverage(
