@@ -38,6 +38,7 @@ import os
 import pickle
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -282,6 +283,15 @@ def _serve(connection: Connection, reader: str) -> None:
         os.nice(10)
     except OSError:  # a platform without it: read at normal priority
         pass
+    # A worker whose reader is gone (killed, crashed) stops at once, never left reading a page.
+    parent = os.getppid()
+
+    def watch() -> None:
+        while os.getppid() == parent:
+            time.sleep(2.0)
+        os._exit(0)
+
+    threading.Thread(target=watch, name="gv-page-worker-parent", daemon=True).start()
     from importlib import import_module
 
     module, name = reader.split(":")
