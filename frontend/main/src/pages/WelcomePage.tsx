@@ -16,7 +16,7 @@ import { projectId } from '@/api/config';
 import { useAsync } from '@/api/useAsync';
 import { NewReviewForm } from '@/components/upload/NewReviewForm';
 import { PageFrame } from '@/components/ui/PageFrame';
-import { setStatusWords } from '@/lib/words';
+import { sidebarWords } from '@/lib/set-check';
 
 interface WelcomePageProps {
   /** An upload finished: the app opens the set's chat (#1464). */
@@ -77,8 +77,8 @@ export function WelcomePage({ onCreated, onOpenSaved, onOpenReview }: WelcomePag
                           <time className="num" dateTime={pkg.created_at}>{formatDay(pkg.created_at)}</time>
                         </span>
                       </span>
-                      {/* #1744: a set's state is grey words, never an outcome colour (as in the sidebar). */}
-                      <span data-slot="set-status" data-status={pkg.state} className="shrink-0 text-xs text-muted-foreground max-sm:hidden">{setStatusWords(pkg.state)}</span>
+                      {/* #1744: a set's state is grey words, never an outcome colour; the newest full check's, as in the sidebar. */}
+                      <span data-slot="set-status" className="shrink-0 text-xs text-muted-foreground max-sm:hidden">{sidebarWords(pkg)}</span>
                       <ArrowRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                     </button>
                   </li>

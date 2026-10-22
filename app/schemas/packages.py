@@ -267,6 +267,53 @@ class ReadingActivityOut(BaseModel):
     summary: ReadingActivitySummaryOut
 
 
+class FullCheckCountsOut(BaseModel):
+    """A full check's items as its result screen counts them (its tiles)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    wrong: int = Field(ge=0, description="Wrong: proved by code, red on the cloud drawing.")
+    right: int = Field(ge=0, description="Right: matches the architect or GV's rule.")
+    ask_architect: int = Field(
+        ge=0, description="Ask the architect: the architect's size breaks a GV rule (#1839)."
+    )
+    not_compared: int = Field(ge=0, description="Not compared, each with its reason.")
+
+
+class FullCheckReviewOut(BaseModel):
+    """A full check's review result in AWI's words (`review_action`), once its package is made."""
+
+    model_config = ConfigDict(frozen=True)
+
+    action: Literal[
+        "approved", "approved_as_noted", "revise_resubmit", "rejected", "not_for_sending"
+    ]
+    words: str = Field(description='"Revise and resubmit", "Check incomplete: not for sending", …')
+
+
+class LatestFullCheckOut(BaseModel):
+    """The drawing set's newest full check (a chat's one-click check), for the Documents list and
+    the sidebar: the results now live in the chat, not in the old check runs."""
+
+    model_config = ConfigDict(frozen=True)
+
+    chat_id: UUID = Field(description="The chat that holds it: open `#/chat/<set>/<chat>`.")
+    message_id: UUID
+    ran_at: datetime = Field(description="When its answer was stored (the check ended).")
+    stopped: Literal["cost_cap", "cancelled", "error", "turn_limit", "interrupted"] | None = Field(
+        default=None, description="Why it stopped before it finished; null when it finished."
+    )
+    review_result: FullCheckReviewOut | None = Field(
+        default=None,
+        description="Its review result once its package is made; null when it stopped before.",
+    )
+    counts: FullCheckCountsOut
+
+
+#: Where the set's drawings are for the chat's full check: its set pack (the plan check's state).
+type DrawingsState = Literal["reading", "read", "failed"]
+
+
 class PackageOut(BaseModel):
     """One package, and the revision documents currently attach to.
 
@@ -311,6 +358,14 @@ class PackageOut(BaseModel):
     price; the model rates must be fixed first, and the action is refused), `fixed` (the set's
     fixed AI budget was reached) or `maximum` (the admin's maximum was reached): an admin raises
     the limit first. `null` when it can help, or nothing waits."""
+    full_check: LatestFullCheckOut | None = None
+    """The set's newest full check (its result, counts and chat); `null` before the first. Filled
+    by the package list (the sidebar), not by `GET .../packages/{id}`."""
+    checking: bool = False
+    """A full check of the set is running now on this server. Package list only."""
+    drawings: DrawingsState | None = None
+    """The set pack for the chat's full check: `reading` while its page map is made, `read` when
+    it is, `failed`; `null` when no copy of the PDFs was made yet. Package list only."""
 
 
 class ExtractionRequestOut(BaseModel):

@@ -8043,6 +8043,8 @@ export interface components {
             /** Why Not */
             why_not: string | null;
         };
+        /** @enum {string} */
+        DrawingsState: "reading" | "read" | "failed";
         /**
          * EarlierRunOut
          * @description One day's earlier calls for one purpose, from `ai_spend_history`.
@@ -8581,6 +8583,48 @@ export interface components {
             record_id?: string | null;
         };
         /**
+         * FullCheckCountsOut
+         * @description A full check's items as its result screen counts them (its tiles).
+         */
+        FullCheckCountsOut: {
+            /**
+             * Ask Architect
+             * @description Ask the architect: the architect's size breaks a GV rule (#1839).
+             */
+            ask_architect: number;
+            /**
+             * Not Compared
+             * @description Not compared, each with its reason.
+             */
+            not_compared: number;
+            /**
+             * Right
+             * @description Right: matches the architect or GV's rule.
+             */
+            right: number;
+            /**
+             * Wrong
+             * @description Wrong: proved by code, red on the cloud drawing.
+             */
+            wrong: number;
+        };
+        /**
+         * FullCheckReviewOut
+         * @description A full check's review result in AWI's words (`review_action`), once its package is made.
+         */
+        FullCheckReviewOut: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "approved" | "approved_as_noted" | "revise_resubmit" | "rejected" | "not_for_sending";
+            /**
+             * Words
+             * @description "Revise and resubmit", "Check incomplete: not for sending", …
+             */
+            words: string;
+        };
+        /**
          * GrantException
          * @description Accept one specific deviation, until one specific moment.
          *
@@ -8836,6 +8880,38 @@ export interface components {
              * @description Inches with the inch mark, in the form's own format: `3/4"`.
              */
             value: string;
+        };
+        /**
+         * LatestFullCheckOut
+         * @description The drawing set's newest full check (a chat's one-click check), for the Documents list and
+         *     the sidebar: the results now live in the chat, not in the old check runs.
+         */
+        LatestFullCheckOut: {
+            /**
+             * Chat Id
+             * Format: uuid
+             * @description The chat that holds it: open `#/chat/<set>/<chat>`.
+             */
+            chat_id: string;
+            counts: components["schemas"]["FullCheckCountsOut"];
+            /**
+             * Message Id
+             * Format: uuid
+             */
+            message_id: string;
+            /**
+             * Ran At
+             * Format: date-time
+             * @description When its answer was stored (the check ended).
+             */
+            ran_at: string;
+            /** @description Its review result once its package is made; null when it stopped before. */
+            review_result?: components["schemas"]["FullCheckReviewOut"] | null;
+            /**
+             * Stopped
+             * @description Why it stopped before it finished; null when it finished.
+             */
+            stopped?: ("cost_cap" | "cancelled" | "error" | "turn_limit" | "interrupted") | null;
         };
         /**
          * LayoutProposalOut
@@ -9419,6 +9495,11 @@ export interface components {
             /** Budget Limit */
             budget_limit?: ("unpriced" | "fixed" | "maximum") | null;
             /**
+             * Checking
+             * @default false
+             */
+            checking: boolean;
+            /**
              * Created At
              * Format: date-time
              */
@@ -9430,6 +9511,8 @@ export interface components {
             current_revision_id: string;
             /** Current Revision Number */
             current_revision_number: number;
+            drawings?: components["schemas"]["DrawingsState"] | null;
+            full_check?: components["schemas"]["LatestFullCheckOut"] | null;
             /**
              * Id
              * Format: uuid
@@ -9520,10 +9603,20 @@ export interface components {
             /** Approved */
             approved: boolean;
             /**
+             * Checking
+             * @description A full check of the set is running now on this server.
+             * @default false
+             */
+            checking: boolean;
+            /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** @description The set pack for the full check: reading, read, failed; null when not started. */
+            drawings?: components["schemas"]["DrawingsState"] | null;
+            /** @description The set's newest full check (the chat's one-click check): its review result, counts and chat; null before the first. The Documents table's main columns. */
+            full_check?: components["schemas"]["LatestFullCheckOut"] | null;
             /** Needs Decision */
             needs_decision: number;
             needs_decision_by_outcome: components["schemas"]["NeedsDecisionByOutcomeOut"];
