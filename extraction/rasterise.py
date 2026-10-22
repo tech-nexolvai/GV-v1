@@ -39,11 +39,10 @@ from typing import Any, Final
 from uuid import UUID
 
 import pdfplumber
-import pypdfium2 as pdfium  # type: ignore[import-untyped]
-import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 
 from evidence.coordinates import SUPPORTED_ROTATIONS
 from evidence.crop import RenderedPage, encode_png
+from extraction.pdfium_guard import pdfium, pdfium_raw
 from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 
 __all__ = [

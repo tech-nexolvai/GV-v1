@@ -1134,7 +1134,7 @@ def _cached_layer(
 def _picture(page: _Page, spot: tuple[float, float, float, float]) -> np.ndarray | None:
     """The vendor's layer at the spot as a grey picture; on GV's combined sheets its coloured
     pixels whitened (GV's marks, the colour rule)."""
-    pdfium = import_module("pypdfium2")
+    pdfium = import_module("extraction.pdfium_guard").pdfium
     lock = import_module("app.review.assistant.chat_drawing").PDFIUM_LOCK
     width, height = page.size
     x0, y0, x1, y1 = spot

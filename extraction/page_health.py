@@ -37,9 +37,9 @@ from typing import Any, Final
 
 import pdfplumber
 import pikepdf
-import pypdfium2 as pdfium  # type: ignore[import-untyped]
-import pypdfium2.raw as pdfium_c  # type: ignore[import-untyped]
 
+from extraction.pdfium_guard import pdfium
+from extraction.pdfium_guard import pdfium_raw as pdfium_c
 from extraction.stamp_text import carries_drawing
 from extraction.visible_text import InkPicture, ink_picture, is_shx_comment
 

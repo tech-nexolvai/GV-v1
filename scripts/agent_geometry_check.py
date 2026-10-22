@@ -308,8 +308,7 @@ def _write_crop(
 def sheet(
     arguments: argparse.Namespace, *, shows_a_number: Callable[[bytes], bool] | None = None
 ) -> int:
-    import pypdfium2 as pdfium  # type: ignore[import-untyped]
-
+    from extraction.pdfium_guard import pdfium
     from storage.local import LocalStore
     from workflow.stages import VISION_CROP_CONTEXT_MARGIN_PT
 

@@ -38,13 +38,13 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any, Literal, overload
 
 import pdfplumber
-import pypdfium2 as pdfium  # type: ignore[import-untyped]
 
 from evidence.coordinates import ImagePoint
 from evidence.crop import decode_rgb_png, encode_png
 from extraction.annotations import MarkupNote, OutlinedTextRegion, PageLayers
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.text_association import lines_within
+from extraction.pdfium_guard import pdfium
 from extraction.rasterise import VISION_CROP_DPI, drop_reviewer_layers
 from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 

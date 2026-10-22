@@ -33,7 +33,6 @@ from typing import Any, Final
 from xml.sax.saxutils import escape
 
 import pikepdf
-import pypdfium2 as pdfium  # type: ignore[import-untyped]
 from reportlab.lib.colors import Color, white  # type: ignore[import-untyped]
 from reportlab.lib.styles import ParagraphStyle  # type: ignore[import-untyped]
 from reportlab.pdfbase import pdfmetrics  # type: ignore[import-untyped]
@@ -75,6 +74,8 @@ from app.review.assistant.impact import BIGGEST_FIRST, biggest_line
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.rule_notes import HEADING as RULE_NOTE_HEADING
 from extraction import gv_marks
+from extraction.pdfium_guard import PDFIUM_LOCK as GUARD_LOCK
+from extraction.pdfium_guard import pdfium
 from extraction.stamp_text import carries_drawing, pasted_picture
 from vocabulary.product_registry import registry
 
@@ -113,8 +114,9 @@ MARKUP_TITLE: Final = "AI markup: draft, not GV's signed review"
 CROP_DPI: Final = 170
 CROP_PAD_PT: Final = 24.0
 CROP_MAX_PX: Final = 1600
-_PDFIUM_LOCK: Final = threading.Lock()
-#: The same lock for the set pack and the `zoom` tool (`set_pack.py`).
+#: pdfium's one process-wide lock (`extraction/pdfium_guard.py`: every pdfium call holds it; it is
+#: re-entrant, so a whole step may hold it too). The same lock for the set pack and the `zoom` tool.
+_PDFIUM_LOCK: Final = GUARD_LOCK
 PDFIUM_LOCK: Final = _PDFIUM_LOCK
 
 type Box = tuple[float, float, float, float]

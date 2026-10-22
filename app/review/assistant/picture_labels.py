@@ -340,7 +340,7 @@ def picture_sizes(page_pdf: bytes) -> tuple[list[Box], tuple[float, float]]:
 
 def _render(page_pdf: bytes, box: Box, size: tuple[float, float]) -> tuple[np.ndarray, float]:
     """The picture's area as a grey picture, its coloured pixels whitened, and its pixels a point."""
-    pdfium = import_module("pypdfium2")
+    pdfium = import_module("extraction.pdfium_guard").pdfium
     lock = import_module("app.review.assistant.chat_drawing").PDFIUM_LOCK
     width, height = size
     x0, y0, x1, y1 = box
