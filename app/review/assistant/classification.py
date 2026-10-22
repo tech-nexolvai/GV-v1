@@ -80,6 +80,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
+from app.review.assistant.finding_checks import wrong_part
 from app.review.assistant.round_picks import pick_words
 from app.review.assistant.round_reference import (
     ROUND_MATCH,
@@ -588,10 +589,15 @@ def architect_conflict(finding: Mapping[str, Any]) -> str | None:
     settled = finding.get("settled")
     if isinstance(settled, Mapping) and settled.get("method") == "gv_limits":
         return None  # GV's limits are a range, not the architect's size
+    part = wrong_part(finding)
     should = (
-        _number(finding.get("parts_sum"))
-        if finding.get("source") == "vendor_arithmetic"
-        else _number(inches.get("architect"))
+        part[1]
+        if part is not None
+        else (
+            _number(finding.get("parts_sum"))
+            if finding.get("source") == "vendor_arithmetic"
+            else _number(inches.get("architect"))
+        )
     )
     if should is None or printed != {should}:
         shown = ", ".join(f'{_trim(v)}"' for v in sorted(printed))

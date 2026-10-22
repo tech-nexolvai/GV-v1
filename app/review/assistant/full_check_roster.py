@@ -104,6 +104,7 @@ from app.review.assistant import (
 )
 from app.review.assistant import proof as proof_rule
 from app.review.assistant.chat_findings import UPDATE_FINDING
+from app.review.assistant.chat_findings import _architect_upload as architect_upload
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
 from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
 from app.review.assistant.chat_tools import HELPER_TOOLS, new_step
@@ -672,6 +673,7 @@ def apply_proofs(engine: ChatEngine, report: str, asked: Sequence[str]) -> dict[
         return dict.fromkeys(asked, "no proof: the verifier's reply was not readable")
     done: dict[str, str] = {}
     book = engine.book
+    sources = {str(f.get("id")): str(f.get("source") or "") for f in book.live()}
     for proof in proofs:
         if not isinstance(proof, Mapping):
             continue
@@ -681,11 +683,23 @@ def apply_proofs(engine: ChatEngine, report: str, asked: Sequence[str]) -> dict[
         if proof.get("outcome") != "inputs_found":
             done[finding_id] = f"cannot prove: {str(proof.get('why') or '')[:120]}"
             continue
+        # The vendor's own string (or GV's rule) has no architect spot: its "should be" is code's
+        # sum (or GV's rule), so an architect label named for it is never taken (a verifier once
+        # gave a vendor string an architect value read on the vendor's own page number).
+        own = sources.get(finding_id) in CODE_PAIRED_SOURCES
+        sides = (
+            (("vendor_dim", "vendor_box"),)
+            if own
+            else (
+                ("vendor_dim", "vendor_box"),
+                ("architect_dim", "arch_box"),
+            )
+        )
         change: dict[str, Any] = {"finding_id": finding_id}
-        for key in ("vendor_dim", "architect_dim"):
+        for key, _box in sides:
             if isinstance(proof.get(key), str) and proof[key].strip():
                 change[key] = proof[key].strip()
-        for key, side in (("vendor_box", "vendor_dim"), ("arch_box", "architect_dim")):
+        for side, key in sides:
             if side not in change and isinstance(proof.get(key), Mapping):
                 change[key] = dict(proof[key])
         if len(change) == 1:
@@ -1283,7 +1297,7 @@ class _Run:
     #: Items the escalation already gave their one deeper look.
     escalated: set[str] = field(default_factory=set)
     #: Every page's architect labels, set-wide, once read (`_architect_pages`, #1802).
-    architect_labels: list[list[dict[str, Any]]] | None = None
+    architect_labels: dict[tuple[str, int], list[dict[str, Any]]] | None = None
     #: The engine's spend when the roster started (the price counts from there).
     started_at: int = 0
     #: Pages a numbers helper compared whose open checklist lines no gap closer re-read (#1805).
@@ -3355,8 +3369,8 @@ class _Run:
                     f"({listed} = {printed} printed).",
                 )
             return
-        architect = architect_overalls(finding["parts"], self._architect_pages())
-        exact = architect_overalls(finding["parts"], self._architect_pages(), slips=0)
+        architect = architect_overalls(finding["parts"], self._architect_pages(finding))
+        exact = architect_overalls(finding["parts"], self._architect_pages(finding), slips=0)
         if architect != {summed} or exact != {summed}:
             said = ", ".join(sorted(format_inches(v) for v in architect)) or "no overall code found"
             self._set_string(
@@ -3424,16 +3438,28 @@ class _Run:
             return False
         return architect_paired(page_map, str(file) if file else None, page) is False
 
-    def _architect_pages(self) -> list[list[dict[str, Any]]]:
-        """Every page's architect labels code has (the set pack's `dims.json`), set-wide: a
-        vendor page is not always paired with its architect page."""
+    def _architect_pages(self, finding: Mapping[str, Any]) -> list[list[dict[str, Any]]]:
+        """The architect labels code has (the set pack's `dims.json`) that may show the vendor
+        string's run. GV's combined sheets: every page's, set-wide (a vendor page is not always
+        paired with its architect page). Separate uploads (#1798): only the architect pages
+        paired with the string's vendor page, and none when nothing is paired: another drawing's
+        run of the same sizes is never "the architect's" (a real two-file upload once got an
+        unrelated architect overall on vendor pages with no architect drawing)."""
         if self.architect_labels is None:
             pages = self.engine.book.dim_labels.pages()
-            self.architect_labels = [
-                [label for label in labels if label.get("side") == "architect"]
-                for labels in pages.values()
-            ]
-        return self.architect_labels
+            self.architect_labels = {
+                key: [label for label in labels if label.get("side") == "architect"]
+                for key, labels in pages.items()
+            }
+        labels = self.architect_labels
+        book = self.engine.book
+        architect = architect_upload(book.listing)
+        if architect is None or str(architect["name"]) == book.main_file:
+            return list(labels.values())
+        across = getattr(self.engine, "_cross", None)
+        page = finding.get("page")
+        paired = across.pairs.get(page, ()) if across is not None and isinstance(page, int) else ()
+        return [labels.get((str(file), int(number)), []) for file, number in paired]
 
     def _architect_guard(self) -> None:
         """Each vendor string's run as the architect prints it (#1802, $0): the overalls of the
@@ -3449,7 +3475,7 @@ class _Run:
                 or not finding.get("parts")
             ):
                 continue
-            found = architect_overalls(finding["parts"], self._architect_pages())
+            found = architect_overalls(finding["parts"], self._architect_pages(finding))
             if not found:
                 continue
             printed = sorted(_plain(v) for v in found)

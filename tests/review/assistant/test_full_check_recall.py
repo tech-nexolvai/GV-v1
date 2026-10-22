@@ -54,9 +54,9 @@ from tests.review.assistant.test_full_check_roster import (
 OPUS = "claude-opus-5-5"
 SONNET = "claude-sonnet-5-5"
 
-# Made-up values (no client values): a run of five parts that adds to 38 5/8" printed 38 1/2"; and
+# Made-up values (no client values): a run of five parts that adds to 38 7/8" printed 38 1/2"; and
 # a reading that mixed two runs (a 41 1/2" from the next run in place of 68" and 3/4").
-FIVE = ['3"', '11 1/8"', '3/4"', '20 3/4"', '3"']
+FIVE = ['3"', '11 3/8"', '3/4"', '20 3/4"', '3"']
 MIXED = ['8 1/2"', '41 1/2"', '4 1/4"']
 
 
@@ -366,7 +366,7 @@ def _chains(*chains: tuple[list[str], str]) -> dict[str, Any]:
 def test_two_blind_readings_of_the_same_string_prove_it_and_other_parts_drop_it() -> None:
     same = _chains((FIVE, '38 1/2"'), (['10"', '22"'], '32"'))
     outcome, why = compare_strings(FIVE, '38 1/2"', same)
-    assert outcome == "proved" and '38 5/8"' in why
+    assert outcome == "proved" and '38 7/8"' in why
     reversed_read = _chains((FIVE[::-1], '38 1/2"'))
     assert compare_strings(FIVE, '38 1/2"', reversed_read)[0] == "proved"
     # The mixed reading: the second reading lists the run's own parts, and they add up.
@@ -488,7 +488,7 @@ def test_a_string_two_blind_readings_agree_on_is_red(tmp_path: Path) -> None:
     asked = script.params["string"][0]
     assert asked["model"] == OPUS  # another model than the helpers'
     seen = json.dumps(asked["messages"])
-    assert "11 1/8" not in seen and "38 5/8" not in seen  # blind to the first reading
+    assert "11 3/8" not in seen and "38 7/8" not in seen  # blind to the first reading
     found = next(f for f in harness.engine.book.live() if f["id"] == finding_id)
     assert found["string_geometry"] == "two_reads"
     assert proof.proof_group(found) == "clouded"
