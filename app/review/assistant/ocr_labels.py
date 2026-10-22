@@ -140,8 +140,8 @@ def _read_spot(
 ) -> tuple[dict[tuple[str, int], set[tuple[str, Decimal]]], list[str]]:
     """Each engine's readings of one spot in every direction its vectors allow and the other way
     round, at each size; the allowed directions are marked as found lying (`picture_labels._FOUND`),
-    as the text detector marks a line on a picture. An engine often drops a drawn inch mark (`46`
-    for `46"`): where the vectors draw the mark in that direction, `marked` reads the line's digits
+    as the text detector marks a line on a picture. An engine often drops a drawn inch mark (`41`
+    for `41"`): where the vectors draw the mark in that direction, `marked` reads the line's digits
     as the vectors lay them out (their count must be the vectors' count) as that many inches. In
     an allowed direction a reading counts only when it `fits` the vectors (`21 3/8"` with its
     fraction stacked, read `213"`, has a digit too few)."""

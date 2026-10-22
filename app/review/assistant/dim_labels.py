@@ -2394,7 +2394,7 @@ _MARKED_LINE: Final = re.compile(r'^[\d /"]+$')
 
 
 def _marked_value(spot: ocr_labels.Spot, turn: int, text: str) -> Decimal | None:
-    """A reading with the drawn inch mark dropped or read as `9`s (`46`, `4699`), as inches: only
+    """A reading with the drawn inch mark dropped or read as `9`s (`41`, `4199`), as inches: only
     in a direction in which the vectors draw that mark, and only when the line is digits (a space,
     a slash or the mark at most) and their count is the vectors' (`_laid_out`)."""
     layout = dict(spot.marked).get(turn)
