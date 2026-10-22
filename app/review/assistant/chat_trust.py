@@ -501,10 +501,20 @@ _TEXT_MADE_BY: Final = frozenset({"architect_items", "simple_check"})
 
 def _text_made(finding: Mapping[str, Any]) -> str | None:
     """A finding a code check made from the drawings' text (what it read and the vendor sheets it
-    searched are in `text_proof`): an observed code witness."""
+    searched are in `text_proof`): an observed code witness. So is a missing millwork item the
+    escalation proved (`missing_items`, kind `missing_item`), while the finding still rests on the
+    architect label code searched for and still says the vendor does not show it."""
     proof = finding.get("text_proof")
     if finding.get("created_by") in _TEXT_MADE_BY and isinstance(proof, Mapping) and proof:
         return "agrees"
+    if isinstance(proof, Mapping) and proof.get("kind") == "missing_item":
+        dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+        label = _label_ref((dims or {}).get("architect"))
+        first = next(iter(proof.get("architect") or []), None)
+        searched = f"p{first.get('page')}.{first.get('id')}" if isinstance(first, Mapping) else None
+        shown = " ".join(str(finding.get("vendor") or "").split()).lower()
+        if label is not None and label == searched and shown.startswith("not shown"):
+            return "agrees"
     return None
 
 
