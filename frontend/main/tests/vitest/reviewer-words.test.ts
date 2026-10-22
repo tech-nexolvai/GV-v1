@@ -10,18 +10,20 @@ import { describe, expect, it } from 'vitest';
 import { chatListWords, fallbackWords, footerWords, modelLabel } from '@/lib/chat-messages';
 import { shortModelLabel } from '@/lib/chat-settings';
 import { modelName } from '@/lib/usage';
-import { BANNED_WORDS, COMPOSER_NOTE, COMPOSER_PLACEHOLDER, OUTCOME_WORDS, roundTagWords, setStatusWords } from '@/lib/words';
+import { sidebarWords } from '@/lib/set-check';
+import { BANNED_WORDS, COMPOSER_NOTE, COMPOSER_PLACEHOLDER, OUTCOME_WORDS, roundTagWords } from '@/lib/words';
 
 const SRC = resolve(__dirname, '../../src');
 
-/** The reviewer-facing code: the chat, the shell, the tracker. The words module itself holds the list. */
+/** The reviewer-facing code: the chat, the shell, the tracker, the Documents table. The words module itself holds the list. */
 function reviewerFiles(): string[] {
   const inDir = (dir: string, test: (name: string) => boolean) =>
     readdirSync(join(SRC, dir)).filter(test).map((name) => join(SRC, dir, name));
   return [
     ...inDir('components/chat', (name) => name.endsWith('.tsx')),
     ...inDir('components/shell', (name) => name.endsWith('.tsx')),
-    ...inDir('lib', (name) => /^chat-.*\.ts$/.test(name) || name === 'tracker.ts'),
+    ...inDir('components/documents', (name) => name.endsWith('.tsx')),
+    ...inDir('lib', (name) => /^chat-.*\.ts$/.test(name) || name === 'tracker.ts' || name === 'set-check.ts'),
     join(SRC, 'pages/ChatPage.tsx'),
     join(SRC, 'pages/TrackerPage.tsx'),
   ];
@@ -78,11 +80,21 @@ describe('reviewer words (#1712)', () => {
     expect(roundTagWords('Overall size')).toBe('Overall size');
   });
 
-  it('says a set’s state in plain grey words', () => {
-    expect(setStatusWords('AWAITING_REVIEW')).toBe('Drawings read');
-    expect(setStatusWords('EXTRACTING')).toBe('Reading the drawings…');
-    expect(setStatusWords('FAILED_PERMANENT')).toBe('Could not read the drawings');
-    expect(setStatusWords('SOMETHING_NEW')).toBe('Something new');
+  it('says a set’s state in plain grey words: its newest full check, never the old pipeline’s', () => {
+    const counts = { wrong: 5, right: 12, ask_architect: 0, not_compared: 30 };
+    const check = { chat_id: 'c', message_id: 'm', ran_at: '2026-10-21T10:00:00Z', counts, review_result: { action: 'revise_resubmit' as const, words: 'Revise and resubmit' } };
+    expect(sidebarWords({ full_check: check, drawings: 'read' })).toBe('Revise and resubmit · 5 wrong');
+    expect(sidebarWords({ full_check: { ...check, counts: { ...counts, wrong: 0 }, review_result: { action: 'approved', words: 'Approved' } } })).toBe('Approved');
+    expect(sidebarWords({ full_check: { ...check, review_result: { action: 'not_for_sending', words: 'Check incomplete: not for sending' } } })).toBe('Check incomplete · 5 wrong');
+    expect(sidebarWords({ full_check: { ...check, review_result: null, stopped: 'cost_cap' } })).toBe('Check did not finish · 5 wrong');
+    // Review needed: how many items a person decides before it can be approved.
+    expect(sidebarWords({ full_check: { ...check, counts: { ...counts, wrong: 0 }, review_result: { action: 'review_needed', words: 'Review needed' } } })).toBe('Review needed · 30 to decide');
+    // "Reading the drawings…" only while the set pack is really being made.
+    expect(sidebarWords({ drawings: 'reading' })).toBe('Reading the drawings…');
+    expect(sidebarWords({ drawings: 'read' })).toBe('Drawings read · Not checked yet');
+    expect(sidebarWords({ drawings: 'failed' })).toBe('Could not read the drawings');
+    expect(sidebarWords({})).toBe('Not checked yet');
+    expect(sidebarWords({ checking: true, full_check: check })).toBe('Full check running…');
   });
 
   it('lists a full check as "Full check" with when it started, and a question by its own words', () => {

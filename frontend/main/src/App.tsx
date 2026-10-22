@@ -43,7 +43,6 @@ export default function App() {
   const [chatName, setChatName] = useState<{ packageId: string; name: string } | null>(null);
   // Whether the open review's failed reading is restarting now (`reading.retrying`, #1249), so the
   // sidebar's badge says the same as the review's header.
-  const [liveRestarting, setLiveRestarting] = useState<{ packageId: string; restarting: boolean } | null>(null);
   // Bumped after a new review is created, so the sidebar lists it without a reload.
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
   const [documentPosition, setDocumentPosition] = useState(() => {
@@ -140,7 +139,6 @@ export default function App() {
     <AppShell
       title={title}
       crumbs={crumbs}
-      liveRestarting={packageId !== null && liveRestarting?.packageId === packageId ? liveRestarting : null}
       activePage={route.page}
       activePackage={packageId ?? chatPackageId}
       theme={theme}
@@ -189,7 +187,6 @@ export default function App() {
           sessionId={packageId}
           onEvidenceChange={setEvidencePanel}
           onTitleChange={(vendor, revisionNumber) => setReviewTitle({ packageId, title: vendor, revision: revisionNumber })}
-          onRestartingChange={(restarting) => setLiveRestarting({ packageId, restarting })}
           onBackToDocuments={() => go('documents')}
           onPackageChanged={() => setSidebarRefreshKey((key) => key + 1)}
         />
@@ -207,7 +204,9 @@ export default function App() {
       )}
 
       {route.page === 'documents' && (
-        <PackagesPage onOpenReview={openReview} onNewPackage={newReview}
+        <PackagesPage
+          onOpenSet={(id, chatId) => navigate(chatId ? { page: 'chat', packageId: id, chatId } : { page: 'chat', packageId: id })}
+          onNewPackage={newReview}
           initialCursors={documentPosition.cursors} positionNotice={documentPosition.notice}
           onPositionChange={rememberDocumentPosition} />
       )}

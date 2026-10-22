@@ -199,6 +199,11 @@ export interface Verdict {
   stamp: string;
   /** An unfinished check: a dashed stamp, a draft package. */
   draft: boolean;
+  /**
+   * Review needed (Anant 2026-10-22): the check finished, but too many items were Not compared to
+   * approve it; a person decides them first. A dashed stamp with a person glyph, never an approval.
+   */
+  pending: boolean;
   /** One sentence: only what no count on the screen says. */
   sentence: string;
 }
@@ -206,12 +211,16 @@ export interface Verdict {
 export function verdictOf(action: ChatReviewAction | null | undefined): Verdict | null {
   if (!action) return null;
   if (action.action === 'not_for_sending') {
-    return { stamp: action.words.replace(/:\s*/, ' · '), draft: true, sentence: `${action.reason.replace(/\.?$/, '.')} This package is a draft: do not send it yet.` };
+    return { stamp: action.words.replace(/:\s*/, ' · '), draft: true, pending: false, sentence: `${action.reason.replace(/\.?$/, '.')} This package is a draft: do not send it yet.` };
+  }
+  if (action.action === 'review_needed') {
+    // The screen's own next step; the vendor's files say only "Under review".
+    return { stamp: action.words, draft: false, pending: true, sentence: `${action.reason.replace(/\.?$/, '.')} Decide them below; until then the package tells the vendor “${action.vendor_words || 'Under review'}”.` };
   }
   const fabrication = action.fabrication > 0
     ? `${action.fabrication} of the wrong values ${action.fabrication === 1 ? 'changes' : 'change'} fabrication.`
     : null;
-  return { stamp: action.words, draft: false, sentence: [fabrication, action.next_step].filter(Boolean).join(' ') };
+  return { stamp: action.words, draft: false, pending: false, sentence: [fabrication, action.next_step].filter(Boolean).join(' ') };
 }
 
 // ── The work line ───────────────────────────────────────────

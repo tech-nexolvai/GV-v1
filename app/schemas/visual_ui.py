@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.review.row_location import RowLocation
 from app.schemas.architect_matches import ArchitectViewRefOut
 from app.schemas.findings import MissingInputOut
+from app.schemas.packages import DrawingsState, LatestFullCheckOut
 from app.schemas.review import optional_in_schema
 from verdict.outcomes import Outcome
 
@@ -731,6 +732,18 @@ class PackageSummaryItemOut(BaseModel):
     needs_decision_by_outcome: NeedsDecisionByOutcomeOut
     approved: bool
     signed_exports_ready: bool
+    full_check: LatestFullCheckOut | None = Field(
+        default=None,
+        description="The set's newest full check (the chat's one-click check): its review result, "
+        "counts and chat; null before the first. The Documents table's main columns.",
+    )
+    checking: bool = Field(
+        default=False, description="A full check of the set is running now on this server."
+    )
+    drawings: DrawingsState | None = Field(
+        default=None,
+        description="The set pack for the full check: reading, read, failed; null when not started.",
+    )
 
 
 class PackageSummaryPageOut(BaseModel):

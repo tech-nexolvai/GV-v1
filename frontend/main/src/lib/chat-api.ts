@@ -179,19 +179,25 @@ export interface ChatMessage {
 
 /**
  * #1622: the review result a full check's send-ready package carries, decided by code (rules S0 to
- * S7, the first that matches wins) from the comments it sends the vendor (the clouded Wrong items).
- * The comment letter and the cloud drawing's cover say the same words.
+ * S7 and RN, the first that matches wins) from the comments it sends the vendor (the clouded Wrong
+ * items). The comment letter and the cloud drawing's cover say the same words, except that the
+ * vendor reads "Under review" where GV's screen says "Review needed" (`vendor_words`).
  */
 export interface ChatReviewAction {
-  action: 'approved' | 'approved_as_noted' | 'revise_resubmit' | 'rejected' | 'not_for_sending';
-  rule: 'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7';
-  /** "Approved", "Approved as noted", "Revise and resubmit", "Rejected", "Check incomplete: not for sending". */
+  action: 'approved' | 'approved_as_noted' | 'review_needed' | 'revise_resubmit' | 'rejected' | 'not_for_sending';
+  rule: 'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'RN' | 'S5' | 'S6' | 'S7';
+  /** "Approved", "Approved as noted", "Review needed", "Revise and resubmit", "Rejected", "Check incomplete: not for sending". */
   words: string;
+  /** The result as the vendor reads it: the same words, but "Under review" for Review needed. */
+  vendor_words?: string;
+  /** Items Not compared, and all items (Wrong + Right + Ask the architect + Not compared). */
+  not_compared?: number;
+  items?: number;
   /** Why, in one line: "2 of 5 corrections change fabrication." */
   reason: string;
   corrections: number;
   fabrication: number;
-  /** S6: what was not reviewed. */
+  /** S6 and RN: what was not reviewed. */
   note?: string | null;
   /** What the vendor does next (the letter's closing line). */
   next_step: string;

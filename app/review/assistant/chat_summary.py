@@ -17,6 +17,7 @@ from app.review.assistant.chat_trust import cloud_kind
 from app.review.assistant.classification import not_compared_line
 from app.review.assistant.impact import by_impact
 from app.review.assistant.proof import classified, proof_counts, proof_group
+from app.review.assistant.review_action import review_action
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.vendor_text import vendor_text
 
@@ -197,7 +198,12 @@ def code_summary(
     lines += [line for line in also if line]
     steps: list[str] = []
     drawing = any("cloud" in name.lower() for name in files)
-    if wrong and drawing:
+    action = review_action(findings)
+    if action.action == "review_needed":
+        # Anant 2026-10-22: never approved because the system could not look; a person decides.
+        things = _plural(action.not_compared, "Not compared item", "Not compared items")
+        steps.append(f"a person decides the {things} before this can be approved")
+    elif wrong and drawing:
         steps.append("send the cloud drawing to the vendor")
     elif wrong:
         steps.append("send the wrong items to the vendor")

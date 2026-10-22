@@ -38,11 +38,12 @@ from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
+from app.api.set_check_status import set_check_statuses
 from app.auth import Action, Principal, Role, require_action, require_project_access, require_role
 from app.lifecycle import begin
 from app.lifecycle.side_states import PLAIN_STOP_REASONS
@@ -376,6 +377,7 @@ def list_product_types(
     summary="List this project's packages, newest first",
 )
 def list_packages(
+    request: Request,
     principal: Annotated[Principal, Depends(require_project_access)],
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
@@ -411,6 +413,15 @@ def list_packages(
     # makes a client walk an extra round trip to find the end.
     rows = session.execute(statement).all()
     items = [PackageOut.model_validate(dict(row._mapping)) for row in rows[:limit]]
+    # The set's newest full check and its drawings (the sidebar's line under each set).
+    statuses = set_check_statuses(session, request.app, [item.id for item in items])
+    for item in items:
+        found = statuses[item.id]
+        item.full_check, item.checking, item.drawings = (
+            found.full_check,
+            found.checking,
+            found.drawings,
+        )
     next_cursor = (
         encode_cursor(items[-1].created_at, items[-1].id) if len(rows) > limit and items else None
     )

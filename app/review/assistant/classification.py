@@ -83,6 +83,8 @@ from app.review.assistant.spot_locate import VENDOR_SEARCH, search_words, spot_w
 __all__ = [
     "PROTOTYPE_REFERENCE",
     "PROTOTYPE_REFERENCE_WORDS",
+    "READER_ERROR",
+    "READER_ERROR_WORDS",
     "REASONS",
     "REASON_WORDS",
     "TRADE_WORDS",
@@ -373,6 +375,11 @@ def prototype_governs(finding: Mapping[str, Any]) -> bool:
 
 def _page(finding: Mapping[str, Any]) -> object:
     return finding.get("page")
+
+
+#: A finding one of whose numbers a code reader failed to read (it raised, #1850): the reason.
+READER_ERROR: Final = "reader_error"
+READER_ERROR_WORDS: Final = "the number could not be read (reader error)"
 
 
 def _not(
@@ -950,6 +957,14 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
     if reference is not None:
         return reference
     status = finding.get("status")
+    if finding.get(READER_ERROR) and status in ("different", "same"):
+        # One of its numbers could not be read because a code reader raised (#1850): never
+        # Wrong or Right on what was not read; the check itself stays complete.
+        return _not(
+            "unreadable",
+            READER_ERROR_WORDS,
+            "both values read at their spots on the drawings",
+        )
     source = str(finding.get("source") or "")
     parts = finding.get("architect_parts")
     if status in ("different", "check") and isinstance(parts, Mapping):

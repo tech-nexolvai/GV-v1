@@ -1803,23 +1803,42 @@ class ChatRemadeOut(ChatFileOut):
 
 
 class ChatReviewActionOut(BaseModel):
-    """A full check's review result (#1622, `review_action.review_action`, rules S0 to S7),
+    """A full check's review result (#1622, `review_action.review_action`, rules S0 to S7 and RN),
     decided by code on read from its findings with the reviewer's latest decisions and the state
     kept with its package; the comment letter and the cloud drawing's cover say the same."""
 
     model_config = ConfigDict(frozen=True)
 
     action: Literal[
-        "approved", "approved_as_noted", "revise_resubmit", "rejected", "not_for_sending"
+        "approved",
+        "approved_as_noted",
+        "review_needed",
+        "revise_resubmit",
+        "rejected",
+        "not_for_sending",
     ]
-    rule: Literal["S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7"] = Field(
+    rule: Literal["S0", "S1", "S2", "S3", "S4", "RN", "S5", "S6", "S7"] = Field(
         description="The rule that decided it (the first that matches wins)."
     )
-    words: str = Field(description='"Approved as noted", "Revise and resubmit", …')
+    words: str = Field(description='"Approved as noted", "Review needed", "Revise and resubmit", …')
+    vendor_words: str = Field(
+        default="",
+        description='The result as the vendor reads it: the same words, but "Under review" for '
+        "Review needed (never an approval).",
+    )
     reason: str = Field(description='Why, in one line: "2 of 5 corrections change fabrication."')
     corrections: int = Field(ge=0, description="Comments sent (the clouds).")
     fabrication: int = Field(ge=0, description="Of them, those that change fabrication.")
-    note: str | None = Field(default=None, description="S6: what was not reviewed.")
+    note: str | None = Field(default=None, description="S6 and RN: what was not reviewed.")
+    not_compared: int = Field(
+        default=0, ge=0, description="Items Not compared (decided items no longer count)."
+    )
+    items: int = Field(
+        default=0,
+        ge=0,
+        description="All items: Wrong + Right + Ask the architect + Not compared (decided ones "
+        "included); Review needed when more than the set share of them are Not compared.",
+    )
     next_step: str = Field(description="What the vendor does next (the letter's closing line).")
     required_by: str = Field(description='Who must act now ("Vendor: revise and resubmit").')
     disclaimer: str = Field(description="The standard words printed under the result.")
@@ -2088,7 +2107,12 @@ class ChatSummaryReviewOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     action: Literal[
-        "approved", "approved_as_noted", "revise_resubmit", "rejected", "not_for_sending"
+        "approved",
+        "approved_as_noted",
+        "review_needed",
+        "revise_resubmit",
+        "rejected",
+        "not_for_sending",
     ]
     words: str = Field(description='"Revise and resubmit", "Check incomplete: not for sending", …')
 

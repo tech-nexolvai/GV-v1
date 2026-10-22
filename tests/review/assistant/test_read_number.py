@@ -374,3 +374,28 @@ def test_a_separate_files_set_page_is_read_at_its_own_page(tmp_path: Path) -> No
 def test_a_page_qualified_label_id_names_the_pages_label(tmp_path: Path) -> None:
     found = _read(_forty_six(tmp_path), label="p1001.D1", labels=_labels())
     assert found.outcome == "read" and found.label == "D1"
+
+
+def test_readers_storing_at_once_keep_each_others_readings(tmp_path: Path) -> None:
+    """#1850: each `read_answer` has its own reader; readings stored at once on code's pool are
+    all kept in the pack's `readings.json` (one writer at a time, merged), none lost."""
+    import threading
+
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    readers = [rn.NumberReader(pack, lambda file: None) for _ in range(8)]
+    for reader in readers:
+        reader._cached()  # each read the (empty) file before any stored
+    go = threading.Barrier(len(readers))
+
+    def store(n: int) -> None:
+        go.wait()
+        readers[n]._store(f"key-{n}", rn.Reading("read", value=str(n), text=f'{n}"'))
+
+    threads = [threading.Thread(target=store, args=(n,)) for n in range(len(readers))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    stored = json.loads((pack / rn.READINGS_FILE).read_text("utf-8"))["readings"]
+    assert sorted(stored) == sorted(f"key-{n}" for n in range(len(readers)))

@@ -6559,7 +6559,7 @@ export interface components {
         };
         /**
          * ChatReviewActionOut
-         * @description A full check's review result (#1622, `review_action.review_action`, rules S0 to S7),
+         * @description A full check's review result (#1622, `review_action.review_action`, rules S0 to S7 and RN),
          *     decided by code on read from its findings with the reviewer's latest decisions and the state
          *     kept with its package; the comment letter and the cloud drawing's cover say the same.
          */
@@ -6568,7 +6568,7 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "approved" | "approved_as_noted" | "revise_resubmit" | "rejected" | "not_for_sending";
+            action: "approved" | "approved_as_noted" | "review_needed" | "revise_resubmit" | "rejected" | "not_for_sending";
             /**
              * Corrections
              * @description Comments sent (the clouds).
@@ -6585,13 +6585,25 @@ export interface components {
              */
             fabrication: number;
             /**
+             * Items
+             * @description All items: Wrong + Right + Ask the architect + Not compared (decided ones included); Review needed when more than the set share of them are Not compared.
+             * @default 0
+             */
+            items: number;
+            /**
              * Next Step
              * @description What the vendor does next (the letter's closing line).
              */
             next_step: string;
             /**
+             * Not Compared
+             * @description Items Not compared (decided items no longer count).
+             * @default 0
+             */
+            not_compared: number;
+            /**
              * Note
-             * @description S6: what was not reviewed.
+             * @description S6 and RN: what was not reviewed.
              */
             note?: string | null;
             /**
@@ -6609,10 +6621,16 @@ export interface components {
              * @description The rule that decided it (the first that matches wins).
              * @enum {string}
              */
-            rule: "S0" | "S1" | "S2" | "S3" | "S4" | "S5" | "S6" | "S7";
+            rule: "S0" | "S1" | "S2" | "S3" | "S4" | "RN" | "S5" | "S6" | "S7";
+            /**
+             * Vendor Words
+             * @description The result as the vendor reads it: the same words, but "Under review" for Review needed (never an approval).
+             * @default
+             */
+            vendor_words: string;
             /**
              * Words
-             * @description "Approved as noted", "Revise and resubmit", …
+             * @description "Approved as noted", "Review needed", "Revise and resubmit", …
              */
             words: string;
         };
@@ -6837,7 +6855,7 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "approved" | "approved_as_noted" | "revise_resubmit" | "rejected" | "not_for_sending";
+            action: "approved" | "approved_as_noted" | "review_needed" | "revise_resubmit" | "rejected" | "not_for_sending";
             /**
              * Words
              * @description "Revise and resubmit", "Check incomplete: not for sending", …
@@ -8108,6 +8126,8 @@ export interface components {
             /** Why Not */
             why_not: string | null;
         };
+        /** @enum {string} */
+        DrawingsState: "reading" | "read" | "failed";
         /**
          * EarlierRunOut
          * @description One day's earlier calls for one purpose, from `ai_spend_history`.
@@ -8646,6 +8666,48 @@ export interface components {
             record_id?: string | null;
         };
         /**
+         * FullCheckCountsOut
+         * @description A full check's items as its result screen counts them (its tiles).
+         */
+        FullCheckCountsOut: {
+            /**
+             * Ask Architect
+             * @description Ask the architect: the architect's size breaks a GV rule (#1839).
+             */
+            ask_architect: number;
+            /**
+             * Not Compared
+             * @description Not compared, each with its reason.
+             */
+            not_compared: number;
+            /**
+             * Right
+             * @description Right: matches the architect or GV's rule.
+             */
+            right: number;
+            /**
+             * Wrong
+             * @description Wrong: proved by code, red on the cloud drawing.
+             */
+            wrong: number;
+        };
+        /**
+         * FullCheckReviewOut
+         * @description A full check's review result in AWI's words (`review_action`), once its package is made.
+         */
+        FullCheckReviewOut: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "approved" | "approved_as_noted" | "review_needed" | "revise_resubmit" | "rejected" | "not_for_sending";
+            /**
+             * Words
+             * @description "Revise and resubmit", "Check incomplete: not for sending", …
+             */
+            words: string;
+        };
+        /**
          * GrantException
          * @description Accept one specific deviation, until one specific moment.
          *
@@ -8901,6 +8963,38 @@ export interface components {
              * @description Inches with the inch mark, in the form's own format: `3/4"`.
              */
             value: string;
+        };
+        /**
+         * LatestFullCheckOut
+         * @description The drawing set's newest full check (a chat's one-click check), for the Documents list and
+         *     the sidebar: the results now live in the chat, not in the old check runs.
+         */
+        LatestFullCheckOut: {
+            /**
+             * Chat Id
+             * Format: uuid
+             * @description The chat that holds it: open `#/chat/<set>/<chat>`.
+             */
+            chat_id: string;
+            counts: components["schemas"]["FullCheckCountsOut"];
+            /**
+             * Message Id
+             * Format: uuid
+             */
+            message_id: string;
+            /**
+             * Ran At
+             * Format: date-time
+             * @description When its answer was stored (the check ended).
+             */
+            ran_at: string;
+            /** @description Its review result once its package is made; null when it stopped before. */
+            review_result?: components["schemas"]["FullCheckReviewOut"] | null;
+            /**
+             * Stopped
+             * @description Why it stopped before it finished; null when it finished.
+             */
+            stopped?: ("cost_cap" | "cancelled" | "error" | "turn_limit" | "interrupted") | null;
         };
         /**
          * LayoutProposalOut
@@ -9484,6 +9578,11 @@ export interface components {
             /** Budget Limit */
             budget_limit?: ("unpriced" | "fixed" | "maximum") | null;
             /**
+             * Checking
+             * @default false
+             */
+            checking: boolean;
+            /**
              * Created At
              * Format: date-time
              */
@@ -9495,6 +9594,8 @@ export interface components {
             current_revision_id: string;
             /** Current Revision Number */
             current_revision_number: number;
+            drawings?: components["schemas"]["DrawingsState"] | null;
+            full_check?: components["schemas"]["LatestFullCheckOut"] | null;
             /**
              * Id
              * Format: uuid
@@ -9585,10 +9686,20 @@ export interface components {
             /** Approved */
             approved: boolean;
             /**
+             * Checking
+             * @description A full check of the set is running now on this server.
+             * @default false
+             */
+            checking: boolean;
+            /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** @description The set pack for the full check: reading, read, failed; null when not started. */
+            drawings?: components["schemas"]["DrawingsState"] | null;
+            /** @description The set's newest full check (the chat's one-click check): its review result, counts and chat; null before the first. The Documents table's main columns. */
+            full_check?: components["schemas"]["LatestFullCheckOut"] | null;
             /** Needs Decision */
             needs_decision: number;
             needs_decision_by_outcome: components["schemas"]["NeedsDecisionByOutcomeOut"];

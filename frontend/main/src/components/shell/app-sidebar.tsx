@@ -5,7 +5,7 @@ import { listPackages } from '@/api/client';
 import type { PackagePage } from '@/api/client';
 import { projectId } from '@/api/config';
 import { useAsync } from '@/api/useAsync';
-import { setStatusWords } from '@/lib/words';
+import { sidebarLine } from '@/lib/set-check';
 import type { Page } from '@/app/route';
 import type { Theme } from '@/app/theme';
 import {
@@ -49,11 +49,6 @@ export interface AppSidebarProps {
   theme: Theme;
   /** Bumped after an upload or a sign-off, so the list reloads without a page refresh. */
   refreshKey: number;
-  /**
-   * The open review's `reading.retrying` (#1249): its badge says "Restarting after a problem" like
-   * the review's header and Reading step. Other reviews have no reading line here, so keep "Stopped".
-   */
-  liveRestarting?: { packageId: string; restarting: boolean } | null;
   onNavigate: (page: Page) => void;
   /** A drawing set picked here: the app opens its chat (#1464). */
   onOpenPackage: (packageId: string) => void;
@@ -83,7 +78,6 @@ export function AppSidebar({
   activePackage,
   theme,
   refreshKey,
-  liveRestarting = null,
   onNavigate,
   onOpenPackage,
   onOpenReviewList,
@@ -230,11 +224,9 @@ export function AppSidebar({
                         {/* Packages carry only a vendor; there is no human package name yet. */}
                         <span className="w-full truncate font-medium">{pkg.vendor ?? 'Untitled document set'}</span>
                         {/* #1712: a set's state in plain grey words (no pill: a state is not an outcome); no
-                            "N optional" count, as every question is optional. */}
-                        <span data-slot="set-status" data-status={pkg.state} className="w-full truncate text-xs text-muted-foreground">
-                          {setStatusWords(pkg.state, { restarting: liveRestarting?.packageId === pkg.id && liveRestarting.restarting })}
-                          {pkg.current_revision_number > 1 && <> · Rev <span className="num">{pkg.current_revision_number}</span></>}
-                        </span>
+                            "N optional" count, as every question is optional. The state is the newest full
+                            check's (the chat), never the old pipeline's, which a chat-read set never moves on. */}
+                        <SetStatus pkg={pkg} />
                       </SidebarMenuButton>
                       {active && activePage === 'chat' && chatsSlotRef && <div ref={chatsRef} data-slot="sidebar-chats" className="group-data-[collapsible=icon]:hidden" />}
                       {active && onOpenReviewList && (
@@ -290,6 +282,20 @@ export function AppSidebar({
         </SidebarMenu>
       </SidebarFooter>
     </Sidebar>
+  );
+}
+
+/** The grey line under a set: its newest full check, or where its drawings are (`sidebarLine`). */
+function SetStatus({ pkg }: { pkg: PackageItem }) {
+  const line = sidebarLine(pkg);
+  const kind = pkg.checking ? 'checking' : pkg.drawings === 'reading' ? 'reading' : pkg.full_check ? 'checked' : 'none';
+  return (
+    <span data-slot="set-status" data-status={kind} className="w-full truncate text-xs text-muted-foreground">
+      {line.words}
+      {line.wrong !== null && <> · <span className="num">{line.wrong}</span> wrong</>}
+      {line.toDecide !== null && <> · <span className="num">{line.toDecide}</span> to decide</>}
+      {pkg.current_revision_number > 1 && <> · Rev <span className="num">{pkg.current_revision_number}</span></>}
+    </span>
   );
 }
 

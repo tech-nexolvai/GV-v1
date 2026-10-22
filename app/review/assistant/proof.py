@@ -432,7 +432,7 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
         return "not_compared"  # GV's reviewer only (#1652): never clouded, whoever clicks
     status = finding.get("status")
     decided = _decided(finding)
-    proved = status == "different" and code_proved(finding)
+    proved = status == "different" and code_proved(finding) and not _reader_error(finding)
     if not proved and classified(finding).outcome == "right":
         return "right"  # compared and Right: nothing to override
     # The reviewer's decision on any other item (#1803: a Not-compared item whose two values look
@@ -449,10 +449,17 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
     return "rule_note" if classified(finding).outcome == "rule_note" else "not_compared"
 
 
+def _reader_error(finding: Mapping[str, Any]) -> bool:
+    """A code reader raised on one of its numbers (#1850): never clouded, Not compared."""
+    return bool(finding.get(classification.READER_ERROR))
+
+
 def classified(finding: Mapping[str, Any]) -> classification.Classified:
     """The item under the architect-first rules (R1-R10), with code's proof (`code_proved`). A GV
     rule result with no stated requirement is Not compared under R6 (`no_stated_requirement`)."""
-    proved = finding.get("status") == "different" and code_proved(finding)
+    proved = (
+        finding.get("status") == "different" and code_proved(finding) and not _reader_error(finding)
+    )
     if not proved and no_stated_requirement(finding):
         return classification.rule_without_requirement(finding)
     return classification.classify(finding, proved=proved)
