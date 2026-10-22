@@ -25,7 +25,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 from uuid import UUID, uuid4
 
 import pytest
@@ -71,11 +71,11 @@ class _Worker:
         self.threads: list[threading.Thread] = []
         self._loop = threading.Thread(target=self._run, daemon=True)
 
-    def __enter__(self) -> _Worker:
+    def __enter__(self) -> Self:
         self._loop.start()
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.stop.set()
         self._loop.join(10)
         for thread in self.threads:
@@ -154,7 +154,9 @@ def _parity(events: list[tuple[str, Any]]) -> list[tuple[str, Any]]:
 
 def test_a_message_is_a_job_the_worker_answers_and_the_screen_streams_from_the_database(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
     # The same question answered by the API's own thread (the setting off), for comparison.
-    with _world(postgres_engine, tmp_path / "thread", provider=ScriptedProvider(lead=_ask_script())) as old:
+    with _world(
+        postgres_engine, tmp_path / "thread", provider=ScriptedProvider(lead=_ask_script())
+    ) as old:
         old_status, old_events = old.ask(old.chat(), "How many pages?")
     assert old_status == 200
 
@@ -179,7 +181,7 @@ def test_a_message_is_a_job_the_worker_answers_and_the_screen_streams_from_the_d
         assert job.request["body"]["text"] == "How many pages?"
         assert job.request["principal"]["id"] == "reviewer-one"
         kept = _job_events(world, job.id)
-        assert [name for name, _ in kept][0] == "message_start" and kept[-1][0] == "message_end"
+        assert kept[0][0] == "message_start" and kept[-1][0] == "message_end"
         assert job.last_seq == len(kept)
         stored = _stored(world, UUID(chat_id))
         assert [m.role for m in stored] == ["user", "assistant"]
@@ -473,7 +475,9 @@ def test_a_set_pack_is_one_job_per_pack_and_never_built_in_the_api(postgres_engi
         start(folder, tmp_path / "uploads", listing)
         start(folder, tmp_path / "uploads", listing)  # asked again while it waits
         with _factory(world)() as session:
-            jobs = list(session.scalars(select(AssistantJob).where(AssistantJob.kind == "set_pack")))
+            jobs = list(
+                session.scalars(select(AssistantJob).where(AssistantJob.kind == "set_pack"))
+            )
         assert len(jobs) == 1 and jobs[0].pack_key == "abc123" and jobs[0].status == "queued"
         assert jobs[0].request["listing"] == listing
         # The pack says "building" at once, as `ensure_pack` says it (a full check waits for it).
@@ -487,7 +491,10 @@ def test_a_set_pack_is_one_job_per_pack_and_never_built_in_the_api(postgres_engi
         set_pack._set_status(folder, "ready", [])
         start(folder, tmp_path / "uploads", listing)
         with _factory(world)() as session:
-            assert session.scalar(select(AssistantJob.id).where(AssistantJob.status == "queued")) is None
+            assert (
+                session.scalar(select(AssistantJob.id).where(AssistantJob.status == "queued"))
+                is None
+            )
 
 
 class _Gone:
