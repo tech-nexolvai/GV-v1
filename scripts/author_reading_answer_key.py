@@ -76,7 +76,7 @@ from pathlib import Path
 from typing import Final
 from uuid import UUID, uuid4
 
-import pypdfium2 as pdfium  # type: ignore[import-untyped]
+from extraction.pdfium_guard import pdfium
 
 # Run as a file, the repository is not on the path; the other scripts here add it the same way.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

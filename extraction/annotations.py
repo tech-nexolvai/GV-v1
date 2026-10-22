@@ -63,13 +63,12 @@ from uuid import UUID
 
 import pdfplumber
 import pikepdf
-import pypdfium2 as pdfium  # type: ignore[import-untyped]
-import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 
 from evidence.coordinates import ImagePoint, PageTransform, PdfPoint
 from evidence.polygon import Polygon
 from extraction.geometry.containment import DimensionExtent
 from extraction.glyph_bands import FractionBarGeometry, FractionLayout, GlyphBox, stacked_fractions
+from extraction.pdfium_guard import pdfium, pdfium_raw
 from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 from extraction.stamp_text import carries_drawing
 

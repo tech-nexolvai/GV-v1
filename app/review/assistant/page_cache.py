@@ -46,10 +46,10 @@ from typing import Any, Final
 from uuid import uuid4
 
 import numpy as np
-import pypdfium2 as pdfium  # type: ignore[import-untyped]
 from PIL import Image
 
 from app.review.assistant.chat_drawing import PDFIUM_LOCK
+from extraction.pdfium_guard import pdfium
 
 __all__ = [
     "CACHE_DPI",

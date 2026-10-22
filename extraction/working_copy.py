@@ -26,7 +26,9 @@ flattened.
 times the scale) against the working copy, annotations drawn, and their counts compared. A page
 whose pictures do not agree is replaced by a blank page that says why: no reader ever places
 anything on a page whose working copy is not exact, and the unchanged page is never used instead.
-So is a page with no visible area.
+So is a page with no visible area. The check runs in a process of its own (`verify_isolated`,
+#1869): a page that crashes the PDF engine is such a page too ("the PDF reader crashed on it"), and
+the rest are still checked; the server never goes down with it.
 
 **A file that needs none of this comes back byte for byte**, so a set already in this shape (every
 GV set so far) reads exactly as before and keeps its set pack.
@@ -39,13 +41,21 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Final
 
 import numpy as np
 import pikepdf
-import pypdfium2 as pdfium  # type: ignore[import-untyped]
+
+from extraction.pdfium_guard import pdfium
 
 __all__ = [
     "MAX_SIDE_PT",
@@ -156,7 +166,7 @@ def working_copy(data: bytes) -> WorkingCopy:
         out = io.BytesIO()
         pdf.save(out, encryption=False, deterministic_id=True)
     working = out.getvalue()
-    failed = _verify(data, working, skip={page for page, _ in not_read})
+    failed = verify_isolated(data, working, skip={page for page, _ in not_read})
     if failed:
         working, more = _quarantine(working, failed)
         not_read = sorted([*not_read, *more])
@@ -450,10 +460,131 @@ def _text(value: Decimal) -> str:
 # ---- the picture check ---------------------------------------------------------------------------
 
 
-def _verify(original: bytes, working: bytes, *, skip: set[int]) -> dict[int, str]:
+#: The picture check's own process (`verify_isolated`): the most pages it may crash on before the
+#: file is refused, and its time limit (a start, plus a page's worst time on a busy machine, each).
+MAX_CRASHED_PAGES: Final = 3
+_VERIFY_START_S: Final = 60.0
+_VERIFY_PAGE_S: Final = 10.0
+CRASHED: Final = "the PDF reader crashed on it"
+#: Runs the picture check in this process (tests that change how it judges a page).
+IN_PROCESS_SETTING: Final = "GV_FRONT_DOOR_IN_PROCESS"
+#: What the picture check's process gets of this one's environment: enough to run Python and find
+#: this code, never a key, a token or the database's address (it reads an uploaded file).
+_CHILD_VARIABLES: Final = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ")
+
+
+def verify_command(original: Path, working: Path, out: Path, skip: Collection[int]) -> list[str]:
+    """The picture check's own process (`main`)."""
+    pages = ",".join(str(page) for page in sorted(skip))
+    return [
+        sys.executable,
+        "-m",
+        "extraction.working_copy",
+        "verify",
+        *map(str, (original, working, out)),
+        pages,
+    ]
+
+
+def _child_environment() -> dict[str, str]:
+    root = Path(__file__).resolve().parents[1]
+    kept = {name: os.environ[name] for name in _CHILD_VARIABLES if name in os.environ}
+    kept["PYTHONPATH"] = os.pathsep.join(filter(None, (str(root), os.environ.get("PYTHONPATH"))))
+    kept.setdefault("PATH", "/usr/bin:/bin")
+    return kept
+
+
+def verify_isolated(original: bytes, working: bytes, *, skip: set[int]) -> dict[int, str]:
+    """`_verify` in a process of its own (the PDF engine draws every page twice there): a page that
+    crashes the engine is failed (`CRASHED`, so it is left blank like any page that did not agree)
+    and the check goes on without it, never stopping this process. Raises `WorkingCopyRefused`
+    after `MAX_CRASHED_PAGES` such pages, or when the check cannot finish."""
+    if os.environ.get(IN_PROCESS_SETTING) == "1":
+        return _verify(original, working, skip=skip)
+    crashed: dict[int, str] = {}
+    with tempfile.TemporaryDirectory(prefix="gv-front-door-") as scratch:
+        folder = Path(scratch)
+        before, after, out = folder / "original.pdf", folder / "working.pdf", folder / "out"
+        before.write_bytes(original)
+        after.write_bytes(working)
+        pages = _page_count(working)
+        while True:
+            for stale in (out.with_suffix(".json"), out.with_suffix(".progress")):
+                stale.unlink(missing_ok=True)
+            try:
+                done = subprocess.run(
+                    verify_command(before, after, out, skip | set(crashed)),
+                    cwd=Path(__file__).resolve().parents[1],
+                    env=_child_environment(),
+                    timeout=_VERIFY_START_S + _VERIFY_PAGE_S * pages,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as late:
+                raise WorkingCopyRefused(
+                    "checking this file's pages took too long, so it could not be read"
+                ) from late
+            if done.returncode == 0:
+                found = json.loads(out.with_suffix(".json").read_text(encoding="utf-8"))
+                return {**{int(k): str(v) for k, v in found.items()}, **crashed}
+            page = _last_page(out.with_suffix(".progress"))
+            if done.returncode > 0 or page is None or page in crashed:
+                raise WorkingCopyRefused(
+                    "this file's pages could not be checked, so it was not read"
+                )
+            crashed[page] = CRASHED
+            if len(crashed) > MAX_CRASHED_PAGES:
+                raise WorkingCopyRefused(
+                    f"the PDF reader crashed on more than {MAX_CRASHED_PAGES} of this file's pages,"
+                    " so it was not read"
+                )
+
+
+def _page_count(data: bytes) -> int:
+    with pikepdf.open(io.BytesIO(data)) as pdf:
+        return len(pdf.pages)
+
+
+def _last_page(progress: Path) -> int | None:
+    """The page the picture check's process started last (`None` before the first)."""
+    try:
+        lines = progress.read_text(encoding="utf-8").split()
+    except OSError:
+        return None
+    return int(lines[-1]) if lines and lines[-1].isdigit() else None
+
+
+def main(arguments: Sequence[str]) -> int:
+    """`python -m extraction.working_copy verify <original> <working> <out> <pages to skip>`:
+    `_verify` in a process of its own; `<out>.json` the failed pages, `<out>.progress` each page's
+    number as it is started."""
+    if len(arguments) != 5 or arguments[0] != "verify":
+        print("usage: working_copy verify <original.pdf> <working.pdf> <out> <pages,to,skip>")
+        return 2
+    original, working, out = (Path(value) for value in arguments[1:4])
+    skip = {int(page) for page in arguments[4].split(",") if page.strip()}
+    with out.with_suffix(".progress").open("a", encoding="utf-8") as progress:
+
+        def started(page: int) -> None:
+            progress.write(f"{page}\n")
+            progress.flush()
+
+        failed = _verify(original.read_bytes(), working.read_bytes(), skip=skip, started=started)
+    out.with_suffix(".json").write_text(json.dumps({str(k): v for k, v in failed.items()}))
+    return 0
+
+
+def _verify(
+    original: bytes,
+    working: bytes,
+    *,
+    skip: set[int],
+    started: Callable[[int], None] | None = None,
+) -> dict[int, str]:
     """Each page of `working` against `original` as displayed: the same picture (at `VERIFY_DPI`,
     the original at its user unit's scale) and the same number of annotations. Returns the pages
-    (from 1) that do not agree, with why."""
+    (from 1) that do not agree, with why. `started`: told each page's number before it is drawn."""
     units, counts_before = _page_facts(original)
     kept, counts_after = _page_facts(working)
     before = pdfium.PdfDocument(original)
@@ -467,6 +598,8 @@ def _verify(original: bytes, working: bytes, *, skip: set[int]) -> dict[int, str
             if index >= len(before) or counts_before.get(number) != counts_after.get(number):
                 failed[number] = "its annotations did not all come through"
                 continue
+            if started is not None:
+                started(number)
             scale = VERIFY_DPI / 72
             # The unit applied (the original's over any the working copy kept) is drawn as scale.
             applied = units.get(number, Decimal(1)) / kept.get(number, Decimal(1))
@@ -570,3 +703,7 @@ def _shown_size(page: pikepdf.Page) -> tuple[Decimal, Decimal]:
     width, height = crop[2] - crop[0], crop[3] - crop[1]
     rotation, _ = _rotation(page)
     return (height, width) if rotation in (90, 270) else (width, height)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

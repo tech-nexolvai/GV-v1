@@ -19,8 +19,8 @@ threads at once and changes nothing else:
 - **Modest.** At most `code_workers()` threads: `GV_ASSISTANT_CODE_WORKERS` (never above
   `MOST_WORKERS`), else min(`DEFAULT_MAX_WORKERS`, cores - 2), at least one (one is the old
   one-at-a-time loop, run on the caller's thread). OCR is the work: Tesseract runs as its own
-  process per read (one thread each, `verify_value.TESSERACT_THREADS`) and pdfium renders hold
-  `chat_drawing.PDFIUM_LOCK`, so threads are enough and memory stays the process's.
+  process per read (one thread each, `verify_value.TESSERACT_THREADS`) and every pdfium call holds
+  its one lock (`extraction/pdfium_guard.py`), so threads are enough and memory stays the process's.
 
 Each item runs in a copy of the caller's context (`contextvars`), so a step that reads a context
 variable sees what the caller set.

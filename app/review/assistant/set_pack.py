@@ -73,7 +73,12 @@ rotation applied), origin top-left: the units of `pdftotext -bbox`, `report_find
 
 **Loaded by name, never imported**: this module draws with pypdfium2 and Pillow, which `app/api/`
 must not reach by import (`tests/api/test_no_heavy_work.py`); `chat_service` and the `zoom` tool
-load it with `import_module`. pdfium is not thread-safe: every use holds `chat_drawing`'s lock.
+load it with `import_module`. pdfium is not thread-safe: every call holds its one lock
+(`extraction/pdfium_guard.py`), and a whole step holds `chat_drawing.PDFIUM_LOCK` (the same lock).
+
+**Built in a process of its own** (`ensure_pack` -> `_build_in_child`, #1869): the set's pages are
+read and drawn there, so a page that crashes the PDF engine fails this pack (`status.json`:
+`renderer_crashed` and a `reason` naming the page, from `progress.json`) and never the server.
 """
 
 from __future__ import annotations
@@ -88,7 +93,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -97,7 +102,6 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import uuid4
 
-import pypdfium2 as pdfium  # type: ignore[import-untyped]
 from PIL import Image, ImageDraw, ImageFont
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import ArrayObject, NameObject
@@ -105,6 +109,7 @@ from pypdf.generic import ArrayObject, NameObject
 from app.review.assistant import page_cache
 from app.review.assistant.chat_drawing import PDFIUM_LOCK
 from app.review.assistant.page_pictures import fitting_dpi
+from extraction.pdfium_guard import pdfium
 from vocabulary.panel_headings import HeadingMeaning, heading_meaning, page_title_role
 
 __all__ = [
@@ -901,7 +906,26 @@ def _page_texts(pdf: Path) -> list[str]:
     return _texts(pdf)[0]
 
 
-def _texts(pdf: Path) -> tuple[list[str], list[str]]:
+#: The pack's last page started, by step and file (`_note`): what a crash of the pack's own process
+#: names (`_build_in_child`).
+PROGRESS_FILE: Final = "progress.json"
+
+type Progress = Callable[[int], None]
+
+
+def _note(folder: Path, step: str, name: str) -> Progress:
+    """Each page's number written to the pack's `PROGRESS_FILE` before `step` reads it."""
+
+    def page(number: int) -> None:
+        try:
+            _write_json(folder / PROGRESS_FILE, {"step": step, "file": name, "page": number})
+        except OSError:  # only a crash's reason is less exact
+            pass
+
+    return page
+
+
+def _texts(pdf: Path, progress: Progress | None = None) -> tuple[list[str], list[str]]:
     """Each page's text, the pasted drawings' own text included (flattened in memory), and each
     page's own text: its content alone, without its pasted drawings (#1772: whether a page of a
     separate upload is a drawing by itself, whatever is pasted on it)."""
@@ -911,6 +935,8 @@ def _texts(pdf: Path) -> tuple[list[str], list[str]]:
         document = pdfium.PdfDocument(str(pdf))
         try:
             for index in range(len(document)):
+                if progress is not None:
+                    progress(index + 1)
                 page = document[index]
                 try:
                     textpage = page.get_textpage()
@@ -934,11 +960,13 @@ def _texts(pdf: Path) -> tuple[list[str], list[str]]:
     return texts, own
 
 
-def _render_pages(pdf: Path, out: Path, dpi: int) -> list[Path]:
+def _render_pages(pdf: Path, out: Path, dpi: int, progress: Progress | None = None) -> list[Path]:
     paths: list[Path] = []
     with PDFIUM_LOCK:
         count = len(pdfium.PdfDocument(str(pdf)))
     for index in range(count):
+        if progress is not None:
+            progress(index + 1)
         with PDFIUM_LOCK:
             document = pdfium.PdfDocument(str(pdf))
             try:
@@ -1070,7 +1098,10 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
     _set_status(folder, "building", done, files=names)
     _write_bytes(folder / "README.txt", _README.encode("utf-8"))
     try:
-        copies = {name: drawings_only(folder, uploads, name) for name in names}
+        copies = {}
+        for name in names:
+            _note(folder, "copying the drawings of", name)(0)
+            copies[name] = drawings_only(folder, uploads, name)
         done.append("drawings_only")
         _set_status(folder, "building", done, files=names)
         annotations: list[dict[str, Any]] = []
@@ -1083,7 +1114,7 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
             reader = PdfReader(str(uploads / name))
             found = _annotations(name, reader, picture_annotations(uploads / name))
             annotations += found
-            texts, own = _texts(copies[name])
+            texts, own = _texts(copies[name], _note(folder, "reading the text of", name))
             entries = _page_entries(
                 name,
                 found,
@@ -1112,7 +1143,12 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         except Exception as failed:  # noqa: BLE001 - the pack works without the health check
             _log.warning("assistant set pack health check failed: %s", type(failed).__name__)
         for name in names:
-            pages = _render_pages(copies[name], folder / "pages" / stem(name), RENDER_DPI)
+            pages = _render_pages(
+                copies[name],
+                folder / "pages" / stem(name),
+                RENDER_DPI,
+                _note(folder, "drawing", name),
+            )
             _contact_sheets(name, pages, folder / "contact")
         done += ["pages", "contact_sheets"]
         _set_status(folder, "building", done, files=names)
@@ -1268,7 +1304,9 @@ def _health(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]) -
             document = pdfium.PdfDocument(data)
             count = len(document)
             document.close()
+        progress = _note(folder, "checking the health of", name)
         for number in range(1, count + 1):
+            progress(number)
             with PDFIUM_LOCK:
                 pages.append(health.page_health(data, name, number, item))
     _write_json(folder / "health.json", {"version": PACK_VERSION, "pages": pages})
@@ -1466,11 +1504,14 @@ def ensure_pack(
         folder.chmod(0o755)
         _set_status(folder, "building", [], files=[str(item["name"]) for item in listing])
 
-        def run() -> None:
+        def run(child: bool) -> None:
             try:
-                build_pack(folder, uploads, listing)
+                if child:
+                    _build_in_child(folder, uploads, listing)
+                else:
+                    build_pack(folder, uploads, listing)
             except Exception as failed:  # noqa: BLE001 - the chat works without the pack
-                _log.warning("assistant set pack failed: %s", type(failed).__name__)
+                _log.warning("assistant set pack failed: %s", failed)
             finally:
                 with _running_lock:
                     _running.pop(folder, None)
@@ -1478,12 +1519,131 @@ def ensure_pack(
         if not background:
             _running.pop(folder, None)
         else:
-            thread = threading.Thread(target=run, name="gv-set-pack", daemon=True)
+            thread = threading.Thread(
+                target=run, args=(not pack_in_process(),), name="gv-set-pack", daemon=True
+            )
             _running[folder] = thread
             thread.start()
             return thread
-    run()
+    run(False)
     return None
+
+
+# ---- the pack's own process ---------------------------------------------------------------------
+
+#: Builds the pack in this process instead of its own (tests; `GV_DIM_LABELS_IN_PROCESS=1` too).
+PACK_IN_PROCESS_SETTING: Final = "GV_ASSISTANT_PACK_IN_PROCESS"
+#: The most seconds the pack's own process may take: its labels' own limit, plus an hour for the
+#: rest (the text, the health check and the pictures of a few hundred pages).
+PACK_TIMEOUT_S: Final = DIMS_TIMEOUT_S + 3600
+#: The listing the pack's own process reads (in the pack's folder).
+_LISTING_FILE: Final = ".listing.json"
+
+
+def pack_in_process() -> bool:
+    """Whether a background pack is built in the server's process (a setting), not its own."""
+    return any(
+        os.environ.get(name) == "1"
+        for name in (PACK_IN_PROCESS_SETTING, "GV_DIM_LABELS_IN_PROCESS")
+    )
+
+
+def pack_command(folder: Path, uploads: Path, listing_file: Path) -> list[str]:
+    """The command of the pack's own process (`main`)."""
+    module = "app.review.assistant.set_pack"
+    return [sys.executable, "-m", module, "build", str(folder), str(uploads), str(listing_file)]
+
+
+def crash_reason(folder: Path, signal_number: int | None) -> str:
+    """Why the pack's own process stopped, in plain words, naming the page it was reading."""
+    progress = _read_json(folder / PROGRESS_FILE)
+    how = "the PDF reader crashed" if signal_number is not None else "the reading stopped"
+    if isinstance(progress, dict) and progress.get("file"):
+        page = int(progress.get("page") or 0)
+        where = f"page {page} of {progress['file']}" if page else str(progress["file"])
+        step = str(progress.get("step") or "reading")
+        return f"{where} could not be read: {how} while {step} it"
+    return f"the drawing set could not be read: {how}"
+
+
+def _build_in_child(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]) -> None:
+    """`build_pack` in a process of its own: the PDF engine reads and draws every page of the set
+    there, so a page that crashes it fails this pack, said in `status.json` (`error`
+    `renderer_crashed`, `reason` naming the page), and never the server. Raises then."""
+    root = Path(__file__).resolve().parents[3]
+    folder.mkdir(parents=True, exist_ok=True)
+    listing_file = folder / _LISTING_FILE
+    _write_json(listing_file, [dict(item) for item in listing])
+    (folder / PROGRESS_FILE).unlink(missing_ok=True)
+    names = [str(item["name"]) for item in listing]
+    try:
+        done = subprocess.run(
+            pack_command(folder, uploads, listing_file),
+            cwd=root,
+            env=child_environment(root),
+            timeout=PACK_TIMEOUT_S,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as late:
+        reason = f"the drawing set took longer than {PACK_TIMEOUT_S // 60} minutes to read"
+        status = read_status(folder)
+        _set_status(
+            folder,
+            "failed",
+            status.get("done") or [],
+            files=names,
+            error="timed_out",
+            reason=reason,
+        )
+        raise RuntimeError(reason) from late
+    if done.returncode == 0:
+        return
+    status = read_status(folder)
+    if done.returncode > 0 and status.get("state") == "failed":
+        raise RuntimeError(f"the pack's process failed: {status.get('error')}")
+    signal_number = -done.returncode if done.returncode < 0 else None
+    reason = crash_reason(folder, signal_number)
+    _set_status(
+        folder,
+        "failed",
+        status.get("done") or [],
+        files=names,
+        error="renderer_crashed" if signal_number is not None else "stopped",
+        reason=reason,
+    )
+    raise RuntimeError(reason)
+
+
+def main(arguments: Sequence[str]) -> int:
+    """`python -m app.review.assistant.set_pack build <pack folder> <uploads folder> <listing>`:
+    the set pack built in a process of its own (`_build_in_child`). It stops when the server that
+    started it is gone."""
+    if len(arguments) != 4 or arguments[0] != "build":
+        print("usage: set_pack build <pack folder> <uploads folder> <listing.json>")
+        return 2
+    logging.basicConfig(
+        level=logging.WARNING, format="%(asctime)s %(levelname)s:  %(name)s: %(message)s"
+    )
+    parent = os.getppid()
+
+    def watch() -> None:
+        while os.getppid() == parent:
+            time.sleep(2.0)
+        os._exit(0)
+
+    threading.Thread(target=watch, name="gv-set-pack-parent", daemon=True).start()
+    folder, uploads, listing_file = Path(arguments[1]), Path(arguments[2]), Path(arguments[3])
+    listing = json.loads(listing_file.read_text(encoding="utf-8"))
+    # The module by its name (this file also runs as `__main__`): one copy of its state.
+    pack = import_module("app.review.assistant.set_pack")
+    try:
+        pack.build_pack(folder, uploads, listing)
+    except Exception as failed:  # noqa: BLE001 - said in status.json and here
+        _log.warning("assistant set pack failed: %s", type(failed).__name__)
+        return 1
+    return 0
 
 
 # ---- zoom crops ----------------------------------------------------------------------------------
@@ -1590,3 +1750,7 @@ def crop_picture(
         finally:
             document.close()
     return _png_crop(picture, clamped, scale)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
