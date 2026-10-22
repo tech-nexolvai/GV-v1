@@ -569,10 +569,11 @@ class ChatFindingRoundMatchOut(BaseModel):
     label: str | None = Field(default=None, description="The label compared with (D3).")
     value: str = Field(default="", description="The value printed there.")
     unchanged: bool = Field(default=False, description="Code reads the same value there.")
-    compared: Literal["carrier", "code_pair", "earlier_round"] | None = Field(
+    compared: Literal["carrier", "code_pair", "earlier_round", "round_pick"] | None = Field(
         default=None,
         description="How code compared the item with the architect instead (None: it could not, "
-        "so the item is Not compared).",
+        "so the item is Not compared); round_pick: a cheap blind pick named the architect's "
+        "label and code compared the values (#1861).",
     )
     via: str | None = Field(default=None, description="What linked it to the architect's label.")
     architect: str | None = Field(default=None, description="The architect's label (p57.D21).")

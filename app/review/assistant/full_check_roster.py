@@ -1948,7 +1948,9 @@ class _Run:
         book = engine.book
 
         def checks(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> Sequence[Any]:
-            return code_checks(
+            # The advocate's code checks, and code's geometry: two dimensions it shows ending in
+            # different places are never compared, for a Right as for a red.
+            found = code_checks(
                 vendor,
                 architect,
                 annotations=annotations,
@@ -1956,6 +1958,11 @@ class _Run:
                 vendor_ink=self._ink(vendor),
                 newer_same=self._newer_same(vendor, page_map),
             )
+            if all(check.outcome == "pass" for check in found):
+                state, why = self._extent(vendor, architect, page_map)
+                if state == "different_extent":
+                    found.append(Check("extent", "fail", why))
+            return found
 
         first: str | None = None
         outcome = "none"

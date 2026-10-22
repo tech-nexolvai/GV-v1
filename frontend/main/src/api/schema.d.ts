@@ -5221,9 +5221,9 @@ export interface components {
             architect?: string | null;
             /**
              * Compared
-             * @description How code compared the item with the architect instead (None: it could not, so the item is Not compared).
+             * @description How code compared the item with the architect instead (None: it could not, so the item is Not compared); round_pick: a cheap blind pick named the architect's label and code compared the values (#1861).
              */
-            compared?: ("carrier" | "code_pair" | "earlier_round") | null;
+            compared?: ("carrier" | "code_pair" | "earlier_round" | "round_pick") | null;
             /**
              * Label
              * @description The label compared with (D3).

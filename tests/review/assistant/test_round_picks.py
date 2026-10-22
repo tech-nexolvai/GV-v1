@@ -388,7 +388,9 @@ def _run(pack: Path, findings: list[dict[str, Any]], cap: int) -> full_check_ros
     return run
 
 
-def _fake_picks(monkeypatch: pytest.MonkeyPatch, answers: Mapping[str, str]) -> list[str]:
+def _fake_picks(
+    monkeypatch: pytest.MonkeyPatch, answers: Mapping[str, str], extent: str = "cannot_tell"
+) -> list[str]:
     asked: list[str] = []
 
     def held(self: Any, finding: Any, vendor: Any, architect: Any, page_map: Any, model: Any,
@@ -399,6 +401,9 @@ def _fake_picks(monkeypatch: pytest.MonkeyPatch, answers: Mapping[str, str]) -> 
 
     monkeypatch.setattr(full_check_roster._Run, "_held_pick", held)
     monkeypatch.setattr(full_check_roster._Run, "_ink", lambda self, label: (100, 0.0))
+    monkeypatch.setattr(
+        full_check_roster._Run, "_extent", lambda self, v, a, pm=None: (extent, "the drawn run")
+    )
     monkeypatch.setattr(full_check_roster, "_annotations", lambda engine: [])
     return asked
 
@@ -488,3 +493,15 @@ def test_money_is_kept_for_the_picks_only_when_the_set_has_a_later_round(tmp_pat
     assert run._round_need() == 0
     assert full_check_roster._later_rounds(PAGE_MAP) is True
     assert full_check_roster._later_rounds({"pages": [PAGE_MAP["pages"][0]]}) is False
+
+
+def test_a_pick_code_geometry_shows_ending_elsewhere_is_never_compared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Code's drawn run shows the two dimensions end in different places: no Right, no red."""
+    _fake_picks(monkeypatch, {"p8.D4": "p7.D3", "p8.D5": "p7.D2"}, extent="different_extent")
+    run = _run(_pack(tmp_path), _two_leftovers(), cap=2_000_000)
+    run._round_picks(PAGE_MAP)
+    for finding in run.engine.book.live():
+        said = proof.proof_of(judged(finding))
+        assert said["group"] == "not_compared" and "the drawn run" in said["reason"]
