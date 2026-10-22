@@ -222,12 +222,30 @@ export interface ChatProgress {
   wrong_so_far: number;
   decision_so_far: number;
   right_so_far: number;
-  /** Time left at the pace so far; null before any page is done. */
+  /** Time left: from the plan's expected time in a roster full check (#1874), else at the pace so far; null before any page is done. */
   eta_seconds: number | null;
   /** The simple full check (#1665): vendor drawings compared so far, of its work list. */
   drawings_done?: number | null;
   drawings_total?: number | null;
+  /** #1874: the roster full check's step; on a big set its areas run as parallel chains. */
+  step?: ChatCheckStep | null;
+  step_number?: number | null;
+  areas_done?: number | null;
+  areas_total?: number | null;
 }
+
+/** #1874: a roster full check's steps, in order. */
+export type ChatCheckStep =
+  | 'helpers'
+  | 'gap_closers'
+  | 'verifier'
+  | 'lead_review'
+  | 'look_again'
+  | 'areas'
+  | 'proving'
+  | 'advocate'
+  | 'escalation'
+  | 'finish';
 
 /**
  * What an answer covers (#1528), worked out by code: the whole drawing set, or some pages, or one
@@ -1084,6 +1102,8 @@ export interface ChatFullCheckPlan {
   price_usd?: string | null;
   /** The content pages in scope it counts (drawings of those products; title and divider pages left out). */
   price_pages?: number | null;
+  /** #1874: about how many minutes the full check takes (an estimate, with the price). */
+  minutes?: number | null;
 }
 
 /** `POST /chats/{id}/messages`. */
