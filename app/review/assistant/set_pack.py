@@ -1489,7 +1489,9 @@ def write_dims(
     ink: dict[tuple[str, int], Any] = {}
     reads: dict[int, Any] = {}
     pool = import_module("app.review.assistant.dims_pool")
-    in_process = os.environ.get("GV_DIM_LABELS_IN_PROCESS") == "1"
+    # The labels' own process (`parent` given) reads pages in worker processes; called in this
+    # process (tests, `GV_DIM_LABELS_IN_PROCESS=1`) it reads them here unless the setting says.
+    in_process = parent is None
     document = labels.build_dims(
         {name: uploads / name for name in names},
         pages,

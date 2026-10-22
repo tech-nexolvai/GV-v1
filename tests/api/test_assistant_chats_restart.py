@@ -49,7 +49,8 @@ def _no_checks_modules(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _wait(condition: Any, what: str) -> None:
-    for _ in range(400):
+    # A full check first waits for the set's pages to be read (#1872): up to a minute here.
+    for _ in range(2400):
         if condition():
             return
         threading.Event().wait(0.025)
