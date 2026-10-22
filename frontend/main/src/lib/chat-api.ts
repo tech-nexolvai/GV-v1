@@ -232,6 +232,9 @@ export interface ChatProgress {
   step_number?: number | null;
   areas_done?: number | null;
   areas_total?: number | null;
+  /** #1872: pages read so far while the check waits for the drawings (no AI step meanwhile). */
+  reading_done?: number | null;
+  reading_total?: number | null;
 }
 
 /** #1874: a roster full check's steps, in order. */
@@ -1104,6 +1107,8 @@ export interface ChatFullCheckPlan {
   price_pages?: number | null;
   /** #1874: about how many minutes the full check takes (an estimate, with the price). */
   minutes?: number | null;
+  /** #1872: how far the drawings are read; the check's AI steps start only once every page is read. */
+  reading?: { state: 'reading' | 'ready' | 'failed'; done: number; total: number; unreadable: number; why?: string | null } | null;
 }
 
 /** `POST /chats/{id}/messages`. */

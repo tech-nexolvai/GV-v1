@@ -164,10 +164,10 @@ def test_the_pack_holds_the_page_map_annotations_pictures_and_contact_sheets(pac
     assert status["done"] == [
         "drawings_only",
         "page_map",
-        "health",
         "pages",
         "contact_sheets",
         "dims",
+        "health",  # read with each page's labels (#1872)
     ]
     health = json.loads((pack / "health.json").read_text())
     assert [(entry["file"], entry["page"]) for entry in health["pages"]] == [
@@ -264,6 +264,57 @@ def test_the_pack_is_built_in_the_background(tmp_path: Path, uploads: Path) -> N
     assert set_pack.ensure_pack(folder, uploads, LISTING) in (thread, None)  # never twice
     thread.join(timeout=60)
     assert json.loads((folder / "status.json").read_text())["state"] == "ready"
+
+
+_CRASHING_PACK = """
+import json, os, sys
+folder = sys.argv[1]
+with open(os.path.join(folder, "progress.json"), "w") as progress:
+    json.dump({"step": "drawing", "file": "combined.pdf", "page": 2}, progress)
+os.abort()
+"""
+
+
+def test_a_pack_whose_reader_crashes_fails_naming_the_page_and_the_server_lives(
+    tmp_path: Path, uploads: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-10-22: the PDF engine crashed the live server. The pack is built in a process of its
+    own now: a crash there fails this pack, saying which page, and the server goes on."""
+    import sys
+
+    monkeypatch.delenv(set_pack.PACK_IN_PROCESS_SETTING, raising=False)
+    monkeypatch.delenv("GV_DIM_LABELS_IN_PROCESS", raising=False)
+    monkeypatch.setattr(
+        set_pack,
+        "pack_command",
+        lambda folder, uploads, listing: [sys.executable, "-c", _CRASHING_PACK, str(folder)],
+    )
+    folder = set_pack.pack_folder(tmp_path / "chats", LISTING)
+    thread = set_pack.ensure_pack(folder, uploads, LISTING)
+    assert thread is not None
+    thread.join(timeout=60)
+    status = json.loads((folder / "status.json").read_text())
+    assert status["state"] == "failed"
+    assert status["error"] == "renderer_crashed"
+    assert status["reason"] == (
+        "page 2 of combined.pdf could not be read: the PDF reader crashed while drawing it"
+    )
+    # Asked again, it is built again (here: it crashes again, still only failing the pack).
+    again = set_pack.ensure_pack(folder, uploads, LISTING)
+    assert again is not None
+    again.join(timeout=60)
+    assert json.loads((folder / "status.json").read_text())["error"] == "renderer_crashed"
+
+
+def test_the_pack_process_is_given_no_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GV_DATABASE_URL", "postgresql://example")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-key")
+    command = set_pack.pack_command(tmp_path, tmp_path / "uploads", tmp_path / ".listing.json")
+    assert command[1:4] == ["-m", "app.review.assistant.set_pack", "build"]
+    env = set_pack.child_environment(Path("."))
+    assert "GV_DATABASE_URL" not in env and "ANTHROPIC_API_KEY" not in env
 
 
 # ---- zoom ------------------------------------------------------------------------------------------

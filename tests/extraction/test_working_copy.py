@@ -642,6 +642,7 @@ def test_a_page_whose_copy_does_not_look_the_same_is_never_read(
         return False if calls["n"] == 2 else real(a, b)
 
     monkeypatch.setattr(front_door, "_same", second_page_differs)
+    monkeypatch.setenv(front_door.IN_PROCESS_SETTING, "1")  # the check judged in this process
     pdf = pikepdf.new()
     _page(pdf, rotate=90)
     _page(pdf, rotate=90)
@@ -670,3 +671,85 @@ def test_the_picture_check_tells_an_edge_from_a_moved_mark() -> None:
     assert front_door._same(page, page)
     assert front_door._same(page, edge)
     assert not front_door._same(page, moved)
+
+
+# ---- the picture check's own process -------------------------------------------------------------
+
+#: Stands in for the picture check's process: it starts each page (`<out>.progress`) and crashes
+#: the way pdfium does (a signal, no Python error) on every page in CRASH that it is not told to skip.
+_CRASHING_CHECK = """
+import json, os, sys
+out, skip, crash = sys.argv[1], sys.argv[2], sys.argv[3]
+skip = {int(p) for p in skip.split(",") if p}
+with open(out + ".progress", "a") as progress:
+    for page in (1, 2, 3):
+        if page in skip:
+            continue
+        progress.write(f"{page}\\n")
+        progress.flush()
+        if str(page) in crash.split(","):
+            os.abort()
+with open(out + ".json", "w") as done:
+    json.dump({}, done)
+"""
+
+
+def _crashing_on(monkeypatch: pytest.MonkeyPatch, pages: str) -> list[str]:
+    import sys
+
+    runs: list[str] = []
+
+    def command(original: Path, working: Path, out: Path, skip: Any) -> list[str]:
+        skipped = ",".join(str(page) for page in sorted(skip))
+        runs.append(skipped)
+        return [sys.executable, "-c", _CRASHING_CHECK, str(out), skipped, pages]
+
+    monkeypatch.setattr(front_door, "verify_command", command)
+    return runs
+
+
+def _turned(pages: int) -> bytes:
+    pdf = pikepdf.new()
+    for _ in range(pages):
+        _page(pdf, rotate=90)
+    return _bytes(pdf)
+
+
+def test_the_picture_check_runs_in_its_own_process_and_agrees() -> None:
+    data = _turned(2)
+    copy = working_copy(data)  # its own process (the default)
+    assert copy.changed and copy.not_read == ()
+    assert front_door.verify_isolated(data, copy.data, skip=set()) == front_door._verify(
+        data, copy.data, skip=set()
+    )
+
+
+def test_a_page_that_crashes_the_reader_is_blank_and_the_others_are_still_checked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-10-22: the PDF engine crashed the live server while checking a set's pages. Now the
+    check runs in a process of its own: a crash there fails that page only (blank, saying why),
+    the check goes on without it, and this process lives."""
+    runs = _crashing_on(monkeypatch, "2")
+    copy = working_copy(_turned(3))
+    assert runs == ["", "2"]  # crashed on page 2, then checked the rest without it
+    assert copy.not_read == (
+        (
+            2,
+            (
+                "page 2 could not be read: the PDF reader crashed on it, so nothing is read or "
+                "drawn on it"
+            ),
+        ),
+    )
+    with pdfplumber.open(io.BytesIO(copy.data)) as document:
+        assert document.pages[1].extract_text().startswith("page 2 could not be read")
+
+
+def test_a_file_that_crashes_the_reader_on_many_pages_is_refused_plainly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(front_door, "MAX_CRASHED_PAGES", 1)
+    _crashing_on(monkeypatch, "1,2,3")
+    with pytest.raises(WorkingCopyRefused, match="crashed on more than 1 of this file's pages"):
+        working_copy(_turned(3))

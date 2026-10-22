@@ -6113,6 +6113,17 @@
             "description": "The full check's fixed price for the products asked (`products`), when the page map is read (#1823): base + per content page in scope, at least the minimum, never above the set's budget left. A roster full check's own cap; `null` until then.",
             "title": "Price Usd"
           },
+          "reading": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatPagesReadOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How far the drawings are read (#1872): a full check starts its AI steps only once every page is read (`state` ready); `null` before the reading starts."
+          },
           "state": {
             "description": "ready: the page map is read; building: ask again in a moment; none: no page map can be made (no PDFs): run without questions.",
             "enum": [
@@ -8133,6 +8144,56 @@
         "title": "ChatPackageStateOut",
         "type": "object"
       },
+      "ChatPagesReadOut": {
+        "description": "How far the reading of the drawings has got (#1872): pages read of all the set's pages.",
+        "properties": {
+          "done": {
+            "default": 0,
+            "description": "Pages read, or known unreadable, so far.",
+            "title": "Done",
+            "type": "integer"
+          },
+          "state": {
+            "description": "reading: pages are being read; ready: every page is read (or known unreadable); failed: the drawings could not be read (`why`).",
+            "enum": [
+              "reading",
+              "ready",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "total": {
+            "default": 0,
+            "description": "The set's pages.",
+            "title": "Total",
+            "type": "integer"
+          },
+          "unreadable": {
+            "default": 0,
+            "description": "Pages that could not be read (skipped).",
+            "title": "Unreadable",
+            "type": "integer"
+          },
+          "why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the drawings could not be read.",
+            "title": "Why"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "ChatPagesReadOut",
+        "type": "object"
+      },
       "ChatPlanAnswerIn": {
         "additionalProperties": false,
         "description": "The reviewer's answer to one plan-check question (#1569).",
@@ -8382,6 +8443,30 @@
             ],
             "title": "Phase",
             "type": "string"
+          },
+          "reading_done": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "While the check waits for the drawings to be read (#1872): pages read so far ('Reading the drawings: 40 of 188 pages'); no AI step runs meanwhile.",
+            "title": "Reading Done"
+          },
+          "reading_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The set's pages to read.",
+            "title": "Reading Total"
           },
           "right_so_far": {
             "title": "Right So Far",

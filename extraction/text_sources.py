@@ -37,10 +37,9 @@ from enum import StrEnum
 from typing import Any, Final
 
 import pdfplumber
-import pypdfium2 as pdfium  # type: ignore[import-untyped]
-import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 
 from extraction.annotations import DrawingLayer, _layer_of, _subtype
+from extraction.pdfium_guard import pdfium, pdfium_raw
 from extraction.reader import UnreadablePdf
 from extraction.stamp_text import stamp_character_counts
 

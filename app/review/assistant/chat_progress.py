@@ -143,11 +143,14 @@ class FullCheckProgress:
         self._work: tuple[int, int] | None = None
         self._step: tuple[str, int | None, int | None] | None = None
         self._expected: float | None = None
+        self._reading: tuple[int, int] | None = None
 
     def current(self) -> dict[str, Any]:
         findings, coverage, pages = self._snapshot()
         elapsed = self._clock() - self._started
         numbers = progress_numbers(findings, coverage, pages, self._phase, elapsed)
+        if self._reading is not None and self._phase == "reading":
+            numbers["reading_done"], numbers["reading_total"] = self._reading
         numbers = with_work(numbers, self._work, elapsed)
         return with_step(numbers, self._step, self._expected, elapsed)
 
@@ -166,6 +169,12 @@ class FullCheckProgress:
         """The plan's expected time for the whole check (`full_check_schedule`, #1874): the time
         left is worked out from it rather than from the pace of the pages."""
         self._expected = max(0.0, float(seconds))
+        self.changed(force=True)
+
+    def set_reading(self, done: int, total: int) -> None:
+        """The drawings' pages read so far, while the check waits for them (#1872): "Reading the
+        drawings: 40 of 188 pages"."""
+        self._reading = (done, total)
         self.changed(force=True)
 
     def set_work(self, done: int, total: int) -> None:

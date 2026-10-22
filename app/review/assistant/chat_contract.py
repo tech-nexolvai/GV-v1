@@ -1631,6 +1631,12 @@ class ChatProgressOut(BaseModel):
     areas_total: int | None = Field(
         default=None, description="A big set: the areas run as parallel chains."
     )
+    reading_done: int | None = Field(
+        default=None,
+        description="While the check waits for the drawings to be read (#1872): pages read so "
+        "far ('Reading the drawings: 40 of 188 pages'); no AI step runs meanwhile.",
+    )
+    reading_total: int | None = Field(default=None, description="The set's pages to read.")
 
 
 class ChatWorkItemOut(BaseModel):
@@ -2284,6 +2290,21 @@ class ChatPlanDoubtOut(BaseModel):
     )
 
 
+class ChatPagesReadOut(BaseModel):
+    """How far the reading of the drawings has got (#1872): pages read of all the set's pages."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Literal["reading", "ready", "failed"] = Field(
+        description="reading: pages are being read; ready: every page is read (or known "
+        "unreadable); failed: the drawings could not be read (`why`)."
+    )
+    done: int = Field(default=0, description="Pages read, or known unreadable, so far.")
+    total: int = Field(default=0, description="The set's pages.")
+    unreadable: int = Field(default=0, description="Pages that could not be read (skipped).")
+    why: str | None = Field(default=None, description="Why the drawings could not be read.")
+
+
 class ChatFullCheckPlanOut(BaseModel):
     """`GET /chats/{chat_id}/full-check-plan` (#1569): code's plan and its 0-3 questions."""
 
@@ -2314,6 +2335,11 @@ class ChatFullCheckPlanOut(BaseModel):
         description="About how many minutes the full check takes, with the price (#1874): the "
         "page helpers, the areas' chains and the set-wide steps at the call times measured on the "
         "server, the drawings already read. An estimate, never a promise.",
+    )
+    reading: ChatPagesReadOut | None = Field(
+        default=None,
+        description="How far the drawings are read (#1872): a full check starts its AI steps only "
+        "once every page is read (`state` ready); `null` before the reading starts.",
     )
 
 

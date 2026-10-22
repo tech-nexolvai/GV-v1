@@ -177,7 +177,7 @@ def _render_without_markup(
 
 
 def _page_size(data: bytes, page_index: int) -> tuple[float, float] | None:
-    pdfium = import_module("pypdfium2")
+    pdfium = import_module("extraction.pdfium_guard").pdfium
     document = pdfium.PdfDocument(data)
     try:
         if not 0 <= page_index < len(document):

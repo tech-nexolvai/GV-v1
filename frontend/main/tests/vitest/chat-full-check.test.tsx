@@ -301,6 +301,11 @@ describe('a full-check answer', () => {
     expect(at({ step: null })).toBe('Checking page 41 of 188 · 3 wrong so far · about 14 min left');
   });
 
+  it('says how far the drawings are read while the check waits for them (#1872)', () => {
+    const progress = { phase: 'reading' as const, pages_done: 0, pages_total: 0, wrong_so_far: 0, decision_so_far: 0, right_so_far: 0, eta_seconds: null, reading_done: 40, reading_total: 188 };
+    expect(progressWords({ created_at: '2026-10-22T10:00:00Z', findings: [], coverage: null, progress })).toBe('Reading the drawings: 40 of 188 pages');
+  });
+
   it('counts drawings in the simple full check (#1665)', () => {
     const progress = { phase: 'checking' as const, pages_done: 3, pages_total: 60, wrong_so_far: 2, decision_so_far: 0, right_so_far: 1, eta_seconds: 400, drawings_done: 11, drawings_total: 36 };
     expect(progressWords({ created_at: '2026-10-17T10:00:00Z', findings: [], coverage: null, progress })).toBe('Comparing drawing 12 of 36 · 2 wrong so far · about 7 min left');

@@ -27,7 +27,8 @@ from typing import Any, Final
 
 import numpy as np
 import pikepdf
-import pypdfium2 as pdfium  # type: ignore[import-untyped]
+
+from extraction.pdfium_guard import pdfium
 
 __all__ = [
     "INK_DPI",

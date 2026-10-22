@@ -52,7 +52,7 @@ from datetime import timedelta
 from typing import Annotated, Any, Final
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import Select, and_, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -563,6 +563,7 @@ def confirm_upload(
     summary="Start AI reading after the drawing PDFs are confirmed",
 )
 def start_extraction(
+    request: Request,
     principal: Annotated[Principal, Depends(require_project_access)],
     _: Annotated[Principal, Depends(require_action(Action.START_REVIEW))],
     session: Annotated[Session, Depends(get_session)],
@@ -651,4 +652,9 @@ def start_extraction(
     except Exception:
         session.rollback()
         raise
+    # The drawings start being read for the full check now, in the background (#1872): set by
+    # the assistant's router (`assistant_chats.READING_HOOK`), absent when it is not mounted.
+    hook = getattr(request.app.state, "assistant_start_reading", None)
+    if hook is not None:
+        hook(session, package_id)
     return ExtractionRequestOut(accepted_id=accepted, package_revision_id=revision.id)

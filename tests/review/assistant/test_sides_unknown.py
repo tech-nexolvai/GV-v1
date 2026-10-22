@@ -127,14 +127,10 @@ def test_a_time_out_says_sides_unknown_and_keeps_no_guess(
 ) -> None:
     monkeypatch.delenv("GV_DIM_LABELS_IN_PROCESS", raising=False)
     monkeypatch.setenv("GV_DIM_LABELS_DRAWN_BUDGET_S", "0")
-    real = subprocess.run
-
-    def run(command: Any, *args: Any, **kwargs: Any) -> Any:
-        if content_sides.__name__ in command:
-            return _timed_out(b"")(command, *args, **kwargs)
-        return real(command, *args, **kwargs)
-
-    monkeypatch.setattr(set_pack.subprocess, "run", run)
+    # Each page is read in a worker process with a limit of its own (#1872): a limit no page can
+    # meet stops the page's worker, as a page past its limit is.
+    monkeypatch.setattr(set_pack, "SIDES_TIMEOUT_S", 0)
+    monkeypatch.setattr(set_pack, "SIDES_PAGE_S", 0.01)
     folder = _build(tmp_path, combined_sheet(headings=False), version="a")
     entry = _entry(folder)
     assert entry[content_sides.SIDES_UNKNOWN] == "code timed out"

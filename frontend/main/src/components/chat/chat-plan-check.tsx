@@ -1,7 +1,7 @@
 import { useState } from 'react';
 
 import type { ChatPlanDoubt } from '@/lib/chat-api';
-import type { PlanState } from '@/lib/chat-plan-check';
+import { readingWords, type PlanState } from '@/lib/chat-plan-check';
 import { cn } from '@/lib/utils';
 
 /**
@@ -55,8 +55,14 @@ export function PlanCheck({ state, picked, onPick }: PlanCheckProps) {
     );
   }
   const { plan } = state;
+  const reading = readingWords(plan.reading);
   return (
     <div data-slot="chat-plan-check" className="grid gap-2">
+      {reading && (
+        <p data-slot="chat-plan-reading" role="status" className="text-xs text-muted-foreground tabular-nums">
+          {reading}
+        </p>
+      )}
       {plan.summary && (
         <p data-slot="chat-plan-summary" className="text-xs text-muted-foreground tabular-nums">
           Plan: {plan.summary}

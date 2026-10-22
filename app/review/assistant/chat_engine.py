@@ -235,12 +235,14 @@ from app.review.assistant.full_check_plan import (
     CrossPairs,
     FanOutPlan,
     HelperJob,
+    Reading,
     pack_ready,
     pack_without_labels,
     pair_lines,
     rules_summary,
     scoped_plan,
     wait_for_page_map,
+    wait_for_reading,
     with_lenses,
 )
 from app.review.assistant.full_check_specialists import specialist_system
@@ -4680,6 +4682,50 @@ class ChatEngine:
         (the estimate held for each call is smaller, so the caps leave the checks their room)."""
         return FULL_CHECK_LEAD_MAX_TOKENS if self._plan is not None else LEAD_MAX_TOKENS
 
+    def _wait_for_reading(self) -> MessageOutcome | None:
+        """Wait until the set pack has read every page (#1872), the live card saying "Reading the
+        drawings: N of M pages"; no AI call is made meanwhile. A page that could not be read is
+        then skipped by every plan, with why (`read_page_map`). `None` to go on; else the stored
+        outcome: stopped, or refused because the drawings could not be read (nothing spent)."""
+        folder = self.tools.workspace.set_pack
+        if folder is None:
+            return None
+
+        def told(reading: Reading) -> None:
+            if self._progress is not None:
+                self._progress.set_reading(reading.done, reading.total)
+
+        with self.timings.phase("set_pack"):
+            reading = wait_for_reading(folder, self.cancel, on_progress=told)
+        if reading.state in ("ready", "none"):
+            if reading.unreadable:
+                _log.warning(
+                    "assistant full check: %d pages could not be read and are skipped",
+                    len(reading.unreadable),
+                )
+            return None
+        if reading.state == "stopped":
+            text = "Stopped while the drawings were being read; nothing was spent."
+            stopped: str = "cancelled"
+            error = None
+        else:
+            text = (
+                f"The drawings could not be read ({reading.why}), so the full check did not "
+                "start and nothing was spent. Upload the set again, or ask GV support."
+            )
+            stopped, error = "error", text
+            _log.warning("assistant full check refused: %s", reading.why)
+        index = self._add_block({"type": "text", "text": text, "by": "code"})
+        self.emit("text_delta", {"index": index, "text": text, "by": "code"})
+        return MessageOutcome(
+            text=text,
+            blocks=self.stored_blocks(),
+            api_content=[],
+            cost_micros=self.spent,
+            stopped=stopped,
+            error=error,
+        )
+
     def _start_full_check(self) -> None:
         """Full check: GV Review's recorded differences made findings, the cloud drawing's copy
         started, and the helpers planned by code and run (else the lead is told the seeded
@@ -4807,6 +4853,12 @@ class ChatEngine:
         # Asked once more after a reply with no words (`EMPTY_REPLY_NOTE`).
         nudged = False
         self._room_for_history()
+        if settings.mode == "full_check":
+            # Never an AI step before the drawings are read (#1872): wait (no money is spent),
+            # showing the pages read; refuse plainly when they cannot be read.
+            refused = self._wait_for_reading()
+            if refused is not None:
+                return refused
         if settings.mode == "full_check" and settings.full_check_mode == "simple":
             # The simple full check (CONTRACT-SIMPLE): work list, code, compare, verify, blind.
             return import_module(  # type: ignore[no-any-return]

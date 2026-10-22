@@ -96,7 +96,12 @@ from app.review.assistant.chat_tools import (
     named_pages,
 )
 from app.review.assistant.chat_unknowns import asks_for_the_rest, last_unknowns, work_list_note
-from app.review.assistant.full_check_plan import MAX_JOB_PAGES, read_page_map, scoped_plan
+from app.review.assistant.full_check_plan import (
+    MAX_JOB_PAGES,
+    read_page_map,
+    reading_of,
+    scoped_plan,
+)
 from app.review.assistant.full_check_schedule import expected_minutes
 from app.review.assistant.live_check import LiveCheck
 from app.review.assistant.package_store import numbering
@@ -413,7 +418,23 @@ def _size_words(size: int) -> str:
     return f"{max(1, round(size / 1000))} KB"
 
 
+#: One copy of a folder's PDFs at a time (`sync_uploads`): the plan check asked again while the
+#: first ask still copies a big set waits for it, instead of copying the set again beside it.
+_SYNC_LOCKS: dict[Path, threading.Lock] = {}
+_SYNC_LOCKS_GUARD: Final = threading.Lock()
+
+
 def sync_uploads(
+    workspace: ChatWorkspace, sources: Sequence[UploadSource]
+) -> tuple[list[dict[str, Any]], bool]:
+    """`_sync_uploads`, one at a time for the same folder (`_SYNC_LOCKS`)."""
+    with _SYNC_LOCKS_GUARD:
+        lock = _SYNC_LOCKS.setdefault(workspace.root.resolve(), threading.Lock())
+    with lock:
+        return _sync_uploads(workspace, sources)
+
+
+def _sync_uploads(
     workspace: ChatWorkspace, sources: Sequence[UploadSource]
 ) -> tuple[list[dict[str, Any]], bool]:
     """The chat's uploads made equal to the drawing set's latest PDFs (read-only, their uploaded
@@ -573,6 +594,7 @@ def full_check_plan(
         return {"state": "none", "summary": None, "doubts": [], "more": 0}
     workspace = start_set_pack(workspace, chat_root, listing)
     folder = workspace.set_pack
+    reading = reading_words(folder)
     page_map = read_page_map(folder)
     if folder is None or page_map is None:
         state = read_status_state(folder)
@@ -581,6 +603,7 @@ def full_check_plan(
             "summary": None,
             "doubts": [],
             "more": 0,
+            "reading": reading,
         }
     main = main_upload(listing)
     main_file = None if main is None else str(main["name"])
@@ -606,6 +629,7 @@ def full_check_plan(
         "summary": plan_summary(page_map, main_file),
         "doubts": shown,
         "more": max(0, len(found) - MAX_DOUBTS),
+        "reading": reading,
     }
     if price is not None:
         plan, _all = scoped_plan(
@@ -620,6 +644,20 @@ def full_check_plan(
             answer["price_usd"] = cost_text(price(plan.pages))
             answer["minutes"] = expected_minutes(plan.pages, calls_at_once)
     return answer
+
+
+def reading_words(folder: Path | None) -> dict[str, Any] | None:
+    """The plan's `reading` (#1872): how many of the set's pages are read; `None` with no pack."""
+    reading = reading_of(folder)
+    if reading.state not in ("reading", "ready", "failed"):
+        return None
+    return {
+        "state": reading.state,
+        "done": reading.done,
+        "total": reading.total,
+        "unreadable": len(reading.unreadable),
+        "why": reading.why,
+    }
 
 
 def set_pack_state(chat_root: Path, package_id: UUID, chat_ids: Sequence[UUID] = ()) -> str | None:

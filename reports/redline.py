@@ -1976,7 +1976,7 @@ class PageInk:
 def page_ink(source_pdf: bytes, index: int, sheet: _Box) -> PageInk | None:
     """Page `index` drawn in grey, its visible sheet (`_sheet`) top-left at the image's. `None` when
     the page cannot be drawn: tags are then kept off the clouds and each other only."""
-    import pypdfium2 as pdfium  # type: ignore[import-untyped]
+    from extraction.pdfium_guard import pdfium
 
     try:
         document = pdfium.PdfDocument(source_pdf)

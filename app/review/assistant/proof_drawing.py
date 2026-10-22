@@ -44,7 +44,6 @@ from typing import Any, Final
 from xml.sax.saxutils import escape
 
 import pikepdf
-import pypdfium2 as pdfium  # type: ignore[import-untyped]
 from PIL import Image as PILImage
 from PIL import ImageDraw
 from reportlab.lib.colors import Color, white  # type: ignore[import-untyped]
@@ -113,6 +112,7 @@ from app.review.assistant.proof import (
 )
 from app.review.assistant.rule_notes import HEADING as RULE_NOTE_HEADING
 from app.review.assistant.vendor_text import internal, item_name, reviewer_right, vendor_text
+from extraction.pdfium_guard import pdfium
 
 __all__ = [
     "GREEN",

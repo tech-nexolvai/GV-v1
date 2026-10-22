@@ -826,7 +826,7 @@ def render_crop(
         raise ModelBakeoffError(f"polygon has no area: {polygon!r}")
     left, bottom, right, top = pdf_box(pdf, page=page, polygon=polygon, polygon_dpi=polygon_dpi)
 
-    pdfium = import_module("pypdfium2")
+    pdfium = import_module("extraction.pdfium_guard").pdfium
     document = pdfium.PdfDocument(pdf)
     try:
         try:
@@ -865,7 +865,7 @@ def pdf_box(
     if isinstance(polygon_dpi, bool) or not isinstance(polygon_dpi, int) or polygon_dpi <= 0:
         raise ModelBakeoffError("polygon_dpi must be a positive integer")
     left_px, top_px, right_px, bottom_px = polygon
-    pdfium = import_module("pypdfium2")
+    pdfium = import_module("extraction.pdfium_guard").pdfium
     document = pdfium.PdfDocument(pdf)
     try:
         try:
