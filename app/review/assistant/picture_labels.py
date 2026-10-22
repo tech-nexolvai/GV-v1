@@ -85,6 +85,7 @@ __all__ = [
     "pages_with_pictures",
     "picture_boxes",
     "picture_page",
+    "picture_page_of",
     "picture_sizes",
     "read_page",
     "read_picture",
@@ -295,24 +296,29 @@ def picture_page(data: bytes, page_index: int) -> bytes | None:
     pictures merged into it (GV Review's own marks emptied, no other comment), or `None` when the
     page holds no image of drawing size (most pages: nothing is drawn)."""
     with pikepdf.open(io.BytesIO(data)) as source:
-        page = source.pages[page_index]
-        if not _shows_big_image(page):
-            return None
-        out = pikepdf.new()
-        out.pages.append(page)
-        if "/OCProperties" in source.Root:
-            out.Root["/OCProperties"] = out.copy_foreign(
-                source.make_indirect(source.Root["/OCProperties"])
-            )
-        copy = out.pages[0]
-        every = copy.obj.get("/Annots") or pikepdf.Array()
-        shx_comment_text(out, copy, [a for a in every if is_shx_comment(a)])
-        copy.obj["/Annots"] = pikepdf.Array([a for a in every if _kept(a)])
-        without_gv_marks(out, copy)
-        out.flatten_annotations(mode="all")
-        buffer = io.BytesIO()
-        out.save(buffer)
-        return buffer.getvalue()
+        return picture_page_of(source, page_index)
+
+
+def picture_page_of(source: pikepdf.Pdf, page_index: int) -> bytes | None:
+    """`picture_page` of an open PDF (#1874: a check cuts it from the file held open)."""
+    page = source.pages[page_index]
+    if not _shows_big_image(page):
+        return None
+    out = pikepdf.new()
+    out.pages.append(page)
+    if "/OCProperties" in source.Root:
+        out.Root["/OCProperties"] = out.copy_foreign(
+            source.make_indirect(source.Root["/OCProperties"])
+        )
+    copy = out.pages[0]
+    every = copy.obj.get("/Annots") or pikepdf.Array()
+    shx_comment_text(out, copy, [a for a in every if is_shx_comment(a)])
+    copy.obj["/Annots"] = pikepdf.Array([a for a in every if _kept(a)])
+    without_gv_marks(out, copy)
+    out.flatten_annotations(mode="all")
+    buffer = io.BytesIO()
+    out.save(buffer)
+    return buffer.getvalue()
 
 
 def picture_sizes(page_pdf: bytes) -> tuple[list[Box], tuple[float, float]]:

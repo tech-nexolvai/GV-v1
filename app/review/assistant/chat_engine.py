@@ -626,6 +626,9 @@ class EngineSettings:
     """A full check's specialists started together, at most (`GV_ASSISTANT_FULL_CHECK_AGENTS`):
     each then waits for a place of its model's limiter, so the number that run grows with the work
     up to the provider's limits (#1874)."""
+    parse_processes: int = 0
+    """Worker processes that parse drawing pages for a full check's code checks
+    (`GV_ASSISTANT_PARSE_PROCESSES`, `verify_value.use_parse_processes`; 0: threads, #1874)."""
 
 
 @dataclass(slots=True)

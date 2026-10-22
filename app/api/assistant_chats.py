@@ -1559,6 +1559,7 @@ def _message(
             rate_tier=settings.assistant_rate_tier,
             calls_at_once=settings.assistant_calls_at_once,
             full_check_agents=settings.assistant_full_check_agents,
+            parse_processes=settings.assistant_parse_processes,
             message_cap_micros=_lowered(
                 int(settings.assistant_message_cap_usd * _MICROS), body.cap_usd
             ),

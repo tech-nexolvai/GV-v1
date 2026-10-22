@@ -93,6 +93,7 @@ from app.review.assistant import (
     pick_cache,
     round_picks,
     same_ends,
+    verify_value,
     witness,
 )
 from app.review.assistant import proof as proof_rule
@@ -1613,6 +1614,8 @@ class _Run:
         workspace = engine.tools.workspace
         if workspace.set_pack is None:
             return None
+        # The code checks' page parsing in worker processes when the server asks for it (#1874).
+        verify_value.use_parse_processes(getattr(settings, "parse_processes", 0))
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="gv-roster-warm") as warm_pool:
             warm = warm_pool.submit(engine._prewarm)
             with engine.timings.phase("set_pack"):
