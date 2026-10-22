@@ -167,7 +167,7 @@ def test_the_pack_holds_the_page_map_annotations_pictures_and_contact_sheets(pac
         "pages",
         "contact_sheets",
         "dims",
-        "health",  # read with each page's labels (#1871)
+        "health",  # read with each page's labels (#1872)
     ]
     health = json.loads((pack / "health.json").read_text())
     assert [(entry["file"], entry["page"]) for entry in health["pages"]] == [

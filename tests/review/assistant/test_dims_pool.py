@@ -1,4 +1,4 @@
-"""The set pack's labels read a page at a time in worker processes (#1871).
+"""The set pack's labels read a page at a time in worker processes (#1872).
 
 A 188-page upload ran out of the labels step's 40 minutes before its drawn pass started; and a
 page that crashes the PDF engine must cost that page, never the set. These tests hold:

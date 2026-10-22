@@ -1604,7 +1604,7 @@ class ChatProgressOut(BaseModel):
     )
     reading_done: int | None = Field(
         default=None,
-        description="While the check waits for the drawings to be read (#1871): pages read so "
+        description="While the check waits for the drawings to be read (#1872): pages read so "
         "far ('Reading the drawings: 40 of 188 pages'); no AI step runs meanwhile.",
     )
     reading_total: int | None = Field(default=None, description="The set's pages to read.")
@@ -2262,7 +2262,7 @@ class ChatPlanDoubtOut(BaseModel):
 
 
 class ChatPagesReadOut(BaseModel):
-    """How far the reading of the drawings has got (#1871): pages read of all the set's pages."""
+    """How far the reading of the drawings has got (#1872): pages read of all the set's pages."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -2303,7 +2303,7 @@ class ChatFullCheckPlanOut(BaseModel):
     )
     reading: ChatPagesReadOut | None = Field(
         default=None,
-        description="How far the drawings are read (#1871): a full check starts its AI steps only "
+        description="How far the drawings are read (#1872): a full check starts its AI steps only "
         "once every page is read (`state` ready); `null` before the reading starts.",
     )
 

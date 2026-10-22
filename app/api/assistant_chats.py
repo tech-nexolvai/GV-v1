@@ -299,7 +299,7 @@ READING_HOOK: Final = "assistant_start_reading"
 
 
 def start_reading(app: Any, session: Session, package_id: UUID) -> None:
-    """Start reading the set's latest drawings now, in the background (#1871): its PDFs copied
+    """Start reading the set's latest drawings now, in the background (#1872): its PDFs copied
     through the front door and its set pack started (`full_check_plan`), so the pages are read
     while the reviewer opens the chat and the plan, and a full check reuses that reading. Never
     raises; never an AI call. Only with `GV_ASSISTANT_READ_AT_UPLOAD=true`."""

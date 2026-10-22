@@ -229,7 +229,7 @@ def read_page_map(
     loaded = _raw_page_map(folder)
     if loaded is None:
         return None
-    # A page the reading could not read (#1871) is never compared blind: it is skipped, with why.
+    # A page the reading could not read (#1872) is never compared blind: it is skipped, with why.
     unreadable = reading_of(folder).unreadable
     for entry in loaded.get("pages") or []:
         if isinstance(entry, dict):
@@ -265,7 +265,7 @@ def _pack_state(folder: Path) -> tuple[str | None, list[str]]:
     return status.get("state"), [str(d) for d in done] if isinstance(done, list) else []
 
 
-# ---- the reading, page by page (#1871) -------------------------------------------------------
+# ---- the reading, page by page (#1872) -------------------------------------------------------
 
 #: The set pack's reading table (`set_pack.READING_FILE`; that module is not imported here).
 READING_FILE: Final = "reading.json"

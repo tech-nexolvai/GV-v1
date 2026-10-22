@@ -1,4 +1,4 @@
-"""A set's pages read at once, one page per task, in worker processes (#1871).
+"""A set's pages read at once, one page per task, in worker processes (#1872).
 
 **Why.** A 188-page upload (2026-10-22) ran out of the labels step's 40 minutes before the drawn
 pass even started: the labels' process read every page one after another (text, pasted pictures,

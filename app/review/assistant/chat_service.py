@@ -641,7 +641,7 @@ def full_check_plan(
 
 
 def reading_words(folder: Path | None) -> dict[str, Any] | None:
-    """The plan's `reading` (#1871): how many of the set's pages are read; `None` with no pack."""
+    """The plan's `reading` (#1872): how many of the set's pages are read; `None` with no pack."""
     reading = reading_of(folder)
     if reading.state not in ("reading", "ready", "failed"):
         return None

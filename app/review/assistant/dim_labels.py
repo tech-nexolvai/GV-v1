@@ -151,7 +151,7 @@ _log = logging.getLogger(__name__)
 LABELS_VERSION: Final = 3
 #: The most labels one page lists (a schedule page can print hundreds of numbers).
 MAX_LABELS: Final = 400
-#: Time limits for ONE page (seconds; #1871: per page, so a set of any size reads in about its
+#: Time limits for ONE page (seconds; #1872: per page, so a set of any size reads in about its
 #: pages' time over the workers): the picture route (#1830), the OCR route (#1848: a few seconds a
 #: page) and `read_number` at pack time (#1860). The drawn route's is the set pack's
 #: (`set_pack.DIMS_DRAWN_BUDGET_S`).
@@ -3501,7 +3501,7 @@ def build_dims(
     page's unread pen-stroke candidates the drawn pass counted (#1862), keyed `(file, page)`; a
     page it did not reach is not in it.
 
-    Since #1871 each page is read whole (text, pictures, drawn ink) by `read_page`, `workers`
+    Since #1872 each page is read whole (text, pictures, drawn ink) by `read_page`, `workers`
     pages at once in worker processes (`dims_pool`; 1: in this process, in order), every budget
     now a limit for ONE page (`drawn_budget_s` too); `keep`: the
     folder the finished pages are kept in, so a stopped run resumes. A page that crashed the PDF
@@ -3530,7 +3530,7 @@ def build_dims(
                 halves[key].append(candidate)
     document: dict[str, Any] = {"version": LABELS_VERSION, "files": list(pdfs), "pages": []}
     # Each page read whole (its text, its pasted pictures, its drawn ink), in worker processes
-    # (`dims_pool`, #1871), each within its own time limits.
+    # (`dims_pool`, #1872), each within its own time limits.
     tasks: list[dims_pool.PageTask] = []
     for name, pdf in pdfs.items():
         count = 0

@@ -4612,7 +4612,7 @@ class ChatEngine:
         return FULL_CHECK_LEAD_MAX_TOKENS if self._plan is not None else LEAD_MAX_TOKENS
 
     def _wait_for_reading(self) -> MessageOutcome | None:
-        """Wait until the set pack has read every page (#1871), the live card saying "Reading the
+        """Wait until the set pack has read every page (#1872), the live card saying "Reading the
         drawings: N of M pages"; no AI call is made meanwhile. A page that could not be read is
         then skipped by every plan, with why (`read_page_map`). `None` to go on; else the stored
         outcome: stopped, or refused because the drawings could not be read (nothing spent)."""
@@ -4783,7 +4783,7 @@ class ChatEngine:
         nudged = False
         self._room_for_history()
         if settings.mode == "full_check":
-            # Never an AI step before the drawings are read (#1871): wait (no money is spent),
+            # Never an AI step before the drawings are read (#1872): wait (no money is spent),
             # showing the pages read; refuse plainly when they cannot be read.
             refused = self._wait_for_reading()
             if refused is not None:

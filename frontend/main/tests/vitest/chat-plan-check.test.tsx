@@ -186,7 +186,7 @@ describe('What’s wrong, biggest first (#1569)', () => {
   });
 });
 
-describe('the reading before the check (#1871)', () => {
+describe('the reading before the check (#1872)', () => {
   it('says how many pages are read, and nothing once every page is read', () => {
     expect(readingWords({ state: 'reading', done: 40, total: 188, unreadable: 0 })).toBe('Reading the drawings: 40 of 188 pages. The check starts when every page is read; nothing is spent while it waits.');
     expect(readingWords({ state: 'ready', done: 188, total: 188, unreadable: 1 })).toBeNull();

@@ -6110,7 +6110,7 @@
                 "type": "null"
               }
             ],
-            "description": "How far the drawings are read (#1871): a full check starts its AI steps only once every page is read (`state` ready); `null` before the reading starts."
+            "description": "How far the drawings are read (#1872): a full check starts its AI steps only once every page is read (`state` ready); `null` before the reading starts."
           },
           "state": {
             "description": "ready: the page map is read; building: ask again in a moment; none: no page map can be made (no PDFs): run without questions.",
@@ -8133,7 +8133,7 @@
         "type": "object"
       },
       "ChatPagesReadOut": {
-        "description": "How far the reading of the drawings has got (#1871): pages read of all the set's pages.",
+        "description": "How far the reading of the drawings has got (#1872): pages read of all the set's pages.",
         "properties": {
           "done": {
             "default": 0,
@@ -8417,7 +8417,7 @@
                 "type": "null"
               }
             ],
-            "description": "While the check waits for the drawings to be read (#1871): pages read so far ('Reading the drawings: 40 of 188 pages'); no AI step runs meanwhile.",
+            "description": "While the check waits for the drawings to be read (#1872): pages read so far ('Reading the drawings: 40 of 188 pages'); no AI step runs meanwhile.",
             "title": "Reading Done"
           },
           "reading_total": {

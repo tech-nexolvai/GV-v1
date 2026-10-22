@@ -433,7 +433,7 @@ def test_build_dims_reads_each_page_whole_and_writes_it_as_it_finishes(
         on_page=lambda doc: seen.append([e["drawn"] for e in doc["pages"]]),
     )
     none = dl.build_dims({"set.pdf": path}, page_map, drawn_budget_s=0)
-    # Each page is read whole (text, pictures, drawn ink, its OCR labels: #1871, so pages can be
+    # Each page is read whole (text, pictures, drawn ink, its OCR labels: #1872, so pages can be
     # read at once in worker processes) and written as it finishes.
     assert seen == [["done"], ["done", "done"]]
     first = document["pages"][0]["labels"]

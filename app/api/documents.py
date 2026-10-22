@@ -652,7 +652,7 @@ def start_extraction(
     except Exception:
         session.rollback()
         raise
-    # The drawings start being read for the full check now, in the background (#1871): set by
+    # The drawings start being read for the full check now, in the background (#1872): set by
     # the assistant's router (`assistant_chats.READING_HOOK`), absent when it is not mounted.
     hook = getattr(request.app.state, "assistant_start_reading", None)
     if hook is not None:

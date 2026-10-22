@@ -144,7 +144,7 @@ class SidePage:
 
 
 def read_side_page(task: Any, _limits: Mapping[str, float]) -> SidePage:
-    """One page (`dims_pool.PageTask`) as the set pack's page pool reads it (#1871): a worker
+    """One page (`dims_pool.PageTask`) as the set pack's page pool reads it (#1872): a worker
     process of its own per page, so the set's unheaded pages are read at once."""
     for page, decided in each_page(Path(task.pdf), [task.number]):
         return SidePage(page, decided, None if decided is not None else NOT_READ)

@@ -112,7 +112,7 @@ class FullCheckProgress:
         return with_work(numbers, self._work, elapsed)
 
     def set_reading(self, done: int, total: int) -> None:
-        """The drawings' pages read so far, while the check waits for them (#1871): "Reading the
+        """The drawings' pages read so far, while the check waits for them (#1872): "Reading the
         drawings: 40 of 188 pages"."""
         self._reading = (done, total)
         self.changed(force=True)

@@ -161,7 +161,7 @@ class Settings(BaseSettings):
     # what does not fit in it is listed as not done, never dropped. Off: the lead verifies (#1512).
     assistant_full_check_roster: bool = True
     # Start reading a set's drawings for the full check as soon as AI reading is requested at
-    # upload (#1871: the set pack, in the background), so the check does not wait for it later.
+    # upload (#1872: the set pack, in the background), so the check does not wait for it later.
     # Off by default: a test server must not read into the default chat folder.
     assistant_read_at_upload: bool = False
     # The full check's fixed price (owner, 2026-10-21, #1823): base + per content page in scope,

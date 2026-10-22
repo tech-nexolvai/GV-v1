@@ -135,7 +135,7 @@ PACK_VERSION: Final = 16
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
 RENDER_DPI: Final = 100
-#: Seconds the dimension labels' drawn-ink route (OCR) may spend on ONE page (#1871: a limit per
+#: Seconds the dimension labels' drawn-ink route (OCR) may spend on ONE page (#1872: a limit per
 #: page, read in worker processes; `GV_DIM_LABELS_DRAWN_BUDGET_S`; 0 turns it off). It reads the
 #: vendor's drawn numbers label by label (#1571); a page it does not finish is `partial`, and its
 #: drawn values keep `verify_value`.
@@ -1139,7 +1139,7 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         done.append("page_map")
         _set_status(folder, "building", done, files=names)
         # The labels (with each page's health check) in their own process, its pages read at once
-        # by worker processes (#1871); the page pictures drawn here meanwhile.
+        # by worker processes (#1872); the page pictures drawn here meanwhile.
         labels_error: str | None = None
         drawn: list[str] = []
         reading = threading.Thread(
@@ -1216,7 +1216,7 @@ def _content_sides(pdf: Path, entries: list[dict[str, Any]], cache: Path) -> Non
     todo = [p for p in pages if p not in read]
     why = sides.NOT_READ
     if todo:
-        # Each page in a worker process of its own (#1871: a 188-page set had a 3-hour limit for
+        # Each page in a worker process of its own (#1872: a 188-page set had a 3-hour limit for
         # one process reading page after page); a page past its limit, or one that crashes
         # the reader twice, keeps its drawings as they were, its sides unknown.
         pool = import_module("app.review.assistant.dims_pool")
@@ -1324,7 +1324,7 @@ def _drawn_budget() -> float:
 
 
 #: The most seconds the labels' own process may take for one set: the text route and the drawn
-#: route's budget, with room to spare; plus `DIMS_PAGE_S` for each page past the first 60 (#1871:
+#: route's budget, with room to spare; plus `DIMS_PAGE_S` for each page past the first 60 (#1872:
 #: a 188-page set ran out of the fixed 40 minutes).
 DIMS_TIMEOUT_S: Final = 2400
 DIMS_PAGE_S: Final = 20
@@ -1402,14 +1402,14 @@ def _dims(
 
 #: The reading table (`dims_pool.Table`): each page's state (`waiting`, `reading`, `ready`,
 #: `failed` with why), `total`, `ready`, `failed`, and `complete` once the set's labels are settled.
-#: A full check starts on a page only when it is ready (#1871).
+#: A full check starts on a page only when it is ready (#1872).
 READING_FILE: Final = "reading.json"
 #: The most often (seconds) the labels' facts are written while pages finish.
 WRITE_EVERY_S: Final = 10.0
 
 
 def read_pack_page(task: Any, given: Mapping[str, float]) -> Any:
-    """One page as the set pack reads it, in a worker process (#1871): its health check
+    """One page as the set pack reads it, in a worker process (#1872): its health check
     (`extraction/page_health`, #1745) and its labels (`dim_labels.read_page`)."""
     labels = import_module("app.review.assistant.dim_labels")
     health: dict[str, Any] | None = None
@@ -1496,7 +1496,7 @@ def write_dims(
         drawn_budget_s=_drawn_budget(),
         on_page=written,
         ink=ink,
-        # Pages read at once in worker processes (#1871); tests read in this process unless set.
+        # Pages read at once in worker processes (#1872); tests read in this process unless set.
         workers=(1 if in_process and not os.environ.get(pool.WORKERS_SETTING) else pool.workers()),
         keep=folder / pool.PAGES_FOLDER,
         reader=read_pack_page,
@@ -1506,7 +1506,7 @@ def write_dims(
         reads=reads,
     )
     written(document, now=True)
-    # Each page's health check (#1745), read with its labels (#1871).
+    # Each page's health check (#1745), read with its labels (#1872).
     checked = [reads[i].health for i in sorted(reads) if reads[i].health is not None]
     if checked:
         _write_json(folder / "health.json", {"version": PACK_VERSION, "pages": checked})

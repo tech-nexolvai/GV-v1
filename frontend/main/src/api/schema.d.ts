@@ -5416,7 +5416,7 @@ export interface components {
              * @description The full check's fixed price for the products asked (`products`), when the page map is read (#1823): base + per content page in scope, at least the minimum, never above the set's budget left. A roster full check's own cap; `null` until then.
              */
             price_usd?: string | null;
-            /** @description How far the drawings are read (#1871): a full check starts its AI steps only once every page is read (`state` ready); `null` before the reading starts. */
+            /** @description How far the drawings are read (#1872): a full check starts its AI steps only once every page is read (`state` ready); `null` before the reading starts. */
             reading?: components["schemas"]["ChatPagesReadOut"] | null;
             /**
              * State
@@ -6270,7 +6270,7 @@ export interface components {
         };
         /**
          * ChatPagesReadOut
-         * @description How far the reading of the drawings has got (#1871): pages read of all the set's pages.
+         * @description How far the reading of the drawings has got (#1872): pages read of all the set's pages.
          */
         ChatPagesReadOut: {
             /**
@@ -6416,7 +6416,7 @@ export interface components {
             phase: "reading" | "checking" | "writing";
             /**
              * Reading Done
-             * @description While the check waits for the drawings to be read (#1871): pages read so far ('Reading the drawings: 40 of 188 pages'); no AI step runs meanwhile.
+             * @description While the check waits for the drawings to be read (#1872): pages read so far ('Reading the drawings: 40 of 188 pages'); no AI step runs meanwhile.
              */
             reading_done?: number | null;
             /**

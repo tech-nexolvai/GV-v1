@@ -36,7 +36,7 @@ export function usePlanCheck(load: (() => Promise<ChatFullCheckPlan>) | undefine
             return;
           }
           setResult(plan.state === 'ready' ? { status: 'ready', plan } : { status: 'unavailable' });
-          // #1871: while the drawings are still being read, ask again so the count moves.
+          // #1872: while the drawings are still being read, ask again so the count moves.
           if (plan.state === 'ready' && plan.reading?.state === 'reading') timer = setTimeout(ask, pollMs);
         })
         .catch(() => {
@@ -54,7 +54,7 @@ export function usePlanCheck(load: (() => Promise<ChatFullCheckPlan>) | undefine
   return result ?? { status: 'loading' };
 }
 
-/** "Reading the drawings: 40 of 188 pages" while the set is read (#1871); null once it is read. */
+/** "Reading the drawings: 40 of 188 pages" while the set is read (#1872); null once it is read. */
 export function readingWords(reading: ChatFullCheckPlan['reading']): string | null {
   if (!reading) return null;
   if (reading.state === 'failed') return `The drawings could not be read${reading.why ? ` (${reading.why})` : ''}.`;
