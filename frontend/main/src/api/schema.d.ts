@@ -4901,7 +4901,7 @@ export interface components {
             outcome: string;
             /**
              * Step
-             * @description labels, under_markup, same_item, vendor_sums, notes or pairs (cheapest first).
+             * @description gv_sticker or tags (before the ladder, #1859); labels, under_markup, same_item, vendor_sums, notes or pairs (cheapest first).
              */
             step: string;
         };
@@ -5148,7 +5148,7 @@ export interface components {
              * Not Compared
              * @description not_compared: the reason (the list's group).
              */
-            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "no_spot" | "ai_unsure" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "architect_outside_gv_rule" | "outside_gv_rule" | "internal") | null;
+            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "no_spot" | "ai_unsure" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "architect_outside_gv_rule" | "outside_gv_rule" | "internal" | "gv_sticker" | "tags_differ" | "tag_unconfirmed" | "words" | "stroke_words") | null;
             /**
              * Proof
              * @description Clouded items: the check that proved it, in plain words.

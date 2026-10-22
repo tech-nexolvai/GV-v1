@@ -26,6 +26,14 @@ inside the full check and its fixed price, it climbs a ladder, the biggest items
      the same dimension.
    Missed, changed and added finishes (R4) are code's own finish check (`architect_items`, #1623),
    which runs at the finish of every full check; its findings are proved there, never here.
+   Before the ladder, on every item whatever its outcome (#1859):
+   - `gv_sticker`: a vendor value inside one of GV's stickers (`gv_stickers`: GV's coloured note
+     baked into the pasted drawing) that prints the same value is GV's, never the vendor's: Not
+     compared, with what code reads of the vendor's own ink under the sticker;
+   - `tags`: an item whose two sides name finish, material or product tags is read and compared by
+     code (`tag_reader`): exactly the same tags at both spots is Right, a change code's finish check
+     proved is Wrong, anything else Not compared with its true reason; a note in words that would
+     otherwise be "Illegible" gets its true reason (a note in words, or words drawn as strokes).
 2. **One deeper AI look** per item that is left (the roster, `full_check_roster`): a sharper crop
    through the existing verifier and devil's advocate, under the pairing-proof setting, and only
    with the money left under the fixed price.
@@ -82,6 +90,8 @@ type StepName = Literal[
     "equal_parts",
     "read_number",
     "vendor_search",
+    "gv_sticker",
+    "tags",
 ]
 #: The free code steps, cheapest first.
 FREE_STEPS: Final[tuple[StepName, ...]] = (
@@ -118,6 +128,14 @@ class EscalationContext:
     under: UnderReader | None = None
     reread: NumberReader | None = None
     """The read-number tool, for a vendor value that has no spot (#1746)."""
+    phrases: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] = field(default_factory=dict)
+    """The drawings' printed phrases (black or grey text), by (file, page): the tag reader's text."""
+    stickers: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] = field(default_factory=dict)
+    """GV's stickers (`gv_stickers`), by (file, page)."""
+    strokes: Callable[[str, int, tuple[float, float, float, float]], Any] | None = None
+    """The tag reader's stroke route (`tag_reader.StrokeReader`)."""
+    changes: Sequence[Mapping[str, Any]] = ()
+    """Code's finish check's proved "changed" findings (`architect_items`), for the tag reader."""
 
 
 @dataclass(slots=True)
@@ -669,15 +687,302 @@ def _vendor_search_step(item: _Item, ctx: EscalationContext) -> None:
     item.note("vendor_search", "searched", search_words(finding[VENDOR_SEARCH]) or "")
 
 
+# ---- before the ladder: GV's stickers and the tag reader (#1859) ---------------------------------
+
+#: The finding's key for the GV sticker its vendor value sits in (`classification.GV_STICKER`).
+GV_STICKER: Final = classification.GV_STICKER
+
+
+def _norm_words(text: object) -> str:
+    return re.sub(r"[^A-Z0-9/]+", " ", str(text or "").upper()).strip()
+
+
+#: A size alone, once its words in brackets are left out: `48" (45" between fillers)` is `48"`.
+_BRACKETED: Final = re.compile(r"\([^)]*\)")
+_ONE_SIZE: Final = re.compile(r"[0-9][0-9 /'\-\".\[\]]*")
+
+
+def _claim_kind(claim: str) -> tuple[str, Any]:
+    """What a claimed vendor value is: ("tags", keys), ("size", inches) or ("words", text)."""
+    checks = import_module("app.review.assistant.finding_checks")
+    tags = import_module("app.review.assistant.tag_reader").tag_keys(claim)
+    if tags:
+        return "tags", tags
+    bare = " ".join(_BRACKETED.sub(" ", claim).split())
+    value = checks.claim_value(bare)
+    inches = checks.to_inches(value) if value is not None else None
+    if inches is not None and _ONE_SIZE.fullmatch(bare):
+        return "size", inches
+    return "words", _norm_words(claim)
+
+
+def _sizes(text: str) -> set[Any]:
+    checks = import_module("app.review.assistant.finding_checks")
+    text = re.sub(r"/\s+", "/", text)
+    return {
+        checks.to_inches(token)
+        for token in checks.dimension_tokens(text)
+        if checks.to_inches(token) is not None
+    }
+
+
+def _same_as_sticker(claim: object, sticker_text: object) -> bool:
+    """The claimed vendor value is the sticker's: the same size, the same tags, or the same
+    words."""
+    said, there = " ".join(str(claim or "").split()), " ".join(str(sticker_text or "").split())
+    if not said or not there:
+        return False
+    kind, value = _claim_kind(said)
+    if kind == "tags":
+        found = import_module("app.review.assistant.tag_reader").tag_keys(there)
+        return bool(found) and set(value) <= set(found)
+    if kind == "size":
+        return value in _sizes(there)
+    y = _norm_words(there)
+    return len(value) >= 6 and len(y) >= 6 and (value in y or y in value)
+
+
+def _vendor_prints_it(
+    ctx: EscalationContext, file: str, page: int, spot: Sequence[float], claim: str
+) -> bool:
+    """The vendor's own ink at the item's spot prints the claimed value too (code's labels and
+    phrases never read GV's coloured markup): then the value is the vendor's, sticker or not."""
+    kind, value = _claim_kind(" ".join(claim.split()))
+    if kind == "size":
+        return any(
+            lab.get("side") in ("vendor", None)
+            and _inside(_centre(lab.get("box") or (0, 0, 0, 0)), spot, 2.0)
+            and _same(_decimal(lab.get("inches")), value)
+            for lab in ctx.labels.get((file, page), [])
+        )
+    here = " ".join(
+        str(p.get("text") or "")
+        for p in ctx.phrases.get((file, page), [])
+        if p.get("side") in ("vendor", None) and _overlaps(spot, p.get("box"))
+    )
+    if kind == "tags":
+        return set(value) <= set(import_module("app.review.assistant.tag_reader").tag_keys(here))
+    return len(value) >= 6 and value in _norm_words(here)
+
+
+def _under_sticker(
+    ctx: EscalationContext, file: str, page: int, sticker: Mapping[str, Any], spot: Sequence[float]
+) -> tuple[str | None, str]:
+    """The vendor's own value code reads under the sticker, and how; `None` with why when code
+    reads none. A size: code's one label there, else the read-number tool at the sticker's box.
+    Words or a tag: the drawing's printed words there (at the item's spot), else the tag reader's
+    strokes."""
+    try:
+        box = tuple(float(v) for v in sticker.get("box") or ())
+    except (TypeError, ValueError):
+        return None, "the sticker has no box"
+    if len(box) != 4:
+        return None, "the sticker has no box"
+    checks = import_module("app.review.assistant.finding_checks")
+    text = str(sticker.get("text") or "")
+    if any(checks.to_inches(token) is not None for token in checks.dimension_tokens(text)):
+        labels = [
+            lab
+            for lab in ctx.labels.get((file, page), [])
+            if lab.get("side") in ("vendor", None)
+            and _inside(_centre(lab.get("box") or (0, 0, 0, 0)), box, 3.0)
+        ]
+        if len(labels) == 1:
+            return (
+                str(labels[0].get("text") or ""),
+                f"code's label {_ref(dict(labels[0], page=page))}",
+            )
+        if len(labels) > 1:
+            return None, "several of the vendor's labels sit under it"
+        if ctx.reread is None:
+            return None, "no code reading of the vendor's ink there"
+        numbers = import_module("app.review.assistant.read_number")
+        try:
+            reading = ctx.reread(numbers.Request(file, page, "vendor", box=box))
+        except Exception as failed:  # noqa: BLE001 - a tool that cannot run reads nothing
+            return None, f"the read-number tool could not run ({failed})"
+        if reading.outcome == "read" and reading.text:
+            return str(reading.text), f"the read-number tool ({' and '.join(reading.agreed)})"
+        return None, str(reading.reason or "not read")
+    words = [
+        str(p.get("text") or "").strip()
+        for p in ctx.phrases.get((file, page), [])
+        if p.get("side") in ("vendor", None)
+        and _inside(_centre(p.get("box") or (0, 0, 0, 0)), box, 1.0)
+        and _overlaps(spot, p.get("box"))
+        and re.search(r"[A-Za-z]{2,}", str(p.get("text") or ""))
+    ]
+    if words:
+        return " ".join(dict.fromkeys(words)), "the drawing's printed text"
+    if not import_module("app.review.assistant.tag_reader").tag_keys(text):
+        return None, "code reads none of the vendor's printed words under it"
+    if ctx.strokes is not None:
+        try:
+            tags, read, _ink, why = ctx.strokes(file, page, box)
+        except Exception as failed:  # noqa: BLE001 - a reader that cannot run reads nothing
+            return None, f"the tag reader could not run ({failed})"
+        if tags:
+            return str(read), "the tag reader (two OCR engines)"
+        return None, str(why or "no printed words under it")
+    return None, "no printed words under it"
+
+
+def _sticker_step(item: _Item, ctx: EscalationContext) -> None:
+    """A vendor value inside one of GV's stickers that prints the same value is GV's (#1859)."""
+    finding = item.finding
+    if finding.get(GV_STICKER) is not None or finding.get("created_by") in _CODE_MADE:
+        return
+    where = _box(finding.get("vendor_box"))
+    if where is None:
+        return
+    name, page, box = where
+    file = name or ctx.main_file or ""
+    stickers = import_module("app.review.assistant.gv_stickers")
+    on_page = ctx.stickers.get((file, page), [])
+    near = [
+        s
+        for s in on_page
+        if stickers.sticker_at([s], box, 4.0) is not None or _overlaps(box, s.get("box"))
+    ]
+    hit = next((s for s in near if _same_as_sticker(finding.get("vendor"), s.get("text"))), None)
+    if hit is None or _vendor_prints_it(ctx, file, page, box, str(finding.get("vendor") or "")):
+        return
+    under, how = _under_sticker(ctx, file, page, hit, box)
+    finding[GV_STICKER] = {
+        "page": page,
+        "box": [float(v) for v in hit.get("box") or ()],
+        "text": str(hit.get("text") or ""),
+        "under": under,
+        "how": how,
+    }
+    item.changed = True
+    item.note(
+        "gv_sticker",
+        "refused",
+        f"the vendor's {finding.get('vendor')} is GV's sticker on page {page}; "
+        + (f"under it the vendor prints {under} ({how})" if under else f"under it: {how}"),
+    )
+
+
+def _overlaps(box: Sequence[float], other: object) -> bool:
+    if not isinstance(other, Sequence) or isinstance(other, str):
+        return False
+    try:
+        o = [float(v) for v in other]
+    except (TypeError, ValueError):
+        return False
+    return len(o) == 4 and box[0] < o[2] and o[0] < box[2] and box[1] < o[3] and o[1] < box[3]
+
+
+#: Findings code made itself (never an AI's claim to refuse or re-read).
+_CODE_MADE: Final = frozenset({"architect_items", "consistency", "ledger"})
+
+
+def _tag_step(item: _Item, ctx: EscalationContext) -> None:
+    """An item whose two sides name tags is read and compared by code; a note in words that would
+    be "Illegible" gets its true reason (`tag_reader`)."""
+    finding = item.finding
+    tags = import_module("app.review.assistant.tag_reader")
+    if (
+        finding.get(tags.TAG_READ) is not None
+        or finding.get(GV_STICKER) is not None
+        or finding.get("created_by") in _CODE_MADE
+        or classification.internal(finding)
+        or proof.reviewer_decided(finding)
+        or finding.get("status") not in ("same", "different", "check")
+    ):
+        return
+    tag_item = tags.is_tag_item(finding)
+    words = (
+        not tag_item
+        and tags.words_only(finding.get("vendor"))
+        and proof.classified(finding).reason == "unreadable"
+    )
+    if not tag_item and not words:
+        return
+    where = _box(finding.get("vendor_box"))
+    if where is None:
+        return
+    name, page, box = where
+    file = name or ctx.main_file or ""
+
+    def spot(at: tuple[str | None, int, tuple[float, float, float, float]]) -> Any:
+        f = at[0] or ctx.main_file or ""
+        return tags.read_spot(
+            f,
+            at[1],
+            at[2],
+            ctx.phrases.get((f, at[1]), []),
+            page_map=ctx.page_map,
+            strokes=ctx.strokes,
+        )
+
+    vendor = spot((file, page, box))
+    if tag_item:
+        arch_at = _box(finding.get("arch_box"))
+        architect = spot(arch_at) if arch_at is not None else None
+        decision = tags.decide(
+            finding.get("vendor"),
+            finding.get("architect"),
+            vendor,
+            architect,
+            prototype_reference=classification.prototype_governs(finding),
+            changes=ctx.changes,
+        )
+    else:
+        architect = None
+        decision = tags.decide_words(finding.get("vendor"), finding.get("architect"), vendor)
+    finding[tags.TAG_READ] = {
+        **decision.as_dict(),
+        "vendor": vendor.as_dict(),
+        **({"architect": architect.as_dict()} if architect is not None else {}),
+    }
+    item.changed = True
+    if decision.outcome == "right":
+        _settle_right(item, "tags", decision.why)
+    elif decision.outcome == "wrong" and decision.proof is not None:
+        finding.update(status="different", paired_by="code", text_proof=dict(decision.proof))
+        _check(item, "text", "agrees")
+    item.note("tags", decision.outcome, decision.why)
+
+
+def _before_ladder(
+    live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
+) -> set[str]:
+    """Every item, whatever its outcome, before the ladder (#1859): GV's stickers are never the
+    vendor's, and tags are compared by code. Returns the ids it decided (the ladder leaves them)."""
+    early: set[str] = set()
+    for finding in live:
+        item = _Item(finding)
+        _sticker_step(item, ctx)
+        _tag_step(item, ctx)
+        if not item.changed:
+            continue
+        item.finding.update(judged(item.finding))
+        group = proof.proof_group(item.finding)
+        item.outcome = (
+            "wrong" if group == "clouded" else "right" if group == "right" else item.outcome
+        )
+        if item.outcome is not None:
+            result.settled["tags"] = result.settled.get("tags", 0) + 1
+        item.finding["escalation"] = {"outcome": item.outcome or "undecided", "steps": item.steps}
+        result.log[str(item.finding["id"])] = item.steps
+        result.changed.append(item.finding)
+        result.tried += 1
+        early.add(str(item.finding["id"]))
+    return early
+
+
 def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> Escalation:
     """The free code steps on every undecided item of `findings` (an answer's live findings),
     the biggest first (see the module). Pure: returns what changed."""
     result = Escalation()
     live = [dict(f) for f in findings]
+    early = _before_ladder(live, ctx, result)
     by_id = {str(f["id"]): f for f in live}
     areas = _areas(ctx)
     for finding in by_impact(live):
-        if not undecided(finding):
+        if str(finding["id"]) in early or not undecided(finding):
             continue
         result.tried += 1
         item = _Item(by_id[str(finding["id"])])
@@ -739,20 +1044,32 @@ def context_from_pack(
     page_map: Mapping[str, Any] | None = None,
     under: UnderReader | None = None,
     reread: NumberReader | None = None,
+    stickers: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None = None,
+    strokes: Callable[[str, int, tuple[float, float, float, float]], Any] | None = None,
+    changes: Sequence[Mapping[str, Any]] = (),
 ) -> EscalationContext:
-    """The free steps' facts from a set pack (`dims.json`, `pairs.json`)."""
+    """The free steps' facts from a set pack (`dims.json`, `pairs.json`, the stickers code hid,
+    `<name>_stickers.json`). `stickers`: GV's stickers when the pack lists none (an older pack)."""
     labels: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
+    phrases: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     pairs: dict[str, str] = {}
     if pack is not None:
         dims = _read(pack / "dims.json")
         for entry in (dims or {}).get("pages") or [] if isinstance(dims, Mapping) else []:
             if isinstance(entry, Mapping) and isinstance(entry.get("page"), int):
-                labels[(str(entry.get("file")), int(entry["page"]))] = [
+                key = (str(entry.get("file")), int(entry["page"]))
+                labels[key] = [
                     label for label in entry.get("labels") or [] if isinstance(label, Mapping)
+                ]
+                phrases[key] = [
+                    phrase for phrase in entry.get("phrases") or [] if isinstance(phrase, Mapping)
                 ]
         pairs = code_pairs(_read(pack / "pairs.json"))
         if page_map is None:
             page_map = _read(pack / "page_map.json")
+        listed = import_module("app.review.assistant.gv_stickers").read_folder(pack)
+        if listed is not None:
+            stickers = listed
     return EscalationContext(
         main_file=main_file,
         labels=labels,
@@ -760,7 +1077,40 @@ def context_from_pack(
         pairs=pairs,
         under=under,
         reread=reread,
+        phrases=phrases,
+        stickers=stickers or {},
+        strokes=strokes,
+        changes=changes,
     )
+
+
+def stickers_of_uploads(
+    pdf_paths: Mapping[str, Path],
+) -> dict[tuple[str, int], list[dict[str, Any]]]:
+    """GV's stickers searched in the uploads themselves (a set pack made before they were listed)."""
+    module = import_module("app.review.assistant.gv_stickers")
+    out: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for name, path in pdf_paths.items():
+        if path.is_file():
+            out.update(module.by_page(module.stickers_of(path), name))
+    return out
+
+
+def finish_changes(pack: Path | None) -> list[dict[str, Any]]:
+    """Code's finish check's proved "changed" findings on the set pack (`architect_items`): the
+    tag reader's proof that a different tag is the same item changed."""
+    try:
+        result = import_module("app.review.assistant.architect_items").check_pack(pack)
+    except Exception:  # noqa: BLE001 - without it no tag item is Wrong, never a crash
+        _log.exception("escalation: the finish check for the tag reader failed")
+        return []
+    if result is None:
+        return []
+    return [
+        f
+        for f in result.findings
+        if isinstance(f.get("text_proof"), Mapping) and f["text_proof"].get("kind") == "changed"
+    ]
 
 
 def _under_reader(pdf_paths: Mapping[str, Path]) -> UnderReader:
@@ -781,17 +1131,23 @@ def escalate_answer(engine: Any) -> Escalation | None:
     reason. `None` when the answer has no set pack."""
     workspace = engine.tools.workspace
     book = engine.book
-    if workspace.set_pack is None or not any(undecided(f) for f in book.live()):
+    if workspace.set_pack is None or not book.live():
         return None
     plan = import_module("app.review.assistant.full_check_plan")
     page_map = plan.read_page_map(workspace.set_pack, assume=True, main_file=book.main_file)
     numbers = import_module("app.review.assistant.read_number")
+    tags = import_module("app.review.assistant.tag_reader")
+    gv_stickers = import_module("app.review.assistant.gv_stickers")
+    listed = gv_stickers.read_folder(workspace.set_pack)
     ctx = context_from_pack(
         workspace.set_pack,
         book.main_file,
         page_map=page_map,
         under=_under_reader(book.pdf_paths()),
         reread=numbers.reader_for_pack(workspace.set_pack, workspace.uploads),
+        stickers=listed if listed is not None else stickers_of_uploads(book.pdf_paths()),
+        strokes=tags.stroke_reader_for_pack(workspace.set_pack, workspace.uploads),
+        changes=finish_changes(workspace.set_pack),
     )
     with engine.finding_lock:
         result = escalate(book.live(), ctx)
