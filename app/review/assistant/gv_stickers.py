@@ -514,9 +514,7 @@ def _picture_comment(
     normal = annotation.get("/AP", {}).get("/N")
     resources = normal.get("/Resources") if isinstance(normal, pikepdf.Stream) else None
     xobjects = resources.get("/XObject") if isinstance(resources, pikepdf.Dictionary) else None
-    held = (
-        [xobjects[k] for k in xobjects.keys()] if isinstance(xobjects, pikepdf.Dictionary) else []
-    )
+    held = [x for _k, x in xobjects.items()] if isinstance(xobjects, pikepdf.Dictionary) else []
     images = [x for x in held if isinstance(x, pikepdf.Stream) and x.get("/Subtype") == "/Image"]
     if not images or not all(_yellow_picture(image) for image in images):
         return None

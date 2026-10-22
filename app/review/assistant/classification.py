@@ -1038,6 +1038,10 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
                 "drawing for it; kept for GV's reviewer only"
             )
         return _not("internal", why, "both values read at their spots on the drawings")
+    # GV's sticker is never the vendor's value, whatever it was compared with (#1859).
+    sticker = _sticker(finding)
+    if sticker is not None:
+        return sticker
     reference = _reference_problem(finding)
     if reference is not None:
         return reference
@@ -1050,8 +1054,8 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
             READER_ERROR_WORDS,
             "both values read at their spots on the drawings",
         )
-    # GV's sticker is never the vendor's value, and the tag reader's own reason stands (#1859).
-    held = _sticker(finding) or _tag_read(finding)
+    # The tag reader's own reason stands (#1859).
+    held = _tag_read(finding)
     if held is not None:
         return held
     source = str(finding.get("source") or "")
