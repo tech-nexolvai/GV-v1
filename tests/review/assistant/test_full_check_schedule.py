@@ -186,3 +186,38 @@ def test_a_full_check_runs_no_more_specialists_at_once_than_the_limiter_allows(
     outcome = harness.run()
     assert outcome.stopped is None
     assert 1 <= seen["most"] <= 2 + 2  # two specialists, and at most two single calls beside them
+
+
+def test_band_chains_wait_for_the_final_pairs_and_never_send_an_unpaired_page_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A big set's bands keep #1883/#1885 as one chain does: the page matcher's final pairs are
+    in before any band's gap closers, once; an unpaired page is Not compared from the start and
+    no band's gap closer or lead review is sent to compare it."""
+    from app.review.assistant.page_match import CrossPairs
+    from tests.review.assistant.test_unpaired_pages import WHY, _coverage, _Matched, _run_with
+
+    finished: list[int] = []
+
+    class _Counted(_Matched):
+        def finish(self) -> CrossPairs:
+            finished.append(1)
+            return super().finish()
+
+    cut: list[list[Band]] = []
+
+    def two_bands(jobs: Any) -> list[Band]:
+        bands = bands_of(jobs, most=2, every=1)
+        cut.append(bands)
+        return bands
+
+    monkeypatch.setattr(full_check_roster, "bands_of", two_bands)
+    matcher = _Counted(CrossPairs(pairs={2: (("arch.pdf", 9),)}, unpaired={5: WHY}))
+
+    outcome, engine, _script, seen = _run_with(tmp_path, monkeypatch, matcher)
+
+    assert len(cut[0]) == 2
+    assert finished == [1]  # the final pairs once, for every band
+    assert all(5 not in pages for pages in (*seen["close"], *seen["lead"])), seen
+    assert _coverage(outcome)[5]["status"] == "not_comparable"
+    assert len([g for g in engine.extra_gaps if g["page"] == 5]) == 1
