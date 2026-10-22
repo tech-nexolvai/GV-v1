@@ -1216,27 +1216,29 @@ def _content_sides(pdf: Path, entries: list[dict[str, Any]], cache: Path) -> Non
     todo = [p for p in pages if p not in read]
     why = sides.NOT_READ
     if todo:
+        # Each page in a worker process of its own (#1871: a 188-page set had a 3-hour limit for
+        # one process reading page after page); a page past its limit, or one that crashes
+        # the reader twice, keeps its drawings as they were, its sides unknown.
+        pool = import_module("app.review.assistant.dims_pool")
+        pool_pages: dict[int, Any] = {}
+        in_process = os.environ.get("GV_DIM_LABELS_IN_PROCESS") == "1"
         try:
-            if os.environ.get("GV_DIM_LABELS_IN_PROCESS") == "1":
-                read.update(sides.each_page(pdf, todo))
-            else:
-                root = Path(__file__).resolve().parents[3]
-                done = subprocess.run(
-                    [sys.executable, "-m", sides.__name__, str(pdf), *map(str, todo)],
-                    cwd=root,
-                    env=child_environment(root),
-                    check=True,
-                    timeout=sides_timeout(len(todo)),
-                    capture_output=True,
-                    stdin=subprocess.DEVNULL,
-                )
-                read.update(sides.parse_lines(done.stdout))
+            pool.read_pages(
+                [pool.PageTask(pdf.name, str(pdf), page) for page in todo],
+                {},
+                sides.read_side_page,
+                pool_pages.__setitem__,
+                unreadable=lambda task, error: sides.SidePage(task.number, None, error),
+                count=1 if in_process else pool.workers(),
+                page_limit_s=float(SIDES_TIMEOUT_S + SIDES_PAGE_S),
+            )
         except Exception as failed:  # noqa: BLE001 - the pages read so far are kept
             _log.warning("assistant set pack content sides failed: %s", type(failed).__name__)
-            if isinstance(failed, subprocess.TimeoutExpired):
-                why = sides.TIMED_OUT
-            # A time-out keeps the pages the process finished (it writes each as it is read).
-            read.update(sides.parse_lines(getattr(failed, "stdout", None)))
+        for result in pool_pages.values():
+            if result.decided is None and result.error and "longer than" in result.error:
+                why = sides.TIMED_OUT  # not reached in time: said so, never kept
+                continue
+            read[result.page] = result.decided
         sides.write_cache(
             cache, key, {p: d for p, d in read.items() if p in todo and d is not None}
         )

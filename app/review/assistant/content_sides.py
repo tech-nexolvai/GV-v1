@@ -47,6 +47,7 @@ import json
 import os
 import sys
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
@@ -131,6 +132,23 @@ def each_page(pdf: Path, pages: Sequence[int]) -> Iterator[tuple[int, list[dict[
                 }
             )
         yield page, decided
+
+
+@dataclass(frozen=True, slots=True)
+class SidePage:
+    """One page read by `read_side_page`: the drawings decided (`each_page`), or `error`."""
+
+    page: int
+    decided: list[dict[str, Any]] | None
+    error: str | None = None
+
+
+def read_side_page(task: Any, _limits: Mapping[str, float]) -> SidePage:
+    """One page (`dims_pool.PageTask`) as the set pack's page pool reads it (#1871): a worker
+    process of its own per page, so the set's unheaded pages are read at once."""
+    for page, decided in each_page(Path(task.pdf), [task.number]):
+        return SidePage(page, decided, None if decided is not None else NOT_READ)
+    return SidePage(task.number, None, NOT_READ)
 
 
 def decide_sides(pdf: Path, pages: Sequence[int]) -> dict[int, list[dict[str, Any]]]:

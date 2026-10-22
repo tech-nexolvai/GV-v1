@@ -248,7 +248,7 @@ def read_pages(
         else:
             todo.append(index)
     count = workers() if count is None else max(1, count)
-    if count <= 1 or len(todo) <= 1:
+    if count <= 1 or not todo:
         for index in todo:
             table.set(index, READING)
             try:
@@ -474,8 +474,10 @@ class _Pool:
                     self.table.set(index, READING)
                     worker.connection.send((self.tasks[index], self.limits))
                     continue
+                ends = min(w.started + self.page_limit_s for w in busy)
                 ready = wait(
-                    [w.connection for w in busy] + [w.process.sentinel for w in busy], timeout=5.0
+                    [w.connection for w in busy] + [w.process.sentinel for w in busy],
+                    timeout=max(0.05, min(5.0, ends - time.monotonic())),
                 )
                 now = time.monotonic()
                 for worker in busy:
