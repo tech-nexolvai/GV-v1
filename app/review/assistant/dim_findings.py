@@ -130,7 +130,15 @@ def fill_from_labels(
             out["vs_page"] = label["page"]
             vs_page = label["page"]
         found_side = str(label.get("side") or "unknown")
-        if found_side != "unknown" and found_side not in _EXPECTED[side]:
+        if side == "architect" and found_side == "vendor":
+            # A match with the vendor's own earlier round is never Right (2026-10-22): the item
+            # is compared with the architect only through the architect's own label.
+            notes.append(
+                f"{label['id']} is on the vendor's own drawing (an earlier round or another "
+                "view), not the architect's: a match with it is never counted as right; give "
+                "the architect's label for the same dimension"
+            )
+        elif found_side != "unknown" and found_side not in _EXPECTED[side]:
             notes.append(
                 f"{label['id']} is on the drawing the page map calls the {found_side}'s: check "
                 f"it is the {side}'s"

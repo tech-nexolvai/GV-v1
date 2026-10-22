@@ -17,6 +17,8 @@ from app.review.assistant.chat_trust import cloud_kind
 from app.review.assistant.classification import not_compared_line
 from app.review.assistant.impact import by_impact
 from app.review.assistant.proof import classified, proof_counts, proof_group
+from app.review.assistant.review_action import review_action
+from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.vendor_text import vendor_text
 
 #: The small note under a summary code wrote (the screen shows it as written).
@@ -24,6 +26,16 @@ CODE_SUMMARY_NOTE: Final = "*Summary written by GV Review: the AI did not finish
 
 #: How many issues the summary names.
 TOP_ISSUES: Final = 5
+
+
+def rule_note_line(count: int) -> str:
+    """The summary's line on the sizes the architect specifies that break a GV rule (#1839)."""
+    sizes = "1 size" if count == 1 else f"{count} sizes"
+    return (
+        f"{sizes} the architect specifies {'breaks' if count == 1 else 'break'} a GV rule and the "
+        "vendor prints the same: nothing is asked of the vendor; ask the architect (the questions "
+        "are in the comment letter and the register)."
+    )
 
 
 def needs_code_summary(text: str, stopped: str | None) -> bool:
@@ -158,10 +170,14 @@ def code_summary(
         pages = len({f.get("page") for f in findings})
         of = f" of {page_count}" if page_count else ""
         first = f"Checked items on {pages}{of} pages ({scope}); pages were not all recorded."
+    noted = counts["rule_note"]
     lines = [
         first,
-        # #1717: the screen's words (one meaning each): Wrong / Right / Not compared.
-        f"{wrong} wrong (proved by code), {right} right, {nothing} not compared.",
+        # #1717: the screen's words (one meaning each): Wrong / Right / Not compared; #1839: what
+        # breaks a GV rule at the architect's size is decided, never "not compared".
+        f"{wrong} wrong (proved by code), {right} right, "
+        + (f"{noted} {RULE_NOTE_COUNT}, " if noted else "")
+        + f"{nothing} not compared.",
     ]
     issues = _issue_words([f for f in findings if proof_group(f) == "clouded"])
     lines.append(
@@ -169,6 +185,8 @@ def code_summary(
         if issues
         else "No wrong value was proved by code so far."
     )
+    if noted:
+        lines.append(rule_note_line(noted))
     unopened = int(coverage.get("not_opened") or 0) if coverage is not None else 0
     line = not_compared_line(Counter(reasons), unopened)
     lines.append(
@@ -180,7 +198,12 @@ def code_summary(
     lines += [line for line in also if line]
     steps: list[str] = []
     drawing = any("cloud" in name.lower() for name in files)
-    if wrong and drawing:
+    action = review_action(findings)
+    if action.action == "review_needed":
+        # Anant 2026-10-22: never approved because the system could not look; a person decides.
+        things = _plural(action.not_compared, "Not compared item", "Not compared items")
+        steps.append(f"a person decides the {things} before this can be approved")
+    elif wrong and drawing:
         steps.append("send the cloud drawing to the vendor")
     elif wrong:
         steps.append("send the wrong items to the vendor")

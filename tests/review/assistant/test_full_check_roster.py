@@ -978,6 +978,118 @@ def test_a_proving_tool_never_reads_over_what_code_read(
     assert "read_number" in full_check_roster._PROVER_TOOLS
 
 
+def _five_wrongs(harness: Harness) -> None:
+    """Five Wrongs a helper typed at their spots, no code check read yet, on pages 3 to 5."""
+    engine = harness.engine
+    for n in range(5):
+        finding, _notes = engine.book.report(
+            {"page": 3 + n % 3, "item": f"Top {n}", "category": "countertop",
+             "architect": f"{30 + n}\"", "vendor": f"{40 + 2 * n}\"", "status": "different",
+             "verified": False, "source": "architect", "arch_box": _box(3 + n % 3, 100 + n),
+             "vendor_box": _box(3 + n % 3, 300 + n)},
+            "helper:1",
+        )  # fmt: skip
+        assert engine.book.replace(
+            {**finding, "checks": {"printed_architect": "not_found",
+             "printed_vendor": "not_found"}, "trust_level": "to_check", "witnesses": []}
+        )  # fmt: skip
+
+
+def _proved_on_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workers: str
+) -> tuple[list[tuple[Any, ...]], list[dict[str, Any]], dict[str, int]]:
+    """Five red candidates proved with `workers` threads; the slow reads are the first ones and
+    one side's tool raises: what the book and the proof listener hold afterwards."""
+    import time
+
+    from app.review.assistant.chat_tools import ChatTools
+
+    monkeypatch.setenv("GV_ASSISTANT_CODE_WORKERS", workers)
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    _five_wrongs(harness)
+
+    def verify(
+        self: Any, name: str, page: int, box: Any, expected: str, side: str = "vendor"
+    ) -> Any:
+        inches = int(expected.rstrip('"'))
+        time.sleep(0.01 * (50 - inches) / 4)  # the first items asked end last
+        if expected == '44"':
+            raise RuntimeError("this spot could not be rendered")
+        result = "match" if side == "architect" else "cannot_read"
+        return {"result": result, "route": "drawn", "read": expected, "reads": [],
+                "reason": "", "value": expected, "pending": False, "words": f"read {page}",
+                "read_again": side == "vendor"}  # fmt: skip
+
+    monkeypatch.setattr(ChatTools, "verify_answer", verify)
+    heard: list[tuple[Any, ...]] = []
+    engine.tools.on_proof = lambda proof: heard.append(
+        (proof["page"], proof["claim"], proof["side"], proof["answer"]["result"])
+    )
+    run = _run(harness)
+    with engine.timings.phase("provers"):
+        counts = run._prove_values("verifier")
+    counts = {**counts, "failed_steps": len(run.failed_steps)}
+    found = [
+        {k: f.get(k) for k in ("id", "checks", "proof_tools", "reader_error")}
+        for f in sorted(engine.book.live(), key=lambda f: str(f["id"]))
+    ]
+    return heard, found, counts
+
+
+def test_the_proving_tools_on_the_pool_give_what_one_at_a_time_gave(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1850: the reads run on a few threads, finishing in any order; every finding gets the
+    same answers (run after run), the listener hears them in the same order, and an item whose
+    reader raised is Not compared with the reason, never a stop for the others."""
+    one = _proved_on_pool(tmp_path / "one", monkeypatch, "1")
+    pool = _proved_on_pool(tmp_path / "pool", monkeypatch, "3")
+    again = _proved_on_pool(tmp_path / "again", monkeypatch, "3")
+    assert pool == one == again
+    heard, found, counts = pool
+    # One read that raised is not a broken step: the check stays complete.
+    assert counts == {"verify_value": 10, "read_number": 4, "failed_steps": 0}
+    assert len(heard) == 9  # the side whose tool raised is not heard
+    assert sum(len(f["proof_tools"] or []) for f in found) == 10
+    # The item whose read raised is Not compared, with the reason; the others are not touched.
+    failed = [e for f in found for e in f["proof_tools"] or [] if e.get("failed")]
+    assert [(e["side"], e["value"], e["result"]) for e in failed] == [
+        ("vendor", '44"', "cannot_read")
+    ]
+    marked = [f for f in found if f["reader_error"]]
+    assert len(marked) == 1 and marked[0]["proof_tools"][-1].get("failed")
+
+
+def test_stop_ends_the_proving_reads_on_the_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stop during the first read: the item being read ends its read and is kept, as before;
+    no item after it starts."""
+    from app.review.assistant.chat_tools import ChatTools
+
+    monkeypatch.setenv("GV_ASSISTANT_CODE_WORKERS", "2")
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    _five_wrongs(harness)
+    asked: list[str] = []
+
+    def verify(
+        self: Any, name: str, page: int, box: Any, expected: str, side: str = "vendor"
+    ) -> Any:
+        asked.append(expected)
+        engine.cancel.set()  # the reviewer pressed Stop
+        return {"result": "match", "route": "drawn", "read": expected, "reads": [],
+                "reason": "", "value": expected, "pending": False, "words": "read"}  # fmt: skip
+
+    monkeypatch.setattr(ChatTools, "verify_answer", verify)
+    counts = _run(harness)._prove_values("verifier")
+    assert len(asked) <= 4  # at most the two items already running, both sides each
+    assert counts["verify_value"] <= len(asked)
+    kept = [f for f in engine.book.live() if f.get("proof_tools")]
+    assert 1 <= len(kept) <= 2
+
+
 def test_the_escalation_reads_the_labels_then_gives_one_deeper_look_within_the_price(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

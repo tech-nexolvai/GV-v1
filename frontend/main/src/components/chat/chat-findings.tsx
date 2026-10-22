@@ -27,7 +27,7 @@ import {
   vendorPage,
 } from '@/lib/chat-findings';
 import { useReducedMotion } from '@/lib/chat-motion';
-import { notComparedWords } from '@/lib/chat-proof';
+import { notComparedWords, ruleNoteWords } from '@/lib/chat-proof';
 import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { cn } from '@/lib/utils';
 
@@ -52,9 +52,21 @@ import { cn } from '@/lib/utils';
 const DROP_MS = 220;
 
 
-type RowStatus = FindingStatus | 'not_compared';
+type RowStatus = FindingStatus | 'not_compared' | 'rule_note';
 
-const statusOf = (finding: ChatFinding): RowStatus => (finding.status === 'same' && finding.compared === false ? 'not_compared' : finding.status);
+const statusOf = (finding: ChatFinding): RowStatus => {
+  // The item's FINAL group when code worked it out (2026-10-22): a Wrong code did not prove, or an
+  // item carried by another, is Not compared everywhere, never "Wrong" in one panel and Not
+  // compared in the list and the counts.
+  const group = finding.proof?.group;
+  if (group === 'clouded') return 'different';
+  if (group === 'right') return 'same';
+  if (group === 'not_compared') return 'not_compared';
+  if (group === 'rule_note') return 'rule_note';
+  // #1839: the architect's size breaks a GV rule and the vendor follows it: decided, GV asks.
+  if (finding.status === 'check' && ruleNoteWords(finding)) return 'rule_note';
+  return finding.status === 'same' && finding.compared === false ? 'not_compared' : finding.status;
+};
 
 const DOT: Record<RowStatus, string> = {
   different: 'bg-outcome-fail',
@@ -62,6 +74,7 @@ const DOT: Record<RowStatus, string> = {
   check: 'bg-transparent ring-[1.5px] ring-inset ring-muted-foreground/60',
   same: 'bg-outcome-pass',
   not_compared: 'bg-transparent ring-[1.5px] ring-inset ring-outcome-missing',
+  rule_note: 'bg-outcome-ask',
 };
 
 /** A small coloured dot: colour is never the only signal, the word beside it always says it. */
@@ -74,6 +87,7 @@ const STATUS_TEXT: Record<RowStatus, string> = {
   check: 'text-foreground font-medium',
   same: 'text-muted-foreground',
   not_compared: 'text-muted-foreground',
+  rule_note: 'text-outcome-ask-fg font-medium',
 };
 
 /** Wrong / Not compared / Right / Not looked at, as a dot and a word (no filled chip). */
@@ -82,7 +96,7 @@ export function StatusMark({ finding, className }: { finding: ChatFinding; class
   return (
     <span data-slot="chat-finding-status" data-status={status} className={cn('inline-flex items-center gap-1.5 text-[13px] whitespace-nowrap', STATUS_TEXT[status], className)}>
       <StatusDot status={status} />
-      {status === 'not_compared' ? 'Not compared' : STATUS_WORDS[finding.status]}
+      {status === 'not_compared' ? 'Not compared' : status === 'rule_note' ? 'Ask the architect' : STATUS_WORDS[finding.status]}
     </span>
   );
 }
@@ -311,6 +325,9 @@ export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
           <div><dt className="text-xs font-medium text-muted-foreground">{words.vendorLabel}</dt><dd className="break-words">{words.vendor}</dd></div>
           {sum && <div><dt className="text-xs font-medium text-muted-foreground">Code’s sum</dt><dd data-slot="chat-finding-sum" className="break-words tabular-nums">{sum}</dd></div>}
           <div><dt className="text-xs font-medium text-muted-foreground">{words.whyLabel}</dt><dd data-slot="chat-finding-why" className="break-words">{words.why}</dd></div>
+          {finding.status === 'check' && ruleNoteWords(finding) && (
+            <div><dt className="text-xs font-medium text-muted-foreground">Ask the architect (GV rule)</dt><dd data-slot="chat-finding-card-question" className="break-words">{ruleNoteWords(finding)!.question}</dd></div>
+          )}
           {finding.status === 'check' && notComparedWords(finding) && (
             <>
               <div><dt className="text-xs font-medium text-muted-foreground">Why not compared</dt><dd data-slot="chat-finding-card-question" className="break-words"><span className="font-medium">{notComparedWords(finding)!.label}</span>{notComparedWords(finding)!.why ? `: ${notComparedWords(finding)!.why}` : ''}</dd></div>

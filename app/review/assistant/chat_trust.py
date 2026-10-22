@@ -55,10 +55,12 @@ from time import monotonic
 from types import ModuleType
 from typing import Any, Final
 
-from app.review.assistant import witness
+from app.review.assistant import round_reference, witness
 from app.review.assistant.chat_findings import finding_categories, live_findings, page_ranges
+from app.review.assistant.classification import READER_ERROR, READER_ERROR_WORDS
 from app.review.assistant.dim_findings import label_checks
 from app.review.assistant.vendor_text import item_name
+from app.review.assistant.work_pool import run_ordered
 
 __all__ = [
     "ACCURACY_CALIBRATION_LINE",
@@ -67,6 +69,7 @@ __all__ = [
     "CHECKS_MODULE",
     "CITE_POINTS",
     "CLOUD_WORDS",
+    "FAILED_KEY",
     "MIN_SEEN_DPI",
     "SECOND_READ_MODULE",
     "STATUS_WORDS",
@@ -126,6 +129,7 @@ STATUS_WORDS: Final[Mapping[str, str]] = {
 _GROUP_STATUS: Final[Mapping[str, str]] = {
     "clouded": "Wrong",
     "right": "Right",
+    "rule_note": "Ask the architect (GV rule)",
     "not_compared": "Not compared",
     "dismissed": "Not a problem",
 }
@@ -513,6 +517,10 @@ def _ledger_made(finding: Mapping[str, Any]) -> str | None:
 
 #: The most seconds the drawn-ink pass spends on one answer: a side not reached stays unread.
 DRAWN_INK_BUDGET_S: Final = 120.0
+#: A finding whose drawn-ink read raised (#1850): its answer holds only this reason, and the
+#: finding is Not compared with it (`classification.READER_ERROR`).
+FAILED_KEY: Final = "_failed"
+DRAWN_INK_FAILED: Final = "the drawn-ink read of this value failed"
 
 
 def drawn_ink_checks(
@@ -542,14 +550,31 @@ def drawn_ink_checks(
     waiting.sort(key=lambda f: {"different": 0, "check": 1}.get(str(f.get("status")), 2))
     out: dict[str, dict[str, Any]] = {}
     started = monotonic()
-    for finding in waiting:
-        if stop() or monotonic() - started > budget_s:
-            break
-        try:
-            found = dict(run(finding, pdf_paths))
-        except Exception as failed:  # noqa: BLE001 - an unread side stays as it was
-            _log.warning("assistant chat drawn-ink check failed: %s", type(failed).__name__)
+
+    def read(finding: Mapping[str, Any]) -> dict[str, Any] | None:
+        # The budget is looked at as each finding starts, in order, as the one-at-a-time loop did.
+        if monotonic() - started > budget_s:
+            return None
+        return dict(run(finding, pdf_paths))
+
+    # On code's pool (#1850): the findings are read at once, their answers kept in this order.
+    done = run_ordered(waiting, read, stop=stop, name="gv-drawn-ink")
+    for finding, outcome in zip(waiting, done, strict=True):
+        if not outcome.ran or (outcome.error is None and outcome.value is None):
+            break  # stopped, or the budget was used up: the findings after it stay unread
+        if outcome.error is not None:
+            # An unread side stays as it was, with the reason; the check is not complete (#1850).
+            _log.warning(
+                "assistant chat drawn-ink check failed: %s",
+                type(outcome.error).__name__,
+                exc_info=outcome.error,  # its cause, for the next look (#1850)
+            )
+            out[str(finding.get("id"))] = {
+                FAILED_KEY: f"{DRAWN_INK_FAILED} ({type(outcome.error).__name__})",
+                "_claims": _claims(finding),
+            }
             continue
+        found = outcome.value or {}
         if found:
             found["_claims"] = _claims(finding)
             out[str(finding.get("id"))] = found
@@ -574,7 +599,18 @@ def with_drawn_ink(
         for key in ("verify_architect", "verify_vendor"):
             if isinstance(answer.get(key), Mapping):
                 checks[key] = dict(answer[key])
-        out.append(judged({**finding, "checks": checks}))
+            elif (
+                answer.get(FAILED_KEY)
+                and isinstance(checks.get(key), Mapping)
+                and checks[key].get("pending")
+            ):
+                # Still unread: it says why (#1850).
+                checks[key] = {**checks[key], "reason": str(answer[FAILED_KEY])}
+        updated = {**finding, "checks": checks}
+        if answer.get(FAILED_KEY):
+            # A reader that raised: the item is Not compared with that reason (#1850).
+            updated[READER_ERROR] = READER_ERROR_WORDS
+        out.append(judged(updated))
     return out
 
 
@@ -806,7 +842,7 @@ def round_statuses(findings: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     """Each finding's `round_status`, linking the same item across rounds."""
     rounds = {int(f.get("round") or 1) for f in findings}
     if len(rounds) <= 1:
-        return {str(f["id"]): "single_round" for f in findings}
+        return _still_wrong(findings, {str(f["id"]): "single_round" for f in findings})
     by_key: dict[str, list[Mapping[str, Any]]] = {}
     for finding in findings:
         by_key.setdefault(_key(finding), []).append(finding)
@@ -815,12 +851,29 @@ def round_statuses(findings: Sequence[Mapping[str, Any]]) -> dict[str, str]:
         seen = {int(f.get("round") or 1) for f in group}
         if len(seen) > 1:
             latest = max(group, key=lambda f: int(f.get("round") or 1))
-            status = "fixed_in_later_round" if latest.get("status") == "same" else "still_wrong"
+            # A later "same" against the vendor's own earlier round fixes nothing (2026-10-22).
+            fixed = latest.get("status") == "same" and not round_reference.round_only(latest)
+            status = "fixed_in_later_round" if fixed else "still_wrong"
             out.update({str(f["id"]): status for f in group})
         elif seen == {min(rounds)}:
             out.update({str(f["id"]): "not_in_later_round" for f in group})
         else:
             out.update({str(f["id"]): "new_in_later_round" for f in group})
+    return _still_wrong(findings, out)
+
+
+def _still_wrong(findings: Sequence[Mapping[str, Any]], out: dict[str, str]) -> dict[str, str]:
+    """`out` with "still wrong" for a proved Wrong whose value the vendor did not change since an
+    earlier round: it repeats on its newest round a value the architect does not print (Anant,
+    2026-10-22: wrong "no matter how many rounds it took"; `round_reference`)."""
+    proof = import_module("app.review.assistant.proof")  # proof reads this module
+    for finding in findings:
+        if (
+            finding.get("status") == "different"
+            and round_reference.unchanged(finding)
+            and proof.proof_group(finding) == "clouded"
+        ):
+            out[str(finding["id"])] = "still_wrong"
     return out
 
 
@@ -837,6 +890,9 @@ def _rounds_summary(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any] | N
         for status in ("fixed_in_later_round", "still_wrong", "not_in_later_round")
     }
     new = sum(1 for f in findings if f.get("round_status") == "new_in_later_round")
+    # Information only (Anant, 2026-10-22): a value the vendor did not change since an earlier
+    # round is never Right by itself (`round_reference`).
+    unchanged = sum(1 for f in findings if round_reference.unchanged(f))
     # The comment letter's words (Closed / Previous comment not addressed / New, #1766).
     line = (
         f"Round {first} comments: {counts['fixed_in_later_round']} of {len(earlier)} closed; "
@@ -847,6 +903,11 @@ def _rounds_summary(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any] | N
         line += f"; {counts['not_in_later_round']} not found in a later round"
     if new:
         line += f"; {new} new in a later round"
+    if unchanged:
+        line += (
+            f"; {unchanged} unchanged since an earlier round (information only, not counted as "
+            "right)"
+        )
     return {
         "rounds": rounds,
         "earlier_items": len(earlier),
@@ -854,6 +915,7 @@ def _rounds_summary(findings: Sequence[Mapping[str, Any]]) -> dict[str, Any] | N
         "still_wrong": counts["still_wrong"],
         "not_in_later_round": counts["not_in_later_round"],
         "new": new,
+        "unchanged": unchanged,
         "line": line,
     }
 
@@ -1373,6 +1435,9 @@ def _proof_cells(finding: Mapping[str, Any]) -> list[str]:
     words = proof.group_words(finding, found["group"])
     # A Not-compared item (#1619) says why, and what would settle it.
     settle = f" Needed: {found['settle']}." if found.get("settle") else ""
+    note = found.get("rule_note")
+    if found["group"] == "rule_note" and isinstance(note, Mapping) and note.get("question"):
+        settle = f" {note['question']}"  # #1839: GV's question for the architect
     detail = found["proof"] or (f"{found['reason']}.{settle}" if found["reason"] else None)
     return [_cell(found["should_be"] or ""), _cell(f"{words}: {detail}" if detail else words)]
 

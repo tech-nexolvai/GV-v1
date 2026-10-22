@@ -134,6 +134,7 @@ __all__ = [
     "recover_interrupted",
     "resume_of",
     "run_message",
+    "set_pack_state",
     "shutdown_chats",
     "sync_uploads",
     "write_checkpoint",
@@ -613,6 +614,30 @@ def full_check_plan(
             answer["price_pages"] = plan.pages
             answer["price_usd"] = cost_text(price(plan.pages))
     return answer
+
+
+def set_pack_state(chat_root: Path, package_id: UUID, chat_ids: Sequence[UUID] = ()) -> str | None:
+    """Where the drawing set's set pack is, for the Documents list and the sidebar: `building`
+    (its page map is not made yet: the plan check's `building`), `ready` (the page map is made),
+    `failed`, or `None` (no copy of the set's PDFs has been made yet, so nothing was started).
+
+    Read-only and cheap: it never copies a PDF or starts a pack (`full_check_plan` does). It reads
+    the uploads last copied for the plan check, then for the given chats (newest first), and the
+    first pack of theirs that was started (its `page_map.json`, `status.json`). A newer upload
+    is seen once the plan check or a chat copies it."""
+    pack = import_module("app.review.assistant.set_pack")
+    roots = [_plan_root(chat_root, package_id), *(chat_root / str(chat) for chat in chat_ids)]
+    for root in roots:
+        listing = read_listing(ChatWorkspace(root))
+        if not listing:
+            continue
+        folder: Path = pack.pack_folder(chat_root, listing)
+        if (folder / "page_map.json").is_file():
+            return "ready"
+        if not folder.is_dir():
+            continue  # a copy whose pack was never started (or an older pack format)
+        return "failed" if read_status_state(folder) == "failed" else "building"
+    return None
 
 
 def read_status_state(folder: Path | None) -> str | None:

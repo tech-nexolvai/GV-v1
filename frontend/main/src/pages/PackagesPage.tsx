@@ -2,7 +2,7 @@ import { Plus } from 'lucide-react';
 import { useEffect, useReducer, useState } from 'react';
 import { getPackagesSummary, PACKAGES_SUMMARY_PAGE_SIZE } from '../api/client';
 import { projectId } from '../api/config';
-import { DocumentsTable } from '@/components/documents/documents-table';
+import { DocumentsTable, type OpenSet } from '@/components/documents/documents-table';
 import { Button } from '@/components/ui/button';
 import { PageFrame, PageLoadError } from '@/components/ui/PageFrame';
 import { documentListReducer, documentNavigation, documentRowsOf, restoreDocumentList } from './documentRows';
@@ -13,14 +13,15 @@ async function loadRows(cursor?: string) {
 }
 
 interface PackagesPageProps {
-  onOpenReview: (packageId: string) => void;
+  /** A row picked: its newest full check's chat, else the set's chats. */
+  onOpenSet: OpenSet;
   onNewPackage: () => void;
   initialCursors?: readonly string[];
   positionNotice?: string | null;
   onPositionChange?: (cursors: readonly string[]) => void;
 }
 
-export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], positionNotice, onPositionChange }: PackagesPageProps) {
+export function PackagesPage({ onOpenSet, onNewPackage, initialCursors = [], positionNotice, onPositionChange }: PackagesPageProps) {
   const [attempt, setAttempt] = useState(0);
   const [state, dispatch] = useReducer(documentListReducer, initialCursors, restoreDocumentList);
   useEffect(() => {
@@ -46,7 +47,7 @@ export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], 
 
   return (
     <PageFrame title="Documents"
-      description="Every drawing review in this project. Open one to see its results."
+      description="Every drawing set in this project, with its newest full check. Open one to see its results."
       actions={<Button type="button" onClick={onNewPackage}>
         <Plus aria-hidden="true" /> New review
       </Button>}>
@@ -82,7 +83,7 @@ export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], 
         {data && (
           <DocumentsTable
             rows={data.rows}
-            onOpen={onOpenReview}
+            onOpen={onOpenSet}
             morePages={morePages}
             emptyMessage={navigation.page === 1 ? 'No reviews yet. Start one with New review.' : 'No reviews on this page. Use Previous page to go back.'}
           />

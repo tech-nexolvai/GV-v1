@@ -9,19 +9,21 @@ two writers from taking the same place. The history a turn replays is every earl
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Final
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from app.models import (
     AssistantChat,
     AssistantChatFile,
     AssistantChatMessage,
+    AssistantFindingDecision,
     ModelInvocation,
     Package,
     PackageRevision,
@@ -41,6 +43,7 @@ from app.review.assistant.chat_decisions import (
 )
 from app.review.assistant.chat_trust import rescored
 from app.review.assistant.impact import blocks_with_impacts
+from app.review.assistant.proof import proof_counts
 from app.review.assistant.review_action import CheckState, review_action
 
 __all__ = [
@@ -55,6 +58,7 @@ __all__ = [
     "create_chat",
     "file_out",
     "history",
+    "latest_full_checks",
     "message_out",
     "package_name",
     "recorded_chat_spend",
@@ -607,6 +611,158 @@ def review_results(session: Session, chat_ids: Sequence[UUID]) -> dict[UUID, Cha
         found = _review_action(message, blocks or [])
         if found is not None:
             out[chat_id] = ChatSummaryReviewOut(action=found["action"], words=found["words"])
+    return out
+
+
+#: The newest full checks' summaries already worked out (`latest_full_checks`), by what they
+#: depend on: the answer, its decision rows and the chat's later answers. Every one of those tables is
+#: append-only, so a key that matches can never be stale; a new decision or answer is a new key.
+_SUMMARIES: dict[tuple[UUID, int, int], dict[str, Any]] = {}
+_SUMMARIES_LOCK: Final = threading.Lock()
+#: Enough for every set on a page several times over; the oldest entries go first.
+_SUMMARIES_KEPT: Final = 512
+
+
+def latest_full_checks(session: Session, package_ids: Sequence[UUID]) -> dict[UUID, dict[str, Any]]:
+    """Each drawing set's newest full check, for the Documents list and the sidebar: its chat,
+    when it ran, why it stopped (if it did), its review result (once its package is made) and its
+    counts as its result screen shows them (Wrong / Right / Ask the architect / Not compared; a
+    reviewer's "Not a problem" is counted in none). Its findings are read at their newest versions
+    (later answers' corrections) with the reviewer's latest decisions, like `review_results`.
+
+    One query finds every set's newest full check with what its summary depends on (how many
+    decision rows it has, the chat's newest answer), without its blocks. A summary worked out
+    before for the same key is reused (`_SUMMARIES`); only the others are read and worked out, with
+    three more queries for all of them together. Never a query per set. A set with no full check
+    is absent."""
+    if not package_ids:
+        return {}
+    ranked = (
+        select(
+            AssistantChat.package_id,
+            AssistantChatMessage.id.label("message_id"),
+            func.row_number()
+            .over(
+                partition_by=AssistantChat.package_id,
+                order_by=(AssistantChatMessage.created_at.desc(), AssistantChatMessage.seq.desc()),
+            )
+            .label("rank"),
+        )
+        .join(AssistantChat, AssistantChat.id == AssistantChatMessage.chat_id)
+        .where(
+            AssistantChat.package_id.in_(list(package_ids)),
+            AssistantChatMessage.role == "assistant",
+            AssistantChatMessage.mode == "full_check",
+        )
+        .subquery()
+    )
+    later = aliased(AssistantChatMessage)
+    decisions = (
+        select(func.count())
+        .where(AssistantFindingDecision.message_id == AssistantChatMessage.id)
+        .correlate(AssistantChatMessage)
+        .scalar_subquery()
+    )
+    last_seq = (
+        select(func.coalesce(func.max(later.seq), 0))
+        .where(later.chat_id == AssistantChatMessage.chat_id, later.role == "assistant")
+        .correlate(AssistantChatMessage)
+        .scalar_subquery()
+    )
+    heads = session.execute(
+        select(
+            ranked.c.package_id,
+            AssistantChatMessage.id,
+            AssistantChatMessage.chat_id,
+            AssistantChatMessage.seq,
+            AssistantChatMessage.created_at,
+            AssistantChatMessage.stopped,
+            decisions.label("decisions"),
+            last_seq.label("last_seq"),
+        )
+        .join(AssistantChatMessage, AssistantChatMessage.id == ranked.c.message_id)
+        .where(ranked.c.rank == 1)
+    ).all()
+    if not heads:
+        return {}
+    keys = {
+        head.id: (head.id, int(head.decisions), max(int(head.last_seq), head.seq)) for head in heads
+    }
+    with _SUMMARIES_LOCK:
+        known = {key: _SUMMARIES[key] for key in keys.values() if key in _SUMMARIES}
+    missing = [head for head in heads if keys[head.id] not in known]
+    if missing:
+        worked = _work_out_full_checks(session, missing)
+        with _SUMMARIES_LOCK:
+            for head in missing:
+                _SUMMARIES[keys[head.id]] = known[keys[head.id]] = worked[head.id]
+            while len(_SUMMARIES) > _SUMMARIES_KEPT:
+                del _SUMMARIES[next(iter(_SUMMARIES))]
+    return {
+        head.package_id: {
+            "chat_id": head.chat_id,
+            "message_id": head.id,
+            "ran_at": head.created_at,
+            "stopped": head.stopped,
+            **known[keys[head.id]],
+        }
+        for head in heads
+    }
+
+
+def _work_out_full_checks(session: Session, heads: Sequence[Any]) -> dict[UUID, dict[str, Any]]:
+    """The review result and counts of these newest full checks (`latest_full_checks`)."""
+    answers = {
+        row.id: row
+        for row in session.scalars(
+            select(AssistantChatMessage).where(
+                AssistantChatMessage.id.in_([head.id for head in heads])
+            )
+        )
+    }
+    later: dict[UUID, list[AssistantChatMessage]] = {}
+    for row in session.scalars(
+        select(AssistantChatMessage)
+        .where(
+            or_(
+                *(
+                    and_(
+                        AssistantChatMessage.chat_id == head.chat_id,
+                        AssistantChatMessage.seq > head.seq,
+                    )
+                    for head in heads
+                )
+            ),
+            AssistantChatMessage.role == "assistant",
+        )
+        .order_by(AssistantChatMessage.chat_id, AssistantChatMessage.seq)
+    ):
+        later.setdefault(row.chat_id, []).append(row)
+    decided = latest_decisions_of(session, list(answers))
+    out: dict[UUID, dict[str, Any]] = {}
+    for message in answers.values():
+        corrections = corrections_by_answer(later.get(message.chat_id, [])).get(str(message.id))
+        blocks = with_decisions(
+            with_corrections(message.blocks, corrections), decided.get(message.id)
+        )
+        shown = blocks or []
+        counts = proof_counts(
+            block["finding"]
+            for block in shown
+            if block.get("type") == "finding" and isinstance(block.get("finding"), Mapping)
+        )
+        found = _review_action(message, shown)
+        out[message.id] = {
+            "review_result": (
+                None if found is None else {"action": found["action"], "words": found["words"]}
+            ),
+            "counts": {
+                "wrong": counts["clouded"],
+                "right": counts["right"],
+                "ask_architect": counts["rule_note"],
+                "not_compared": counts["not_compared"],
+            },
+        }
     return out
 
 

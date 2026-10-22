@@ -57,6 +57,7 @@ from uuid import UUID
 from app.review.assistant.chat_trust import round_item_key
 from app.review.assistant.impact import by_impact, impact_of
 from app.review.assistant.proof import proof_group
+from app.review.assistant.round_reference import round_only
 from vocabulary.product_registry import registry
 
 __all__ = [
@@ -259,8 +260,11 @@ def _counted_status(finding: Mapping[str, Any]) -> str:
     `different` code did not prove (an unread value, a pairing not proved) is Not compared
     (`check`) here too, so the tracker, its counts and the comment numbers never call Wrong what
     the cloud drawing, the letter and the register list as Not compared. A reviewer's "not a
-    problem" keeps its status (the decision says it)."""
+    problem" keeps its status (the decision says it). A `same` compared only with the vendor's own
+    earlier round is never right (2026-10-22, `round_reference`): Not compared here too."""
     status = str(finding.get("status") or "")
+    if status == "same" and round_only(finding):
+        return "check"
     if status != "different":
         return status
     group = proof_group(finding)

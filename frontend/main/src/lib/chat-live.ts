@@ -33,7 +33,7 @@ export type LiveEvent =
   | { event: 'check_stopping'; data: { v: number; stopping: LiveStopping } }
   | { event: 'check_service'; data: { v: number; reason: string } };
 
-const EMPTY_TALLY: LiveTally = { wrong: 0, right: 0, not_compared: 0, waiting_second_look: 0 };
+const EMPTY_TALLY: LiveTally = { wrong: 0, right: 0, rule_note: 0, not_compared: 0, waiting_second_look: 0 };
 
 /** The state before the first event: getting ready since `at` (the card draws at once). */
 export function startingLive(at: string | null | undefined): LiveState {
@@ -243,7 +243,7 @@ export function provedWrongs(live: LiveState): LiveFinding[] {
 export function tallyOf(live: LiveState): LiveTally {
   const counted = live.findings.filter((finding) => !finding.removed && !finding.same_as);
   const count = (outcome: LiveFinding['outcome']) => counted.filter((finding) => finding.outcome === outcome).length;
-  return { wrong: count('wrong'), right: count('right'), not_compared: count('not_compared'), waiting_second_look: live.tally.waiting_second_look };
+  return { wrong: count('wrong'), right: count('right'), rule_note: count('rule_note'), not_compared: count('not_compared'), waiting_second_look: live.tally.waiting_second_look };
 }
 
 /** How many proved Wrongs each drawing tile carries: on the newest tile of the finding's page. */

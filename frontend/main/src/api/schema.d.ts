@@ -5080,6 +5080,8 @@ export interface components {
             reference_side?: ("vendor" | "architect") | null;
             /** Round */
             round?: number | null;
+            /** @description Information only (2026-10-22): the item was compared with the vendor's own drawing (an earlier round), never counted as right; whether code compared it with the architect instead. */
+            round_match?: components["schemas"]["ChatFindingRoundMatchOut"] | null;
             /** Round Status */
             round_status?: ("fixed_in_later_round" | "still_wrong" | "new_in_later_round" | "not_in_later_round" | "single_round") | null;
             /** Rule Check Id */
@@ -5135,10 +5137,10 @@ export interface components {
         ChatFindingProofOut: {
             /**
              * Group
-             * @description clouded: Wrong, proved by code (red cloud); right; not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').
+             * @description clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks the architect, `rule_note`); not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').
              * @enum {string}
              */
-            group: "clouded" | "right" | "not_compared" | "dismissed";
+            group: "clouded" | "right" | "rule_note" | "not_compared" | "dismissed";
             /**
              * Label
              * @description not_compared: the trade's words for the reason (Field verify, RFI to the architect, Not reviewed: <reason>, Illegible).
@@ -5148,7 +5150,7 @@ export interface components {
              * Not Compared
              * @description not_compared: the reason (the list's group).
              */
-            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "no_spot" | "ai_unsure" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "architect_outside_gv_rule" | "outside_gv_rule" | "internal") | null;
+            not_compared?: ("architect_disagrees" | "nothing_to_compare" | "different_reference" | "unreadable" | "no_spot" | "ai_unsure" | "missing_setting" | "prototype" | "not_proved" | "not_seen" | "field_verify" | "finish_not_comparable" | "no_sheet" | "no_overall" | "string_not_verified" | "architect_outside_gv_rule" | "outside_gv_rule" | "round_only" | "prototype_only" | "internal") | null;
             /**
              * Proof
              * @description Clouded items: the check that proved it, in plain words.
@@ -5164,6 +5166,8 @@ export interface components {
              * @description The architect-first rule it falls under (#1619): R4 a difference, R5 the vendor's own contradiction, R6 GV's rule; for not_compared R1 (brand prototype, or the architect's size outside a GV rule), R3 (architect's drawings disagree), R7 (architect gives nothing), R8 (different reference points), R9 (unreadable), R10 (missing job value or setting).
              */
             rule?: string | null;
+            /** @description rule_note: the GV rule and the question for the architect. */
+            rule_note?: components["schemas"]["ChatFindingRuleNoteOut"] | null;
             /**
              * Settle
              * @description not_compared: what is needed to compare it, in plain words.
@@ -5203,6 +5207,106 @@ export interface components {
             value_arch?: string | null;
             /** Value Vendor */
             value_vendor?: string | null;
+        };
+        /**
+         * ChatFindingRoundMatchOut
+         * @description A comparison with the vendor's own drawing (`round_reference`): information only, shown as
+         *     "Unchanged since round 1"; never a Right and never counted as decided by itself.
+         */
+        ChatFindingRoundMatchOut: {
+            /**
+             * Architect
+             * @description The architect's label (p57.D21).
+             */
+            architect?: string | null;
+            /**
+             * Compared
+             * @description How code compared the item with the architect instead (None: it could not, so the item is Not compared).
+             */
+            compared?: ("carrier" | "code_pair" | "earlier_round") | null;
+            /**
+             * Label
+             * @description The label compared with (D3).
+             */
+            label?: string | null;
+            /** Page */
+            page?: number | null;
+            /**
+             * Round
+             * @description The round of the drawing compared with.
+             */
+            round?: number | null;
+            /**
+             * Unchanged
+             * @description Code reads the same value there.
+             * @default false
+             */
+            unchanged: boolean;
+            /**
+             * Value
+             * @description The value printed there.
+             * @default
+             */
+            value: string;
+            /**
+             * Vendor Round
+             * @description The round of the vendor's value.
+             */
+            vendor_round?: number | null;
+            /**
+             * Via
+             * @description What linked it to the architect's label.
+             */
+            via?: string | null;
+            /**
+             * Words
+             * @description "Unchanged since round 1".
+             * @default
+             */
+            words: string;
+        };
+        /**
+         * ChatFindingRuleNoteOut
+         * @description The GV rule an architect's size breaks while the vendor prints that same size (#1839,
+         *     `rule_notes`): decided, never red; GV asks the architect.
+         */
+        ChatFindingRuleNoteOut: {
+            /**
+             * Architect
+             * @description The architect's size, which the vendor prints too.
+             */
+            architect: string;
+            /**
+             * Name
+             * @description The rule's subject: "filler width", "sink front offset".
+             */
+            name: string;
+            /**
+             * Origin
+             * @description Where the settings come from.
+             * @enum {string}
+             */
+            origin: "GV standard" | "project value" | "drawing set value";
+            /**
+             * Question
+             * @description The ready question for the architect (an RFI line).
+             */
+            question: string;
+            /**
+             * Rule Id
+             * @description The rulebook's id when the check names one.
+             */
+            rule_id?: string | null;
+            /**
+             * Settings
+             * @description The settings in force as printed: 1"-2", 4".
+             */
+            settings: string;
+            /**
+             * Standard
+             * @description "GV's standard is 1"-2"" (or the project's value).
+             */
+            standard: string;
         };
         /**
          * ChatFindingSettledOut
@@ -5671,21 +5775,21 @@ export interface components {
             key: string;
             /**
              * Needs
-             * @description Not compared: what would settle it.
+             * @description Not compared: what would settle it; a rule note: the question for the architect.
              */
             needs?: string | null;
             /**
              * Outcome
              * @enum {string}
              */
-            outcome: "wrong" | "right" | "not_compared";
+            outcome: "wrong" | "right" | "rule_note" | "not_compared";
             /** Page */
             page?: number | null;
             /**
              * Previous
              * @description Its outcome before, when it changed.
              */
-            previous?: ("wrong" | "right" | "not_compared") | null;
+            previous?: ("wrong" | "right" | "rule_note" | "not_compared") | null;
             /**
              * Product
              * @description The product id the item is filed under.
@@ -5699,7 +5803,7 @@ export interface components {
             proved_by?: ("code" | "checked_twice") | null;
             /**
              * Reason
-             * @description Not compared: why, in plain words.
+             * @description Not compared (or a rule note): why, in plain words.
              */
             reason?: string | null;
             /**
@@ -5859,6 +5963,12 @@ export interface components {
             not_compared: number;
             /** Right */
             right: number;
+            /**
+             * Rule Note
+             * @description The architect's size breaks a GV rule: GV asks (#1839).
+             * @default 0
+             */
+            rule_note: number;
             /** Waiting Second Look */
             waiting_second_look: number;
             /** Wrong */
@@ -6258,6 +6368,12 @@ export interface components {
             phase: "reading" | "checking" | "writing";
             /** Right So Far */
             right_so_far: number;
+            /**
+             * Rule Note So Far
+             * @description The architect's size breaks a GV rule: GV asks (#1839).
+             * @default 0
+             */
+            rule_note_so_far: number;
             /** Wrong So Far */
             wrong_so_far: number;
         };
@@ -6443,7 +6559,7 @@ export interface components {
         };
         /**
          * ChatReviewActionOut
-         * @description A full check's review result (#1622, `review_action.review_action`, rules S0 to S7),
+         * @description A full check's review result (#1622, `review_action.review_action`, rules S0 to S7 and RN),
          *     decided by code on read from its findings with the reviewer's latest decisions and the state
          *     kept with its package; the comment letter and the cloud drawing's cover say the same.
          */
@@ -6452,7 +6568,7 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "approved" | "approved_as_noted" | "revise_resubmit" | "rejected" | "not_for_sending";
+            action: "approved" | "approved_as_noted" | "review_needed" | "revise_resubmit" | "rejected" | "not_for_sending";
             /**
              * Corrections
              * @description Comments sent (the clouds).
@@ -6469,13 +6585,25 @@ export interface components {
              */
             fabrication: number;
             /**
+             * Items
+             * @description All items: Wrong + Right + Ask the architect + Not compared (decided ones included); Review needed when more than the set share of them are Not compared.
+             * @default 0
+             */
+            items: number;
+            /**
              * Next Step
              * @description What the vendor does next (the letter's closing line).
              */
             next_step: string;
             /**
+             * Not Compared
+             * @description Items Not compared (decided items no longer count).
+             * @default 0
+             */
+            not_compared: number;
+            /**
              * Note
-             * @description S6: what was not reviewed.
+             * @description S6 and RN: what was not reviewed.
              */
             note?: string | null;
             /**
@@ -6493,10 +6621,16 @@ export interface components {
              * @description The rule that decided it (the first that matches wins).
              * @enum {string}
              */
-            rule: "S0" | "S1" | "S2" | "S3" | "S4" | "S5" | "S6" | "S7";
+            rule: "S0" | "S1" | "S2" | "S3" | "S4" | "RN" | "S5" | "S6" | "S7";
+            /**
+             * Vendor Words
+             * @description The result as the vendor reads it: the same words, but "Under review" for Review needed (never an approval).
+             * @default
+             */
+            vendor_words: string;
             /**
              * Words
-             * @description "Approved as noted", "Revise and resubmit", …
+             * @description "Approved as noted", "Review needed", "Revise and resubmit", …
              */
             words: string;
         };
@@ -6539,6 +6673,12 @@ export interface components {
             rounds: number[];
             /** Still Wrong */
             still_wrong: number;
+            /**
+             * Unchanged
+             * @description Items whose value is unchanged since an earlier round: information only, never counted as right (2026-10-22).
+             * @default 0
+             */
+            unchanged: number;
             /**
              * Unrequested
              * @description compare_rounds: changes nobody asked for (no finding, no GV markup).
@@ -6715,7 +6855,7 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "approved" | "approved_as_noted" | "revise_resubmit" | "rejected" | "not_for_sending";
+            action: "approved" | "approved_as_noted" | "review_needed" | "revise_resubmit" | "rejected" | "not_for_sending";
             /**
              * Words
              * @description "Revise and resubmit", "Check incomplete: not for sending", …
@@ -7986,6 +8126,8 @@ export interface components {
             /** Why Not */
             why_not: string | null;
         };
+        /** @enum {string} */
+        DrawingsState: "reading" | "read" | "failed";
         /**
          * EarlierRunOut
          * @description One day's earlier calls for one purpose, from `ai_spend_history`.
@@ -8524,6 +8666,48 @@ export interface components {
             record_id?: string | null;
         };
         /**
+         * FullCheckCountsOut
+         * @description A full check's items as its result screen counts them (its tiles).
+         */
+        FullCheckCountsOut: {
+            /**
+             * Ask Architect
+             * @description Ask the architect: the architect's size breaks a GV rule (#1839).
+             */
+            ask_architect: number;
+            /**
+             * Not Compared
+             * @description Not compared, each with its reason.
+             */
+            not_compared: number;
+            /**
+             * Right
+             * @description Right: matches the architect or GV's rule.
+             */
+            right: number;
+            /**
+             * Wrong
+             * @description Wrong: proved by code, red on the cloud drawing.
+             */
+            wrong: number;
+        };
+        /**
+         * FullCheckReviewOut
+         * @description A full check's review result in AWI's words (`review_action`), once its package is made.
+         */
+        FullCheckReviewOut: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "approved" | "approved_as_noted" | "review_needed" | "revise_resubmit" | "rejected" | "not_for_sending";
+            /**
+             * Words
+             * @description "Revise and resubmit", "Check incomplete: not for sending", …
+             */
+            words: string;
+        };
+        /**
          * GrantException
          * @description Accept one specific deviation, until one specific moment.
          *
@@ -8779,6 +8963,38 @@ export interface components {
              * @description Inches with the inch mark, in the form's own format: `3/4"`.
              */
             value: string;
+        };
+        /**
+         * LatestFullCheckOut
+         * @description The drawing set's newest full check (a chat's one-click check), for the Documents list and
+         *     the sidebar: the results now live in the chat, not in the old check runs.
+         */
+        LatestFullCheckOut: {
+            /**
+             * Chat Id
+             * Format: uuid
+             * @description The chat that holds it: open `#/chat/<set>/<chat>`.
+             */
+            chat_id: string;
+            counts: components["schemas"]["FullCheckCountsOut"];
+            /**
+             * Message Id
+             * Format: uuid
+             */
+            message_id: string;
+            /**
+             * Ran At
+             * Format: date-time
+             * @description When its answer was stored (the check ended).
+             */
+            ran_at: string;
+            /** @description Its review result once its package is made; null when it stopped before. */
+            review_result?: components["schemas"]["FullCheckReviewOut"] | null;
+            /**
+             * Stopped
+             * @description Why it stopped before it finished; null when it finished.
+             */
+            stopped?: ("cost_cap" | "cancelled" | "error" | "turn_limit" | "interrupted") | null;
         };
         /**
          * LayoutProposalOut
@@ -9362,6 +9578,11 @@ export interface components {
             /** Budget Limit */
             budget_limit?: ("unpriced" | "fixed" | "maximum") | null;
             /**
+             * Checking
+             * @default false
+             */
+            checking: boolean;
+            /**
              * Created At
              * Format: date-time
              */
@@ -9373,6 +9594,8 @@ export interface components {
             current_revision_id: string;
             /** Current Revision Number */
             current_revision_number: number;
+            drawings?: components["schemas"]["DrawingsState"] | null;
+            full_check?: components["schemas"]["LatestFullCheckOut"] | null;
             /**
              * Id
              * Format: uuid
@@ -9463,10 +9686,20 @@ export interface components {
             /** Approved */
             approved: boolean;
             /**
+             * Checking
+             * @description A full check of the set is running now on this server.
+             * @default false
+             */
+            checking: boolean;
+            /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** @description The set pack for the full check: reading, read, failed; null when not started. */
+            drawings?: components["schemas"]["DrawingsState"] | null;
+            /** @description The set's newest full check (the chat's one-click check): its review result, counts and chat; null before the first. The Documents table's main columns. */
+            full_check?: components["schemas"]["LatestFullCheckOut"] | null;
             /** Needs Decision */
             needs_decision: number;
             needs_decision_by_outcome: components["schemas"]["NeedsDecisionByOutcomeOut"];

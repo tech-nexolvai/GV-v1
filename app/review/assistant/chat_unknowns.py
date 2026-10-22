@@ -75,7 +75,7 @@ def _sides_unreadable(finding: Mapping[str, Any]) -> bool:
         return False
     from app.review.assistant.proof import proof_group
 
-    return proof_group(finding) not in ("clouded", "right")
+    return proof_group(finding) not in ("clouded", "right", "rule_note")
 
 
 def _page(value: object) -> int | None:

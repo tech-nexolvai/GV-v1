@@ -557,6 +557,28 @@ type ChatKeepReason = Literal[
 ]
 
 
+class ChatFindingRoundMatchOut(BaseModel):
+    """A comparison with the vendor's own drawing (`round_reference`): information only, shown as
+    "Unchanged since round 1"; never a Right and never counted as decided by itself."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page: int | None = None
+    round: int | None = Field(default=None, description="The round of the drawing compared with.")
+    vendor_round: int | None = Field(default=None, description="The round of the vendor's value.")
+    label: str | None = Field(default=None, description="The label compared with (D3).")
+    value: str = Field(default="", description="The value printed there.")
+    unchanged: bool = Field(default=False, description="Code reads the same value there.")
+    compared: Literal["carrier", "code_pair", "earlier_round"] | None = Field(
+        default=None,
+        description="How code compared the item with the architect instead (None: it could not, "
+        "so the item is Not compared).",
+    )
+    via: str | None = Field(default=None, description="What linked it to the architect's label.")
+    architect: str | None = Field(default=None, description="The architect's label (p57.D21).")
+    words: str = Field(default="", description='"Unchanged since round 1".')
+
+
 class ChatFindingSettledOut(BaseModel):
     """How code settled a not-compared ("check") item by itself (#1554), shown as "Settled by GV
     Review: …"."""
@@ -627,6 +649,25 @@ class ChatFindingImpactOut(BaseModel):
     why: str = Field(description='Plain words: "changes fabrication (overall size); 9 in off".')
 
 
+class ChatFindingRuleNoteOut(BaseModel):
+    """The GV rule an architect's size breaks while the vendor prints that same size (#1839,
+    `rule_notes`): decided, never red; GV asks the architect."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(description='The rule\'s subject: "filler width", "sink front offset".')
+    rule_id: str | None = Field(
+        default=None, description="The rulebook's id when the check names one."
+    )
+    settings: str = Field(description='The settings in force as printed: 1"-2", 4".')
+    origin: Literal["GV standard", "project value", "drawing set value"] = Field(
+        description="Where the settings come from."
+    )
+    architect: str = Field(description="The architect's size, which the vendor prints too.")
+    standard: str = Field(description='"GV\'s standard is 1"-2"" (or the project\'s value).')
+    question: str = Field(description="The ready question for the architect (an RFI line).")
+
+
 class ChatFindingProofOut(BaseModel):
     """Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read
     (`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a
@@ -634,8 +675,10 @@ class ChatFindingProofOut(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    group: Literal["clouded", "right", "not_compared", "dismissed"] = Field(
-        description="clouded: Wrong, proved by code (red cloud); right; not_compared: could not be "
+    group: Literal["clouded", "right", "rule_note", "not_compared", "dismissed"] = Field(
+        description="clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's "
+        "size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks "
+        "the architect, `rule_note`); not_compared: could not be "
         "compared under the architect-first rules (#1619: listed with its reason in the "
         "Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer "
         "marked it Right (Not a problem; the vendor's files say 'Right (reviewer)')."
@@ -678,6 +721,8 @@ class ChatFindingProofOut(BaseModel):
             "string_not_verified",
             "architect_outside_gv_rule",
             "outside_gv_rule",
+            "round_only",
+            "prototype_only",
             "internal",
         ]
         | None
@@ -689,6 +734,9 @@ class ChatFindingProofOut(BaseModel):
     )
     settle: str | None = Field(
         default=None, description="not_compared: what is needed to compare it, in plain words."
+    )
+    rule_note: ChatFindingRuleNoteOut | None = Field(
+        default=None, description="rule_note: the GV rule and the question for the architect."
     )
 
 
@@ -892,6 +940,12 @@ class ChatFindingOut(BaseModel):
         description="A full check (#1619): the free code steps tried on this item when code could "
         "not settle it at first, and how it ended.",
     )
+    round_match: ChatFindingRoundMatchOut | None = Field(
+        default=None,
+        description="Information only (2026-10-22): the item was compared with the vendor's own "
+        "drawing (an earlier round), never counted as right; whether code compared it with the "
+        "architect instead.",
+    )
     string_reads: ChatFindingStringReadsOut | None = Field(
         default=None,
         description="A vendor string (#1641): the blind second reading's outcome, in code's words "
@@ -1081,6 +1135,11 @@ class ChatRoundsOut(BaseModel):
     not_in_later_round: int
     new: int
     line: str
+    unchanged: int = Field(
+        default=0,
+        description="Items whose value is unchanged since an earlier round: information only, "
+        "never counted as right (2026-10-22).",
+    )
     unrequested: int = Field(
         default=0,
         description="compare_rounds: changes nobody asked for (no finding, no GV markup).",
@@ -1452,6 +1511,9 @@ class ChatProgressOut(BaseModel):
     wrong_so_far: int
     decision_so_far: int
     right_so_far: int
+    rule_note_so_far: int = Field(
+        default=0, description="The architect's size breaks a GV rule: GV asks (#1839)."
+    )
     eta_seconds: int | None = Field(
         default=None, description="Time left at the pace so far; null before any page is done."
     )
@@ -1741,23 +1803,42 @@ class ChatRemadeOut(ChatFileOut):
 
 
 class ChatReviewActionOut(BaseModel):
-    """A full check's review result (#1622, `review_action.review_action`, rules S0 to S7),
+    """A full check's review result (#1622, `review_action.review_action`, rules S0 to S7 and RN),
     decided by code on read from its findings with the reviewer's latest decisions and the state
     kept with its package; the comment letter and the cloud drawing's cover say the same."""
 
     model_config = ConfigDict(frozen=True)
 
     action: Literal[
-        "approved", "approved_as_noted", "revise_resubmit", "rejected", "not_for_sending"
+        "approved",
+        "approved_as_noted",
+        "review_needed",
+        "revise_resubmit",
+        "rejected",
+        "not_for_sending",
     ]
-    rule: Literal["S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7"] = Field(
+    rule: Literal["S0", "S1", "S2", "S3", "S4", "RN", "S5", "S6", "S7"] = Field(
         description="The rule that decided it (the first that matches wins)."
     )
-    words: str = Field(description='"Approved as noted", "Revise and resubmit", …')
+    words: str = Field(description='"Approved as noted", "Review needed", "Revise and resubmit", …')
+    vendor_words: str = Field(
+        default="",
+        description='The result as the vendor reads it: the same words, but "Under review" for '
+        "Review needed (never an approval).",
+    )
     reason: str = Field(description='Why, in one line: "2 of 5 corrections change fabrication."')
     corrections: int = Field(ge=0, description="Comments sent (the clouds).")
     fabrication: int = Field(ge=0, description="Of them, those that change fabrication.")
-    note: str | None = Field(default=None, description="S6: what was not reviewed.")
+    note: str | None = Field(default=None, description="S6 and RN: what was not reviewed.")
+    not_compared: int = Field(
+        default=0, ge=0, description="Items Not compared (decided items no longer count)."
+    )
+    items: int = Field(
+        default=0,
+        ge=0,
+        description="All items: Wrong + Right + Ask the architect + Not compared (decided ones "
+        "included); Review needed when more than the set share of them are Not compared.",
+    )
     next_step: str = Field(description="What the vendor does next (the letter's closing line).")
     required_by: str = Field(description='Who must act now ("Vendor: revise and resubmit").')
     disclaimer: str = Field(description="The standard words printed under the result.")
@@ -1903,7 +1984,7 @@ class ChatLiveFindingOut(BaseModel):
     id: str | None = Field(
         default=None, description="The finding's id (`F12`) once recorded in the answer."
     )
-    outcome: Literal["wrong", "right", "not_compared"]
+    outcome: Literal["wrong", "right", "rule_note", "not_compared"]
     proved_by: Literal["code", "checked_twice"] | None = Field(
         default=None,
         description="A Wrong only: code alone, or code and the blind second look ('checked twice').",
@@ -1915,8 +1996,14 @@ class ChatLiveFindingOut(BaseModel):
     architect: str | None = None
     should_be: str | None = Field(default=None, description="What it should be (green).")
     product: str = Field(default="other", description="The product id the item is filed under.")
-    reason: str | None = Field(default=None, description="Not compared: why, in plain words.")
-    needs: str | None = Field(default=None, description="Not compared: what would settle it.")
+    reason: str | None = Field(
+        default=None, description="Not compared (or a rule note): why, in plain words."
+    )
+    needs: str | None = Field(
+        default=None,
+        description="Not compared: what would settle it; a rule note: the question for the "
+        "architect.",
+    )
     impact: ChatLiveImpactOut | None = None
     same_as: str | None = Field(
         default=None,
@@ -1926,7 +2013,7 @@ class ChatLiveFindingOut(BaseModel):
     removed: bool = Field(
         default=False, description="No longer in the answer (folded into another, or left out)."
     )
-    previous: Literal["wrong", "right", "not_compared"] | None = Field(
+    previous: Literal["wrong", "right", "rule_note", "not_compared"] | None = Field(
         default=None, description="Its outcome before, when it changed."
     )
     final: bool = Field(
@@ -1944,6 +2031,9 @@ class ChatLiveTallyOut(BaseModel):
 
     wrong: int = Field(ge=0)
     right: int = Field(ge=0)
+    rule_note: int = Field(
+        default=0, ge=0, description="The architect's size breaks a GV rule: GV asks (#1839)."
+    )
     not_compared: int = Field(ge=0)
     waiting_second_look: int = Field(ge=0)
 
@@ -2017,7 +2107,12 @@ class ChatSummaryReviewOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     action: Literal[
-        "approved", "approved_as_noted", "revise_resubmit", "rejected", "not_for_sending"
+        "approved",
+        "approved_as_noted",
+        "review_needed",
+        "revise_resubmit",
+        "rejected",
+        "not_for_sending",
     ]
     words: str = Field(description='"Revise and resubmit", "Check incomplete: not for sending", …')
 

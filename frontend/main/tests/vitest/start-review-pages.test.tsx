@@ -77,13 +77,13 @@ describe('one page header (#1125)', () => {
 
   it('a recent review is read out whole: vendor, revision, date and status', async () => {
     routes['GET /projects/p/packages'] = () => json({
-      items: [{ id: 'pkg', vendor: 'Synthetic vendor', state: 'AWAITING_REVIEW', created_at: '2026-10-01T10:00:00Z', current_revision_number: 2, current_revision_id: 'r', project_id: 'p', product_type: 'countertop' }],
+      items: [{ id: 'pkg', vendor: 'Synthetic vendor', state: 'UPLOADING', created_at: '2026-10-01T10:00:00Z', current_revision_number: 2, current_revision_id: 'r', project_id: 'p', product_type: 'countertop', checking: false, drawings: 'read', full_check: null }],
       next_cursor: null,
     });
     const onOpenReview = vi.fn();
     render(<WelcomePage onCreated={() => {}} onOpenReview={onOpenReview} />);
     // No aria-label: the name is the row's own text, so the status and date are not hidden.
-    const recent = await screen.findByRole('button', { name: /^Synthetic vendor\s*Round 2 · \S+.*Drawings read$/ });
+    const recent = await screen.findByRole('button', { name: /^Synthetic vendor\s*Round 2 · \S+.*Drawings read · Not checked yet$/ });
     await userEvent.setup().click(recent);
     expect(onOpenReview).toHaveBeenCalledWith('pkg');
   });
@@ -160,15 +160,13 @@ describe('Documents legend (#1125)', () => {
     state: 'AWAITING_REVIEW', created_at: '2026-10-01T10:00:00Z', updated_at: '2026-10-01T10:00:00Z',
     outcomes: { pass: 1, fail: 0, review: 0, not_found: 0, no_rule: 0 }, needs_decision: 0,
     needs_decision_by_outcome: { fail: 0, review: 0, not_found: 0, other: 0 }, approved: false, signed_exports_ready: false,
+    checking: false, drawings: null, full_check: null,
   };
 
-  it('shows the five result words, each with its glyph, without a click', () => {
+  it('names the item glyphs without a click: Wrong, Right, Not compared (Ask the architect only when there is one)', () => {
     render(<DocumentsTable rows={[row]} onOpen={() => {}} morePages={false} />);
-    const legend = screen.getByRole('list', { name: 'Result shapes' });
+    const legend = screen.getByRole('list', { name: 'Item counts' });
     const items = within(legend).getAllByRole('listitem');
-    expect(items.map((li) => li.textContent)).toEqual([
-      'Looks right', 'Needs correction', 'Needs your decision', 'Waiting on a value', 'Not applicable',
-    ]);
-    for (const item of items) expect(item.querySelector('[data-outcome-icon]')).not.toBeNull();
+    expect(items.map((li) => li.textContent)).toEqual(['Wrong', 'Right', 'Not compared']);
   });
 });

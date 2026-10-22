@@ -193,17 +193,56 @@ def test_the_limits_in_force_decide_and_none_means_no_check() -> None:
 # ---- the architect governs ----------------------------------------------------------------------
 
 
-def test_the_vendor_following_the_architects_out_of_range_filler_is_not_compared() -> None:
+def test_the_vendor_following_the_architects_out_of_range_filler_is_a_rule_note() -> None:
+    """#1839: decided, never red, never Not compared: GV asks the architect."""
     (made,) = _one(
         [_label("D3", '3/4" FILLER', "0.75", "vendor")],
         [_label("D7", '3/4" FILLER', "0.75", "architect")],
     )
     assert made["status"] == "check"
     assert made["gv_note"] == 'the architect specifies 3/4", outside GV\'s 1"-2" filler range'
+    assert made["gv_standard"]["value"] == '1"-2"' and made["gv_standard"]["proved"] is True
+    assert made["gv_standard"]["origin"] == "GV standard"
+    shown = classification.classify(made, proved=False)
+    assert (shown.outcome, shown.reason) == ("rule_note", fr.ARCHITECT_OUTSIDE)
+    assert shown.note is not None and shown.note.settings == '1"-2"'
+    assert shown.settle == (
+        "Architect: the filler width is specified at 3/4\" (Pantry, architect's page 1); "
+        'GV\'s standard is 1"-2". Please confirm the size.'
+    )
+    found = proof.proof_of(judged({**made, "id": "F1"}))
+    assert found["group"] == "rule_note" and found["should_be"] is None
+    assert found["rule_note"]["architect"] == '3/4"'
+
+
+def test_an_architect_filler_read_from_drawn_ink_stays_not_compared() -> None:
+    """Code did not read the architect's size from the drawing's text: not proved, so the old GV
+    note on the Not-compared list."""
+    (made,) = _one(
+        [_label("D3", '3/4" FILLER', "0.75", "vendor")],
+        [_label("D7", '3/4" FILLER', "0.75", "architect", route="drawn")],
+    )
+    assert made["gv_standard"]["proved"] is False
     shown = classification.classify(made, proved=False)
     assert (shown.outcome, shown.reason) == ("not_compared", fr.ARCHITECT_OUTSIDE)
     assert shown.why == made["gv_note"]
     assert proof.proof_group(judged({**made, "id": "F1"})) == "not_compared"
+
+
+def test_a_project_range_is_named_as_the_projects_value() -> None:
+    project = RULES_MD.replace("| the rulebook's default |", "| this project's value |")
+    limits = fr.limits_from(settings_in_force(project), project)
+    assert limits is not None and limits.origin == "project value"
+    (made,) = fr.findings_from(
+        _dims(
+            [_label("D3", '3/4" FILLER', "0.75", "vendor")],
+            [_label("D7", '3/4" FILLER', "0.75", "architect")],
+        ),
+        PAGE_MAP,
+        limits,
+    )
+    note = classification.classify(made, proved=False).note
+    assert note is not None and note.standard == 'this project\'s GV value is 1"-2"'
 
 
 def test_the_vendor_differing_from_the_architect_is_left_to_the_architect_comparison() -> None:

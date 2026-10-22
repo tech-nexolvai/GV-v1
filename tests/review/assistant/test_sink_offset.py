@@ -331,10 +331,19 @@ def test_every_output_names_the_standard_and_a_not_compared_item_its_reason() ->
     assert shown["group"] == "clouded"
     assert shown["should_be"] == '4" (GV standard: sink front offset)'
     assert shown["proof"].startswith('Settled by GV Review: GV standard: sink front offset 4"')
+    # #1839: the vendor follows the architect's other value: decided, GV asks the architect.
     (conflict,) = _findings("5", ("5", True), vendor_offset=5.0)
     shown = proof.proof_of(judged({**conflict, "id": "S2"}))
-    assert shown["group"] == "not_compared" and shown["should_be"] is None
-    assert "reviewer decides" in shown["reason"]
+    assert shown["group"] == "rule_note" and shown["should_be"] is None
+    assert shown["rule_note"]["question"] == (
+        "Architect: the sink front offset is specified at 5\" (Kitchen, architect's page 1); "
+        "GV's standard is 4\". Please confirm the size."
+    )
+    # The vendor differs from the architect's other value too: never decided by GV's rule.
+    (other,) = _findings("3", ("5", True), vendor_offset=3.0)
+    assert other["keep_reason"] == so.CONFLICT
+    shown = proof.proof_of(judged({**other, "id": "S4"}))
+    assert shown["group"] == "not_compared" and "reviewer decides" in shown["reason"]
     (note,) = _findings("3", None, vendor_offset=3.0)
     assert proof.proof_of(judged({**note, "id": "S3"}))["group"] == "not_compared"
 

@@ -4,7 +4,8 @@
  *
  * - The work line says what the check did and how long it took (the only place for the time).
  * - The review result speaks AWI's words; its one sentence says only what no count says.
- * - Three tiles are the tabs and the only place for the counts: Wrong / Right / Not compared.
+ * - The tiles are the tabs and the only place for the counts: Wrong / Right / Not compared, and
+ *   Ask the architect when a size the architect specifies breaks a GV rule (#1839: decided, never red).
  * - A row says where (area, page), what was measured, and "Vendor 7″ → Should be 12″".
  */
 
@@ -12,18 +13,27 @@ import type { ChatFinding, ChatFile, ChatPackageState, ChatReviewAction, ChatTim
 import { isInternal, proofGroup } from '@/lib/chat-proof';
 import { inchNumber, inchWords } from '@/lib/chat-trust';
 
-export type ResultTab = 'wrong' | 'right' | 'not_compared';
+export type ResultTab = 'wrong' | 'right' | 'rule_note' | 'not_compared';
 
 export const TAB_WORDS: Record<ResultTab, { word: string; hint: string }> = {
   wrong: { word: 'Wrong', hint: 'Red on the cloud drawing, with what it should be' },
   right: { word: 'Right', hint: 'Match the architect or GV’s rules' },
+  // #1839: the owner's words; decided, never red, nothing asked of the vendor.
+  rule_note: { word: 'Ask the architect', hint: 'Architect’s size breaks a GV rule; the vendor follows it' },
   not_compared: { word: 'Not compared', hint: 'Each with its reason and what is needed' },
 };
+
+/** The tiles shown: Ask the architect only when there is one (#1839), so most sets keep three. */
+export function resultTabs(groups: Pick<ResultGroups, 'ruleNotes'>): ResultTab[] {
+  return groups.ruleNotes.length ? ['wrong', 'right', 'rule_note', 'not_compared'] : ['wrong', 'right', 'not_compared'];
+}
 
 export interface ResultGroups {
   /** Proved by code (clouded), biggest first. */
   wrong: ChatFinding[];
   right: ChatFinding[];
+  /** #1839: the architect's size breaks a GV rule and the vendor follows it: decided, GV asks the architect. */
+  ruleNotes: ChatFinding[];
   /** Not compared, in the order of their reasons (see `notComparedGroups`). */
   notCompared: ChatFinding[];
   /** The reviewer's "Not a problem" (an optional override): listed under Wrong, apart, not counted. */
@@ -34,16 +44,18 @@ const impactOf = (finding: ChatFinding) => finding.impact?.rank ?? Number.MAX_SA
 
 /** The findings by where the cloud drawing puts them, with the reviewer's newest click laid over. */
 export function resultGroups(findings: readonly ChatFinding[], decisionOf: (finding: ChatFinding) => FindingDecision | null = (finding) => finding.decision ?? null): ResultGroups {
-  const groups: ResultGroups = { wrong: [], right: [], notCompared: [], dismissed: [] };
+  const groups: ResultGroups = { wrong: [], right: [], ruleNotes: [], notCompared: [], dismissed: [] };
   for (const finding of findings) {
     const group = proofGroup(finding, decisionOf(finding));
     if (group === 'clouded') groups.wrong.push(finding);
     else if (group === 'right') groups.right.push(finding);
     else if (group === 'dismissed') groups.dismissed.push(finding);
+    else if (group === 'rule_note') groups.ruleNotes.push(finding);
     else groups.notCompared.push(finding);
   }
   groups.wrong.sort((a, b) => impactOf(a) - impactOf(b) || (b.impact?.score ?? 0) - (a.impact?.score ?? 0));
   groups.right.sort((a, b) => a.page - b.page);
+  groups.ruleNotes.sort((a, b) => a.page - b.page);
   groups.notCompared = notComparedGroups(groups.notCompared).flatMap((group) => group.findings);
   return groups;
 }
@@ -65,7 +77,9 @@ const REASONS: readonly [string, string][] = [
   ['not_seen', 'Not looked at on both drawings'],
   ['finish_not_comparable', 'Finish codes not comparable'],
   ['no_sheet', 'No sheet of the area or round to compare'],
+  ['round_only', 'Compared only with the vendor’s earlier round, not the architect'],
   ['prototype', 'Brand prototype differs (reference only)'],
+  ['prototype_only', 'Matches the brand prototype only (reference only)'],
   ['internal', 'For GV only: read by the AI, never found at its spot'],
 ];
 const REASON_ORDER = new Map(REASONS.map(([reason], at) => [reason, at]));
@@ -185,6 +199,11 @@ export interface Verdict {
   stamp: string;
   /** An unfinished check: a dashed stamp, a draft package. */
   draft: boolean;
+  /**
+   * Review needed (Anant 2026-10-22): the check finished, but too many items were Not compared to
+   * approve it; a person decides them first. A dashed stamp with a person glyph, never an approval.
+   */
+  pending: boolean;
   /** One sentence: only what no count on the screen says. */
   sentence: string;
 }
@@ -192,12 +211,16 @@ export interface Verdict {
 export function verdictOf(action: ChatReviewAction | null | undefined): Verdict | null {
   if (!action) return null;
   if (action.action === 'not_for_sending') {
-    return { stamp: action.words.replace(/:\s*/, ' · '), draft: true, sentence: `${action.reason.replace(/\.?$/, '.')} This package is a draft: do not send it yet.` };
+    return { stamp: action.words.replace(/:\s*/, ' · '), draft: true, pending: false, sentence: `${action.reason.replace(/\.?$/, '.')} This package is a draft: do not send it yet.` };
+  }
+  if (action.action === 'review_needed') {
+    // The screen's own next step; the vendor's files say only "Under review".
+    return { stamp: action.words, draft: false, pending: true, sentence: `${action.reason.replace(/\.?$/, '.')} Decide them below; until then the package tells the vendor “${action.vendor_words || 'Under review'}”.` };
   }
   const fabrication = action.fabrication > 0
     ? `${action.fabrication} of the wrong values ${action.fabrication === 1 ? 'changes' : 'change'} fabrication.`
     : null;
-  return { stamp: action.words, draft: false, sentence: [fabrication, action.next_step].filter(Boolean).join(' ') };
+  return { stamp: action.words, draft: false, pending: false, sentence: [fabrication, action.next_step].filter(Boolean).join(' ') };
 }
 
 // ── The work line ───────────────────────────────────────────
@@ -279,7 +302,7 @@ export function filesLine(files: { cloud: ChatFile | null; report: ChatFile | nu
 
 /** The page the preview opens on: the biggest Wrong item's vendor page, else the first item's, else 1. */
 export function previewPageOf(groups: ResultGroups): number {
-  const first = groups.wrong[0] ?? groups.notCompared[0] ?? groups.right[0];
+  const first = groups.wrong[0] ?? groups.ruleNotes[0] ?? groups.notCompared[0] ?? groups.right[0];
   return first ? first.vendor_box?.page ?? first.page : 1;
 }
 

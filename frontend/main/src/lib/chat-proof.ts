@@ -14,7 +14,7 @@
 
 import type { ChatFinding, FindingDecision, FindingStatus, ProofGroup } from '@/lib/chat-api';
 
-export const PROOF_GROUPS: readonly ProofGroup[] = ['clouded', 'right', 'not_compared', 'dismissed'];
+export const PROOF_GROUPS: readonly ProofGroup[] = ['clouded', 'right', 'rule_note', 'not_compared', 'dismissed'];
 
 export type ProofCounts = Record<ProofGroup, number>;
 
@@ -75,6 +75,9 @@ function codeGroup(finding: ChatFinding): ProofGroup {
   // The server's group already holds the stored decision: an overridden item goes back to what code found.
   if (server && server !== 'dismissed' && !(server === 'clouded' && finding.decision)) return server;
   if (finding.status === 'different' && codeProved(finding)) return 'clouded';
+  // #1839: the architect's size breaks a GV rule and the vendor follows it (the server's words
+  // stay on the item under an override): decided, GV asks the architect.
+  if (finding.proof?.rule_note && finding.status === 'check') return 'rule_note';
   // What code could not prove or compare is Not compared (#1619): listed apart, never asked.
   if (finding.status === 'different' || finding.status === 'check') return 'not_compared';
   return finding.compared === false ? 'not_compared' : 'right';
@@ -88,7 +91,7 @@ function codeGroup(finding: ChatFinding): ProofGroup {
  */
 export function asShown(finding: ChatFinding, decision: FindingDecision | null = finding.decision ?? null): ChatFinding {
   const group = proofGroup(finding, decision);
-  const status: FindingStatus | null = group === 'clouded' ? 'different' : group === 'right' ? 'same' : group === 'not_compared' ? 'check' : null;
+  const status: FindingStatus | null = group === 'clouded' ? 'different' : group === 'right' ? 'same' : group === 'not_compared' || group === 'rule_note' ? 'check' : null;
   return status === null || status === finding.status ? finding : { ...finding, status };
 }
 
@@ -97,6 +100,24 @@ export interface NotComparedWords {
   label: string;
   why: string | null;
   settle: string | null;
+}
+
+/**
+ * #1839: a size the architect specifies that breaks a GV rule, printed the same by the vendor:
+ * decided (never red, never "not compared"); GV asks the architect. The server's words.
+ */
+export interface RuleNoteWords {
+  why: string | null;
+  /** "GV’s standard is 1″-2″". */
+  standard: string;
+  /** The ready question for the architect. */
+  question: string;
+}
+
+export function ruleNoteWords(finding: ChatFinding, decision: FindingDecision | null = finding.decision ?? null): RuleNoteWords | null {
+  const note = finding.proof?.rule_note;
+  if (!note || proofGroup(finding, decision) !== 'rule_note') return null;
+  return { why: finding.proof?.reason?.trim() || null, standard: note.standard, question: note.question };
 }
 
 export function notComparedWords(finding: ChatFinding): NotComparedWords | null {
@@ -127,6 +148,7 @@ export function proofCounts(findings: readonly ChatFinding[], decisionOf?: (find
 export const PROOF_WORDS: Record<ProofGroup, string> = {
   clouded: 'Wrong, proved by code (clouded)',
   right: 'Right',
+  rule_note: 'Breaks a GV rule (architect’s size): ask the architect',
   not_compared: 'Not compared',
   dismissed: 'Right (reviewer)',
 };

@@ -33,7 +33,7 @@ function liveState(over: Partial<LiveState> = {}): LiveState {
     phase: phase(),
     drawings: [drawing('p16.v1', 16, 'answered'), drawing('p23.v1', 23, 'comparing', 'Buffet small'), drawing('p24.v1', 24, 'comparing'), drawing('p27.v1', 27, 'waiting')],
     findings: [finding('a'), finding('b', { outcome: 'right' }), finding('c', { removed: true }), finding('d', { same_as: 'a' })],
-    tally: { wrong: 1, right: 1, not_compared: 0, waiting_second_look: 2 },
+    tally: { wrong: 1, right: 1, rule_note: 0, not_compared: 0, waiting_second_look: 2 },
     counts: { drawings_done: 23, drawings_total: 39, second_looks_done: 0, second_looks_total: 0, files_made: 0 },
     stopping: null,
     service: null,
@@ -77,7 +77,7 @@ describe('the live card', () => {
 
   it('the tally always equals the list: N proved Wrongs shown, N in the tally, even before the server\'s own tally comes', () => {
     const findings = [finding('a'), finding('b', { page: 23 }), finding('c', { page: 24 }), finding('d', { outcome: 'right' }), finding('e', { outcome: 'not_compared' }), finding('f', { same_as: 'a' }), finding('g', { removed: true })];
-    render(<LiveCheck live={liveState({ findings, tally: { wrong: 0, right: 0, not_compared: 0, waiting_second_look: 1 } })} />);
+    render(<LiveCheck live={liveState({ findings, tally: { wrong: 0, right: 0, rule_note: 0, not_compared: 0, waiting_second_look: 1 } })} />);
     const shown = document.querySelectorAll('[data-slot="chat-live-row"]').length;
     expect(shown).toBe(3);
     const value = (kind: string) => document.querySelector(`[data-count="${kind}"] [data-value]`)?.getAttribute('data-value');
@@ -102,7 +102,7 @@ describe('the live card', () => {
   });
 
   it('before any Wrong is proved the feed says where they will appear', () => {
-    render(<LiveCheck live={liveState({ findings: [], tally: { wrong: 0, right: 0, not_compared: 0, waiting_second_look: 0 } })} />);
+    render(<LiveCheck live={liveState({ findings: [], tally: { wrong: 0, right: 0, rule_note: 0, not_compared: 0, waiting_second_look: 0 } })} />);
     expect(document.querySelector('[data-slot="chat-live-feed-empty"]')?.textContent).toBe('Wrong items appear here as soon as they are proved.');
     expect(document.querySelector('[data-slot="chat-live-waiting"]')).toBeNull();
   });

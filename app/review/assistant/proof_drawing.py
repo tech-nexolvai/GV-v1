@@ -107,9 +107,11 @@ from app.review.assistant.proof import (
     governs,
     proof_counts,
     proof_group,
+    proof_of,
     should_be_value,
     vendor_value,
 )
+from app.review.assistant.rule_notes import HEADING as RULE_NOTE_HEADING
 from app.review.assistant.vendor_text import internal, item_name, reviewer_right, vendor_text
 
 __all__ = [
@@ -144,6 +146,8 @@ RED: Final = _RED
 GREEN: Final = Color(0.0, 0.47, 0.2)
 #: Grey for the lists code could not prove.
 _LIST_GREY: Final = Color(0.4, 0.4, 0.4)
+#: A rule note (#1839): neutral slate, never red, green or amber (decided, nothing for the vendor).
+_NOTE_SLATE: Final = Color(0.2, 0.27, 0.38)
 STAMP_WORDS: Final = "Checked automatically by GV Review"
 LEGEND_LINES: Final = (
     "Red cloud and red words: the vendor's value that is wrong.",
@@ -165,12 +169,13 @@ _ROUND_KEY: Final = "_round_two"
 #: The small heading on each sheet with clouds.
 _SHEET_STAMP_SIZE: Final = 9.0
 #: The review result's colour on the cover (#1622): red to resubmit or rejected, dark amber as
-#: noted, green approved, grey when the check did not finish.
+#: noted, green approved, grey when GV's person decides the rest or the check did not finish.
 _ACTION_COLOURS: Final[Mapping[str, Color]] = {
     "revise_resubmit": _RED,
     "rejected": _RED,
     "approved_as_noted": Color(0.63, 0.29, 0.02),
     "approved": Color(0.0, 0.47, 0.2),
+    "review_needed": Color(0.4, 0.4, 0.4),
     "not_for_sending": Color(0.4, 0.4, 0.4),
 }
 _NOTE_ROWS: Final = 3
@@ -204,6 +209,8 @@ class ProofCounts:
     right: int
     not_compared: int
     dismissed: int
+    rule_note: int = 0
+    """Sizes the architect specifies that break a GV rule (#1839): decided, never clouded."""
 
 
 # ---- the note on the sheet ------------------------------------------------------------------------
@@ -1070,10 +1077,12 @@ def _cover(
         # The send-ready package's review result (#1622, `review_action`), as the letter says it,
         # with the standard disclaimer.
         colour = _ACTION_COLOURS.get(action.action, _DARK)
-        why = f"{action.reason} {action.note}" if action.note else action.reason
+        # The vendor's words: "Under review" while GV's person decides the rest, never approved.
+        reason = action.vendor_reason
+        why = f"{reason} {action.note}" if action.note else reason
         story += [
             Paragraph(
-                f'<font color="{_hex(colour)}"><b>{escape(action_stamp or action.words)}</b></font>',
+                f'<font color="{_hex(colour)}"><b>{escape(action_stamp or action.vendor_words)}</b></font>',
                 styles["head"],
             ),
             Paragraph(f"{escape(why)} Action required by: {escape(action.required_by)}.", body),
@@ -1086,6 +1095,17 @@ def _cover(
         ("Right", counts["right"] + counts["dismissed"], GREEN, "matches the architect"),
         ("Not compared", counts["not_compared"], _LIST_GREY, "listed apart, with the reason"),
     ]
+    if counts.get("rule_note"):
+        # #1839: decided, never clouded: the architect's size breaks a GV rule; GV asks.
+        tiles.insert(
+            2,
+            (
+                "Ask the architect",
+                counts["rule_note"],
+                _NOTE_SLATE,
+                "the architect's size breaks a GV rule",
+            ),
+        )
     cells = [
         [
             Paragraph(
@@ -1097,7 +1117,9 @@ def _cover(
             for words, number, colour, hint in tiles
         ]
     ]
-    grid = Table(cells, colWidths=[min(190.0, (width - 72) / 3)] * 3, hAlign="LEFT")
+    grid = Table(
+        cells, colWidths=[min(190.0, (width - 72) / len(tiles))] * len(tiles), hAlign="LEFT"
+    )
     grid.setStyle(
         TableStyle(
             [
@@ -1621,6 +1643,16 @@ def _reviewer_right_line(finding: Mapping[str, Any]) -> str:
     return words + reviewer_right(dict(finding)) + "."
 
 
+def _rule_note_line(finding: Mapping[str, Any]) -> str:
+    """A rule note on the notes pages (#1839): "the architect specifies 5/8", as the vendor shows;
+    GV's standard is 1"-2". GV asks the architect; no change is asked of the vendor"."""
+    note = proof_of(finding).get("rule_note") or {}
+    return (
+        f"the architect specifies {note.get('architect')}, as the vendor shows; "
+        f"{note.get('standard')}. GV asks the architect; no change is asked of the vendor"
+    )
+
+
 def _right_or_reviewer_line(finding: Mapping[str, Any]) -> str:
     if proof_group(finding) == "dismissed":
         return _reviewer_right_line(finding)
@@ -1887,6 +1919,10 @@ def proof_markup_pdf(
             styles["grey"],
         )
     )
+    noted = groups.get("rule_note", [])
+    if noted:
+        # #1839: decided, never clouded; nothing is asked of the vendor.
+        notes += _list_entries(styles, RULE_NOTE_HEADING, noted, _rule_note_line, _NOTE_SLATE)
     # The reviewer's "Not a problem" is Right on the vendor's files, noted "(reviewer)" (#1766).
     right = [*groups.get("right", []), *groups.get("dismissed", [])]
     notes += _list_entries(styles, "Right", right, _right_or_reviewer_line, GREEN)

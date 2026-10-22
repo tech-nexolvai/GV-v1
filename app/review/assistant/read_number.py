@@ -881,14 +881,37 @@ class NumberReader:
             if self.pack is None or not self.pack.is_dir():
                 return
             path = self.pack / READINGS_FILE
-            held = path.with_name(f".{path.name}.{uuid4().hex[:6]}")
-            try:
-                held.write_text(
-                    json.dumps({"version": READER_VERSION, "readings": cache}), encoding="utf-8"
-                )
-                held.replace(path)
-            except OSError:
-                _log.warning("read_number: the readings could not be stored in the set pack")
+            # One writer per pack, and what another reader stored meanwhile kept (#1850): each
+            # `read_answer` has its own reader, so readings made at once on code's pool would
+            # otherwise each rewrite the file without the others'.
+            with _writer_lock(path):
+                try:
+                    document = json.loads(path.read_text("utf-8"))
+                    stored = document.get("readings") if isinstance(document, dict) else None
+                    if document.get("version") == READER_VERSION and isinstance(stored, dict):
+                        for other, reading in stored.items():
+                            cache.setdefault(other, reading)
+                except (OSError, ValueError, AttributeError):
+                    pass
+                held = path.with_name(f".{path.name}.{uuid4().hex[:6]}")
+                try:
+                    held.write_text(
+                        json.dumps({"version": READER_VERSION, "readings": cache}),
+                        encoding="utf-8",
+                    )
+                    held.replace(path)
+                except OSError:
+                    _log.warning("read_number: the readings could not be stored in the set pack")
+
+
+#: One lock per readings file, for every reader of this process (#1850).
+_WRITERS_LOCK: Final = threading.Lock()
+_WRITERS: dict[str, threading.Lock] = {}
+
+
+def _writer_lock(path: Path) -> threading.Lock:
+    with _WRITERS_LOCK:
+        return _WRITERS.setdefault(str(path), threading.Lock())
 
 
 def reader_for_pack(
