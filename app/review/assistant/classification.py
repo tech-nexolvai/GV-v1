@@ -80,6 +80,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
+from app.review.assistant.round_picks import pick_words
 from app.review.assistant.round_reference import (
     ROUND_MATCH,
     earlier_round,
@@ -1006,6 +1007,10 @@ def _reference_problem(finding: Mapping[str, Any]) -> Classified | None:
             if earlier
             else "; code found no architect value of this dimension to compare it with"
         )
+        picked = pick_words(match) if isinstance(match, Mapping) and not earlier else None
+        if picked:
+            # The cheap pick for the leftovers (#1861): what it said, or that it was not asked.
+            tail += f", and {picked}"
         if isinstance(match, Mapping) and not earlier_round(match):
             # One round has no earlier round (#1866): the vendor's other drawing of the same
             # round, said as such; still never Right, never red (`round_only`).

@@ -757,6 +757,8 @@ def decide(
     item: str | None = None,
     words: str | None = None,
     twins: Collection[str] = (),
+    first_spans: tuple[object, object] | None = None,
+    code_ends: bool = False,
 ) -> Verdict:
     """The verdict on one red candidate under D1 (see the module). `printed`: code read both
     values at their spots. `helper_pick`: the helper's architect label (`p23.D10`). `advocate`: the
@@ -766,7 +768,11 @@ def decide(
     `item` and `words` (`finding_words`): the finding's own, read for room context (`room_end`)
     when geometry cannot back the picks. `twins`: architect labels code proved are the helper's
     dimension printed again on the same drawing (`same_dimension`, #1840): a pick naming one of
-    them names the helper's dimension."""
+    them names the helper's dimension. `first_spans`: where the first blind pick said the two
+    dimensions' ends land (vendor's, architect's), when the first pick was a blind pick too (a
+    cheap round pick, #1861): the second pick must say the same. `code_ends`: the pairing may be
+    proved only by code's geometry showing the same ends (a pairing a cheap round pick named,
+    option C): agreeing picks alone never prove it."""
     answers: dict[str, str] = {check.name: str(check.outcome) for check in checks}
     failed = [check for check in checks if check.outcome != "pass"]
     if failed:
@@ -793,6 +799,16 @@ def decide(
         # Code's geometry is checked first (#1641): an item it shows apart spends no AI call.
         answers["extent"] = extent[0]
         return Verdict("objects", f"Not proved: {extent[1]}.", answers)
+    if code_ends and (extent is None or extent[0] != "same_extent"):
+        # A cheap pick's pairing (#1861, option C): no red unless code proves both ends.
+        answers["extent"] = extent[0] if extent is not None else "not_measured"
+        why = extent[1] if extent is not None else "not measured"
+        return Verdict(
+            "objects",
+            "Not proved: a pairing a cheap pick named is red only when code proves both "
+            f"dimensions end at the same places ({why}).",
+            answers,
+        )
     said = face_doubt(item=item, words=words)
     thing = room_end(item=item, words=words)
     if said is not None and thing is not None and not (extent and extent[0] == "same_extent"):
@@ -845,6 +861,16 @@ def decide(
             "objects",
             "Not proved: the two dimensions' ends land in different places "
             f"({_ends(vendor_spans)} vs {_ends(architect_spans)}).",
+            answers,
+        )
+    if first_spans is not None and (vendor_spans, architect_spans) != tuple(first_spans):
+        # Two blind picks of the same label must also agree on the ends (#1861).
+        answers["spans"] = "picks_differ"
+        return Verdict(
+            "objects",
+            "Not proved: the two blind picks say the ends land in different places (first: "
+            f"vendor {_ends(first_spans[0])}, architect {_ends(first_spans[1])}; second: vendor "
+            f"{_ends(vendor_spans)}, architect {_ends(architect_spans)}).",
             answers,
         )
     answers["spans"] = "agree"

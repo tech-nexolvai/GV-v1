@@ -179,6 +179,13 @@ class Settings(BaseSettings):
     # advocate check passes); `code_only` = only items code paired by itself (the vendor's own
     # sums, GV's rules) can be red.
     assistant_pairing_proof: Literal["ai_pair_plus_code", "code_only"] = "ai_pair_plus_code"
+    # The cheap pick for the round-only leftovers (Anant, 2026-10-22: "go with hybrid, with both,
+    # but less cost", #1861): a full check's hard cap for the Sonnet picks that name the
+    # architect's label of an item compared only with the vendor's earlier round, reserved inside
+    # the fixed price. OFF by default (Anant, 2026-10-22, option C): 0 asks nothing, spends $0 and
+    # keeps no money; the items stay Not compared. Switched on, such an item is Right or red only
+    # when code proves both dimensions end at the same places.
+    assistant_round_pick_cap_usd: Decimal = Field(default=Decimal(0), ge=0, allow_inf_nan=False)
     # Which full check runs (CONTRACT-SIMPLE, 2026-10-19): `roster` (today's specialists) or
     # `simple` (code's work list of every vendor drawing, one compare call per drawing, code
     # verifies, one blind look per red candidate; `app/review/assistant/simple_check/`). The switch
