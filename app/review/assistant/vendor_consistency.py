@@ -1249,14 +1249,17 @@ def check_set(
     texts: Mapping[tuple[str, int], str] | None = None,
     segments: Segments | None = None,
     clock: Callable[[], float] = monotonic,
+    index: Any = None,
 ) -> ConsistencyResult:
     """The vendor consistency check over one set's labels and page map (see the module).
-    `segments` reads a page's line work (for the end marks); without it nothing is reported."""
+    `segments` reads a page's line work (for the end marks); without it nothing is reported.
+    `index`: the set index (`set_index.json`), for telling an older copy of a sheet from the
+    same sheet number reused in another part of the set (`sheet_revisions`)."""
     started = clock()
     entries = {(str(e.get("file")), int(e["page"])): e for e in _entries(page_map)}
     labels: list[_Label] = []
     vendor_pages: dict[tuple[str, int], int] = {}
-    older = _older_pages(dims, page_map, texts)
+    older = _older_pages(dims, page_map, texts, index)
     for entry in (dims or {}).get("pages") or []:
         if not isinstance(entry, Mapping) or not isinstance(entry.get("labels"), list):
             continue
@@ -1329,6 +1332,7 @@ def _older_pages(
     dims: Mapping[str, Any] | None,
     page_map: Mapping[str, Any] | None,
     texts: Mapping[tuple[str, int], str] | None,
+    index: Any = None,
 ) -> frozenset[tuple[str, int]]:
     """The vendor pages that are older copies of a sheet printed again later in their file (an
     earlier revision, `sheet_revisions`): their sizes are the superseded ones, never compared
@@ -1339,7 +1343,8 @@ def _older_pages(
     out: set[tuple[str, int]] = set()
     for file in [str(f) for f in page_map.get("files") or [] if f]:
         exact = revisions.exact_copies(file, dims, texts)
-        out |= {(file, page) for page in revisions.older_copies(page_map, texts, file, exact=exact)}
+        older = revisions.older_copies(page_map, texts, file, exact=exact, index=index)
+        out |= {(file, page) for page in older}
     return frozenset(out)
 
 
@@ -1517,6 +1522,7 @@ def check_pack(
         page_map,
         texts=texts,
         segments=line_work(uploads, folder) if uploads is not None else None,
+        index=_read_json(folder / "set_index.json"),
     )
 
 

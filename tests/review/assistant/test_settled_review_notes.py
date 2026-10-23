@@ -352,3 +352,21 @@ def test_a_plan_of_room_and_wall_sizes_only_prints_no_piece_size() -> None:
     assert not worklist._room_only(_plan(*piece))
     # Too few sizes to tell: unsure, it keeps its sizes.
     assert not worklist._room_only(_plan(*ROOM[:2]))
+
+
+def test_one_sheet_number_reused_in_two_hotels_is_two_sheets() -> None:
+    """A vendor reuses a sheet number for the same piece in two hotels: only the hotel's name and
+    the date change. With no revision mark it is never an older copy; with one, the set index's
+    divider pages (or the printed projects) keep them apart."""
+    page_map = _map(_entry(21, ["MW-201"]), _entry(37, ["MW-201"]))
+    texts = _texts((21, f"{TITLE} ALPHA HOTEL 10/17/2026"), (37, f"{TITLE} BETA HOTEL 07/17/2026"))
+    assert sheet_revisions.older_copies(page_map, texts, VENDOR) == {}
+    marked = _texts((21, f"{TITLE} ALPHA HOTEL REV 1"), (37, f"{TITLE} BETA HOTEL REV 0"))
+    assert sorted(sheet_revisions.older_copies(page_map, marked, VENDOR)) == [37]
+    index = {
+        "pages": {
+            f"{VENDOR}#{n}": {"file": VENDOR, "page": n, "introduces": n == 30, "projects": []}
+            for n in (21, 30, 37)
+        }
+    }
+    assert sheet_revisions.older_copies(page_map, marked, VENDOR, index=index) == {}

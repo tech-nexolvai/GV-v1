@@ -201,6 +201,10 @@ _DIMENSION: Final = re.compile(
     r"|\d+(?:\s+\d+/\d+)?\s*(?:\"|''|\u201d)"
 )
 _DRAWING_DIMS: Final = 3
+#: A vendor page with fewer labels is a drawing whose numbers are pen strokes code could not read
+#: when it has at least this many of them on its dimension lines (`reading_ink`): a key plan's
+#: stray marks are a few at most.
+_STROKE_NUMBERS: Final = 4
 
 #: Builds running in this process, by pack folder (a second chat on the same set waits for none).
 _running: dict[Path, threading.Thread] = {}
@@ -862,7 +866,7 @@ def settle_candidates(
     vendor's pen strokes, and its millimetre-only values; never a derived `EQ` part) number at
     least `_DRAWING_DIMS` is one
     whole-page drawing (its stamps are not drawings); any other stays as it was. A vendor page
-    with fewer labels that has at least `_DRAWING_DIMS` numbers drawn as lines on its dimension
+    with fewer labels that has at least `_STROKE_NUMBERS` numbers drawn as lines on its dimension
     lines code could not read (`strokes`: `reading_ink.PageInk.stroke_numbers`) is a drawing
     too, marked `NUMBERS_UNREAD` ("flag everything", 2026-10-23): never a general page. Returns
     the pages that had a candidate (their labels' sides are set again from their drawings) and
@@ -900,7 +904,7 @@ def settle_candidates(
         ]
         unread = int((strokes or {}).get(key) or 0)
         if len(outside) < _DRAWING_DIMS:
-            if unread < _DRAWING_DIMS or candidate.get("role") != "vendor":
+            if unread < _STROKE_NUMBERS or candidate.get("role") != "vendor":
                 continue
             entry[NUMBERS_UNREAD] = "strokes"
         half = {k: v for k, v in candidate.items() if k != "upload"}

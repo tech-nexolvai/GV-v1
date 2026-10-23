@@ -616,7 +616,13 @@ def worklist_from(
 
     # An older copy of a sheet printed again later (an earlier revision): only the newest is
     # checked (owner, 2026-10-23).
-    older = older_copies(page_map, texts or {}, file, exact=exact_copies(file, dims, texts or {}))
+    older = older_copies(
+        page_map,
+        texts or {},
+        file,
+        exact=exact_copies(file, dims, texts or {}),
+        index=set_index,
+    )
 
     pages = set_pages(page_map, file)
     # Another upload's pages: one file per work list (label ids name pages, not files), except a

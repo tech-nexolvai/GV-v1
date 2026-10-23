@@ -13,8 +13,11 @@ itself. So code finds such pages and leaves the older one out, with a plain note
 - both are vendor drawings of the same file, of no GV round (GV's combined sheets have their own
   rounds, `revision_diff`), and neither is an exact copy (`preflight.duplicate_pages` says those);
 - they print the same sheet number(s) the page map read (`sheet_numbers`, at least one);
-- their printed words, less numbers and revision marks, are nearly the same
-  (`SAME_WORDS`, or `SAME_WORDS_NO_MARK` when no revision mark tells them apart).
+- their printed words, less numbers and revision marks, are nearly the same (`SAME_WORDS`), or
+  all the same when no revision mark tells them apart (`SAME_WORDS_NO_MARK`: a vendor reuses one
+  sheet number for the same piece in two hotels, with only the hotel's name changed);
+- when the set index is at hand, they are in the same part of the set (no divider page that
+  starts a new project between them) and print no different project names (`sections_of`).
 
 **Which is newer**, the first that tells:
 
@@ -47,8 +50,8 @@ __all__ = [
 #: Two pages with revision marks that differ are one sheet when this share of their words is
 #: the same (numbers and revision marks left out).
 SAME_WORDS: Final = 0.6
-#: With no revision mark to tell them apart, the words must be all but the same.
-SAME_WORDS_NO_MARK: Final = 0.9
+#: With no revision mark to tell them apart, the words must be the same.
+SAME_WORDS_NO_MARK: Final = 1.0
 #: An exact copy: a page's text at least this long (characters), the same labels too.
 DUPLICATE_TEXT: Final = 100
 #: A revision mark: `REV 0`, `REV. 1`, `REV: B`, `REVISION 2`, `REV NO. 3`, `REV #4` (never the
@@ -188,18 +191,56 @@ def _newer(first: int, second: int, texts: Mapping[int, str]) -> tuple[int, int,
     return first, second, f"the same sheet printed again; page {second} is the later page"
 
 
+def sections_of(index: Any, file: str | None) -> dict[int, tuple[int, frozenset[str]]]:
+    """Each page of `file` placed in the set by the set index's checked reads (`set_index.json`'s
+    pages, keyed `file#page`, or that file's `pages`): (how many divider pages that start a new
+    project or set come before it or on it, the project names it prints). Empty without one."""
+    pages = index.get("pages") if isinstance(index, Mapping) and "pages" in index else index
+    if not isinstance(pages, Mapping) or not file:
+        return {}
+    reads = {
+        int(read["page"]): read
+        for read in pages.values()
+        if isinstance(read, Mapping)
+        and str(read.get("file")) == file
+        and isinstance(read.get("page"), int)
+    }
+    out: dict[int, tuple[int, frozenset[str]]] = {}
+    part = 0
+    for page in sorted(reads):
+        read = reads[page]
+        if read.get("introduces"):
+            part += 1
+        names = frozenset(
+            " ".join(str(n).upper().split()) for n in read.get("projects") or [] if str(n).strip()
+        )
+        out[page] = (part, names)
+    return out
+
+
+def _apart(first: int, second: int, sections: Mapping[int, tuple[int, frozenset[str]]]) -> bool:
+    """Whether the set index puts the two pages in different parts or projects of the set."""
+    a, b = sections.get(first), sections.get(second)
+    if a is None or b is None:
+        return False
+    return a[0] != b[0] or bool(a[1] and b[1] and a[1] != b[1])
+
+
 def older_copies(
     page_map: Mapping[str, Any] | None,
     texts: Mapping[tuple[str, int], str],
     file: str | None,
     *,
     exact: Mapping[int, int] | None = None,
+    index: Any = None,
 ) -> dict[int, Older]:
     """Each vendor page of `file` that is an older copy of another page of the same sheet (see
     the module), with the newest page it gives way to. `exact`: the exact copies already found
-    (`preflight.duplicate_pages`), never counted again."""
+    (`preflight.duplicate_pages`), never counted again. `index`: the set index's checked reads
+    (`sections_of`): two pages it puts in different parts of the set are never one sheet."""
     if not page_map or not file:
         return {}
+    sections = sections_of(index, file)
     pages = _vendor_pages(page_map, file)
     exact = exact or {}
     sheets: dict[str, list[int]] = {}
@@ -213,7 +254,9 @@ def older_copies(
     for _sheet, members in sorted(sheets.items()):
         for i, first in enumerate(members):
             for second in members[i + 1 :]:
-                if _sheets(pages[first]) != _sheets(pages[second]):
+                if _sheets(pages[first]) != _sheets(pages[second]) or _apart(
+                    first, second, sections
+                ):
                     continue
                 found = _newer(first, second, page_text)
                 if found is None:

@@ -968,7 +968,9 @@ def _pages_line(inputs: Inputs) -> Line | None:
 def build(inputs: Inputs) -> Report:
     """The report (see the module): the stops first, then what was found, then the notes."""
     duplicates = duplicate_pages(inputs.main_file, inputs.dims, inputs.texts)
-    older = older_copies(inputs.page_map, inputs.texts, inputs.main_file, exact=duplicates)
+    older = older_copies(
+        inputs.page_map, inputs.texts, inputs.main_file, exact=duplicates, index=inputs.index
+    )
     stops = [*_broken(inputs), *_swapped(inputs)]
     if not stops:
         stops.extend(_other_project(inputs))
