@@ -1,6 +1,6 @@
 """The vendor's field cut, recognised by code: never a design difference. Code, $0, no AI.
 
-Settled with GV (Raj): a countertop gets a **field cut**, about 1" of extra stone at each end that
+Settled with GV: a countertop gets a **field cut**, about 1" of extra stone at each end that
 meets a wall, added at the factory and trimmed on site (GV's company standard is 1" per wall end; a
 project value replaces it, `rules.md`'s `field_cut`). GV's own countertop drawings print it: a 1"
 dimension at the top's wall end with the words "FIELD CUT" on the drawing, and an overall that
@@ -48,7 +48,7 @@ __all__ = [
     "vet",
 ]
 
-#: GV's company standard: 1" per wall end (Raj; adopted 2026-10-07), until a project value is set.
+#: GV's company standard: 1" per wall end (adopted 2026-10-07), until a project value is set.
 DEFAULT_PER_END: Final = Fraction(1)
 #: The words a field cut is printed with ("FIELD CUT", "FIELD-CUT", "field cut").
 FIELD_CUT_WORDS: Final = re.compile(r"\bFIELD[\s\-]*CUT\b", re.IGNORECASE)
