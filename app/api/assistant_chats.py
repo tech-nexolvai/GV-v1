@@ -1608,6 +1608,11 @@ def _message(
                 else None
             ),
             run_anyway=body.run_anyway,
+            set_index_model=(
+                None
+                if settings.assistant_set_index_model == "off"
+                else settings.assistant_set_index_model
+            ),
             simple=_simple_options(settings, body) if mode == "full_check" else None,
             plan_answers=(
                 None

@@ -613,6 +613,9 @@ class EngineSettings:
     """The supervisor's model (`plan_supervisor.py`); `None`: off (code's own stops only)."""
     run_anyway: bool = False
     """The reviewer chose Run anyway: a pre-flight stop is recorded, the check goes on."""
+    set_index_model: str | None = None
+    """The set index's model (`set_index.py`, `assistant_set_index_model`): each page of a
+    two-file set read once for its project, set and views; `None`: off (no project is known)."""
 
 
 @dataclass(slots=True)
