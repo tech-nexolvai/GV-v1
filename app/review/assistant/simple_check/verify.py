@@ -193,6 +193,16 @@ _END_KINDS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = tuple(
         ),
         ("outlet", r"outlet|receptacle|j-?box|junction box|\bdata\b|\bplug|electrical box"),
         ("sink", r"\bsink|faucet|\bbowl\b"),
+        # A side splash's top is never a back splash's (2026-10-23, like for like); the
+        # splash's face (its thickness, face to wall) is never the wall itself.
+        (
+            "side_splash_top",
+            r"(?:top|t\.?o\.?s\.?)\s+of\s+(?:the\s+)?side\s*splash|side\s*splash\s+top",
+        ),
+        (
+            "splash_face",
+            r"(?:face|front)\s+of\s+(?:the\s+)?(?:back\s*)?splash|(?:back\s*)?splash\s+face",
+        ),
         ("splash_top", r"(?:top|t\.?o\.?s\.?)\s+of\s+(?:the\s+)?(?:back\s*)?splash|splash top"),
         ("upper_under", r"(?:underside|bottom|u/s)\s+of\s+(?:the\s+)?(?:upper|wall\s*cab)"),
         (
@@ -235,6 +245,8 @@ _STRICT: Final = frozenset(
         "counter_top",
         "counter_under",
         "splash_top",
+        "side_splash_top",
+        "splash_face",
         "upper_under",
         "upper_top",
         "unit_top",
@@ -1932,13 +1944,14 @@ _VERTICAL_ENDS: Final = frozenset(
         "counter_top",
         "counter_under",
         "splash_top",
+        "side_splash_top",
         "upper_under",
         "upper_top",
         "unit_top",
         "toe",
     }
 )
-_HORIZONTAL_ENDS: Final = frozenset({"wall", "sink"})
+_HORIZONTAL_ENDS: Final = frozenset({"wall", "sink", "splash_face"})
 
 
 def _ends_axis(start: object, end: object) -> str | None:

@@ -282,6 +282,7 @@ from app.review.assistant.send_package import (
 )
 from app.review.assistant.sharpen import helper_lines
 from app.review.assistant.sink_offset import add_to_answer as add_sink_offset
+from app.review.assistant.splash_views import add_to_answer as add_splash_views
 from app.review.assistant.spot_guard import dropped as spot_dropped
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
@@ -527,6 +528,7 @@ CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
     "run_fit": "GV's site-fit rule",
     "filler_range": "GV's filler range",
     "sink_offset": "GV's sink rules",
+    "splash_views": "the splash sizes on the architect's other views",
     "scale_measure": "the measuring by scale where the architect prints no size",
 }
 
@@ -2953,6 +2955,9 @@ class ChatEngine:
             (CODE_CHECK_NAMES["filler_range"], lambda: add_filler_range(self)),
             # GV's sink rules on the vendor's plans (#1807, #1906), pages with no architect too.
             (CODE_CHECK_NAMES["sink_offset"], lambda: add_sink_offset(self)),
+            # A splash the paired drawing prints no size for: looked for on the item's other
+            # views (its section, its elevation; 2026-10-23), before the measuring by scale.
+            (CODE_CHECK_NAMES["splash_views"], lambda: add_splash_views(self)),
             # Where the architect prints no size: measured by its own scale (2026-10-23), last,
             # on every item the steps above left open.
             (CODE_CHECK_NAMES["scale_measure"], lambda: add_scale_measures(self)),

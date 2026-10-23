@@ -839,6 +839,16 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
     if missing_on_vendor(finding) and finding.get("source") != "completeness":
         # Missing on the vendor's drawing: said so, whatever the reading's own reason was.
         return _missing(finding)
+    splash = finding.get("splash_views")
+    if isinstance(splash, Mapping) and splash.get("why") and not finding.get("measured_by_scale"):
+        # The splash step looked on the item's other views (`splash_views`, 2026-10-23): its
+        # reason names each view it looked at.
+        unlike = splash.get("outcome") == "not_like_for_like"
+        return _not(
+            "different_reference" if unlike else "nothing_to_compare",
+            _short(splash.get("why"), 300),
+            "the architect's printed splash size for {thing} (its section or elevation)",
+        )
     if reason in ("architect_prints_nothing",) or named == "pairing_not_certain":
         why = f"architect gives no size or information for it{_measured(finding)}"
         return _not("nothing_to_compare", why, "the architect's size or note for {thing}")

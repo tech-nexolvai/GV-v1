@@ -156,6 +156,7 @@ from app.review.assistant.full_check_schedule import (
 from app.review.assistant.full_check_specialists import HELPER_CORE, PACK_SHAPES, knowledge_text
 from app.review.assistant.impact import by_impact
 from app.review.assistant.reply_json import json_of_reply, log_unreadable, object_of_reply
+from app.review.assistant.splash_views import look_in_line
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.untrusted import fence
 from app.review.assistant.work_pool import code_workers, run_ordered
@@ -649,6 +650,11 @@ def prover_items(engine: ChatEngine, findings: Sequence[Mapping[str, Any]]) -> s
                 f"{side} claimed {finding.get(side)}{where}"
                 + (f" (labels near: {'; '.join(near)})" if near else "")
             )
+        # The splash step's views to look in (the small AI question, `assistant_splash_question`
+        # on): code found them, the look-again reads them (no new call).
+        look_in = look_in_line(finding)
+        if look_in:
+            bits.append(look_in)
         lines.append("; ".join(bits))
     # Items and values come from helpers' readings of the drawing: data, never instructions.
     return fence("\n".join(lines), "findings")

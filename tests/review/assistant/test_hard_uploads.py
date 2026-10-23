@@ -6,8 +6,8 @@ scan, numbers drawn as pen strokes, millimetres with [inches], rotated pages, "N
 GV's markup over a vendor value, a schedule table, 300 near-empty pages, files swapped, a sheet
 twice in two revisions, a locked file, a damaged file, empty pages, twin architect views, an
 accessible unit against the standard one, a mirrored unit, millimetres that disagree with the
-inches, and an architect whose plan and elevation disagree), puts it through the front door, the
-set pack, the work list (code's own pairing), the plan check and the vendor-string check, and
+inches, an architect whose plan and elevation disagree, and a splash sized only on the architect's
+section or another sheet), puts it through the front door, the set pack, the work list (code's own pairing), the plan check and the vendor-string check, and
 asserts three things:
 
 1. **no crash, in time**: every step finishes (a file that cannot be read fails with a plain
@@ -22,7 +22,7 @@ them. They are not strict: the builder who fixes one sees it pass and removes it
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -36,6 +36,7 @@ from tests.review.assistant.hard_uploads import (
     Outcome,
     Run,
     Sheet,
+    TitledView,
     Upload,
     blank_pages,
     damaged_pdf,
@@ -482,6 +483,359 @@ def test_architect_plan_and_elevation_that_disagree_are_said(tmp_path: Path) -> 
         'Architect: your plan (page 1) shows 72", your elevation (page 2) shows 74" for the '
         "vanity elevation: overall width. Please confirm which is right."
     )
+
+
+# ---- a splash sized only on another view of the item (owner, 2026-10-23) -------------------------
+#
+# Anant: "check elevation and section drawings for splash details when they are absent from
+# architectural plans". The vendor's plan prints a 4" back splash; the architect's sheet holds a
+# plan (no splash size) and, beside it, a section. The splash item is what a helper records when
+# the paired plan prints nothing (made up here, the same shape).
+
+_PLAN_BOX = {"x0": 100.0, "y0": 290.0, "x1": 240.0, "y1": 680.0, "file": "arch.pdf", "page": 1}
+
+
+def _splash_set(
+    tmp_path: Path,
+    section_notes: Sequence[tuple[str, float, float]] = ((('4" BACKSPLASH'), 780.0, 400.0),),
+    *,
+    elevation_notes: Sequence[tuple[str, float, float]] = (),
+    strokes: Sequence[tuple[str, float, float]] = (),
+    more: Sequence[Sheet] = (),
+    plan_words: Sequence[tuple[str, float, float]] = (),
+) -> Outcome:
+    views = [
+        TitledView("1", "VANITY PLAN", 120, 120, notes=plan_words, runs=[Run((36,), x=120, y=200)]),
+        TitledView(
+            "2",
+            "VANITY SECTION",
+            760,
+            120,
+            notes=section_notes,
+            strokes=strokes,
+            runs=[Run((12, 12), x=760, y=200)],
+        ),
+    ]
+    if elevation_notes:
+        views.append(
+            TitledView(
+                "3",
+                "VANITY ELEVATION",
+                440,
+                120,
+                notes=elevation_notes,
+                runs=[Run((18, 18), x=440, y=200)],
+            )
+        )
+    return run_pipeline(
+        tmp_path,
+        [
+            _vendor(Sheet("VANITY PLAN", words=['4" BACKSPLASH'], runs=[Run((18, 18))])),
+            _architect(Sheet(None, views=views), *more),
+        ],
+    )
+
+
+def _splash(
+    item: str = "Vanity: back splash height", vendor: str = '4"', **more: Any
+) -> dict[str, Any]:
+    finding: dict[str, Any] = {
+        "id": "F1",
+        "page": 1,
+        "vs_page": 1,
+        "item": item,
+        "vendor": vendor,
+        "architect": "no size printed on the plan",
+        "status": "check",
+        "keep_reason": "architect_prints_nothing",
+        "inches": {"vendor": str(Fraction(vendor.strip('"').split()[0]))} if vendor else {},
+        "checks": {"printed_vendor": "match"},
+        "arch_box": dict(_PLAN_BOX),
+        "source": "architect",
+        "category": "countertop",
+        "created_by": "helper:1",
+    }
+    finding.update(more)
+    return finding
+
+
+def _looked(outcome: Outcome, finding: dict[str, Any], **given: Any) -> Any:
+    from app.review.assistant import splash_views
+
+    facts = given.pop("facts", None) or splash_views.Facts.from_pack(outcome.pack)
+    search = splash_views.companion_views(outcome.work, finding, facts)
+    assert search.found, "the vendor drawing is paired with the architect's sheet"
+    return splash_views.settle(finding, search, facts.phrases, **given)
+
+
+def _group(finding: dict[str, Any]) -> str:
+    from app.review.assistant import proof
+
+    return str(proof.proof_group(finding))
+
+
+def test_splash_sized_on_the_same_sheets_section_is_compared(tmp_path: Path) -> None:
+    outcome = _splash_set(tmp_path)
+    _honest_basics(outcome)
+    settled = _looked(outcome, _splash())
+    assert settled is not None
+    found = settled.finding
+    # (a) the section beside the paired plan prints 4" BACKSPLASH: compared, Right.
+    assert found["status"] == "same" and _group(found) == "right"
+    assert found["architect"] == '4" BACKSPLASH'
+    assert found["splash_views"]["looked_at"][0]["how"] == "the same sheet"
+    assert {v["kind"] for v in found["splash_views"]["looked_at"]} == {"plan", "section"}
+    assert settled.added == []
+
+
+def test_splash_that_differs_is_red_only_with_the_blind_proof(tmp_path: Path) -> None:
+    from app.review.assistant import proof
+
+    outcome = _splash_set(tmp_path, ((('6" BACKSPLASH'), 780.0, 400.0),))
+    found = _looked(outcome, _splash()).finding
+    # (b) code read both values and they differ: a difference that needs the pairing proof.
+    assert found["status"] == "different"
+    assert found.get("paired_by") is None and proof.needs_pairing(found)
+    assert not proof.code_proved({**found, "trust_level": "confirmed", "witnesses": ["printed"]})
+    assert _group(found) != "clouded"
+    # With the blind look agreeing (the devil's advocate passed it), the usual red path.
+    passed = {
+        **found,
+        "trust_level": "confirmed",
+        "witnesses": ["printed"],
+        "critic": {"model": "devil's advocate", "result": "passed"},
+    }
+    assert proof.code_proved(passed)
+
+
+def test_splash_views_that_disagree_ask_the_architect(tmp_path: Path) -> None:
+    from app.review.assistant.classification import classify
+
+    outcome = _splash_set(
+        tmp_path,
+        ((('6" BACKSPLASH'), 780.0, 400.0),),
+        elevation_notes=((('4" BACKSPLASH'), 450.0, 420.0),),
+    )
+    settled = _looked(outcome, _splash())
+    # (c) the section governs (6"), the elevation says 4": GV asks the architect, never red
+    # because of it; the vendor is compared with the section.
+    assert settled.finding["architect"] == '6" BACKSPLASH'
+    assert settled.finding["status"] == "different"
+    [asked] = settled.added
+    assert asked["source"] == "cross_view" and asked["reference_side"] == "architect"
+    said = classify(asked, proved=False)
+    assert said.outcome == "rule_note"
+    assert "section" in asked["why"] and "elevation" in asked["why"]
+
+
+def test_splash_never_compared_with_another_part_or_kind(tmp_path: Path) -> None:
+    # (e) a thickness printed, the vendor's height: not like for like.
+    outcome = _splash_set(tmp_path, ((('1 1/2" THK BACKSPLASH'), 780.0, 400.0),))
+    found = _looked(outcome, _splash()).finding
+    assert found["status"] == "check" and _group(found) == "not_compared"
+    assert "shows no splash size" in found["splash_views"]["why"]
+    # (f) a side splash printed, the vendor's back splash.
+    outcome = _splash_set(tmp_path / "side", ((('4" SIDE SPLASH'), 780.0, 400.0),))
+    found = _looked(outcome, _splash()).finding
+    assert found["status"] == "check"
+
+
+def test_splash_nothing_printed_says_the_true_reason(tmp_path: Path) -> None:
+    from app.review.assistant.classification import classify
+
+    outcome = _splash_set(tmp_path, ())
+    found = _looked(outcome, _splash()).finding
+    # Nothing found: Not compared, naming every view looked at.
+    assert found["status"] == "check" and _group(found) == "not_compared"
+    why = classify(found, proved=False).why
+    assert why.startswith("the architect shows no splash size (looked at:")
+    assert "the plan 'VANITY PLAN' (page 1)" in why
+    assert "the section 'VANITY SECTION' (page 1)" in why
+
+
+def test_splash_drawn_in_pen_strokes_is_never_guessed(tmp_path: Path) -> None:
+    from app.review.assistant import splash_views
+
+    # (j) the section's number is drawn in pen strokes code cannot read (the meeting set's
+    # section A5): the view is found, nothing is read or guessed, never red, and the reason says
+    # so. The pen-stroke number is listed as unread, as the reading coverage lists it.
+    outcome = _splash_set(tmp_path, (), strokes=(('4"', 790.0, 420.0),))
+    facts = splash_views.Facts.from_pack(outcome.pack)
+    unread = splash_views.Facts(
+        phrases=facts.phrases, unread={("arch.pdf", 1): ((786.0, 362.0, 800.0, 374.0),)}
+    )
+    found = _looked(outcome, _splash(), facts=unread).finding
+    assert found["status"] == "check" and _group(found) == "not_compared"
+    assert found["architect"] == "no size printed on the plan"
+    why = found["splash_views"]["why"]
+    assert "pen strokes code cannot read yet: 1 in the section 'VANITY SECTION' (page 1)" in why
+
+
+def test_splash_general_note_is_never_the_size(tmp_path: Path) -> None:
+    # (k) a general note outside every view ("U.O.N.") is not the item's size: never a Right.
+    outcome = _splash_set(
+        tmp_path, (), plan_words=(('COUNTERTOP W/ 4" BACKSPLASH U.O.N.', 960.0, 60.0),)
+    )
+    found = _looked(outcome, _splash()).finding
+    assert found["status"] == "check"
+
+
+def test_splash_never_taken_from_the_brand_prototype(tmp_path: Path) -> None:
+    from app.review.assistant import splash_views
+
+    # (g) the paired sheet is the brand prototype's: no view of it is used.
+    outcome = _splash_set(tmp_path)
+    facts = splash_views.Facts.from_pack(outcome.pack)
+    prototype = splash_views.Facts(
+        phrases=facts.phrases, roles={("arch.pdf", 1): "brand_prototype"}
+    )
+    settled = _looked(outcome, _splash(), facts=prototype)
+    assert settled is not None
+    assert settled.finding["status"] == "check"
+    assert "brand prototype" in settled.finding["splash_views"]["why"]
+
+
+def test_splash_length_never_pairs_with_a_tops_width(tmp_path: Path) -> None:
+    from app.review.assistant import splash_views
+
+    # (l) the meeting set: the vendor's 36" splash length against the architect plan's 36" top
+    # width was a Right. Not like for like: never a Right.
+    outcome = _splash_set(tmp_path, ())
+    facts = splash_views.Facts.from_pack(outcome.pack)
+    right = _splash(
+        item="Makeup counter: back splash length",
+        vendor='36"',
+        architect='36"',
+        status="same",
+        dims={
+            "architect": {"text": '36"', "box": [150, 300, 170, 310], "file": "arch.pdf", "page": 1}
+        },
+    )
+    down = splash_views.downgrade_unlike(right, facts.phrases)
+    assert down is not None and down["status"] == "check" and _group(down) == "not_compared"
+    # (i) an item whose architect prints a size (a splash band in a height) is not looked for.
+    banded = _splash(item="Vanity: counter height to top of splash", vendor='38"', architect='38"')
+    assert splash_views.candidates([banded], splash_views._rules()) == []
+
+
+def test_splash_drawn_without_a_size_is_measured_by_scale(tmp_path: Path) -> None:
+    from app.review.assistant import scale_measure, view_scales
+
+    outcome = _splash_set(tmp_path, ())
+    # The helper's spot round the splash drawn in the section (inside the view's measured scale).
+    tight = {"x0": 800.0, "y0": 300.0, "x1": 812.0, "y1": 330.0, "file": "arch.pdf", "page": 1}
+    vendor = {"id": "D1", "text": '4"', "inches": "4", "orientation": "v", "route": "text"}
+    finding = _splash(arch_box=tight, dims={"vendor": vendor})
+    settled = _looked(outcome, finding).finding
+    assert settled["status"] == "check"
+
+    class Measured:
+        value_in, plus_minus_in, scale_ratio = 5.0, 0.1, 12.0
+        snapped = ("line", "line")
+
+    found = scale_measure.measure_item(
+        settled,
+        pdf=outcome.uploads / "arch.pdf",
+        scales=view_scales.scales_on(outcome.pack, "arch.pdf", 1),
+        measure=lambda *a, **k: Measured(),
+    )
+    # (h) drawn, no size printed: measured by scale (the #1909 step that runs next), a Likely
+    # problem when more than 1/4" off, never red.
+    assert found is not None and found["differs"]
+    measured = scale_measure._with_measure(settled, found)
+    assert _group(measured) == "likely_problem"
+
+
+def test_splash_followed_through_a_callout_to_its_section_sheet(tmp_path: Path) -> None:
+    # The architect's pointer: a callout "3 / A-501" printed on the plan leads to view 3 of the
+    # sheet numbered A-501, which prints the splash; followed only on an exact match.
+    section_sheet = Sheet(
+        None,
+        sheet_number="A-501",
+        views=[
+            TitledView(
+                "3",
+                "VANITY SECTION",
+                760,
+                120,
+                notes=[('4" BACKSPLASH', 780, 400)],
+                runs=[Run((12, 12), x=760, y=200)],
+            ),
+            TitledView("4", "BASE DETAIL", 300, 120, runs=[Run((10, 10), x=300, y=200)]),
+        ],
+    )
+    outcome = run_pipeline(
+        tmp_path,
+        [
+            _vendor(Sheet("VANITY PLAN", words=['4" BACKSPLASH'], runs=[Run((18, 18))])),
+            _architect(
+                Sheet(
+                    None,
+                    views=[
+                        TitledView(
+                            "1",
+                            "VANITY PLAN",
+                            120,
+                            120,
+                            notes=[("A-501", 150, 560), ("3", 156, 575)],
+                            runs=[Run((36,), x=120, y=200)],
+                        ),
+                        TitledView(
+                            "2", "MIRROR ELEVATION", 760, 120, runs=[Run((30,), x=760, y=200)]
+                        ),
+                    ],
+                ),
+                section_sheet,
+            ),
+        ],
+    )
+    settled = _looked(outcome, _splash())
+    found = settled.finding
+    assert found["status"] == "same", found.get("splash_views")
+    assert found["vs_page"] == 2
+    hows = {v["how"] for v in found["splash_views"]["looked_at"]}
+    assert "a callout" in hows
+
+
+def test_splash_never_from_an_older_copy_or_several_look_alikes(tmp_path: Path) -> None:
+    import json
+
+    from app.review.assistant import splash_views
+    from app.review.assistant.simple_check.worklist import build_worklist
+
+    # The same item named on two other sheets: code needs a clear winner, so neither is used
+    # (and the reason says so).
+    other = Sheet(
+        None,
+        views=[
+            TitledView(
+                "5",
+                "VANITY SECTION",
+                760,
+                120,
+                notes=[('6" BACKSPLASH', 780, 400)],
+                runs=[Run((12, 12), x=760, y=200)],
+            ),
+            TitledView("6", "VANITY DETAIL", 300, 120, runs=[Run((10, 10), x=300, y=200)]),
+        ],
+    )
+    outcome = _splash_set(tmp_path, (), more=(other, other))
+    index = {
+        f"arch.pdf#{page}": {"file": "arch.pdf", "page": page, "item": "VANITY", "views": []}
+        for page in (1, 2, 3)
+    }
+    (outcome.pack / "set_index.json").write_text(json.dumps({"version": 1, "pages": index}))
+    outcome.work = build_worklist(outcome.pack, "shop.pdf")
+    facts = splash_views.Facts.from_pack(outcome.pack)
+    found = _looked(outcome, _splash(), facts=facts).finding
+    assert found["status"] == "check"
+    assert "2 other sheets name the same item" in found["splash_views"]["why"]
+    # One of them an older copy of the other: the newer one alone is the item's other sheet.
+    older = splash_views.Facts(
+        phrases=facts.phrases, index=facts.index, older=frozenset({("arch.pdf", 2)})
+    )
+    found = _looked(outcome, _splash(), facts=older).finding
+    assert found["architect"] == '6" BACKSPLASH' and found["vs_page"] == 3
 
 
 # ---- helpers ------------------------------------------------------------------------------------

@@ -366,7 +366,7 @@ def _equal_parts(item: _Item, ctx: EscalationContext) -> None:
     item.changed = True
     _check(item, "printed_vendor", "match")
     item.note("equal_parts", "read", f"{_ref(label)}: {how}")
-    _printed_compare(item, "equal_parts")
+    _printed_compare(item, "equal_parts", ctx)
 
 
 def _label_of(ctx: EscalationContext, side: object) -> dict[str, Any] | None:
@@ -473,15 +473,24 @@ def _labels_step(item: _Item, ctx: EscalationContext) -> None:
         item.note("labels", "no_change", "no code label prints the item's value in its box")
         return
     item.note("labels", "read", "code read " + "; ".join(found))
-    _printed_compare(item, "labels")
+    _printed_compare(item, "labels", ctx)
 
 
-def _printed_compare(item: _Item, step: StepName) -> None:
+def _printed_compare(item: _Item, step: StepName, ctx: EscalationContext | None = None) -> None:
     """A "Your decision" item whose two values code now read at their spots: equal is Right
     (the resolver's printed-against-printed rule); different is a difference code read, which
-    still needs a pairing proof to be clouded."""
+    still needs a pairing proof to be clouded. Like for like only (2026-10-23): a splash's size is
+    never settled against an architect size code does not see named as the same splash's
+    (`splash_views.unlike`: the meeting set's splash length against the plan's top width)."""
     finding = item.finding
     if finding.get("status") != "check":
+        return
+    splash = import_module("app.review.assistant.splash_views")
+    unlike = splash.unlike(finding, ctx.phrases if ctx is not None else None)
+    if unlike is not None:
+        finding[splash.FIELD] = splash.not_alike(unlike)
+        item.changed = True
+        item.note(step, "no_change", f"not like for like: {unlike}")
         return
     checks = finding.get("checks") or {}
     if checks.get("printed_vendor") != "match" or checks.get("printed_architect") != "match":
@@ -551,7 +560,7 @@ def _under_markup_step(item: _Item, ctx: EscalationContext) -> None:
     _check(item, "printed_vendor", "match")
     item.changed = True
     item.note("under_markup", "read", f"code read {text} under GV's markup")
-    _printed_compare(item, "under_markup")
+    _printed_compare(item, "under_markup", ctx)
 
 
 def _carrier(
