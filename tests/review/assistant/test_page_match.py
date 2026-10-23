@@ -190,15 +190,20 @@ def test_a_sure_pick_needs_strong_code_evidence_or_a_clear_lead() -> None:
     chosen, why = agree(ahead, None, MatchAnswer(("p1024",), confident=True))
     assert chosen == () and "code ranks p1026 higher" in why
     # Weak evidence only: the pick must be code's first by `WEAK_LEAD`.
-    clear = _scored(("p1001", 1.0), ("p1002", 0.25), ("p1003", 0.0))
+    clear = _scored(("p1001", 1.0), ("p1002", 0.25), ("p1003", 0.0), ("p1004", 0.0))
     chosen, _why = agree(clear, None, MatchAnswer(("p1001",), confident=True))
     assert chosen == ("p1001",)
+    # ... among at least `MIN_WEAK_POOL` items: first of three on weak evidence says nothing (a
+    # real two-file upload: the vendor's new desk and an older desk, the matcher sure of it).
+    small = _scored(("p1001", 1.0), ("p1002", 0.25), ("p1003", 0.0))
+    chosen, why = agree(small, None, MatchAnswer(("p1001",), confident=True))
+    assert chosen == () and "first of 3 architect drawings on weak evidence says nothing" in why
 
 
 def test_a_sure_pick_among_look_alikes_code_cannot_tell_apart_is_not_paired() -> None:
     """The paid test (2026-10-20): the matcher was sure of a look-alike that code ranked first by
     one close size only, and of a run code ranked second; neither may pair."""
-    narrow = _scored(("p1010", 1.0), ("p1009", 0.75), ("p1001", 0.25))
+    narrow = _scored(("p1010", 1.0), ("p1009", 0.75), ("p1001", 0.25), ("p1002", 0.0))
     chosen, why = agree(narrow, None, MatchAnswer(("p1010",), True, "same base run"))
     assert chosen == () and "does not put it clearly first" in why
     second = _scored(("p1026", 6.7), ("p1023", 4.7), ("p1003", 1.5))
@@ -385,7 +390,11 @@ ARCH = [
     cover(),
     Sheet("ARCH ELEVATION", (24, 30, 18)),
     Sheet("ARCH ELEVATION", (36, 36, 12)),
+    Sheet("ARCH ELEVATION", (60, 48)),
+    Sheet("ARCH ELEVATION", (15, 96)),
 ]
+#: The architect's items of `ARCH` (weak evidence never pairs among fewer than four).
+ALL = ["p1002", "p1003", "p1004", "p1005"]
 #: The vendor's sizes differ from both (no printed value in common): code cannot pair alone.
 SHOP = [Sheet("VENDOR ELEVATION", (25, 29, 17))]
 
@@ -423,10 +432,10 @@ def test_the_work_list_pairs_where_code_and_the_saved_answer_agree(tmp_path: Pat
     work = build_worklist(folder, "shop.pdf")
     assert work.items == ()
     across = work.across[0]
-    assert across.vendor.ref == "p1.v0" and set(across.asked) == {"p1002", "p1003"}
+    assert across.vendor.ref == "p1.v0" and set(across.asked) == set(ALL)
     assert across.code_pick is None and across.why.startswith(UNPAIRED)
     # The matcher's saved answer, sure, and code's clear first (on weak evidence): paired, at $0.
-    _save(folder, "p1.v0", ["p1002", "p1003"], ["p1002"], sure=True)
+    _save(folder, "p1.v0", ALL, ["p1002"], sure=True)
     work = build_worklist(folder, "shop.pdf")
     assert [(i.id, [d.ref for d in i.architect]) for i in work.items] == [("p1.v0", ["p1002.a1"])]
     assert "the AI page matcher is sure" in str(work.items[0].paired_by)
@@ -439,17 +448,22 @@ def test_the_work_list_pairs_where_code_and_the_saved_answer_agree(tmp_path: Pat
 
 
 def test_no_answer_among_twins_is_paired(tmp_path: Path) -> None:
-    twins = [cover(), Sheet("ARCH ELEVATION", (24, 30, 18)), Sheet("ARCH ELEVATION", (24, 30, 18))]
+    twins = [
+        cover(),
+        Sheet("ARCH ELEVATION", (24, 30, 18)),
+        Sheet("ARCH ELEVATION", (24, 30, 18)),
+        *ARCH[3:],
+    ]
     folder = _two_files(tmp_path, twins)
     scores = [c.score for c in build_worklist(folder, "shop.pdf").across[0].candidates]
     assert scores[0] == scores[1]  # code cannot tell the twins apart
-    _save(folder, "p1.v0", ["p1002", "p1003"], ["p1003"], sure=False)
+    _save(folder, "p1.v0", ALL, ["p1003"], sure=False)
     work = build_worklist(folder, "shop.pdf")
     assert work.items == ()
     unpaired = CrossPairs.of(work).unpaired
     assert 1 in unpaired and "is not sure" in unpaired[1]
     # Sure is not enough when code cannot tell the twins apart (a wrong pair makes false reds).
-    _save(folder, "p1.v0", ["p1002", "p1003"], ["p1003"], sure=True)
+    _save(folder, "p1.v0", ALL, ["p1003"], sure=True)
     work = build_worklist(folder, "shop.pdf")
     assert work.items == () and "does not put it clearly first" in CrossPairs.of(work).unpaired[1]
 
@@ -565,7 +579,7 @@ def test_the_engine_hands_the_roster_its_cross_file_pairs(tmp_path: Path) -> Non
     from app.review.assistant.chat_engine import ChatEngine
 
     folder = _two_files(tmp_path)
-    _save(folder, "p1.v0", ["p1002", "p1003"], ["p1002"], sure=True)
+    _save(folder, "p1.v0", ALL, ["p1002"], sure=True)
 
     class _Engine:
         settings = type("S", (), {"page_match_model": None})()

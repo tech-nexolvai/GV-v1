@@ -23,6 +23,11 @@ the set pack alone ($0, no PDF opened, no picture drawn):
   `Drawing` keeps its file and its own page (`file_page`) for its pictures. Its architect drawings
   are the candidates a plain vendor drawing (one whole page, no GV area) is paired with
   (`_pair_across`).
+- **Two-file sets of several projects** (2026-10-23): the set index (`set_index.py`, read by AI and
+  checked by code) places every page in its project; a vendor drawing is paired only with views
+  of its own project's architect sheets, never a reference set (R1) nor a key plan, and is
+  "drawing needed" before any paid compare when the architect's file lacks its project or prints
+  no sizes of it (`DRAWING_NEEDED`). A table or notes page is skipped (`NO_DRAWING_NOTE`).
 - **Every page is said to be covered or skipped** (`WorkList.pages`); `uncovered` lists any page with
   a drawing that no item covers and no reason explains (a test holds it empty on a real set).
 - **Hard items** (no labels on the vendor drawing, an architect drawing with no labels, a very dense
@@ -34,11 +39,13 @@ Read with the plan check's answers and code's assumptions laid over the page map
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import math
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -48,6 +55,8 @@ from app.review.assistant import dim_pairs, view_scales
 from app.review.assistant.full_check_plan import DIVIDER_NOTE, read_page_map
 from app.review.assistant.product_scope import named_products
 from app.review.assistant.simple_check import pairing as pairing_module
+from app.review.assistant.simple_check import projects as projects_module
+from app.review.assistant.simple_check import views as views_module
 from app.review.assistant.simple_check.schema import (
     AcrossCandidate,
     AcrossPair,
@@ -65,6 +74,9 @@ from app.review.assistant.simple_check.set_pages import set_pages
 
 #: The AI page matcher's saved answers in the set pack (`page_match.py`, #1798).
 MATCH_FILE: Final = "page_match.json"
+#: The set index in the set pack (`set_index.py`: each page's project, set and views, read by AI
+#: and checked by code).
+INDEX_FILE: Final = "set_index.json"
 
 #: Code's ranking of the architect items for each vendor drawing paired across the uploads, kept
 #: between builds of one unchanged set pack (a full check builds its work list again as each
@@ -74,9 +86,20 @@ type RankMemo = dict[
 ]
 
 __all__ = [
+    "CALLOUT_CLEAR",
+    "CALLOUT_REACH_PT",
+    "COMMON_WORD_MIN",
+    "COMMON_WORD_SHARE",
     "DENSE_LABELS",
+    "DRAWING_NEEDED",
+    "INDEX_FILE",
+    "ITEM_TAG_MIN",
+    "ITEM_TAG_SHARE",
+    "KEY_PLAN_TAGS",
     "MATCH_FILE",
     "MIN_DRAWING_PT",
+    "MIN_PAGE_DIMS",
+    "NO_DRAWING_NOTE",
     "RankMemo",
     "build_worklist",
     "combined_files",
@@ -105,6 +128,36 @@ _MAX_NOTES: Final = 12
 #: At most this many joined phrases per drawing (`_stacked_in`).
 _MAX_STACKED: Final = 2_000
 _MAX_NOTE_CHARS: Final = 80
+#: A page of the vendor's file that prints fewer dimensions than this (with an inch, foot or
+#: millimetre mark), whose text code read whole (typed, no pen-stroke letters) and on which GV
+#: headed no drawing, has no drawing to compare: a table, notes or pictures.
+MIN_PAGE_DIMS: Final = 3
+#: The words of an unpaired drawing's reason when code knows, before any paid compare, that the
+#: architect's drawing of it is not in the upload (the letter's "drawings needed" list).
+DRAWING_NEEDED: Final = "drawing needed"
+#: A view the set index says prints no sizes counts as such when code reads at most this many
+#: labels in it (a stray room height on an outline).
+MAX_SIZELESS_LABELS: Final = 2
+NO_DRAWING_NOTE: Final = (
+    "a table, notes or pictures page: it prints no dimensions, so there is no drawing to "
+    "compare (code)"
+)
+_UNIT: Final = re.compile(r"[\"'\u2032\u2033]|\bmm\b", re.IGNORECASE)
+#: An item-like tag (`pairing.item_tags_in`) names one piece when the vendor prints it on at most
+#: this share of its drawings (or `ITEM_TAG_MIN` drawings): `LM-004`, printed on a third of a real
+#: set's drawings, is a laminate; `XX-801`, on the few sheets of one piece, is the piece.
+ITEM_TAG_SHARE: Final = 0.1
+ITEM_TAG_MIN: Final = 3
+#: A plan printing this many item-like tags is a key or furniture plan, not an item's drawing.
+KEY_PLAN_TAGS: Final = 8
+#: A key plan's callout points to the item whose tag is printed this close to it (points), when no
+#: other callout is nearly as close (`CALLOUT_CLEAR` times as far, or more).
+CALLOUT_REACH_PT: Final = 100.0
+CALLOUT_CLEAR: Final = 1.5
+#: A naming word the vendor prints on more than this share of its drawings (and more than
+#: `COMMON_WORD_MIN` of them) is its title block's or its brand's, never evidence of a piece.
+COMMON_WORD_SHARE: Final = 0.25
+COMMON_WORD_MIN: Final = 10
 
 
 # ---- reading the pack --------------------------------------------------------------------------
@@ -450,6 +503,8 @@ def build_worklist(
         notes=_read(folder / "notes.json"),
         annotations=annotations,
         matches=_read(folder / MATCH_FILE),
+        health=_read(folder / "health.json"),
+        set_index=_read(folder / INDEX_FILE),
         main_file=main_file,
         combined=combined_files(page_map, annotations),
         memo=memo,
@@ -494,6 +549,8 @@ def worklist_from(
     main_file: str | None = None,
     combined: Mapping[str, bool] | None = None,
     memo: RankMemo | None = None,
+    health: Any = None,
+    set_index: Any = None,
 ) -> WorkList:
     """The work list from the pack's documents (pure: `build_worklist` reads them). `annotations`
     (the pack's `annotations.json`): GV's typed item titles are read from it, only where one is
@@ -501,7 +558,11 @@ def worklist_from(
     matcher's saved answers (`page_match.MATCH_FILE`). `combined`: each file's kind
     (`combined_files`); a file it does not name is of unknown kind. `memo`: code's ranking across
     the uploads from an earlier build of the same pack (`RankMemo`), so a build that only has new
-    matcher answers ranks nothing again."""
+    matcher answers ranks nothing again. `health`: the pack's `health.json` (which pages code read
+    whole as typed text: a page of them printing no dimension has no drawing, `NO_DRAWING_NOTE`).
+    `set_index`: the set index (`set_index.INDEX_FILE`, each page's read checked by code): the projects
+    and reference sets a vendor drawing is paired within, and the views' sizes; without it every
+    architect item is a candidate (no project is known)."""
     file = _main_file(page_map, main_file)
     if file is None:
         return WorkList(file="", items=(), skipped=(), pages=())
@@ -518,6 +579,7 @@ def worklist_from(
     }
     scales_pages = _by_page(scales)
     notes_pages = _by_page(notes)
+    health_pages = _by_page(health)
     skipped: list[Skipped] = []
     cover: dict[int, PageCover] = {}
 
@@ -594,6 +656,12 @@ def worklist_from(
         if not raw_halves:
             skip(page, DIVIDER_NOTE)
             cover[page] = PageCover(page=page, how="skipped", reason=DIVIDER_NOTE)
+            continue
+        if not separate and _prints_no_drawing(
+            dims_pages.get((entry_file, own)), health_pages.get((entry_file, own)), raw_halves
+        ):
+            skip(page, NO_DRAWING_NOTE)
+            cover[page] = PageCover(page=page, how="skipped", reason=NO_DRAWING_NOTE)
             continue
         halves: list[_Half] = []
         counts: dict[str, int] = {}
@@ -751,6 +819,13 @@ def worklist_from(
             rows=(tuple(raw), scales_page, side),
             oriented=oriented,
             tags=pairing_module.tags_in([*texts, *(drawing.tags or ())]),
+            markers=pairing_module.markers_in(texts)[0],
+            hand=pairing_module.markers_in(texts)[1],
+            item_tags=(
+                pairing_module.item_tags_in([*texts, *(drawing.tags or ())])
+                if drawing.role == "vendor"
+                else None
+            ),
             words=pairing_module.words_in(texts),
             views=pairing_module.views_in([*(drawing.titles or ()), *(drawing.heading or "",)]),
             section=places.get((drawing.file, own)),
@@ -781,8 +856,30 @@ def worklist_from(
     # the drawings of every round paired with one architect item are one area for their rounds
     # (#1728).
     answers = _saved_answers(matches)
-    items_across = _items_across(across, drawings, file, architect_files, by_set_page, facts_of)
+    read_index = _index_pages(set_index)
+    items_across, across_context = _enrich(
+        _items_across(across, drawings, file, architect_files, by_set_page, facts_of),
+        dims_pages,
+        notes_pages,
+        projects_module.places(read_index, entries, _printed_words(dims_pages, annotations)),
+        {
+            (str(one.get("file")), int(one["page"])): one
+            for one in read_index.values()
+            if isinstance(one.get("page"), int)
+        },
+    )
     separate_items = any(c.file != file for c in items_across)
+    mine_vendor = [h for h in vendor_halves if h.file == file]
+    for half in mine_vendor:
+        known_vendor = facts_of(drawings[half.ref])
+        across_context.tag_drawings.update(known_vendor.item_tags or ())
+        across_context.word_drawings.update(known_vendor.words)
+    across_context.item_limit = max(ITEM_TAG_MIN, ITEM_TAG_SHARE * len(mine_vendor))
+    for half in vendor_halves:
+        page_read = read_index.get(f"{half.file}#{half.file_page or half.page}")
+        if page_read is not None:
+            across_context.marked[half.ref] = _marked_words(page_read)
+    across_context.word_limit = max(COMMON_WORD_MIN, COMMON_WORD_SHARE * len(mine_vendor))
 
     def own_area(half: _Half) -> tuple[list[_Half], tuple[Drawing, ...]]:
         """The drawings of a vendor drawing's own area (GV's typed area, or its own page), and
@@ -818,17 +915,17 @@ def worklist_from(
             answers.get(half.ref),
             _plain(by_set_page[half.page].get("section")) or None,
             memo=memo,
+            context=across_context,
         )
         if decided is None:
             continue
         across_pairs[half.ref] = decided
         if decided.chosen and half.from_upload:
             # The group is named by the governing architect drawing its rounds were paired with.
-            governing = _governing_first(
-                [d for item_id in decided.chosen for d in by_item[item_id].drawings], half.page
-            )
+            governing = _governing_first(_paired_drawings(decided, by_item), half.page)
             groups.setdefault(governing[0].ref, []).append(half)
     group_of = {h.ref: key for key, hs in groups.items() for h in hs}
+    by_view = {v.ref: v for c in items_across for v in c.views}
 
     items: list[WorkItem] = []
     round_groups: list[tuple[str, int, int, str]] = []
@@ -842,9 +939,7 @@ def worklist_from(
         if half.ref in across_pairs:
             crossed = across_pairs[half.ref]
             pairing = crossed.why
-            architect = _governing_first(
-                [d for item_id in crossed.chosen for d in by_item[item_id].drawings], half.page
-            )
+            architect = _governing_first(_paired_drawings(crossed, by_item), half.page)
             if not crossed.chosen:
                 pairing = f"{crossed.why} (code)"
         reference = tuple(
@@ -933,6 +1028,9 @@ def worklist_from(
                 hard=tuple(hard),
                 paired_by=pairing,
                 prototype_reference=prototype,
+                opposite_hand=(
+                    across_pairs[half.ref].opposite_hand if half.ref in across_pairs else None
+                ),
             )
         )
         if half.ref in group_of and len(groups[group_of[half.ref]]) > 1:
@@ -946,6 +1044,8 @@ def worklist_from(
 
     # Architect and prototype drawings no item looks at: the vendor did not submit that area.
     looked = {d.ref for item in items for d in (*item.architect, *item.reference)}
+    # A view of a sheet stands for the sheet's drawing.
+    looked |= {ref.rsplit(".view", 1)[0] for ref in looked if ref in by_view}
     across_refs = {h.ref for h in across}
     separate_file = any(h.file != file for h in across)
     for ref, drawing in drawings.items():
@@ -1055,6 +1155,33 @@ def _inches_of(value: object) -> Fraction | None:
     return found if found > 0 else None
 
 
+def _printed_words(
+    dims_pages: Mapping[tuple[str, int], Mapping[str, Any]], annotations: Any
+) -> dict[tuple[str, int], str]:
+    """Each page's printed words: code's phrases and GV's typed boxes."""
+    out: dict[tuple[str, int], list[str]] = {}
+    for where, page in dims_pages.items():
+        out.setdefault(where, []).extend(
+            _plain(p.get("text")) for p in page.get("phrases") or [] if isinstance(p, Mapping)
+        )
+    for one in annotations if isinstance(annotations, list) else []:
+        if (
+            isinstance(one, Mapping)
+            and one.get("kind") == "FreeText"
+            and isinstance(one.get("page"), int)
+        ):
+            out.setdefault((str(one.get("file")), int(one["page"])), []).append(
+                _plain(one.get("text"))
+            )
+    return {where: " ".join(words) for where, words in out.items()}
+
+
+def _index_pages(document: Any) -> dict[str, Mapping[str, Any]]:
+    """The set index's checked page reads (`set_index.load`'s shape), empty when there is none."""
+    pages = document.get("pages") if isinstance(document, Mapping) else None
+    return {str(k): v for k, v in (pages or {}).items() if isinstance(v, Mapping)}
+
+
 def _saved_answers(document: Any) -> dict[str, tuple[tuple[str, ...], pairing_module.MatchAnswer]]:
     """The AI page matcher's saved answers (`page_match.MATCH_FILE`): per vendor drawing, the
     candidates it was shown and its answer."""
@@ -1111,6 +1238,333 @@ def _items_across(
     return out
 
 
+@dataclass(frozen=True, slots=True)
+class _KeyPlan:
+    """A key plan's printed item tags and callouts (`views.callouts`)."""
+
+    item: str
+    """The key plan's item id."""
+    page: int
+    project: str | None
+    tags: tuple[tuple[str, str, Box], ...]
+    """Each tag printed on it: normalised (`pairing.item_tags_in`), as printed, where."""
+    marks: tuple[views_module.Callout, ...]
+
+
+@dataclass(slots=True)
+class _Across:
+    """What code knows of the architect's items across the uploads, beyond each item's facts:
+    the projects of GV's divider pages, the key plans, each project's sheets and views, and how
+    many of the vendor's drawings print each item-like tag."""
+
+    places: Mapping[tuple[str, int], projects_module.Place] = field(default_factory=dict)
+    projects: frozenset[str] = frozenset()
+    """The architect's projects (normalised), the brand prototype's left out."""
+    plans: list[_KeyPlan] = field(default_factory=list)
+    sheets: dict[tuple[str | None, str, str], str] = field(default_factory=dict)
+    """(project, sheet number, view number) -> the view's drawing ref (sheet numbers repeat
+    from one project to the next: each project's set has its own IN7.0)."""
+    view_page: dict[str, str] = field(default_factory=dict)
+    """A view's drawing ref -> its item's id."""
+    tag_drawings: Counter[str] = field(default_factory=Counter)
+    """How many of the vendor's drawings print each item-like tag."""
+    item_limit: float = math.inf
+    """An item-like tag printed on more of the vendor's drawings than this names a finish."""
+    marked: dict[str, tuple[frozenset[str], frozenset[str]]] = field(default_factory=dict)
+    """A drawing's variant and opposite-hand words the set index read on it (checked printed),
+    by the drawing's ref: on top of code's own (`pairing.markers_in`)."""
+    no_sizes: set[str] = field(default_factory=set)
+    """The views the set index says print no sizes of the piece (an outline, a schedule)."""
+    word_drawings: Counter[str] = field(default_factory=Counter)
+    """How many of the vendor's drawings print each naming word."""
+    word_limit: float = math.inf
+    """A naming word printed on more of the vendor's drawings than this is its title block's or
+    its brand's (`COPYRIGHT`, `DRAWN`, the brand's name): no evidence of which piece a drawing shows."""
+
+    def item_tags(self) -> frozenset[str]:
+        """The vendor's item tags (`ITEM_TAG_SHARE`): every item-like tag it prints on few of its
+        drawings."""
+        return frozenset(t for t, n in self.tag_drawings.items() if n <= self.item_limit)
+
+
+def _view_drawings(
+    drawing: Drawing,
+    dims_page: Mapping[str, Any] | None,
+    notes_page: Mapping[str, Any] | None,
+    found: Sequence[views_module.View],
+    boxed: bool = False,
+) -> tuple[Drawing, ...]:
+    """Each titled view of an architect sheet as its own drawing (`views.find_views`): its full
+    title, the labels, tags and notes printed in it (`views.owner`), its printed scale. `boxed`:
+    the views' `title_box` is the whole view's box (the set index's read, checked by code), and a
+    printed thing belongs to the view whose box holds it."""
+    if len(found) < 2:
+        return ()
+    printed = views_module.phrases_of(dims_page, drawing.box)
+    block = views_module.title_block_left(printed)
+    edge = math.inf if block is None else block
+
+    def owner(box: Box) -> int | None:
+        point = _centre(box)
+        if point[0] >= edge:
+            return None
+        if boxed:
+            return next(
+                (n for n, v in enumerate(found) if _distance(point, v.title_box) == 0), None
+            )
+        return views_module.owner(point, found)
+
+    owned_labels: dict[int, list[Label]] = {}
+    for label in drawing.labels:
+        at = owner(label.box)
+        if at is not None:
+            owned_labels.setdefault(at, []).append(label)
+    owned_boxes: dict[int, list[Box]] = {}
+    owned_text: dict[int, list[str]] = {}
+    for text, box in printed:
+        at = owner(box)
+        if at is not None:
+            owned_boxes.setdefault(at, []).append(box)
+            owned_text.setdefault(at, []).append(text)
+    owned_tags: dict[int, list[str]] = {}
+    for one in (notes_page or {}).get("drawings") or []:
+        if not isinstance(one, Mapping) or one.get("role") != "architect":
+            continue
+        for tag in one.get("tags") or []:
+            where = _box(tag.get("box")) if isinstance(tag, Mapping) else None
+            if where is None or _distance(_centre(where), drawing.box) > 0:
+                continue
+            at = owner(where)
+            if at is not None:
+                owned_tags.setdefault(at, []).append(_plain(tag.get("text")))
+    out: list[Drawing] = []
+    for n, view in enumerate(found):
+        labels = tuple(owned_labels.get(n, ()))
+        box = _union([view.title_box, *(lb.box for lb in labels), *owned_boxes.get(n, ())])
+        note = next(
+            (t for t in owned_text.get(n, ()) if views_module.is_scale(t)),
+            None,
+        )
+        ratio = _scale_ratio(note)
+        out.append(
+            drawing.model_copy(
+                update={
+                    "ref": f"{drawing.ref}.view{n + 1}",
+                    "heading": None,
+                    "box": tuple(round(v, 2) for v in box),
+                    "crop_box": tuple(
+                        round(v, 2)
+                        for v in (
+                            max(0.0, box[0] - _MARGIN_PT),
+                            max(0.0, box[1] - _MARGIN_PT),
+                            box[2] + _MARGIN_PT,
+                            box[3] + _MARGIN_PT,
+                        )
+                    ),
+                    "labels": labels,
+                    "titles": (view.title,),
+                    "tags": tuple(dict.fromkeys(owned_tags.get(n, ()))),
+                    "notes": (),
+                    "scale_in_per_pt": (
+                        round(1 / (float(ratio) * 72), 6) if ratio else drawing.scale_in_per_pt
+                    ),
+                    "scale_note": note or drawing.scale_note,
+                    "detail": view.kind == "detail",
+                }
+            )
+        )
+    return tuple(out)
+
+
+def _key_plan(
+    found: Sequence[views_module.View], read: Sequence[Mapping[str, Any]], tags: int
+) -> bool:
+    """A key plan: a plan of a whole floor or of a building system (the set index's checked read
+    says so of every view on the sheet), or a plan that tags at least `KEY_PLAN_TAGS` items (code
+    counts them). It shows where pieces are, never a piece's sizes: it is never paired as an
+    item's drawing, and its callouts point to the elevations (`_linked`)."""
+    if read and all(v.get("kind") == "plan" and v.get("whole_floor") for v in read):
+        return True
+    if tags < KEY_PLAN_TAGS:
+        return False
+    kinds = [v.get("kind") for v in read] or [v.kind for v in found]
+    return not kinds or all(k == "plan" for k in kinds)
+
+
+def _index_views(
+    read: Sequence[Mapping[str, Any]], found: Sequence[views_module.View]
+) -> list[tuple[int | None, Mapping[str, Any]]]:
+    """Each view of the set index's read with the code-found view it is (same number, or a title
+    of the same words), `None` when code found none."""
+    out: list[tuple[int | None, Mapping[str, Any]]] = []
+    for one in read:
+        title = projects_module.key(one.get("title"))
+        number = str(one.get("number") or "")
+        at = next(
+            (
+                n
+                for n, v in enumerate(found)
+                if (
+                    number
+                    and v.number == number
+                    and set(title.split()) & set(projects_module.key(v.title).split())
+                )
+                or projects_module.key(v.title) == title
+            ),
+            None,
+        )
+        out.append((at, one))
+    return out
+
+
+def _enrich(
+    items: Sequence[AcrossCandidate],
+    dims_pages: Mapping[tuple[str, int], Mapping[str, Any]],
+    notes_pages: Mapping[tuple[str, int], Mapping[str, Any]],
+    places: Mapping[tuple[str, int], projects_module.Place],
+    index: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
+) -> tuple[list[AcrossCandidate], _Across]:
+    """The architect's items with their project, whether a reference set or a key plan holds
+    them, and their titled views (code's, or the set index's checked boxes when code finds too
+    few); and what the pairing needs across them (`_Across`)."""
+    context = _Across(places=places)
+    index = index or {}
+    found_views: dict[str, tuple[views_module.View, ...]] = {}
+    phrases: dict[str, list[views_module.Phrase]] = {}
+    sheet_of: dict[str, str] = {}
+    out: list[AcrossCandidate] = []
+    for item in items:
+        place = places.get((item.file, item.page)) or projects_module.Place()
+        dims_page = dims_pages.get((item.file, item.page))
+        notes_page = notes_pages.get((item.file, item.page))
+        printed = views_module.phrases_of(dims_page)
+        found = views_module.find_views(printed)
+        whole = len(item.drawings) == 1
+        read = [
+            v
+            for v in (index.get((item.file, item.page)) or {}).get("views") or []
+            if isinstance(v, Mapping)
+        ]
+        boxed = False
+        if len(found) < 2:
+            from_read = [
+                views_module.View(
+                    title=str(v.get("title")),
+                    number=str(v.get("number") or "") or None,
+                    sheet=None,
+                    title_box=tuple(float(x) for x in v["box"]),  # type: ignore[arg-type]
+                    kind=str(v.get("kind")) if v.get("kind") in ("plan", "elevation") else None,
+                )
+                for v in read
+                if isinstance(v.get("box"), list) and len(v["box"]) == 4
+            ]
+            if len(from_read) >= 2:
+                found, boxed = tuple(from_read), True
+                read = [v for v in read if isinstance(v.get("box"), list)]
+        views = (
+            _view_drawings(item.drawings[0], dims_page, notes_page, found, boxed) if whole else ()
+        )
+        page_read = index.get((item.file, item.page)) or {}
+        if not views:
+            words = _marked_words(page_read)
+            for drawing in item.drawings:
+                context.marked[drawing.ref] = words
+        for at, one in _index_views(read, found):
+            if at is None or at >= len(views):
+                continue
+            context.marked[views[at].ref] = _marked_words(one)
+            if not one.get("prints_sizes"):
+                context.no_sizes.add(views[at].ref)
+            if one.get("kind") == "schedule":
+                context.no_sizes.add(views[at].ref)
+        if read and not any(v.get("prints_sizes") for v in read):
+            context.no_sizes.add(item.id)
+        tags = pairing_module.item_tags_in(
+            [
+                _plain(t.get("text"))
+                for d in (notes_page or {}).get("drawings") or []
+                if isinstance(d, Mapping)
+                for t in d.get("tags") or []
+                if isinstance(t, Mapping)
+            ]
+        )
+        key_plan = whole and _key_plan(found, read, len(tags))
+        found_views[item.id] = found if views else ()
+        phrases[item.id] = printed
+        sheet = views_module.sheet_number(printed, found)
+        if sheet is not None:
+            sheet_of[item.id] = sheet
+        for view, drawing in zip(found, views, strict=False):
+            context.view_page[drawing.ref] = item.id
+            if sheet is not None and view.number and (view.sheet in (None, sheet)):
+                context.sheets.setdefault((place.project, sheet, view.number), drawing.ref)
+        out.append(
+            item.model_copy(
+                update={
+                    "project": place.name,
+                    "reference": place.reference,
+                    "key_plan": key_plan,
+                    "views": views,
+                }
+            )
+        )
+    context.projects = frozenset(
+        p for item in out if not item.reference and (p := _project_of(item)) is not None
+    )
+    sheets = frozenset(sheet_of.values())
+    for item in out:
+        if not item.key_plan:
+            continue
+        notes_page = notes_pages.get((item.file, item.page))
+        printed_tags: list[tuple[str, str, Box]] = []
+        for one in (notes_page or {}).get("drawings") or []:
+            for tag in one.get("tags") or [] if isinstance(one, Mapping) else []:
+                box = _box(tag.get("box")) if isinstance(tag, Mapping) else None
+                text = _plain(tag.get("text")) if isinstance(tag, Mapping) else ""
+                keys = pairing_module.item_tags_in([text])
+                if box is not None and len(keys) == 1:
+                    printed_tags.append((next(iter(keys)), text, box))
+        context.plans.append(
+            _KeyPlan(
+                item=item.id,
+                page=item.page,
+                project=_project_of(item),
+                tags=tuple(printed_tags),
+                marks=views_module.callouts(phrases[item.id], (), sheets),
+            )
+        )
+    return out, context
+
+
+def _marked_words(read: Mapping[str, Any]) -> tuple[frozenset[str], frozenset[str]]:
+    """The variant and opposite-hand words of a set index read (checked printed), in capitals."""
+    return (
+        frozenset(" ".join(str(w).upper().split()) for w in read.get("variant_words") or []),
+        frozenset(" ".join(str(w).upper().split()) for w in read.get("hand_words") or []),
+    )
+
+
+def _with_marks(
+    facts_of: Callable[[Drawing], pairing_module.Facts], context: _Across
+) -> Callable[[Drawing], pairing_module.Facts]:
+    """`facts_of` with the set index's variant and hand words added to code's own."""
+
+    def facts(drawing: Drawing) -> pairing_module.Facts:
+        found = facts_of(drawing)
+        extra = context.marked.get(drawing.ref)
+        if not extra or not (extra[0] or extra[1]):
+            return found
+        return dataclasses.replace(
+            found, markers=found.markers | extra[0], hand=found.hand | extra[1]
+        )
+
+    return facts
+
+
+def _project_of(item: AcrossCandidate) -> str | None:
+    return projects_module.key(item.project) if item.project else None
+
+
 def _item_facts(
     item: AcrossCandidate, facts_of: Callable[[Drawing], pairing_module.Facts], section: str | None
 ) -> tuple[pairing_module.Facts, list[pairing_module.Facts]]:
@@ -1128,8 +1582,55 @@ def _item_facts(
         views=frozenset(v for m in members for v in m.views),
         section=section,
         title=title,
+        view_count=max(1, len(item.views)),
+        whole_sheet=bool(item.views),
+        markers=frozenset(w for m in members for w in m.markers),
+        hand=frozenset(w for m in members for w in m.hand),
     )
     return merged, members
+
+
+def _view_facts(
+    item: AcrossCandidate, facts_of: Callable[[Drawing], pairing_module.Facts], section: str | None
+) -> list[pairing_module.Facts]:
+    """Each titled view's facts (its own words, tags and sizes; its full title as its title)."""
+    return [
+        dataclasses.replace(
+            facts_of(view),
+            section=section,
+            title=pairing_module.title_key(view.titles[0]) if view.titles else None,
+            view_count=len(item.views),
+        )
+        for view in item.views
+    ]
+
+
+def _needed(why: str) -> str:
+    """A reason that the architect's drawing is missing, said up front: no paid compare."""
+    return f"{pairing_module.UNPAIRED}: {DRAWING_NEEDED}: {why}"
+
+
+def _vendor_project(vendor: Drawing, context: _Across) -> tuple[str | None, str | None]:
+    """The architect's project the vendor drawing is in (normalised), from the set index (the
+    project its page prints, or the page introducing it prints), matched to the architect's
+    projects (`projects.match`); or `None`, and the reason when its project is in the vendor's
+    file but not in the architect's (a drawing needed)."""
+    if not context.projects:
+        return None, None
+    place = context.places.get((vendor.file, vendor.own_page)) or projects_module.Place()
+    if place.project is None:
+        return None, None
+    siblings = {
+        p.project
+        for (file, _page), p in context.places.items()
+        if file == vendor.file and p.project is not None
+    }
+    mine = projects_module.match(place.project, context.projects, siblings)
+    if mine is None:
+        return None, _needed(
+            f"its page is in {place.name}, and the architect's file has no drawings of that project"
+        )
+    return mine, None
 
 
 def _pair_across(
@@ -1141,37 +1642,184 @@ def _pair_across(
     section: str | None = None,
     *,
     memo: RankMemo | None = None,
+    context: _Across | None = None,
 ) -> AcrossPair | None:
     """How a vendor drawing is paired across the uploads (#1798), or `None` when there is no
     architect item to pair it with. Code ranks every item (`pairing.rank`): a title GV typed or
     the vendor printed that is an item's title, the same section of the divider pages, printed
-    references, spans lined up, tags and naming words, sizes. Its own clear pick
-    (`pairing.clear_winner`, or a printed reference / the same printed values, `pairing.decide`)
-    and the AI page matcher's saved answer then meet in `pairing.agree`. `memo`: the ranking of an
-    earlier build (only the answer is new: the agreement rule runs again on it)."""
-    pool = [c for c in candidates if c.drawings and all(d.ref != vendor.ref for d in c.drawings)]
-    if not pool:
+    references, spans lined up, tags and naming words, sizes, a key plan's callout beside its
+    item tag. Its own clear pick (`pairing.clear_winner`, or a printed reference / the same
+    printed values, `pairing.decide`) and the AI page matcher's saved answer then meet in
+    `pairing.agree`; a sheet of several titled views is then narrowed to one view
+    (`pairing.narrow`). Only items of the vendor drawing's own project are candidates
+    (`projects`), never the brand prototype (R1: reference only) nor a key plan. `memo`: the
+    ranking of an earlier build (only the answer is new: the agreement rule runs again on it)."""
+    context = context or _Across()
+    facts_of = _with_marks(facts_of, context)
+    mine_facts = facts_of(vendor)
+    everything = [
+        c for c in candidates if c.drawings and all(d.ref != vendor.ref for d in c.drawings)
+    ]
+    if not everything:
         return None
+    project, refused = _vendor_project(vendor, context)
+    pool = [
+        c
+        for c in everything
+        if not c.reference
+        and not c.key_plan
+        and (project is None or _project_of(c) in (project, None))
+        and refused is None
+    ]
+    item_tags = (mine_facts.item_tags or frozenset()) & context.item_tags()
+    # An item-like tag the vendor prints on many of its drawings is a material (`LM-004`, a
+    # laminate on a third of a real set's drawings): no evidence of which piece this one is.
+    common = (mine_facts.item_tags or frozenset()) - item_tags
+    # So is a word it prints on many of its drawings (its title block's, its brand's).
+    boiler = frozenset(
+        w for w in mine_facts.words if context.word_drawings.get(w, 0) > context.word_limit
+    )
+    if not pool:
+        why = (
+            refused
+            or _honest_unpaired(vendor, everything, item_tags, project, facts_of)
+            or (
+                f"{pairing_module.UNPAIRED}: the architect's file holds no drawing it may be "
+                "compared with (only the brand prototype or key plans)"
+            )
+        )
+        return AcrossPair(
+            vendor=vendor,
+            section=None,
+            candidates=(),
+            why=why,
+            needed=f": {DRAWING_NEEDED}: " in why,
+        )
+    if all(c.id in context.no_sizes for c in pool):
+        # The set index read every drawing of its project: none prints a piece's sizes.
+        return AcrossPair(
+            vendor=vendor,
+            section=None,
+            candidates=(),
+            why=_needed(
+                f"the architect's drawings of its project ({len(pool)} pages) print no sizes of "
+                "any piece (outlines, schedules or plans only)"
+            ),
+            needed=True,
+        )
+    linked = _linked(item_tags, pool, context)
     key = (vendor.ref, tuple(c.id for c in pool))
     known = memo.get(key) if memo is not None else None
     if known is None:
-        known = _ranked_across(vendor, pool, facts_of, typed)
+        known = _ranked_across(vendor, pool, facts_of, typed, item_tags, linked, common, boiler)
         if memo is not None:
             memo[key] = known
     ranked, code_pick = known
     asked = tuple(s.ref for s in ranked if s.contradicts is None)
     answer = None
-    if saved is not None and tuple(sorted(saved[0])) == tuple(sorted(asked)):
-        answer = saved[1]
+    if saved is not None:
+        answer = pairing_module.reuse(saved[0], saved[1], asked)
     if not asked:
         chosen: tuple[str, ...] = ()
         why = f"{pairing_module.UNPAIRED}: every architect item is ruled out by code ({ranked[0].contradicts})"
     else:
         chosen, why = pairing_module.agree(ranked, code_pick, answer)
     by_id = {c.id: c for c in pool}
+    picked_views: list[str] = []
+    if chosen:
+        kept: list[str] = []
+        failed: list[str] = []
+        shown: list[str] = []
+        for item_id in chosen:
+            item = by_id[item_id]
+            if not item.views:
+                kept.append(item_id)
+                continue
+            own = {v.ref for v in item.views}
+            vendor_facts = dataclasses.replace(
+                mine_facts,
+                tags=mine_facts.tags - common,
+                words=mine_facts.words - boiler,
+                item_tags=item_tags,
+                linked={r: w for r, w in linked.items() if r in own},
+            )
+            best, problem = pairing_module.narrow(
+                vendor_facts, _view_facts(item, facts_of, _section_of(item, facts_of))
+            )
+            if best is None:
+                failed.append(f"{item_id} shows it ({why}), but {problem}")
+                continue
+            kept.append(item_id)
+            picked_views.append(best.ref)
+            view = next(v for v in item.views if v.ref == best.ref)
+            title = view.titles[0] if view.titles else best.ref
+            shown.append(f'its view "{title}" on {item_id} ({pairing_module.evidence_words(best)})')
+        if kept:
+            chosen = tuple(kept)
+            if shown:
+                why = f"{why}; {'; '.join(shown)}"
+        else:
+            chosen = ()
+            why = f"{pairing_module.UNPAIRED}: {failed[0]}"
+    if chosen:
+        paired = [
+            *(v for v in picked_views),
+            *(item_id for item_id in chosen if not by_id[item_id].views),
+        ]
+        drawings_of = {v.ref: v for c in pool for v in c.views}
+        sizeless = [
+            ref
+            for ref in paired
+            if ref in context.no_sizes
+            and sum(
+                len(d.labels)
+                for d in ((drawings_of[ref],) if ref in drawings_of else by_id[ref].drawings)
+            )
+            <= MAX_SIZELESS_LABELS
+        ]
+        if sizeless and len(sizeless) == len(paired):
+            where = ", ".join(
+                (
+                    f'"{drawings_of[r].titles[0]}" on {drawings_of[r].ref.split(".")[0]}'
+                    if r in drawings_of and drawings_of[r].titles
+                    else r
+                )
+                for r in sizeless
+            )
+            why = _needed(
+                f"the architect's drawing of it ({where}) prints no sizes of the piece; {why}"
+            )
+            chosen, picked_views = (), []
+    hand: str | None = None
+    if chosen:
+        drawings_of = {v.ref: v for c in pool for v in c.views}
+        targets = [facts_of(drawings_of[r]) for r in picked_views if r in drawings_of] + [
+            _item_facts(by_id[i], facts_of, None)[0] for i in chosen if not by_id[i].views
+        ]
+        hand = next(
+            (h for t in targets if (h := pairing_module.opposite_hand(mine_facts, t))), None
+        )
+        if hand is not None:
+            why = f"{why}; {hand}: sizes are compared, positions from an end are not"
+    why = _named_views(why, pool)
+    if not chosen and DRAWING_NEEDED not in why and saved is not None:
+        # The item, not the project: the AI page matcher looked at every architect page of the
+        # project and named only drawings that give no sizes of it, and code agrees.
+        shown_only = (
+            _shown_only(saved[1], everything, item_tags, context, by_id, project)
+            if set(by_id) <= set(saved[0])
+            else None
+        )
+        if shown_only is not None:
+            why = _needed(f"{shown_only}; {why.removeprefix(f'{pairing_module.UNPAIRED}: ')}")
+    if not chosen and DRAWING_NEEDED not in why:
+        honest = _honest_unpaired(vendor, everything, item_tags, project, facts_of)
+        prefix = f"{pairing_module.UNPAIRED}: "
+        if honest is not None:
+            why = f"{honest}; {why.removeprefix(prefix)}"
     return AcrossPair(
         vendor=vendor,
-        section=section if facts_of(vendor).section is not None else None,
+        section=section if mine_facts.section is not None else None,
         candidates=tuple(
             by_id[s.ref].model_copy(
                 update={
@@ -1187,8 +1835,176 @@ def _pair_across(
         asked=asked,
         answer=None if answer is None else answer.matches,
         chosen=chosen,
+        views=tuple(picked_views),
         why=why,
+        needed=f": {DRAWING_NEEDED}: " in why,
+        opposite_hand=hand,
     )
+
+
+def _shown_only(
+    answer: pairing_module.MatchAnswer,
+    everything: Sequence[AcrossCandidate],
+    item_tags: frozenset[str],
+    context: _Across,
+    pool: Mapping[str, AcrossCandidate],
+    project: str | None,
+) -> str | None:
+    """How the architect shows an item with no drawing of its sizes, when two witnesses agree
+    (else `None`: the drawing is left as not found). The AI page matcher, shown every architect
+    page of the vendor drawing's project (and code knows that project), named only:
+
+    - key plans, and one of them prints the vendor's item tag with no callout within twice
+      `CALLOUT_REACH_PT` of it (nothing points from it to an elevation): "only as a tag on a
+      plan";
+    - sheets whose every view the set index reads as printing no sizes of the piece, and code
+      reads at most `MAX_SIZELESS_LABELS` labels in each: "only as an outline"."""
+    if not answer.matches:
+        return None
+    by = {c.id: c for c in everything}
+    named = [by[m] for m in dict.fromkeys(answer.matches) if m in by]
+    if (
+        project is None
+        or len(named) != len(answer.matches)
+        or any(c.reference or _project_of(c) != project for c in named)
+    ):
+        return None
+    if all(c.key_plan for c in named):
+        plans = {c.id for c in named}
+        for plan in context.plans:
+            if plan.item not in plans:
+                continue
+            for key, printed, box in plan.tags:
+                if key not in item_tags:
+                    continue
+                near = min((views_module.gap(box, m.box) for m in plan.marks), default=math.inf)
+                if near > 2 * CALLOUT_REACH_PT:
+                    return (
+                        f"the architect shows this item only as a tag on a plan ({printed} on "
+                        f"its page {plan.page}, no callout beside it), with no sizes"
+                    )
+        return None
+    if any(c.key_plan or c.id not in pool for c in named):
+        return None
+    for item in named:
+        drawings = item.views or item.drawings
+        if item.id not in context.no_sizes:
+            return None
+        if any(
+            (v.ref not in context.no_sizes and item.views) or len(v.labels) > MAX_SIZELESS_LABELS
+            for v in drawings
+        ):
+            return None
+    pages = ", ".join(str(c.page) for c in named)
+    return (
+        f"the architect shows this item only as an outline (its file's page {pages}: no view "
+        "prints its sizes), with no sizes"
+    )
+
+
+def _named_views(why: str, pool: Sequence[AcrossCandidate]) -> str:
+    """The reason with each view's ref followed by its sheet's page and its title, as a reader
+    finds it ("p1208.a1.view5" is "p1208.a1.view5 (the architect's file page 12, "HALL
+    ELEVATION @ WAITING AREA")")."""
+    for item in pool:
+        for view in item.views:
+            if view.ref not in why or not view.titles:
+                continue
+            why = re.sub(
+                rf"{re.escape(view.ref)}(?!\d)(?! \()",
+                f'{view.ref} (the architect\'s file page {item.page}, "{view.titles[0]}")',
+                why,
+            )
+    return why
+
+
+def _honest_unpaired(
+    vendor: Drawing,
+    everything: Sequence[AcrossCandidate],
+    item_tags: frozenset[str],
+    project: str | None,
+    facts_of: Callable[[Drawing], pairing_module.Facts],
+) -> str | None:
+    """What code can say of an unpaired vendor drawing's item: no architect drawing of its
+    project prints its item tag, but a key plan of the project does (a tag gives no sizes), or
+    only the brand prototype does (R1: reference only)."""
+    if not item_tags:
+        return None
+
+    def printing(items: Iterable[AcrossCandidate]) -> list[tuple[AcrossCandidate, list[str]]]:
+        out = []
+        for item in items:
+            tags = frozenset(t for d in item.drawings for t in facts_of(d).tags)
+            hits = sorted(item_tags & tags)
+            if hits:
+                out.append((item, hits))
+        return out
+
+    mine = [c for c in everything if project is None or _project_of(c) in (project, None)]
+    if printing(c for c in mine if not c.reference and not c.key_plan):
+        return None
+    plans = printing(c for c in mine if c.key_plan and not c.reference)
+    if plans:
+        item, hits = plans[0]
+        return (
+            f"{pairing_module.UNPAIRED}: its item tag {', '.join(hits)} is printed only on a "
+            f"key plan of the architect's file (page {item.page}), which gives no sizes"
+        )
+    prototype = printing(c for c in everything if c.reference)
+    if prototype:
+        item, hits = prototype[0]
+        return (
+            f"{pairing_module.UNPAIRED}: only the brand prototype shows its item code "
+            f"{', '.join(hits)} (the architect's file page {item.page}): reference only, never "
+            "compared (R1)"
+        )
+    return None
+
+
+def _linked(
+    item_tags: frozenset[str], pool: Sequence[AcrossCandidate], context: _Across
+) -> dict[str, str]:
+    """The candidates (items and their views) a key plan of the vendor drawing's project points
+    to (fix: follow plan callouts), with the evidence in words. One of the vendor's item tags is
+    printed on the plan; the callout nearest to it is within `CALLOUT_REACH_PT`, no other callout
+    is nearly as near (`CALLOUT_CLEAR`), and no other item's tag is nearer to that callout (a
+    callout in the next room does not point to this piece); the callout names one view (a
+    four-way callout does not say which view shows the piece)."""
+    in_pool = {c.id for c in pool}
+    projects = {_project_of(c) for c in pool}
+    universe = context.item_tags()
+    out: dict[str, str] = {}
+    for plan in context.plans:
+        if plan.project not in projects or not plan.marks:
+            continue
+        for key, printed, box in plan.tags:
+            if key not in item_tags:
+                continue
+            near = sorted((views_module.gap(box, m.box), n) for n, m in enumerate(plan.marks))
+            if near[0][0] > CALLOUT_REACH_PT:
+                continue
+            if len(near) > 1 and near[1][0] < CALLOUT_CLEAR * max(near[0][0], 1.0):
+                continue
+            mark = plan.marks[near[0][1]]
+            rivals = [
+                views_module.gap(other, mark.box)
+                for other_key, _text, other in plan.tags
+                if other_key != key and other_key in universe
+            ]
+            if rivals and min(rivals) < near[0][0]:
+                continue
+            if len(mark.numbers) != 1:
+                continue
+            view = context.sheets.get((plan.project, mark.sheet, mark.numbers[0]))
+            if view is None or context.view_page.get(view) not in in_pool:
+                continue
+            words = (
+                f"the architect's key plan (page {plan.page}) prints {printed} beside a callout "
+                f"to view {mark.numbers[0]} of sheet {mark.sheet}"
+            )
+            out.setdefault(view, words)
+            out.setdefault(context.view_page[view], words)
+    return out
 
 
 def _ranked_across(
@@ -1196,6 +2012,10 @@ def _ranked_across(
     pool: Sequence[AcrossCandidate],
     facts_of: Callable[[Drawing], pairing_module.Facts],
     typed: frozenset[str],
+    item_tags: frozenset[str] | None = None,
+    linked: Mapping[str, str] | None = None,
+    common: frozenset[str] = frozenset(),
+    boiler: frozenset[str] = frozenset(),
 ) -> tuple[tuple[pairing_module.Scored, ...], str | None]:
     """Code's ranking of the architect items for a vendor drawing (`pairing.rank`) and its own
     clear pick (`pairing.clear_winner`, or `pairing.decide`): the slow part of `_pair_across`."""
@@ -1220,12 +2040,14 @@ def _ranked_across(
         references=mine.references,
         spans=item_spans if spans is not None else None,
         oriented=mine.oriented,
-        tags=mine.tags,
-        words=mine.words,
+        tags=mine.tags - common,
+        words=mine.words - boiler,
         views=mine.views,
         section=mine.section,
         text=text,
         phrases=mine.phrases,
+        item_tags=item_tags if item_tags is not None else mine.item_tags,
+        linked={r: w for r, w in (linked or {}).items() if r in built},
     )
     ranked = pairing_module.rank(vendor_facts, [built[c.id][0] for c in pool])
     by_rank = {s.ref: s for s in ranked}
@@ -1239,6 +2061,39 @@ def _ranked_across(
             if by_rank[owner].contradicts is None:
                 code_pick = owner
     return ranked, code_pick
+
+
+def _paired_drawings(pair: AcrossPair, by_item: Mapping[str, AcrossCandidate]) -> list[Drawing]:
+    """The architect drawings a vendor drawing was paired with: the chosen views of a sheet of
+    several views, else the chosen items' drawings."""
+    out: list[Drawing] = []
+    for item_id in pair.chosen:
+        item = by_item[item_id]
+        views = [v for v in item.views if v.ref in pair.views]
+        out.extend(views or item.drawings)
+    return out
+
+
+def _prints_no_drawing(
+    dims_page: Mapping[str, Any] | None,
+    health_page: Mapping[str, Any] | None,
+    halves: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Whether a page of the vendor's file has no drawing to compare (`NO_DRAWING_NOTE`): GV
+    headed no drawing on it, code read its text whole (typed text, no pen-stroke letters), and it
+    prints fewer than `MIN_PAGE_DIMS` dimensions with a unit (a schedule's row numbers are none)."""
+    if any(h.get("heading") for h in halves):
+        return False
+    facts = (health_page or {}).get("facts")
+    if not isinstance(facts, Mapping) or facts.get("drawn_letters") or not facts.get("typed_text"):
+        return False
+    printed = 0
+    for label in (dims_page or {}).get("labels") or []:
+        if isinstance(label, Mapping) and (
+            label.get("mm") is not None or _UNIT.search(str(label.get("text") or ""))
+        ):
+            printed += 1
+    return printed < MIN_PAGE_DIMS
 
 
 def _section_of(
