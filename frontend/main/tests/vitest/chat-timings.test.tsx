@@ -48,10 +48,10 @@ describe('timings in words', () => {
   it('lists each phase, then the whole answer; each helper with why it stopped', () => {
     const rows = timingRows(TIMINGS)!;
     expect(rows.map((row) => [row.label, row.time, row.cost, row.calls])).toEqual([
-      ['Waiting for the set pack’s page map', '0.2 s', '$0.00', 0],
-      ['Helpers', '3 min 22 s', '$2.80', 93],
-      ['Lead checks and notes', '1 min 36 s', '$0.95', 4],
-      ['Critic', '31 s', '$0.21', 4],
+      ['Read the drawings', '0.2 s', '$0.00', 0],
+      ['Compared each vendor page', '3 min 22 s', '$2.80', 93],
+      ['Checked the findings on the drawings', '1 min 36 s', '$0.95', 4],
+      ['A second look at each difference', '31 s', '$0.21', 4],
       ['Whole answer', '6 min 12 s', '$4.12', null],
     ]);
     expect(helperTimingRows(TIMINGS).map((row) => row.label)).toEqual([
@@ -72,13 +72,13 @@ describe('the table under "How this was checked"', () => {
     const phases = within(node).getByRole('table', { name: 'Time and cost by phase' });
     const rows = within(phases).getAllByRole('row').slice(1);
     expect(rows.map((row) => row.textContent)).toEqual([
-      'Waiting for the set pack’s page map0.2 s$0.000',
-      'Helpers3 min 22 s$2.8093',
-      'Lead checks and notes1 min 36 s$0.954',
-      'Critic31 s$0.214',
+      'Read the drawings0.2 s$0.000',
+      'Compared each vendor page3 min 22 s$2.8093',
+      'Checked the findings on the drawings1 min 36 s$0.954',
+      'A second look at each difference31 s$0.214',
       'Whole answer6 min 12 s$4.12',
     ]);
-    const helpers = within(node).getByRole('table', { name: 'Time and cost by helper' });
+    const helpers = within(node).getByRole('table', { name: 'Time and cost by group of pages' });
     expect(within(helpers).getAllByRole('row')).toHaveLength(3);
     expect(within(helpers).getByText('Helper 2: Pages 8-12 · 2. Area two (stopped: turn limit)')).toBeTruthy();
   });

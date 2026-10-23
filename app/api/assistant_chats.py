@@ -181,6 +181,7 @@ from app.review.assistant.proof import reviewer_value_refusal
 from app.review.assistant.review_action import CheckState
 from app.review.assistant.sandbox import ChatWorkspace, Sandbox, open_sandbox
 from app.review.assistant.send_package import ZIP_MIME
+from app.review.assistant.skills_export import missing_settings
 from app.runs.rates import ModelRates, rates_from_environment
 from vocabulary.semantic_types import ProductType
 
@@ -736,6 +737,12 @@ def get_full_check_plan(
         _latest_revision_id(session, package.id),
     )
     try:
+        revision_id = _latest_revision_id(session, package.id)
+        missing = [] if revision_id is None else missing_settings(session, revision_id, products)
+    except Exception as failed:  # noqa: BLE001 - the report shows without the values line
+        _log.warning("assistant chat missing settings failed: %s", type(failed).__name__)
+        missing = []
+    try:
         plan = full_check_plan(
             _chat_root(request.app),
             package.id,
@@ -743,6 +750,7 @@ def get_full_check_plan(
             lambda page: f"/api/v1/packages/{package.id}/plan-pages/{page}",
             products=products,
             price=lambda pages: rule.price(pages, max(0, left)),
+            missing_values=missing,
         )
     except Exception as failed:  # noqa: BLE001 - the full check still runs, without questions
         _log.warning("assistant chat plan check failed: %s", type(failed).__name__)
@@ -1594,6 +1602,12 @@ def _message(
                 if settings.assistant_page_match_model == "off"
                 else settings.assistant_page_match_model
             ),
+            preflight_model=(
+                settings.assistant_preflight_supervisor_model
+                if settings.assistant_preflight_supervisor
+                else None
+            ),
+            run_anyway=body.run_anyway,
             simple=_simple_options(settings, body) if mode == "full_check" else None,
             plan_answers=(
                 None

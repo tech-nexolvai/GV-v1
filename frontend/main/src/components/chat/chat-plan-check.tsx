@@ -1,5 +1,6 @@
 import { useState } from 'react';
 
+import { PreflightReport } from '@/components/chat/chat-preflight';
 import type { ChatPlanDoubt } from '@/lib/chat-api';
 import { readingWords, type PlanState } from '@/lib/chat-plan-check';
 import { cn } from '@/lib/utils';
@@ -63,6 +64,7 @@ export function PlanCheck({ state, picked, onPick }: PlanCheckProps) {
           {reading}
         </p>
       )}
+      {plan.preflight && plan.preflight.lines.length > 0 && <PreflightReport preflight={plan.preflight} />}
       {plan.summary && (
         <p data-slot="chat-plan-summary" className="text-xs text-muted-foreground tabular-nums">
           Plan: {plan.summary}

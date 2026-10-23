@@ -417,7 +417,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const blocked = unavailable ?? (models.status === 'loading' ? 'Loading the models…' : chatId && !chat ? 'Opening the chat…' : null);
 
   /** `continueFrom` (#1514): the interrupted answer Continue goes on from, and how it was asked. */
-  async function send(text: string, mode: ChatMode = 'chat', continueFrom?: { id: string; mode: ChatMode }, task?: ChatTaskEdit, planAnswers?: ChatPlanAnswer[]) {
+  async function send(text: string, mode: ChatMode = 'chat', continueFrom?: { id: string; mode: ChatMode }, task?: ChatTaskEdit, planAnswers?: ChatPlanAnswer[], runAnyway = false) {
     const question = text.trim();
     if (!question || runRef.current || blocked || !choice) return;
     stoppedChat.current = null;
@@ -479,6 +479,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
           ...(continueFrom ? { continue_from: continueFrom.id } : {}),
           ...(task ? { task } : {}),
           ...(mode === 'full_check' && planAnswers?.length ? { plan_answers: planAnswers } : {}),
+          ...(mode === 'full_check' && runAnyway ? { run_anyway: true } : {}),
         }, onEvent, signal).catch((error: unknown) => {
           refusal = error;
           throw error;
@@ -639,7 +640,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const fullCheckSummary = confirmWords(products, pickedModel ? shortModelLabel(pickedModel) : null, choice ? EFFORT_WORDS[choice.effort] : null, null);
   const fullCheckRule = models.status === 'ready' ? priceRuleWords(models.data) : null;
   const fullCheckBlocked = blocked ?? (running ? 'A message is still running in this chat.' : null);
-  const runFullCheck = (answers?: ChatPlanAnswer[]) => void send(FULL_CHECK_TEXT, 'full_check', undefined, undefined, answers);
+  const runFullCheck = (answers?: ChatPlanAnswer[], options?: { runAnyway?: boolean }) => void send(FULL_CHECK_TEXT, 'full_check', undefined, undefined, answers, options?.runAnyway ?? false);
   // #1569: the plan check before a paid full check (a fake API may leave it out: no questions).
   const planApi = api.plan;
   // With the products picked, so the plan says the price for them (#1823); asked again only when
@@ -763,6 +764,8 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     fullCheck={isFullCheck(message, asked?.role === 'user' ? asked : null)}
                     focusFindingId={focusFinding && message.id === focusFinding.messageId ? focusFinding.findingId : null}
                     liveStop={at === messages.length - 1 ? liveStop : null}
+                    // A full check the pre-flight check paused: Run anyway sends it again past the stop.
+                    onRunAnyway={message.preflight?.paused && at === messages.length - 1 && !running && !blocked ? () => runFullCheck(undefined, { runAnyway: true }) : undefined}
                   />
                 );
               })}

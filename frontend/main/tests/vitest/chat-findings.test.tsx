@@ -323,7 +323,7 @@ describe('how this was checked (whole-set answers)', () => {
     await user.click(within(how).getByRole('button', { name: /Matches GV Review’s own checks: 8 of 9/ }));
     expect(within(how).getByText('Upper cabinet height')).toBeTruthy();
     const lines = [...how.querySelectorAll('[data-slot="chat-trust-checks"] li')].map((line) => line.textContent);
-    expect(lines).toContain('Printed at the spot: 2 of 2 values found');
+    expect(lines).toContain('Found printed on the drawing: 2 of 2 values');
     expect(lines).toContain('Not checked: numbers drawn as pen strokes on page 4');
     expect(lines).toContain('Not checked: page 9 (not opened)');
 

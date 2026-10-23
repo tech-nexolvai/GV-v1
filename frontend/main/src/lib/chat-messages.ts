@@ -7,7 +7,7 @@
  * message, which then replaces what was built live: a reload and a live answer end up identical.
  */
 
-import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatPackageState, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatReviewAction, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown, ChatFallback } from '@/lib/chat-api';
+import type { ChatAccuracy, ChatAgent, ChatBlock, ChatCite, ChatCoverage, ChatEffort, ChatEvent, ChatFile, ChatFinding, ChatFindingUpdate, ChatMessage, ChatMode, ChatModel, ChatPackageState, ChatProduct, ChatProgress, ChatResolver, ChatResume, ChatReviewAction, ChatScope, ChatStep, ChatStopped, ChatSummary, ChatTask, ChatTrust, ChatUnderstood, ChatUnknown, ChatFallback, ChatPreflight } from '@/lib/chat-api';
 import { CHECK_MODEL } from '@/lib/chat-api';
 import { EFFORT_WORDS, shortName } from '@/lib/chat-settings';
 import { applyLive, caughtUp, isLiveEvent, type LiveEvent, type LiveState } from '@/lib/chat-live';
@@ -85,6 +85,8 @@ export interface ViewMessage {
    * catch up with it (so the card never steps back). Use `shownLive`.
    */
   liveSeed?: LiveState | null;
+  /** A full check's pre-flight report and the supervisor's look (its `preflight` block). */
+  preflight?: ChatPreflight | null;
   /** #1577: the refusal fallback that answered instead of the model asked (the last switch). */
   fallback?: ChatFallback | null;
   cost_usd: string | null;
@@ -209,6 +211,15 @@ export function fallbackWords(fallback: ChatFallback, models: readonly Pick<Chat
   return `${modelLabel(fallback.from_model, models)} declined this request, so ${modelLabel(fallback.to_model, models)} answered it instead.`;
 }
 
+/** A full check's `preflight` block (the pre-flight report, the supervisor's look), or null. */
+export function preflightOf(blocks: readonly ChatBlock[]): ChatPreflight | null {
+  for (let at = blocks.length - 1; at >= 0; at -= 1) {
+    const block = blocks[at];
+    if (block.type === 'preflight' && block.preflight) return block.preflight;
+  }
+  return null;
+}
+
 /** The `resume` block of an interrupted answer (#1514), or null. */
 export function resumeOf(blocks: readonly ChatBlock[]): ChatResume | null {
   for (let at = blocks.length - 1; at >= 0; at -= 1) {
@@ -269,6 +280,7 @@ export function fromSaved(message: ChatMessage): ViewMessage {
     package_state: packageStateOf(saved),
     package_outdated: message.package_outdated ?? null,
     fallback: fallbackOf(saved),
+    preflight: preflightOf(saved),
     cost_usd: message.cost_usd ?? null,
     stopped: message.stopped ?? null,
     error: message.error ?? null,
@@ -434,6 +446,8 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
       return event.data.resolver ? { ...message, resolver: event.data.resolver } : message;
     case 'fallback':
       return event.data.fallback ? { ...message, fallback: event.data.fallback } : message;
+    case 'preflight':
+      return event.data.preflight ? { ...message, preflight: event.data.preflight } : message;
     case 'message_end': {
       // The stored message wins; the live task list, files, findings and coverage stay if it somehow
       // left them out.
@@ -450,6 +464,7 @@ export function applyChatEvent(message: ViewMessage, event: ChatEvent): ViewMess
         scope: stored.scope ?? message.scope ?? null,
         understood: stored.understood ?? message.understood ?? null,
         fallback: stored.fallback ?? message.fallback ?? null,
+        preflight: stored.preflight ?? message.preflight ?? null,
         cites: stored.cites?.length ? stored.cites : message.cites ?? [],
         corrections: stored.corrections?.length ? stored.corrections : message.corrections ?? [],
         accuracy: stored.accuracy ?? message.accuracy ?? null,
@@ -791,8 +806,10 @@ function capWords(value: string | null | undefined): string | null {
  * limit": today's setting may differ from the cap it ran under (#1483: a $5 stop read "$15").
  */
 export function stoppedWords(
-  message: Pick<ViewMessage, 'stopped'> & Partial<Pick<ViewMessage, 'cap_hit' | 'message_cap_usd' | 'package_cap_usd' | 'error'>>,
+  message: Pick<ViewMessage, 'stopped'> & Partial<Pick<ViewMessage, 'cap_hit' | 'message_cap_usd' | 'package_cap_usd' | 'error' | 'preflight'>>,
 ): string | null {
+  // The pre-flight check paused it before anything was compared: its own card says why.
+  if (message.stopped === 'cancelled' && message.preflight?.paused) return 'Paused before spending';
   switch (message.stopped) {
     case 'cost_cap': {
       if (message.cap_hit === 'package') {

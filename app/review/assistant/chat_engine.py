@@ -609,6 +609,10 @@ class EngineSettings:
     page_match_model: str | None = None
     """The AI page matcher's model for vendor drawings paired across separate uploads (#1798,
     `assistant_page_match_model`); `None`: off (code pairs alone)."""
+    preflight_model: str | None = None
+    """The supervisor's model (`plan_supervisor.py`); `None`: off (code's own stops only)."""
+    run_anyway: bool = False
+    """The reviewer chose Run anyway: a pre-flight stop is recorded, the check goes on."""
 
 
 @dataclass(slots=True)
