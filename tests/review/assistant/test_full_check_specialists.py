@@ -72,7 +72,7 @@ def _example_numbers(text: str) -> set[Fraction]:
         value = 12 * int(feet) + int(inches) + (Fraction(int(top), int(bottom)) if top else 0)
         found.add(Fraction(value))
     for whole, top, bottom in _INCHES.findall(_FEET.sub("", text)):
-        found.add(int(whole) + (Fraction(int(top), int(bottom)) if top else 0))
+        found.add(Fraction(int(whole)) + (Fraction(int(top), int(bottom)) if top else 0))
     return {value for value in found if value >= 10}
 
 
@@ -87,9 +87,13 @@ def test_the_worked_examples_use_invented_numbers() -> None:
         for item in yaml.safe_load(path.read_text(encoding="utf-8")).get("items") or []:
             for key in ("numbers_all", "numbers_any"):
                 keyed |= {Fraction(str(n)) for n in item.get(key) or []}
+    # Every file's clashes in one failure, so a new answer key is fixed in one pass.
+    clashes: dict[str, list[Fraction]] = {}
     for name in ("what-dimensions-measure.md", "vendor-mistakes.md", "reading-drawings.md"):
         numbers = _example_numbers((KNOWLEDGE_FOLDER / name).read_text(encoding="utf-8"))
-        assert not numbers & keyed, (name, sorted(numbers & keyed))
+        if numbers & keyed:
+            clashes[name] = sorted(numbers & keyed)
+    assert not clashes, clashes
 
 
 def test_each_kind_gets_the_core_its_job_and_its_knowledge() -> None:
