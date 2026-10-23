@@ -61,7 +61,9 @@ class Plan:
         self.left, self.right = LEFT, LEFT + width * PT
         self.top_edge = None if overhang is None else self.front_line + overhang * PT
 
-    def lines(self, *, dims: tuple[str, ...] = ("front", "back", "width", "depth", "top")) -> list[Line]:
+    def lines(
+        self, *, dims: tuple[str, ...] = ("front", "back", "width", "depth", "top")
+    ) -> list[Line]:
         end = self.top_edge or self.front_line
         out: list[Line] = [
             ((0.0, self.back_line), (240.0, self.back_line)),
@@ -190,7 +192,7 @@ def test_every_rule_reads_its_values_from_rules_md() -> None:
     assert found[so.WIDTH.id].value == Fraction(30) and found[so.WIDTH.id].text == '30"'
     assert found[so.DEPTH.id].value == Fraction(35, 2)
     assert found[so.WIDTH.id].origin == "drawing set value"
-    assert "sink inside width 30 1/2\"" in found[so.WIDTH.id].where
+    assert 'sink inside width 30 1/2"' in found[so.WIDTH.id].where
     # The countertop's depth: the cabinet depth plus the overhang.
     assert found[so.TOP.id].value == Fraction(103, 4) and found[so.TOP.id].origin == "project value"
 
@@ -268,7 +270,7 @@ def test_the_cut_out_from_the_entered_sink_less_the_clearances() -> None:
     plan = Plan(depth=17.0)
     (wrong,) = _items(plan, [plan.label("depth", "17", "D2")], so.DEPTH)
     assert wrong["status"] == "different" and wrong["architect"] == '17 1/2"'
-    assert "sink inside depth 18\"" in wrong["why"] and "2 x clearance 1/4\"" in wrong["why"]
+    assert 'sink inside depth 18"' in wrong["why"] and '2 x clearance 1/4"' in wrong["why"]
     assert proof.should_be(wrong) == '17 1/2" (drawing set value: sink cut-out depth)'
     plan = Plan()
     (right,) = _items(plan, [plan.label("width", "30", "D3")], so.WIDTH)
@@ -283,7 +285,7 @@ def test_the_countertop_depth_is_the_cabinet_depth_plus_the_overhang() -> None:
     plan = Plan(overhang=1.0)
     (red,) = _items(plan, [plan.label("top", "25", "D4")], so.TOP)
     assert red["status"] == "different" and red["architect"] == '25 3/4"'
-    assert "cabinet depth 24 3/4\"" in red["why"] and "overhang 1\"" in red["why"]
+    assert 'cabinet depth 24 3/4"' in red["why"] and 'overhang 1"' in red["why"]
     (right,) = _items(plan, [plan.label("top", "25 3/4", "D4")], so.TOP)
     assert right["status"] == "same"
 
@@ -376,7 +378,12 @@ def _pack(tmp_path: Path, plan: Plan, labels: list[dict[str, Any]]) -> Path:
                 "page": 7,
                 "role": "vendor",
                 "halves": [
-                    {"box": [-10.0, 50.0, 250.0, 220.0], "role": "vendor", "heading": None, "round": 1}
+                    {
+                        "box": [-10.0, 50.0, 250.0, 220.0],
+                        "role": "vendor",
+                        "heading": None,
+                        "round": 1,
+                    }
                 ],
                 "section": "1. WALL",
                 "area": "2. Kitchen",
