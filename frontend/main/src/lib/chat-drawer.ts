@@ -8,7 +8,7 @@
 
 import type { ChatFinding, FindingBox, FindingDecision, ProofGroup } from '@/lib/chat-api';
 import { ruleNoteWords } from '@/lib/chat-proof';
-import { isDrawingNeededItem, shouldBeValue, vendorValue, wrongPartWords } from '@/lib/chat-result';
+import { isDrawingNeededItem, isRefusedString, shouldBeValue, vendorValue, wrongPartWords } from '@/lib/chat-result';
 import { inchNumber, inchWords } from '@/lib/chat-trust';
 
 /** The drawer's group, with Drawing needed apart (a page, not a finding). */
@@ -59,6 +59,40 @@ export function ringOnCrop(box: FindingBox | null | undefined, naturalWidth: num
   const actual = naturalWidth / naturalHeight;
   if (Math.abs(actual - expected) / expected > 0.03) return null;
   return { left: CROP_PAD_PT / paddedWidth, top: CROP_PAD_PT / paddedHeight, width: width / paddedWidth, height: height / paddedHeight };
+}
+
+/**
+ * Where a smaller spot inside the crop's own spot is on that crop (a refused string's printed
+ * overall inside its row): the same shape check as `ringOnCrop`, then the inner box placed in it.
+ */
+export function ringInCrop(crop: FindingBox | null | undefined, inner: { x0: number; y0: number; x1: number; y1: number } | null | undefined, naturalWidth: number, naturalHeight: number): Ring | null {
+  if (!crop || !inner || !ringOnCrop(crop, naturalWidth, naturalHeight)) return null;
+  const left = Math.min(crop.x0, crop.x1) - CROP_PAD_PT;
+  const top = Math.min(crop.y0, crop.y1) - CROP_PAD_PT;
+  const paddedWidth = Math.abs(crop.x1 - crop.x0) + 2 * CROP_PAD_PT;
+  const paddedHeight = Math.abs(crop.y1 - crop.y0) + 2 * CROP_PAD_PT;
+  const x0 = Math.min(inner.x0, inner.x1);
+  const y0 = Math.min(inner.y0, inner.y1);
+  const width = Math.abs(inner.x1 - inner.x0);
+  const height = Math.abs(inner.y1 - inner.y0);
+  if (width <= 0 || height <= 0) return null;
+  const ring = { left: (x0 - left) / paddedWidth, top: (y0 - top) / paddedHeight, width: width / paddedWidth, height: height / paddedHeight };
+  // Only a spot that is really inside the crop is ringed.
+  if (ring.left < 0 || ring.top < 0 || ring.left + ring.width > 1.001 || ring.top + ring.height > 1.001) return null;
+  return ring;
+}
+
+/**
+ * The printed overall's own spot inside a vendor string's row, when code kept the label it read
+ * (`dims.vendor`, on the row's page); else none (the row alone is ringed).
+ */
+export function overallSpot(finding: Pick<ChatFinding, 'dims' | 'vendor_box'>): FindingBox | null {
+  const label = finding.dims?.vendor;
+  const row = finding.vendor_box;
+  if (!label || !row || label.page !== row.page || !Array.isArray(label.box) || label.box.length !== 4) return null;
+  if ((label.file ?? null) !== (row.file ?? null) && label.file && row.file) return null;
+  const [x0, y0, x1, y1] = label.box;
+  return { page: label.page, x0, y0, x1, y1, file: label.file ?? null };
 }
 
 /** Where the spot is on the vendor's whole-page picture (100 dpi, drawn from PDF points). */
@@ -179,6 +213,8 @@ export function howWeKnow(finding: ChatFinding, kind: DrawerKind, options: { noA
     const reference = finding.architect?.trim();
     if (shown && reference) steps.push(sentence(`The vendor’s ${shown} matches the ${finding.source === 'rules' ? 'GV rule' : 'architect’s'} ${reference}`));
     steps.push(sentence(finding.proof?.reason));
+  } else if (kind === 'not_compared' && isRefusedString(finding, 'not_compared')) {
+    steps.push(...refusedStringSteps(finding));
   } else {
     steps.push(sentence(finding.proof?.reason ?? finding.why));
     steps.push(finding.proof?.settle ? sentence(`Needed to compare it: ${finding.proof.settle}`) : null);
@@ -186,6 +222,33 @@ export function howWeKnow(finding: ChatFinding, kind: DrawerKind, options: { noA
   if (options.noArchitectDrawing && kind !== 'drawing_needed') steps.push('This page has no architect drawing in the upload: it is in the drawings request to GV.');
   const unique = [...new Set(steps.filter((step): step is string => Boolean(step)))];
   return unique.slice(0, 3);
+}
+
+/** The sentence a refused vendor string opens with: nothing about its numbers. */
+export const REFUSED_STRING_WORDS = 'The app could not confirm these sizes belong to one row, so nothing is compared.';
+
+/**
+ * How we know, for a vendor string code did not compare: that nothing is compared, code's own
+ * reason (without the AI's unproven numbers), and that nothing goes to the vendor for it.
+ */
+export function refusedStringSteps(finding: Pick<ChatFinding, 'proof' | 'why'>): string[] {
+  const steps: (string | null)[] = [];
+  const unverified = !finding.proof?.not_compared || finding.proof.not_compared === 'string_not_verified';
+  steps.push(unverified ? REFUSED_STRING_WORDS : 'The app did not compare this row’s sizes, so nothing is compared.');
+  // Code's reason, without a leading "parts 3″ + … = …; printed …;" (the unproven reading itself).
+  const reason = (finding.proof?.reason ?? finding.why ?? '').replace(/^parts\s[^;]*;\s*printed[^;]*;\s*/i, '').trim();
+  const restates = /could not verify on the drawing that these parts are one string/i.test(reason);
+  if (reason && !restates) steps.push(sentence(reason.replace(/^code(?!\u2019s|'s)\b/i, 'The app')));
+  steps.push('Nothing is asked of the vendor for it. If the row looks wrong to you, you can add a red mark yourself.');
+  return steps.filter((step): step is string => Boolean(step));
+}
+
+/** Why the architect's side has no picture, in plain words. */
+export function noArchitectPictureWords(finding: Pick<ChatFinding, 'proof' | 'source' | 'rule_check_id'>, noDrawing: boolean): string {
+  if (noDrawing) return 'No architect drawing of this item in the upload';
+  if (finding.source === 'rules' || finding.rule_check_id) return 'GV’s rule decides this item: there is no architect drawing to show';
+  if (finding.proof?.not_compared === 'nothing_to_compare') return 'The architect’s drawings give no size or note for this item, so there is no spot to show';
+  return 'The app did not find this item’s spot on the architect’s drawings, so there is no picture of it';
 }
 
 // ── Chips ──────────────────────────────────────────────────
