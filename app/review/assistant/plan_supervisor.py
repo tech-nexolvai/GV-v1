@@ -26,7 +26,9 @@ on and the stops are recorded as the reviewer's choice. Every stop and warning i
 answer (its `preflight` block) and shown on the screen.
 
 **Duplicate pages**: a vendor page that is an exact copy of an earlier page (`preflight`) is taken
-out of the plan and noted "the same as page N: checked there".
+out of the plan and noted "the same as page N: checked there"; an older copy of a sheet printed
+again later in the upload (an earlier revision, `sheet_revisions`) is taken out too, noted "an
+older copy of page N: not checked".
 
 The supervisor is behind a setting (`GV_ASSISTANT_PREFLIGHT_SUPERVISOR`, on by default); tests use
 a fake call (`ask`), never a paid one.
@@ -343,13 +345,20 @@ def paused_outcome(engine: ChatEngine, found: Gate) -> MessageOutcome:
 
 
 def duplicate_notes(found: Gate, pages: Sequence[int]) -> list[tuple[int, str]]:
-    """The planned pages that are exact copies of an earlier page, with their coverage note."""
+    """The planned pages that are exact copies of an earlier page, or older copies of a sheet
+    printed again later (an earlier revision, `sheet_revisions`), with their coverage note."""
     planned = set(pages)
-    return [
+    exact = [
         (page, f"the same as page {first}: checked there (an exact copy)")
         for page, first in sorted(found.report.duplicates.items())
         if page in planned and first in planned and first != page
     ]
+    older = [
+        (page, f"an older copy of page {copy.newer} ({copy.why}): not checked")
+        for page, copy in sorted((getattr(found.report, "older", None) or {}).items())
+        if page in planned and copy.newer in planned and copy.newer != page
+    ]
+    return sorted([*exact, *older])
 
 
 def for_full_check(engine: ChatEngine, plan: Any, matching: Any) -> Gate | None:

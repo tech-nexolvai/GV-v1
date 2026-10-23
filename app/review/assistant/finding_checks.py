@@ -15,7 +15,10 @@ Before a reviewer is asked to believe it, code checks what it can without any AI
 - **Inches by code.** `to_inches` turns a written value into exact inches with the repo's one parser
   (`units.notation` + `units.normalise`), so the screen shows code's numbers and code's difference,
   never the model's arithmetic. Millimetres alone are not read (GV ignores metric); in `940 [37]`
-  the inches count.
+  the inches count, also when the millimetres say something else (`660 [27"]` is 27": settled
+  with GV, "inches count; ignore millimetres"). Such a value is never a doubt, never red and
+  never a question because of its millimetres (`units_check` still says they disagree, as a
+  fact; a check of a side printed in the text layer at its spot ignores it).
 - **Vendor arithmetic.** For a finding about the vendor's own sums, code adds the parts up.
 
 `trust_level` turns the full set of checks on a finding into Confirmed / Likely / To check
@@ -62,6 +65,7 @@ __all__ = [
     "inch_first_mm",
     "printed_at_spot",
     "printed_from",
+    "printed_mm",
     "read_result",
     "to_inches",
     "trust_level",
@@ -195,11 +199,12 @@ def _mm_agrees(millimetres: str, inches: Decimal) -> bool:
 
 def _inch_first(token: str) -> Decimal | Literal[False] | None:
     """A pair written inches first with the millimetres in brackets (#1778): `31 1/4" [794]` is
-    31 1/4", `25 [635]` is 25". The order is settled by the 25.4 cross-check: a marked value
-    (`31 1/4"`, `2'-0"`) is the inches, and is read only when the bracket is its millimetres; two
-    bare numbers are inches first only when the bracket is the first number times 25.4 and the
-    first is not the bracket's millimetres (GV's usual `794 [31 1/4]` keeps its reading). `None`:
-    not this form (read as before); `False`: this form, refused (the numbers disagree)."""
+    31 1/4", `25 [635]` is 25". A marked value (`31 1/4"`, `2'-0"`) is the inches whatever the
+    bracket says: inches count, millimetres are ignored (settled with GV), so `31 1/4" [800]` is
+    31 1/4" too. Two bare numbers are inches first only when the bracket is the first number
+    times 25.4 and the first is not the bracket's millimetres (GV's usual `794 [31 1/4]` keeps its
+    reading). `None`: not this form (read as before); `False`: this form, refused (a marked value
+    that is not one number)."""
     found = _INCH_FIRST.match(token)
     if found is None:
         return None
@@ -219,7 +224,8 @@ def _inch_first(token: str) -> Decimal | Literal[False] | None:
         if plain and backwards is not None and _mm_agrees(outside, backwards):
             return None
         return value
-    return False if marked else None
+    # A marked value is the inches: the millimetres beside it are ignored (settled with GV).
+    return value if marked else None
 
 
 def inch_first_mm(text: object) -> str | None:
@@ -232,6 +238,28 @@ def inch_first_mm(text: object) -> str | None:
     if found is None or not _inch_first(token):
         return None
     return found.group("mm")
+
+
+def printed_mm(text: object) -> str | None:
+    """The millimetres of a value printed in both units, either way round: `660 [27"]` and
+    `660 (27")` give `660` (millimetres first, the inches in brackets), `31 1/4" [794]` gives
+    `794` (`inch_first_mm`). `None` for a value in one unit, or when the inches are not read
+    (`to_inches`). Only says what is printed: the inches count (settled with GV)."""
+    if not isinstance(text, str):
+        return None
+    first = inch_first_mm(text)
+    if first is not None:
+        return first
+    token = " ".join(plain_marks(text).split())
+    if to_inches(token) is None:
+        return None
+    round_dual = _ROUND_DUAL.match(token)
+    if round_dual is not None:
+        return round_dual.group("mm")
+    if _INCH_FIRST.match(token) is not None and _inch_first(token) is not None:
+        return None
+    dual = _DUAL_UNITS.match(token)
+    return dual.group("mm") if dual is not None else None
 
 
 def value_flags(text: object) -> tuple[str, ...]:
@@ -460,7 +488,7 @@ def check_finding(finding: Mapping[str, Any], pdf_paths: Mapping[str, Path]) -> 
         printed_architect=architect,
         printed_vendor=vendor,
         arithmetic=arithmetic,
-        units=_both_units(finding),
+        units=_both_units(finding, {"architect": architect, "vendor": vendor}),
         verify_architect=verify_architect,
         verify_vendor=verify_vendor,
     )
@@ -484,8 +512,24 @@ def drawn_checks(finding: Mapping[str, Any], pdf_paths: Mapping[str, Path]) -> d
     return out
 
 
-def _both_units(finding: Mapping[str, Any]) -> UnitsResult | None:
-    sides = [units_check(finding.get(side)) for side in ("architect", "vendor")]
+def _both_units(
+    finding: Mapping[str, Any], printed: Mapping[str, PrintedResult] | None = None
+) -> UnitsResult | None:
+    """Whether the millimetres and inches a side prints together agree. A side that the text
+    layer prints at its spot (`printed` "match") is read exactly, so millimetres that disagree
+    there are the vendor's (or architect's) own slip: inches count and the millimetres are
+    ignored (settled with GV), never a doubt. Elsewhere (drawn ink, a picture) a disagreement
+    still means the reading may be wrong."""
+    printed = printed or {}
+    sides = [
+        (
+            None
+            if (result := units_check(finding.get(side))) == "disagrees"
+            and printed.get(side) == "match"
+            else result
+        )
+        for side in ("architect", "vendor")
+    ]
     if "disagrees" in sides:
         return "disagrees"
     return "agrees" if "agrees" in sides else None

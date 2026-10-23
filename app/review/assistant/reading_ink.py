@@ -66,6 +66,9 @@ _SAME_SHAPE: Final = 0.75
 _MAX_SHAPED: Final = 40
 #: A label overlapping a candidate by this share (either way) means the candidate was read.
 _READ_SHARE: Final = 0.3
+#: A page where code read fewer labels than this is looked at for numbers drawn on dimension
+#: lines (`PageInk.stroke_numbers`): the set pack's own threshold for a whole-page drawing.
+FEW_LABELS: Final = 3
 
 REASON_ORDER: Final = (
     "gv_sticker",
@@ -92,6 +95,10 @@ class Candidate:
     """Every reason that applies, in `REASON_ORDER`."""
     shapes: tuple[Shape, ...] = ()
     """Its digit-sized glyphs' shapes in each direction it may read (for the alphabet test)."""
+    on_line: bool = False
+    """Two glyphs or more centred on a dimension line (`dim_labels.dimension_line`): a number
+    drawn as pen strokes in a dimension's place. Looked for only on a page where code read fewer
+    than `FEW_LABELS` labels (`PageInk.stroke_numbers`)."""
 
 
 @dataclass(slots=True)
@@ -102,6 +109,11 @@ class PageInk:
     digits: list[tuple[Shape, str]] = field(default_factory=list)
     seconds: float = 0.0
     """Processor seconds this page's counting took."""
+    stroke_numbers: int = 0
+    """On a page where code read fewer than `FEW_LABELS` labels: its candidates sitting on a
+    dimension line (`Candidate.on_line`), numbers drawn as lines that code could not read. The
+    set pack keeps such a page as a drawing whose numbers cannot be read (`set_pack`), never a
+    general page."""
 
 
 # ---- shapes ----------------------------------------------------------------------------------
@@ -176,8 +188,9 @@ class _Alphabet:
 
 def looks_like_number(candidate: Candidate, alphabet: _Alphabet | None) -> bool:
     """Whether a candidate counts as a printed number: marked as a dimension by its own strokes,
-    or one of its glyphs shaped as a digit of the set's alphabet."""
-    if candidate.marked:
+    centred on a dimension line (on a page code read almost nothing of), or one of its glyphs
+    shaped as a digit of the set's alphabet."""
+    if candidate.marked or candidate.on_line:
         return True
     return bool(alphabet) and any(alphabet.knows(s) for s in candidate.shapes)  # type: ignore[union-attr]
 
@@ -507,6 +520,7 @@ def page_ink(
     ]
     index_of = {id(path): i for i, path in enumerate(near.paths)}
     taken = np.array(read, dtype=float) if read else np.zeros((0, 4))
+    few = sum(1 for label in labels if not label.get("derived")) < FEW_LABELS
     for ink in _page_labels(near, free):
         row = list(ink.glyphs)
         if max(g.size for g in row) < il._MIN_LABEL_PT or il._not_text(row):
@@ -521,9 +535,103 @@ def page_ink(
             continue
         if int(near.mask(box, il.GATHER_PT).sum()) > _BUSY_PATHS:
             continue  # hatching or a dotted fill
-        result.candidates.append(_candidate(ink, side, near, lines, stickers, index_of))
+        found = _candidate(ink, side, near, lines, stickers, index_of)
+        if (
+            few
+            and len(row) >= 2
+            and _number_row(row, box)
+            and _on_dimension_line(box, parsed.segments)
+        ):
+            found.on_line = True
+            result.stroke_numbers += 1
+        result.candidates.append(found)
     result.seconds = round(process_time() - started, 3)
     return result
+
+
+#: A written number of two digits or more is at least this many times longer than high, and its
+#: strokes cover at least this share of its height.
+_ROW_LENGTH: Final = 1.2
+_ROW_COVER: Final = 0.8
+#: How far from its span's middle a dimension's number may be written (a share of the span).
+_OFF_MIDDLE: Final = 0.1
+#: A dimension line a number drawn as strokes sits on spans at least this many times the
+#: number's own length (a tag's box, a room number's frame, is about as long as its text).
+_SPAN_OVER_TEXT: Final = 2.0
+
+
+def _on_dimension_line(box: Box, segments: Sequence[Any]) -> bool:
+    """Whether ink in `box` sits on (or in a gap of) a dimension line with an extension line or a
+    tick at an end, read as along its longer side (`dim_labels.dimension_line`), the line
+    spanning at least `_SPAN_OVER_TEXT` times the ink's length, and the ink not framed by lines
+    on both sides (a tag or a room number in its box)."""
+    wide = box[2] - box[0] >= box[3] - box[1]
+    font = min(box[2] - box[0], box[3] - box[1])
+    length = max(box[2] - box[0], box[3] - box[1])
+    if font <= 0 or _framed(box, segments, wide, font):
+        return False
+    x0, y0, x1, y1 = box[0] - 0.5, box[1] - 0.5, box[2] + 0.5, box[3] + 0.5
+    # The ink's own strokes (wholly inside its box) are never its dimension line.
+    around = [
+        (a, b)
+        for a, b in segments
+        if not (x0 <= min(a[0], b[0]) and max(a[0], b[0]) <= x1)
+        or not (y0 <= min(a[1], b[1]) and max(a[1], b[1]) <= y1)
+    ]
+    found = dl.dimension_line(box, "h" if wide else "v", around, font, drawn=True)
+    if found is None:
+        return False
+    span = float(found.get("span_pt") or 0.0)
+    if span < _SPAN_OVER_TEXT * length:
+        return False
+    # A dimension's number is written at the middle of its span.
+    (ax, ay), (bx, by) = found["dim_line"]
+    middle = (ax + bx) / 2 if wide else (ay + by) / 2
+    centre = (box[0] + box[2]) / 2 if wide else (box[1] + box[3]) / 2
+    return abs(middle - centre) <= max(font, _OFF_MIDDLE * span)
+
+
+def _number_row(glyphs: Sequence[il.Glyph], box: Box) -> bool:
+    """Whether ink is shaped like a written number of two digits or more: longer than
+    `_ROW_LENGTH` times its height, at least `_SMALL_PT` high, and its strokes reach across most
+    of that height (`_ROW_COVER`: a dashed line's dashes or a hatch do not)."""
+    wide = box[2] - box[0] >= box[3] - box[1]
+    length = max(box[2] - box[0], box[3] - box[1])
+    height = min(box[2] - box[0], box[3] - box[1])
+    if height < _SMALL_PT or length < _ROW_LENGTH * height:
+        return False
+    spans = sorted((g.box[1], g.box[3]) if wide else (g.box[0], g.box[2]) for g in glyphs)
+    covered, reach = 0.0, None
+    for lo, hi in spans:
+        if reach is None or lo > reach:
+            covered += hi - lo
+            reach = hi
+        elif hi > reach:
+            covered += hi - reach
+            reach = hi
+    return covered >= _ROW_COVER * height
+
+
+def _framed(box: Box, segments: Sequence[Any], wide: bool, font: float) -> bool:
+    """Whether lines run along both long sides of the ink, close to it (within a character's
+    size): the ink is framed (a tag, a room number in its box), never a dimension's number."""
+    lo, hi = (box[0], box[2]) if wide else (box[1], box[3])
+    near, far = (box[1], box[3]) if wide else (box[0], box[2])
+    before = after = False
+    for a, b in segments:
+        if wide and abs(a[1] - b[1]) > 0.5 or not wide and abs(a[0] - b[0]) > 0.5:
+            continue
+        along = (min(a[0], b[0]), max(a[0], b[0])) if wide else (min(a[1], b[1]), max(a[1], b[1]))
+        if along[0] > lo + 0.5 or along[1] < hi - 0.5:
+            continue  # it does not run the ink's whole length
+        across = a[1] if wide else a[0]
+        if near - font <= across <= near:
+            before = True
+        elif far <= across <= far + font:
+            after = True
+        if before and after:
+            return True
+    return False
 
 
 def _candidate(
