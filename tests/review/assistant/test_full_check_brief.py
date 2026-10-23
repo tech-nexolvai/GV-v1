@@ -451,3 +451,27 @@ def test_skill_md_says_what_to_compare_beyond_dimensions() -> None:
         assert words in section, words
     for shape in CLIENT_VALUE_SHAPES:
         assert not shape.search(text), shape.search(text)
+
+
+def test_a_closers_brief_lists_what_is_done_and_what_is_still_open_apart() -> None:
+    """One item, one card (review of #1916): Right and Wrong items are not to be reported again;
+    a Not-compared item is still open (the closer may settle it with both labels); an item kept for
+    GV's reviewer only is not listed at all."""
+    from app.review.assistant.full_check_brief import ALREADY_FOUND, found_on_pages
+
+    findings = [
+        {"id": "F1", "page": 2, "item": "Area 1: top width", "status": "same", "vendor": '36"',
+         "architect": '36"', "dims": {"vendor": {"id": "D5", "page": 2}}},
+        {"id": "F2", "page": 2, "item": "Area 1: top depth", "status": "check", "vendor": '12"',
+         "architect": '21"'},
+        {"id": "F3", "page": 2, "item": "Area 1: splash", "status": "different", "vendor": '4"',
+         "architect": "none", "salvaged": True},
+        {"id": "F4", "page": 9, "item": "Elsewhere", "status": "same"},
+    ]  # fmt: skip
+    text = found_on_pages(findings, [2])
+    done, _, still = text.partition("STILL OPEN")
+    assert done.startswith(ALREADY_FOUND)
+    assert "[F1]" in done and "p2.D5" in done and "[F2]" not in done
+    assert "[F2]" in still
+    assert "Elsewhere" not in text and "[F3]" not in text
+    assert found_on_pages([], [2]) == ""

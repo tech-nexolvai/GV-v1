@@ -67,6 +67,7 @@ __all__ = [
     "LENS_SCOPE",
     "NUMBERS_NOTE",
     "PRINCIPLE",
+    "STILL_OPEN",
     "checklist_gaps",
     "checklist_send_back",
     "found_on_pages",
@@ -382,35 +383,52 @@ def _dim_ref(finding: Mapping[str, Any], side: str) -> str | None:
     return f"p{label.get('page')}.{label['id']}"
 
 
+#: Its second part: what is still open there, which the closer may settle.
+STILL_OPEN: Final = (
+    "STILL OPEN on your pages (not settled yet: compare each again with both labels, and report it "
+    "again only when you can settle it):"
+)
+
+
+def _found_line(finding: Mapping[str, Any]) -> str:
+    vendor = _dim_ref(finding, "vendor")
+    architect = _dim_ref(finding, "architect")
+    sides = [
+        f"vendor {vendor + ' ' if vendor else ''}{_short(finding.get('vendor'), 40)}",
+        (
+            f"architect {architect + ' ' if architect else ''}"
+            f"{_short(finding.get('architect'), 40)}"
+        ),
+    ]
+    status = _FOUND_STATUS.get(str(finding.get("status")), "listed")
+    return (
+        f"- p{finding.get('page')}: {_short(finding.get('item'), 80)} ({'; '.join(sides)}): "
+        f"{status} [{finding.get('id')}]"
+    )
+
+
 def found_on_pages(findings: Iterable[Mapping[str, Any]], pages: Iterable[int]) -> str:
-    """What this check already recorded on `pages` (`ALREADY_FOUND`, one line per item: its
-    page, labels, values and status), for a look-again reader's brief; empty when nothing is."""
+    """What this check already recorded on `pages`, for a look-again reader's brief: the Right and
+    Wrong items not to report again (`ALREADY_FOUND`), then the Not-compared ones still open
+    (`STILL_OPEN`); an item for GV's reviewer only is not listed. Empty when nothing is."""
+    from app.review.assistant.classification import internal
+
     wanted = set(pages)
-    lines: list[str] = []
+    done: list[str] = []
+    still: list[str] = []
     for finding in findings:
-        page = finding.get("page")
-        if page not in wanted:
+        if finding.get("page") not in wanted or internal(finding):
             continue
-        vendor = _dim_ref(finding, "vendor")
-        architect = _dim_ref(finding, "architect")
-        sides = [
-            f"vendor {vendor + ' ' if vendor else ''}{_short(finding.get('vendor'), 40)}",
-            (
-                f"architect {architect + ' ' if architect else ''}"
-                f"{_short(finding.get('architect'), 40)}"
-            ),
-        ]
-        status = _FOUND_STATUS.get(str(finding.get("status")), "listed")
-        lines.append(
-            f"- p{page}: {_short(finding.get('item'), 80)} ({'; '.join(sides)}): {status} "
-            f"[{finding.get('id')}]"
-        )
-    if not lines:
-        return ""
-    shown = lines[:_FOUND_LINES]
-    if len(lines) > len(shown):
-        shown.append(f"- and {len(lines) - len(shown)} more on these pages")
-    return "\n".join([ALREADY_FOUND, *shown])
+        (still if finding.get("status") == "check" else done).append(_found_line(finding))
+    parts: list[str] = []
+    for head, lines in ((ALREADY_FOUND, done), (STILL_OPEN, still)):
+        if not lines:
+            continue
+        shown = lines[:_FOUND_LINES]
+        if len(lines) > len(shown):
+            shown.append(f"- and {len(lines) - len(shown)} more on these pages")
+        parts.append("\n".join([head, *shown]))
+    return "\n\n".join(parts)
 
 
 def leads_on_pages(document: Mapping[str, Any] | None, pages: Iterable[int]) -> list[str]:

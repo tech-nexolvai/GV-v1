@@ -8,11 +8,14 @@ before the counts and the files. It folds copies by **code facts only**:
 - the same printed vendor label (code's label id), or the same vendor value at the same spot on the
   same vendor page (the two boxes overlap by at least half);
 - the same architect label, with one copy's vendor spot on top of the other's vendor label (a
-  reader that named no vendor label, its spot holding the label the other copy names);
-- the same finish tag codes on the same page pair (finish items with no size on either side).
+  reader that named no vendor label, its spot holding the label the other copy names), and never
+  two different vendor numbers;
+- the same finish tag codes on the same page pair (finish items with no size on either side); when
+  neither vendor side prints a tag, the vendor must name the same material too.
 
 Wording alone never merges two items, and neither does a big AI region alone: two different items
-read at one big spot stay two.
+read at one big spot stay two. Only comparisons with the architect are folded: GV's rules, GV's
+limits, a GV standard and the vendor's own checks ask another question and always stay.
 
 Which card stays: a code-proved Wrong, then a Likely problem, then Ask the architect, then Not
 compared, then Right (the most severe, decided by code). The card kept is one of the copies,
@@ -104,8 +107,13 @@ def _dec(value: object) -> Decimal | None:
 
 
 def _inches(finding: Mapping[str, Any], side: str) -> Decimal | None:
+    """The side's value in inches: as the finding's checks read it, else as its label prints it."""
     inches = finding.get("inches")
-    return _dec(inches.get(side)) if isinstance(inches, Mapping) else None
+    found = _dec(inches.get(side)) if isinstance(inches, Mapping) else None
+    if found is not None:
+        return found
+    label = _label(finding, side)
+    return _dec(label.get("inches")) if label is not None else None
 
 
 def _label(finding: Mapping[str, Any], side: str) -> Mapping[str, Any] | None:
@@ -222,6 +230,9 @@ def same_item(a: Mapping[str, Any], b: Mapping[str, Any]) -> str | None:
     ):
         return "vendor_spot"
     a_a, a_b = _label_key(a, "architect"), _label_key(b, "architect")
+    if in_a is not None and in_b is not None and in_a != in_b:
+        # Two vendor numbers against one architect dimension: two vendor dimensions, two items.
+        a_a = None
     if _same_label(a_a, a_b) and spot_a is not None and spot_b is not None:
         # One reader named the vendor label, the other only a spot: that spot holds the label.
         if v_a is not None and v_b is None and _inside(spot_a, spot_b):
@@ -243,11 +254,40 @@ def _tags_match(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     if any(_inches(f, side) is not None for f in (a, b) for side in ("vendor", "architect")):
         return False
     arch = _codes(a.get("architect"))
-    return (
-        bool(arch)
-        and arch == _codes(b.get("architect"))
-        and _codes(a.get("vendor")) == _codes(b.get("vendor"))
-    )
+    if not arch or arch != _codes(b.get("architect")):
+        return False
+    vendor = _codes(a.get("vendor"))
+    if vendor != _codes(b.get("vendor")):
+        return False
+    if vendor:
+        return True
+    # No tag on either vendor side: the same finish only when the vendor names the same material
+    # (at least half the words of the shorter one), else two elements against one tag.
+    words_a, words_b = _words(a.get("vendor")), _words(b.get("vendor"))
+    shorter = min(len(words_a), len(words_b))
+    return shorter > 0 and len(words_a & words_b) * 2 >= shorter
+
+
+_WORD: Final = re.compile(r"[a-z]{4,}")
+_COMMON: Final = frozenset({"with", "drawn", "shows", "shown", "tag", "finish", "none", "side"})
+
+
+def _words(text: object) -> frozenset[str]:
+    return frozenset(w for w in _WORD.findall(str(text or "").lower()) if w not in _COMMON)
+
+
+#: The sources of a comparison with the architect's drawings (the brand prototype standing in).
+_ARCHITECT_SOURCES: Final = frozenset({"architect", "brand_prototype", "gv_review"})
+
+
+def _compares_architect(finding: Mapping[str, Any]) -> bool:
+    """A comparison with the architect: never GV's rule, GV's limits, a GV standard or the
+    vendor's own check (its sum, its other view), which ask another question."""
+    if str(finding.get("source") or "architect") not in _ARCHITECT_SOURCES:
+        return False
+    if proof.vendor_own(finding) or finding.get("rule_check_id") or finding.get("gv_standard"):
+        return False
+    return proof.gv_limits(finding) is None
 
 
 # ---- the card that stays --------------------------------------------------------------------------
@@ -345,6 +385,8 @@ def _no_drawing(finding: Mapping[str, Any]) -> bool:
         return False
     if finding.get("rule_check_id") or finding.get("created_by") in ("consistency", "ledger"):
         return False
+    if _inches(finding, "architect") is not None:
+        return False  # an architect value was read: it says more than the page's card
     return not (finding.get("vs_page") or finding.get("arch_box") or _label(finding, "architect"))
 
 
@@ -371,7 +413,7 @@ def fold(findings: Sequence[Mapping[str, Any]], drawing_needed: Collection[int] 
                     ),
                 )
             )
-    for group in _groups([f for f in live if str(f["id"]) not in gone]):
+    for group in _groups([f for f in live if str(f["id"]) not in gone and _compares_architect(f)]):
         ordered = sorted(group, key=_order)
         keep = ordered[0]
         if any(_fixed(f) for f in ordered[1:]):

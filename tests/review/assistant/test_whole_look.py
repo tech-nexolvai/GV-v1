@@ -373,13 +373,25 @@ def test_a_likely_claim_at_a_helpers_label_joins_that_item_by_code_facts(tmp_pat
         "helper:1",
     )  # fmt: skip
     spot = {"x0": 10, "y0": 20, "x1": 25, "y1": 35}  # picture 3 (vendor p2), around D2
-    claim = _claim("size", _side(3, None, '28"'), _side(1, "D1", "3'-6\""), vendor_spot=spot)
+    claim = _claim("size", _side(3, None, '30"'), _side(1, "D1", "3'-6\""), vendor_spot=spot)
     applied, _shown = _apply(book, look, [claim])
     assert applied.joined == [helper["id"]] and not applied.likely
     joined = next(f for f in book.live() if f["id"] == helper["id"])
     assert joined[likely_problems.FIELD]["proof"] == "joined"
     assert proof.proof_group(joined) == "likely_problem"
     assert len(book.live()) == 1
+    # Another vendor number in that spot (review of #1916): another vendor dimension, its own item.
+    book, look = _setup(tmp_path / "other")
+    book.report(
+        {
+            "page": 2, "item": "Uppers height", "category": "other", "status": "different",
+            "verified": False, "source": "architect", "vendor_dim": "D2", "architect_dim": "D1",
+        },
+        "helper:1",
+    )  # fmt: skip
+    other = _claim("size", _side(3, None, '28"'), _side(1, "D1", "3'-6\""), vendor_spot=spot)
+    applied, _shown = _apply(book, look, [other])
+    assert applied.likely and not applied.joined and len(book.live()) == 2
     # The same spot without the architect's label: a big AI spot alone never joins.
     book, look = _setup(tmp_path / "again")
     book.report(

@@ -229,7 +229,7 @@ from app.review.assistant.chat_trust import (
     with_second_read,
 )
 from app.review.assistant.chat_unknowns import refused_from_diff, unknown_records
-from app.review.assistant.classification import not_compared_line
+from app.review.assistant.classification import SAME_ITEM, not_compared_line
 from app.review.assistant.decision_resolver import recount_words, resolve_answer
 from app.review.assistant.dim_index import labels_for
 from app.review.assistant.escalation import Escalation, escalate_answer
@@ -1215,6 +1215,10 @@ class ChatEngine:
                 "created_by": str(given.get("created_by") or "lead"),
                 "verified": bool(given.get("verified")),
             }
+            if isinstance(given.get(SAME_ITEM), Mapping):
+                # One item, one card: its folded copies were dropped from the earlier answer, so
+                # the card keeps them (a conflict stays Not compared, never red again).
+                finding[SAME_ITEM] = dict(given[SAME_ITEM])
             self.book.replace(finding)
             self._show_finding(finding)
             kept += 1

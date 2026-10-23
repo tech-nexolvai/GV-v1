@@ -159,7 +159,7 @@ def test_a_likely_problem_at_the_spot_of_a_helper_label_carries_its_reason() -> 
         "likely_problem",
         vendor=None,
         architect="D16",
-        v_in="22.5",
+        v_in="12",
         a_in="21.9375",
         vendor_box=_vbox((80.0, 60.0), (60.0, 95.0)),
     )
@@ -168,6 +168,9 @@ def test_a_likely_problem_at_the_spot_of_a_helper_label_carries_its_reason() -> 
     copy = final[0]["same_item"]["copies"][0]
     assert copy["finding_id"] == "F42" and copy["group"] == "not_compared" and copy["reason"]
     assert "conflict" not in final[0]["same_item"]
+    # The review of #1916: the look reads another vendor number in its spot (22 1/2" there, the
+    # helper's label prints 12"): two vendor dimensions against one architect one, two items.
+    assert len(_apply([helper, {**look, "inches": {**look["inches"], "vendor": "22.5"}}])) == 2
     # Another architect label at that spot: not the same item.
     other = {**look, "dims": {"architect": _dim("D17", 7, "21", (300, 300), ARCH_FILE)}}
     assert len(_apply([helper, other])) == 2
@@ -201,6 +204,11 @@ def test_the_same_finish_tags_on_the_same_two_pages_are_one_card() -> None:
     assert len(_apply([helper, {**look, "vs_page": 8}])) == 2
     # A finish code on one vendor side only: two items.
     assert len(_apply([helper, {**look, "vendor": "ST-3 stone"}])) == 2
+    # The review of #1916: no tag on either vendor side and other materials (upper doors painted,
+    # lower doors veneer, both against one architect tag): two items.
+    painted = {**helper, "vendor": "painted white", "architect": "PL-1 laminate doors"}
+    veneer = {**look, "vendor": "rift oak veneer", "architect": "PL 1 laminate (section)"}
+    assert len(_apply([painted, veneer])) == 2
 
 
 def test_a_big_ai_region_or_the_same_words_alone_never_merge() -> None:
@@ -236,6 +244,22 @@ def test_a_big_ai_region_or_the_same_words_alone_never_merge() -> None:
     # Another page or round: never one item.
     assert len(_apply([helper, {**helper, "id": "F99", "page": 4}])) == 2
     assert len(_apply([{**helper, "round": 1}, {**helper, "id": "F98", "round": 2}])) == 2
+
+
+def test_a_gv_rule_or_a_vendor_check_never_folds_with_an_architect_comparison() -> None:
+    """The review of #1916: GV's rule (run fit: 24" should be 23 1/2") and a reader's comparison
+    at the same vendor spot ask two questions; the proved rule Wrong stays red."""
+    rule = _item(
+        "F3", "clouded", vendor=None, architect=None, v_in="24", a_in="23.5",
+        source="rules", rule_check_id="RUN-FIT", witnesses=["rule"], settled=None,
+    )  # fmt: skip
+    rule.update(architect='23 1/2"', created_by="run_fit")
+    reader = _item("F4", "right", vendor=None, architect=None, v_in="24", a_in="24")
+    final = _apply([rule, reader])
+    assert len(final) == 2
+    assert {f["id"] for f in final if "same_item" in f} == set()
+    own = {**rule, "id": "F5", "source": "vendor_arithmetic", "rule_check_id": None}
+    assert len(_apply([own, reader])) == 2
 
 
 def test_two_printed_vendor_labels_joined_through_one_spot_stay_apart() -> None:
@@ -319,6 +343,9 @@ def test_no_drawing_items_fold_under_drawing_needed_and_the_vendor_checks_stay()
     assert one_card.fold([nothing, own_sum], (4,)).folded == []
     # With an architect page or spot, it is not a "no drawing" item.
     assert one_card.fold([{**nothing, "vs_page": 7}], (3,)).folded == []
+    # Nor with an architect value read: it says more than the page's card.
+    sized = {**nothing, "inches": {"vendor": None, "architect": "36", "difference": None}}
+    assert one_card.fold([sized], (3,)).folded == []
 
 
 def test_every_output_counts_the_meeting_shapes_once() -> None:
@@ -332,7 +359,7 @@ def test_every_output_counts_the_meeting_shapes_once() -> None:
             "likely_problem",
             vendor=None,
             architect="D16",
-            v_in="22.5",
+            v_in="12",
             a_in="21.9375",
             vendor_box=_vbox((80.0, 60.0), (60.0, 95.0)),
         ),
