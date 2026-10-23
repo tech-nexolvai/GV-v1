@@ -777,12 +777,16 @@ def preflight_words(
     across = isinstance(roles, Mapping) and "architect" in roles.values()
     working = False
     pairs = None
+    grouped = None
     if across and reading_of(folder).state == "ready":
         estimates = import_module("app.review.assistant.preflight_pairs")
         state, pairs = estimates.cached(folder)
         if state != "ready":
             pairs = None
             working = estimates.start(folder, main_file)
+        else:
+            # The projects exactly as the pairing groups the set index (never raw names).
+            grouped = estimates.cached_projects(folder)
     files = [str(name) for name in page_map.get("files") or [] if name] or (
         [main_file] if main_file else []
     )
@@ -792,6 +796,7 @@ def preflight_words(
         main_file=main_file,
         texts=page_texts(folder, files),
         pairs=pairs,
+        projects=grouped,
         skipped=skipped,
         missing_values=missing_values,
         products=products,

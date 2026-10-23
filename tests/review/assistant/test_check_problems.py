@@ -150,7 +150,7 @@ def test_the_estimate_splits_paired_to_ask_and_none_possible() -> None:
     before = preflight_pairs.estimate_from(work, {"d1", "d2"})
     assert before == PairEstimate(3, 1, 1, (3,), confirmed=False)
     after = preflight_pairs.estimate_from(work, set())
-    assert after == PairEstimate(3, 1, 0, (2, 3), confirmed=True)
+    assert after == PairEstimate(3, 1, 0, (3,), unsure=(2,), confirmed=True)
 
 
 def test_the_estimate_is_kept_with_its_fingerprint(tmp_path: Path) -> None:
