@@ -301,3 +301,23 @@ def test_a_field_cut_of_another_view_on_the_same_row_is_not_this_tops() -> None:
         cuts=cuts,
     )
     assert allowed is None
+
+
+@pytest.mark.parametrize("second_x", [450.0, 600.0])
+def test_two_field_cuts_need_one_at_each_end_of_the_top(second_x: float) -> None:
+    # A one-wall top (50" over 48") with a neighbouring view's field cut on the same row: the two
+    # 1" labels are not the two ends of this top (one is beside it, the other far off), so the 50"
+    # never takes two field cuts. A top's two ends sit about equally far from its centred overall.
+    labels = [
+        _label("FC", "vendor", '1"', "1", [92, 105, 100, 115]),
+        _label("O", "vendor", '50"', "50", [153, 90, 168, 100]),
+        _label("P", "vendor", '48"', "48", [153, 115, 168, 125]),
+        _label("FC2", "vendor", '1"', "1", [second_x, 105, second_x + 8, 115]),
+    ]
+    words = [
+        {"text": "FIELD CUT", "box": [80, 125, 120, 135], "side": "vendor"},
+        {"text": "FIELD CUT", "box": [second_x - 10, 125, second_x + 30, 135], "side": "vendor"},
+    ]
+    cuts = page_field_cuts(labels, words)
+    assert cuts.labels == {"FC", "FC2"}
+    assert cuts.overalls == {}

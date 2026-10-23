@@ -24,7 +24,8 @@ measure different things. So:
   above) is the same as the architect's when it is the architect's value plus one field cut per
   wall end the drawing shows: field-cut labels on the pair's own dimension row whose nearest top it
   is, no farther along the row than the top's own length drawn at a large scale
-  (`ALONG_PT_PER_INCH`), so ordinary drawing scales all work. That is GV's settled rule, not a
+  (`ALONG_PT_PER_INCH`), so ordinary drawing scales all work; two field cuts only at the top's two
+  ends (one each side of the overall, about equally far). That is GV's settled rule, not a
   difference.
 
 Pure: plain values in, plain values out. Verification: `tests/review/assistant/test_field_cut.py`.
@@ -264,6 +265,20 @@ def _owner(
     return nearest[0][1], nearest[0][2], best
 
 
+#: A top's two wall ends sit about equally far from its overall, printed at the dimension's
+#: middle: the nearer end at least this share of the farther one's distance.
+_BOTH_ENDS_SHARE: Final = 0.75
+
+
+def _both_ends(offsets: Sequence[float]) -> bool:
+    """Two field cuts at the top's two ends: one on each side of the overall along its row, about
+    equally far (a neighbouring view's field cut is not this top's other end; review of 2026-10-23).
+    """
+    left = [-x for x in offsets if x < 0]
+    right = [x for x in offsets if x > 0]
+    return any(min(a, b) >= _BOTH_ENDS_SHARE * max(a, b) for a in left for b in right)
+
+
 def page_field_cuts(
     labels: Sequence[Mapping[str, Any]],
     phrases: Sequence[Mapping[str, Any]],
@@ -311,15 +326,15 @@ def page_field_cuts(
         for overall, part in pairs:
             if overall.id in found or part.id in found:
                 continue
-            close = sum(
-                1
+            close = [
+                _along(overall, label.box)
                 for label in cut_labels
                 if (owner := owners[label.id]) is not None
                 and owner[0].id == overall.id
                 and abs(_along(label, overall.box))
                 <= max(RUN_PT, float(overall.inches) * ALONG_PT_PER_INCH)
-            )
-            if close >= cuts:
+            ]
+            if len(close) >= cuts and (cuts == 1 or _both_ends(close)):
                 counts.setdefault(overall.id, set()).add(cuts)
     # An overall two readings give different field cuts gets no allowance at all.
     overalls = {
