@@ -81,7 +81,7 @@ describe('reviewer words (#1712)', () => {
   });
 
   it('says a set’s state in plain grey words: its newest full check, never the old pipeline’s', () => {
-    const counts = { wrong: 5, right: 12, ask_architect: 0, not_compared: 30 };
+    const counts = { wrong: 5, right: 12, ask_architect: 0, likely_problem: 0, not_compared: 30 };
     const check = { chat_id: 'c', message_id: 'm', ran_at: '2026-10-21T10:00:00Z', counts, review_result: { action: 'revise_resubmit' as const, words: 'Revise and resubmit' } };
     expect(sidebarWords({ full_check: check, drawings: 'read' })).toBe('Revise and resubmit · 5 wrong');
     expect(sidebarWords({ full_check: { ...check, counts: { ...counts, wrong: 0 }, review_result: { action: 'approved', words: 'Approved' } } })).toBe('Approved');
