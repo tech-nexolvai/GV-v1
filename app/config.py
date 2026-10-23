@@ -152,6 +152,17 @@ class Settings(BaseSettings):
     # Helpers run at the same time (#1497): one lead turn's, or a full check's jobs planned by
     # code (#1512).
     assistant_max_parallel_agents: int = Field(default=8, ge=1, le=12)
+    # The AI provider's limits (#1874, production pipeline research 2026-10-22): one limiter per
+    # model for the whole server keeps the tier's requests and tokens a minute and at most
+    # `calls_at_once` calls of a model together (halved for a while after a "too many requests"
+    # answer). A full check starts up to `full_check_agents` specialists together and each waits
+    # for a place: how many run grows with the set, up to the provider's limits.
+    assistant_rate_tier: Literal["start", "build", "scale"] = "start"
+    assistant_calls_at_once: int = Field(default=32, ge=1, le=256)
+    assistant_full_check_agents: int = Field(default=96, ge=1, le=512)
+    # Worker processes that parse drawing pages for a full check's code checks (#1874): the page
+    # parser is plain Python, so on threads a big set's checks waited for each other. 0: threads.
+    assistant_parse_processes: int = Field(default=3, ge=0, le=16)
     # A full check's second, drawn-things helper per page group (#1569): notes, doors and drawers,
     # hardware, extent, brand prototype, finish tags; Sonnet at low effort, capped per helper.
     assistant_drawn_helpers: bool = True

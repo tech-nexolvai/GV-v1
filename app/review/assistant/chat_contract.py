@@ -1637,7 +1637,9 @@ class ChatProgressOut(BaseModel):
         default=0, description="Likely problems the whole-drawing look found (please check)."
     )
     eta_seconds: int | None = Field(
-        default=None, description="Time left at the pace so far; null before any page is done."
+        default=None,
+        description="Time left: from the plan's expected time in a roster full check (#1874), "
+        "else at the pace so far; null before any page is done or past the estimate.",
     )
     drawings_done: int | None = Field(
         default=None,
@@ -1646,6 +1648,33 @@ class ChatProgressOut(BaseModel):
     )
     drawings_total: int | None = Field(
         default=None, description="The simple full check: drawings in its work list."
+    )
+    step: (
+        Literal[
+            "helpers",
+            "gap_closers",
+            "verifier",
+            "lead_review",
+            "look_again",
+            "areas",
+            "proving",
+            "advocate",
+            "escalation",
+            "finish",
+        ]
+        | None
+    ) = Field(
+        default=None,
+        description="The roster full check's step (#1874): page helpers, gap closers, verifier, "
+        "lead review, look-again; on a big set 'areas' (each area's own chain of those, in "
+        "parallel); then code's proving steps, the devil's advocate, the escalation, the finish.",
+    )
+    step_number: int | None = Field(default=None, description="The step's place, from 1.")
+    areas_done: int | None = Field(
+        default=None, description="A big set (#1874): the areas whose chain has finished."
+    )
+    areas_total: int | None = Field(
+        default=None, description="A big set: the areas run as parallel chains."
     )
     reading_done: int | None = Field(
         default=None,
@@ -2442,6 +2471,12 @@ class ChatFullCheckPlanOut(BaseModel):
         default=None,
         description="The content pages in scope the price counts: the pages the plan compares "
         "(drawings of the products asked; title and divider pages left out).",
+    )
+    minutes: int | None = Field(
+        default=None,
+        description="About how many minutes the full check takes, with the price (#1874): the "
+        "page helpers, the areas' chains and the set-wide steps at the call times measured on the "
+        "server, the drawings already read. An estimate, never a promise.",
     )
     reading: ChatPagesReadOut | None = Field(
         default=None,

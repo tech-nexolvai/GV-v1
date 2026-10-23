@@ -292,6 +292,15 @@ describe('a full-check answer', () => {
     expect(progressWords({ created_at: '2026-10-17T10:00:00Z', findings: [], coverage: null, progress: { ...progress, eta_seconds: 20 } })).toBe('Checking page 12 of 60 · 8 wrong so far · under a minute left');
   });
 
+  it('#1874: names the roster step, and on a big set the areas done of all', () => {
+    const progress = { phase: 'checking' as const, pages_done: 40, pages_total: 188, wrong_so_far: 3, decision_so_far: 0, right_so_far: 1, eta_seconds: 840 };
+    const at = (more: object) => progressWords({ created_at: '2026-10-17T10:00:00Z', findings: [], coverage: null, progress: { ...progress, ...more } });
+    expect(at({ step: 'areas', areas_done: 2, areas_total: 5 })).toBe('Comparing the areas · 2 of 5 done · 3 wrong so far · about 14 min left');
+    expect(at({ step: 'lead_review', areas_total: null })).toBe('Lead review · 3 wrong so far · about 14 min left');
+    expect(at({ step: 'advocate', eta_seconds: null })).toBe('Second look at the red marks · 3 wrong so far');
+    expect(at({ step: null })).toBe('Checking page 41 of 188 · 3 wrong so far · about 14 min left');
+  });
+
   it('says how far the drawings are read while the check waits for them (#1872)', () => {
     const progress = { phase: 'reading' as const, pages_done: 0, pages_total: 0, wrong_so_far: 0, decision_so_far: 0, right_so_far: 0, eta_seconds: null, reading_done: 40, reading_total: 188 };
     expect(progressWords({ created_at: '2026-10-22T10:00:00Z', findings: [], coverage: null, progress })).toBe('Reading the drawings: 40 of 188 pages');

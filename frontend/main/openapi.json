@@ -6139,6 +6139,18 @@
             "title": "Doubts",
             "type": "array"
           },
+          "minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "About how many minutes the full check takes, with the price (#1874): the page helpers, the areas' chains and the set-wide steps at the call times measured on the server, the drawings already read. An estimate, never a promise.",
+            "title": "Minutes"
+          },
           "more": {
             "default": 0,
             "description": "Further unsure places, compared as read.",
@@ -8649,6 +8661,30 @@
       "ChatProgressOut": {
         "description": "A full check's progress, by code: \"Checking page 12 of 60 \u00b7 8 wrong so far \u00b7 about 6 min\nleft\". Sent as `progress` events while it runs; the last one is stored.",
         "properties": {
+          "areas_done": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A big set (#1874): the areas whose chain has finished.",
+            "title": "Areas Done"
+          },
+          "areas_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A big set: the areas run as parallel chains.",
+            "title": "Areas Total"
+          },
           "decision_so_far": {
             "title": "Decision So Far",
             "type": "integer"
@@ -8686,7 +8722,7 @@
                 "type": "null"
               }
             ],
-            "description": "Time left at the pace so far; null before any page is done.",
+            "description": "Time left: from the plan's expected time in a roster full check (#1874), else at the pace so far; null before any page is done or past the estimate.",
             "title": "Eta Seconds"
           },
           "likely_so_far": {
@@ -8745,6 +8781,42 @@
             "description": "The architect's size breaks a GV rule: GV asks (#1839).",
             "title": "Rule Note So Far",
             "type": "integer"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "enum": [
+                  "helpers",
+                  "gap_closers",
+                  "verifier",
+                  "lead_review",
+                  "look_again",
+                  "areas",
+                  "proving",
+                  "advocate",
+                  "escalation",
+                  "finish"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The roster full check's step (#1874): page helpers, gap closers, verifier, lead review, look-again; on a big set 'areas' (each area's own chain of those, in parallel); then code's proving steps, the devil's advocate, the escalation, the finish.",
+            "title": "Step"
+          },
+          "step_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The step's place, from 1.",
+            "title": "Step Number"
           },
           "wrong_so_far": {
             "title": "Wrong So Far",

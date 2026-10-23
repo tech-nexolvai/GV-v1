@@ -12,7 +12,7 @@
  * `@/lib/products`), never a list here; a product added to the registry gets its chip with no change.
  */
 
-import type { ChatFile, ChatFinding, ChatFullCheckPlan, ChatModels, ChatProduct, FindingSource } from '@/lib/chat-api';
+import type { ChatCheckStep, ChatFile, ChatFinding, ChatFullCheckPlan, ChatModels, ChatProduct, ChatProgress, FindingSource } from '@/lib/chat-api';
 import { dollars, type ViewMessage } from '@/lib/chat-messages';
 import { proofGroup } from '@/lib/chat-proof';
 import { activeProducts, inRegistryOrder, productCatalog, productPlural, type ProductCatalog } from '@/lib/products';
@@ -132,7 +132,7 @@ export function priceRuleShort(models: Pick<ChatModels, 'full_check_base_usd' | 
   return base && perPage ? `${base} + ${perPage}/page` : null;
 }
 
-/** The full check's price before it runs, in parts: the amount ("$16") and what it counts ("40 content pages"), or the rule. */
+/** The full check's price before it runs, in parts: the amount ("$16") and what it counts ("40 content pages · about 14 min"), or the rule. */
 export interface FullCheckPriceParts {
   price: string | null;
   detail: string | null;
@@ -143,17 +143,22 @@ export interface FullCheckPriceParts {
  * the pages of the products picked, else the rule ("$2 + $0.35 a content page, at least $5");
  * null when neither is known.
  */
-export function fullCheckPrice(plan: Pick<ChatFullCheckPlan, 'price_usd' | 'price_pages'> | null | undefined, rule: string | null): FullCheckPriceParts | null {
+export function fullCheckPrice(plan: Pick<ChatFullCheckPlan, 'price_usd' | 'price_pages' | 'minutes'> | null | undefined, rule: string | null): FullCheckPriceParts | null {
   const price = plainDollars(plan?.price_usd);
   if (price) {
     const pages = plan?.price_pages;
-    return { price, detail: typeof pages === 'number' ? `${pages} content page${pages === 1 ? '' : 's'}` : null };
+    const minutes = plan?.minutes;
+    const detail = [
+      typeof pages === 'number' ? `${pages} content page${pages === 1 ? '' : 's'}` : null,
+      typeof minutes === 'number' && minutes > 0 ? `about ${minutes} min` : null,
+    ].filter(Boolean).join(' · ');
+    return { price, detail: detail || null };
   }
   return rule ? { price: null, detail: rule } : null;
 }
 
 /** The same in one line: "Fixed price $16 · 40 content pages", or "Fixed price: $2 + $0.35 a content page, at least $5". */
-export function fullCheckPriceWords(plan: Pick<ChatFullCheckPlan, 'price_usd' | 'price_pages'> | null | undefined, rule: string | null): string | null {
+export function fullCheckPriceWords(plan: Pick<ChatFullCheckPlan, 'price_usd' | 'price_pages' | 'minutes'> | null | undefined, rule: string | null): string | null {
   const parts = fullCheckPrice(plan, rule);
   if (!parts) return null;
   if (!parts.price) return `Fixed price: ${parts.detail}`;
@@ -231,6 +236,28 @@ export function fullCheckFiles(files: readonly ChatFile[]): { cloud: ChatFile | 
  * accounted for); the time left is the time per page so far times the pages left, shown only once
  * three pages are done and the total is known. Without coverage yet: "Starting the full check…".
  */
+/** #1874: what each step of a roster full check does, in the live line's words. */
+const STEP_WORDS: Record<ChatCheckStep, string> = {
+  helpers: 'Comparing the pages',
+  gap_closers: 'Closing the gaps',
+  verifier: 'Finding the spots of the differences',
+  lead_review: 'Lead review',
+  look_again: 'Looking again at the open pages',
+  areas: 'Comparing the areas',
+  proving: 'Proving the differences',
+  advocate: 'Second look at the red marks',
+  escalation: 'Last look at what is not proved',
+  finish: 'Writing the files',
+};
+
+/** #1874: "Comparing the areas · 3 of 5 done", "Lead review"; null when the server sends no step. */
+export function stepWords(live: Pick<ChatProgress, 'step' | 'areas_done' | 'areas_total'>): string | null {
+  if (!live.step) return null;
+  const words = STEP_WORDS[live.step] ?? null;
+  if (!words) return null;
+  return live.areas_total && live.areas_total > 1 ? `${words} · ${live.areas_done ?? 0} of ${live.areas_total} done` : words;
+}
+
 export function progressWords(
   message: Pick<ViewMessage, 'created_at' | 'findings' | 'coverage' | 'progress'>,
   now: number = Date.now(),
@@ -244,7 +271,8 @@ export function progressWords(
     if (live.phase === 'writing') return `Writing the summary and the cloud drawing · ${live.wrong_so_far} wrong · ${live.decision_so_far} to decide`;
     // #1665: the simple full check counts drawings, not pages.
     const drawings = live.drawings_total ? `Comparing drawing ${Math.min((live.drawings_done ?? 0) + 1, live.drawings_total)} of ${live.drawings_total}` : null;
-    const at = drawings ?? (live.pages_total ? `Checking page ${Math.min(live.pages_done + 1, live.pages_total)} of ${live.pages_total}` : `Checking · ${live.pages_done} pages done`);
+    const step = stepWords(live);
+    const at = drawings ?? step ?? (live.pages_total ? `Checking page ${Math.min(live.pages_done + 1, live.pages_total)} of ${live.pages_total}` : `Checking · ${live.pages_done} pages done`);
     const left = live.eta_seconds == null ? null : live.eta_seconds < 60 ? 'under a minute left' : `about ${Math.ceil(live.eta_seconds / 60)} min left`;
     return [at, `${live.wrong_so_far} wrong so far`, left].filter(Boolean).join(' · ');
   }

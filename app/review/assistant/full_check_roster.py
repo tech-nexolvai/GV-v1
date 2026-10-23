@@ -88,6 +88,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from functools import partial
 from itertools import zip_longest
 from pathlib import Path
 from time import monotonic
@@ -100,6 +101,7 @@ from app.review.assistant import (
     pick_cache,
     round_picks,
     same_ends,
+    verify_value,
     whole_look,
     witness,
 )
@@ -142,6 +144,12 @@ from app.review.assistant.full_check_advocate import (
     string_chain,
     string_extent,
     string_extras,
+)
+from app.review.assistant.full_check_schedule import (
+    Band,
+    bands_of,
+    expected_minutes,
+    run_chains,
 )
 from app.review.assistant.full_check_specialists import HELPER_CORE, PACK_SHAPES, knowledge_text
 from app.review.assistant.impact import by_impact
@@ -238,6 +246,9 @@ JOB_CAPS: Final[Mapping[str, int]] = {
 PAGE_KINDS: Final = frozenset({"numbers", "drawn", "gaps"})
 #: The passes after the lead review that send on the pages still not compared (#1817, #1819).
 AGAIN_PASSES: Final = 2
+#: The phases a big set's band runs, in order (#1874, `full_check_schedule`): its money is its
+#: part of their shares.
+_BAND_PHASES: Final = ("numbers", "drawn", "gaps", "provers", "lead")
 #: How a page the passes after the lead still did not compare is said (`_after_lead`).
 _MORE_LOOKS: Final = "more looks"
 #: What the finishing steps need is kept before any extra pass spends (#1821), worked out from the
@@ -261,7 +272,8 @@ ROUND_PICK_SHARE: Final = 0.10
 ROUND_PHASE: Final = "round_picks"
 #: Why a page code stopped sending on was left unchecked when the money was really short.
 OUT_OF_MONEY: Final = "out of money (the fixed price left too little for another look)"
-#: The most gap closers at once (one per run of pages; the engine's parallel agents bound it too).
+#: The gap closers of one pass (one per run of pages): this many, or as many as the plan's page
+#: groups run at once when that is more (#1874); the money and the agents at once bound it too.
 MAX_GAP_CLOSERS: Final = 10
 #: The least money a gap closer gets per page (millionths of $): about three Sonnet calls with
 #: their crops (the paid run's gap closers spent $0.07-0.13 for one page from a fresh start).
@@ -1352,6 +1364,11 @@ class _Run:
     #: The proving reads made ahead while the AI steps run (`_read_ahead`), and how to stop them.
     _ahead: threading.Thread | None = None
     _ahead_stop: threading.Event = field(default_factory=threading.Event)
+    #: Guards the reads ahead: a big set's bands start them from their own threads (#1874).
+    _ahead_lock: Any = field(default_factory=threading.RLock)
+    #: A big set's bands (`full_check_schedule.bands_of`, #1874): one chain each; one band (the
+    #: whole set) runs the roster as before.
+    bands: list[Band] = field(default_factory=list)
 
     # -- money --
 
@@ -1520,6 +1537,15 @@ class _Run:
     def _charge(self, phase: str, cost: int) -> None:
         self.spent[phase] = self.spent.get(phase, 0) + cost
 
+    def _step(self, name: str, *, done: int | None = None, total: int | None = None) -> None:
+        """The live line's step (`chat_progress.STEPS`, #1874); never stops the check."""
+        progress = self.engine._progress
+        if progress is not None:
+            try:
+                progress.set_step(name, areas_done=done, areas_total=total)
+            except Exception:  # noqa: BLE001 - progress never stops the check
+                _log.debug("assistant roster progress step not shown")
+
     def _note(self, line: str) -> None:
         if line not in self.not_done:
             self.not_done.append(line)
@@ -1530,6 +1556,8 @@ class _Run:
         were all compared, #1827): nothing to launch."""
         if not agents:
             return []
+        if given.get("ceiling", 0) is None:
+            given.pop("ceiling")  # one chain: the engine's own `helper_ceiling`
         entries = self.engine._launch(agents, **given)
         for agent, entry in zip(agents, entries, strict=False):
             if entry.get("stopped") == "error":
@@ -1819,6 +1847,8 @@ class _Run:
         workspace = engine.tools.workspace
         if workspace.set_pack is None:
             return None
+        # The code checks' page parsing in worker processes when the server asks for it (#1874).
+        verify_value.use_parse_processes(getattr(settings, "parse_processes", 0))
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="gv-roster-warm") as warm_pool:
             warm = warm_pool.submit(engine._prewarm)
             with engine.timings.phase("set_pack"):
@@ -1922,6 +1952,10 @@ class _Run:
             )
         set_price(engine, price)
         self.started_at = engine.spent
+        if engine._progress is not None:
+            # The plan's expected time (#1874): the live line's time left.
+            minutes = expected_minutes(plan.pages, engine.settings.calls_at_once)
+            engine._progress.set_expected(engine._progress.elapsed() + minutes * 60)
         for timing, names in TIMINGS_PHASES.items():
             engine.timings.set_budget(timing, sum(self.plan.budgets[n] for n in names))
         engine._started_scope = engine.scope()
@@ -2003,7 +2037,18 @@ class _Run:
         protected = sum(max(self.plan.budgets[name], self.needs.get(name, 0)) for name in PROTECTED)
         # The cheap round picks have no share of the price: what they need is kept too (#1861).
         protected += self.needs.get(ROUND_PHASE, 0)
-        engine.helper_ceiling = engine.spent + max(0, price - protected)
+        ceiling = engine.spent + max(0, price - protected)
+        self.bands = bands_of(plan.jobs)
+        if len(self.bands) > 1:
+            # A big set (#1874): each band's chain runs on its own, the tag reader beside them;
+            # only the set-wide steps below wait for all. `by_job` was taken before the sort
+            # above (the agents that wait for the page matcher last), so each job keeps its agent.
+            tags = [a for a in agents if a.lens == "tags"]
+            self._run_bands(by_job, tags, ceiling, page_map, matching, looks=looks)
+            self._finish_bands(plan, page_map)
+            return self._finish("cancelled" if engine.cancel.is_set() else None)
+        engine.helper_ceiling = ceiling
+        self._step("helpers")
         try:
             try:
                 entries = self._launched(agents, on_done=engine._helper_done)
@@ -2042,18 +2087,22 @@ class _Run:
             engine._queue_second_reads(engine.book.live())
             if not engine.cancel.is_set():
                 self._read_ahead()
+                self._step("gap_closers")
                 self._gap_closers(page_map, rules, pictures)
         finally:
             engine.helper_ceiling = None
         engine._wait_checks()
         if not engine.cancel.is_set():
+            self._step("verifier")
             self._provers(plan)
         engine._wait_checks()
         if not engine.cancel.is_set():
+            self._step("lead_review")
             with engine.timings.phase("lead_review"):
                 self._lead_review(page_map)
         engine._wait_checks()
         if not engine.cancel.is_set():
+            self._step("look_again")
             self._read_ahead()  # the lead review's items too
             # Code, not the lead's guess about money, sends on what is still not compared (#1817).
             self._after_lead(page_map)
@@ -2063,6 +2112,160 @@ class _Run:
         if not engine.cancel.is_set():
             self._proof_steps(plan, page_map)
         return self._finish("cancelled" if engine.cancel.is_set() else None)
+
+    # -- a big set's bands (#1874) --
+
+    def _run_bands(
+        self,
+        by_job: Mapping[int, Any],
+        tags: Sequence[Any],
+        ceiling: int,
+        page_map: Mapping[str, Any] | None,
+        matching: Any = None,
+        *,
+        looks: Sequence[Any] = (),
+    ) -> None:
+        """Each band's chain on its own thread (`full_check_schedule.run_chains`): its page
+        helpers, then its gap closers, verifier, lead review and look-again passes, each as soon
+        as the band's step before it ended; the tag reader runs beside them. The page helpers and
+        gap closers never pass `ceiling` (the later steps' money, as in one chain).
+
+        As in one chain, no band's gap closers start before the page matcher's final pairs are in
+        and the pages no architect drawing is paired with are settled (#1883, #1885): the first
+        band whose helpers end does it, once; the others wait for it.
+
+        The whole-drawing looks (`whole_look`) run beside their band's page helpers, as beside
+        the helpers in one chain, each in the band holding its first vendor page (one no band
+        holds runs beside the tag reader); their claims are applied by code before that band's
+        gap closers, one band at a time. Their money stays their own share (not the band's)."""
+        engine = self.engine
+        looks_lock = threading.Lock()
+        band_looks: dict[int, list[Any]] = {index: [] for index in range(len(self.bands))}
+        loose: list[Any] = []
+        for agent in looks:
+            first = min(agent.pages or (0,))
+            home = next((n for n, band in enumerate(self.bands) if band.holds(first)), None)
+            (loose if home is None else band_looks[home]).append(agent)
+
+        def launched(agents: list[Any]) -> list[tuple[Any, dict[str, Any]]]:
+            # The agents that wait for the page matcher start after the others (as in one chain).
+            agents = sorted(agents, key=self._waits)
+            entries = self._launched(agents, on_done=engine._helper_done, ceiling=ceiling)
+            return list(zip(agents, entries, strict=True))
+
+        def apply_looks(done: list[tuple[Any, dict[str, Any]]]) -> None:
+            if not done:
+                return
+            with looks_lock:
+                try:
+                    whole_look.apply_roster(self, done, self.looked)
+                except Exception:  # noqa: BLE001 - the page helpers' findings stand
+                    _log.exception("assistant roster could not apply the whole-drawing looks")
+
+        pairs_lock = threading.Lock()
+        pairs_final = [False]
+
+        def final_pairs() -> None:
+            with pairs_lock:
+                if pairs_final[0]:
+                    return
+                pairs_final[0] = True
+                try:
+                    # Every answer in: the gap closers and the finishing steps read the final pairs.
+                    engine.finish_page_matching(matching)
+                finally:
+                    # The pages no architect drawing was paired with: Not compared with the
+                    # architect, said from now on, never sent on to compare again (#1885).
+                    try:
+                        self._settle_unpaired(matching)
+                    except Exception:  # noqa: BLE001 - the pages stay as their helpers left them
+                        _log.exception("assistant roster could not settle the unpaired pages")
+
+        def tag_chain() -> None:
+            if not tags and not loose:
+                return
+            done = launched([*tags, *loose])
+            self._apply_tags([(a, str(e.get("report") or "")) for a, e in done if a.lens == "tags"])
+            apply_looks([(a, e) for a, e in done if a.lens == whole_look.LENS])
+
+        def chain(index: int, band: Band) -> None:
+            mine = [by_job[job.number] for job in band.jobs if job.number in by_job]
+            band.agents.extend(mine)
+            try:
+                done = launched([*mine, *band_looks[index]])
+            finally:
+                final_pairs()
+            for agent, entry in done:
+                if agent.lens == whole_look.LENS:
+                    continue
+                self._salvage(agent, entry)
+                if entry.get("stopped") == "cost_cap":
+                    self._capped(agent.description, "; the pages it left are listed")
+            # Each look's claims, by code, before the band's gap closers (as in one chain).
+            apply_looks([(a, e) for a, e in done if a.lens == whole_look.LENS])
+            engine._queue_second_reads([f for f in engine.book.live() if band.holds(f.get("page"))])
+            if engine.cancel.is_set():
+                return
+            self._read_ahead()
+            self._gap_closers(page_map, "", False, band=band, ceiling=ceiling)
+            engine._wait_checks()
+            if engine.cancel.is_set():
+                return
+            self._provers(band, band=band)
+            engine._wait_checks()
+            if engine.cancel.is_set():
+                return
+            with engine.timings.phase("lead_review"):
+                self._lead_review(page_map, band=band)
+            engine._wait_checks()
+            if engine.cancel.is_set():
+                return
+            self._read_ahead()  # the lead review's items too
+            self._after_lead(page_map, band=band)
+
+        done = [0]
+
+        def counted(index: int, band: Band) -> None:
+            try:
+                chain(index, band)
+            finally:
+                with engine._lock:
+                    done[0] += 1
+                self._step("areas", done=done[0], total=len(self.bands))
+
+        self._step("areas", done=0, total=len(self.bands))
+        _log.warning(
+            "assistant roster: %d bands of %s content pages run as parallel chains",
+            len(self.bands),
+            "/".join(str(len(band.pages)) for band in self.bands),
+        )
+        chains: list[Callable[[], None]] = [tag_chain]
+        chains += [partial(counted, index, band) for index, band in enumerate(self.bands)]
+        for failed in run_chains(chains):
+            self.failed_steps.append(f"the check of {failed} ended with an error")
+        final_pairs()  # a band that broke before it: the matcher's calls still end first
+        for where in self.looked.unread:
+            self._note(whole_look.UNREAD_NOTE.format(where=where))
+
+    def _finish_bands(self, plan: Any, page_map: Mapping[str, Any] | None) -> None:
+        """What one chain does after its look-again, once for every band (#1874)."""
+        engine = self.engine
+        self._end_read_ahead()
+        self._note_left_open()
+        engine._wait_checks()
+        if not engine.cancel.is_set():
+            self._proof_steps(plan, page_map)
+
+    def _band_room(self, band: Band, phase: str) -> int:
+        """A band step's money (#1874): the band's part (`Band.fraction`) of the phases its chain
+        runs, less what its specialists spent and its later steps' parts; never more than the
+        set's own room for `phase` (the set-wide steps' money is kept)."""
+        assert self.plan is not None
+        budgets = self.plan.budgets
+        total = int(band.fraction * sum(budgets[n] for n in _BAND_PHASES))
+        later = _BAND_PHASES[_BAND_PHASES.index(phase) + 1 :]
+        kept = int(band.fraction * sum(budgets[n] for n in later))
+        return max(0, min(self._room(phase), total - band.spent() - kept))
 
     def _proof_steps(self, plan: Any, page_map: Mapping[str, Any] | None) -> None:
         """D1's proof steps, after every reading is in (#1641): code's own findings (the ledger's
@@ -2074,6 +2277,7 @@ class _Run:
         engine = self.engine
         from app.review.assistant.escalation import escalate_answer
 
+        self._step("proving")
         engine.add_code_findings()
         self._prototype_references(page_map)
         try:
@@ -2097,12 +2301,14 @@ class _Run:
         self._refresh_needs("advocate")
         if engine.cancel.is_set():
             return
+        self._step("advocate")
         with engine.timings.phase("advocate"):
             self._strings(page_map)
             self._architect_guard()
             if not engine.cancel.is_set():
                 self._advocate(page_map)
         if not engine.cancel.is_set():
+            self._step("escalation")
             with engine.timings.phase("escalation"):
                 self._escalate(plan, page_map)
         else:
@@ -2419,7 +2625,15 @@ class _Run:
 
     # -- P2: gap closers --
 
-    def _gap_closers(self, page_map: Mapping[str, Any] | None, rules: str, pictures: bool) -> None:
+    def _gap_closers(
+        self,
+        page_map: Mapping[str, Any] | None,
+        rules: str,
+        pictures: bool,
+        *,
+        band: Band | None = None,
+        ceiling: int | None = None,
+    ) -> None:
         """P2 (#1634): every page the numbers helpers left (not reached, stopped at its cap) and
         every recorded difference no helper placed goes to a gap closer, several pages each, with
         the gap phase's money plus all P1 left unspent (the later phases' shares kept back). A page
@@ -2431,10 +2645,13 @@ class _Run:
         still open waits for the lead review (which takes pages with open checklists) or stays Not
         compared, said so. The drawn-things helpers' checklists are theirs alone. The open lines
         are listed for a closer only on a page it takes anyway. The paid run of 2026-10-20 re-read
-        39 pages in 4-page groups after both helpers had compared them."""
+        39 pages in 4-page groups after both helpers had compared them.
+
+        `band` (#1874): only that band's pages and helpers, from its own money (`_band_room`)."""
         engine = self.engine
         assert self.plan is not None
-        numbers = {agent.number for agent in self.agents if agent.lens not in ("drawn", "tags")}
+        mine = self.agents if band is None else band.agents
+        numbers = {agent.number for agent in mine if agent.lens not in ("drawn", "tags")}
         # A page no architect drawing is paired with is never sent on to compare (#1885).
         alone = self._not_pairable()
         with engine._lock:
@@ -2451,11 +2668,18 @@ class _Run:
             for f in engine.book.live()
             if f.get("created_by") == "gv_review"
             and code_spotted(f)
+            and (band is None or band.holds(f.get("page")))
             and int(f.get("page") or 0) not in alone
         ]
+        if band is not None:
+            any_open = {page for page in any_open if band.holds(page)}
         pages: dict[int, list[str]] = {}
         planned = sorted(
-            {page for job in (engine._plan.jobs if engine._plan else ()) for page in job.pages}
+            (
+                {page for job in (engine._plan.jobs if engine._plan else ()) for page in job.pages}
+                if band is None
+                else set(band.pages)
+            )
             - alone
         )
         coverage = engine.book.coverage_map() if engine.book.coverage_used else None
@@ -2476,7 +2700,11 @@ class _Run:
         for page, why in open_gaps.items():
             if page in pages:  # taken anyway (not reached, or a record to place)
                 pages[page].append(f"left open by the numbers helper: {why}")
-        self.repeats_avoided = sorted(any_open - set(pages))
+        if band is None:
+            self.repeats_avoided = sorted(any_open - set(pages))
+        else:
+            with engine._lock:
+                self.repeats_avoided = sorted(set(self.repeats_avoided) | (any_open - set(pages)))
         _log.warning(
             "assistant roster gap closers: %d pages to close; %d compared pages not read again",
             len(pages),
@@ -2485,7 +2713,15 @@ class _Run:
         if not pages:
             return
         self._refresh_needs("gaps")
-        self._close(pages, self._gap_budget(), {int(f["page"]) for f in unboxed}, page_map)
+        budget = self._gap_budget() if band is None else self._band_room(band, "gaps")
+        self._close(
+            pages,
+            budget,
+            {int(f["page"]) for f in unboxed},
+            page_map,
+            band=band,
+            ceiling=ceiling,
+        )
         del rules, pictures
 
     def _close(
@@ -2496,6 +2732,8 @@ class _Run:
         page_map: Mapping[str, Any] | None,
         *,
         again: bool = False,
+        band: Band | None = None,
+        ceiling: int | None = None,
     ) -> list[int]:
         """Gap closers on `pages` (each with what to close there) from `budget`, several pages
         each; a page the money cannot reach is said so on its coverage, never dropped. `again`:
@@ -2510,7 +2748,13 @@ class _Run:
             self._left_unchecked(dict.fromkeys(left), OUT_OF_MONEY)
         if not chosen:
             return []
-        closers = min(MAX_GAP_CLOSERS, engine._max_agents, max(1, budget // MIN_GAP_RUN_MICROS))
+        # As many closers as the plan's groups run at once (#1874: a closer with many pages was
+        # the slowest step of a Set 3 check), never fewer than before, each with enough money.
+        closers = min(
+            max(MAX_GAP_CLOSERS, engine._plan_parallel),
+            engine._agents_at_once,
+            max(1, budget // MIN_GAP_RUN_MICROS),
+        )
         runs = page_runs(chosen, closers)
         pool = _Pool(budget)
         agents = []
@@ -2554,7 +2798,9 @@ class _Run:
                     )
                 )
             )
-        entries = self._launched(agents, on_done=engine._helper_done)
+        if band is not None:
+            band.agents.extend(agents)
+        entries = self._launched(agents, on_done=engine._helper_done, ceiling=ceiling)
         for agent, entry in zip(agents, entries, strict=True):
             self._salvage(agent, entry)
             if entry.get("stopped") == "cost_cap":
@@ -2562,7 +2808,7 @@ class _Run:
         self.agents.extend(agents)
         return [page for run in runs for page in run]
 
-    def _after_lead(self, page_map: Mapping[str, Any] | None) -> None:
+    def _after_lead(self, page_map: Mapping[str, Any] | None, band: Band | None = None) -> None:
         """#1817: after the lead review, every planned page still not compared (no helper set
         it, "not opened", a note that says it was not reached, the lead's own "Budget", or any
         page the check would call not compared, such as one marked not comparable: #1825) and every
@@ -2577,12 +2823,12 @@ class _Run:
             return
         pages: dict[int, list[str]] = {}
         for _pass in range(AGAIN_PASSES):
-            pages = self._still_open()
+            pages = self._still_open(band)
             if not pages or engine.cancel.is_set():
                 return
             # The finishing steps' needs first (#1821): this pass spends only what is left after.
             self._refresh_needs("lead")
-            budget = self._room("lead")
+            budget = self._room("lead") if band is None else self._band_room(band, "lead")
             _log.warning(
                 "assistant roster look-again after the lead: %d pages still open; $%.2f left",
                 len(pages),
@@ -2591,24 +2837,39 @@ class _Run:
             if budget < MIN_GAP_RUN_MICROS:
                 self._left_unchecked(pages, OUT_OF_MONEY)
                 return
-            engine.helper_ceiling = engine.spent + budget
-            try:
+            if band is None:
+                engine.helper_ceiling = engine.spent + budget
+                try:
+                    with engine.timings.phase("gap_closers"):
+                        taken = self._close(pages, budget, (), page_map, again=True)
+                finally:
+                    engine.helper_ceiling = None
+            else:
+                # A band's own ceiling (#1874): the bands' passes run at the same time.
                 with engine.timings.phase("gap_closers"):
-                    taken = self._close(pages, budget, (), page_map, again=True)
-            finally:
-                engine.helper_ceiling = None
+                    taken = self._close(
+                        pages,
+                        budget,
+                        (),
+                        page_map,
+                        again=True,
+                        band=band,
+                        ceiling=engine.spent + budget,
+                    )
             # A page a closer took is not "left open, not compared again": its closer said what it
             # did on its coverage.
-            self.lead_taken |= set(taken)
-        left = self._still_open()
+            with engine._lock:
+                self.lead_taken |= set(taken)
+        left = self._still_open(band)
         if left:
-            short = self._room("lead") < MIN_GAP_RUN_MICROS
+            room = self._room("lead") if band is None else self._band_room(band, "lead")
+            short = room < MIN_GAP_RUN_MICROS
             self._left_unchecked(
                 left,
                 OUT_OF_MONEY if short else f"still not compared after {AGAIN_PASSES} {_MORE_LOOKS}",
             )
 
-    def _still_open(self) -> dict[int, list[str]]:
+    def _still_open(self, band: Band | None = None) -> dict[int, list[str]]:
         """The planned pages still not compared, and the pages left open by their helper that no
         later look took, each with what to close there (`_after_lead`)."""
         engine = self.engine
@@ -2617,6 +2878,8 @@ class _Run:
             - set(self.no_vendor)  # nothing to compare there (#1837): never sent on again
             - self._not_pairable()  # no architect drawing paired with it (#1885): the same
         )
+        if band is not None:  # a big set's band (#1874): only its own pages
+            planned = [page for page in planned if band.holds(page)]
         coverage = engine.book.coverage_map() if engine.book.coverage_used else None
         with engine._lock:
             open_gaps: dict[int, str] = {}
@@ -2650,6 +2913,8 @@ class _Run:
                 )
             ]
         for page in self.repeats_avoided:
+            if band is not None and not band.holds(page):
+                continue
             if page not in self.lead_taken and page in open_gaps:
                 pages.setdefault(page, []).append(f"left open by its helper: {open_gaps[page]}")
         return pages
@@ -2839,7 +3104,12 @@ class _Run:
         step's reads of today's red candidates are made ahead on a spare thread or two (#1850):
         only reads, kept by `_verify`; the proving step itself still runs later on the final items
         and applies each answer then, so nothing an AI step sees changes. A read ahead that was
-        running is stopped first (what it read is kept). Off with one code worker."""
+        running is stopped first (what it read is kept). Off with one code worker. A big set's
+        bands start it from their own threads (#1874): one at a time."""
+        with self._ahead_lock:
+            self._start_read_ahead()
+
+    def _start_read_ahead(self) -> None:
         engine = self.engine
         self._end_read_ahead()
         workers = code_workers() // 2
@@ -2877,12 +3147,13 @@ class _Run:
 
     def _end_read_ahead(self) -> None:
         """Stops the reads ahead (each running read ends) and waits for them."""
-        ahead = self._ahead
-        if ahead is None:
-            return
-        self._ahead_stop.set()
-        ahead.join()
-        self._ahead = None
+        with self._ahead_lock:
+            ahead = self._ahead
+            if ahead is None:
+                return
+            self._ahead_stop.set()
+            ahead.join()
+            self._ahead = None
 
     def _proved(
         self, tools: Any, sides: Sequence[_SideRead], stage: str, counts: dict[str, int]
@@ -2967,16 +3238,20 @@ class _Run:
 
     # -- P3: the verifier --
 
-    def _provers(self, plan: Any) -> None:
+    def _provers(self, plan: Any, band: Band | None = None) -> None:
+        """P3: a verifier per page group with AI-only Wrongs. `band` (#1874): that band's groups
+        and items only (`plan` is the band), from its own money (`_band_room`)."""
         engine = self.engine
         assert self.plan is not None
         from app.review.assistant.sandbox import UPLOADS
 
         skip = frozenset(
             {"tag_reader"}
-            | {f"helper:{agent.number}" for agent in self.agents if agent.lens == "drawn"}
+            | {f"helper:{agent.number}" for agent in list(self.agents) if agent.lens == "drawn"}
         )
         candidates = ai_only_wrongs(engine.book.live(), skip)
+        if band is not None:
+            candidates = [f for f in candidates if band.holds(f.get("page"))]
         if not candidates:
             return
         groups: dict[tuple[int, ...], list[dict[str, Any]]] = {}
@@ -2999,7 +3274,7 @@ class _Run:
         # Its own share plus what the earlier phases left (#1805), split over its groups; the
         # finishing steps' needs kept (#1821).
         self._refresh_needs("provers")
-        pool = _Pool(self._room("provers"))
+        pool = _Pool(self._room("provers") if band is None else self._band_room(band, "provers"))
         cap = pool.limit // max(1, len(groups))
         for pages, findings in groups.items():
             agents.append(
@@ -3028,6 +3303,8 @@ class _Run:
         if cap <= 0:
             self._note("the verifier: not reached within the fixed price")
             return
+        if band is not None:
+            band.agents.extend(agents)
         entries = self._launched(agents)
         for agent, entry, ids in zip(agents, entries, asked, strict=True):
             done = apply_proofs(engine, str(entry.get("report") or ""), ids)
@@ -3122,7 +3399,10 @@ class _Run:
         return weight + _BARE_ARCHITECT * sum(1 for half in bare if half.startswith("architect"))
 
     def _lead_pages(
-        self, money: int | None = None, page_map: Mapping[str, Any] | None = None
+        self,
+        money: int | None = None,
+        page_map: Mapping[str, Any] | None = None,
+        band: Band | None = None,
     ) -> tuple[list[int], list[dict[str, Any]]]:
         """The pages the lead review takes, as many as `money` covers (`LEAD_PAGE_MICROS` a page,
         at most `LEAD_MAX_PAGES`), the biggest first (#1654): pages with an item no code spot backs
@@ -3150,6 +3430,10 @@ class _Run:
         planned = sorted(
             {p for job in (engine._plan.jobs if engine._plan else ()) for p in job.pages}
         )
+        if band is not None:  # a big set's band (#1874): its own lead review, its own pages
+            planned = [p for p in planned if band.holds(p)]
+            unplaced = [f for f in unplaced if band.holds(f.get("page"))]
+            open_items = [f for f in open_items if band.holds(f.get("page"))]
         coverage = engine.book.coverage_map() if engine.book.coverage_used else None
         with engine._lock:
             gaps = {p for found in engine._checklist_gaps.values() for p in found}
@@ -3198,7 +3482,7 @@ class _Run:
         assert self.plan is not None
         return min(scaled_cap("lead", self.plan.price), self._room("lead"))
 
-    def _lead_review(self, page_map: Mapping[str, Any] | None) -> None:
+    def _lead_review(self, page_map: Mapping[str, Any] | None, band: Band | None = None) -> None:
         """One capped lead (Opus 5.5) after the page helpers, as Anthropic's long-running agent
         advice has it (fresh-context workers read, the lead verifies): it places the items the
         helpers read but code has no spot for, records the strings and compares what the helpers
@@ -3210,14 +3494,18 @@ class _Run:
 
         self._refresh_needs("lead")
         cap = self._lead_money()
-        pages, unplaced = self._lead_pages(cap, page_map)
+        if band is not None:
+            # A big set (#1874): one lead review per band, from the band's own money.
+            cap = min(cap, self._band_room(band, "lead"))
+        pages, unplaced = self._lead_pages(cap, page_map, band)
         if not pages or cap <= 0:
             return
         model = BY_SHORT["opus"]
         if not engine._fits(engine._price(model, 30_000, 4_000)):
             self._note(f"the lead review of {page_ranges_words(pages)}: not reached")
             return
-        self.lead_taken = set(pages)
+        with engine._lock:
+            self.lead_taken |= set(pages)
         brief = helper_brief(
             pages,
             file_name=f"{UPLOADS}/{engine.book.main_file}",
@@ -3233,7 +3521,7 @@ class _Run:
             notes=self._helper_notes(pages),
         )
         agent = self._agent(
-            call_id="lead-review",
+            call_id="lead-review" if band is None else f"lead-review-{band.number}",
             description=f"Lead review, {page_ranges_words(pages)}",
             prompt=f"{prompt}\n\n{brief}",
             model=model,
@@ -3248,6 +3536,8 @@ class _Run:
             system=engine._kind_system("numbers"),
             tools=(*HELPER_TOOLS, UPDATE_FINDING),
         )
+        if band is not None:
+            band.agents.append(agent)
         entries = self._launched([agent], on_done=engine._helper_done)
         self._salvage(agent, entries[0])
         self._drop_placed_salvage()
@@ -4583,6 +4873,7 @@ class _Run:
                 _log.exception("assistant roster could not work out whether it is sendable")
                 engine.incomplete_note = "whether every page was compared could not be worked out"
         files: list[str] = []
+        self._step("finish")
         if engine._progress is not None:
             engine._progress.phase("writing")
         try:

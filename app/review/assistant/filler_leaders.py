@@ -370,7 +370,7 @@ def page_geometry(pdf: Path, page: int) -> Geometry:
     (the page's own content and its pasted drawings, any colour)."""
     pdfplumber = import_module("pdfplumber")
     vv = import_module("app.review.assistant.verify_value")
-    vendor = vv._vendor_page(Path(pdf).read_bytes(), page - 1)
+    vendor = vv.vendor_page_at(Path(pdf), page - 1)  # the file held open (#1874)
     paths: list[tuple[Point, ...]] = []
     rects: list[Box] = []
     with pdfplumber.open(io.BytesIO(vendor)) as document:

@@ -5438,6 +5438,11 @@ export interface components {
             /** Doubts */
             doubts?: components["schemas"]["ChatPlanDoubtOut"][];
             /**
+             * Minutes
+             * @description About how many minutes the full check takes, with the price (#1874): the page helpers, the areas' chains and the set-wide steps at the call times measured on the server, the drawings already read. An estimate, never a promise.
+             */
+            minutes?: number | null;
+            /**
              * More
              * @description Further unsure places, compared as read.
              * @default 0
@@ -6570,6 +6575,16 @@ export interface components {
          *     left". Sent as `progress` events while it runs; the last one is stored.
          */
         ChatProgressOut: {
+            /**
+             * Areas Done
+             * @description A big set (#1874): the areas whose chain has finished.
+             */
+            areas_done?: number | null;
+            /**
+             * Areas Total
+             * @description A big set: the areas run as parallel chains.
+             */
+            areas_total?: number | null;
             /** Decision So Far */
             decision_so_far: number;
             /**
@@ -6584,7 +6599,7 @@ export interface components {
             drawings_total?: number | null;
             /**
              * Eta Seconds
-             * @description Time left at the pace so far; null before any page is done.
+             * @description Time left: from the plan's expected time in a roster full check (#1874), else at the pace so far; null before any page is done or past the estimate.
              */
             eta_seconds?: number | null;
             /**
@@ -6620,6 +6635,16 @@ export interface components {
              * @default 0
              */
             rule_note_so_far: number;
+            /**
+             * Step
+             * @description The roster full check's step (#1874): page helpers, gap closers, verifier, lead review, look-again; on a big set 'areas' (each area's own chain of those, in parallel); then code's proving steps, the devil's advocate, the escalation, the finish.
+             */
+            step?: ("helpers" | "gap_closers" | "verifier" | "lead_review" | "look_again" | "areas" | "proving" | "advocate" | "escalation" | "finish") | null;
+            /**
+             * Step Number
+             * @description The step's place, from 1.
+             */
+            step_number?: number | null;
             /** Wrong So Far */
             wrong_so_far: number;
         };

@@ -789,6 +789,7 @@ def get_full_check_plan(
             lambda page: f"/api/v1/packages/{package.id}/plan-pages/{page}",
             products=products,
             price=lambda pages: rule.price(pages, max(0, left)),
+            calls_at_once=settings.assistant_calls_at_once,
             missing_values=missing,
             starter=_pack_starter_of(request, session),
         )
@@ -1608,6 +1609,10 @@ def _message(
             lead_max_turns=settings.assistant_lead_max_turns,
             helper_max_turns=settings.assistant_helper_max_turns,
             max_parallel_agents=settings.assistant_max_parallel_agents,
+            rate_tier=settings.assistant_rate_tier,
+            calls_at_once=settings.assistant_calls_at_once,
+            full_check_agents=settings.assistant_full_check_agents,
+            parse_processes=settings.assistant_parse_processes,
             message_cap_micros=_lowered(
                 int(settings.assistant_message_cap_usd * _MICROS), body.cap_usd
             ),

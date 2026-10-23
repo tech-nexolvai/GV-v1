@@ -52,6 +52,8 @@ from app.models import AssistantChatMessage
 from app.review.assistant.chat_contract import ChatMessageOut
 from app.review.assistant.chat_corrections import earlier_findings, earlier_findings_note
 from app.review.assistant.chat_engine import (
+    CALLS_AT_ONCE,
+    FULL_CHECK_AGENTS,
     FULL_CHECK_INSTRUCTION,
     ChatEngine,
     EngineSettings,
@@ -100,6 +102,7 @@ from app.review.assistant.full_check_plan import (
     reading_of,
     scoped_plan,
 )
+from app.review.assistant.full_check_schedule import expected_minutes
 from app.review.assistant.live_check import LiveCheck
 from app.review.assistant.package_store import numbering
 from app.review.assistant.plan_check import (
@@ -596,6 +599,7 @@ def full_check_plan(
     picture_url: Callable[[int], str],
     products: Sequence[str] | None = None,
     price: Callable[[int], int] | None = None,
+    calls_at_once: int = CALLS_AT_ONCE,
     missing_values: Sequence[str] = (),
     starter: PackStarter | None = None,
 ) -> dict[str, Any]:
@@ -603,7 +607,8 @@ def full_check_plan(
     where it is unsure of the page map (`plan_check.doubts`), each with its page's picture and the
     drawing marked; with `price` (content pages in scope -> millionths of $, #1823), the full
     check's fixed price for `products` (`None`: every active product) and the pages it counts:
-    the same count the full check plans (`full_check_plan.scoped_plan`). The set's latest PDFs
+    the same count the full check plans (`full_check_plan.scoped_plan`), and about how many
+    minutes it takes (`full_check_schedule.expected_minutes`, #1874). The set's latest PDFs
     are copied to the set's plan-check folder (only when they changed) and the set pack is started
     when it is not made yet, so it works before the set's first chat; `building` until the page
     map is made. With the page map, the pre-flight health report too (`preflight_words`).
@@ -666,6 +671,8 @@ def full_check_plan(
     if price is not None and plan is not None:
         answer["price_pages"] = plan.pages
         answer["price_usd"] = cost_text(price(plan.pages))
+        # The plan's expected time (#1874): "about M min" before Run.
+        answer["minutes"] = expected_minutes(plan.pages, calls_at_once)
     try:
         answer["preflight"] = preflight_words(
             folder,
@@ -976,6 +983,14 @@ class MessageJob:
     run_anyway: bool = False
     """The reviewer chose Run anyway after a pre-flight stop."""
     """The AI page matcher's model for separate uploads (#1798); `None`: off."""
+    rate_tier: str = "start"
+    """The provider's usage tier each model's limiter keeps (`rate_limits`, #1874)."""
+    calls_at_once: int = CALLS_AT_ONCE
+    """The most calls of one model at once, server-wide (#1874)."""
+    full_check_agents: int = FULL_CHECK_AGENTS
+    """A full check's specialists started together, at most (#1874)."""
+    parse_processes: int = 0
+    """Worker processes that parse drawing pages for a full check's code checks (#1874)."""
     whole_look_model: str | None = None
     """The whole-drawing look's model (`whole_look`); `None`: off."""
     whole_look_effort: str = "medium"
@@ -1419,6 +1434,10 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             full_check_mode=job.full_check_mode,
             simple=_simple_of(job, run, workspace.root, workspace.set_pack),
             page_match_model=job.page_match_model,
+            rate_tier=job.rate_tier,
+            calls_at_once=job.calls_at_once,
+            full_check_agents=job.full_check_agents,
+            parse_processes=job.parse_processes,
             preflight_model=job.preflight_model,
             run_anyway=job.run_anyway,
             whole_look_model=job.whole_look_model,
