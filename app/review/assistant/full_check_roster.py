@@ -1255,6 +1255,31 @@ def page_ranges_words(pages: Sequence[int]) -> str:
     return f"pages {', '.join(map(str, ordered[:-1]))} and {ordered[-1]}"
 
 
+def unusable_looks_line(looks: Sequence[str]) -> str:
+    """The summary's line for the whole-drawing looks whose answer was not usable (`whole_look`'s
+    `unread`, each "pages 2" or "pages 4, 5"): "The AI's whole-drawing look of page 2 gave no
+    usable answer; its sizes were still checked." Not money, so never under "Not done within the
+    fixed price" (the client read that as a price problem, 2026-10-23)."""
+    pages: list[int] = []
+    for where in looks:
+        numbers = re.findall(r"\d+", where)
+        if not numbers:
+            pages = []
+            break
+        pages += [int(number) for number in numbers if int(number) not in pages]
+    if pages:
+        where = page_ranges_words(pages)
+        many = len(pages) > 1
+    else:
+        where = "; ".join(looks)
+        many = len(looks) > 1
+    whose = "their" if many else "its"
+    return (
+        f"The AI's whole-drawing look of {where} gave no usable answer; {whose} sizes were still "
+        "checked."
+    )
+
+
 # ---- Continue of a check that did not finish (#1821) ---------------------------------------------------
 
 #: Who set a page's coverage in the answer a Continue goes on from (`ChatEngine.carry_over`).
@@ -1399,6 +1424,10 @@ class _Run:
     engine: ChatEngine
     plan: PricePlan | None = None
     not_done: list[str] = field(default_factory=list)
+    #: The whole-drawing looks whose answer was not usable (`whole_look`'s `unread`, "pages 2"):
+    #: said apart from what the fixed price did not reach, as they are not about money (the
+    #: client meeting, 2026-10-23); the page helpers still checked those pages' sizes.
+    unusable_looks: list[str] = field(default_factory=list)
     spent: dict[str, int] = field(default_factory=dict)
     stopped_for_money: bool = False
     #: A specialist stopped at its own cap before the price was used up (#1805): judged again at
@@ -1667,6 +1696,10 @@ class _Run:
     def _note(self, line: str) -> None:
         if line not in self.not_done:
             self.not_done.append(line)
+
+    def _note_unusable_look(self, where: str) -> None:
+        if where not in self.unusable_looks:
+            self.unusable_looks.append(where)
 
     def _launched(self, agents: Sequence[Any], **given: Any) -> list[dict[str, Any]]:
         """`engine._launch`, and each helper that ended with an error kept as a failed step: a
@@ -2207,7 +2240,7 @@ class _Run:
                 except Exception:  # noqa: BLE001 - the page helpers' findings stand
                     _log.exception("assistant roster could not apply the whole-drawing looks")
                 for where in self.looked.unread:
-                    self._note(whole_look.UNREAD_NOTE.format(where=where))
+                    self._note_unusable_look(where)
             engine._queue_second_reads(engine.book.live())
             if not engine.cancel.is_set():
                 self._read_ahead()
@@ -2369,7 +2402,7 @@ class _Run:
             self.failed_steps.append(f"the check of {failed} ended with an error")
         final_pairs()  # a band that broke before it: the matcher's calls still end first
         for where in self.looked.unread:
-            self._note(whole_look.UNREAD_NOTE.format(where=where))
+            self._note_unusable_look(where)
 
     def _finish_bands(self, plan: Any, page_map: Mapping[str, Any] | None) -> None:
         """What one chain does after its look-again, once for every band (#1874)."""
@@ -5002,6 +5035,8 @@ class _Run:
                 + "; ".join(self.not_done)
                 + "."
             )
+        if self.unusable_looks:
+            lines.append(unusable_looks_line(self.unusable_looks))
         pages, items, why = self._unfinished(stopped)
         if pages or items:
             parts = []

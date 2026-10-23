@@ -25908,6 +25908,47 @@
               "title": "Page",
               "type": "integer"
             }
+          },
+          {
+            "description": "That upload's page (its name as the set lists it, as a finding's box names it); none: the vendor's file.",
+            "in": "query",
+            "name": "file",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "That upload's page (its name as the set lists it, as a finding's box names it); none: the vendor's file.",
+              "title": "File"
+            }
+          },
+          {
+            "description": "architect: the architect's file's page (when `file` is not given).",
+            "in": "query",
+            "name": "side",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "vendor",
+                    "architect"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "architect: the architect's file's page (when `file` is not given).",
+              "title": "Side"
+            }
           }
         ],
         "responses": {

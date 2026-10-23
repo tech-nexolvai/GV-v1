@@ -19,6 +19,7 @@ import {
   filesLine,
   headline,
   isDrawingNeededItem,
+  isRefusedString,
   itemParts,
   missingDrawingsOnly,
   neededWords,
@@ -28,6 +29,7 @@ import {
   previewPageOf,
   resultGroups,
   resultTabs,
+  shortValue,
   shouldBeValue,
   TAB_WORDS,
   tileHint,
@@ -746,8 +748,10 @@ function PageHead({ heading, count, noDrawing }: { heading: ReturnType<typeof pa
 
 function CompactRow({ kind, finding, onOpen, underPage = false }: { kind: 'right' | 'rule_note' | 'not_compared' | 'dismissed'; finding: ChatFinding; onOpen: (findingId: string) => void; underPage?: boolean }) {
   const { thing } = itemParts(finding.item);
+  // A vendor string code did not compare: its numbers are the AI's unproven reading, never shown as values (2026-10-23).
+  const refused = kind === 'not_compared' && isRefusedString(finding, 'not_compared');
   const vendor = vendorValue(finding);
-  const architect = finding.architect ? finding.architect.replace(/"/g, '″').replace(/'/g, '′') : null;
+  const architect = finding.architect && !refused ? finding.architect.replace(/"/g, '″').replace(/'/g, '′') : null;
   const note = kind === 'rule_note' ? ruleNoteWords(finding) : null;
   return (
     <button
@@ -768,8 +772,9 @@ function CompactRow({ kind, finding, onOpen, underPage = false }: { kind: 'right
         {kind === 'dismissed' && <span className="text-[13px] text-muted-foreground">Right (reviewer){finding.decision?.by ? ` · marked by ${finding.decision.by}` : ''}{finding.decision?.note ? ` · “${finding.decision.note}”` : ''}</span>}
       </span>
       <span className="num text-right text-[13.5px] whitespace-nowrap text-foreground max-md:col-start-2 max-md:text-left">
-        {vendor.main}
-        {architect && <span className="block text-xs text-muted-foreground">architect {architect}</span>}
+        {/* A long value is said short here (the drawer shows it whole). */}
+        {refused ? null : <span title={shortValue(vendor.main).full ?? undefined}>{shortValue(vendor.main, 24).short}</span>}
+        {architect && <span className="block text-xs text-muted-foreground" title={shortValue(architect).full ?? undefined}>architect {shortValue(architect, 24).short}</span>}
       </span>
     </button>
   );
