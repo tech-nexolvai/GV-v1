@@ -10,7 +10,7 @@ import type { ChatFile, ChatFinding, FindingBox, FindingDecision, FindingDecisio
 import { architectOnVendorPage, drawerChips, drawerKind, howWeKnow, KIND_WORDS, noArchitectPictureWords, overallSpot, referenceSide, ringInCrop, ringOnCrop, ringOnPage, vendorOnly, vendorSide, type DrawerKind, type Ring } from '@/lib/chat-drawer';
 import { architectPage, decisionHelpRows, pageWords, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
 import { isInternal, proofGroup, ruleNoteWords, type RuleNoteWords } from '@/lib/chat-proof';
-import { boxOnPicture, decisionsWords, isDrawingNeededItem, isRefusedString, itemParts, pageHeading, shortValue, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultTab } from '@/lib/chat-result';
+import { boxOnPicture, decisionsWords, isDrawingNeededItem, isPairingUnsureItem, isRefusedString, itemParts, pageHeading, shortValue, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultTab } from '@/lib/chat-result';
 import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { cn } from '@/lib/utils';
@@ -322,8 +322,8 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
   const finding = at >= 0 ? findings[at] : null;
   const previous = at > 0 ? findings[at - 1] : null;
   const next = at >= 0 && at < findings.length - 1 ? findings[at + 1] : null;
-  const needed = finding ? isDrawingNeededItem(finding) : false;
-  // A Drawing-needed item is a page, not a finding: nothing is ever decided on it.
+  const needed = finding ? isDrawingNeededItem(finding) || isPairingUnsureItem(finding) : false;
+  // A Drawing-needed or pairing-unsure item is a page, not a finding: nothing is ever decided on it.
   const decision = finding && decisionFor && !needed ? decisionFor(finding) : null;
   const laid = decision ? (decision.saved ?? (decision.decision ? { decision: decision.decision } : null)) : finding?.decision ?? null;
   const group = finding ? proofGroup(finding, laid) : null;

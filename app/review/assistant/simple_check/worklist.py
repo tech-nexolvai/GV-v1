@@ -925,6 +925,8 @@ def worklist_from(
         page_read = read_index.get(f"{half.file}#{half.file_page or half.page}")
         if page_read is not None:
             across_context.marked[half.ref] = _marked_words(page_read)
+            if title := _plain(page_read.get("item")):
+                across_context.index_titles[half.ref] = title
     across_context.word_limit = max(COMMON_WORD_MIN, COMMON_WORD_SHARE * len(mine_vendor))
 
     def own_area(half: _Half) -> tuple[list[_Half], tuple[Drawing, ...]]:
@@ -1248,15 +1250,34 @@ def _saved_answers(document: Any) -> dict[str, tuple[tuple[str, ...], pairing_mo
         shown = entry.get("candidates")
         if not isinstance(shown, list):
             continue
+        labels = entry.get("labels")
         out[str(ref)] = (
             tuple(str(c) for c in shown),
             pairing_module.MatchAnswer(
                 matches=tuple(str(m) for m in entry["matches"]),
                 confident=bool(entry.get("confident")),
-                reason=_plain(entry.get("reason"))[:200],
+                reason=_without_labels(
+                    _plain(entry.get("reason"))[:200],
+                    labels if isinstance(labels, Mapping) else {},
+                ),
             ),
         )
     return out
+
+
+#: The AI page matcher's own picture labels ("A5"): private to its question (`page_match`).
+_MATCH_LABEL: Final = re.compile(r"\bA\d{1,3}\b(?!\.?\d)")
+
+
+def _without_labels(reason: str, labels: Mapping[str, Any]) -> str:
+    """The matcher's reason with its picture labels ("the plan on A5") turned into the architect
+    item each one stands for (`p1009`, then said as a page a person finds, `_human_ids`). A label
+    it does not list is "an architect page": "A5" on a drawing is a section's name, never this."""
+
+    def item(found: re.Match[str]) -> str:
+        return str(labels.get(found.group(0)) or "an architect page")
+
+    return _MATCH_LABEL.sub(item, reason)
 
 
 def _items_across(
@@ -1336,6 +1357,9 @@ class _Across:
     none of a piece."""
     word_drawings: Counter[str] = field(default_factory=Counter)
     """How many of the vendor's drawings print each naming word."""
+    index_titles: dict[str, str] = field(default_factory=dict)
+    """The item title the set index read on a drawing's page (checked printed), by the drawing's
+    ref: a whole page's drawings only, never a view of a sheet (`pairing.Facts.index_title`)."""
     word_limit: float = math.inf
     """A naming word printed on more of the vendor's drawings than this is its title block's or
     its brand's (`COPYRIGHT`, `DRAWN`, the brand's name): no evidence of which piece a drawing shows."""
@@ -1524,6 +1548,10 @@ def _enrich(
             _view_drawings(item.drawings[0], dims_page, notes_page, found, boxed) if whole else ()
         )
         page_read = index.get((item.file, item.page)) or {}
+        title = _plain(page_read.get("item"))
+        if title:
+            for drawing in item.drawings:
+                context.index_titles[drawing.ref] = title
         if not views:
             words = _marked_words(page_read)
             for drawing in item.drawings:
@@ -1694,6 +1722,9 @@ def _with_marks(
 
     def facts(drawing: Drawing) -> pairing_module.Facts:
         found = facts_of(drawing)
+        title = context.index_titles.get(drawing.ref)
+        if title:
+            found = dataclasses.replace(found, index_title=title)
         extra = context.marked.get(drawing.ref)
         if not extra or not (extra[0] or extra[1]):
             return found
@@ -1729,6 +1760,7 @@ def _item_facts(
         whole_sheet=bool(item.views),
         markers=frozenset(w for m in members for w in m.markers),
         hand=frozenset(w for m in members for w in m.hand),
+        index_title=next((m.index_title for m in members if m.index_title), None),
     )
     return merged, members
 
@@ -1909,6 +1941,8 @@ def _pair_across(
         chosen, why = pairing_module.agree(ranked, code_pick, answer)
     by_id = {c.id: c for c in pool}
     picked_views: list[str] = []
+    whole: set[str] = set()
+    """The chosen items of several views compared whole (their page is titled the vendor's item)."""
     if chosen:
         kept: list[str] = []
         failed: list[str] = []
@@ -1929,6 +1963,15 @@ def _pair_across(
             best, problem = pairing_module.narrow(
                 vendor_facts, _view_facts(item, facts_of, _section_of(item, facts_of))
             )
+            if best is None and pairing_module.same_item(
+                mine_facts.index_title, _item_facts(item, facts_of, None)[0].index_title
+            ):
+                # The page's own title names the vendor's item exactly: the whole page is its
+                # drawing, whichever of its views shows the piece.
+                kept.append(item_id)
+                whole.add(item_id)
+                shown.append(f"the whole of {item_id}: its page is titled the vendor's item")
+                continue
             if best is None:
                 failed.append(f"{item_id} shows it ({why}), but {problem}")
                 continue
@@ -1947,7 +1990,7 @@ def _pair_across(
     if chosen:
         paired = [
             *(v for v in picked_views),
-            *(item_id for item_id in chosen if not by_id[item_id].views),
+            *(item_id for item_id in chosen if not by_id[item_id].views or item_id in whole),
         ]
         drawings_of = {v.ref: v for c in pool for v in c.views}
         sizeless = [
@@ -1980,14 +2023,15 @@ def _pair_across(
     if chosen:
         drawings_of = {v.ref: v for c in pool for v in c.views}
         targets = [facts_of(drawings_of[r]) for r in picked_views if r in drawings_of] + [
-            _item_facts(by_id[i], facts_of, None)[0] for i in chosen if not by_id[i].views
+            _item_facts(by_id[i], facts_of, None)[0]
+            for i in chosen
+            if not by_id[i].views or i in whole
         ]
         hand = next(
             (h for t in targets if (h := pairing_module.opposite_hand(mine_facts, t))), None
         )
         if hand is not None:
             why = f"{why}; {hand}: sizes are compared, positions from an end are not"
-    why = _named_views(why, pool)
     if not chosen and DRAWING_NEEDED not in why and saved is not None:
         # The item, not the project: the AI page matcher looked at every architect page of the
         # project and named only drawings that give no sizes of it, and code agrees.
@@ -2003,6 +2047,16 @@ def _pair_across(
         prefix = f"{pairing_module.UNPAIRED}: "
         if honest is not None:
             why = f"{honest}; {why.removeprefix(prefix)}"
+    unsure = () if chosen or DRAWING_NEEDED in why else _unsure(ranked, code_pick, answer)
+    if unsure:
+        # The AI page matcher is sure of an architect page and code cannot confirm it: the drawing
+        # is in the upload, so the reviewer is shown both pages, never "drawing needed".
+        either = " or ".join(unsure)
+        why = (
+            f"{pairing_module.UNPAIRED}: {pairing_module.PAIRING_UNSURE}: {either}?; "
+            f"{why.removeprefix(f'{pairing_module.UNPAIRED}: ')}"
+        )
+    why = _human_ids(why, everything, context)
     return AcrossPair(
         vendor=vendor,
         section=section if mine_facts.section is not None else None,
@@ -2025,6 +2079,7 @@ def _pair_across(
         why=why,
         needed=f": {DRAWING_NEEDED}: " in why,
         opposite_hand=hand,
+        unsure=unsure,
     )
 
 
@@ -2299,19 +2354,54 @@ def _shown_only(
     )
 
 
-def _named_views(why: str, pool: Sequence[AcrossCandidate]) -> str:
-    """The reason with each view's ref followed by its sheet's page and its title, as a reader
-    finds it ("p1208.a1.view5" is "p1208.a1.view5 (the architect's file page 12, "HALL
-    ELEVATION @ WAITING AREA")")."""
-    for item in pool:
+def _unsure(
+    ranked: Sequence[pairing_module.Scored],
+    code_pick: str | None,
+    answer: pairing_module.MatchAnswer | None,
+) -> tuple[str, ...]:
+    """The two architect items a reviewer picks from when the AI page matcher is sure of one and
+    code could not confirm it (`pairing.agree` refused it): the matcher's pick, then code's own
+    pick or code's first other item (code's pick first when code rules the matcher's out). Empty
+    when the matcher was not sure or found none, or when code rules its pick out and holds no
+    pick of its own (another unit, nothing to choose)."""
+    if answer is None or not answer.confident or not answer.matches:
+        return ()
+    by = {s.ref: s for s in ranked}
+    pick = answer.matches[0]
+    scored = by.get(pick)
+    if scored is None:
+        return ()
+    other = code_pick if code_pick not in (None, pick) else None
+    if scored.contradicts is not None:
+        # Code rules the matcher's pick out and picked another: code's first, then the matcher's.
+        return () if other is None else (other, pick)
+    if other is None:
+        other = next((s.ref for s in ranked if s.contradicts is None and s.ref != pick), None)
+    return (pick,) if other is None else (pick, other)
+
+
+def _human_ids(why: str, everything: Sequence[AcrossCandidate], context: _Across) -> str:
+    """The reason with code's private ids said as pages a person finds in the architect's file:
+    a view "p1208.a1.view5" is 'architect page 12, view "HALL ELEVATION"', an item "p1009" is
+    'architect page 9 ("STANDARD KITCHEN")', the title the set index read on it, when there is one.
+    """
+    files = {c.file for c in everything}
+    found: list[tuple[str, str]] = []
+    for item in everything:
+        page = f"architect page {item.page}" + (f" of {item.file}" if len(files) > 1 else "")
+        title = next(
+            (context.index_titles[d.ref] for d in item.drawings if d.ref in context.index_titles),
+            None,
+        )
+        named = f'{page} ("{title}")' if title else page
         for view in item.views:
-            if view.ref not in why or not view.titles:
-                continue
-            why = re.sub(
-                rf"{re.escape(view.ref)}(?!\d)(?! \()",
-                f'{view.ref} (the architect\'s file page {item.page}, "{view.titles[0]}")',
-                why,
-            )
+            words = f'{page}, view "{view.titles[0]}"' if view.titles else named
+            found.append((view.ref, words))
+        found.extend((d.ref, named) for d in item.drawings)
+        found.append((item.id, named))
+    for ref, words in sorted(found, key=lambda one: -len(one[0])):
+        if ref in why:
+            why = re.sub(rf"(?<![\w.]){re.escape(ref)}(?!\.?\w)", words.replace("\\", r"\\"), why)
     return why
 
 
@@ -2449,6 +2539,7 @@ def _ranked_across(
         # out (accessible against standard) or flags it (opposite hand), whichever side has it.
         markers=mine.markers,
         hand=mine.hand,
+        index_title=mine.index_title,
     )
     ranked = pairing_module.rank(vendor_facts, [built[c.id][0] for c in pool])
     by_rank = {s.ref: s for s in ranked}

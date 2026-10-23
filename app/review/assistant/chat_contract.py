@@ -1123,13 +1123,32 @@ class ChatCoveragePageOut(BaseModel):
         "found in the architect's file\").",
     )
 
+    pairing_unsure: bool = Field(
+        default=False,
+        description="Not compared: the AI page matcher was sure of an architect page and code "
+        "could not confirm it. The architect's drawing is in the upload (never 'Drawing "
+        "needed'): the result screen lists it under Not compared with both candidate pages. "
+        "Worked out on read from the page's note.",
+    )
+    pairing_unsure_why: str | None = Field(
+        default=None,
+        description="pairing_unsure: the two candidate pages, as a person finds them "
+        "('architect page 9 (\"STANDARD KITCHEN\") or architect page 2?').",
+    )
+
     @model_validator(mode="before")
     @classmethod
     def _drawing_needed(cls, raw: object) -> object:
-        if not isinstance(raw, dict) or "drawing_needed" in raw:
+        if not isinstance(raw, dict):
             return raw
-        from app.review.assistant.full_check_plan import unpaired_note_why
+        from app.review.assistant.full_check_plan import unpaired_note_why, unsure_note_why
 
+        if "pairing_unsure" not in raw:
+            unsure = unsure_note_why(raw.get("note"))
+            if unsure is not None:
+                raw = {**raw, "pairing_unsure": True, "pairing_unsure_why": unsure}
+        if "drawing_needed" in raw:
+            return raw
         why = unpaired_note_why(raw.get("note"))
         return raw if why is None else {**raw, "drawing_needed": True, "drawing_needed_why": why}
 

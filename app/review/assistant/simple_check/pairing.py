@@ -50,6 +50,14 @@ variant never pairs with a standard one (`markers_in`); an opposite-hand unit is
 (`opposite_hand`); a saved matcher answer still holds when code only ruled candidates out
 (`reuse`).
 
+**The set index's item titles (2026-10-23):** a set with no GV headings had the matcher right and
+sure on 20 of 20 vendor drawings, and code accepted 4. The item title the set index read on both
+pages (checked printed) now counts as strong evidence when the two match exactly after a fixed
+tidy-up (`unit_title`, `same_item`: "KITCHEN" is never "KITCHENETTE"); two numbered unit types
+that differ ("TYPE 1", "TYPE 3") rule the pair out. A sure matcher pick code still cannot confirm
+is "pairing unsure" (`PAIRING_UNSURE`): both pages are shown to the reviewer, never "drawing
+needed", never compared.
+
 Pure: plain values in, a decision out. The work list (`worklist._pair_across`) builds the facts.
 """
 
@@ -70,6 +78,7 @@ __all__ = [
     "MIN_LAYOUT_SHARE",
     "MIN_LAYOUT_VALUES",
     "MIN_WEAK_POOL",
+    "PAIRING_UNSURE",
     "TIER",
     "UNPAIRED",
     "Candidate",
@@ -87,15 +96,21 @@ __all__ = [
     "rank",
     "references_in",
     "reuse",
+    "same_item",
     "section_key",
     "tags_in",
     "title_key",
+    "unit_title",
     "views_in",
     "words_in",
 ]
 
 #: The Not-compared words of a vendor drawing code could not pair (the run lists these drawings).
 UNPAIRED: Final = "not paired with an architect drawing"
+#: An unpaired drawing's reason when the AI page matcher is sure of an architect page and code
+#: cannot confirm it: the drawing is in the upload, so it is never "drawing needed"; the reviewer
+#: is shown both candidate pages (`worklist._pair_across`).
+PAIRING_UNSURE: Final = "pairing unsure"
 #: A vendor drawing needs this many printed values to be paired by its layout.
 MIN_LAYOUT_VALUES: Final = 3
 #: The share of the vendor's values the architect must also print for a layout pairing.
@@ -186,6 +201,11 @@ class Facts:
     hand: frozenset[str] = frozenset()
     """The opposite-hand markers it prints (`MIRROR`, `OPP. HAND`; the set index's checked words
     too): printed on one side only, the pair is compared mirrored (`opposite_hand`)."""
+    index_title: str | None = None
+    """The item title the set index read on its page, as printed (checked printed by code:
+    `set_index.verify`): "PRIMARY EN SUITE VANITY - TYPE 1". Two pages naming the same item,
+    exactly after a fixed tidy-up (`unit_title`), is strong evidence; two numbered types that
+    differ ("TYPE 1", "TYPE 3") rule the pair out (`rank`)."""
 
 
 @dataclass(frozen=True)
@@ -623,10 +643,16 @@ def markers_in(texts: Iterable[str]) -> tuple[frozenset[str], frozenset[str]]:
 
 
 def opposite_hand(vendor: Facts, architect: Facts) -> str | None:
-    """Why a pair is compared mirrored (an opposite-hand marker printed on one side only), or
-    `None`."""
-    if bool(vendor.hand) == bool(architect.hand):
+    """Why a pair is compared mirrored (an opposite-hand marker printed on one side only, or on
+    both: an architect's page listing its unit's reverse type beside the regular one says nothing
+    of which hand it draws), or `None` (no marker on either side)."""
+    if not vendor.hand and not architect.hand:
         return None
+    if vendor.hand and architect.hand:
+        return (
+            f"both drawings name a hand (the vendor's {', '.join(sorted(vendor.hand))}; the "
+            f"architect's {', '.join(sorted(architect.hand))}): which hand each draws is not sure"
+        )
     side, words = (
         ("the vendor's drawing", vendor.hand)
         if vendor.hand
@@ -706,6 +732,55 @@ def _named_in(title: str, phrases: Sequence[str]) -> str | None:
         if len(p) >= 8 and p not in _GENERIC_PHRASES and p != title and f" {p} " in padded
     ]
     return max(found, key=len) if found else None
+
+
+#: Words that say which hand or copy of a unit a sheet draws, never which unit: a "REVERSED UNITS"
+#: sheet draws the same unit as its regular sheet (compared mirrored, `opposite_hand`).
+_HAND_WORDS: Final = frozenset(
+    {
+        "reverse",
+        "reversed",
+        "mirror",
+        "mirrored",
+        "regular",
+        "unit",
+        "units",
+        "opp",
+        "opposite",
+        "hand",
+        "handed",
+    }
+)
+#: A numbered unit type in a tidied title: "type 1", "type 3a", "type b".
+_UNIT_TYPE: Final = re.compile(r"\btype ([a-z0-9]{1,4})\b")
+
+
+def unit_title(text: object) -> tuple[str, str | None]:
+    """An item title tidied for an exact match (`title_key`: lower case, signs as spaces, so
+    "TYPE-1" is "type 1"), the hand words left out ("KITCHEN REVERSED UNITS" is "kitchen"); and its
+    numbered unit type ("1" of "VANITY - TYPE 1"), or `None`. Only an exact match counts: "kitchen"
+    is not "standard kitchen", nor "kitchenette" (other tools ask the reviewer then, never guess).
+    """
+    words = [w for w in title_key(text).split() if w not in _HAND_WORDS]
+    tidy = " ".join(words)
+    found = _UNIT_TYPE.search(tidy)
+    return tidy, found.group(1) if found else None
+
+
+def _index_title_words(title: str) -> bool:
+    """Whether a tidied title says enough to name an item (2 words or more, or one of 5 letters or
+    more), as `_title_on`."""
+    words = title.split()
+    return bool(words) and (len(words) > 1 or len(words[0]) >= 5)
+
+
+def same_item(one: str | None, other: str | None) -> bool:
+    """Whether two set index item titles name the same item: equal after `unit_title`'s tidy-up
+    (so "VANITY - TYPE 1 REVERSED UNITS" is "Vanity type-1"), and enough words to name one."""
+    if not one or not other:
+        return False
+    mine, theirs = unit_title(one)[0], unit_title(other)[0]
+    return mine == theirs and _index_title_words(mine)
 
 
 @dataclass(frozen=True)
@@ -796,6 +871,24 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
         elif one.title and (named_in := _named_in(one.title, vendor.phrases)):
             score += _W_NAMED_IN_TITLE
             evidence.append(f'the vendor\'s sheet names "{named_in}", part of its title')
+        if vendor.index_title and one.index_title:
+            my_type = unit_title(vendor.index_title)[1]
+            their_type = unit_title(one.index_title)[1]
+            if my_type is not None and their_type is not None and my_type != their_type:
+                # "TYPE 1" against "TYPE 3": another unit, whatever else they share.
+                contradicts = (
+                    f'the vendor\'s sheet is "{vendor.index_title}" and this one is '
+                    f'"{one.index_title}": another unit type'
+                )
+            elif same_item(vendor.index_title, one.index_title) and not strong:
+                # The same item title on both pages (each checked printed): strong.
+                strong = True
+                score += _W_TITLE
+                evidence.append(
+                    f'both pages are titled "{one.index_title}"'
+                    if vendor.index_title == one.index_title
+                    else f'the vendor\'s "{vendor.index_title}" is its "{one.index_title}"'
+                )
         if vendor.section is not None and one.section is not None:
             if one.section == vendor.section:
                 score += _W_SECTION

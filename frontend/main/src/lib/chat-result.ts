@@ -161,6 +161,42 @@ export function drawingNeededItems(needed: readonly DrawingNeeded[], titles: Pag
   });
 }
 
+/** Id prefix of a pairing-unsure page: listed under Not compared, opened like a finding, never decided on. */
+export const PAIRING_UNSURE_ID = 'pairing-unsure:';
+
+export function isPairingUnsureItem(finding: Pick<ChatFinding, 'id'>): boolean {
+  return finding.id.startsWith(PAIRING_UNSURE_ID);
+}
+
+/**
+ * Each vendor page the AI page matcher paired and code could not confirm (the server's
+ * `pairing_unsure`), as a Not-compared item naming both candidate pages. Its architect drawing is in
+ * the upload: never "no architect drawing", never compared. Never sent to the server.
+ */
+export function pairingUnsureItems(coverage: ChatCoverage | null | undefined, titles: PageTitles | null | undefined): ChatFinding[] {
+  return (coverage?.pages ?? [])
+    .filter((page) => page.pairing_unsure === true)
+    .sort((a, b) => a.page - b.page)
+    .map((page) => {
+      const heading = pageHeading(page.page, titles);
+      const pages = page.pairing_unsure_why?.trim() || 'which architect page shows it?';
+      const why = `Pairing unsure: ${pages}`;
+      return {
+        id: `${PAIRING_UNSURE_ID}${page.page}`,
+        page: page.page,
+        item: heading.title ? `${heading.title}: ${why}` : why,
+        category: 'other',
+        architect: null,
+        vendor: null,
+        status: 'check',
+        why: 'the AI page matcher was sure of the first page, and code could not confirm it, so nothing on this page was compared with the architect',
+        verified: false,
+        source: 'architect',
+        proof: { group: 'not_compared', not_compared: 'pairing_unsure', reason: why, settle: 'your pick of the architect page that shows this item, then run the check again' },
+      } satisfies ChatFinding;
+    });
+}
+
 /** Items grouped under their vendor page, in page order (the list's "By page"). */
 export function byPage(findings: readonly ChatFinding[]): { page: number; findings: ChatFinding[] }[] {
   const pages = new Map<number, ChatFinding[]>();
@@ -254,6 +290,7 @@ export function drawingsRequestText(pages: readonly number[], titles: PageTitles
 
 /** The reasons in the Not-compared list's order, as its headings say them (`classification.REASON_WORDS`). */
 const REASONS: readonly [string, string][] = [
+  ['pairing_unsure', 'Pairing unsure: pick the architect page'],
   ['field_verify', 'The drawing says verify in field'],
   ['nothing_to_compare', 'Architect gives no size or information'],
   ['no_overall', 'Architect gives only the parts, no overall'],

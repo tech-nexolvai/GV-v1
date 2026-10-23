@@ -4603,6 +4603,17 @@ export interface components {
             /** Pair Page */
             pair_page?: number | null;
             /**
+             * Pairing Unsure
+             * @description Not compared: the AI page matcher was sure of an architect page and code could not confirm it. The architect's drawing is in the upload (never 'Drawing needed'): the result screen lists it under Not compared with both candidate pages. Worked out on read from the page's note.
+             * @default false
+             */
+            pairing_unsure: boolean;
+            /**
+             * Pairing Unsure Why
+             * @description pairing_unsure: the two candidate pages, as a person finds them ('architect page 9 ("STANDARD KITCHEN") or architect page 2?').
+             */
+            pairing_unsure_why?: string | null;
+            /**
              * Status
              * @enum {string}
              */
