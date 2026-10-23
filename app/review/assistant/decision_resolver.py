@@ -568,6 +568,15 @@ def _printed_vs_printed(finding: Mapping[str, Any], ctx: ResolverContext) -> _Se
         return None
     if finding.get("check_reason"):
         return None  # the lead said why two printed values still need a person (#1545)
+    splash = import_module("app.review.assistant.splash_views")
+    record = finding.get(splash.FIELD)
+    if isinstance(record, Mapping) and record.get("outcome") in (
+        "likely_problem",
+        "not_like_for_like",
+    ):
+        return None  # the splash step's own outcome stands
+    if splash.unlike(finding) is not None:
+        return None  # like for like (2026-10-23): a splash's size against another part's
     if _OTHER_MEASURE.search(_words(finding, "why", "architect", "vendor")):
         return None
     if _LAYOUT.search(str(finding.get("item") or "")) and not _measure(finding):

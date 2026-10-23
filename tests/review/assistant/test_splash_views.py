@@ -326,3 +326,26 @@ def test_the_escalation_keeps_the_splash_steps_reason() -> None:
     found = next((f for f in result.changed if f["id"] == "F1"), finding)
     assert found["status"] == "check"
     assert found["splash_views"]["why"] == record["why"]
+
+
+def test_the_resolver_never_remakes_an_unlike_splash_right() -> None:
+    from app.review.assistant import decision_resolver as dr
+
+    # The roster's finish runs the resolver after this step: a splash length against an
+    # architect size code never saw printed as the splash's stays Not compared.
+    right = _splash(
+        item="Vanity: back splash length",
+        vendor='36"',
+        architect='36"',
+        status="same",
+        inches={"vendor": "36", "architect": "36"},
+        checks={"printed_vendor": "match", "printed_architect": "match"},
+        dims={
+            "architect": {"id": "D8", "text": '36"', "box": [0, 0, 9, 9], "file": FILE, "page": 2}
+        },
+    )
+    down = splash_views.downgrade_unlike(right, {})
+    assert down is not None
+    resolved = dr.resolve([down], dr.ResolverContext())
+    found = next((f for f in resolved.changed if f["id"] == "F1"), down)
+    assert found["status"] == "check" and proof.proof_group(found) == "not_compared"
