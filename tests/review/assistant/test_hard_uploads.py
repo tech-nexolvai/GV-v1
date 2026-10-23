@@ -423,8 +423,10 @@ def test_twin_architect_views_are_never_paired(tmp_path: Path) -> None:
 
 
 @pytest.mark.xfail(
-    reason="an accessible (ADA) unit is paired with the architect's standard unit when their "
-    "sizes match: the marker on one side only does not stop the pair",
+    reason="an accessible (ADA) vendor unit is still paired with the architect's standard unit: "
+    "the one-side marker rule (#1893) only fires when the architect's drawing carries the marker, "
+    "because the vendor's markers are left out of the facts code ranks with "
+    "(worklist._ranked_across builds vendor_facts without markers / hand)",
     strict=False,
 )
 def test_accessible_unit_is_never_paired_with_the_standard_one(tmp_path: Path) -> None:
@@ -439,11 +441,6 @@ def test_accessible_unit_is_never_paired_with_the_standard_one(tmp_path: Path) -
     assert outcome.paired() == {1: ()}
 
 
-@pytest.mark.xfail(
-    reason="a mirrored unit (OPP. HAND, widths in the other order) is paired with the architect's "
-    "unit silently: the pair's reason does not say it is the opposite hand",
-    strict=False,
-)
 def test_mirrored_unit_is_not_paired_silently(tmp_path: Path) -> None:
     outcome = run_pipeline(
         tmp_path,
