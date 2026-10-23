@@ -71,6 +71,9 @@ from app.review.assistant.cloud_layout import (
 )
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.impact import BIGGEST_FIRST, biggest_line
+from app.review.assistant.likely_problems import COUNT_WORDS as LIKELY_COUNT
+from app.review.assistant.likely_problems import HEADING as LIKELY_HEADING
+from app.review.assistant.likely_problems import please_check
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.rule_notes import HEADING as RULE_NOTE_HEADING
 from extraction import gv_marks
@@ -1203,6 +1206,7 @@ def check_report_pdf(
         "Cloud drawing": (
             f"{groups['clouded']} wrong clouded (proved by code), {groups['right']} right, "
             + (f"{groups['rule_note']} {RULE_NOTE_COUNT}, " if groups["rule_note"] else "")
+            + (f"{groups['likely_problem']} {LIKELY_COUNT}, " if groups["likely_problem"] else "")
             + f"{groups['not_compared']} not compared (the Not-compared list)"
         ),
         "The rule": proof.RULE_LINE,
@@ -1218,6 +1222,7 @@ def check_report_pdf(
     right = by_product([f for f in findings if placed[id(f)] == "right"])
     unseen = by_product([f for f in findings if placed[id(f)] == "not_compared"])
     noted = by_product([f for f in findings if placed[id(f)] == "rule_note"])
+    likely = by_product([f for f in findings if placed[id(f)] == "likely_problem"])
     per_product: dict[str, list[int]] = {}
     for kinds, chosen in enumerate((wrong, unseen, right)):
         for f in chosen:
@@ -1285,6 +1290,26 @@ def check_report_pdf(
                     for f in noted
                 ],
                 [26, 70, 34, 210, 110, 190],
+            )
+        )
+    if likely:
+        # The whole-drawing look's claims code could not prove (2026-10-23): never red.
+        sections.append(
+            (
+                f"{LIKELY_HEADING} ({len(likely)})",
+                ["AI", "Product", "Page", "Item", "Vendor", "What to check"],
+                [
+                    [
+                        number[id(f)],
+                        group(f),
+                        f.get("page"),
+                        f.get("item"),
+                        f.get("vendor"),
+                        please_check(f),
+                    ]
+                    for f in likely
+                ],
+                [26, 70, 34, 170, 100, 240],
             )
         )
     if unseen:

@@ -16,6 +16,7 @@ from app.review.assistant.chat_findings import products_words
 from app.review.assistant.chat_trust import cloud_kind
 from app.review.assistant.classification import not_compared_line
 from app.review.assistant.impact import by_impact
+from app.review.assistant.likely_problems import COUNT_WORDS as LIKELY_COUNT
 from app.review.assistant.proof import classified, proof_counts, proof_group, vendor_own
 from app.review.assistant.review_action import review_action
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
@@ -26,6 +27,17 @@ CODE_SUMMARY_NOTE: Final = "*Summary written by GV Review: the AI did not finish
 
 #: How many issues the summary names.
 TOP_ISSUES: Final = 5
+
+
+def likely_line(count: int) -> str:
+    """The summary's line on the whole-drawing look's Likely problems (2026-10-23)."""
+    found = "1 likely problem" if count == 1 else f"{count} likely problems"
+    return (
+        f"{found} in the design (a missing or extra piece, another count, size or layout) "
+        f"{'was' if count == 1 else 'were'} found by looking at whole drawings but not proved by "
+        "code: please check and confirm (they are in the comment letter and the register as "
+        '"Please check and confirm").'
+    )
 
 
 def rule_note_line(count: int) -> str:
@@ -220,12 +232,14 @@ def code_summary(
         of = f" of {page_count}" if page_count else ""
         first = f"Checked items on {pages}{of} pages ({scope}); pages were not all recorded."
     noted = counts["rule_note"]
+    likely = counts["likely_problem"]
     lines = [
         first,
         # #1717: the screen's words (one meaning each): Wrong / Right / Not compared; #1839: what
         # breaks a GV rule at the architect's size is decided, never "not compared".
         f"{wrong} wrong (proved by code), {right} right, "
         + (f"{noted} {RULE_NOTE_COUNT}, " if noted else "")
+        + (f"{likely} {LIKELY_COUNT}, " if likely else "")
         + f"{nothing} not compared.",
     ]
     issues = _issue_words([f for f in findings if proof_group(f) == "clouded"])
@@ -236,6 +250,8 @@ def code_summary(
     )
     if noted:
         lines.append(rule_note_line(noted))
+    if likely:
+        lines.append(likely_line(likely))
     unopened = int(coverage.get("not_opened") or 0) if coverage is not None else 0
     line = not_compared_line(Counter(reasons), unopened)
     lines.append(

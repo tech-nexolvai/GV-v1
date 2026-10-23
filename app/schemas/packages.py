@@ -278,6 +278,12 @@ class FullCheckCountsOut(BaseModel):
         ge=0, description="Ask the architect: the architect's size breaks a GV rule (#1839)."
     )
     not_compared: int = Field(ge=0, description="Not compared, each with its reason.")
+    likely_problem: int = Field(
+        default=0,
+        ge=0,
+        description="Likely problem: the whole-drawing look found it, code did not prove it "
+        "(please check and confirm).",
+    )
 
 
 class FullCheckReviewOut(BaseModel):

@@ -26,6 +26,10 @@ a false red cloud goes straight to the vendor, so **only what code proved is clo
   and the vendor prints that same size, both read by code at their spots (`rule_notes`): DECIDED,
   "Breaks a GV rule (architect's size): ask the architect". Never clouded, no "should be", not on
   the Not-compared list: the letter and the register carry GV's ready question for the architect.
+- **likely_problem** (the owner 2026-10-23, `likely_problems`): what the whole-drawing look found
+  (`whole_look`: a missing unit, another count or height, another layout) and code could not prove.
+  Never clouded and never on the Not-compared list: shown dashed, and on the letter and the
+  register "Please check and confirm: ...". One code proves takes the clouded path like any item.
 
 The reviewer's Agree / Not a problem stay as optional overrides: an agreed item is clouded
 whatever code proved (the reviewer is the witness), and an item marked not a problem is never
@@ -44,7 +48,14 @@ from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
-from app.review.assistant import classification, missing_items, rule_notes, spot_guard, witness
+from app.review.assistant import (
+    classification,
+    likely_problems,
+    missing_items,
+    rule_notes,
+    spot_guard,
+    witness,
+)
 from app.review.assistant import full_check_advocate as advocate
 from app.review.assistant.chat_trust import inch_words
 from app.review.assistant.finding_checks import to_inches, wrong_part
@@ -64,6 +75,7 @@ __all__ = [
     "REVIEWER_WRONG",
     "RULE_LINE",
     "TWO_READS",
+    "UNDECIDED",
     "ProofGroup",
     "architect_file",
     "blocks_with_proof",
@@ -97,19 +109,26 @@ __all__ = [
     "witnesses_of",
 ]
 
-type ProofGroup = Literal["clouded", "right", "rule_note", "not_compared", "dismissed"]
+type ProofGroup = Literal[
+    "clouded", "right", "rule_note", "likely_problem", "not_compared", "dismissed"
+]
 GROUPS: Final[tuple[ProofGroup, ...]] = (
     "clouded",
     "right",
     "rule_note",
+    "likely_problem",
     "not_compared",
     "dismissed",
 )
+#: The groups of an item still open after code's steps (the escalation, the lead review and the
+#: look-again work on these): Not compared, and a Likely problem code may still prove.
+UNDECIDED: Final = frozenset({"not_compared", "likely_problem"})
 #: Each group as the drawing, the report, the CSV and the screen name it.
 GROUP_WORDS: Final[Mapping[str, str]] = {
     "clouded": "Wrong, proved by code (clouded)",
     "right": "Right",
     "rule_note": rule_notes.GROUP_WORDS,
+    "likely_problem": likely_problems.GROUP_WORDS,
     "not_compared": "Not compared",
     "dismissed": "Right (reviewer)",
 }
@@ -350,11 +369,19 @@ def pairing_proved(finding: Mapping[str, Any]) -> bool:
     """The full check proved the pairing (#1611, the one signal): code paired the two labels by
     itself (`paired_by: code`), or the devil's advocate passed the item: two blind picks of the
     same labels, code reading both, the same drawn extent and every code check
-    (`full_check_advocate.decide`, under `assistant_pairing_proof`)."""
+    (`full_check_advocate.decide`, under `assistant_pairing_proof`). An item the whole-drawing
+    look made (`likely_problems.needs_code_ends`) needs code's own proof that both dimensions end at
+    the same places: two agreeing blind picks are not enough (the paid Set 3 run of 2026-10-23: a
+    height to a splash's top went red against a height to the counter's top on two picks)."""
     if finding.get("paired_by") == "code":
         return True
     verdict = _advocate(finding)
-    return verdict is not None and verdict.get("result") == "passed"
+    if verdict is None or verdict.get("result") != "passed":
+        return False
+    if likely_problems.needs_code_ends(finding):
+        answers = verdict.get("answers")
+        return isinstance(answers, Mapping) and answers.get("pairing") == "proved"
+    return True
 
 
 def _read_by_code(finding: Mapping[str, Any]) -> bool:
@@ -463,7 +490,12 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
         return "not_compared"  # GV's reviewer only (#1652): never clouded, whoever clicks
     status = finding.get("status")
     decided = _decided(finding)
-    proved = status == "different" and code_proved(finding) and not _reader_error(finding)
+    proved = (
+        status == "different"
+        and code_proved(finding)
+        and not _reader_error(finding)
+        and not likely_problems.likely_only(finding)
+    )
     if not proved and classified(finding).outcome == "right":
         return "right"  # compared and Right: nothing to override
     # The reviewer's decision on any other item (#1803: a Not-compared item whose two values look
@@ -477,7 +509,10 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
         return "clouded"
     # The architect's size breaks a GV rule and the vendor follows it (#1839): decided, GV asks
     # the architect; never clouded, never on the Not-compared list.
-    return "rule_note" if classified(finding).outcome == "rule_note" else "not_compared"
+    if classified(finding).outcome == "rule_note":
+        return "rule_note"
+    # The whole-drawing look found it and code could not prove it (2026-10-23): please check.
+    return "likely_problem" if likely_problems.likely(finding) else "not_compared"
 
 
 def _reader_error(finding: Mapping[str, Any]) -> bool:
@@ -489,7 +524,10 @@ def classified(finding: Mapping[str, Any]) -> classification.Classified:
     """The item under the architect-first rules (R1-R10), with code's proof (`code_proved`). A GV
     rule result with no stated requirement is Not compared under R6 (`no_stated_requirement`)."""
     proved = (
-        finding.get("status") == "different" and code_proved(finding) and not _reader_error(finding)
+        finding.get("status") == "different"
+        and code_proved(finding)
+        and not _reader_error(finding)
+        and not likely_problems.likely_only(finding)
     )
     if not proved and no_stated_requirement(finding):
         return classification.rule_without_requirement(finding)
@@ -797,7 +835,10 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
     found = classified(finding)
     not_compared = group == "not_compared"
     noted = group == "rule_note" and found.note is not None
-    wrong = (finding.get("status") == "different" and not not_compared) or group == "clouded"
+    likely = group == "likely_problem"
+    wrong = (
+        finding.get("status") == "different" and not not_compared and not likely
+    ) or group == "clouded"
     reason: str | None = None
     if not_compared:
         reason = found.why
@@ -806,6 +847,8 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
             reason = NO_REQUIREMENT_REASON
     elif noted:
         reason = found.why
+    elif likely:
+        reason = (likely_problems.payload(finding) or {}).get("reason") or found.why
     elif group == "dismissed":
         reason = "The reviewer marked it Right."
     return {
@@ -823,11 +866,20 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
             )
         ),
         "not_compared": found.reason if not_compared else None,
-        "label": found.label if not_compared else (rule_notes.SHORT_WORDS if noted else None),
+        "label": (
+            found.label
+            if not_compared
+            else (
+                rule_notes.SHORT_WORDS if noted else likely_problems.SHORT_WORDS if likely else None
+            )
+        ),
         "settle": found.settle if not_compared else None,
         # #1839: the GV rule the architect's size breaks, and GV's question for the architect: what
         # code found, also under a reviewer's override (the screen goes back to it on an undo).
         "rule_note": found.note.as_dict() if found.note is not None else None,
+        # The whole-drawing look's claim (2026-10-23): what to check and confirm, its kind and
+        # reason; the spots are the finding's own boxes.
+        "likely_problem": likely_problems.payload(finding),
     }
 
 

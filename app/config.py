@@ -212,6 +212,17 @@ class Settings(BaseSettings):
     assistant_page_match_model: Literal["off", "claude-sonnet-5-5", "claude-opus-5-5"] = (
         "claude-sonnet-5-5"
     )
+    # The whole-drawing look (Anant, 2026-10-23): one AI look per paired vendor drawing, beside the
+    # roster's page helpers, for the big design differences number-by-number reading misses
+    # (missing units, other counts and heights); its claims are "Likely problem" unless code
+    # proves them. Inside the fixed price (its share, `full_check_roster.SHARES`); `off`: none.
+    # Opus 5.5 by measurement (Set 3, 2026-10-23, same prompt): Sonnet 5.5 found 3 of the 21 items
+    # GV's answer key must find ($0.97 a set); Opus 5.5 at medium effort found 10 of them, and the
+    # big design differences the number helpers missed, at about $0.12 a look ($2.57 a set).
+    assistant_whole_look_model: Literal["off", "claude-sonnet-5-5", "claude-opus-5-5"] = (
+        "claude-opus-5-5"
+    )
+    assistant_whole_look_effort: Literal["low", "medium", "high"] = "medium"
     # The set index (two-file uploads): each page read once by a cheap call (project, set, views),
     # every string checked by code, kept in the set pack; the vendor's drawings are then paired
     # only within their own project, never with a brand prototype. About $0.01-0.02 a page.
@@ -289,6 +300,17 @@ class Settings(BaseSettings):
     # stopped the API).
     assistant_page_cache_workers: int = Field(default=3, ge=1, le=8)
     assistant_page_cache_memory_mb: int = Field(default=256, ge=16, le=100_000)
+    # #1871: the chat's messages (the full check above all) and the set packs run in a separate
+    # worker process (`scripts/assistant_worker.py --watch`), never in the API: the API writes a
+    # job row and streams its progress from PostgreSQL. Off: the API's own threads, as before (a
+    # deployment that turns it on must run the worker, or messages wait in the queue).
+    assistant_run_in_worker: bool = False
+    # The worker's jobs running at once, over every worker process: messages, and set packs.
+    assistant_worker_message_slots: int = Field(default=3, ge=1, le=16)
+    assistant_worker_pack_slots: int = Field(default=1, ge=1, le=8)
+    # A running job with no heartbeat for this long is dead (its process was killed): a message is
+    # stored as interrupted (Continue), a set pack is built again once.
+    assistant_worker_stale_seconds: int = Field(default=60, ge=10, le=3600)
     # The Usage page can show what OpenRouter reports this key has used (all projects using the
     # key), beside the recorded total (#1165): a free, read-only request with `OPENROUTER_API_KEY`.
     # Off by default, and off whenever no key is set.

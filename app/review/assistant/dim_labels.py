@@ -3485,6 +3485,7 @@ def build_dims(
     uploads: Mapping[str, Path] | None = None,
     on_status: Callable[[dict[str, Any]], None] | None = None,
     reads: dict[int, PageRead] | None = None,
+    line_work: Path | None = None,
 ) -> dict[str, Any]:
     """The set pack's `dims.json`: every page of every upload and its labels. Three passes: the
     text route on every page first (the agent has every printed label in minutes), then the pasted
@@ -3554,6 +3555,7 @@ def build_dims(
                 ink is not None,
                 None if health is None else tuple(sorted(dict(health.get(name) or {}).items())),
                 str((uploads or {}).get(name, "")),
+                "" if line_work is None else str(line_work),
             )
             for number in range(1, count + 1)
         ]
