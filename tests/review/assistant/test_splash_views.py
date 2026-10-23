@@ -374,3 +374,152 @@ def test_no_sharper_read_is_paid_for_an_unlike_splash() -> None:
     )
     settled, _reason, said = dr._settle_one(unread, dr.ResolverContext(read=reader))
     assert settled is None and said is None and asked == []
+
+
+# ---- review of #1918 ------------------------------------------------------------------------------
+
+
+def test_a_splash_whose_kind_is_said_on_one_side_only_is_never_alike() -> None:
+    rules = splash_views._rules()
+    vague = _splash(item="Vanity: splash height")
+    side = {(FILE, 2): [_phrase('4" SIDE SPLASH', 100, 100)]}
+    found = splash_views.settle(vague, Search((SECTION,)), side, rules=rules).finding
+    assert found["status"] == "check" and proof.proof_group(found) != "right"
+    # A splash of no said kind and a side splash in two views: two parts, no question.
+    two = {(FILE, 2): [_phrase('4" SPLASH', 100, 100), _phrase('6" SIDE SPLASH', 500, 100)]}
+    settled = splash_views.settle(_splash(), Search((SECTION, ELEVATION)), two, rules=rules)
+    assert settled.added == []
+    # A vendor value whose measure is not said is not alike to a printed height.
+    label = {"text": '4" BACKSPLASH', "box": [0, 0, 9, 9], "file": FILE, "page": 2}
+    unsaid = _splash(item="Vanity: back splash", vendor='4"', dims={"architect": label})
+    assert splash_views.unlike(unsaid) is not None
+
+
+def test_a_side_splash_never_takes_the_backsplash_job_value() -> None:
+    job = {"thickness": splash_views.JobValue(Fraction(3, 4), '3/4"', "this project's value")}
+    for item in ("Vanity: side splash thickness", "Vanity: splash thickness"):
+        thick = _splash(item=item, vendor='3/4"', inches={"vendor": "0.75"})
+        found = splash_views.settle(thick, Search((SECTION,)), {}, job=job).finding
+        assert found["status"] == "check" and "job_value" not in found["splash_views"], item
+
+
+def test_the_job_value_is_a_job_entry_never_a_company_default(tmp_path: Any) -> None:
+    from types import SimpleNamespace
+
+    def engine(origin: str) -> Any:
+        skills = tmp_path / origin.replace(" ", "_")
+        skills.mkdir()
+        (skills / "rules.md").write_text(
+            '| Backsplash thickness (`backsplash_thickness`) | 3/4" | ' + origin + " |\n",
+            encoding="utf-8",
+        )
+        return SimpleNamespace(tools=SimpleNamespace(workspace=SimpleNamespace(skills=skills)))
+
+    assert splash_views._job_values(engine("GV's company standard")) == {}
+    assert "thickness" in splash_views._job_values(engine("this project's value"))
+
+
+def test_a_countertop_depth_including_the_splash_is_no_splash_item() -> None:
+    rules = splash_views._rules()
+    for item in (
+        "Countertop depth incl. backsplash",
+        "Countertop depth excl. backsplash",
+        "Top depth + backsplash",
+        "Top depth & backsplash",
+    ):
+        finding = _splash(item=item, vendor='25 1/2"', inches={"vendor": "25.5"})
+        assert splash_views.candidates([finding], rules) == [], item
+
+
+def test_a_likely_problem_says_what_code_compared() -> None:
+    sized = {(FILE, 2): [_phrase('4" HIGH BACKSPLASH', 100, 100)]}
+    six = _splash(vendor='6"', inches={"vendor": "6"})
+    found = splash_views.settle(six, Search((SECTION,)), sized).finding
+    assert proof.proof_group(found) == "likely_problem"
+    why = proof.classified(found).why
+    assert '4" HIGH BACKSPLASH' in why and "gives no size" not in why
+
+
+def _drawing(title: str, x: float, file: str = FILE, page: int = 2) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        titles=(title,) if title else (),
+        file=file,
+        own_page=page,
+        box=(x, 0.0, x + 300.0, 300.0),
+        labels=(),
+        tags=(),
+    )
+
+
+def _work(views: list[Any], others: list[Any] = ()) -> Any:  # type: ignore[assignment]
+    from types import SimpleNamespace
+
+    sheet = SimpleNamespace(
+        id="a1", file=FILE, page=2, views=views, drawings=views, project=None,
+        reference=False, key_plan=False,
+    )  # fmt: skip
+    pair = SimpleNamespace(
+        vendor=SimpleNamespace(file="shop.pdf", own_page=1),
+        candidates=[sheet, *others],
+        chosen=("a1",),
+    )
+    return SimpleNamespace(file="shop.pdf", across=[pair])
+
+
+def test_the_same_sheet_gives_only_this_items_views() -> None:
+    facts = splash_views.Facts()
+    finding = _splash(item="Break room: back splash height")
+    # A trade word in common is no item: the reception's countertop section is not used.
+    views = [
+        _drawing("BREAK ROOM COUNTERTOP PLAN", 0),
+        _drawing("RECEPTION COUNTERTOP SECTION", 400),
+        _drawing("SECTION", 800),
+        _drawing("", 1200),
+    ]
+    found = splash_views.companion_views(_work(views), finding, facts)
+    assert [v.title for v in found.views] == ["BREAK ROOM COUNTERTOP PLAN"]
+    # A sheet of this item only: its bare SECTION and untitled views are its own.
+    views = [_drawing("BREAK ROOM PLAN", 0), _drawing("SECTION", 400), _drawing("", 800)]
+    found = splash_views.companion_views(_work(views), finding, facts)
+    assert len(found.views) == 3
+    # The item's words not known: a sheet that names items gives none of its views.
+    unknown = _splash(item="Back splash height")
+    views = [_drawing("ADA VANITY ELEVATION", 0), _drawing("SECTION", 400)]
+    assert splash_views.companion_views(_work(views), unknown, facts).views == ()
+    # Two item names both fit the item's words: which is its own is not known.
+    vanity = _splash(item="Vanity: back splash height")
+    views = [_drawing("ADA VANITY SECTION", 0), _drawing("PRIMARY VANITY SECTION", 400)]
+    assert splash_views.companion_views(_work(views), vanity, facts).views == ()
+
+
+def test_the_paired_sheets_copy_in_another_architect_file_is_never_used() -> None:
+    from types import SimpleNamespace
+
+    index = {
+        f"{FILE}#2": {"item": "SAMPLE VANITY", "sheet": "A-501"},
+        "older arch.pdf#2": {"item": "SAMPLE VANITY", "sheet": "A-501"},
+    }
+    facts = splash_views.Facts(index=index)
+    older = SimpleNamespace(
+        id="b1", file="older arch.pdf", page=2, project=None, reference=False, key_plan=False,
+        views=[_drawing("SAMPLE VANITY SECTION", 0, "older arch.pdf")], drawings=[],
+    )  # fmt: skip
+    work = _work([_drawing("SAMPLE VANITY PLAN", 0)], [older])
+    found = splash_views.companion_views(
+        work, _splash(item="Sample vanity: back splash height"), facts
+    )
+    assert all(v.file == FILE for v in found.views)
+
+
+def test_a_bare_thin_size_beside_the_splash_is_not_read_as_its_height() -> None:
+    bare = {(FILE, 2): [_phrase('3/4" BACKSPLASH', 100, 100)]}
+    found = splash_views.settle(_splash(), Search((SECTION,)), bare).finding
+    assert proof.proof_group(found) == "not_compared"
+    # A bare 4" or 6" beside the splash is its height, as drawings print it.
+    same = {(FILE, 2): [_phrase('4" BACKSPLASH', 100, 100)]}
+    assert splash_views.settle(_splash(), Search((SECTION,)), same).finding["status"] == "same"
+    six = {(FILE, 2): [_phrase('6" BACKSPLASH', 100, 100)]}
+    found = splash_views.settle(_splash(), Search((SECTION,)), six).finding
+    assert proof.proof_group(found) == "likely_problem"

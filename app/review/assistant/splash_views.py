@@ -239,7 +239,7 @@ def part_of(text: object, rules: Sequence[Rule] | None = None) -> Part | None:
 #: measured ("counter height to the top of the splash", "outlet in the backsplash").
 _END_BEFORE: Final = re.compile(
     r"(?:\b(?:to|from|of|in|on|at|above|below|under|over|behind|into|beside|near|with|incl"
-    r"|including|plus|less|minus|without|excluding|and)|\bw/)"
+    r"|including|excl|plus|less|minus|without|excluding|and|thru|through)\.?|\bw/|[+&])"
     r"(?:\s+(?:the|a|an))?\s*$",
     re.IGNORECASE,
 )
@@ -261,10 +261,19 @@ def _rule_of(part: Part, rules: Sequence[Rule]) -> Rule | None:
 
 
 def _clash(a: Part, b: Part) -> str | None:
-    """Why two parts are not like for like, or `None`."""
-    if a.kind and b.kind and a.kind != b.kind:
-        return f"a {a.kind} {a.part} against a {b.kind} {b.part}"
-    if a.measure and b.measure and a.measure != b.measure:
+    """Why two parts are not like for like, or `None`. Like for like is never assumed: a kind
+    (back, side) said on one side only, or a measure not said on both, is not like for like (a
+    vendor's "splash height" may be the side splash's; review of #1918)."""
+    if a.part != b.part:
+        return f"a {a.part} against a {b.part}"
+    if a.kind != b.kind:
+        if a.kind and b.kind:
+            return f"a {a.kind} {a.part} against a {b.kind} {b.part}"
+        said = a.kind or b.kind
+        return f"only one side says it is the {said} {a.part}"
+    if not a.measure or not b.measure:
+        return f"what is measured on the {a.part} is not said on both sides"
+    if a.measure != b.measure:
         return f"the {a.part}'s {a.measure} against its {b.measure}"
     return None
 
@@ -589,8 +598,42 @@ class Companion:
         return f"{named} (page {self.page})"
 
 
+#: Trade words every item shares: never what tells one item's view from another's
+#: ("RECEPTION COUNTERTOP SECTION" is not the break room's countertop).
+_TRADE_WORDS: Final = frozenset(
+    {
+        "COUNTERTOP",
+        "COUNTERTOPS",
+        "COUNTER",
+        "COUNTERS",
+        "TOP",
+        "TOPS",
+        "MILLWORK",
+        "CASEWORK",
+        "ROOM",
+        "SPLASH",
+        "BACKSPLASH",
+        "SIDESPLASH",
+        "INTERIOR",
+        "SHEET",
+        "DRAWING",
+        "DRAWINGS",
+    }
+)
+
+
 def _item_words(text: object) -> set[str]:
-    return {w for w in _TITLE_WORD.findall(str(text or "").upper()) if w not in _KIND_WORDS}
+    return {
+        w
+        for w in _TITLE_WORD.findall(str(text or "").upper())
+        if w not in _KIND_WORDS and w not in _TRADE_WORDS
+    }
+
+
+def _names_this(words: set[str], item: set[str]) -> bool:
+    """Whether a view title's item words name this item: one set holds the other ("VANITY" and
+    "PRIMARY VANITY"), never a word in common alone ("ADA VANITY" is not "PRIMARY VANITY")."""
+    return bool(words) and bool(item) and (words <= item or item <= words)
 
 
 def _kind_of(drawing: Any) -> str:
@@ -606,15 +649,6 @@ def _kind_of(drawing: Any) -> str:
 
 def _views_of(candidate: Any) -> list[Any]:
     return list(getattr(candidate, "views", ()) or ()) or list(candidate.drawings)
-
-
-def _names_item(drawing: Any, item: set[str]) -> bool:
-    """A view's title names the item (a rare word in common), or only its kind (the sheet's own
-    item: `ELEVATION`), or the item's words are not known."""
-    titles = list(getattr(drawing, "titles", ()) or ())
-    if not titles or not item:
-        return True
-    return any(not _item_words(t) or _item_words(t) & item for t in titles)
 
 
 def _inside(box: Sequence[float], within: Sequence[float], slack: float = 2.0) -> bool:
@@ -784,19 +818,29 @@ def companion_views(
         seen.add(key)
         found.append(comp)
 
-    # 1. The same sheet: its views that name the item, or only their kind when no view of the
-    # sheet names another item (a sheet of several items: a bare "SECTION" may be another's).
+    # 1. The same sheet: its views whose title names this item, and its views titled only by
+    # their kind (`SECTION`) or not titled, when the sheet names no other item (a sheet of several
+    # items, or one whose item is not known: a bare "SECTION" may be another item's).
     own = _views_of(sheet)
-    several = bool(item) and any(
-        _item_words(t) and not _item_words(t) & item
+    named = [
+        title_words
         for d in own
         for t in getattr(d, "titles", ()) or ()
-    )
+        if (title_words := _item_words(t))
+    ]
+    mine = [one for one in named if _names_this(one, item)]
+    several = any(not _names_this(one, item) for one in named)
+    if len({frozenset(w) for w in mine}) > 1:
+        # Two different item names on the sheet both fit this item's words ("VANITY" against
+        # "PRIMARY VANITY" and "ADA VANITY"): which is the item's is not known.
+        mine, several = [], True
     for drawing in own:
-        titles = list(getattr(drawing, "titles", ()) or ())
-        if several and titles and all(not _item_words(t) for t in titles):
-            continue
-        if _names_item(drawing, item):
+        titles = [str(t) for t in getattr(drawing, "titles", ()) or ()]
+        its = [w for t in titles if (w := _item_words(t))]
+        if its:
+            if any(w in mine for w in its):
+                add(drawing, "the same sheet")
+        elif not several and (item or not named):
             add(drawing, "the same sheet")
     if not facts.older_known:
         # Older copies of sheets could not be told apart: no other sheet is used.
@@ -809,11 +853,15 @@ def companion_views(
     name = _key(sheet_index.get("item"))
     tags = {_key(t) for t in vendor_index.get("item_tags") or [] if len(_key(t)) >= 4}
     others = []
+    own_number = _key(sheet_index.get("sheet"))
     for candidate in pair.candidates:
         if (str(candidate.file), int(candidate.page)) == (file, page):
             continue
         if not _usable(candidate, facts) or not _same_project(candidate, project, pair):
             continue  # another project's sheet (or one of unknown project) is never used
+        number = _key(facts.index_of(str(candidate.file), int(candidate.page)).get("sheet"))
+        if own_number and number == own_number:
+            continue  # the paired sheet's own number: a copy of it (an older revision, maybe)
         read = facts.index_of(str(candidate.file), int(candidate.page))
         their_tags = {_key(t) for t in read.get("item_tags") or []} | {
             _key(t) for d in _views_of(candidate) for t in getattr(d, "tags", ()) or ()
@@ -911,6 +959,10 @@ class Reading:
     box: tuple[float, float, float, float]
 
 
+#: A bare size before the part's name (`4" BACKSPLASH`) is its height only from this size up: a
+#: splash is never this thin, and a thickness never this big (`3/4" BACKSPLASH` says nothing).
+BARE_HEIGHT_MIN: Final = 2
+
 _SIZED: Final = re.compile(r"\d\s*(?:\"|''|”|')")
 
 
@@ -986,8 +1038,12 @@ def note_readings(
                     if between is None:
                         continue
                     word = between.group(1)
-                    if word is None:
+                    if word is None and value >= BARE_HEIGHT_MIN:
+                        # `4" BACKSPLASH`: its height. A bare `3/4" BACKSPLASH` may be its
+                        # thickness: its measure is not said, so it is not read.
                         measure = "height"
+                    elif word is None:
+                        continue
                     else:
                         found = _measures(word)
                         measure = found[0] if len(found) == 1 else None
@@ -1252,7 +1308,14 @@ def settle(
             settled.added = added
             return settled
         return Settled(_compared(out, record, item, vendor, found), added)
-    if part.measure == "thickness" and job and job.get("thickness") is not None:
+    if (
+        part.measure == "thickness"
+        and part.kind == "back"
+        and job
+        and job.get("thickness") is not None
+    ):
+        # The job value is the BACKsplash thickness: never a side splash's, nor a splash whose
+        # kind is not said (like for like).
         value = job["thickness"]
         record["job_value"] = {"text": value.text, "where": value.where}
         if vendor is not None:
@@ -1327,6 +1390,11 @@ def _compared(
         out.pop("paired_by", None)
         out["keep_reason"] = "architect_prints_nothing"
         out["why"] = f"{item}: {how}: they differ."
+        # The item's reason is this comparison, never "the architect gives no size".
+        record["why"] = (
+            f"the architect's {found.view.words} prints {found.text}; the vendor's drawing shows "
+            f"{_inches_words(vendor)}: please check and confirm they measure the same"
+        )
         out[likely_problems.FIELD] = {
             "by": METHOD,
             "kind": "size",
@@ -1483,7 +1551,8 @@ def _job_values(engine: Any) -> dict[str, JobValue]:
         return {}
     sink = import_module("app.review.assistant.sink_offset")
     found = sink.setting_from(rules_md, "backsplash_thickness", "backsplash thickness")
-    if found is None:
+    if found is None or found.origin not in ("project value", "drawing set value"):
+        # Settled with GV: the backsplash thickness is entered per job, never a company value.
         return {}
     return {"thickness": JobValue(found.value, found.text, found.where)}
 
