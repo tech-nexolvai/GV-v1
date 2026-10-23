@@ -1802,6 +1802,16 @@ def _pair_across(
         if hand is not None:
             why = f"{why}; {hand}: sizes are compared, positions from an end are not"
     why = _named_views(why, pool)
+    if not chosen and DRAWING_NEEDED not in why and saved is not None:
+        # The item, not the project: the AI page matcher looked at every architect page of the
+        # project and named only drawings that give no sizes of it, and code agrees.
+        shown_only = (
+            _shown_only(saved[1], everything, item_tags, context, by_id, project)
+            if set(by_id) <= set(saved[0])
+            else None
+        )
+        if shown_only is not None:
+            why = _needed(f"{shown_only}; {why.removeprefix(f'{pairing_module.UNPAIRED}: ')}")
     if not chosen and DRAWING_NEEDED not in why:
         honest = _honest_unpaired(vendor, everything, item_tags, project, facts_of)
         prefix = f"{pairing_module.UNPAIRED}: "
@@ -1829,6 +1839,66 @@ def _pair_across(
         why=why,
         needed=f": {DRAWING_NEEDED}: " in why,
         opposite_hand=hand,
+    )
+
+
+def _shown_only(
+    answer: pairing_module.MatchAnswer,
+    everything: Sequence[AcrossCandidate],
+    item_tags: frozenset[str],
+    context: _Across,
+    pool: Mapping[str, AcrossCandidate],
+    project: str | None,
+) -> str | None:
+    """How the architect shows an item with no drawing of its sizes, when two witnesses agree
+    (else `None`: the drawing is left as not found). The AI page matcher, shown every architect
+    page of the vendor drawing's project (and code knows that project), named only:
+
+    - key plans, and one of them prints the vendor's item tag with no callout within twice
+      `CALLOUT_REACH_PT` of it (nothing points from it to an elevation): "only as a tag on a
+      plan";
+    - sheets whose every view the set index reads as printing no sizes of the piece, and code
+      reads at most `MAX_SIZELESS_LABELS` labels in each: "only as an outline"."""
+    if not answer.matches:
+        return None
+    by = {c.id: c for c in everything}
+    named = [by[m] for m in dict.fromkeys(answer.matches) if m in by]
+    if (
+        project is None
+        or len(named) != len(answer.matches)
+        or any(c.reference or _project_of(c) != project for c in named)
+    ):
+        return None
+    if all(c.key_plan for c in named):
+        plans = {c.id for c in named}
+        for plan in context.plans:
+            if plan.item not in plans:
+                continue
+            for key, printed, box in plan.tags:
+                if key not in item_tags:
+                    continue
+                near = min((views_module.gap(box, m.box) for m in plan.marks), default=math.inf)
+                if near > 2 * CALLOUT_REACH_PT:
+                    return (
+                        f"the architect shows this item only as a tag on a plan ({printed} on "
+                        f"its page {plan.page}, no callout beside it), with no sizes"
+                    )
+        return None
+    if any(c.key_plan or c.id not in pool for c in named):
+        return None
+    for item in named:
+        drawings = item.views or item.drawings
+        if item.id not in context.no_sizes:
+            return None
+        if any(
+            (v.ref not in context.no_sizes and item.views) or len(v.labels) > MAX_SIZELESS_LABELS
+            for v in drawings
+        ):
+            return None
+    pages = ", ".join(str(c.page) for c in named)
+    return (
+        f"the architect shows this item only as an outline (its file's page {pages}: no view "
+        "prints its sizes), with no sizes"
     )
 
 

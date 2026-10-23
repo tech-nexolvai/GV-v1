@@ -98,9 +98,10 @@ def _set() -> dict[str, Any]:
         _phrase("A5.0", [705, 398, 725, 406]),
         _phrase("A5.0", [1100, 740, 1180, 790]),
     ]
-    plan_tags = [{"text": "RD-101", "box": [300, 300, 340, 310]}] + [
-        {"text": f"PB-30{n}", "box": [600 + 30 * n, 500, 625 + 30 * n, 510]} for n in range(1, 9)
-    ]
+    plan_tags = [
+        {"text": "RD-101", "box": [300, 300, 340, 310]},
+        {"text": "SB-202", "box": [1000, 100, 1040, 110]},
+    ] + [{"text": f"PB-30{n}", "box": [600 + 30 * n, 500, 625 + 30 * n, 510]} for n in range(1, 9)]
     plan_words = [
         _phrase("FLOOR PLAN", [100, 700, 200, 712]),
         _phrase("1", [348, 278, 354, 288]),
@@ -116,6 +117,7 @@ def _set() -> dict[str, Any]:
             _entry(SHOP, 3, None),
             _entry(SHOP, 4, "vendor"),
             _entry(SHOP, 5, "vendor"),
+            _entry(SHOP, 6, "vendor"),
             _entry(ARCH, 1, None),
             _entry(ARCH, 2, "architect"),
             _entry(ARCH, 3, None),
@@ -145,6 +147,12 @@ def _set() -> dict[str, Any]:
                 "page": 5,
                 "labels": table,
                 "phrases": [_phrase("ITEM CODE", [75, 400, 120, 410])],
+            },
+            {
+                "file": SHOP,
+                "page": 6,
+                "labels": vendor_desk,
+                "phrases": [_phrase("SB-202", [700, 720, 740, 730])],
             },
             {
                 "file": ARCH,
@@ -182,7 +190,7 @@ def _set() -> dict[str, Any]:
     health = {
         "pages": [
             {"file": SHOP, "page": p, "facts": {"typed_text": 900, "drawn_letters": False}}
-            for p in (2, 4, 5)
+            for p in (2, 4, 5, 6)
         ]
     }
     return {"page_map": page_map, "dims": dims, "notes": notes, "health": health}
@@ -223,6 +231,7 @@ def _index() -> dict[str, Any]:
         f"{SHOP}#3": _read(SHOP, 3, projects=["PROJECT SOUTH"], introduces=True),
         f"{SHOP}#4": _read(SHOP, 4),
         f"{SHOP}#5": _read(SHOP, 5),
+        f"{SHOP}#6": _read(SHOP, 6, projects=["PROJECT NORTH"]),
         f"{ARCH}#1": _read(
             ARCH,
             1,
@@ -279,11 +288,13 @@ def _index() -> dict[str, Any]:
     return {"version": 1, "pages": pages}
 
 
-def _answers(asked: list[str], matches: list[str], sure: bool) -> dict[str, Any]:
+def _answers(
+    asked: list[str], matches: list[str], sure: bool, ref: str = "p2.v0"
+) -> dict[str, Any]:
     return {
         "version": 1,
         "answers": {
-            "p2.v0": {
+            ref: {
                 "candidates": asked,
                 "matches": matches,
                 "confident": sure,
@@ -465,6 +476,21 @@ def test_a_project_the_architect_lacks_is_a_drawing_needed_up_front() -> None:
     south = _across(_work(_index()), 4)
     assert south.needed and south.asked == () and f"{DRAWING_NEEDED}:" in south.why
     assert "PROJECT SOUTH" in south.why
+
+
+def test_an_item_shown_only_as_a_tag_on_a_plan_is_a_drawing_needed() -> None:
+    """The matcher, shown every page of the project, named only the key plan; the plan prints
+    the item's tag with no callout near it: a drawing is needed, before any paid compare. With a
+    callout beside the tag, or a matcher that was not shown every page, it is left as not found."""
+    bench = _across(
+        _work(_index(), _answers(["p1002", "p1004", "p1005"], ["p1005"], True, "p6.v0")), 6
+    )
+    assert bench.needed and bench.chosen == () and "only as a tag on a plan" in bench.why
+    assert "SB-202" in bench.why
+    narrower = _work(_index(), _answers(["p1005"], ["p1005"], True, "p6.v0"))
+    assert not _across(narrower, 6).needed
+    desk = _across(_work(_index(), _answers(["p1004", "p1005"], ["p1005"], True)), 2)
+    assert not desk.needed  # RD-101 has a callout beside it on the plan
 
 
 def test_a_view_that_prints_no_sizes_is_a_drawing_needed() -> None:
