@@ -387,7 +387,7 @@ def missing_settings(
 ) -> list[str]:
     """The settings the checks of `products` need that no layer holds and the rulebook gives no
     default for (sink size, overhang, side thickness, width limits…), by their plain names, for
-    the pre-flight report's "Ask GV for these values" line. The same rules and layers as
+    the pre-flight report's "job values not entered yet" line. The same rules and layers as
     `rules_markdown`; empty when the revision is unknown."""
     revision = session.get(PackageRevision, package_revision_id)
     package = None if revision is None else session.get(Package, revision.package_id)
