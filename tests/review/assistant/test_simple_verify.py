@@ -1003,10 +1003,25 @@ def test_an_ai_string_is_never_red_and_a_layout_is_said_so() -> None:
         ("floor to door head", "room"),
         ("", "none"),
         ("trim", "other"),
+        # A side splash's top is not a back splash's; the splash's face is not the wall.
+        ("top_of_splash", "splash_top"),
+        ("top_of_side_splash", "side_splash_top"),
+        ("face_of_splash (front)", "splash_face"),
+        ("back splash face", "splash_face"),
     ],
 )
 def test_end_words(words: str, kind: str) -> None:
     assert end_kind(words)[0] == kind
+
+
+def test_a_back_splash_is_never_a_side_splash_or_the_wall() -> None:
+    from app.review.assistant.simple_check.verify import ends_match
+
+    _, why = ends_match("top_of_counter", "top_of_splash", "top_of_counter", "top_of_side_splash")
+    found, _ = ends_match("top_of_counter", "top_of_splash", "top_of_counter", "top_of_side_splash")
+    assert found == "different", why
+    found, _ = ends_match("face_of_splash", "wall_face", "wall_face", "cabinet_side")
+    assert found != "same"
 
 
 @pytest.mark.parametrize(

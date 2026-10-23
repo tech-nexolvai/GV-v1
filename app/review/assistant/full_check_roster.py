@@ -156,6 +156,13 @@ from app.review.assistant.full_check_schedule import (
 from app.review.assistant.full_check_specialists import HELPER_CORE, PACK_SHAPES, knowledge_text
 from app.review.assistant.impact import by_impact
 from app.review.assistant.reply_json import json_of_reply, log_unreadable, object_of_reply
+from app.review.assistant.splash_views import (
+    downgrade_unlike,
+    look_in_line,
+    pack_phrases,
+    splash_item,
+    splash_question_items,
+)
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.untrusted import fence
 from app.review.assistant.work_pool import code_workers, run_ordered
@@ -649,6 +656,11 @@ def prover_items(engine: ChatEngine, findings: Sequence[Mapping[str, Any]]) -> s
                 f"{side} claimed {finding.get(side)}{where}"
                 + (f" (labels near: {'; '.join(near)})" if near else "")
             )
+        # The splash step's views to look in (the small AI question, `assistant_splash_question`
+        # on): code found them, the look-again reads them (no new call).
+        look_in = look_in_line(finding)
+        if look_in:
+            bits.append(look_in)
         lines.append("; ".join(bits))
     # Items and values come from helpers' readings of the drawing: data, never instructions.
     return fence("\n".join(lines), "findings")
@@ -694,6 +706,7 @@ def apply_proofs(engine: ChatEngine, report: str, asked: Sequence[str]) -> dict[
     done: dict[str, str] = {}
     book = engine.book
     sources = {str(f.get("id")): str(f.get("source") or "") for f in book.live()}
+    phrases: Any = None  # the pack's printed phrases, read once when a splash Right needs them
     for proof in proofs:
         if not isinstance(proof, Mapping):
             continue
@@ -738,6 +751,17 @@ def apply_proofs(engine: ChatEngine, report: str, asked: Sequence[str]) -> dict[
                         }
                     )
                     done[finding_id] = "Right: code read the same value on both sides"
+                    if splash_item(updated):
+                        # Like for like (2026-10-23): a splash's Right needs the architect's size
+                        # printed as the same splash's (`splash_views.unlike`).
+                        if phrases is None:
+                            phrases = pack_phrases(
+                                getattr(engine.tools.workspace, "set_pack", None)
+                            )
+                        down = downgrade_unlike(updated, phrases)
+                        if down is not None and book.replace(down):
+                            updated = down
+                            done[finding_id] = "spots found: not like for like"
                 else:
                     done[finding_id] = "spots found: code reads them"
             engine._show_finding(updated)
@@ -4839,9 +4863,12 @@ class _Run:
         except Exception:  # noqa: BLE001 - the deeper look goes on without the free steps
             _log.exception("assistant roster escalation's free steps failed")
         waiting = self._unproved()
-        if not waiting:
+        # The splash step's small AI question (`assistant_splash_question` on): its open splash
+        # items with the views code found to look in join this one look-again (no new call).
+        asked = splash_question_items(engine.book.live(), self.escalated)
+        if not waiting and not asked:
             return
-        unread = [f for f in waiting if not self._read_by_code(f)]
+        unread = [f for f in waiting if not self._read_by_code(f)] + asked
         if unread and self._left() <= 0:
             self._note(
                 f"the escalation's deeper look: {len(unread)} items not verified within the "

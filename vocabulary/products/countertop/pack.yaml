@@ -46,3 +46,14 @@ material_words: [stone, quartz, granite, marble, solid surface, countertop, coun
 # The chat ledger files a reading by these (was ledger.py); "ct" is the countertop tag letters.
 item_words: [countertop, counter, top, backsplash, splash, overhang, ct]
 # A countertop's worked example is the compare prompt's own (a kitchen run): no example.json.
+# Where a splash's size is printed when the paired drawing prints none (the owner, 2026-10-23:
+# "check elevation and section drawings for splash details when they are absent from the plans").
+# A back splash is never compared with a side splash; the section governs, then the elevation,
+# then the plan (settled), whatever the search order below.
+look_in_views:
+  - part: splash
+    words: [backsplash, back splash, side splash, sidesplash, splash, b.s.]
+    kinds:
+      back: [backsplash, back splash, rear splash]
+      side: [side splash, sidesplash, end splash]
+    views: [plan, elevation, section]

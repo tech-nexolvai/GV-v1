@@ -62,3 +62,10 @@ semantic_types:                 # codes its GV rules may name (the values stay i
     meaning: Widget mounting height above the floor
     unit: in
 impact_words: [mounting height] # what makes one of its differences matter more
+
+# -- a part the architect often sizes only on another view of the item -------------------------
+look_in_views:                  # searched when the paired drawing prints no size for the part
+  - part: widget_plate
+    words: [widget plate, mounting plate]
+    kinds: {front: [front plate], back: [back plate]}   # one kind is never compared with another
+    views: [elevation, section]  # in this order (plan, elevation, section); a section governs

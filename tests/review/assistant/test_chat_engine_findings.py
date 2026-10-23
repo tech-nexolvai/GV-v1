@@ -524,7 +524,8 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
 ) -> None:
     _modules(monkeypatch)
     workspace_with_pdf(tmp_path)
-    right = finding_input(item="Backsplash height", status="same", vendor='37"')
+    # (A splash's Right needs its own like-for-like proof since 2026-10-23: a plain item here.)
+    right = finding_input(item="Vanity top height", status="same", vendor='37"')
     provider = ScriptedProvider(
         lead=[
             reply(
@@ -538,7 +539,7 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
                 tool("r1", "report_finding", right),
                 stop="tool_use",
             ),
-            reply(text("One item wrong on page 2; the backsplash is right.")),
+            reply(text("One item wrong on page 2; the top's height is right.")),
         ]
     )
     harness = _zooms(Harness(tmp_path, provider))
@@ -580,7 +581,7 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
     # The run's record id stays off the vendor's drawing (#1622, `vendor_text`).
     assert "Proved by code: GV's rule check fails it" in drawing.pages[-2].extract_text()
     assert "Right (1)" in drawing.pages[-1].extract_text()
-    assert "Backsplash height" in drawing.pages[-1].extract_text()
+    assert "Vanity top height" in drawing.pages[-1].extract_text()
     report = "".join(
         page.extract_text()
         for page in PdfReader(str(workspace.files / harness.files[1]["id"])).pages
@@ -591,7 +592,7 @@ def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_rep
         "Countertop",
         "Wrong (1)",
         "Right (1)",
-        "Backsplash height",
+        "Vanity top height",
         "Not checked",
     ):
         assert words in report, words
