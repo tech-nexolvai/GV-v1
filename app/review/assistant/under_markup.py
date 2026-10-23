@@ -16,8 +16,8 @@ it emptied the small filled-rectangle forms inside that drawing. This module doe
    the reviewers' annotations: text under an opaque box is still in the drawing's text, so it is
    listed even where nothing could be hidden. On GV's combined review sheets text set in colour
    is marked: inside a pasted drawing that may be GV's note, not the vendor's. On an ordinary
-   upload every colour is the drawing's own ink (the colour rule, `gv_marks.gv_combined`), so its
-   coloured text is never marked.
+   upload every colour is the drawing's own ink (the colour rule; the label reader's own test,
+   `verify_value.combined_sheet_at`), so its coloured text is never marked.
 
 It returns two pictures of the area (as the page shows it, and with the markup removed) and plain
 lines saying what was removed and how. Nothing is changed in the upload; the copy lives in memory.
@@ -42,7 +42,6 @@ from PIL import Image
 
 from app.review.assistant.chat_drawing import PDFIUM_LOCK
 from app.review.assistant.page_pictures import fitting_dpi
-from extraction.gv_marks import gv_combined
 from extraction.pdfium_guard import pdfium
 from extraction.reader import pixel_placement
 from extraction.stamp_text import carries_drawing
@@ -400,10 +399,12 @@ def read_under_markup(pdf: Path, page_number: int, box: Box, dpi: int | None = N
     """The area `box` (points of the page as shown, origin top-left) of page `page_number` (from 1)
     of `pdf`, as shown and under GV's markup. Raises `ValueError` with a plain reason for a page or
     box not on the file."""
+    from app.review.assistant.verify_value import combined_sheet_at
+
     data = pdf.read_bytes()
     with pikepdf.open(io.BytesIO(data)) as source:
         count = len(source.pages)
-        combined = gv_combined(source)  # the colour rule: coloured text may be GV's only here
+    combined = combined_sheet_at(pdf)  # the colour rule: coloured text may be GV's only here
     if not 1 <= page_number <= count:
         raise ValueError(f"there is no page {page_number} (the file has {count})")
     original = _one_page(data, page_number - 1)
