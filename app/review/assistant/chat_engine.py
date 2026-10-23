@@ -2957,8 +2957,11 @@ class ChatEngine:
         unlabelled = pack_without_labels(self.tools.workspace.set_pack)
         with self.timings.phase("finish_checks"):
             for name, step in steps:
-                if self.cancel.is_set():
-                    break  # Stop (2026-10-23): no further check starts; a Continue runs them all
+                if self.cancel.is_set() and name != CODE_CHECK_NAMES["ledger"]:
+                    # Stop (2026-10-23): the reading ledger's own sums (the work the helpers
+                    # recorded, milliseconds) are still added; no other check starts (each reads
+                    # the whole set again, a minute on a big one): a Continue runs them all.
+                    break
                 left_out = self.book.left_out_for_room.get("code", 0)
                 try:
                     step()

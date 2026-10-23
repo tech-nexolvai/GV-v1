@@ -1691,15 +1691,22 @@ def test_stop_ends_the_final_checks_by_code_within_seconds_and_keeps_the_work(
     assert outcome.stopped == "cancelled"
     assert before <= {f["id"] for f in engine.book.live()}
     assert any(b.get("type") == "resume" for b in outcome.blocks)
+    assert harness.files == []  # the files are made when the check is continued
 
 
-def test_after_stop_no_further_code_check_starts(
+def test_after_stop_only_the_ledgers_sums_are_added(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """2026-10-23: after Stop the reading ledger's sums (what the helpers recorded) are added,
+    and no check that reads the whole set again starts (a Continue runs them)."""
+    from app.review.assistant import chat_engine
+
     harness = _roster(tmp_path, _Roster())
     engine = harness.engine
     checks: list[str] = []
     monkeypatch.setattr(engine, "_ledger_findings", lambda: checks.append("ledger"))
+    monkeypatch.setattr(chat_engine, "add_consistency", lambda _e: checks.append("strings"))
+    monkeypatch.setattr(chat_engine, "add_run_fit", lambda _e: checks.append("run fit"))
     engine.cancel.set()
     engine.add_code_findings()
-    assert checks == [] and engine.code_checks_failed == []
+    assert checks == ["ledger"] and engine.code_checks_failed == []
