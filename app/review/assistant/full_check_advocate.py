@@ -104,6 +104,7 @@ __all__ = [
     "string_extent",
     "string_extras",
     "string_gap",
+    "within_cad_rounding",
 ]
 
 #: Where each end of a dimension lands (`knowledge/what-dimensions-measure.md`).
@@ -951,8 +952,19 @@ STRING_QUESTION: Final = (
 )
 
 type StringOutcome = Literal["proved", "adds_up", "within_rounding", "disagrees", "not_found"]
-#: A string off by no more than this is within the drawings' rounding, never proved wrong.
+#: A string off by no more than this a part is within the drawings' rounding, never proved wrong:
+#: a CAD program prints each value rounded to 1/8", so each part may be up to 1/16" off its true
+#: length (three 57 1/3" bays print 57 3/8" under 172"). Never more than `_ROUNDING_MOST`.
 _ROUNDING: Final = Decimal(1) / Decimal(16)
+_ROUNDING_MOST: Final = Decimal(1) / Decimal(4)
+
+
+def within_cad_rounding(off: Decimal, parts: int) -> bool:
+    """A vendor string's printed sum `off` its printed overall by no more than CAD rounding can
+    make with `parts` parts: 1/16" a part (at least 1/16", at most 1/4"). Two readings of the same
+    values cannot tell such a miss from rounding; only the drawing's geometry can
+    (`vendor_consistency`)."""
+    return abs(off) <= min(max(_ROUNDING * parts, _ROUNDING), _ROUNDING_MOST)
 
 
 def _inches_of(text: object) -> Decimal | None:
@@ -968,7 +980,8 @@ def compare_strings(
     reading (`STRING_SCHEMA`). Only the chain whose overall is the printed overall counts:
 
     - exactly one such chain, with the same parts in the same order (or reversed): code sums them;
-      off by more than 1/16" is `proved` (two readings and code's sum), else `within_rounding`;
+      off by more than CAD rounding can make (`within_cad_rounding`) is `proved` (two readings
+      and code's sum), else `within_rounding`;
     - such a chain whose parts differ and add up to the overall: `adds_up` (the first reading
       took a part from another run);
     - otherwise `disagrees` (or `not_found` when the second reading saw no chain with that
@@ -1007,8 +1020,11 @@ def compare_strings(
         )
     summed = sum((v for v in first if v is not None), Decimal(0))
     off = total - summed
-    if abs(off) <= _ROUNDING:
-        return "within_rounding", 'both readings agree and the parts are within 1/16" of it'
+    if within_cad_rounding(off, len(first)):
+        return "within_rounding", (
+            "both readings agree, and the parts miss the overall by no more than the drawing's "
+            'rounding (1/16" a part)'
+        )
     return "proved", (
         "a second reading that never saw the first lists the same parts and overall; code adds "
         f"them to {_words(summed)} against {_words(total)} printed"

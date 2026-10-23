@@ -609,6 +609,9 @@ class EngineSettings:
     page_match_model: str | None = None
     """The AI page matcher's model for vendor drawings paired across separate uploads (#1798,
     `assistant_page_match_model`); `None`: off (code pairs alone)."""
+    set_index_model: str | None = None
+    """The set index's model (`set_index.py`, `assistant_set_index_model`): each page of a
+    two-file set read once for its project, set and views; `None`: off (no project is known)."""
 
 
 @dataclass(slots=True)
