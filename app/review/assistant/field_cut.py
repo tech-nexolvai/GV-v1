@@ -23,8 +23,9 @@ measure different things. So:
 - **The top's length allows it** (`vet`): an overall that includes field cuts (the stacked pair
   above) is the same as the architect's when it is the architect's value plus one field cut per
   wall end the drawing shows: field-cut labels on the pair's own dimension row whose nearest top it
-  is, at any distance along the row (the drawing's scale does not matter). That is GV's settled
-  rule, not a difference.
+  is, no farther along the row than the top's own length drawn at a large scale
+  (`ALONG_PT_PER_INCH`), so ordinary drawing scales all work. That is GV's settled rule, not a
+  difference.
 
 Pure: plain values in, plain values out. Verification: `tests/review/assistant/test_field_cut.py`.
 """
@@ -68,6 +69,10 @@ STACK_PT: Final = 60.0
 #: A 1" not beside the FIELD CUT words is the field cut only this close (points, centre to centre)
 #: to its top's stacked pair and to the words (the allowance on the overall has no such limit).
 RUN_PT: Final = 170.0
+#: How far along its row a top's field cut may sit from the top's stacked sizes: the top's whole
+#: length drawn at 1 1/2"=1'-0" (9 points per inch; twice the half-length, so up to 3"=1'-0"), never
+#: less than `RUN_PT`. A field cut farther along the row is another view's (review of 2026-10-23).
+ALONG_PT_PER_INCH: Final = 9.0
 #: Sides a label of the vendor's own drawing may carry.
 _NOT_VENDOR: Final = frozenset({"architect", "brand_prototype"})
 #: The sources of an item that compares the vendor with another drawing.
@@ -309,7 +314,10 @@ def page_field_cuts(
             close = sum(
                 1
                 for label in cut_labels
-                if (owner := owners[label.id]) is not None and owner[0].id == overall.id
+                if (owner := owners[label.id]) is not None
+                and owner[0].id == overall.id
+                and abs(_along(label, overall.box))
+                <= max(RUN_PT, float(overall.inches) * ALONG_PT_PER_INCH)
             )
             if close >= cuts:
                 counts.setdefault(overall.id, set()).add(cuts)

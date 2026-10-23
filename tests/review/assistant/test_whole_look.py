@@ -611,6 +611,14 @@ def test_a_left_right_claim_the_references_reverse_variant_explains_is_dropped(
     )
     kept_size, _ = _apply(book, look, [sized])
     assert kept_size.likely and not kept_size.dropped
+    one_number = _claim(
+        "layout",
+        _side(3, None, "sink 30 from the left end"),
+        _side(1, None, "sink at the right end"),
+        item="Top: the sink end",
+    )
+    kept_one, _ = _apply(book, look, [one_number])
+    assert kept_one.likely and not kept_one.dropped
     # "MIRROR ABOVE" is a mirror on the wall, not a unit drawn the other way round.
     mirror = [{"text": "MIRROR ABOVE", "box": [400, 300, 480, 310], "side": "architect"}]
     on_wall, _look = _setup(tmp_path / "mirror", phrases=mirror)

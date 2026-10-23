@@ -911,11 +911,12 @@ def _numbers(value: object) -> list[Fraction]:
 
 
 def _only_the_end_differs(claim: Mapping[str, Any]) -> bool:
-    """The claim's two sides print the same numbers (or none): what differs is which end, which a
-    unit drawn the other way round explains. Different numbers are a size difference."""
+    """The claim's two sides print the same numbers (or neither prints one): what differs is which
+    end, which a unit drawn the other way round explains. Different numbers, or a number on one
+    side only, may be a size difference: never explained."""
     vendor = _numbers(_side_of(claim, "vendor").get("value"))
     architect = _numbers(_side_of(claim, "architect").get("value"))
-    return not vendor or not architect or vendor == architect
+    return vendor == architect
 
 
 def _drawing_labels(context: _Context, drawing: Drawing) -> list[Mapping[str, Any]]:

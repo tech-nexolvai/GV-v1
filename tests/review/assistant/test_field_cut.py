@@ -274,3 +274,30 @@ def test_codes_own_pair_never_undoes_the_field_cut_allowance(tmp_path: Path) -> 
     }  # fmt: skip
     assert book.prove_by_code(cut["id"], {"dims": on_cut["dims"], "status": "same"}) is None
     assert next(f for f in book.live() if f["id"] == cut["id"])["status"] == "different"
+
+
+def test_a_field_cut_of_another_view_on_the_same_row_is_not_this_tops() -> None:
+    # A one-wall plan top (50" over 48", one field cut) and, far along the same row, another view
+    # with its own field cut and a lone 48": the plan's 50" never takes two field cuts.
+    labels = [
+        _label("FC", "vendor", '1"', "1", [92, 105, 100, 115]),
+        _label("O", "vendor", '50"', "50", [235, 90, 250, 100]),
+        _label("P", "vendor", '48"', "48", [235, 115, 250, 125]),
+        _label("FC2", "vendor", '1"', "1", [900, 105, 908, 115]),
+        _label("L", "vendor", '48"', "48", [1000, 115, 1015, 125]),
+    ]
+    words = [
+        {"text": "FIELD CUT", "box": [80, 125, 120, 135], "side": "vendor"},
+        {"text": "FIELD CUT", "box": [890, 125, 930, 135], "side": "vendor"},
+    ]
+    cuts = page_field_cuts(labels, words)
+    assert cuts.labels == {"FC", "FC2"}
+    assert cuts.overalls == {}  # one field cut near it, the top's 50" is not 48" + 1"
+    allowed = vet(
+        {"vendor": {**labels[1], "page": 1}},
+        status="different",
+        source="architect",
+        architect='48"',
+        cuts=cuts,
+    )
+    assert allowed is None
