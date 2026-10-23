@@ -2005,6 +2005,7 @@ class ChatEngine:
             "question",
             "keep_reason",
             "also_on",
+            "same_item",
             "parts_sum",
             "escalation",
             "string_reads",
