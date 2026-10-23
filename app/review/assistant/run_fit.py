@@ -330,7 +330,7 @@ class _Marks:
     reach touches. `marked` gives `_marked`'s answer: a piece within `MARK_REACH_PT` of the point
     is always in the point's cell, and each piece is measured exactly as `_marked` measures it.
     A run check asks this of every gap of every row against every overall of a page: reading all
-    of a big page's line work each time took most of a big set's finish (XYZ SPRING, 2026-10-23)."""
+    of a big page's line work each time took most of a 99-page set's finish (2026-10-23)."""
 
     CELL_PT: Final = 16.0
 

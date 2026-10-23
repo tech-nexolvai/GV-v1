@@ -5,7 +5,7 @@ A full check's final checks by code read many spots again: the proving step's `v
 text route left pending. Each read is plain Python (the vendor's ink cut into strokes, fractions
 found, pictures drawn) and OCR (RapidOCR and Tesseract). On code's thread pool (`work_pool`) they
 waited for each other: Python holds one lock, and each OCR engine is one instance used one call at
-a time. A 99-page set (XYZ SPRING, 2026-10-23) spent over an hour of its "final checks by code"
+a time. A 99-page set (2026-10-23) spent over an hour of its "final checks by code"
 on one core. Here each read runs in a worker process of its own:
 
 - **The same answer.** A worker runs the very function the thread ran (`run(module, name, ...)`
