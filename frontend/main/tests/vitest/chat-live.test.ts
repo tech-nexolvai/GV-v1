@@ -137,6 +137,11 @@ describe('the words', () => {
     expect(barWords(run(ev('check_phase', { phase: phase({ done: 23 }) })))).toBe('23 of\u00a039 drawings compared');
     expect(barWords(run(ev('check_phase', { phase: phase({ phase: 'double_checking', step: 'second_looks', done: 1, total: 4, unit: 'looks' }) })))).toBe('All drawings compared · second look 1 of\u00a04');
     expect(barWords(run(ev('check_phase', { phase: phase({ phase: 'getting_ready', done: null, total: null }) })))).toBe('');
+    // The final checks by code count each check's items (a long code step is never a still bar).
+    const counted = run(ev('check_phase', { phase: phase({ phase: 'double_checking', step: 'final_checks', done: 45, total: 125, unit: 'items' }) }));
+    expect(barWords(counted)).toBe('All drawings compared · checking 45 of\u00a0125 items');
+    expect(barShare(counted)).toBeNull();
+    expect(barWords(run(ev('check_phase', { phase: phase({ phase: 'double_checking', step: 'final_checks', done: null, total: null, unit: null }) })))).toBe('All drawings compared · checking by code');
     expect(barWords(run(ev('check_phase', { phase: phase({ phase: 'getting_ready', done: null, total: null, usual: USUAL }) })))).toBe('Usually 35–60 min for 99\u00a0content pages');
   });
 

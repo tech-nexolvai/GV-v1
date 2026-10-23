@@ -64,12 +64,14 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import logging
 import math
 import os
 import re
 import shlex
 import threading
+from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextvars import ContextVar
@@ -94,11 +96,14 @@ from extraction.visible_text import InkPicture, ink_picture, is_shx_comment, shx
 
 __all__ = [
     "BIG_BOX_PT2",
+    "WHOLE_SHEET_PT2",
     "InkReader",
     "Verified",
     "claim_value",
     "default_readers",
     "dimension_tokens",
+    "keep_reads_in",
+    "kept_folders",
     "lenient_tesseract",
     "near_miss",
     "printed_spots",
@@ -112,6 +117,12 @@ type Route = Literal["text", "drawn", "none"]
 
 #: A box larger than this (square points) that holds several numbers is refused by the drawn route.
 BIG_BOX_PT2: Final = 2500.0
+#: A box larger than this (square points: a quarter of an ARCH D sheet) is most of a sheet, not one
+#: dimension's spot: its drawn ink is not read (2026-10-23). Reading a whole sheet's ink took most
+#: of an hour on a 99-page set (every short stroke a fraction bar to read part by part), and the
+#: reads cannot tell which of its numbers is the one claimed (`BIG_BOX_PT2`). Its typed text is
+#: still read (route 1).
+WHOLE_SHEET_PT2: Final = 1_000_000.0
 #: How far outside the box a character may start and still count as at the spot (points): a box
 #: drawn tight round a dimension often clips its inch mark or its last digit.
 _NEAR_PT: Final = 4.0
@@ -982,6 +993,42 @@ def lenient_tesseract(module: Any) -> Any:
     return module
 
 
+class _Seen:
+    """What an OCR engine read in each picture it was shown, kept for this process (speed,
+    2026-10-23): an engine reads the same picture the same way every time, and a big box shows
+    it the same drawn strokes again and again (a hatch, a row of the same tick: a whole sheet's
+    box took most of an hour, its fraction bars' parts read one by one). Keyed by the engine's
+    own call, the picture's size, type and bytes; the newest `SIZE` kept. One per engine
+    instance (`default_readers` makes each engine once per process)."""
+
+    SIZE: Final = 20_000
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._read: OrderedDict[tuple[Any, ...], tuple[Any, ...]] = OrderedDict()
+
+    def read(
+        self, call: tuple[Any, ...], picture: np.ndarray, reader: Callable[[], Sequence[Any]]
+    ) -> list[Any]:
+        key = (
+            *call,
+            picture.shape,
+            picture.dtype.str,
+            hashlib.blake2b(np.ascontiguousarray(picture).tobytes(), digest_size=20).digest(),
+        )
+        with self._lock:
+            found = self._read.get(key)
+            if found is not None:
+                self._read.move_to_end(key)
+                return list(found)
+        lines = tuple(reader())
+        with self._lock:
+            self._read[key] = lines
+            while len(self._read) > self.SIZE:
+                self._read.popitem(last=False)
+        return list(lines)
+
+
 class TesseractReader:
     """Tesseract (Apache-2.0) through pytesseract, sparse text or one line."""
 
@@ -995,8 +1042,14 @@ class TesseractReader:
         os.environ.setdefault(TESSERACT_THREADS, "1")
         self._tesseract = lenient_tesseract(import_module("pytesseract"))
         self._tesseract.get_tesseract_version()  # raises when the program is not installed
+        self._seen = _Seen()
 
     def __call__(self, picture: np.ndarray, *, single_line: bool) -> list[str]:
+        return self._seen.read(
+            ("tesseract", single_line), picture, lambda: self._lines(picture, single_line)
+        )
+
+    def _lines(self, picture: np.ndarray, single_line: bool) -> list[str]:
         config = f"--psm {7 if single_line else 11} -c " + shlex.quote(
             f"tessedit_char_whitelist={_WHITELIST}"
         )
@@ -1006,12 +1059,20 @@ class TesseractReader:
     def raw_line(self, picture: np.ndarray) -> list[str]:
         """One line read as a raw line (`--psm 13`, no layout analysis): the drawn route's read of
         a stacked fraction alone, whose `3` the line model (`--psm 7`) reads as `5`."""
+        return self._seen.read(("tesseract raw",), picture, lambda: self._raw_line(picture))
+
+    def _raw_line(self, picture: np.ndarray) -> list[str]:
         config = "--psm 13 -c " + shlex.quote(f"tessedit_char_whitelist={_WHITELIST}")
         text = self._tesseract.image_to_string(picture, config=config, timeout=60)
         return [line for line in str(text).splitlines() if line.strip()]
 
     def one_shapes(self, picture: np.ndarray, *, single_line: bool) -> list[float]:
         """The width-to-height of the ink of every glyph Tesseract reads as `1` here."""
+        return self._seen.read(
+            ("tesseract ones", single_line), picture, lambda: self._ones(picture, single_line)
+        )
+
+    def _ones(self, picture: np.ndarray, single_line: bool) -> list[float]:
         config = f"--psm {7 if single_line else 11} -c " + shlex.quote(
             f"tessedit_char_whitelist={_WHITELIST}"
         )
@@ -1042,8 +1103,13 @@ class RapidReader:
         ocr = import_module("extraction.ocr")
         self._engine = ocr.RapidOcrEngine()
         self._lock = threading.Lock()
+        self._seen = _Seen()
 
     def __call__(self, picture: np.ndarray, *, single_line: bool) -> list[str]:
+        # RapidOCR's answer does not depend on `single_line`: one key for both.
+        return self._seen.read(("rapidocr",), picture, lambda: self._lines(picture))
+
+    def _lines(self, picture: np.ndarray) -> list[str]:
         rgb = np.ascontiguousarray(cv2.cvtColor(picture, cv2.COLOR_GRAY2RGB))
         height, width = picture.shape[:2]
         with self._lock:
@@ -1141,16 +1207,19 @@ def _bars(paths: Sequence[_Path]) -> list[tuple[_Path, str, list[_Path], list[_P
     """Fraction bars: a short thin stroke with character-sized ink right above and below it (or
     left and right of it, for a sideways fraction)."""
     out = []
+    near: _Near | None = None
     for bar in paths:
         width, height = bar.box[2] - bar.box[0], bar.box[3] - bar.box[1]
         flat = height <= 0.25 and 0.8 <= width <= 5
         upright = width <= 0.25 and 0.8 <= height <= 5
         if not (flat or upright):
             continue
+        if near is None:
+            near = _Near(paths)
         if flat:
             above = [
                 p
-                for p in paths
+                for p in near.within(3, bar.box[1] - 1.2, bar.box[1] + 0.2)
                 if p is not bar
                 and bar.box[1] - 1.2 <= p.box[3] <= bar.box[1] + 0.2
                 and p.box[0] >= bar.box[0] - 0.5
@@ -1159,7 +1228,7 @@ def _bars(paths: Sequence[_Path]) -> list[tuple[_Path, str, list[_Path], list[_P
             ]
             below = [
                 p
-                for p in paths
+                for p in near.within(1, bar.box[3] - 0.2, bar.box[3] + 1.2)
                 if p is not bar
                 and bar.box[3] - 0.2 <= p.box[1] <= bar.box[3] + 1.2
                 and p.box[0] >= bar.box[0] - 0.5
@@ -1169,7 +1238,7 @@ def _bars(paths: Sequence[_Path]) -> list[tuple[_Path, str, list[_Path], list[_P
         else:
             above = [
                 p
-                for p in paths
+                for p in near.within(2, bar.box[0] - 1.2, bar.box[0] + 0.2)
                 if p is not bar
                 and bar.box[0] - 1.2 <= p.box[2] <= bar.box[0] + 0.2
                 and p.box[1] >= bar.box[1] - 0.5
@@ -1178,7 +1247,7 @@ def _bars(paths: Sequence[_Path]) -> list[tuple[_Path, str, list[_Path], list[_P
             ]
             below = [
                 p
-                for p in paths
+                for p in near.within(0, bar.box[2] - 0.2, bar.box[2] + 1.2)
                 if p is not bar
                 and bar.box[2] - 0.2 <= p.box[0] <= bar.box[2] + 1.2
                 and p.box[1] >= bar.box[1] - 0.5
@@ -1190,23 +1259,53 @@ def _bars(paths: Sequence[_Path]) -> list[tuple[_Path, str, list[_Path], list[_P
     return out
 
 
+class _Near:
+    """A spot's paths sorted by each side of their boxes, once (speed, 2026-10-23: `_bars` read
+    every path for every short stroke, so a spot with many paths took most of a check's drawn-ink
+    reads). `within(side, lo, hi)` gives, in the spot's own order, every path whose box side
+    `side` (0 x0, 1 y0, 2 x1, 3 y1) is from `lo` to `hi`: exactly the paths that pass that test,
+    so `_bars` finds the same bars with the same parts."""
+
+    def __init__(self, paths: Sequence[_Path]) -> None:
+        self.paths = paths
+        self.plain = not all(math.isfinite(v) for path in paths for v in path.box)
+        self._sides: list[tuple[list[float], list[int]]] = []
+        if self.plain:
+            return  # a box with a side that is no number: every path is looked at, as before
+        for side in range(4):
+            order = sorted(range(len(paths)), key=lambda i, side=side: paths[i].box[side])
+            self._sides.append(([paths[i].box[side] for i in order], order))
+
+    def within(self, side: int, lo: float, hi: float) -> Sequence[_Path]:
+        if self.plain:
+            return self.paths
+        values, order = self._sides[side]
+        found = sorted(order[bisect_left(values, lo) : bisect_right(values, hi)])
+        return [self.paths[i] for i in found]
+
+
 def _digits(lines: Iterable[str]) -> str:
     return re.sub(r"\D", "", "".join(lines))
 
 
 def _fractions(
-    paths: Sequence[_Path], reader: InkReader
+    paths: Sequence[_Path],
+    reader: InkReader,
+    bars: Sequence[tuple[_Path, str, list[_Path], list[_Path]]] | None = None,
 ) -> list[tuple[str, list[tuple[np.ndarray, list[str]]]]]:
     """Each stacked fraction read part by part: the whole number before the bar, the numerator
-    and the denominator, each drawn and read alone. `(text, [(part picture, lines read)])`."""
+    and the denominator, each drawn and read alone. `(text, [(part picture, lines read)])`.
+    `bars`: `_bars(paths)`, when the caller found them already (one search for every engine)."""
     found: list[tuple[str, list[tuple[np.ndarray, list[str]]]]] = []
-    for bar, way, above, below in _bars(paths):
+    near: _Near | None = None
+    for bar, way, above, below in _bars(paths) if bars is None else bars:
         size = max(bar.box[2] - bar.box[0], bar.box[3] - bar.box[1])
         parts = set(map(id, above + below)) | {id(bar)}
+        near = near if near is not None else _Near(paths)
         if way == "flat":
             whole = [
                 p
-                for p in paths
+                for p in near.within(2, bar.box[0] - 4 * size, bar.box[0] + 0.3)
                 if id(p) not in parts
                 and bar.box[0] - 4 * size <= p.box[2] <= bar.box[0] + 0.3
                 and p.box[1] <= bar.box[1] + 1.5 * size
@@ -1216,7 +1315,7 @@ def _fractions(
         else:
             whole = [
                 p
-                for p in paths
+                for p in near.within(1, bar.box[3] - 0.3, bar.box[3] + 4 * size)
                 if id(p) not in parts
                 and bar.box[3] - 0.3 <= p.box[1] <= bar.box[3] + 4 * size
                 and p.box[0] <= bar.box[2] + 1.5 * size
@@ -1264,7 +1363,7 @@ def _cached_layer(
         layers.mkdir(parents=True, exist_ok=True)
         layer = layers / f"{hashlib.sha256(page.vendor_pdf).hexdigest()[:24]}.pdf"
         if not layer.is_file():
-            temporary = layer.with_name(f".{layer.name}.{threading.get_ident()}.tmp")
+            temporary = layer.with_name(f".{layer.name}.{os.getpid()}.{threading.get_ident()}.tmp")
             temporary.write_bytes(page.vendor_pdf)
             os.replace(temporary, layer)
         picture = page_cache.cut(folder, layer, 1, area, scale)
@@ -1445,11 +1544,12 @@ def _read_ink(
     """The four reads: each engine on the vector redrawing and on the vendor-layer picture."""
     paths = _ink_paths(page, spot)
     picture = _picture(page, spot)
+    bars = _bars(paths) if paths else []
     reads: list[_InkRead] = []
     for reader in readers:
         vector = _InkRead(f"vendor ink, {reader.name}", reader.name)
         if paths:
-            for fraction, parts in _fractions(paths, reader):
+            for fraction, parts in _fractions(paths, reader, bars):
                 value = to_inches(fraction)
                 vector.lines.append(fraction)
                 if value is not None:
@@ -1657,9 +1757,192 @@ def verify_value(
     """
     token = _CACHE_FOLDER.set(page_cache)
     try:
-        return _verify(pdf, page, box, expected, drawn=drawn, readers=readers)
+        kept = (
+            _kept_key(pdf, page, box, expected, page_cache) if drawn and readers is None else None
+        )
+        if kept is not None:
+            found = _kept_read(*kept)
+            if found is not None:
+                return found
+        verified = _verify(pdf, page, box, expected, drawn=drawn, readers=readers)
+        if kept is not None and verified.reason != _PAGE_UNREAD:
+            _keep_read(*kept, verified)
+        return verified
     finally:
         _CACHE_FOLDER.reset(token)
+
+
+# ---- reads kept in the set pack (2026-10-23) -----------------------------------------------------
+
+#: The set pack's folder of kept drawn-ink reads (`keep_reads_in`).
+KEPT_READS: Final = "spot_reads"
+#: Changes when what a kept read holds changes (the code's own source is in the key as well).
+_KEPT_VERSION: Final = 1
+#: The modules whose code decides a read: a change to any of them reads every spot again.
+_KEPT_CODE: Final = (
+    "app.review.assistant.verify_value",
+    "app.review.assistant.ink_labels",
+    "app.review.assistant.finding_checks",
+    "app.review.assistant.page_cache",
+    "app.review.assistant.picture_labels",
+    "extraction.gv_marks",
+    "extraction.reader",
+    "extraction.stamp_text",
+    "extraction.visible_text",
+    "extraction.ocr",
+)
+#: The libraries whose version is part of a kept read's key.
+_KEPT_LIBRARIES: Final = (
+    "rapidocr_onnxruntime",
+    "onnxruntime",
+    "pytesseract",
+    "pdfplumber",
+    "pikepdf",
+    "pypdfium2",
+    "opencv-python-headless",
+    "numpy",
+)
+_PAGE_UNREAD: Final = "the page cannot be read"
+_WHOLE_SHEET: Final = (
+    "the box is most of the sheet, not one dimension's spot: draw the box round the one dimension"
+)
+#: Each PDF's set pack folder (`keep_reads_in`), by its resolved path.
+_KEPT_IN: dict[str, Path] = {}
+_FILE_IDS: dict[tuple[str, int, int], str] = {}
+_CODE_ID: list[str] = []
+
+
+def keep_reads_in(folder: Path | None, pdfs: Iterable[Path]) -> None:
+    """The drawn-ink reads of these PDFs are kept in `folder` (a set pack) from now on, so a spot
+    is read once per set: a second check, a Continue or another worker process finds the answer
+    (2026-10-23). The key is the PDF's own bytes, the page, the box, the value, whether the page
+    cache was used, the reading code's source and its libraries' versions: any change reads again.
+    `folder` None: no longer kept."""
+    with _CACHE_LOCK:
+        for pdf in pdfs:
+            try:
+                where = str(Path(pdf).resolve())
+            except OSError:
+                continue
+            if folder is None:
+                _KEPT_IN.pop(where, None)
+            else:
+                _KEPT_IN[where] = Path(folder)
+
+
+def kept_folders() -> dict[str, Path]:
+    """`keep_reads_in`'s folders now (handed to a worker process, `spot_pool`)."""
+    with _CACHE_LOCK:
+        return dict(_KEPT_IN)
+
+
+def _code_id() -> str:
+    with _CACHE_LOCK:
+        if _CODE_ID:
+            return _CODE_ID[0]
+    from importlib import metadata
+    from importlib.util import find_spec
+
+    digest = hashlib.sha256(str(_KEPT_VERSION).encode())
+    for name in _KEPT_CODE:
+        spec = find_spec(name)
+        origin = getattr(spec, "origin", None) if spec is not None else None
+        digest.update(name.encode())
+        if origin:
+            try:
+                digest.update(Path(origin).read_bytes())
+            except OSError:
+                digest.update(b"?")
+    for library in _KEPT_LIBRARIES:
+        try:
+            digest.update(f"{library}={metadata.version(library)}".encode())
+        except metadata.PackageNotFoundError:
+            digest.update(f"{library}=none".encode())
+    found = digest.hexdigest()
+    with _CACHE_LOCK:
+        if not _CODE_ID:
+            _CODE_ID.append(found)
+        return _CODE_ID[0]
+
+
+def _file_id(path: Path) -> str:
+    stat = path.stat()
+    key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    with _CACHE_LOCK:
+        found = _FILE_IDS.get(key)
+    if found is None:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while block := handle.read(1 << 20):
+                digest.update(block)
+        found = digest.hexdigest()
+        with _CACHE_LOCK:
+            _FILE_IDS[key] = found
+    return found
+
+
+def _kept_key(
+    pdf: Path, page: int, box: Mapping[str, Any], expected: str, page_cache: Path | None
+) -> tuple[Path, str] | None:
+    """Where this read is kept and its key, or `None` (not kept: no folder for this PDF, or a box
+    or page code would not read anyway)."""
+    try:
+        where = str(Path(pdf).resolve())
+    except OSError:
+        return None
+    with _CACHE_LOCK:
+        folder = _KEPT_IN.get(where)
+    if folder is None or isinstance(page, bool) or not isinstance(page, int):
+        return None
+    try:
+        spot = [repr(float(box[k])) for k in ("x0", "y0", "x1", "y1")]
+        fields = [
+            _code_id(),
+            _file_id(Path(pdf)),
+            page,
+            spot,
+            str(expected),
+            page_cache is not None,
+        ]
+    except (KeyError, TypeError, ValueError, OSError):
+        return None
+    key = hashlib.sha256(json.dumps(fields).encode()).hexdigest()
+    return folder / KEPT_READS / key[:2], key
+
+
+def _kept_read(folder: Path, key: str) -> Verified | None:
+    try:
+        raw = json.loads((folder / f"{key}.json").read_text("utf-8"))
+        return Verified(
+            raw["result"],
+            raw["route"],
+            raw["read"],
+            tuple(raw["reads"]),
+            raw["reason"],
+            raw["value"],
+            bool(raw["pending"]),
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _keep_read(folder: Path, key: str, verified: Verified) -> None:
+    raw = {
+        "result": verified.result,
+        "route": verified.route,
+        "read": verified.read,
+        "reads": list(verified.reads),
+        "reason": verified.reason,
+        "value": verified.value,
+        "pending": verified.pending,
+    }
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        held = folder / f".{key}.{os.getpid()}.{threading.get_ident()}.tmp"
+        held.write_text(json.dumps(raw), encoding="utf-8")
+        held.replace(folder / f"{key}.json")
+    except OSError:
+        _log.info("verify_value: a read could not be kept in the set pack")
 
 
 def _verify(
@@ -1682,7 +1965,7 @@ def _verify(
         read = _read_page(Path(pdf), page - 1)
     except (OSError, IndexError, pikepdf.PdfError, ValueError) as failed:
         _log.warning("verify_value could not read the page: %s", type(failed).__name__)
-        return Verified("cannot_read", "none", None, reason="the page cannot be read", value=value)
+        return Verified("cannot_read", "none", None, reason=_PAGE_UNREAD, value=value)
     text = _text_read(read, spot)
     text_reads = tuple(f"text: {label}" for label in text.labels)
     if wanted in text.values:
@@ -1850,6 +2133,8 @@ def _drawn(
         return Verified(
             "cannot_read", "none", None, text_reads, "no OCR engine is installed here", value
         )
+    if (spot[2] - spot[0]) * (spot[3] - spot[1]) > WHOLE_SHEET_PT2:
+        return Verified("cannot_read", "none", None, text_reads, _WHOLE_SHEET, value)
     # The box's own text is exact: when it prints a near-miss of the value (`63 1/2"` when `63"`
     # is claimed), no OCR read of the ink may confirm it (an engine loses a stacked fraction).
     # Checked where a match would be made, so a mismatch is still told (#1573).

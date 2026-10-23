@@ -101,6 +101,7 @@ from app.review.assistant import (
     pick_cache,
     round_picks,
     same_ends,
+    spot_pool,
     verify_value,
     whole_look,
     witness,
@@ -1426,6 +1427,8 @@ class _Run:
     #: The drawn run's drawings and line work (`same_ends`), read once per run.
     _drawn_sides: dict[Any, Any] = field(default_factory=dict)
     _line_work: dict[tuple[str, int], Sequence[Any]] = field(default_factory=dict)
+    #: The set pack's kept line work (`vendor_consistency.LineWork`), made on first use.
+    _kept_lines: Any = None
     agents: list[Any] = field(default_factory=list)
     #: The phase whose budget the devil's advocate's blind picks are charged to: its own (P4), or
     #: what is left under the fixed price (the escalation, #1619).
@@ -1964,6 +1967,10 @@ class _Run:
             return None
         # The code checks' page parsing in worker processes when the server asks for it (#1874).
         verify_value.use_parse_processes(getattr(settings, "parse_processes", 0))
+        # The final checks' spot reads in worker processes, each read kept in the set pack so no
+        # spot is read twice, in this run or a Continue (2026-10-23).
+        spot_pool.use_processes(getattr(settings, "spot_processes", 0))
+        verify_value.keep_reads_in(workspace.set_pack, engine.book.pdf_paths().values())
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="gv-roster-warm") as warm_pool:
             warm = warm_pool.submit(engine._prewarm)
             with engine.timings.phase("set_pack"):
@@ -2395,6 +2402,10 @@ class _Run:
         from app.review.assistant.escalation import escalate_answer
 
         self._step("proving")
+        if engine._progress is not None:
+            # Every page is compared: from here code double-checks (the live line says so, with
+            # each long check's item count, never "comparing 109 of 109 pages" for an hour).
+            engine._progress.phase("checking")
         engine.add_code_findings()
         self._prototype_references(page_map)
         try:
@@ -3148,14 +3159,26 @@ class _Run:
             self.chat_proofs = set_proofs.load(tools.workspace.set_pack)
         started = monotonic()
 
+        counted = engine.count_items(len(candidates))
+
         def read(finding: dict[str, Any]) -> list[_SideRead] | None:
             # The budget is looked at as each item starts, in order, as the old loop did.
             if monotonic() - started > _PROOF_BUDGET_S:
                 return None
-            return self._read_sides(tools, finding)
+            try:
+                return self._read_sides(tools, finding)
+            finally:
+                counted()
 
         # The reads run on code's pool (#1850); each item's answer is applied in the old order.
-        done = run_ordered(candidates, read, stop=engine.cancel.is_set, name="gv-provers")
+        done = run_ordered(
+            candidates,
+            read,
+            workers=max(code_workers(), spot_pool.processes()),
+            stop=engine.cancel.is_set,
+            name="gv-provers",
+        )
+        engine.items_counted()
         for finding, outcome in zip(candidates, done, strict=True):
             if not outcome.ran or (outcome.error is None and outcome.value is None):
                 break  # stopped, or the budget was used up: the items after it are not read
@@ -3216,11 +3239,17 @@ class _Run:
         from app.review.assistant.finding_checks import claim_value
 
         found: list[_SideRead] = []
+        checks = finding.get("checks") if isinstance(finding.get("checks"), Mapping) else {}
         for side, box_key, key in _PROOF_SIDES:
             value = claim_value(finding.get(side))
             box = finding.get(box_key)
             if value is None or not isinstance(box, Mapping):
                 continue  # no number or no spot: nothing a tool can read (it stays as it is)
+            done = (checks or {}).get(key)
+            if isinstance(done, Mapping) and done.get("result") in ("match", "mismatch"):
+                # Code read this side already (its typed text, or its ink): that answer stands and
+                # a new one is never written over it, so it is not read again (2026-10-23).
+                continue
             try:
                 spot: dict[str, Any] = {
                     "page": int(box.get("page") or finding["page"]),
@@ -3252,7 +3281,25 @@ class _Run:
             known = self.proof_reads.get(key)
         if known is not None:
             return copy.deepcopy(known)
-        answer = dict(tools.verify_answer(name, page, coords, value, side))
+        if spot_pool.processes() > 0:
+            # In a worker process (2026-10-23): the same read, beside the others.
+            workspace = tools.workspace
+            answer = dict(
+                spot_pool.run(
+                    "app.review.assistant.spot_pool",
+                    "verify_answer_at",
+                    workspace.uploads,
+                    workspace.set_pack,
+                    name,
+                    page,
+                    tuple(coords),
+                    value,
+                    side,
+                    affinity=page,
+                )
+            )
+        else:
+            answer = dict(tools.verify_answer(name, page, coords, value, side))
         with self.proof_reads_lock:
             self.proof_reads[key] = copy.deepcopy(answer)
         return answer
@@ -4166,8 +4213,19 @@ class _Run:
             jobs.append(finding)
         if not jobs:
             return
+        counted = engine.count_items(len(jobs))
+
+        def judge(finding: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
+            if engine.cancel.is_set():
+                return None  # Stop: not judged now (never proved: Continue judges it)
+            try:
+                return self._judge(finding, page_map, annotations)
+            finally:
+                counted()
+
         with ThreadPoolExecutor(max_workers=_ADVOCATE_WORKERS) as pool:
-            verdicts = list(pool.map(lambda f: self._judge(f, page_map, annotations), jobs))
+            verdicts = list(pool.map(judge, jobs))
+        engine.items_counted()
         for finding, verdict in zip(jobs, verdicts, strict=True):
             if verdict is not None:
                 self._write_verdict(str(finding["id"]), verdict)
@@ -4429,11 +4487,25 @@ class _Run:
         return proved, f"the drawn run: {said}"
 
     def _segments(self, file: str, page: int) -> Sequence[Any]:
-        """A page's line work as `dim_labels` reads it, read once per run."""
+        """A page's line work as `dim_labels` reads it, read once per run: from the set pack's
+        kept copy of that same reading when it has one (`vendor_consistency.LineWork`, exact
+        floats; speed, 2026-10-23: parsing a big page again took seconds), else parsed here."""
         key = (file, page)
         if key not in self._line_work:
-            pdf = self.engine.book.dim_labels.uploads / file
-            self._line_work[key] = dim_anchors.page_segments(pdf, page - 1)
+            uploads = self.engine.book.dim_labels.uploads
+            found: Sequence[Any] | None = None
+            pack = self.engine.tools.workspace.set_pack
+            if pack is not None:
+                if self._kept_lines is None:
+                    from app.review.assistant import vendor_consistency
+
+                    self._kept_lines = vendor_consistency.line_work(uploads, pack)
+                found = self._kept_lines(file, page)
+            self._line_work[key] = (
+                tuple(found)
+                if found is not None
+                else dim_anchors.page_segments(uploads / file, page - 1)
+            )
         return self._line_work[key]
 
     def _half_box(
@@ -5137,6 +5209,10 @@ def run(engine: ChatEngine) -> MessageOutcome | None:
         ended = roster.run()
     finally:
         roster._end_read_ahead()  # never left reading after the check ends (#1850)
+        # Its reads are kept in its set pack while it runs only, and its reading workers end with
+        # it (2026-10-23).
+        verify_value.keep_reads_in(None, engine.book.pdf_paths().values())
+        spot_pool.use_processes(0)
     if ended is None:
         rule = engine.settings.price_rule
         set_price(engine, rule.price(engine.tools.page_count, price_bound(engine)))

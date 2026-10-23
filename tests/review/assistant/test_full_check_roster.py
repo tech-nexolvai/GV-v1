@@ -1572,3 +1572,134 @@ def test_a_silent_tag_reader_never_notes_pages_it_does_not_own(
     outcome = harness.run()
     assert noted == []
     assert "send the cloud drawing" not in outcome.text  # the tag step broke: not for sending
+
+
+class _Counted:
+    """The live line's item counts as a check sends them (`FullCheckProgress.set_items`)."""
+
+    def __init__(self) -> None:
+        self.items: list[tuple[int, int]] = []
+        self.ended = 0
+        self.phases: list[str] = []
+
+    def set_items(self, done: int, total: int) -> None:
+        self.items.append((done, total))
+
+    def end_items(self) -> None:
+        self.ended += 1
+
+    def phase(self, name: str) -> None:
+        self.phases.append(name)
+
+    def set_step(self, *_a: Any, **_k: Any) -> None:
+        return None
+
+    def changed(self, *_a: Any, **_k: Any) -> None:
+        return None
+
+
+def test_the_final_checks_by_code_count_their_items_on_the_live_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-10-23: the proving reads say "checking n of m items" as they go, and end the count."""
+    from app.review.assistant.chat_tools import ChatTools
+
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    _five_wrongs(harness)
+    counted = _Counted()
+    engine._progress = counted  # type: ignore[assignment]
+
+    def verify(self: Any, name: str, page: int, box: Any, expected: str, side: str = "") -> Any:
+        return {"result": "cannot_read", "route": "none", "read": None, "reads": [],
+                "reason": "", "value": expected, "pending": False, "words": "not read"}  # fmt: skip
+
+    monkeypatch.setattr(ChatTools, "verify_answer", verify)
+    _run(harness)._prove_values("verifier")
+    assert counted.items[0] == (0, 5) and counted.items[-1] == (5, 5)
+    assert sorted(counted.items) == counted.items and counted.ended == 1
+
+
+def test_a_side_code_already_read_is_never_read_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-10-23: a side whose value code already read (typed text, or ink) keeps that answer and
+    a new one is never written over it, so the proving step does not read it again."""
+    from app.review.assistant.chat_tools import ChatTools
+
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    _five_wrongs(harness)
+    first = engine.book.live()[0]
+    read = {"result": "match", "route": "text", "read": first["vendor"], "reads": [],
+            "reason": "", "value": first["vendor"], "pending": False}  # fmt: skip
+    engine.book.replace({**first, "checks": {**first["checks"], "verify_vendor": read}})
+    asked: list[tuple[str, str]] = []
+
+    def verify(self: Any, name: str, page: int, box: Any, expected: str, side: str = "") -> Any:
+        asked.append((expected, side))
+        return {"result": "cannot_read", "route": "none", "read": None, "reads": [],
+                "reason": "", "value": expected, "pending": False, "words": "not read"}  # fmt: skip
+
+    monkeypatch.setattr(ChatTools, "verify_answer", verify)
+    _run(harness)._prove_values("verifier")
+    assert (first["vendor"], "vendor") not in asked and len(asked) == 9
+    kept = next(f for f in engine.book.live() if f["id"] == first["id"])
+    assert kept["checks"]["verify_vendor"]["result"] == "match"
+
+
+def test_stop_ends_the_final_checks_by_code_within_seconds_and_keeps_the_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-10-23: Stop pressed while the final checks by code run (each read slow): the reads
+    already running end, nothing else is read, the advocate judges nothing more and no further
+    code check starts; the stopped answer keeps every finding and says how to continue."""
+    import time
+    from types import SimpleNamespace
+
+    from app.review.assistant.chat_tools import ChatTools
+
+    monkeypatch.setenv("GV_ASSISTANT_CODE_WORKERS", "2")
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    _five_wrongs(harness)
+    asked: list[str] = []
+
+    def verify(self: Any, name: str, page: int, box: Any, expected: str, side: str = "") -> Any:
+        asked.append(expected)
+        if len(asked) == 2:
+            engine.cancel.set()  # the reviewer pressed Stop while code reads
+        time.sleep(0.3)
+        return {"result": "cannot_read", "route": "none", "read": None, "reads": [],
+                "reason": "", "value": expected, "pending": False, "words": "not read"}  # fmt: skip
+
+    judged: list[str] = []
+    monkeypatch.setattr(ChatTools, "verify_answer", verify)
+    monkeypatch.setattr(
+        full_check_roster._Run, "_judge", lambda self, f, *_a: judged.append(f["id"])
+    )
+    checks: list[str] = []
+    monkeypatch.setattr(engine, "_ledger_findings", lambda: checks.append("ledger"))
+    run = _run(harness)
+    before = {f["id"] for f in engine.book.live()}
+    started = time.monotonic()
+    run._proof_steps(SimpleNamespace(jobs=[]), None)
+    outcome = run._finish("cancelled")
+    assert time.monotonic() - started < 10
+    # Code's own checks ran once, before the stop; the reads stopped with the two running.
+    assert len(asked) <= 4 and judged == [] and checks == ["ledger"]
+    assert outcome.stopped == "cancelled"
+    assert before <= {f["id"] for f in engine.book.live()}
+    assert any(b.get("type") == "resume" for b in outcome.blocks)
+
+
+def test_after_stop_no_further_code_check_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    checks: list[str] = []
+    monkeypatch.setattr(engine, "_ledger_findings", lambda: checks.append("ledger"))
+    engine.cancel.set()
+    engine.add_code_findings()
+    assert checks == [] and engine.code_checks_failed == []

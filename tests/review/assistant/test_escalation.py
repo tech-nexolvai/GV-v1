@@ -348,3 +348,24 @@ def test_a_value_that_has_its_spot_is_never_re_read() -> None:
         raise AssertionError("not asked")
 
     escalate([_wrong()], EscalationContext(main_file=FILE, reread=never))
+
+
+def test_stop_ends_the_ladder_and_counts_each_item_tried() -> None:
+    """2026-10-23: Stop pressed during the free steps: no further item is tried (each one tried
+    keeps what code found; a Continue tries the rest), and the live line counts the items."""
+    counts: list[int] = []
+    tried: list[int] = []
+
+    def count(total: int) -> Any:
+        counts.append(total)
+        return lambda: tried.append(1)
+
+    stopped = escalate(
+        [_wrong(), _wrong(id="F2", page=3)],
+        _ctx(stop=lambda: len(tried) >= 1, count=count),
+    )
+    assert counts == [2] and len(tried) == 1 and stopped.tried == 1
+    assert list(_by_id(stopped)) == ["F1"]
+    whole = escalate([_wrong(), _wrong(id="F2", page=3)], _ctx())
+    assert whole.tried == 2
+    assert _by_id(stopped)["F1"] == _by_id(whole)["F1"]

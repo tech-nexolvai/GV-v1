@@ -154,6 +154,12 @@ class EscalationContext:
     """GV's markup (`annotations.json`): its typed notes are never the architect's value."""
     unopened: frozenset[int] | None = None
     """The main file's pages the check never opened (its coverage); None: not known (none)."""
+    stop: Callable[[], bool] | None = None
+    """Stop was pressed (2026-10-23): the ladder tries no further item (each one tried is kept;
+    the guards before it, which only ever take a red or a Right away, still run on every item)."""
+    count: Callable[[int], Callable[[], None]] | None = None
+    """The live line's item count (`ChatEngine.count_items`): given the items to try, it returns
+    the function that counts one tried."""
 
 
 @dataclass(slots=True)
@@ -1251,9 +1257,15 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     early = _before_ladder(live, ctx, result)
     by_id = {str(f["id"]): f for f in live}
     areas = _areas(ctx)
-    for finding in by_impact(live):
+    order = by_impact(live)
+    waiting = sum(1 for f in order if str(f["id"]) not in early and undecided(f))
+    tried = ctx.count(waiting) if ctx.count is not None else (lambda: None)
+    for finding in order:
         if str(finding["id"]) in early or not undecided(finding):
             continue
+        if ctx.stop is not None and ctx.stop():
+            break  # Stop: the items not tried stay as they are (Continue tries them)
+        tried()
         result.tried += 1
         item = _Item(by_id[str(finding["id"])])
         for step in FREE_STEPS:
@@ -1322,6 +1334,8 @@ def context_from_pack(
     strokes: Callable[[str, int, tuple[float, float, float, float]], Any] | None = None,
     changes: Sequence[Mapping[str, Any]] = (),
     unopened: frozenset[int] | None = None,
+    stop: Callable[[], bool] | None = None,
+    count: Callable[[int], Callable[[], None]] | None = None,
 ) -> EscalationContext:
     """The free steps' facts from a set pack (`dims.json`, `pairs.json`, the stickers code hid
     (`<name>_stickers.json`), and for a missing item `page_texts.json`, `health.json`,
@@ -1377,6 +1391,8 @@ def context_from_pack(
         pictures=pictures,
         annotations=notes,
         unopened=unopened,
+        stop=stop,
+        count=count,
     )
 
 
@@ -1421,6 +1437,11 @@ def _under_reader(pdf_paths: Mapping[str, Path]) -> UnderReader:
     return read
 
 
+def _stop_of(engine: Any) -> Callable[[], bool] | None:
+    cancel = getattr(engine, "cancel", None)
+    return cancel.is_set if cancel is not None else None
+
+
 def escalate_answer(engine: Any) -> Escalation | None:
     """The engine's hook (whole-set work, after the resolver, before the trust report): the free
     steps on the answer's undecided items, each change shown, folded copies dropped with their
@@ -1449,6 +1470,8 @@ def escalate_answer(engine: Any) -> Escalation | None:
             for entry in book.coverage_map()["pages"]
             if entry.get("status") == "not_opened"
         ),
+        stop=_stop_of(engine),
+        count=getattr(engine, "count_items", None),
     )
     with engine.finding_lock:
         result = escalate(book.live(), ctx)
@@ -1460,5 +1483,8 @@ def escalate_answer(engine: Any) -> Escalation | None:
                 continue
             if book.replace(finding):
                 engine._show_finding(finding)
+    items_counted = getattr(engine, "items_counted", None)
+    if items_counted is not None:
+        items_counted()
     _log.info("assistant escalation: %s", result.block())
     return result
