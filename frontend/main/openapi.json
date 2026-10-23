@@ -4085,6 +4085,14 @@
             "title": "Pairing Unsure",
             "type": "boolean"
           },
+          "pairing_unsure_pages": {
+            "description": "pairing_unsure: each candidate architect page (its page, its file when the set has several architect files, its title), for a person to pick.",
+            "items": {
+              "$ref": "#/components/schemas/ChatUnsurePageOut"
+            },
+            "title": "Pairing Unsure Pages",
+            "type": "array"
+          },
           "pairing_unsure_why": {
             "anyOf": [
               {
@@ -11231,6 +11239,42 @@
           "unknowns"
         ],
         "title": "ChatUnknownsBlock",
+        "type": "object"
+      },
+      "ChatUnsurePageOut": {
+        "description": "One candidate architect page of a \"pairing unsure\" vendor page.",
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "title": "ChatUnsurePageOut",
         "type": "object"
       },
       "ChatVendorPageOut": {

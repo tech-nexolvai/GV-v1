@@ -444,7 +444,16 @@ export interface FindingBox {
  * One difference (or match) the assistant reported with `report_finding`, at its latest version.
  * `architect` and `vendor` are shown exactly as written: the screen never re-types a number.
  */
+/** A candidate architect page of a "pairing unsure" vendor page (its file when the set has several architect files). */
+export interface UnsurePage {
+  page: number;
+  file?: string | null;
+  title?: string | null;
+}
+
 export interface ChatFinding {
+  /** A "pairing unsure" page's candidate architect pages (made on the screen, never sent). */
+  unsure_pages?: UnsurePage[] | null;
   id: string;
   /** The page the finding is on (the vendor's page). */
   page: number;
@@ -1095,6 +1104,8 @@ export interface CoveragePage {
   pairing_unsure?: boolean | null;
   /** The two candidate pages, as a person finds them ('architect page 9 ("STANDARD KITCHEN") or architect page 2?'). */
   pairing_unsure_why?: string | null;
+  /** pairing_unsure: each candidate architect page, for a person to pick. */
+  pairing_unsure_pages?: UnsurePage[] | null;
 }
 
 /** The page-by-page map of a whole-set answer: which pages were compared and how they came out. */

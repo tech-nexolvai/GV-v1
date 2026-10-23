@@ -508,3 +508,21 @@ def test_unit_type_lists_and_unit_words() -> None:
     assert unit_title("SAMPLE KITCHEN REVERSED UNITS")[0] == "sample kitchen"
     # "unit" is kept when it is not a hand word: a wall unit is not a wall.
     assert not same_item("SAMPLE WALL UNIT ELEVATION", "SAMPLE WALL ELEVATION")
+
+
+def test_pairing_unsure_names_each_candidate_page_for_the_screen() -> None:
+    from app.review.assistant.full_check_plan import unsure_pages
+
+    why = 'architect page 14 of B.pdf ("SAMPLE UNIT TYPE 1") or architect page 15 of B.pdf?'
+    assert unsure_pages(why) == [
+        {"page": 14, "file": "B.pdf", "title": "SAMPLE UNIT TYPE 1"},
+        {"page": 15, "file": "B.pdf", "title": None},
+    ]
+    note = f"Not compared with the architect: pairing unsure ({why})"
+    shown = ChatCoveragePageOut.model_validate(
+        {"page": 3, "status": "not_comparable", "note": note}
+    )
+    assert [(p.page, p.file) for p in shown.pairing_unsure_pages] == [(14, "B.pdf"), (15, "B.pdf")]
+    assert unsure_pages('architect page 9, view "SAMPLE ELEVATION" or architect page 9?') == [
+        {"page": 9, "file": None, "title": "SAMPLE ELEVATION"}
+    ]

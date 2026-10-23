@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { AssistantMessage } from '@/components/chat/chat-message';
 import type { ChatCoverage } from '@/lib/chat-api';
 import type { ViewMessage } from '@/lib/chat-messages';
-import { drawingNeededPages, notComparedGroups, pairingUnsureItems } from '@/lib/chat-result';
+import { drawingNeededPages, notComparedGroups, pairingUnsureItems, pairingUnsureWords } from '@/lib/chat-result';
 import { finding, OPUS } from './fixtures/chat';
 
 const PAGES = 'architect page 9 ("SAMPLE UNIT A") or architect page 2?';
@@ -20,7 +20,7 @@ const PAGES = 'architect page 9 ("SAMPLE UNIT A") or architect page 2?';
 const COVERAGE: ChatCoverage = {
   pages: [
     { page: 1, status: 'same' },
-    { page: 2, status: 'not_comparable', note: `Not compared with the architect: pairing unsure (${PAGES})`, pairing_unsure: true, pairing_unsure_why: PAGES },
+    { page: 2, status: 'not_comparable', note: `Not compared with the architect: pairing unsure (${PAGES})`, pairing_unsure: true, pairing_unsure_why: PAGES, pairing_unsure_pages: [{ page: 9, title: 'SAMPLE UNIT A' }, { page: 2, title: null }] },
     { page: 3, status: 'not_comparable', note: 'Not compared with the architect: …', drawing_needed: true, drawing_needed_why: 'no drawing of the same item was found in the architect’s file' },
   ],
 };
@@ -42,9 +42,11 @@ describe('pairing unsure', () => {
   it('is a Not-compared item naming both pages, never a Drawing-needed page', () => {
     expect(drawingNeededPages(COVERAGE).map((page) => page.page)).toEqual([3]);
     const items = pairingUnsureItems(COVERAGE, TITLES);
-    expect(items.map((item) => [item.id, item.page, item.item])).toEqual([['pairing-unsure:2', 2, `Sample unit A: Pairing unsure: ${PAGES.replace(/"([^"]*)"/g, '“$1”')}`]]);
-    // A title's quotes are curly quotes, never inch marks.
-    expect(items[0].item).not.toContain('"');
+    // The row names the two pages; the group's heading says "Pairing unsure" once.
+    expect(items.map((item) => [item.id, item.page, item.item])).toEqual([['pairing-unsure:2', 2, 'Sample unit A: architect page 9 or page 2?']]);
+    // An older answer with the pages only in words: those, its quotes curly (never inch marks).
+    const older = pairingUnsureItems({ pages: [{ page: 2, status: 'not_comparable', pairing_unsure: true, pairing_unsure_why: PAGES }] }, TITLES);
+    expect(older[0].item).toBe(`Sample unit A: ${PAGES.replace(/"([^"]*)"/g, '“$1”')}`);
     expect(notComparedGroups(items).map((group) => [group.reason, group.words])).toEqual([['pairing_unsure', 'Pairing unsure: a person confirms the architect page']]);
     expect(items[0].item).not.toMatch(/\bA\d{1,3}\b|\bp\d{3,5}\b|no architect drawing/);
   });
@@ -56,7 +58,36 @@ describe('pairing unsure', () => {
     expect(tiles(node)).toEqual(['wrong:0', 'likely_problem:0', 'rule_note:0', 'drawing_needed:1', 'right:1', 'not_compared:1']);
     await user.click(within(node).getByRole('tab', { name: /Not compared/ }));
     const row = node.querySelector<HTMLElement>('[data-id="pairing-unsure:2"]');
-    expect(row?.textContent).toContain('Pairing unsure');
-    expect(row?.textContent).toContain('architect page 9');
+    expect(row?.textContent).toMatch(/architect page 9 or page 2/i);
+    expect(row?.textContent).not.toContain('Pairing unsure');
+  });
+
+  it('opens a drawer showing the vendor page and each candidate architect page, deciding nothing', async () => {
+    const user = userEvent.setup();
+    const asked: string[] = [];
+    const pagePicture = (page: number, where?: { file?: string | null; side?: string | null }) => {
+      const url = `/pages/${where?.file ?? where?.side ?? 'vendor'}/${page}`;
+      asked.push(url);
+      return url;
+    };
+    render(<AssistantMessage message={answer()} chatId="c-1" models={[OPUS]} fullCheck pageTitles={TITLES} pagePicture={pagePicture} />);
+    const node = screen.getByRole('article', { name: 'Answer' });
+    await user.click(within(node).getByRole('tab', { name: /Not compared/ }));
+    await user.click(node.querySelector<HTMLElement>('[data-id="pairing-unsure:2"]')!);
+    const panel = await screen.findByRole('dialog');
+    expect(within(panel).getByRole('heading', { level: 2 }).textContent).toContain('Which architect page shows this? Page 9 or page 2');
+    const sides = [...panel.querySelectorAll<HTMLElement>('[data-slot="chat-evidence-side"][data-side="architect"]')].map((side) => side.querySelector('figcaption')?.textContent);
+    expect(sides).toEqual(['Architect page 9 — SAMPLE UNIT A', 'Architect page 2']);
+    expect(asked).toEqual(expect.arrayContaining(['/pages/vendor/2', '/pages/architect/9', '/pages/architect/2']));
+    expect(panel.textContent).toContain('so the app won’t pick it for you');
+    expect(panel.textContent).not.toContain('did not find this item');
+    expect(panel.querySelector('[data-slot="chat-decision"]')).toBeNull();
+  });
+
+  it('says why in plain words', () => {
+    const same = pairingUnsureWords([{ page: 14, title: 'SAMPLE UNIT TYPE 1' }, { page: 15, title: 'Sample unit type 1' }]);
+    expect(same.title).toBe('Which architect page shows this? Page 14 or page 15');
+    expect(same.steps[0]).toBe('Two architect pages carry the same title, so the app won’t pick one for you.');
+    expect(pairingUnsureWords([{ page: 9 }]).title).toBe('Does architect page 9 show this?');
   });
 });

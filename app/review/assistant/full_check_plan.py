@@ -813,6 +813,30 @@ def unsure_note_why(note: str | None) -> str | None:
     return text[len(head) :].rsplit(")", 1)[0].strip() or None
 
 
+#: One candidate page in a "pairing unsure" reason, as `worklist._human_ids` words it: 'architect
+#: page 14', 'architect page 14 of B.pdf', then its title '("SAMPLE UNIT")' or its view.
+_UNSURE_PAGE: Final = re.compile(
+    r'architect page (\d+)(?: of (.+?\.pdf))?(?: \("([^"]*)"\)|, view "([^"]*)")?',
+    re.IGNORECASE,
+)
+
+
+def unsure_pages(why: str | None) -> list[dict[str, Any]]:
+    """The candidate architect pages a "pairing unsure" reason names, in its order, each once:
+    `{"page", "file", "title"}` (`file` only when the set has several architect files; `title`
+    the set index's title or the view's, when named). The result screen shows each page for a
+    person to pick."""
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str | None, int]] = set()
+    for found in _UNSURE_PAGE.finditer(str(why or "")):
+        page, file = int(found.group(1)), found.group(2)
+        if (file, page) in seen:
+            continue
+        seen.add((file, page))
+        out.append({"page": page, "file": file, "title": found.group(3) or found.group(4)})
+    return out
+
+
 def mostly_unpaired(unpaired: int, pages: int) -> bool:
     """Whether more than `UNPAIRED_WARN_SHARE` of the `pages` compared have no architect drawing
     paired with them (#1885): the summary then says so first, in plain words."""
