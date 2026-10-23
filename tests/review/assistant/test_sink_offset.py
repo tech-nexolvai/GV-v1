@@ -409,8 +409,11 @@ def hooked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, list[
     (tmp_path / "rules.md").write_text(RULES_MD)
     found: list[dict[str, Any]] = []
 
-    def check_pack(folder: Any, uploads: Any, setting: Any, main: Any, category: str) -> Any:
+    def check_pack(
+        folder: Any, uploads: Any, setting: Any, main: Any, category: str, **more: Any
+    ) -> Any:
         assert setting == STANDARD and category == "cabinet"
+        assert more["settings"] == {so.FRONT.id: STANDARD}
         return [dict(f, category=category) for f in found]
 
     monkeypatch.setattr(so, "check_pack", check_pack)

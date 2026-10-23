@@ -32,7 +32,7 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Any, Final, Literal
 
-from app.review.assistant import classification
+from app.review.assistant import classification, same_item_pages
 from app.review.assistant import proof as rule
 from app.review.assistant.finding_checks import wrong_part
 from app.review.assistant.vendor_text import inch_words, item_name, vendor_text
@@ -170,7 +170,10 @@ def _range(text: str) -> tuple[Decimal | None, Decimal | None] | None:
 
 def difference_words(finding: Mapping[str, Any]) -> str | None:
     """By how much the vendor's value is off: `1/2" over`, `2" short` (`3" over` a rule's upper
-    bound); `None` when either side is not one size."""
+    bound); `None` when either side is not one size, or when two of the vendor's pages disagree
+    and which one is right is not known (`same_item_pages`)."""
+    if reference_kind(finding) == "pages":
+        return None
     vendor = _vendor_inches(finding)
     if vendor is None:
         return None
@@ -216,7 +219,7 @@ def _reviewer_note(finding: Mapping[str, Any]) -> str | None:
     return vendor_text(note) if note else None
 
 
-type Kind = Literal["reviewer", "prototype", "rule", "sum", "span", "architect"]
+type Kind = Literal["reviewer", "prototype", "rule", "sum", "span", "pages", "architect"]
 
 
 def reference_kind(finding: Mapping[str, Any]) -> Kind:
@@ -232,6 +235,8 @@ def reference_kind(finding: Mapping[str, Any]) -> Kind:
         return "sum"
     if own == "span":
         return "span"
+    if own == "pages":
+        return "pages"
     if finding.get("source") == "rules" or rule.gv_limits(finding) is not None:
         return "rule"
     if finding.get("source") == "brand_prototype":
@@ -267,6 +272,8 @@ def reference_words(finding: Mapping[str, Any], *, note: bool = True) -> str:
         return "The vendor's own parts (their sum)"
     if kind == "span":
         return "The vendor's other dimension of the same span" + (f", {where}" if where else "")
+    if kind == "pages":
+        return "The vendor's own other drawing of the same item" + (f", {where}" if where else "")
     if kind == "rule":
         return "GV filler rule" if rule.gv_limits(finding) is not None else "GV rule"
     if kind == "prototype":
@@ -292,6 +299,7 @@ def _who(finding: Mapping[str, Any]) -> str:
             else "GV's rule requires"
         ),
         "span": "the vendor's other dimension of the same span shows",
+        "pages": "the vendor's other drawing of the same item shows",
         "sum": "its own parts add up to",
         "architect": "the architect shows",
     }[reference_kind(finding)]
@@ -417,6 +425,24 @@ def sentence_runs(finding: Mapping[str, Any]) -> list[Run]:
             (".", "plain"),
         ]
         return runs
+    if kind == "pages":
+        # Two of the vendor's pages print the same item in two sizes: code never picks one.
+        pages = same_item_pages.pages_of(finding)
+        if len(pages) == 2:
+            (first_page, first), (second_page, second) = pages
+            return [
+                ("Vendor prints ", "plain"),
+                (second, "vendor"),
+                (f"{item} on page {second_page} but ", "plain"),
+                (first, "should"),
+                (
+                    (
+                        f" on page {first_page}: the same item must be the same size on every "
+                        "drawing. Correct one of them so both pages agree."
+                    ),
+                    "plain",
+                ),
+            ]
     if missing(vendor):
         return [
             ("The vendor's sheets do not show it; ", "plain"),

@@ -80,6 +80,7 @@ __all__ = [
     "apply_checks",
     "cite_evidence_kind",
     "cloud_kind",
+    "code_judged_by_rule",
     "drawn_ink_checks",
     "findings_csv",
     "inch_words",
@@ -792,6 +793,29 @@ def code_read_both(finding: Mapping[str, Any]) -> bool:
     return vendor is not None and vendor == architect
 
 
+def code_judged_by_rule(finding: Mapping[str, Any]) -> bool:
+    """Whether a `same` item is the vendor's own printed value judged by a GV rule, all by code
+    (`sink_offset`'s `gv_standard`, #1906): its side is GV's rule, not a drawing, so it needs no
+    architect page; code proved the dimension on the drawing (`gv_standard.proved`), its label is
+    one code numbered from the drawing's own text (`dims.vendor`, route `text`) and code's printed
+    check found that value there. A vendor page with no architect drawing gets its Rights this
+    way."""
+    if finding.get("source") != "rules":
+        return False
+    standard = finding.get("gv_standard")
+    if not isinstance(standard, Mapping) or standard.get("proved") is not True:
+        return False
+    if (finding.get("checks") or {}).get("printed_vendor") != "match":
+        return False
+    dims = finding.get("dims")
+    label = dims.get("vendor") if isinstance(dims, Mapping) else None
+    return (
+        isinstance(label, Mapping)
+        and bool(label.get("id"))
+        and str(label.get("route") or "text") == "text"
+    )
+
+
 def not_compared_why(
     finding: Mapping[str, Any],
     coverage: Mapping[str, Any] | None,
@@ -804,6 +828,8 @@ def not_compared_why(
     architect side). `None`: it counts (or it is not a `same` finding)."""
     if finding.get("status") != "same":
         return None
+    if code_judged_by_rule(finding):
+        return None  # the vendor's label against a GV rule, both by code: nothing else to see
     if code_read_both(finding):
         pass  # code itself read both values at their labels: looked at, by code (#1819)
     elif seen is not None:
