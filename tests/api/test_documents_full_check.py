@@ -247,7 +247,13 @@ def test_both_lists_show_the_newest_full_check(session: Session, tmp_path: Path)
             "stopped": None,
             "review_result": _expected_review(),
             # F5 (not a problem) and F6 (dropped later) are counted in none.
-            "counts": {"wrong": 1, "right": 1, "ask_architect": 1, "not_compared": 1, "likely_problem": 0},
+            "counts": {
+                "wrong": 1,
+                "right": 1,
+                "ask_architect": 1,
+                "not_compared": 1,
+                "likely_problem": 0,
+            },
         }, key
         assert datetime.fromisoformat(found["full_check"]["ran_at"]) == answer.created_at
         assert found["checking"] is False
@@ -289,7 +295,13 @@ def test_a_newest_check_stopped_before_its_package_has_no_result(
     found = _get(client, f"/projects/{project.id}/packages-summary")["items"][0]["full_check"]
     assert found["review_result"] is None
     assert found["stopped"] == "cancelled"
-    assert found["counts"] == {"wrong": 1, "right": 1, "ask_architect": 0, "not_compared": 0, "likely_problem": 0}
+    assert found["counts"] == {
+        "wrong": 1,
+        "right": 1,
+        "ask_architect": 0,
+        "not_compared": 0,
+        "likely_problem": 0,
+    }
 
 
 def test_the_summary_asks_the_same_number_of_queries_for_any_number_of_sets(
@@ -408,7 +420,13 @@ def test_a_new_decision_or_correction_is_seen_at_once(session: Session, tmp_path
         found: dict[str, int] = rows[0]["full_check"]["counts"]
         return found
 
-    assert counts() == {"wrong": 1, "right": 1, "ask_architect": 1, "not_compared": 1, "likely_problem": 0}
+    assert counts() == {
+        "wrong": 1,
+        "right": 1,
+        "ask_architect": 1,
+        "not_compared": 1,
+        "likely_problem": 0,
+    }
     # The reviewer takes "Not a problem" back on F5: Wrong again.
     session.add(
         AssistantFindingDecision(
@@ -420,7 +438,13 @@ def test_a_new_decision_or_correction_is_seen_at_once(session: Session, tmp_path
         )
     )
     session.flush()
-    assert counts() == {"wrong": 2, "right": 1, "ask_architect": 1, "not_compared": 1, "likely_problem": 0}
+    assert counts() == {
+        "wrong": 2,
+        "right": 1,
+        "ask_architect": 1,
+        "not_compared": 1,
+        "likely_problem": 0,
+    }
     # A later answer drops F1.
     _message(session, chat, 5, role="user", mode="chat", minutes=40)
     _message(
@@ -436,4 +460,10 @@ def test_a_new_decision_or_correction_is_seen_at_once(session: Session, tmp_path
             }
         ],
     )
-    assert counts() == {"wrong": 1, "right": 1, "ask_architect": 1, "not_compared": 1, "likely_problem": 0}
+    assert counts() == {
+        "wrong": 1,
+        "right": 1,
+        "ask_architect": 1,
+        "not_compared": 1,
+        "likely_problem": 0,
+    }
