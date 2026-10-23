@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import uuid4
 
+from app.review.assistant import field_cut
 from app.review.assistant.chat_corrections import parse_ref
 from app.review.assistant.dim_findings import (
     LabelRefused,
@@ -990,6 +991,59 @@ class FindingBook:
     silent; the engine says so in the answer."""
     _count: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _cut_pages: dict[tuple[str, int], field_cut.PageFieldCuts] = field(default_factory=dict)
+    _cut_per_end: Fraction | None = None
+
+    # ---- the field cut (client meeting, 2026-10-23) ---------------------------------------------
+
+    def field_cuts(self, file: str, page: int) -> field_cut.PageFieldCuts:
+        """A vendor page's field-cut labels (`field_cut.page_field_cuts`), kept per page."""
+        key = (str(file), int(page))
+        with self._lock:
+            found = self._cut_pages.get(key)
+        if found is not None:
+            return found
+        if self._cut_per_end is None:
+            try:
+                rules = (self.workspace.skills / "rules.md").read_text(encoding="utf-8")
+            except (OSError, AttributeError, TypeError, ValueError):
+                rules = None
+            self._cut_per_end = field_cut.per_end_from(rules)
+        try:
+            labels = self.dim_labels.on_page(key[0], key[1], read_now=False) or []
+            phrases = self.dim_labels.phrases(key[0], key[1])
+            found = field_cut.page_field_cuts(labels, phrases, self._cut_per_end)
+        except Exception:  # noqa: BLE001 - no field cut known: the item is kept as it is
+            _log.exception("assistant chat field cut not worked out (page %s)", page)
+            found = field_cut.PageFieldCuts(self._cut_per_end)
+        with self._lock:
+            self._cut_pages[key] = found
+        return found
+
+    def field_cut_label(self, label: Mapping[str, Any]) -> bool:
+        """Whether a vendor label prints the field cut (never compared with the architect)."""
+        file, page = label.get("file") or self.main_file, label.get("page")
+        if not file or not isinstance(page, int) or not label.get("id"):
+            return False
+        return str(label["id"]) in self.field_cuts(str(file), page).labels
+
+    def _field_cut_rule(
+        self, fields: Mapping[str, Any], dims: Mapping[str, Any] | None
+    ) -> field_cut.Vetted | None:
+        """The field-cut rule on an item (`field_cut.vet`) from its vendor label's page."""
+        vendor = (dims or {}).get("vendor")
+        if not isinstance(vendor, Mapping) or not isinstance(vendor.get("page"), int):
+            return None
+        file = vendor.get("file") or self.main_file
+        if not file:
+            return None
+        return field_cut.vet(
+            dims,
+            status=fields.get("status"),
+            source=fields.get("source"),
+            architect=fields.get("architect"),
+            cuts=self.field_cuts(str(file), int(vendor["page"])),
+        )
 
     # ---- files and boxes ---------------------------------------------------------------------------
 
@@ -1215,6 +1269,14 @@ class FindingBook:
             fields["verified"] = False
         fields["created_by"] = created_by
         changed = _status_rules(fields, list(self.extents))
+        cut = self._field_cut_rule(fields, dims)
+        if cut is not None and cut.outcome == "refuse":
+            raise SandboxRefused(cut.words)
+        if cut is not None:
+            # GV's settled field-cut allowance: the top with its field cut is the architect's.
+            fields["status"] = "same"
+            fields["why"] = f"{cut.words} {fields.get('why') or ''}".strip()[:_MAX_WHY]
+            changed.append(cut.words)
         with self._lock:
             if not self._room_for("ai"):
                 raise SandboxRefused(f"at most {self.finding_cap} findings in one answer")
@@ -1248,6 +1310,8 @@ class FindingBook:
             "check_reason": fields.get("check_reason"),
             "dims": dims,
         }
+        if cut is not None:
+            finding["field_cut"] = cut.as_dict()
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:
@@ -1328,6 +1392,14 @@ class FindingBook:
                 return None
         if not self._in_scope(fields, created_by):
             return None
+        given_dims = given.get("dims") if isinstance(given.get("dims"), Mapping) else None
+        cut = self._field_cut_rule(fields, given_dims)
+        if cut is not None and cut.outcome == "refuse":
+            _log.info("assistant chat finding left out (%s): %s", created_by, cut.words)
+            return None
+        if cut is not None:
+            fields["status"] = "same"
+            fields["why"] = f"{cut.words} {fields.get('why') or ''}".strip()[:_MAX_WHY]
         room = room or ("code" if created_by in CODE_ROOM_MAKERS else "ai")
         with self._lock:
             if not self._room_for(room):
@@ -1379,6 +1451,8 @@ class FindingBook:
         if isinstance(given.get(WRONG_PART), Mapping):
             # The vendor string's part code's geometry names as the wrong number (#1887).
             finding[WRONG_PART] = json.loads(json.dumps(given[WRONG_PART]))
+        if cut is not None:
+            finding["field_cut"] = cut.as_dict()
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:
@@ -1513,7 +1587,13 @@ class FindingBook:
                     notes.append(f"{side} box: no picture ({why})")
         with self._lock:
             finding = {**self.findings[finding_id], **changes}
+        cut = self._field_cut_rule(finding, finding.get("dims"))
+        if cut is not None and cut.outcome == "refuse":
+            raise SandboxRefused(cut.words)
         notes.extend(_status_rules(finding, list(self.extents)))
+        if cut is not None:
+            finding = {**finding, "status": "same", "field_cut": cut.as_dict()}
+            notes.append(cut.words)
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:
@@ -1731,7 +1811,9 @@ class FindingBook:
     def prove_by_code(self, finding_id: str, changes: Mapping[str, Any]) -> dict[str, Any] | None:
         """An answer's finding re-proved by code's own pair of the same item (`pair_findings`):
         code's values, status, labels and `paired_by: code` laid over it, a new picture for a box
-        it gains, then its checks again. None when it was dropped meanwhile."""
+        it gains, then the field-cut rule and its checks again. None when it was dropped meanwhile,
+        or when code's pair sets the vendor's field cut against the architect (the item stays as
+        it was: the field cut is never compared)."""
         update = dict(changes)
         for box, picture in (("arch_box", "arch_picture_id"), ("vendor_box", "vendor_picture_id")):
             if box in update:
@@ -1740,6 +1822,17 @@ class FindingBook:
             if finding_id not in self.findings:
                 return None
             finding = {**self.findings[finding_id], **update}
+        # The field-cut rule on the labels code laid over it (review of 2026-10-23: code's own
+        # pair turned an allowed top back into a difference); a stale outcome never stays.
+        finding.pop("field_cut", None)
+        cut = self._field_cut_rule(finding, finding.get("dims"))
+        if cut is not None and cut.outcome == "refuse":
+            return None
+        if cut is not None:
+            finding["status"] = "same"
+            finding["field_cut"] = cut.as_dict()
+            if cut.words not in str(finding.get("why") or ""):
+                finding["why"] = f"{cut.words} {finding.get('why') or ''}".strip()[:_MAX_WHY]
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:

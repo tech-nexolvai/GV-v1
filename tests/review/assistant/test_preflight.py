@@ -192,18 +192,23 @@ def test_the_same_file_uploaded_as_both_sides_stops() -> None:
     assert stop.id == "files_swapped" and "same file as the vendor's" in stop.words
 
 
-def test_an_architect_file_that_reads_like_a_shop_drawing_stops() -> None:
+def test_an_architect_file_that_reads_like_a_shop_drawing_is_a_note_and_goes_on() -> None:
     # Every page of the "architect's" file: inch sizes with millimetres beside them, "SHOP
-    # DRAWING" printed, no feet-and-inches and no architectural scale.
+    # DRAWING" printed, no feet-and-inches and no architectural scale. For GV's countertops the
+    # cabinet maker's shop drawings ARE the right reference (client meeting, 2026-10-23): the
+    # reviewer's choice is trusted, the check goes on, nobody has to act.
     sizes = ['24"', '36"', '18"', '30"', '12"', '6"']
     dims = _dims({(ARCH, n): _labels(sizes, mm=True) for n in (1, 2, 3)})
     texts = {(ARCH, n): "MILLWORK SHOP DRAWING FOR APPROVAL" for n in (1, 2, 3)}
     report = build(
         Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR, dims=dims, texts=texts)
     )
-    (stop,) = report.stops
-    assert stop.id == "files_swapped"
-    assert stop.words.startswith("The file uploaded as the architect's looks like a vendor shop")
+    assert report.stops == ()
+    line = _line(report, "reference_shop_drawing")
+    assert line.level == "note" and line.goes_on and line.who == "nobody" and line.todo is None
+    assert line.words == preflight.SHOP_REFERENCE_WORDS
+    assert "architect's" in line.words and "used as the reference you chose" in line.words
+    assert all(not entry["stops"] for entry in report.facts["findings_so_far"])
 
 
 def test_an_architect_file_printing_inches_only_is_never_called_swapped() -> None:
@@ -406,7 +411,7 @@ def test_a_broken_upload_is_said_even_without_a_page_map(tmp_path: Path) -> None
     assert "could not be read (the PDF could not be opened)" in failed["lines"][0]["words"]
 
 
-def test_a_one_page_shop_drawing_uploaded_as_the_architects_stops_and_kinds_count() -> None:
+def test_a_one_page_shop_drawing_uploaded_as_the_architects_is_noted_and_kinds_count() -> None:
     dims = _dims({(ARCH, 1): _labels(['24"', '30"', '18"', '72"', '6"'])})
     texts = {(ARCH, 1): "MILLWORK SHOP DRAWING SUBMITTED FOR APPROVAL"}
     listing = [
@@ -418,8 +423,9 @@ def test_a_one_page_shop_drawing_uploaded_as_the_architects_stops_and_kinds_coun
     report = build(
         Inputs(listing=listing, page_map=page_map, main_file=VENDOR, dims=dims, texts=texts)
     )
-    assert [line.id for line in report.stops] == ["files_swapped"]
-    # The same bytes uploaded as both sides (the pack then reads one file): a stop too.
+    assert report.stops == ()
+    assert "reference_shop_drawing" in _ids(report)
+    # The same bytes uploaded as both sides (the pack then reads one file): the one stop.
     same = [{**listing[0]}, {**listing[1], "sha256": "aaa"}]
     assert (
         "same file"

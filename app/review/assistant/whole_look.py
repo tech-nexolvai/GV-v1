@@ -53,6 +53,7 @@ import threading
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Final
 
 from app.review.assistant import likely_problems
@@ -788,9 +789,25 @@ class _Context:
     likely: dict[tuple[Any, ...], str] = field(default_factory=dict)
     """A likely problem already recorded, by what it says (kind, item, architect's value): the
     same difference on another vendor round folds into it."""
+    same_part: Callable[[Mapping[str, Any], Mapping[str, Any]], bool] | None = None
+    """Whether code itself confirms a vendor label and an architect label measure the same part
+    from the same ends (`code_paired`: code's own pairs); `None`: code confirms nothing."""
 
 
 _ROUND_WORDS: Final = re.compile(r"\(?\b(?:vendor )?rounds? \d+(?: and \d+)?\b\)?", re.IGNORECASE)
+#: A drawing that marks a unit drawn the other way round (the reference's "Reverse" variant). A
+#: bare "MIRROR" is not one: "MIRROR ABOVE" is a mirror on the wall.
+_REVERSE: Final = re.compile(
+    r"\bREVERSED?\b|\bOPP(?:OSITE|\.)?\s*HAND(?:ED)?\b|\bMIRRORED\b|\bMIRROR\s+IMAGE\b|\bHANDED\b",
+    re.IGNORECASE,
+)
+#: A claim about which end or side something is at (left / right, mirrored, the other end).
+_END_WORDS: Final = re.compile(
+    r"\b(?:left|right|opposite|other) (?:end|side|hand)\b|\b(?:on|at) the (?:left|right)\b|"
+    r"\bmirror(?:ed|s)?\b|\brevers(?:ed|e)\b|\bflipped\b|\bswapped\b|\bwrong (?:end|side)\b|"
+    r"\b(?:left|right)\b",
+    re.IGNORECASE,
+)
 
 
 def _same_key(look: Look, kind: str, item: str, architect: str) -> tuple[Any, ...]:
@@ -832,6 +849,135 @@ def _side_of(claim: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     return side if isinstance(side, Mapping) else {}
 
 
+def _field_cut(context: _Context, label: Mapping[str, Any] | None) -> bool:
+    """A vendor label that prints the field cut (`field_cut`): never compared with the architect."""
+    if label is None:
+        return False
+    check = getattr(context.book, "field_cut_label", None)
+    try:
+        return bool(check(label)) if callable(check) else False
+    except Exception:  # noqa: BLE001 - unknown: the claim goes on to code's other checks
+        _log.exception("assistant whole look: field cut not checked")
+        return False
+
+
+def _reverse_variant(context: _Context, drawing: Drawing) -> bool:
+    """The drawing's page marks a unit drawn the other way round (REVERSE, OPP. HAND, MIRROR)."""
+    phrases = getattr(context.labels, "phrases", None)
+    if not callable(phrases):
+        return False
+    try:
+        found = phrases(drawing.file, drawing.page)
+    except Exception:  # noqa: BLE001 - no phrases: nothing explained
+        return False
+    for phrase in found or []:
+        box = _box(phrase.get("box")) if isinstance(phrase, Mapping) else None
+        if box is None or not _REVERSE.search(str(phrase.get("text") or "")):
+            continue
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        x0, y0, x1, y1 = drawing.box
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            return True
+    return False
+
+
+def _about_ends(claim: Mapping[str, Any]) -> bool:
+    words = " ".join(
+        _text(part, 400)
+        for part in (
+            claim.get("item"),
+            claim.get("why"),
+            _side_of(claim, "vendor").get("value"),
+            _side_of(claim, "architect").get("value"),
+        )
+    )
+    return bool(_END_WORDS.search(words))
+
+
+#: The numbers a claim's value prints ("sink 25 1/2 from the left end" -> 25 1/2).
+_NUMBER: Final = re.compile(r"(\d+)(?:\s+(\d+)/(\d+)|/(\d+))?")
+
+
+def _numbers(value: object) -> list[Fraction]:
+    out: list[Fraction] = []
+    for whole, num, den, over in _NUMBER.findall(_text(value, 400)):
+        if num and int(den):
+            out.append(Fraction(int(whole)) + Fraction(int(num), int(den)))
+        elif over and int(over):
+            out.append(Fraction(int(whole), int(over)))
+        else:
+            out.append(Fraction(int(whole)))
+    return sorted(out)
+
+
+def _only_the_end_differs(claim: Mapping[str, Any]) -> bool:
+    """The claim's two sides print the same numbers (or neither prints one): what differs is which
+    end, which a unit drawn the other way round explains. Different numbers, or a number on one
+    side only, may be a size difference: never explained."""
+    vendor = _numbers(_side_of(claim, "vendor").get("value"))
+    architect = _numbers(_side_of(claim, "architect").get("value"))
+    return vendor == architect
+
+
+def _drawing_labels(context: _Context, drawing: Drawing) -> list[Mapping[str, Any]]:
+    try:
+        found = context.labels.on_page(drawing.file, drawing.page, read_now=False) or []
+    except Exception:  # noqa: BLE001 - no labels: nothing lines the drawings up
+        return []
+    return [label for label in found if _inside(label, drawing)]
+
+
+def _confirm_same_part(
+    context: _Context,
+    v_label: Mapping[str, Any],
+    a_label: Mapping[str, Any],
+    vendor: Drawing,
+    architect: Drawing,
+) -> bool:
+    """Like for like only (client meeting, 2026-10-23): a claim naming labels on both sides is
+    kept only when code itself confirms both measure the same part from the same ends: code's own
+    pairs (`code_paired`), or code's geometry lining the two drawings up on the dimensions both
+    print once and finding both dimension lines' ends land together
+    (`full_check_advocate.same_extent`, the advocate's own same-ends rule). Otherwise it is no
+    comparison at all and is dropped (logged, never shown)."""
+    confirm = context.same_part
+    if confirm is not None and confirm(v_label, a_label):
+        return True
+    from app.review.assistant.full_check_advocate import same_extent
+
+    try:
+        extent, why = same_extent(
+            v_label,
+            a_label,
+            _drawing_labels(context, vendor),
+            _drawing_labels(context, architect),
+        )
+    except Exception:  # noqa: BLE001 - code could not tell: the claim is no comparison
+        extent, why = "cannot_tell", "code's geometry failed"
+    if extent == "same_extent":
+        return True
+    if extent == "different_extent":
+        raise _Drop(
+            f"code's geometry shows the two dimensions run between different points ({why})"
+        )
+    if unconfirmed_mode() == "likely":
+        return False  # the owner's switch: kept as a Likely problem only, never recorded for red
+    raise _Drop("code could not confirm that both labels measure the same part from the same ends")
+
+
+#: What happens to a claim naming labels on both sides that code can neither confirm nor refute
+#: (`_confirm_same_part`): `drop` (the owner's rule after the 2026-10-23 client meeting: like for
+#: like only) or `likely` (kept as a Likely problem only, never recorded for red).
+UNCONFIRMED_ENV: Final = "GV_ASSISTANT_WHOLE_LOOK_UNCONFIRMED"
+
+
+def unconfirmed_mode() -> str:
+    import os
+
+    found = os.environ.get(UNCONFIRMED_ENV, "drop").strip().lower()
+    return found if found in ("drop", "likely") else "drop"
+
+
 def _one(context: _Context, look: Look, claim: Mapping[str, Any], applied: Applied) -> None:
     kind = str(claim.get("kind") or "size")
     if kind not in likely_problems.KINDS:
@@ -860,6 +1006,23 @@ def _one(context: _Context, look: Look, claim: Mapping[str, Any], applied: Appli
     a_label = _label(context.labels, "architect", architect_side, architect, size=size)
     if _colour(context, a_label, architect) or _colour(context, v_label, vendor):
         raise _Drop("a value it names is in GV's colour on GV's sheet (GV's markup)")
+    if _field_cut(context, v_label):
+        # Settled with GV: the field cut is extra stone added at the factory for a wall end and
+        # trimmed on site; it is never a design difference (client meeting, 2026-10-23).
+        raise _Drop("it names the vendor's field cut, which is never compared with the architect")
+    confirmed = True
+    if v_label is not None and a_label is not None:
+        if kind != "size":
+            confirmed = _confirm_same_part(context, v_label, a_label, vendor, architect)
+    elif (
+        kind in ("size", "layout")
+        and _about_ends(claim)
+        and _only_the_end_differs(claim)
+        and _reverse_variant(context, architect)
+    ):
+        # The reference draws this unit both ways round ("Reverse"): a left / right difference
+        # is what the other variant shows, not a design difference.
+        raise _Drop("a left / right difference that the reference's own Reverse variant explains")
     newest = look.newest_round
     rounds = (
         f" (round {vendor.round})"
@@ -895,6 +1058,8 @@ def _one(context: _Context, look: Look, claim: Mapping[str, Any], applied: Appli
             and v_label.get("orientation") != a_label.get("orientation")
         ):
             raise _Drop("one label is a width and the other a height")
+        confirmed = _confirm_same_part(context, v_label, a_label, vendor, architect)
+    if kind == "size" and v_label is not None and a_label is not None and confirmed:
         with context.lock:
             joined = _existing(context, v_label)
             if joined is not None:
@@ -996,12 +1161,17 @@ def apply_look(
     show: Callable[[dict[str, Any]], None],
     ink: Callable[[Mapping[str, Any]], tuple[int, float] | None] | None = None,
     lock: threading.Lock | None = None,
+    same_part: Callable[[Mapping[str, Any], Mapping[str, Any]], bool] | None = None,
 ) -> Applied:
     """One look's claims, by code (see the module). `category`: the items' product ("other": the
     book files each one under its product from its words and its page, `product_scope.refiled`, and
     refuses one outside the check's products). `show`: the engine's `_show_finding`. `ink`: a
-    label's ink (`full_check_advocate.ink_colour` of its spot), for GV's colour on GV's sheets."""
-    context = _Context(book, labels, category, show, ink, lock or threading.Lock())
+    label's ink (`full_check_advocate.ink_colour` of its spot), for GV's colour on GV's sheets.
+    `same_part`: whether code itself confirms two labels measure the same part from the same ends
+    (`code_paired`); a claim naming labels on both sides is dropped without it."""
+    context = _Context(
+        book, labels, category, show, ink, lock or threading.Lock(), same_part=same_part
+    )
     applied = Applied()
     seen: set[tuple[Any, ...]] = set()
     for claim in claims[:MAX_CLAIMS]:
@@ -1025,6 +1195,30 @@ def apply_look(
     for left in claims[MAX_CLAIMS:]:
         applied.dropped.append((_text(left.get("item")), "more than the look's claims"))
     return applied
+
+
+def code_paired(folder: Any) -> Callable[[Mapping[str, Any], Mapping[str, Any]], bool]:
+    """Whether code's own pairs (the set pack's `pairs.json`: `dim_pairs` by drawn position at
+    each drawing's measured scale, `dim_anchors` by what both ends land on) pair this vendor label
+    with this architect label: the same part, from the same ends, proved by code."""
+    import json
+    from pathlib import Path
+
+    from app.review.assistant.full_check_advocate import code_pairs
+
+    pairs: dict[str, str] = {}
+    if folder is not None:
+        try:
+            document = json.loads((Path(folder) / "pairs.json").read_text(encoding="utf-8"))
+            pairs = code_pairs(document)
+        except (OSError, ValueError):
+            pairs = {}
+
+    def same(vendor: Mapping[str, Any], architect: Mapping[str, Any]) -> bool:
+        key = f"p{vendor.get('page')}.{vendor.get('id')}"
+        return pairs.get(key) == f"p{architect.get('page')}.{architect.get('id')}"
+
+    return same
 
 
 def with_drawings(look: Look, drawings: Sequence[Drawing]) -> Look:
@@ -1195,6 +1389,7 @@ def apply_roster(
     """Every look's answer, by code (`apply_look`), once all the first phase's agents reported."""
     engine = run.engine
     lock = threading.Lock()
+    same_part = code_paired(getattr(getattr(engine.tools, "workspace", None), "set_pack", None))
     for agent, entry in done:
         look = state.looks.get(agent.call_id)
         if look is None or getattr(agent, "skip", False):
@@ -1215,6 +1410,7 @@ def apply_roster(
                 show=engine._show_finding,
                 ink=getattr(run, "_ink", None),
                 lock=lock,
+                same_part=same_part,
             )
         except Exception:  # noqa: BLE001 - one look failing never stops the check
             _log.exception("assistant whole look %s could not be applied", agent.call_id)

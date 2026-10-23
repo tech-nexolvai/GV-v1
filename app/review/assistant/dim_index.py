@@ -120,6 +120,7 @@ class DimLabels:
         self._page_locks: dict[tuple[str, int], threading.Lock] = {}
         self._read: dict[tuple[str, int], list[dict[str, Any]]] = {}
         self._dims: tuple[float, dict[tuple[str, int], list[dict[str, Any]]]] | None = None
+        self._phrases: dict[tuple[str, int], list[dict[str, Any]]] = {}
         self._counts: dict[tuple[str, float], int] = {}
 
     def _from_pack(self) -> dict[tuple[str, int], list[dict[str, Any]]]:
@@ -138,13 +139,26 @@ class DimLabels:
         except (OSError, ValueError):
             return {}
         pages: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        phrases: dict[tuple[str, int], list[dict[str, Any]]] = {}
         for entry in document.get("pages") or [] if isinstance(document, Mapping) else []:
             if isinstance(entry, Mapping) and isinstance(entry.get("labels"), list):
                 key = (str(entry.get("file")), int(entry.get("page") or 0))
                 pages[key] = [dict(label) for label in entry["labels"]]
+                phrases[key] = [
+                    dict(phrase)
+                    for phrase in entry.get("phrases") or []
+                    if isinstance(phrase, Mapping)
+                ]
         with self._lock:
             self._dims = (stamp, pages)
+            self._phrases = phrases
         return pages
+
+    def phrases(self, file: str, page: int) -> list[dict[str, Any]]:
+        """The page's printed phrases from the pack (`dims.json`: text, box, side), else none."""
+        self._from_pack()
+        with self._lock:
+            return [dict(phrase) for phrase in self._phrases.get((file, page), [])]
 
     def pages(self) -> dict[tuple[str, int], list[dict[str, Any]]]:
         """Every page's labels code has (the pack's, and those read now), by (file, page), each

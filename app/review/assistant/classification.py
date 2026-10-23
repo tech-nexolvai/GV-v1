@@ -489,6 +489,15 @@ def _not(
     return Classified("not_compared", _RULES[reason], reason, why, settle)
 
 
+def _measured(finding: Mapping[str, Any]) -> str:
+    """What code measured by the reference's own scale (`scale_measure`), else the drawing's
+    scaled words (`_scaled_about`)."""
+    measured = finding.get("measured_by_scale")
+    if isinstance(measured, Mapping) and measured.get("text"):
+        return f" (measured by scale: {measured['text']}; scaled, not printed)"
+    return _scaled_about(finding)
+
+
 def _scaled_about(finding: Mapping[str, Any]) -> str:
     found = _SCALES.search(_flat(finding.get("architect")) + " " + _flat(finding.get("why")))
     return (
@@ -831,7 +840,7 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
         # Missing on the vendor's drawing: said so, whatever the reading's own reason was.
         return _missing(finding)
     if reason in ("architect_prints_nothing",) or named == "pairing_not_certain":
-        why = f"architect gives no size or information for it{_scaled_about(finding)}"
+        why = f"architect gives no size or information for it{_measured(finding)}"
         return _not("nothing_to_compare", why, "the architect's size or note for {thing}")
     if reason == "measures_something_else" or named == "different_extent":
         return _not(
@@ -1105,7 +1114,11 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
         return held
     source = str(finding.get("source") or "")
     parts = finding.get("architect_parts")
-    if status in ("different", "check") and isinstance(parts, Mapping):
+    if (
+        status in ("different", "check")
+        and isinstance(parts, Mapping)
+        and not (status == "different" and parts.get("chain_proved"))
+    ):
         return _not(
             "no_overall",
             f"architect's parts add to {parts.get('total')}; vendor shows {parts.get('vendor')}",
