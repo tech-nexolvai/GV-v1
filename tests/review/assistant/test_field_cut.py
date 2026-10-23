@@ -189,3 +189,88 @@ def test_only_a_field_cut_label_counts_as_its_words(text: str, label: bool) -> N
     assert field_cut.field_cut_label_words(text) is label
     words = [{"text": text, "box": WORDS[0]["box"], "side": "vendor"}]
     assert bool(page_field_cuts(LABELS, words).labels) is label
+
+
+# ---- the independent review of 2026-10-23 ---------------------------------------------------------
+
+
+def test_a_one_inch_on_the_far_side_of_the_top_is_not_the_field_cut() -> None:
+    # FIELD CUT and its 1" at the left wall end; the 49" over 48" top; a 1" overhang at the free
+    # right end on the same row. Only the left 1" is the field cut: the overhang is compared.
+    labels = [
+        _label("FC", "vendor", '1"', "1", [92, 105, 100, 115]),
+        _label("D1", "vendor", '49"', "49", [245, 90, 260, 100]),
+        _label("D2", "vendor", '48"', "48", [245, 115, 260, 125]),
+        _label("OH", "vendor", '1"', "1", [390, 105, 398, 115]),
+    ]
+    words = [{"text": "FIELD CUT", "box": [80, 125, 120, 135], "side": "vendor"}]
+    cuts = page_field_cuts(labels, words)
+    assert cuts.labels == {"FC"}
+    assert cuts.overalls == {"D1": 1}
+    # A 1" between the words and the top, farther than NEAR_PT from the words, is the field cut
+    # (the wall end's 1" on the top's own dimension row).
+    between = [
+        _label("FC", "vendor", '1"', "1", [360, 112, 370, 123]),
+        _label("D1", "vendor", '49"', "49", [480, 102, 495, 112]),
+        _label("D2", "vendor", '48"', "48", [482, 130, 498, 140]),
+    ]
+    beside = [{"text": "FIELD CUT", "box": [200, 130, 247, 140], "side": "vendor"}]
+    found = page_field_cuts(between, beside)
+    assert found.labels == {"FC"} and found.overalls == {"D1": 1}
+
+
+def test_the_tops_allowance_does_not_depend_on_the_drawings_scale() -> None:
+    # 1"=1'-0": a 61" top drawn about 360pt long; FIELD CUT beside the 1" at the wall end.
+    labels = [
+        _label("FC", "vendor", '1"', "1", [100, 105, 108, 115]),
+        _label("D1", "vendor", '61"', "61", [290, 90, 305, 100]),
+        _label("D2", "vendor", '60"', "60", [290, 115, 305, 125]),
+    ]
+    words = [{"text": "FIELD CUT", "box": [90, 125, 130, 135], "side": "vendor"}]
+    cuts = page_field_cuts(labels, words)
+    assert cuts.labels == {"FC"} and cuts.overalls == {"D1": 1}
+    # A 120" top between two walls: 122" over 120", a field cut at each end, far apart.
+    two = [
+        _label("L", "vendor", '1"', "1", [100, 105, 108, 115]),
+        _label("D1", "vendor", '122"', "122", [400, 90, 418, 100]),
+        _label("D2", "vendor", '120"', "120", [400, 115, 418, 125]),
+        _label("R", "vendor", '1"', "1", [700, 105, 708, 115]),
+    ]
+    both = [
+        {"text": "FIELD CUT", "box": [90, 125, 130, 135], "side": "vendor"},
+        {"text": "FIELD CUT", "box": [690, 125, 730, 135], "side": "vendor"},
+    ]
+    found = page_field_cuts(two, both)
+    assert found.labels == {"L", "R"} and found.overalls == {"D1": 2}
+    # A field cut on another row of the sheet (another view) gives this top no allowance.
+    elsewhere = [{**labels[0], "box": [100, 505, 108, 515]}, *labels[1:]]
+    far_words = [{"text": "FIELD CUT", "box": [90, 525, 130, 535], "side": "vendor"}]
+    assert page_field_cuts(elsewhere, far_words).overalls == {}
+
+
+def test_codes_own_pair_never_undoes_the_field_cut_allowance(tmp_path: Path) -> None:
+    from app.review.assistant import pair_findings
+
+    book = _book(tmp_path)
+    finding, _notes = book.report(
+        _item(vendor_dim="D1", architect_dim="p2.D5", vs_page=2), "helper:1"
+    )
+    assert finding["status"] == "same" and finding["field_cut"]["outcome"] == "allowed"
+    code = {
+        "page": 1, "item": "x", "architect": '60"', "vendor": '61"', "status": "different",
+        "why": "code pair", "source": "architect", "paired_by": "code",
+        "dims": {"vendor": {**LABELS[0], "page": 1}, "architect": {**LABELS[4], "page": 2}},
+        "ledger_ids": ["p1.D1", "p2.D5"],
+    }  # fmt: skip
+    assert pair_findings.same_item(code, book.live()) is not None
+    changed = book.prove_by_code(finding["id"], pair_findings.proved_changes(code, finding))
+    assert changed is not None
+    assert changed["status"] == "same" and changed["field_cut"]["outcome"] == "allowed"
+    # Code's pair of the field cut itself against the architect: the item stays as it was.
+    cut, _ = book.report(_item(vendor_dim="D4", architect_dim="p2.D6", vs_page=2), "helper:1")
+    on_cut = {
+        **code, "architect": '1"', "vendor": '1"', "status": "same",
+        "dims": {"vendor": {**LABELS[2], "page": 1}, "architect": {**LABELS[5], "page": 2}},
+    }  # fmt: skip
+    assert book.prove_by_code(cut["id"], {"dims": on_cut["dims"], "status": "same"}) is None
+    assert next(f for f in book.live() if f["id"] == cut["id"])["status"] == "different"

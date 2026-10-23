@@ -1811,7 +1811,9 @@ class FindingBook:
     def prove_by_code(self, finding_id: str, changes: Mapping[str, Any]) -> dict[str, Any] | None:
         """An answer's finding re-proved by code's own pair of the same item (`pair_findings`):
         code's values, status, labels and `paired_by: code` laid over it, a new picture for a box
-        it gains, then its checks again. None when it was dropped meanwhile."""
+        it gains, then the field-cut rule and its checks again. None when it was dropped meanwhile,
+        or when code's pair sets the vendor's field cut against the architect (the item stays as
+        it was: the field cut is never compared)."""
         update = dict(changes)
         for box, picture in (("arch_box", "arch_picture_id"), ("vendor_box", "vendor_picture_id")):
             if box in update:
@@ -1820,6 +1822,17 @@ class FindingBook:
             if finding_id not in self.findings:
                 return None
             finding = {**self.findings[finding_id], **update}
+        # The field-cut rule on the labels code laid over it (review of 2026-10-23: code's own
+        # pair turned an allowed top back into a difference); a stale outcome never stays.
+        finding.pop("field_cut", None)
+        cut = self._field_cut_rule(finding, finding.get("dims"))
+        if cut is not None and cut.outcome == "refuse":
+            return None
+        if cut is not None:
+            finding["status"] = "same"
+            finding["field_cut"] = cut.as_dict()
+            if cut.words not in str(finding.get("why") or ""):
+                finding["why"] = f"{cut.words} {finding.get('why') or ''}".strip()[:_MAX_WHY]
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:

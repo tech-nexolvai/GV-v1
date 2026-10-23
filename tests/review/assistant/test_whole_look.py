@@ -591,8 +591,8 @@ def test_a_left_right_claim_the_references_reverse_variant_explains_is_dropped(
 ) -> None:
     claim = _claim(
         "layout",
-        _side(3, None, "sink 25 1/2 from the left end"),
-        _side(1, None, "sink 23 1/2 from the left end"),
+        _side(3, None, "sink 25 1/2 from the right end"),
+        _side(1, None, "sink 25 1/2 from the left end"),
         item="Top: the sink sits at the other end",
         why="The sink centre looks mirrored on the reversed unit.",
     )
@@ -601,6 +601,21 @@ def test_a_left_right_claim_the_references_reverse_variant_explains_is_dropped(
     applied, shown = _apply(book, look, [claim])
     assert not applied.likely and not shown
     assert "Reverse variant" in applied.dropped[0][1]
+    # A different size from the same end is a size difference: the Reverse variant explains only
+    # which end, never another number (the review of 2026-10-23).
+    sized = _claim(
+        "layout",
+        _side(3, None, "sink 25 1/2 from the left end"),
+        _side(1, None, "sink 23 1/2 from the left end"),
+        item="Top: the sink centre",
+    )
+    kept_size, _ = _apply(book, look, [sized])
+    assert kept_size.likely and not kept_size.dropped
+    # "MIRROR ABOVE" is a mirror on the wall, not a unit drawn the other way round.
+    mirror = [{"text": "MIRROR ABOVE", "box": [400, 300, 480, 310], "side": "architect"}]
+    on_wall, _look = _setup(tmp_path / "mirror", phrases=mirror)
+    kept_mirror, _ = _apply(on_wall, look, [claim])
+    assert kept_mirror.likely and not kept_mirror.dropped
     # Where the reference has no Reverse variant, the same claim is a Likely problem.
     plain, _look = _setup(tmp_path / "plain")
     kept, _ = _apply(plain, look, [claim])

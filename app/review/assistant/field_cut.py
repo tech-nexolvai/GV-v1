@@ -13,15 +13,18 @@ measure different things. So:
 
 - **A field-cut dimension** (`page_field_cuts`): a vendor label printing the field cut per wall end
   (exactly), on a drawing that prints the words FIELD CUT, and either those words sit near the
-  label (`NEAR_PT`) or the label goes with a stacked pair of the run's sizes that differ by exactly
-  one field cut (the 49" overall over the 48" top). Nothing else counts: a 1" reveal on a drawing
-  with no FIELD CUT words is an ordinary dimension.
+  label (`NEAR_PT`) or the label sits on the dimension row of a stacked pair of the run's sizes
+  that differ by exactly one field cut (the 49" overall over the 48" top), at the end the FIELD CUT
+  words are on. Nothing else counts: a 1" reveal on a drawing with no FIELD CUT words, or a 1"
+  overhang at the top's other end, is an ordinary dimension.
 - **Never compared with the reference** (`vet`): an item that sets a field-cut label against an
   architect's (or the brand prototype's) value is refused; the whole-drawing look drops such a
   claim. The run's log says why; nobody sees it.
 - **The top's length allows it** (`vet`): an overall that includes field cuts (the stacked pair
   above) is the same as the architect's when it is the architect's value plus one field cut per
-  wall end the drawing shows. That is GV's settled rule, not a difference.
+  wall end the drawing shows: field-cut labels on the pair's own dimension row whose nearest top it
+  is, at any distance along the row (the drawing's scale does not matter). That is GV's settled
+  rule, not a difference.
 
 Pure: plain values in, plain values out. Verification: `tests/review/assistant/test_field_cut.py`.
 """
@@ -62,7 +65,8 @@ _WORD: Final = re.compile(r"[A-Za-z]+")
 NEAR_PT: Final = 90.0
 #: An overall and the part under it are printed this close (points, centre to centre).
 STACK_PT: Final = 60.0
-#: A field-cut label this close (points, centre to centre) to the run's stacked pair is its end.
+#: A 1" not beside the FIELD CUT words is the field cut only this close (points, centre to centre)
+#: to its top's stacked pair and to the words (the allowance on the overall has no such limit).
 RUN_PT: Final = 170.0
 #: Sides a label of the vendor's own drawing may carry.
 _NOT_VENDOR: Final = frozenset({"architect", "brand_prototype"})
@@ -209,6 +213,52 @@ def _stacked(
     return out
 
 
+def _along(label: _Printed, box: Box) -> float:
+    """The signed offset along the run from `label` to `box`'s centre (x for a horizontal run)."""
+    if label.orientation == "v":
+        return (box[1] + box[3] - label.box[1] - label.box[3]) / 2
+    return (box[0] + box[2] - label.box[0] - label.box[2]) / 2
+
+
+def _across(label: _Printed, box: Box) -> float:
+    """How far `box`'s centre sits off the label's dimension row (y for a horizontal run)."""
+    if label.orientation == "v":
+        return abs((box[0] + box[2] - label.box[0] - label.box[2]) / 2)
+    return abs((box[1] + box[3] - label.box[1] - label.box[3]) / 2)
+
+
+def _on_row(label: _Printed, overall: _Printed, part: _Printed) -> bool:
+    """The label is printed on the stacked pair's own dimension rows (any distance along them, so
+    the drawing's scale does not matter)."""
+    return (
+        _same_way(label, part)
+        and min(_across(label, overall.box), _across(label, part.box)) <= STACK_PT
+    )
+
+
+def _distance(label: _Printed, overall: _Printed, part: _Printed) -> float:
+    return min(_centre_distance(label.box, overall.box), _centre_distance(label.box, part.box))
+
+
+def _owner(
+    label: _Printed, stacks: Sequence[tuple[_Printed, _Printed]]
+) -> tuple[_Printed, _Printed, float] | None:
+    """The one stacked pair on the label's row nearest to it (each wall end belongs to one top);
+    `None` when there is none or two different tops are as near."""
+    found = [
+        (_distance(label, overall, part), overall, part)
+        for overall, part in stacks
+        if label is not overall and label is not part and _on_row(label, overall, part)
+    ]
+    if not found:
+        return None
+    best = min(item[0] for item in found)
+    nearest = [item for item in found if item[0] - best <= 1e-6]
+    if len({item[1].id for item in nearest}) != 1:
+        return None
+    return nearest[0][1], nearest[0][2], best
+
+
 def page_field_cuts(
     labels: Sequence[Mapping[str, Any]],
     phrases: Sequence[Mapping[str, Any]],
@@ -232,32 +282,34 @@ def page_field_cuts(
     for label in printed:
         if label.inches != per_end:
             continue
-        near = any(_gap(label.box, box) <= NEAR_PT for box in words)
-        run = any(
-            label is not overall
-            and label is not part
-            and _same_way(label, part)
-            and min(_centre_distance(label.box, overall.box), _centre_distance(label.box, part.box))
-            <= RUN_PT
-            for overall, part in one_cut
-        )
-        if near or run:
+        if any(_gap(label.box, box) <= NEAR_PT for box in words):
+            found.add(label.id)
+            continue
+        # Not beside the words: the 1" at the wall end of a stacked top (49" over 48"), on the
+        # top's own row, and on the same side of the top as the FIELD CUT words. A 1" at the top's
+        # other (free) end is an overhang, an ordinary dimension (the 2026-10-23 review).
+        owner = _owner(label, one_cut)
+        if owner is None or owner[2] > RUN_PT:
+            continue
+        side = _along(label, owner[1].box)
+        if side and any(
+            _centre_distance(label.box, box) <= RUN_PT and _along(label, box) * side < 0
+            for box in words
+        ):
             found.add(label.id)
     cut_labels = [label for label in printed if label.id in found]
+    stacks = {cuts: _stacked(printed, per_end, cuts) for cuts in (1, 2)}
+    every = [pair for pairs in stacks.values() for pair in pairs]
+    owners = {label.id: _owner(label, every) for label in cut_labels}
     counts: dict[str, set[int]] = {}
-    for cuts in (1, 2):
-        for overall, part in _stacked(printed, per_end, cuts):
+    for cuts, pairs in stacks.items():
+        for overall, part in pairs:
             if overall.id in found or part.id in found:
                 continue
             close = sum(
                 1
                 for label in cut_labels
-                if _same_way(label, part)
-                and min(
-                    _centre_distance(label.box, overall.box),
-                    _centre_distance(label.box, part.box),
-                )
-                <= RUN_PT
+                if (owner := owners[label.id]) is not None and owner[0].id == overall.id
             )
             if close >= cuts:
                 counts.setdefault(overall.id, set()).add(cuts)

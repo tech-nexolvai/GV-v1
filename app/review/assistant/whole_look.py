@@ -53,6 +53,7 @@ import threading
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Final
 
 from app.review.assistant import likely_problems
@@ -794,9 +795,10 @@ class _Context:
 
 
 _ROUND_WORDS: Final = re.compile(r"\(?\b(?:vendor )?rounds? \d+(?: and \d+)?\b\)?", re.IGNORECASE)
-#: A drawing that marks a unit drawn the other way round (the reference's "Reverse" variant).
+#: A drawing that marks a unit drawn the other way round (the reference's "Reverse" variant). A
+#: bare "MIRROR" is not one: "MIRROR ABOVE" is a mirror on the wall.
 _REVERSE: Final = re.compile(
-    r"\bREVERSED?\b|\bOPP(?:OSITE|\.)?\s*HAND(?:ED)?\b|\bMIRROR(?:ED)?\b|\bHANDED\b",
+    r"\bREVERSED?\b|\bOPP(?:OSITE|\.)?\s*HAND(?:ED)?\b|\bMIRRORED\b|\bMIRROR\s+IMAGE\b|\bHANDED\b",
     re.IGNORECASE,
 )
 #: A claim about which end or side something is at (left / right, mirrored, the other end).
@@ -890,6 +892,30 @@ def _about_ends(claim: Mapping[str, Any]) -> bool:
         )
     )
     return bool(_END_WORDS.search(words))
+
+
+#: The numbers a claim's value prints ("sink 25 1/2 from the left end" -> 25 1/2).
+_NUMBER: Final = re.compile(r"(\d+)(?:\s+(\d+)/(\d+)|/(\d+))?")
+
+
+def _numbers(value: object) -> list[Fraction]:
+    out: list[Fraction] = []
+    for whole, num, den, over in _NUMBER.findall(_text(value, 400)):
+        if num and int(den):
+            out.append(Fraction(int(whole)) + Fraction(int(num), int(den)))
+        elif over and int(over):
+            out.append(Fraction(int(whole), int(over)))
+        else:
+            out.append(Fraction(int(whole)))
+    return sorted(out)
+
+
+def _only_the_end_differs(claim: Mapping[str, Any]) -> bool:
+    """The claim's two sides print the same numbers (or none): what differs is which end, which a
+    unit drawn the other way round explains. Different numbers are a size difference."""
+    vendor = _numbers(_side_of(claim, "vendor").get("value"))
+    architect = _numbers(_side_of(claim, "architect").get("value"))
+    return not vendor or not architect or vendor == architect
 
 
 def _drawing_labels(context: _Context, drawing: Drawing) -> list[Mapping[str, Any]]:
@@ -987,7 +1013,12 @@ def _one(context: _Context, look: Look, claim: Mapping[str, Any], applied: Appli
     if v_label is not None and a_label is not None:
         if kind != "size":
             confirmed = _confirm_same_part(context, v_label, a_label, vendor, architect)
-    elif kind in ("size", "layout") and _about_ends(claim) and _reverse_variant(context, architect):
+    elif (
+        kind in ("size", "layout")
+        and _about_ends(claim)
+        and _only_the_end_differs(claim)
+        and _reverse_variant(context, architect)
+    ):
         # The reference draws this unit both ways round ("Reverse"): a left / right difference
         # is what the other variant shows, not a design difference.
         raise _Drop("a left / right difference that the reference's own Reverse variant explains")
