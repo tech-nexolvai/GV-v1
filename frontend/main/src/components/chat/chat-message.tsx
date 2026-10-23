@@ -687,7 +687,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       {!fullCheck && findings.length > 0 && narrow && <ConfidenceLine findings={findings} trust={message.trust} />}
       {!fullCheck && howChecked}
       {!fullCheck && !howChecked && coverageStrip}
-      {(findings.length > 0 || neededItems.length > 0) && (
+      {(findings.length > 0 || neededItems.length > 0 || unsureItems.length > 0) && (
         <EvidenceViewer
           findings={ordered}
           openId={viewing}

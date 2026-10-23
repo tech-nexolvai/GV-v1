@@ -290,7 +290,7 @@ export function drawingsRequestText(pages: readonly number[], titles: PageTitles
 
 /** The reasons in the Not-compared list's order, as its headings say them (`classification.REASON_WORDS`). */
 const REASONS: readonly [string, string][] = [
-  ['pairing_unsure', 'Pairing unsure: pick the architect page'],
+  ['pairing_unsure', 'Pairing unsure: a person confirms the architect page'],
   ['field_verify', 'The drawing says verify in field'],
   ['nothing_to_compare', 'Architect gives no size or information'],
   ['no_overall', 'Architect gives only the parts, no overall'],

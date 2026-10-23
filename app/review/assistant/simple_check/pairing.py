@@ -745,8 +745,6 @@ _HAND_WORDS: Final = frozenset(
     {
         "reverse",
         "reversed",
-        "mirror",
-        "mirrored",
         "regular",
         "unit",
         "units",
@@ -754,6 +752,8 @@ _HAND_WORDS: Final = frozenset(
 )
 #: A numbered unit type in a tidied title: "type 1", "type 3a", "type b".
 _UNIT_TYPE: Final = re.compile(r"\btype ([a-z0-9]{1,4})\b")
+#: A list of unit types in a tidied title: "type 1 and 2", "type 1 2" ("TYPE 1/2").
+_TYPE_LIST: Final = re.compile(r"\btype ([a-z0-9]{1,4}(?:(?: and| or)? \d{1,2}\b)*)")
 
 
 def unit_title(text: object) -> tuple[str, frozenset[str]]:
@@ -763,7 +763,8 @@ def unit_title(text: object) -> tuple[str, frozenset[str]]:
     "standard kitchen", nor "kitchenette" (other tools ask the reviewer then, never guess)."""
     words = [w for w in title_key(text).split() if w not in _HAND_WORDS]
     tidy = " ".join(words)
-    return tidy, frozenset(_UNIT_TYPE.findall(tidy))
+    found = {t for one in _TYPE_LIST.findall(tidy) for t in one.split() if t not in ("and", "or")}
+    return tidy, frozenset(found)
 
 
 def _index_title_words(title: str) -> bool:
@@ -875,6 +876,7 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
         contradicts = None
         strong = False
         small_tag = False
+        index_titled = False
         linked = vendor.linked.get(one.ref)
         if linked:
             # A plan's callout beside the vendor's item tag points to it: strong enough to agree
@@ -898,8 +900,10 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
                     f'"{one.index_title}": another unit type'
                 )
             elif one.ref in titled and not strong:
-                # The same item title on both pages (each checked printed): strong.
-                strong = True
+                # The same item title on both pages (each checked printed): strong enough to agree
+                # with the AI page matcher, never to pair without it (`agree_only`: an AI read the
+                # titles; a second, independent witness must look at the drawings).
+                index_titled = True
                 score += _W_TITLE
                 evidence.append(
                     f'both pages are titled "{one.index_title}"'
@@ -1009,14 +1013,14 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
                 f"its title names a {next(iter(one.views))}, the vendor drawing's a "
                 f"{next(iter(vendor.views))}"
             )
-        agree_only = (bool(linked) or small_tag) and not strong
+        agree_only = (bool(linked) or small_tag or index_titled) and not strong
         out.append(
             Scored(
                 one.ref,
                 round(score, 3),
                 tuple(evidence),
                 contradicts,
-                strong or bool(linked) or small_tag,
+                strong or bool(linked) or small_tag or index_titled,
                 agree_only,
                 bool(linked),
             )

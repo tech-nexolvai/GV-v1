@@ -1562,6 +1562,7 @@ def _enrich(
         if title:
             for drawing in item.drawings:
                 context.index_titles[drawing.ref] = title
+        title_hand = pairing_module.markers_in([title])[1] if title else frozenset()
         if not views:
             words = _marked_words(page_read)
             for drawing in item.drawings:
@@ -1586,6 +1587,12 @@ def _enrich(
                 # piece (owner, 2026-10-23).
                 context.no_sizes.add(views[at].ref)
                 context.room_only.add(views[at].ref)
+        if title_hand:
+            # The page title's hand ("... REVERSED UNITS") is every view's: a view paired alone is
+            # still flagged opposite-hand (the title's tidy-up leaves the hand words out).
+            for drawn in views:
+                variant, hand = context.marked.get(drawn.ref, (frozenset(), frozenset()))
+                context.marked[drawn.ref] = (variant, hand | title_hand)
         if read and not any(v.get("prints_sizes") for v in read):
             context.no_sizes.add(item.id)
         elif (
@@ -1942,11 +1949,13 @@ def _pair_across(
             asked=asked,
             answer=None if answer is None else answer.matches,
             chosen=(governing,),
-            why=(
+            why=_human_ids(
                 f"code paired it with {governing}, the architect's {disagree.governing}, which "
                 f"governs {disagree.governs}; the architect's own drawings disagree ({other}, its "
                 f"{disagree.other}, shows the same piece: {sizes}): GV asks the architect, and "
-                "these sizes are never red against the vendor"
+                "these sizes are never red against the vendor",
+                everything,
+                context,
             ),
             views_disagree=disagree,
         )
@@ -2398,8 +2407,7 @@ def _unsure(
     """The architect items a person confirms between when the AI page matcher is sure of one and
     code could not confirm it (`pairing.agree` refused it): the matcher's pick, then code's own
     pick or code's first other item (code's pick first when code rules the matcher's out). Empty
-    when the matcher was not sure or found none, or when code rules its pick out and holds no
-    pick of its own (another unit, nothing to choose)."""
+    when the matcher was not sure or found none."""
     if answer is None or not answer.confident or not answer.matches:
         return ()
     by = {s.ref: s for s in ranked}
@@ -2412,8 +2420,9 @@ def _unsure(
         return (pick,)
     other = code_pick if code_pick not in (None, pick) else None
     if scored.contradicts is not None:
-        # Code rules the matcher's pick out and picked another: code's first, then the matcher's.
-        return () if other is None else (other, pick)
+        # Code rules the matcher's pick out: code's own pick first when it has one. Never "no
+        # architect drawing" while the matcher names one (a type list code reads wrong).
+        return (pick,) if other is None else (other, pick)
     if other is None:
         other = next((s.ref for s in ranked if s.contradicts is None and s.ref != pick), None)
     return (pick,) if other is None else (pick, other)

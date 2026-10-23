@@ -78,10 +78,11 @@ def _work(
     architect: dict[int, str] | None = None,
     sizes: dict[int, tuple[int, int, int]] | None = None,
     two_on: int | None = None,
+    sheet_views: list[dict[str, Any]] | None = None,
 ) -> Any:
     """The synthetic set: `vendor` and `architect` titles by page; `sizes` an architect page's
     sizes (else the kitchenette's own, the rest the vendor's); `two_on` a vendor page holding two
-    vendor drawings."""
+    vendor drawings; `sheet_views` the set index's views of architect page 1."""
     vendor = vendor or VENDOR
     architect = architect or ARCHITECT
     sizes = sizes if sizes is not None else {3: (100, 40, 36)}
@@ -109,7 +110,16 @@ def _work(
                     "file": ARCH,
                     "page": p,
                     "labels": _sizes("architect", sizes.get(p, (63, 22, 34))),
-                    "phrases": [_phrase(t, [700, 700, 900, 710])],
+                    "phrases": [
+                        _phrase(t, [700, 700, 900, 710]),
+                        # On a sheet of views, the plan names the piece (its title block, at the
+                        # foot, is outside both views).
+                        *(
+                            [_phrase("SAMPLE VANITY", [100, 100, 300, 110])]
+                            if sheet_views and p == 1
+                            else []
+                        ),
+                    ],
                 }
                 for p, t in architect.items()
             ),
@@ -119,7 +129,12 @@ def _work(
         "version": 1,
         "pages": {
             **{f"{SHOP}#{p}": _read(SHOP, p, item=t) for p, t in vendor.items()},
-            **{f"{ARCH}#{p}": _read(ARCH, p, item=t) for p, t in architect.items()},
+            **{
+                f"{ARCH}#{p}": _read(
+                    ARCH, p, item=t, views=sheet_views if sheet_views and p == 1 else []
+                )
+                for p, t in architect.items()
+            },
         },
     }
     return worklist_from(
@@ -174,6 +189,10 @@ def _paired_pages(pair: Any) -> list[int]:
 def test_titles_match_exactly_after_a_fixed_tidy_up() -> None:
     assert unit_title("Vanity - TYPE-1 Reversed Units") == ("vanity type 1", frozenset({"1"}))
     assert unit_title("KITCHEN REGULAR UNITS") == ("kitchen", frozenset())
+    # A list of types is every one of them: TYPE 2 is on a "TYPE 1 & 2" page.
+    assert unit_title("SAMPLE VANITY TYPE 1 & 2")[1] == frozenset({"1", "2"})
+    # A mirror is an object, never tidied away as a hand.
+    assert not same_item("GUEST BATH VANITY MIRROR", "GUEST BATH VANITY")
     assert same_item("SAMPLE VANITY - TYPE 1 REVERSED UNITS", "SAMPLE VANITY TYPE-1")
     assert same_item("ACCESSIBLE KITCHEN REVERSE UNITS", "Accessible Kitchen")
     # Only an exact match: a near name is a clue, never proof.
@@ -290,8 +309,9 @@ def test_the_reviewer_is_shown_the_two_pages_in_the_right_order() -> None:
     # Code rules the pick out and picked another: code's pick first.
     ruled = (Scored("a2", 5.0, ("x",), strong=True), Scored("a1", 1.0, ("y",), contradicts="type"))
     assert worklist._unsure(ruled, "a2", sure) == ("a2", "a1")
-    # Ruled out with no pick of code's own, a matcher not sure, or no answer: nothing to choose.
-    assert worklist._unsure(ruled, None, sure) == ()
+    # Ruled out with no pick of code's own: the matcher's page alone, never "no drawing".
+    assert worklist._unsure(ruled, None, sure) == ("a1",)
+    # A matcher not sure, or no answer: nothing to choose.
     assert worklist._unsure(ranked, None, MatchAnswer(("a1",), confident=False)) == ()
     assert worklist._unsure(ranked, None, None) == ()
 
@@ -348,3 +368,53 @@ def test_a_label_that_could_be_a_printed_name_drops_the_matchers_reason() -> Non
     assert worklist._without_labels("matches Unit A2 kitchen", labels) == ""
     assert worklist._without_labels("see sheet A501", labels) == ""
     assert worklist._without_labels("no label at all", labels) == "no label at all"
+
+
+def test_the_title_alone_never_pairs_without_the_matcher() -> None:
+    # An AI read the titles: a second witness, looking at the drawings, must agree.
+    vendor = {1: "SAMPLE PANTRY CABINET"}
+    architect = {**LOOK_ALIKE, 3: "SAMPLE DESK"}
+    pair = _across(_work(None, vendor, architect, OTHER_SIZES), 1)
+    assert pair.code_pick is None and pair.chosen == (), pair.why
+    unasked = _work(None, vendor, architect, OTHER_SIZES)
+    agreed = _across(_work(_matched(unasked, {1: 1}), vendor, architect, OTHER_SIZES), 1)
+    assert _paired_pages(agreed) == [1], agreed.why
+
+
+def _sheet_of_two_views(title: str) -> Any:
+    """Vendor page 1 "SAMPLE VANITY TOP"; architect page 1 a sheet of a PLAN and an ELEVATION
+    titled `title`; the matcher sure of it."""
+    vendor = {1: "SAMPLE VANITY TOP"}
+    architect = {1: title, 2: "BENCH", 3: "WARDROBE", 4: "DESK"}
+
+    views = [
+        {
+            "title": "PLAN",
+            "number": "",
+            "kind": "plan",
+            "prints_sizes": True,
+            "box": [0.0, 0.0, 600.0, 650.0],
+            "variant_words": [],
+            "hand_words": [],
+        },
+        {
+            "title": "ELEVATION",
+            "number": "",
+            "kind": "elevation",
+            "prints_sizes": True,
+            "box": [600.0, 0.0, 1200.0, 650.0],
+            "variant_words": [],
+            "hand_words": [],
+        },
+    ]
+    sizes = {p: (100, 40, 36) for p in architect}
+    unasked = _work(None, vendor, architect, sizes, sheet_views=views)
+    return _across(_work(_matched(unasked, {1: 1}), vendor, architect, sizes, sheet_views=views), 1)
+
+
+def test_a_reversed_sheet_title_flags_the_pair_whatever_view_it_is_narrowed_to() -> None:
+    pair = _sheet_of_two_views("SAMPLE VANITY TOP REVERSED UNITS")
+    assert pair.chosen, pair.why
+    assert pair.opposite_hand is not None, pair.why
+    plain = _sheet_of_two_views("SAMPLE VANITY TOP")
+    assert plain.chosen and plain.opposite_hand is None, plain.why
