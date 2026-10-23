@@ -142,6 +142,7 @@ __all__ = [
     "set_pack_state",
     "shutdown_chats",
     "sync_uploads",
+    "use_pack_starter",
     "write_checkpoint",
 ]
 
@@ -509,17 +510,38 @@ def _sync_uploads(
     return wanted, True
 
 
+#: Starts a set pack's build somewhere else than this process (#1871): `(folder, uploads, listing)`.
+type PackStarter = Callable[[Path, Path, Sequence[Mapping[str, Any]]], None]
+_pack_starter: PackStarter | None = None
+
+
+def use_pack_starter(starter: PackStarter | None) -> None:
+    """Where this process's set packs are built from now on (`job_board.pack_starter`: a job the
+    worker runs, #1871); `None`: here, in the background (`set_pack.ensure_pack`)."""
+    global _pack_starter
+    _pack_starter = starter
+
+
 def start_set_pack(
-    workspace: ChatWorkspace, chat_root: Path, listing: Sequence[Mapping[str, Any]]
+    workspace: ChatWorkspace,
+    chat_root: Path,
+    listing: Sequence[Mapping[str, Any]],
+    *,
+    starter: PackStarter | None = None,
 ) -> ChatWorkspace:
     """The chat's workspace with its set pack (`set_pack.py`), whose building starts in the
-    background when it is not made yet: the message never waits for it."""
+    background when it is not made yet: the message never waits for it. `starter` (else the one
+    `use_pack_starter` set): the build is handed to it (the worker's job, #1871) instead."""
     if not listing:
         return workspace
     try:
         pack = import_module("app.review.assistant.set_pack")
         folder: Path = pack.pack_folder(chat_root, listing)
-        pack.ensure_pack(folder, workspace.uploads, listing)
+        handed = starter or _pack_starter
+        if handed is not None:
+            handed(folder, workspace.uploads, listing)
+        else:
+            pack.ensure_pack(folder, workspace.uploads, listing)
     except Exception as failed:  # noqa: BLE001 - the chat works without the pack
         _log.warning("assistant set pack could not start: %s", type(failed).__name__)
         return workspace
@@ -575,6 +597,7 @@ def full_check_plan(
     products: Sequence[str] | None = None,
     price: Callable[[int], int] | None = None,
     missing_values: Sequence[str] = (),
+    starter: PackStarter | None = None,
 ) -> dict[str, Any]:
     """The plan check before a full check (#1569): code's plan in one line and the 0-3 questions
     where it is unsure of the page map (`plan_check.doubts`), each with its page's picture and the
@@ -589,7 +612,7 @@ def full_check_plan(
     listing, _changed = sync_uploads(workspace, uploads())
     if not listing:
         return {"state": "none", "summary": None, "doubts": [], "more": 0}
-    workspace = start_set_pack(workspace, chat_root, listing)
+    workspace = start_set_pack(workspace, chat_root, listing, starter=starter)
     folder = workspace.set_pack
     reading = reading_words(folder)
     page_map = read_page_map(folder)
