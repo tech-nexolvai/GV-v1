@@ -117,4 +117,14 @@ describe('a spot off its pair', () => {
     expect(architect!.textContent).toContain('the item’s spot (page 3) is not on its paired page');
     expect(referenceWhere(off)).toEqual({ file: ARCH_B, page: 7 });
   });
+
+  it('is never the architect thumbnail of a question answer’s list either', () => {
+    const off = finding('o2', {
+      ...PAIRED, id: 'o2', arch_box: { page: 3, x0: 1, y0: 1, x1: 9, y1: 9, file: ARCH_B }, arch_picture_id: 'arch-o2',
+      reference_page: { file: ARCH_B, page: 7, why: 'The architect’s spot is not on the page paired with this vendor page.', outside: true },
+    });
+    const { container } = render(<AssistantMessage message={answer([off])} chatId="c-1" models={[OPUS]} />);
+    const sources = [...container.querySelectorAll('img')].map((img) => img.getAttribute('src') ?? '');
+    expect(sources.some((src) => src.includes('arch-o2'))).toBe(false);
+  });
 });

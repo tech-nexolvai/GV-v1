@@ -205,7 +205,7 @@ function EvidencePair({ finding, pictureUrl, onOpen }: { finding: ChatFinding; p
   const sides = sideLabels(finding);
   return (
     <span data-slot="chat-finding-thumbs" className="grid w-full max-w-80 grid-cols-2 gap-2 lg:w-64">
-      <PairSide side={sides.architectTag} first label={sides.architect} src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} onOpen={onOpen} />
+      <PairSide side={sides.architectTag} first label={sides.architect} src={finding.arch_picture_id && !finding.reference_page?.outside ? pictureUrl(finding.arch_picture_id) : null} onOpen={onOpen} />
       <PairSide side={sides.vendorTag} label={sides.vendor} src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} onOpen={onOpen} />
     </span>
   );
