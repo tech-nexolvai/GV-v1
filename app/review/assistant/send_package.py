@@ -346,6 +346,8 @@ def requires_words(finding: Mapping[str, Any]) -> str:
         return f"The vendor's own parts add up to {value}"
     if own == "span":
         return f"The vendor's other dimension of the same span shows {value}"
+    if own == "pages":
+        return f"The vendor's own drawings of the same item disagree: {value}"
     source = str(finding.get("source") or "architect")
     settled = finding.get("settled")
     if isinstance(settled, Mapping) and settled.get("method") == "gv_limits":

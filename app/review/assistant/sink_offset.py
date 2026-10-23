@@ -1,4 +1,4 @@
-"""GV's sink front offset on the vendor's plan views, $0, no AI: code decides, never the AI.
+"""GV's sink rules on the vendor's plan views (the front offset first), $0, no AI: code decides.
 
 GV's rule CT-SINK-OFFSET-FRONT-001 (the setting `front_offset_required`, 4" by default; the client
 lead: "keep 4" as standard", adjustable in special cases) is the strip of top between the sink
@@ -62,6 +62,28 @@ round, an architect value other than this item's) is never replaced: it speaks, 
 stands aside (`agrees`; in the simple check, code's item goes). A Not-compared
 note of the last kind is only added where the answer has no other item on the label (the
 architect comparison then speaks for it).
+
+**GV's other rules on the same plan** (#1906), read the same way (a ticked dimension line between
+two lines code proved, exactly one plain printed label beside it, its value near the drawn length;
+anything unsure is Not compared, never red), each with its own value in force from `rules.md`:
+
+| Rule | The dimension | Its value in force |
+|---|---|---|
+| CT-BACK-OFFSET-MIN-001 | cut-out's back edge to the run's back line | at least `back_offset_minimum` (2 1/2") |
+| CT-SINK-CUTOUT-WIDTH-001 | across the cut-out, side to side | sink inside width - 2 x clearance |
+| CT-SINK-CUTOUT-DEPTH-001 | cut-out's back edge to its front edge | sink inside depth - 2 x clearance |
+| CT-DEPTH-001 | the run's one back line to the top's edge in front of the proved cabinets' front | cabinet depth + overhang |
+
+A rule whose job value nobody entered (the sink's inside size, the cabinet depth, the overhang) is
+skipped quietly: the pre-flight already lists such values. The cut-out's size comes from the sink
+entered for the job, not from the architect, so the architect is not looked at for it; a set whose
+vendor drawings draw sink cut-outs of different sizes is Not compared for it (one entered sink size
+cannot be every sink's). The back offset is a minimum: the architect's printed back offset governs
+as for the front offset (one the vendor follows that is under GV's minimum is a rule note, never red).
+
+**Vendor drawings with no architect drawing** (`WorkList.alone`, the newest round of each): every
+rule above runs on them too, and GV's rule governs alone: a proved value that breaks it is red, one
+that meets it is Right, and the item says "no architect drawing of this area in the upload".
 
 Findings are in the chat finding shape (`created_by: "sink_offset"`), filed under countertops, or
 under cabinets when countertops are not in the check's scope (`product_scope.sink_cutout_category`:
@@ -183,11 +205,13 @@ class Setting:
     """"GV standard", "project value" or "drawing set value"."""
     where: str
     """`rules.md`'s own words for where it comes from ("GV's company standard")."""
+    name: str = NAME
+    """The rule's plain name ("sink front offset", "sink cut-out width")."""
 
     @property
     def governs(self) -> str:
         """ "GV standard: sink front offset"."""
-        return f"{self.origin}: {NAME}"
+        return f"{self.origin}: {self.name}"
 
 
 def _origin(where: str) -> str:
@@ -209,13 +233,14 @@ def _fraction(value: object) -> Fraction | None:
     return found if found > 0 else None
 
 
-def setting_from(rules_md: str | None) -> Setting | None:
+def setting_from(rules_md: str | None, key: str = SETTING, name: str = NAME) -> Setting | None:
     """The setting in force from the chat's `rules.md` table (`| ... (`front_offset_required`) |
-    4" | GV's company standard | ... |`); `None` when it is not listed or not set."""
+    4" | GV's company standard | ... |`); `None` when it is not listed or not set (a job value
+    nobody entered: the check that needs it is skipped quietly)."""
     to_inches = import_module("app.review.assistant.finding_checks").to_inches
     for line in (rules_md or "").splitlines():
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if len(cells) < 3 or f"(`{SETTING}`)" not in cells[0]:
+        if len(cells) < 3 or f"(`{key}`)" not in cells[0]:
             continue
         if cells[1].lower().startswith("not set"):
             return None
@@ -223,8 +248,58 @@ def setting_from(rules_md: str | None) -> Setting | None:
         if value is None or value <= 0:
             return None
         exact = Fraction(value)
-        return Setting(exact, format_inches(exact), _origin(cells[2]), cells[2])
+        return Setting(exact, format_inches(exact), _origin(cells[2]), cells[2], name)
     return None
+
+
+def _combined(
+    value: Fraction, parts: Sequence[tuple[str, Setting]], name: str, sign: str
+) -> Setting:
+    """A value worked out from settings (the cut-out from the sink's inside size less the
+    clearances; the countertop depth from the cabinet depth plus the overhang): its origin is the
+    most specific of theirs (a drawing set value, then a project value, else GV standard)."""
+    origins = [setting.origin for _words, setting in parts]
+    origin = next(
+        (o for o in ("drawing set value", "project value") if o in origins), "GV standard"
+    )
+    where = f" {sign} ".join(
+        f"{words} {setting.text} ({setting.where})" for words, setting in parts
+    )
+    return Setting(value, format_inches(value), origin, where, name)
+
+
+def settings_from(rules_md: str | None) -> dict[str, Setting]:
+    """Every sink plan rule's value in force, by its rule id (see `RULES`): only the rules whose
+    values are all entered (a job value nobody entered skips its rule quietly; the pre-flight
+    already lists such values)."""
+    out: dict[str, Setting] = {}
+    front = setting_from(rules_md)
+    if front is not None:
+        out[FRONT.id] = front
+    back = setting_from(rules_md, BACK.setting, BACK.name)
+    if back is not None:
+        out[BACK.id] = back
+    clearance = setting_from(rules_md, "sink_cutout_clearance", "clearance")
+    for rule, inside_words in ((WIDTH, "sink inside width"), (DEPTH, "sink inside depth")):
+        inside = setting_from(rules_md, rule.setting, inside_words)
+        if inside is None or clearance is None:
+            continue
+        value = inside.value - 2 * clearance.value
+        if value <= 0:
+            continue
+        out[rule.id] = _combined(
+            value, ((inside_words, inside), ("2 x clearance", clearance)), rule.name, "-"
+        )
+    cabinet = setting_from(rules_md, "cabinet_depth", "cabinet depth")
+    overhang = setting_from(rules_md, TOP.setting, "overhang")
+    if cabinet is not None and overhang is not None:
+        out[TOP.id] = _combined(
+            cabinet.value + overhang.value,
+            (("cabinet depth", cabinet), ("overhang", overhang)),
+            TOP.name,
+            "+",
+        )
+    return out
 
 
 # ---- the line work, turned so the front is down ----------------------------------------------------
@@ -321,7 +396,15 @@ class _Frame:
 def _rectangles(frame: _Frame, pt_per_in: float) -> list[Box]:
     """Closed rectangles (square or rounded corners) of a cut-out's size, as (u0, v0, u1, v1)."""
     low, high = CUTOUT_MIN_IN * pt_per_in, CUTOUT_MAX_IN * pt_per_in
-    sides = sorted(frame.along, key=lambda piece: piece[2])
+    # A dimension line drawn edge to edge inside the cut-out (its depth) is never one of its sides.
+    sides = sorted(
+        (
+            p
+            for p in frame.along
+            if not (_crossed(frame, p[2], p[0]) and _crossed(frame, p[2], p[1]))
+        ),
+        key=lambda piece: piece[2],
+    )
     found: set[Box] = set()
     for i, (a0, a1, left) in enumerate(sides):
         for b0, b1, right in sides[i + 1 :]:
@@ -484,6 +567,32 @@ class SinkPlan:
     """Why the front of this cut-out is not sure (every offset then unsure too)."""
     order: float = 0.0
     """Its place along the run (page points), to pair the vendor's with the architect's."""
+    back: tuple[Offset, ...] = ()
+    """The dimensions from the cut-out's back edge to the run's back line (the back offset)."""
+    back_in_band: int = 0
+    """The drawing's labels standing in the strip behind the cut-out (silent: none)."""
+    widths: tuple[Offset, ...] = ()
+    """The dimensions across the cut-out from side to side (its width)."""
+    depths: tuple[Offset, ...] = ()
+    """The dimensions from the cut-out's back edge to its front edge (its depth)."""
+    tops: tuple[Offset, ...] = ()
+    """The dimensions from the run's back line to the top's front edge, in front of the cabinets'
+    front (the countertop's depth); only when code proved both lines."""
+    size: tuple[float, float] = (0.0, 0.0)
+    """The cut-out as drawn, in inches at the drawing's scale (width along the front, depth)."""
+
+
+def _crossed(frame: _Frame, u: float, v: float) -> bool:
+    """A tick across a line at right angles to the front (at `u`) at its end `v`: a short slanted
+    stroke whose middle is at that end and that runs to both sides of the line (a rounded corner's
+    arc starts there but stays on one side)."""
+    for a, b in frame.slanted:
+        if math.dist(a, b) > 12.0:
+            continue
+        middle = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        if math.dist(middle, (u, v)) <= _TICK_PT and (a[0] - u) * (b[0] - u) < 0:
+            return True
+    return False
 
 
 def _ticked(frame: _Frame, at: Point) -> bool:
@@ -498,11 +607,21 @@ def _ticked(frame: _Frame, at: Point) -> bool:
     return False
 
 
-def _dimension_lines(frame: _Frame, u0: float, u1: float, edge: float, front: float) -> list[float]:
+def _dimension_lines(
+    frame: _Frame,
+    u0: float,
+    u1: float,
+    edge: float,
+    front: float,
+    away: Sequence[float] = (),
+) -> list[float]:
     """Where (u) a dimension line runs from the cut-out's front edge to the front line, ticked at
-    both ends: its pieces at right angles to the front, joined (a gap only for its text)."""
+    both ends: its pieces at right angles to the front, joined (a gap only for its text). `away`:
+    places (u) a dimension line never stands at (the cut-out's own sides)."""
     places: dict[float, list[tuple[float, float]]] = {}
     for a, b, u in frame.along:
+        if any(abs(u - other) <= _END_PT for other in away):
+            continue
         if a >= edge - _END_PT and b <= front + _END_PT and u0 - _SAME_PT <= u <= u1 + _SAME_PT:
             places.setdefault(round(u, 1), []).append((a, b))
     out: list[float] = []
@@ -536,8 +655,11 @@ def _offsets(
     edge: float,
     front: float,
     pt_per_in: float,
+    away: Sequence[float] = (),
 ) -> tuple[list[Offset], int]:
-    """The offsets printed in front of the cut-out, and how many labels stand in that strip."""
+    """The offsets printed in front of the cut-out, and how many labels stand in that strip. The
+    same reading serves every dimension that runs at right angles to the front between two lines
+    code proved (`edge` to `front`): the back offset, the cut-out's depth, the top's depth."""
     boxes = [(label, _turn_box(label["box"], side)) for label in labels if _box_ok(label)]
     # Any label in the strip between the cut-out's front edge and the front line, anywhere along
     # the drawing (a dimension placed off to the side still counts): an architect is silent only
@@ -549,7 +671,7 @@ def _offsets(
     )
     found: list[Offset] = []
     span = front - edge
-    for u in _dimension_lines(frame, u0, u1, edge, front):
+    for u in _dimension_lines(frame, u0, u1, edge, front, away):
         beside = []
         for label, (bu0, bv0, bu1, bv1) in boxes:
             gap = 0.0 if bu0 <= u <= bu1 else min(abs(bu0 - u), abs(bu1 - u))
@@ -685,7 +807,61 @@ def _plan(
         offsets = [Offset(o.label, o.value, o.span_pt, o.unsure or unsure) for o in offsets]
     centre = ((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2)
     order = centre[0] if side in ("top", "bottom") else centre[1]
-    return SinkPlan(rect, side, v1, front_line, (u0, u1), tuple(offsets), in_band, unsure, order)
+    reach = LINE_REACH_IN * pt_per_in
+    # The back offset: from the cut-out's back edge to the run's back line, behind the faucet.
+    back, back_in_band = _offsets(frame, labels, side, u0, u1, back_line, v0, pt_per_in)
+    # The cut-out's depth: from its back edge to its front edge, beside it or across it (never
+    # its own sides).
+    depths, _band = _offsets(
+        frame, labels, side, u0 - reach, u1 + reach, v0, v1, pt_per_in, (u0, u1)
+    )
+    # Its width: the same reading turned a quarter, so its sides are the two edges.
+    across = _ACROSS[side]
+    turned = _Frame.of(segments, across)
+    t0, s0, t1, s1 = _turn_box(rect, across)
+    widths, _band = _offsets(
+        turned, labels, across, t0 - reach, t1 + reach, s0, s1, pt_per_in, (t0, t1)
+    )
+    # The countertop's depth: from the run's one back line to the top's front edge, only where
+    # code proved the cabinets' front behind that edge (so the edge is the top's, not the
+    # cabinets'), no other line runs near it, and one back line only (a splash face and a wall
+    # would leave which one the depth starts at open).
+    tops: list[Offset] = []
+    if (
+        second
+        and not dashed
+        and len(behind) == 1
+        and _cabinet_face(frame, u0, u1, front_line, pt_per_in)
+    ):
+        tops, _band = _offsets(
+            frame, labels, side, u0 - reach, u1 + reach, back_line, second[0], pt_per_in
+        )
+    return SinkPlan(
+        rect,
+        side,
+        v1,
+        front_line,
+        (u0, u1),
+        tuple(offsets),
+        in_band,
+        unsure,
+        order,
+        back=tuple(back),
+        back_in_band=back_in_band,
+        widths=tuple(widths),
+        depths=tuple(depths),
+        tops=tuple(tops),
+        size=((u1 - u0) / pt_per_in, (v1 - v0) / pt_per_in),
+    )
+
+
+#: The frame turned a quarter from each front: the cut-out's sides are then its two edges.
+_ACROSS: Final[Mapping[Side, Side]] = {
+    "bottom": "right",
+    "top": "right",
+    "right": "bottom",
+    "left": "bottom",
+}
 
 
 def _cabinet_face(frame: _Frame, u0: float, u1: float, front: float, pt_per_in: float) -> bool:
@@ -753,12 +929,119 @@ def drawing_plans(drawing: Drawing, segments: Segments | None) -> list[SinkPlan]
 
 
 @dataclass(frozen=True, slots=True)
+class Rule:
+    """One GV rule code checks on a sink plan: the rulebook's id, its main setting, its plain name,
+    the item's words, what code proved of the dimension, and whether it is a minimum (`at least`)
+    rather than an exact value."""
+
+    id: str
+    setting: str
+    name: str
+    item: str
+    proved: str
+    minimum: bool = False
+    #: Whether the architect's drawing is looked at for it (a cut-out's size comes from the sink's
+    #: spec sheet, entered for the job: the architect does not size it).
+    architect: bool = True
+
+    def meets(self, value: Fraction, setting: Setting) -> bool:
+        if self.minimum:
+            return value > setting.value - TOLERANCE
+        return _same(value, setting.value)
+
+    def required(self, setting: Setting) -> str:
+        """The value the rule asks for, as the outputs print it (`4"`, `at least 2 1/2"`)."""
+        return f"at least {setting.text}" if self.minimum else setting.text
+
+
+_PROVED: Final = (
+    "code proved the dimension runs from the sink cut-out's front edge to the run's front edge "
+    "(plan view: the faucet hole marks the back)"
+)
+
+FRONT: Final = Rule(RULE_ID, SETTING, NAME, "sink cut-out, front offset", _PROVED)
+BACK: Final = Rule(
+    "CT-BACK-OFFSET-MIN-001",
+    "back_offset_minimum",
+    "sink back offset minimum",
+    "sink cut-out, back offset",
+    "code proved the dimension runs from the sink cut-out's back edge to the run's back line "
+    "(plan view: the faucet hole marks the back)",
+    minimum=True,
+)
+WIDTH: Final = Rule(
+    "CT-SINK-CUTOUT-WIDTH-001",
+    "sink_interior_width",
+    "sink cut-out width",
+    "sink cut-out, width",
+    "code proved the dimension runs across the sink cut-out from side to side (plan view)",
+    architect=False,
+)
+DEPTH: Final = Rule(
+    "CT-SINK-CUTOUT-DEPTH-001",
+    "sink_interior_depth",
+    "sink cut-out depth",
+    "sink cut-out, depth",
+    "code proved the dimension runs from the sink cut-out's back edge to its front edge "
+    "(plan view)",
+    architect=False,
+)
+TOP: Final = Rule(
+    "CT-DEPTH-001",
+    "countertop_overhang",
+    "countertop depth",
+    "countertop depth",
+    "code proved the dimension runs from the run's back line to the top's front edge, in front "
+    "of the cabinets' front (plan view)",
+)
+#: Every rule this check reads on a sink plan, in the order its items are listed.
+RULES: Final = (FRONT, BACK, WIDTH, DEPTH, TOP)
+#: The words of a vendor drawing no architect drawing is paired with (`WorkList.alone`).
+NO_ARCHITECT: Final = "no architect drawing of this area in the upload, so GV's rule governs"
+#: A set whose sink cut-outs are drawn in different sizes: one sink size entered for the job
+#: cannot be every sink's.
+SIZES_DIFFER: Final = (
+    "the vendor draws sink cut-outs of different sizes in this set: the sink size entered for "
+    "the job may be another sink's"
+)
+#: Cut-outs drawn within this many inches of each other are taken as one sink size.
+SIZE_SLACK_IN: Final = 1.0
+
+
+def _measured(plan: SinkPlan, rule: Rule) -> tuple[Offset, ...]:
+    """The plan's dimensions a rule reads."""
+    if rule is FRONT:
+        return plan.offsets
+    if rule is BACK:
+        return plan.back
+    if rule is WIDTH:
+        return plan.widths
+    if rule is DEPTH:
+        return plan.depths
+    return plan.tops
+
+
+def _band(plan: SinkPlan, rule: Rule) -> int | None:
+    """How many labels stand where the rule's dimension is printed, on a plan where the architect
+    may be silent; `None`: an architect is never taken as silent for it."""
+    if rule is FRONT:
+        return plan.labels_in_band
+    if rule is BACK:
+        return plan.back_in_band
+    return None
+
+
+@dataclass(frozen=True, slots=True)
 class _Architect:
-    kind: Literal["prints", "silent", "unknown"]
+    kind: Literal["prints", "silent", "unknown", "none"]
+    """`none`: no architect drawing is paired with the vendor's (GV's rule governs alone)."""
     value: Fraction | None = None
     label: Mapping[str, Any] | None = None
     drawing: Drawing | None = None
     why: str = ""
+
+
+_NONE: Final = _Architect("none")
 
 
 def _architect_for(
@@ -766,11 +1049,13 @@ def _architect_for(
     count: int,
     architects: Sequence[tuple[Drawing, list[SinkPlan] | None]],
     vendor_value: Fraction | None = None,
+    rule: Rule = FRONT,
 ) -> _Architect:
     """What the architect gives for the vendor's `index`-th of `count` sink cut-outs. Silent only
     when everything says so: one vendor sink, every architect drawing of the item read, one
-    proved sink plan with no label in front of its cut-out, and the vendor's value printed nowhere
-    on the architect's drawings (an enlarged detail or a note may give it)."""
+    proved sink plan with no label where the dimension would be (in front of its cut-out for the
+    front offset, behind it for the back offset), and the vendor's value printed nowhere on the
+    architect's drawings (an enlarged detail or a note may give it)."""
     if count != 1:
         return _Architect(
             "unknown", why="the vendor draws more than one sink: code does not pair them"
@@ -789,21 +1074,30 @@ def _architect_for(
     if len(plans) != count:
         return _Architect("unknown", why="the architect's drawing has another number of sinks")
     plan = plans[index]
-    if plan.unsure is not None:
+    if plan.unsure is not None and rule is FRONT:
         return _Architect(
             "unknown", drawing=drawing, why=f"on the architect's drawing, {plan.unsure}"
         )
-    proved = [o for o in plan.offsets if o.unsure is None and o.value is not None]
-    if any(o.unsure is not None for o in plan.offsets):
-        return _Architect("unknown", drawing=drawing, why="the architect's offset is not sure")
+    measured = _measured(plan, rule)
+    proved = [o for o in measured if o.unsure is None and o.value is not None]
+    if any(o.unsure is not None for o in measured):
+        return _Architect(
+            "unknown", drawing=drawing, why=f"the architect's {rule.name} is not sure"
+        )
     if proved:
         values = {o.value for o in proved}
         if len(values) > 1:
             return _Architect("unknown", drawing=drawing, why="the architect prints two values")
         return _Architect("prints", proved[0].value, proved[0].label, drawing)
-    if plan.labels_in_band:
+    band = _band(plan, rule)
+    if band is None:
         return _Architect(
-            "unknown", drawing=drawing, why="a label in front of the architect's cut-out"
+            "unknown", drawing=drawing, why=f"code found no {rule.name} on the architect's drawing"
+        )
+    if band:
+        where = "in front of" if rule is FRONT else "behind"
+        return _Architect(
+            "unknown", drawing=drawing, why=f"a label {where} the architect's cut-out"
         )
     if vendor_value is not None:
         written = _inches(vendor_value)
@@ -854,12 +1148,6 @@ def _provenance(label: Mapping[str, Any], drawing: Drawing) -> dict[str, Any]:
     }
 
 
-_PROVED: Final = (
-    "code proved the dimension runs from the sink cut-out's front edge to the run's front edge "
-    "(plan view: the faucet hole marks the back)"
-)
-
-
 def findings_for(
     vendor: Drawing,
     plans: Sequence[SinkPlan],
@@ -867,41 +1155,62 @@ def findings_for(
     setting: Setting,
     area: str | None = None,
     category: str = "countertop",
+    *,
+    rule: Rule = FRONT,
+    alone: bool = False,
+    doubt: str | None = None,
 ) -> list[dict[str, Any]]:
-    """The vendor drawing's front offset items (see the module's table)."""
+    """The vendor drawing's items for one rule (see the module's table). `alone`: no architect
+    drawing is paired with it (GV's rule governs alone). `doubt`: why none of its readings may be
+    judged (they are then Not compared, never red: e.g. `SIZES_DIFFER`)."""
     out: list[dict[str, Any]] = []
     place = f"{area}: " if area else ""
     for index, plan in enumerate(plans):
-        for offset in plan.offsets:
-            architect = _architect_for(index, len(plans), architects, offset.value)
-            made = _judge(vendor, offset, architect, setting)
+        for offset in _measured(plan, rule):
+            if doubt is not None and offset.unsure is None:
+                offset = Offset(offset.label, offset.value, offset.span_pt, doubt)
+            if alone or not rule.architect:
+                architect = _NONE
+            else:
+                architect = _architect_for(index, len(plans), architects, offset.value, rule)
+            made = _judge(vendor, offset, architect, setting, rule)
             if made is None:
                 continue
             outcome, why = made
-            out.append(_finding(vendor, offset, architect, setting, outcome, why, place, category))
+            out.append(
+                _finding(vendor, offset, architect, setting, outcome, why, place, category, rule)
+            )
     return out
 
 
 def _judge(
-    vendor: Drawing, offset: Offset, architect: _Architect, setting: Setting
+    vendor: Drawing,
+    offset: Offset,
+    architect: _Architect,
+    setting: Setting,
+    rule: Rule = FRONT,
 ) -> tuple[Outcome, str] | None:
-    standard = f"{setting.governs} {setting.text}"
+    standard = f"{setting.governs} {rule.required(setting)}"
     if offset.unsure is not None or offset.value is None:
-        if offset.value is not None and _same(offset.value, setting.value):
+        if offset.value is not None and rule.meets(offset.value, setting):
             return None  # nothing to say: it may be right, the architect comparison speaks
         return "unsure", f"Not compared: {offset.unsure}; {standard}"
     value = offset.value
     if architect.kind == "prints" and architect.value is not None:
-        if not _same(architect.value, setting.value):
+        if not rule.meets(architect.value, setting):
             conflict = (
-                f"architect {_inches(architect.value)} vs {setting.origin} {setting.text} "
-                f"({NAME}): reviewer decides"
+                f"architect {_inches(architect.value)} vs {setting.origin} "
+                f"{rule.required(setting)} ({rule.name}): reviewer decides"
             )
             return "conflict", conflict
-        return ("right" if _same(value, setting.value) else "wrong"), ""
-    if architect.kind == "silent":
-        return ("right" if _same(value, setting.value) else "wrong"), ""
-    if _same(value, setting.value):
+        if rule.minimum and not _same(value, architect.value) and rule.meets(value, setting):
+            return None  # the vendor differs from the architect: the architect comparison speaks
+        if rule.minimum:
+            return ("right" if _same(value, architect.value) else "wrong"), ""
+        return ("right" if rule.meets(value, setting) else "wrong"), ""
+    if architect.kind in ("silent", "none"):
+        return ("right" if rule.meets(value, setting) else "wrong"), ""
+    if rule.meets(value, setting):
         return None  # the architect may give another value code cannot see: left to it
     unseen = architect.why or "code could not see what the architect gives"
     return "unsure", f"Not compared: {unseen}; {standard}"
@@ -916,14 +1225,16 @@ def _finding(
     why: str,
     place: str,
     category: str,
+    rule: Rule = FRONT,
 ) -> dict[str, Any]:
     label = offset.label
     mine = _value_text(label)
+    required = rule.required(setting)
     standard = {
-        "rule": RULE_ID,
-        "setting": SETTING,
-        "name": NAME,
-        "value": setting.text,
+        "rule": rule.id,
+        "setting": rule.setting,
+        "name": rule.name,
+        "value": required,
         "origin": setting.origin,
         "from": setting.where,
         "architect": None if architect.value is None else _inches(architect.value),
@@ -938,7 +1249,7 @@ def _finding(
     }
     finding: dict[str, Any] = {
         "page": vendor.page,
-        "item": f"{place}sink cut-out, front offset"[:160],
+        "item": f"{place}{rule.item}"[:160],
         "category": category,
         "vendor": mine,
         "verified": False,
@@ -963,30 +1274,33 @@ def _finding(
         finding["dims"]["architect"] = _provenance(theirs, architect.drawing)
         finding["ledger_ids"] = [str(label.get("id")), str(theirs.get("id"))]
     else:
-        finding.update({"architect": setting.text, "source": "rules"})
+        finding.update({"architect": required, "source": "rules"})
         finding["ledger_ids"] = [str(label.get("id"))]
+    alone = f"; {NO_ARCHITECT}" if architect.kind == "none" and rule.architect else ""
     if outcome == "right":
         finding["status"] = "same"
+        verb = "Meets" if rule.minimum else "Matches"
         finding["why"] = (
-            f"Matches {setting.governs} {setting.text} ({setting.where})"
+            f"{verb} {setting.governs} {required} ({setting.where})"
             + (f"; the architect prints {finding['architect']} too" if printed else "")
-            + f". The vendor prints {mine}; {_PROVED}."
+            + f"{alone}. The vendor prints {mine}; {rule.proved}."
         )
     elif outcome == "wrong":
         finding["status"] = "different"
         how = (
-            f"{setting.governs} {setting.text} ({setting.where}); the vendor prints {mine}; "
-            f"{_PROVED}"
+            f"{setting.governs} {required} ({setting.where}); the vendor prints {mine}; "
+            f"{rule.proved}"
             + (f"; the architect prints {finding['architect']}, the same" if printed else "")
+            + alone
         )
-        finding["why"] = f"Vendor: {mine} · Should be: {setting.text} ({setting.governs}). {how}."
+        finding["why"] = f"Vendor: {mine} · Should be: {required} ({setting.governs}). {how}."
         finding["settled"] = {"outcome": "wrong", "method": METHOD, "how": how + "."}
         finding["checks"] = {"rule": "agrees"}
     elif outcome == "conflict":
         finding["status"] = "check"
         finding["keep_reason"] = CONFLICT
         finding["gv_note"] = why
-        finding["why"] = f"{why}. The vendor prints {mine}; {_PROVED}."
+        finding["why"] = f"{why}. The vendor prints {mine}; {rule.proved}."
     else:
         finding["status"] = "check"
         finding["gv_note"] = why
@@ -1044,10 +1358,18 @@ def check_pack(
     main_file: str | None = None,
     category: str = "countertop",
     segments: Segments | None = None,
+    *,
+    settings: Mapping[str, Setting] | None = None,
 ) -> list[dict[str, Any]]:
-    """Every front offset item of the set pack's vendor drawings (`dims.json`, the work list's
-    pairing, the uploads' line work), against the setting in force."""
-    if folder is None or setting is None:
+    """Every sink plan item of the set pack's vendor drawings (`dims.json`, the work list's
+    pairing, the uploads' line work), against the values in force: `setting` is the front
+    offset's, `settings` every rule's by its id (`settings_from`; a rule with no value in force is
+    not checked). The vendor drawings no architect drawing is paired with (`WorkList.alone`, the
+    newest round of each) are read too: GV's rules govern them alone."""
+    rules = dict(settings or {})
+    if setting is not None:
+        rules[FRONT.id] = setting
+    if folder is None or not rules:
         return []
     worklist = import_module("app.review.assistant.simple_check.worklist")
     consistency = import_module("app.review.assistant.vendor_consistency")
@@ -1069,8 +1391,13 @@ def check_pack(
         texts = consistency.page_texts(Path(folder), files)
     except Exception:  # noqa: BLE001 - no page words: the labels' own words only
         texts = {}
-    out: list[dict[str, Any]] = []
-    for item in work.items:
+    read: list[
+        tuple[
+            Drawing, list[SinkPlan], list[tuple[Drawing, list[SinkPlan] | None]], str | None, bool
+        ]
+    ] = []
+    alone = [item for item in getattr(work, "alone", ()) if item.newest_round]
+    for item, by_itself in [*((i, False) for i in work.items), *((i, True) for i in alone)]:
         try:
             vendor = _drawing(
                 item.vendor, pages, texts.get((item.vendor.file, item.vendor.own_page), "")
@@ -1086,11 +1413,46 @@ def check_pack(
                 if found is not None:
                     architects.append((found, drawing_plans(found, segments)))
             area = re.sub(r"^\s*\d{1,3}\s*[.)]\s*", "", item.area or "").strip() or None
-            out.extend(findings_for(vendor, plans, architects, setting, area, category))
+            read.append((vendor, plans, architects, area, by_itself))
         except Exception:  # noqa: BLE001 - a drawing code cannot read gives no finding
             _log.exception("sink offset: work item %s could not be checked", item.id)
+    doubt = (
+        SIZES_DIFFER if _sizes_differ([p for _v, plans, *_rest in read for p in plans]) else None
+    )
+    out: list[dict[str, Any]] = []
+    for vendor, plans, architects, area, by_itself in read:
+        for rule in RULES:
+            value = rules.get(rule.id)
+            if value is None:
+                continue  # its job value is not entered: skipped quietly
+            try:
+                out.extend(
+                    findings_for(
+                        vendor,
+                        plans,
+                        architects,
+                        value,
+                        area,
+                        category,
+                        rule=rule,
+                        alone=by_itself,
+                        doubt=doubt if rule in (WIDTH, DEPTH) else None,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - a drawing code cannot read gives no finding
+                _log.exception("sink offset: %s on p%s could not be checked", rule.id, vendor.page)
     order = {"different": 0, "check": 1, "same": 2}
     return sorted(out, key=lambda f: (order.get(str(f["status"]), 3), f["page"]))
+
+
+def _sizes_differ(plans: Sequence[SinkPlan]) -> bool:
+    """The set's vendor drawings draw sink cut-outs of different sizes (more than `SIZE_SLACK_IN`
+    apart either way): one sink size entered for the job cannot be checked against all of them."""
+    widths = [plan.size[0] for plan in plans]
+    depths = [plan.size[1] for plan in plans]
+    if len(plans) < 2:
+        return False
+    return max(widths) - min(widths) > SIZE_SLACK_IN or max(depths) - min(depths) > SIZE_SLACK_IN
 
 
 # ---- the answer's own items ----------------------------------------------------------------------
@@ -1228,8 +1590,8 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
         rules = (workspace.skills / "rules.md").read_text(encoding="utf-8")
     except (OSError, AttributeError, TypeError):
         rules = None
-    setting = setting_from(rules)
-    if setting is None:
+    settings = settings_from(rules)
+    if not settings:
         return None
     scope_module = import_module("app.review.assistant.product_scope")
     category = scope_module.sink_cutout_category(getattr(engine, "product_scope", None))
@@ -1238,7 +1600,12 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
     book = engine.book
     main_file = getattr(book, "main_file", None)
     found = check_pack(
-        workspace.set_pack, getattr(workspace, "uploads", None), setting, main_file, category
+        workspace.set_pack,
+        getattr(workspace, "uploads", None),
+        settings.get(FRONT.id),
+        main_file,
+        category,
+        settings=settings,
     )
     if not found:
         return None
@@ -1268,7 +1635,7 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
                 continue
             if _decides(finding):
                 reason = (
-                    "Settled by GV Review: the sink front offset, "
+                    f"Settled by GV Review: the {(finding.get('gv_standard') or {}).get('name', NAME)}, "
                     f"{(finding.get('gv_standard') or {}).get('origin', 'GV standard')} "
                     f"{(finding.get('gv_standard') or {}).get('value', '')}."
                 )

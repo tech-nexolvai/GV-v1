@@ -974,6 +974,7 @@ def worklist_from(
     by_view = {v.ref: v for c in items_across for v in c.views}
 
     items: list[WorkItem] = []
+    alone: list[WorkItem] = []
     round_groups: list[tuple[str, int, int, str]] = []
     used_architect: dict[int, list[str]] = {}
     used_reference: dict[int, list[str]] = {}
@@ -998,7 +999,8 @@ def worklist_from(
             # prototype elevation is the reference (as GV's reviewer does). Wherever the architect
             # gives a drawing, the architect governs and the prototype stays reference only.
             architect, reference, prototype = _governing_first(reference, half.page), (), True
-        if not architect:
+        alone_drawing = not architect
+        if alone_drawing:
             skip(
                 half.page,
                 pairing
@@ -1008,7 +1010,8 @@ def worklist_from(
                 ),
                 half.ref,
             )
-            continue
+            # Still an item of its own for GV's rules that need only the vendor's values
+            # (`WorkList.alone`): never sent to a compare call.
         # Rounds within the area: a drawing with no round in an area that has rounds is never
         # taken as the newest (verify trusts only the newest round).
         others = [
@@ -1055,33 +1058,35 @@ def worklist_from(
             )
         if len(vendor.labels) > DENSE_LABELS:
             hard.append(f"a dense drawing: {len(vendor.labels)} vendor labels")
-        items.append(
-            WorkItem(
-                id=half.ref,
-                file=half.file,
-                page=half.page,
-                section=_plain(owner.get("section")) or None,
-                area=_plain(owner.get("area")) or None,
-                vendor=vendor,
-                architect=architect,
-                reference=reference,
-                round=half.round,
-                newest_round=newest,
-                earlier_rounds=tuple(earlier),
-                later_rounds=tuple(later),
-                products=products,
-                architect_only_tags=tuple(t for t in only_tags if t),
-                hard=tuple(hard),
-                paired_by=pairing,
-                prototype_reference=prototype,
-                opposite_hand=(
-                    across_pairs[half.ref].opposite_hand if half.ref in across_pairs else None
-                ),
-                views_disagree=(
-                    across_pairs[half.ref].views_disagree if half.ref in across_pairs else None
-                ),
-            )
+        made = WorkItem(
+            id=half.ref,
+            file=half.file,
+            page=half.page,
+            section=_plain(owner.get("section")) or None,
+            area=_plain(owner.get("area")) or None,
+            vendor=vendor,
+            architect=architect,
+            reference=reference,
+            round=half.round,
+            newest_round=newest,
+            earlier_rounds=tuple(earlier),
+            later_rounds=tuple(later),
+            products=products,
+            architect_only_tags=tuple(t for t in only_tags if t),
+            hard=tuple(hard),
+            paired_by=pairing,
+            prototype_reference=prototype,
+            opposite_hand=(
+                across_pairs[half.ref].opposite_hand if half.ref in across_pairs else None
+            ),
+            views_disagree=(
+                across_pairs[half.ref].views_disagree if half.ref in across_pairs else None
+            ),
         )
+        if alone_drawing:
+            alone.append(made)
+            continue
+        items.append(made)
         if half.ref in group_of and len(groups[group_of[half.ref]]) > 1:
             round_groups.append(
                 (half.file, half.file_page or half.page, half.page, group_of[half.ref])
@@ -1149,6 +1154,7 @@ def worklist_from(
     return WorkList(
         file=file,
         items=tuple(items),
+        alone=tuple(alone),
         skipped=tuple(skipped),
         pages=tuple(cover[p] for p in sorted(cover)),
         uncovered=tuple(uncovered),

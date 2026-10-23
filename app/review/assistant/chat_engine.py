@@ -89,7 +89,13 @@ from time import monotonic, monotonic_ns
 from typing import Any, Final, Protocol
 from uuid import uuid4
 
-from app.review.assistant import not_compared, reading_coverage, set_proofs
+from app.review.assistant import (
+    likely_problems,
+    not_compared,
+    reading_coverage,
+    same_item_pages,
+    set_proofs,
+)
 from app.review.assistant.agent import (
     HELPER_PICTURE_EDGE_PX,
     billed_input_tokens,
@@ -207,6 +213,7 @@ from app.review.assistant.chat_trust import (
     accuracy,
     apply_checks,
     drawn_ink_checks,
+    judged,
     load_module,
     mark_compared,
     recorded_from,
@@ -518,7 +525,7 @@ CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
     "code_pairs": "code's own pairs",
     "run_fit": "GV's site-fit rule",
     "filler_range": "GV's filler range",
-    "sink_offset": "GV's sink front offset",
+    "sink_offset": "GV's sink rules",
 }
 
 
@@ -2485,7 +2492,11 @@ class ChatEngine:
             if f.get("source") == "vendor_arithmetic"
         }
         made: dict[Any, str] = {}
+        pack = self._pack_documents()
         for extra in self.reading_ledger.ledger_findings(live, coverage):
+            # The same item in two sizes on two vendor pages (#1906): red when code reads both
+            # labels (which one is wrong is never guessed), else a Likely problem.
+            extra = same_item_pages.settle(extra, pack[0], pack[1], book.main_file)
             entry = None
             if extra.get("source") == "vendor_arithmetic":
                 entry = next(
@@ -2513,7 +2524,35 @@ class ChatEngine:
                 continue
             if extra.get("source") == "vendor_arithmetic" and self._fold_same_string(added, made):
                 continue
+            kept: dict[str, Any] = {
+                k: extra[k]
+                for k in (same_item_pages.FIELD, likely_problems.FIELD)
+                if k in extra and k not in added
+            }
+            if kept:
+                # The fields the book does not record itself, laid over it, and judged again.
+                updated = judged({**added, **kept})
+                if book.replace(updated):
+                    added = updated
             self._show_finding(added)
+
+    def _pack_documents(self) -> tuple[Any, Any]:
+        """The set pack's labels (`dims.json`) and page map, for code's own reads at the ledger's
+        spots; `None` for one that is not there."""
+        folder = getattr(self.tools.workspace, "set_pack", None)
+        if folder is None:
+            return None, None
+        try:
+            dims = json.loads((Path(folder) / "dims.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            dims = None
+        try:
+            from app.review.assistant.full_check_plan import read_page_map
+
+            page_map = read_page_map(Path(folder), assume=True, main_file=self.book.main_file)
+        except Exception:  # noqa: BLE001 - no rounds known: every pair is judged as one round
+            page_map = None
+        return dims, page_map
 
     def _fold_same_string(self, added: Mapping[str, Any], made: dict[Any, str]) -> bool:
         """#1805: the same vendor string read twice on one page (the left and the right copy of
@@ -2850,7 +2889,7 @@ class ChatEngine:
         """The finish's code findings, $0, once per answer: the reading ledger's, the vendor
         consistency check's (#1584), the finish check's (#1623), code's own pairs, GV's site-fit rule
         on the vendor's runs (`run_fit`), GV's filler range on the vendor's fillers
-        (`filler_range`) and GV's sink front offset on the vendor's plans (`sink_offset`). A roster
+        (`filler_range`) and GV's sink rules on the vendor's plans (`sink_offset`). A roster
         full check adds them before its proof steps (#1641), so its blind reads and devil's
         advocate see them; the trust phase then does not add them again."""
         if self._code_findings_added:
@@ -2868,7 +2907,7 @@ class ChatEngine:
             (CODE_CHECK_NAMES["run_fit"], lambda: add_run_fit(self)),
             # GV's filler range on the vendor's fillers.
             (CODE_CHECK_NAMES["filler_range"], lambda: add_filler_range(self)),
-            # GV's sink front offset on the vendor's plans (#1807).
+            # GV's sink rules on the vendor's plans (#1807, #1906), pages with no architect too.
             (CODE_CHECK_NAMES["sink_offset"], lambda: add_sink_offset(self)),
         )
         # The pack's state before the checks read its labels counts too: it may turn `ready` while
