@@ -92,6 +92,7 @@ __all__ = [
     "label_rows",
     "line_work",
     "proved_chain",
+    "proved_run",
     "read_label",
     "summary_line",
     "warm_line_work",
@@ -1491,6 +1492,33 @@ def label_rows(labels: Sequence[_Label]) -> list[list[_Label]]:
 def proved_chain(overall: _Label, row: Sequence[_Label]) -> list[_Label] | None:
     """The row's labels that tile the overall's span exactly, end to end, else None."""
     return _chain(overall, row)
+
+
+def proved_run(parts: Sequence[_Label], drawing: Sequence[_Label] = ()) -> bool:
+    """Whether `parts` form one chain end to end along one run, by the rules this check proves the
+    vendor's strings with: the same dimension line (across within `ROW_PT`), each part touching
+    the next (within `GAP_PT`), every part with its extension lines (so the outer ends land on the
+    run's own extension lines), at least two parts, and no label of `drawing` on a parallel line
+    printing the run's overall (a printed overall is compared itself, never the sum). Used for the
+    architect's chains with no printed overall (client meeting, 2026-10-23)."""
+    if len(parts) < 2 or len({label.orientation for label in parts}) != 1:
+        return False
+    if max(la.across for la in parts) - min(la.across for la in parts) > ROW_PT:
+        return False
+    ordered = sorted(parts, key=lambda la: la.start)
+    if any(abs(a.end - b.start) > GAP_PT for a, b in pairwise(ordered)):
+        return False
+    if not all(all(label.extensions) for label in ordered):
+        return False
+    start, end = ordered[0].start, ordered[-1].end
+    members = {id(label) for label in parts}
+    return not any(
+        id(other) not in members
+        and other.orientation == ordered[0].orientation
+        and abs(other.start - start) <= END_PT
+        and abs(other.end - end) <= END_PT
+        for other in drawing
+    )
 
 
 def judge_string(

@@ -128,7 +128,12 @@ def test_a_chain_that_differs_is_never_wrong_it_is_not_compared() -> None:
     )
     item = found[0]
     assert item["status"] == "check" and item["paired_by"] == "code"
-    assert item["architect_parts"] == {"parts": ["1' - 0\"", '8"'], "total": '20"', "vendor": '30"'}
+    assert item["architect_parts"] == {
+        "parts": ["1' - 0\"", '8"'],
+        "total": '20"',
+        "vendor": '30"',
+        "chain_proved": False,  # no dimension lines code could follow: code is unsure
+    }
     assert "prints no overall here" in item["why"]
     checks = {"printed_architect": "not_found", "printed_vendor": "match", "units": "agrees"}
     stored = judged(
@@ -427,3 +432,78 @@ def test_the_names_and_reasons_are_fit_for_the_vendor() -> None:
     assert len(found) == 3
     for item in found:
         assert not internal(item["item"]) and not internal(item["why"])
+
+
+# ---- the architect's chain with no overall (client meeting, 2026-10-23) ----------------------------
+
+
+def _drawn(
+    ident: str, text: str, inches: str, start: float, end: float, y: float = 120.0
+) -> dict[str, Any]:
+    """An architect label on its dimension line from `start` to `end`, extension lines at both."""
+    label = _label(ident, text, inches, "architect", start)
+    label["dim_line"] = [[start, y], [end, y]]
+    label["extension"] = [[[start, y - 8], [start, y]], [[end, y - 8], [end, y]]]
+    return label
+
+
+def _chain_dims(*architect: dict[str, Any]) -> dict[str, Any]:
+    vendor = [_label("D12", "762 [30]", "30", "vendor", 160)]
+    return {
+        "version": 5,
+        "files": [FILE],
+        "pages": [{"file": FILE, "page": 2, "labels": [*architect, *vendor]}],
+    }
+
+
+def test_a_proved_chain_is_compared_like_a_printed_overall() -> None:
+    # The architect prints 1'-0" + 8" (20") on one dimension line, end to end, no overall; the
+    # vendor prints 30" between the same two anchors.
+    dims = _chain_dims(_drawn("D1", "1' - 0\"", "12", 100, 136), _drawn("D2", '8"', "8", 136, 160))
+    item = pf.findings_from(
+        _pairs(_pair(["D1", "D2"], "D12", "the left wall to outlet 2", "sum")), dims, PAGE_MAP
+    )[0]
+    assert item["status"] == "different" and item["architect_parts"]["chain_proved"] is True
+    assert item["architect"] == '20"' and "one chain end to end" in item["why"]
+    derived = item["dims"]["architect"]
+    assert derived["id"] == "D1+D2" and derived["derived"]["sum_of"] == ["D1", "D2"]
+    box = item["arch_box"]
+    assert derived["box"] == [box["x0"], box["y0"], box["x1"], box["y1"]]
+    # Red only under the usual proof rules: code read both sides and code made the pair.
+    checks = {"printed_architect": "match", "printed_vendor": "match", "units": "agrees"}
+    stored = judged(
+        {**item, "id": "F1", "checks": checks, "inches": {"architect": "20", "vendor": "30"}}
+    )
+    assert proof.proof_group(stored) == "clouded"
+    assert proof.proof_group(judged({**stored, "paired_by": None})) != "clouded"
+
+
+@pytest.mark.parametrize(
+    "architect",
+    [
+        # A gap between the parts: not one chain.
+        (_drawn("D1", "1' - 0\"", "12", 100, 130), _drawn("D2", '8"', "8", 136, 160)),
+        # On two different dimension lines.
+        (_drawn("D1", "1' - 0\"", "12", 100, 136), _drawn("D2", '8"', "8", 136, 160, y=140)),
+        # An extension line missing at one end.
+        (
+            _drawn("D1", "1' - 0\"", "12", 100, 136),
+            {**_drawn("D2", '8"', "8", 136, 160), "extension": [[[136, 112], [136, 120]], None]},
+        ),
+        # The architect prints the overall on a parallel line: the overall is compared itself.
+        (
+            _drawn("D1", "1' - 0\"", "12", 100, 136),
+            _drawn("D2", '8"', "8", 136, 160),
+            {**_drawn("D9", "1' - 8\"", "20", 100, 160, y=90), "id": "D9"},
+        ),
+    ],
+)
+def test_an_unproved_chain_stays_not_compared(architect: tuple[dict[str, Any], ...]) -> None:
+    item = pf.findings_from(
+        _pairs(_pair(["D1", "D2"], "D12", "the left wall to outlet 2", "sum")),
+        _chain_dims(*architect),
+        PAGE_MAP,
+    )[0]
+    assert item["status"] == "check" and item["architect_parts"]["chain_proved"] is False
+    assert "architect" not in item["dims"]
+    assert proof.classified(item).reason == "no_overall"

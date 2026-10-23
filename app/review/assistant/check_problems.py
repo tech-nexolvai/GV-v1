@@ -45,6 +45,9 @@ _STEP_WORDS: Final[Mapping[str, str]] = {
     "GV's site-fit rule": "GV's site-fit rule",
     "GV's filler range": "GV's filler range",
     "GV's sink rules": "GV's sink rules (offsets, cut-out, countertop depth)",
+    "the measuring by scale where the architect prints no size": (
+        "measuring by scale where the architect prints no size"
+    ),
     "GV Review's recorded results": "GV Review's own earlier checks",
     "the drawings' printed numbers (the labels step did not finish)": (
         "reading the printed numbers"

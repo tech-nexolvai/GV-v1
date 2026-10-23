@@ -9,8 +9,11 @@ vendor, the architect, or nobody).
 **Only three things stop the whole check before money is spent (owner, 2026-10-23)**, plus the
 existing wait for the reading:
 
-1. **Files swapped**: the file uploaded as the architect's looks like a vendor shop drawing, or the
-   same file was uploaded as both (`_swapped`).
+1. **The same file twice**: the same file was uploaded as both the vendor's and the architect's
+   (`_swapped`, kind `files_swapped`). The reviewer's choice of reference is trusted otherwise
+   (owner, 2026-10-23 client meeting): an architect's file that reads like a shop drawing (for
+   GV's countertops the cabinet maker's casework shop drawings ARE the right reference, and the
+   client calls them "the architect's") is a plain note (`_reads_like_shop`); the check goes on.
 2. **Another project**: the architect's file looks like another job: the set index's projects
    (`set_index.json` / `architect_index.json`, read by another builder) share none with the
    vendor's, or, in a two-file set, no vendor page has any architect page that could match it.
@@ -360,33 +363,57 @@ def _side_signs(
     return architect, vendor, told
 
 
-def _swapped(inputs: Inputs) -> list[Line]:
-    """The file uploaded as the architect's looks like a vendor shop drawing (stop): the same file
-    as the vendor's; or, on its own pages, no sign of an architect's drawing at all and vendor
-    signs on at least half of the pages that tell; or the set index reads most of its pages as a
-    shop drawing. Conservative: a file with too little to tell is never stopped."""
+def _same_file(inputs: Inputs) -> bool:
+    """The same bytes uploaded as the vendor's and as the architect's file."""
     by_name = {str(item.get("name")): item for item in inputs.listing}
     vendor = by_name.get(inputs.main_file or "")
-    if vendor is not None and any(
-        _architect_kind(item)
-        and item is not vendor
-        and item.get("sha256")
-        and item.get("sha256") == vendor.get("sha256")
+    if vendor is None or not vendor.get("sha256"):
+        return False
+    return any(
+        _architect_kind(item) and item is not vendor and item.get("sha256") == vendor.get("sha256")
         for item in inputs.listing
-    ):
-        return [_swapped_line("it is the same file as the vendor's")]
-    architects = _architect_files(inputs)
-    if not architects:
+    ) or any(
+        (item := by_name.get(name)) is not None and item.get("sha256") == vendor.get("sha256")
+        for name in _architect_files(inputs)
+        if name != inputs.main_file
+    )
+
+
+def _swapped(inputs: Inputs) -> list[Line]:
+    """The same file uploaded as both the vendor's and the architect's (stop): comparing a file
+    with itself proves nothing. Nothing else about the reference file stops the check: the
+    reviewer chose it (`_reads_like_shop` is a note)."""
+    return [_swapped_line("it is the same file as the vendor's")] if _same_file(inputs) else []
+
+
+def _swapped_line(why: str) -> Line:
+    return Line(
+        "files_swapped",
+        "stop",
+        f"The file uploaded as the architect's is the vendor's own file ({why}).",
+        goes_on=False,
+        who="you",
+        todo="Upload the architect's drawings as the architect's file.",
+    )
+
+
+#: The note's words: the reviewer's choice of reference is trusted (owner, 2026-10-23).
+SHOP_REFERENCE_WORDS: Final = (
+    "The file uploaded as the architect's (the reference) looks like a shop drawing (e.g. the "
+    "cabinet maker's): it is used as the reference you chose."
+)
+
+
+def _reads_like_shop(inputs: Inputs) -> list[Line]:
+    """A note when the architect's file reads like a shop drawing: no sign of an architect's
+    drawing on its pages and vendor signs on at least half of the pages that tell, or the set index
+    reads most of its pages as a shop drawing. Never a stop: for GV's countertops the cabinet
+    maker's casework shop drawings are the right reference, and the reviewer chose the file
+    (client meeting, 2026-10-23). Conservative: a file with too little to tell says nothing."""
+    if _same_file(inputs):
         return []
     labels = _labels(inputs)
-    for name in architects:
-        item = by_name.get(name)
-        same = (
-            vendor is not None
-            and item is not None
-            and vendor.get("sha256")
-            and vendor.get("sha256") == item.get("sha256")
-        )
+    for name in _architect_files(inputs):
         architect_signs, vendor_signs, told = _side_signs(inputs, name, labels)
         kinds = [
             str(entry.get("set_kind") or "")
@@ -400,22 +427,9 @@ def _swapped(inputs: Inputs) -> list[Line]:
         by_code = architect_signs == 0 and (
             (told >= 1 and vendor_signs == told) or (told >= 3 and vendor_signs * 2 >= told)
         )
-        if same:
-            return [_swapped_line("it is the same file as the vendor's")]
         if by_index or by_code:
-            return [_swapped_line("its pages read like shop drawings, not the architect's design")]
+            return [Line("reference_shop_drawing", "note", SHOP_REFERENCE_WORDS, who="nobody")]
     return []
-
-
-def _swapped_line(why: str) -> Line:
-    return Line(
-        "files_swapped",
-        "stop",
-        f"The file uploaded as the architect's looks like a vendor shop drawing ({why}).",
-        goes_on=False,
-        who="you",
-        todo="Upload the architect's drawings as the architect's file.",
-    )
 
 
 def _other_project(inputs: Inputs) -> list[Line]:
@@ -934,6 +948,7 @@ def build(inputs: Inputs) -> Report:
     pages = _pages_line(inputs)
     found = [
         *([pages] if pages else []),
+        *(_reads_like_shop(inputs) if not stops else []),
         *_pairing_lines(inputs),
         *_project_lines(inputs),
         *_reading_lines(inputs),

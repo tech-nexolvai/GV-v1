@@ -272,6 +272,7 @@ from app.review.assistant.rate_limits import Limits, ModelLimiter, limiter_for
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.run_fit import add_to_answer as add_run_fit
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
+from app.review.assistant.scale_measure import add_to_answer as add_scale_measures
 from app.review.assistant.send_package import (
     ZIP_MIME,
     PackageIdentity,
@@ -526,6 +527,7 @@ CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
     "run_fit": "GV's site-fit rule",
     "filler_range": "GV's filler range",
     "sink_offset": "GV's sink rules",
+    "scale_measure": "the measuring by scale where the architect prints no size",
 }
 
 
@@ -2909,6 +2911,9 @@ class ChatEngine:
             (CODE_CHECK_NAMES["filler_range"], lambda: add_filler_range(self)),
             # GV's sink rules on the vendor's plans (#1807, #1906), pages with no architect too.
             (CODE_CHECK_NAMES["sink_offset"], lambda: add_sink_offset(self)),
+            # Where the architect prints no size: measured by its own scale (2026-10-23), last,
+            # on every item the steps above left open.
+            (CODE_CHECK_NAMES["scale_measure"], lambda: add_scale_measures(self)),
         )
         # The pack's state before the checks read its labels counts too: it may turn `ready` while
         # they run on partial labels (#1768 review).

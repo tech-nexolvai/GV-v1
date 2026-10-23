@@ -89,9 +89,11 @@ Say whether this plan makes sense, in ONE short plain sentence for a person new 
 (no internal words, no page ids like p1029, no AI words):
 - "ok": it makes sense.
 - "warn": it can run, but something looks off (say what).
-- "stop": running it would waste the money: only when the architect's file looks like a vendor \
-shop drawing (files_swapped), or like another project's drawings (other_project), or a file is \
-broken or empty (broken_file).
+- "stop": running it would waste the money: only when the same file was uploaded as both the \
+vendor's and the architect's (files_swapped), or the architect's file looks like another \
+project's drawings (other_project), or a file is broken or empty (broken_file). An architect's \
+file that reads like a shop drawing (for countertops, the cabinet maker's shop drawings) is the \
+reference the reviewer chose: never a stop.
 
 You never judge any drawing, size or mistake: only whether the plan makes sense. Answer with the \
 JSON form only."""
@@ -311,6 +313,14 @@ def gate(
                 supervisor = look(facts, call)
         else:
             supervisor = Look("not_run", "The second look was skipped: no money left for it.")
+    if (
+        supervisor.verdict == "stop"
+        and supervisor.kind == "files_swapped"
+        and not any(line.id == "files_swapped" for line in report.stops)
+    ):
+        # The reviewer's choice of reference is trusted (owner, 2026-10-23): only code's own
+        # "same file twice" stops for a swap; the second look's doubt is a warning.
+        supervisor = Look("warn", supervisor.why, supervisor.kind, supervisor.cost_micros)
     stops = bool(report.stops) or supervisor.verdict == "stop"
     found = Gate(report, supervisor, paused=stops and not run_anyway, run_anyway=run_anyway)
     block = found.block()

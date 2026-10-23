@@ -34,6 +34,7 @@ _BREAK = {
     "run_fit": "add_run_fit",
     "filler_range": "add_filler_range",
     "sink_offset": "add_sink_offset",
+    "scale_measure": "add_scale_measures",
 }
 
 
