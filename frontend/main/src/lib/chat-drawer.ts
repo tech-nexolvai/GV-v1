@@ -261,7 +261,7 @@ export function architectSaysSomething(finding: Pick<ChatFinding, 'architect' | 
 }
 
 /** How we know, for an item whose architect side holds words (or a size) code could not compare. */
-export function architectWordsSteps(finding: Pick<ChatFinding, 'architect' | 'proof' | 'check_reason' | 'keep_reason'>): string[] {
+export function architectWordsSteps(finding: Pick<ChatFinding, 'architect' | 'vendor' | 'proof' | 'check_reason' | 'keep_reason'>): string[] {
   const words = marks((finding.architect ?? '').trim()).replace(/[.;,]+$/, '');
   if (/^(?:no\b.*\bdrawing\b|not paired\b)/i.test(words)) {
     return ['No architect drawing was paired with this item, so it was not compared.'];
@@ -271,9 +271,15 @@ export function architectWordsSteps(finding: Pick<ChatFinding, 'architect' | 'pr
   steps.push(size ? `The architect’s drawing prints ${words}.`
     : /^(?:no|none|not)\b/i.test(words) ? `On the architect’s drawing: ${words}.`
       : `The architect’s drawing shows “${words}”, but no size for it.`);
-  if (finding.check_reason === 'pairing_not_certain') steps.push('The app could not confirm it is the same piece as the vendor’s, so the two were not compared.');
+  // Step 2 is the item's own reason: what the architect's words say comes first; "the same piece"
+  // only when the architect does give something and code could not tie it to the vendor's item.
+  const vendor = vendorValue(finding).main;
+  const theirs = vendor && vendor !== '—' ? `the vendor’s ${vendor}` : 'the vendor’s value';
+  if (/\bno overall\b/i.test(words) && /\bpartial\b/i.test(words)) steps.push(`The architect prints only partial sizes, so there is no overall to compare with ${theirs}.`);
+  else if (/^(?:no|none|not)\b/i.test(words)) steps.push(`The architect prints no size for it, so there is no size to measure ${theirs} against.`);
+  else if (finding.check_reason === 'pairing_not_certain') steps.push('The app could not confirm it is the same piece as the vendor’s, so the two were not compared.');
   else if (size) steps.push('The app could not use it as this item’s size, so nothing is compared.');
-  else steps.push('There is no architect size to measure the vendor’s value against, so nothing is compared.');
+  else steps.push(`There is no architect size to measure ${theirs} against, so nothing is compared.`);
   steps.push(finding.proof?.settle ? sentence(`Needed to compare it: ${finding.proof.settle}`) : null);
   return steps.filter((step): step is string => Boolean(step));
 }

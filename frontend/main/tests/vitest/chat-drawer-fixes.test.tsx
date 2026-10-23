@@ -113,6 +113,10 @@ describe('the drawer fixes, without React', () => {
     ]);
     const steps = howWeKnow({ ...LONG, check_reason: 'pairing_not_certain' }, 'not_compared');
     expect(steps[0]).toBe('On the architect’s drawing: no overall printed (partial dims 1′-5″, 7′-2″, 1′-9″).');
+    // Its own reason, not "the same piece" (the architect prints only parts).
+    expect(steps[1]).toBe('The architect prints only partial sizes, so there is no overall to compare with the vendor’s 187 1/2″.');
+    expect(steps.join(' ')).not.toMatch(/same piece/);
+    expect(howWeKnow({ ...LONG, architect: 'none printed in plan' }, 'not_compared')[1]).toBe('The architect prints no size for it, so there is no size to measure the vendor’s 187 1/2″ against.');
     expect(steps.join(' ')).not.toMatch(/gives no size or information/i);
     expect(howWeKnow({ ...LONG, architect: "9'-0\"", check_reason: 'pairing_not_certain' }, 'not_compared')[0]).toBe('The architect’s drawing prints 9′-0″.');
     expect(howWeKnow({ ...LONG, architect: 'no architect drawing paired' }, 'not_compared')).toEqual(['No architect drawing was paired with this item, so it was not compared.']);
