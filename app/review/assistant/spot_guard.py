@@ -16,9 +16,8 @@ states something is backed:
 - or it is a size code finds printed on that page, on that side's drawing (`dims.json`'s labels;
   a page whose labels are not known yet is never held against it). The architect's page is the
   finding's one reference page (`reference_page`: its pair's file and page), never the vendor's
-  page number; an item whose architect side has no reference page is kept from the vendor, and
-  so is a Wrong or a Right whose architect spot sits off its pair (a Not compared one stays
-  listed for GV's reviewer);
+  page number; an item whose architect side has no reference page, or sits off its pair, is
+  kept from the vendor;
 - or it is the vendor's value of a difference between two drawings whose architect side has its
   spot or label: the item stays listed (Not compared: "no spot", with the read-number tool's
   reason), never red, so a found difference is not lost because the page scan missed the
@@ -56,8 +55,6 @@ _ABSENT: Final = re.compile(
 _LOCATED: Final = frozenset({"printed", "ocr_ink", "text", "arithmetic"})
 #: Statuses that reach the vendor's files (Wrong and Not compared).
 _SHOWN: Final = frozenset({"different", "check"})
-#: Statuses that say the item was compared (Wrong and Right).
-_DECIDED: Final = frozenset({"different", "same"})
 #: The longest note a dropped finding keeps (the finding book's limit for a reason).
 MAX_NOTE: Final = 300
 #: A printed size and a stated one agree within this (inches).
@@ -203,10 +200,11 @@ def _printed_at(
 def unbacked(finding: Mapping[str, Any], labels: Labels) -> str | None:
     """Why `finding` cannot be shown to the vendor (a plain line), or None when it can."""
     record = _reference(finding)
-    if record is not None and record.get("outside") and finding.get("status") in _DECIDED:
-        # A Wrong or a Right whose architect side is on a page its pair does not hold: never
-        # compared on its pair (a Right there is not a Right). A Not compared one stays listed
-        # for GV's reviewer, its own spot shown.
+    if record is not None and record.get("outside"):
+        # Its architect side is on a page its pair does not hold: never compared on its pair,
+        # whatever its status. A Not compared one is kept from the vendor too: the resolver and
+        # the escalation after this could still settle it on that page, and the vendor's files
+        # would name that page as the architect's.
         return _note(finding, str(record.get("why") or "Its architect page is not its pair's."))
     if finding.get("status") not in _SHOWN:
         return None

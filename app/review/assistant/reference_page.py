@@ -20,7 +20,8 @@ architect value on the vendor's page number in the vendor's file. On a set with 
   drawings): `spot_guard` looks for an architect value on each of them.
 
 An item checked within the vendor's own drawings is never "outside": its boxes are on the vendor's
-own drawings by design. An unpaired page's own spot (code's run-by-run pairing) is its page.
+own drawings by design. On an unpaired page, a spot code paired by itself (its run-by-run pairing)
+is the item's page; any other spot there is "outside" (no pair holds it).
 
 A page the cross-file pairing did not decide (a one-file set, GV's combined sheets, a page with no
 drawing) gets no stamp: its architect page is the sheet's own, as before.
@@ -99,6 +100,17 @@ def vendor_only(finding: Mapping[str, Any]) -> bool:
     )
 
 
+#: Code's own pairing of an item's two drawings (`run_fit` by the run, `pair_findings`).
+_CODE_PAIRERS: Final = frozenset({"run_fit", "pairs"})
+
+
+def paired_by_code(finding: Mapping[str, Any]) -> bool:
+    """Whether code paired the item's two drawings by itself (not the AI's choice of page)."""
+    return finding.get("paired_by") == "code" or str(finding.get("created_by") or "") in (
+        _CODE_PAIRERS
+    )
+
+
 def stamp(
     finding: Mapping[str, Any],
     pairs: Pairs,
@@ -130,10 +142,16 @@ def stamp(
         if any(spot == where or (box_file is None and spot[1] == where[1]) for where in may):
             file = box_file or next(f for f, p in may if p == spot[1])
             record.update(file=file, page=spot[1])
-        elif not pair:
-            # An unpaired page whose item has its own spot (code's run-by-run pairing, #1883):
-            # the spot is the item's page; there is no pair to hold it against.
+        elif not pair and paired_by_code(finding):
+            # An unpaired page whose item code paired by itself (its run-by-run pairing, its
+            # own dimension pairs): code's spot is the item's page.
             record.update(file=box_file, page=spot[1])
+        elif not pair:
+            record["outside"] = True
+            record["why"] = (
+                f"No architect page is paired with vendor page {page}, so the architect spot the "
+                "item names was never compared on a pair."
+            )
         else:
             record.update(file=pair[0][0], page=pair[0][1], outside=True)
             record["why"] = (

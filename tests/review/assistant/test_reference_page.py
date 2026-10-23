@@ -204,11 +204,15 @@ def test_the_vendors_own_check_with_boxes_on_its_own_page_is_never_outside() -> 
         assert record["outside"] is False and record["page"] is None
 
 
-def test_an_unpaired_pages_own_spot_is_its_page_never_outside() -> None:
+def test_on_an_unpaired_page_only_codes_own_pairing_gives_the_spots_page() -> None:
     # Code's run-by-run pairing gives an unpaired page's item its own architect spot.
     box = {"page": 2, "x0": 1, "y0": 1, "x1": 2, "y1": 2, "file": ARCH_A}
-    record = _stamped(_finding(page=5, vendor_box={**VENDOR_BOX, "page": 5}, arch_box=box))
+    unpaired = {"page": 5, "vendor_box": {**VENDOR_BOX, "page": 5}, "arch_box": box}
+    record = _stamped(_finding(created_by="run_fit", **unpaired))
     assert (record["file"], record["page"], record["outside"]) == (ARCH_A, 2, False)
+    # An AI's own choice of architect page there was never paired: outside, no page shown.
+    guessed = _stamped(_finding(created_by="helper:3", **unpaired))
+    assert guessed["outside"] is True and guessed["page"] is None
 
 
 def test_one_page_number_in_two_architect_files_of_the_pair_is_on_the_pair() -> None:
@@ -276,9 +280,9 @@ def test_spot_guard_drops_a_right_whose_spot_is_off_its_pair() -> None:
     finding = stamp(_finding(status="same", arch_box=box), PAIRS.pairs)
     why = unbacked(finding, lambda _f, _p: [])
     assert why is not None and "not on the page paired" in why
-    # A Not compared one stays listed for GV's reviewer (its own spot is shown).
+    # A Not compared one is kept from the vendor too: a later step could settle it on that page.
     listed = stamp(_finding(status="check", arch_box=box), PAIRS.pairs)
-    assert unbacked(listed, lambda _f, _p: []) is None
+    assert unbacked(listed, lambda _f, _p: []) is not None
 
 
 # ---- zoom and the read tools: no silent vendor file ------------------------------------------------

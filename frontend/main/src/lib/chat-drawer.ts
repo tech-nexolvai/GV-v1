@@ -118,6 +118,7 @@ export function vendorOnly(finding: Pick<ChatFinding, 'source' | 'created_by' | 
 /** The architect page it was compared on, for words: with a reference page (stream V) its spot's, else that page; an older answer: vs_page. */
 function architectPageOf(finding: Pick<ChatFinding, 'vs_page' | 'reference_page' | 'arch_box'>): number | null {
   if (!finding.reference_page) return finding.vs_page ?? null;
+  if (finding.reference_page.outside) return finding.reference_page.page ?? null;
   return finding.arch_box?.page ?? finding.reference_page.page ?? null;
 }
 

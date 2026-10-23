@@ -404,7 +404,7 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
               <ValueCard side="architect" finding={finding} label={should ? 'Should be' : sideLabels(finding).architect} value={should ? should.main : finding.architect ? finding.architect.replace(/"/g, '″').replace(/'/g, '′') : '—'} tone={should ? 'right' : null} note={should?.note ? `From ${should.note}` : null} src={finding.arch_picture_id && !finding.reference_page?.outside ? pictureUrl(finding.arch_picture_id) : null} />
             </div>
 
-            {pagePicture && (finding.vendor_box || finding.arch_box) && <PageSpot finding={finding} src={finding.vendor_box ? pagePicture(finding.vendor_box.page, whereOf(finding.vendor_box, true)) : pagePicture(finding.arch_box!.page, whereOf(finding.arch_box!, false))} />}
+            {pagePicture && (finding.vendor_box || (finding.arch_box && !finding.reference_page?.outside)) && <PageSpot finding={finding} src={finding.vendor_box ? pagePicture(finding.vendor_box.page, whereOf(finding.vendor_box, true)) : pagePicture(finding.arch_box!.page, whereOf(finding.arch_box!, false))} />}
 
             <section aria-label="Why" className="grid min-w-0 gap-2">
               <h3 className="text-xs font-semibold text-muted-foreground">{group === 'clouded' ? 'Why it is Wrong' : group === 'right' ? 'Why it is Right' : group === 'dismissed' ? 'What code found' : group === 'rule_note' ? 'Why GV asks the architect' : 'Why it was not compared'}</h3>
@@ -936,8 +936,10 @@ function PageSpot({ finding, src }: { finding: ChatFinding; src: string }) {
     observer?.observe(node);
     return () => observer?.disconnect();
   }, [broken]);
-  const sameFile = finding.vendor_box && finding.arch_box && finding.vendor_box.file === finding.arch_box.file && finding.vendor_box.page === finding.arch_box.page;
-  const boxes = { vendor: boxOnPicture(finding.vendor_box), architect: sameFile || !finding.vendor_box ? boxOnPicture(finding.arch_box) : null };
+  // An architect spot off its pair (stream V) is never ringed as the architect's.
+  const archBox = finding.reference_page?.outside ? null : finding.arch_box ?? null;
+  const sameFile = finding.vendor_box && archBox && finding.vendor_box.file === archBox.file && finding.vendor_box.page === archBox.page;
+  const boxes = { vendor: boxOnPicture(finding.vendor_box), architect: sameFile || !finding.vendor_box ? boxOnPicture(archBox) : null };
   if (broken) return null;
   const height = 280;
   const scale = mode === 'page' && size ? view / size.width : 1;
