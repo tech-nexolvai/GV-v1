@@ -551,7 +551,15 @@ def _on_dimension_line(box: Box, segments: Sequence[Any]) -> bool:
     font = min(box[2] - box[0], box[3] - box[1])
     if font <= 0:
         return False
-    found = dl.dimension_line(box, "h" if wide else "v", segments, font, drawn=True)
+    x0, y0, x1, y1 = box[0] - 0.5, box[1] - 0.5, box[2] + 0.5, box[3] + 0.5
+    # The ink's own strokes (wholly inside its box) are never its dimension line.
+    around = [
+        (a, b)
+        for a, b in segments
+        if not (x0 <= min(a[0], b[0]) and max(a[0], b[0]) <= x1)
+        or not (y0 <= min(a[1], b[1]) and max(a[1], b[1]) <= y1)
+    ]
+    found = dl.dimension_line(box, "h" if wide else "v", around, font, drawn=True)
     return found is not None
 
 

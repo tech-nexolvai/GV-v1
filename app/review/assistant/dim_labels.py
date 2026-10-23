@@ -126,7 +126,13 @@ from app.review.assistant import (
     vendor_alphabet,
 )
 from app.review.assistant import verify_value as vv
-from app.review.assistant.finding_checks import printed_mm, to_inches, units_check, value_flags
+from app.review.assistant.finding_checks import (
+    inch_first_mm,
+    printed_mm,
+    to_inches,
+    units_check,
+    value_flags,
+)
 from app.review.assistant.measure import _pieces
 from extraction.visible_text import ink_picture
 
@@ -411,18 +417,21 @@ def _tokens(chars: Sequence[Any], font: float) -> list[tuple[str, tuple[Any, ...
     return [(vv._plain(text).strip(), tuple(group)) for text, group in out if text.strip()]
 
 
-def _text_units(text: str) -> dict[str, Any]:
-    """A typed value's millimetres and their check against its inches (`mm`, `units`), read the
-    same whichever unit comes first (`660 [27"]`, `31 1/4" [794]`). Millimetres that disagree
-    with the inches are kept as printed and marked `mm_ignored`, with no `units` result: the
-    inches count (settled with GV, "inches count; ignore millimetres"), so the label is never a
-    doubt because of them. Empty for a value in one unit."""
+def _text_units(text: str, *, check: bool | None = None) -> dict[str, Any]:
+    """A typed value's millimetres as printed (`mm`) and their check against its inches
+    (`units`), kept as before for a value written inches first (#1778) or a stacked pair
+    (`check`). Millimetres that disagree with the inches, whichever comes first (`660 [27"]`,
+    `31 1/4" [800]`), are kept and marked `mm_ignored`, with no `units` result: the inches count
+    (settled with GV, "inches count; ignore millimetres"), so the label is never a doubt because
+    of them. Empty for a value in one unit, and for millimetres first in one row that agree."""
     mm = printed_mm(text)
     if mm is None:
         return {}
     units = units_check(text)
     if units == "disagrees":
         return {"mm": mm, "units": None, "mm_ignored": True}
+    if check is None and inch_first_mm(text) is None:
+        return {}  # millimetres first in one row that agree: read as before (the inches)
     return {"mm": mm, "units": units}
 
 
@@ -635,7 +644,7 @@ def _paired(readings: list[_Reading]) -> tuple[list[_Reading], bool]:
                 font=max(bare.font, bracket.font),
                 bare=False,
                 bracket=True,
-                **{"mm": bare.text, **_text_units(joined)},
+                **{"mm": bare.text, **_text_units(joined, check=True)},
             )
         )
     out += [r for i, r in enumerate(readings) if i not in used]

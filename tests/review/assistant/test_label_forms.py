@@ -194,7 +194,8 @@ def test_millimetres_first_rows_are_read_as_their_inches(tmp_path: Path) -> None
     found = dim_labels.page_labels(pdf, 1, [{"box": [0, 0, 600, 400], "role": "vendor"}])
     labels = {label["text"]: label for label in found.labels}
     agreeing, ignored = labels['914 [36"]'], labels['660 [27"]']
-    assert (agreeing["inches"], agreeing["mm"], agreeing["units"]) == ("36", "914", "agrees")
+    # Millimetres that agree, first in one row: read as before (the inches, no millimetres kept).
+    assert (agreeing["inches"], agreeing["mm"], agreeing["units"]) == ("36", None, None)
     assert "mm_ignored" not in agreeing
     assert (ignored["inches"], ignored["mm"], ignored["units"]) == ("27", "660", None)
     assert ignored["mm_ignored"] is True
