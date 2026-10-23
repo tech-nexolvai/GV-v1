@@ -817,6 +817,38 @@ def test_the_verifiers_proofs_are_applied_by_code(tmp_path: Path) -> None:
     assert fenced == {other["id"]: "cannot prove: no value"}
 
 
+def test_a_verifiers_splash_right_needs_like_for_like(tmp_path: Path) -> None:
+    # 2026-10-23: the look-again's proof makes a Right on equal values; a splash's Right also needs
+    # the architect's size printed as the same splash's (`splash_views.unlike`), else Not compared.
+    script = _Roster()
+    harness = _roster(tmp_path, script)
+    engine = harness.engine
+    finding, _notes = engine.book.report(
+        {
+            "page": 2,
+            "item": "Vanity: back splash length",
+            "category": "countertop",
+            "architect": '37"',
+            "vendor": '37 1/2"',
+            "status": "different",
+            "verified": False,
+            "source": "architect",
+            "arch_box": _box(2, 100),
+            "vendor_box": _box(2, 300),
+        },
+        "helper:1",
+    )
+    proofs = {"proofs": [
+        {"finding_id": finding["id"], "vendor_dim": "D2", "architect_dim": "D2",
+         "vendor_box": None, "arch_box": None, "outcome": "inputs_found", "why": ""},
+    ]}  # fmt: skip
+    done = apply_proofs(engine, json.dumps(proofs), [finding["id"]])
+    assert done[finding["id"]] == "spots found: not like for like"
+    updated = next(f for f in engine.book.live() if f["id"] == finding["id"])
+    assert updated["status"] == "check"
+    assert updated["splash_views"]["outcome"] == "not_like_for_like"
+
+
 def test_codes_own_pairing_is_proof_and_a_different_one_keeps_it_grey(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

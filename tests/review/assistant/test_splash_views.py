@@ -79,7 +79,12 @@ def test_what_the_architects_words_print() -> None:
     assert read('3/4" THK x 4" H QUARTZ BACKSPLASH') == []
     # A general note is never one item's size.
     assert read('ALL BACKSPLASHES 4" HIGH U.O.N.') == []
-    assert read('4" BACKSPLASH TYP.') == []
+    assert read('4" BACKSPLASH TYP.') == [(Fraction(4), "height")]
+    # Two sizes joined as one callout: which is the height is not said.
+    assert read('4" X 3/4" BACKSPLASH') == []
+    # A size after the part's name only when the phrase starts with it.
+    assert read('COUNTERTOP W/ BACKSPLASH 25" DEEP') == []
+    assert read('4" BACKSPLASH, 24" WIDE') == [(Fraction(4), "height")]
     # A size whose measure the words do not say is never used.
     assert read('3/4" X 4" QUARTZ BACKSPLASH') == []
     assert read("SOLID SURFACE SPLASH SS 01") == []
@@ -114,9 +119,13 @@ def test_like_for_like() -> None:
     )
     for near in ('4" BACKSPLASH', 'COUNTERTOP 36" WIDE W/ BACKSPLASH'):
         assert splash_views.unlike(wide, {(FILE, 2): [_phrase(near, 100, 100)]}) is not None
-    side = _splash(item="Vanity: side splash height", architect='4" BACKSPLASH')
+
+    def printed(text: str) -> dict[str, Any]:
+        return {"dims": {"architect": {"text": text, "box": [0, 0, 9, 9], "file": FILE, "page": 2}}}
+
+    side = _splash(item="Vanity: side splash height", **printed('4" BACKSPLASH'))
     assert "side splash against a back splash" in str(splash_views.unlike(side))
-    other = _splash(architect='1 1/2" THK BACKSPLASH')
+    other = _splash(**printed('BACKSPLASH 1 1/2" THK'))
     assert "height against its thickness" in str(splash_views.unlike(other))
     assert splash_views.unlike(_splash(item="Vanity top width", vendor='36"')) is None
     # A splash named only as another dimension's end is not a splash item.
@@ -266,22 +275,32 @@ def test_views_ask_the_architect_only_like_for_like() -> None:
     assert "its the" not in asked["why"]
 
 
-def test_a_splash_right_made_by_any_step_needs_like_for_like() -> None:
-    # A Right a later step made (the verifier's proof, the round reference, the simple check)
-    # on a splash length against an architect size code never saw named as the splash's.
-    right = _splash(
+def test_a_splash_right_made_by_a_later_step_needs_like_for_like() -> None:
+    from app.review.assistant.round_reference import point_at
+
+    # The round reference links the vendor's label to an architect label another item compared:
+    # a splash length against an architect size code never saw printed as the splash's.
+    finding = _splash(
         item="Counter: back splash length",
         vendor='36"',
-        architect="914 [36]",
-        status="same",
-        dims={"architect": {"text": "914 [36]", "box": [0, 0, 9, 9], "file": FILE, "page": 2}},
+        inches={"vendor": "36"},
+        round_match={"vendor": "p3.D1"},
     )
-    assert proof.proof_group(right) == "not_compared"
-    named = {**right, "dims": {"architect": {"text": 'BACKSPLASH 36" LONG', "box": [0, 0, 9, 9]}}}
-    assert proof.proof_group(named) == "right"
-    assert proof.proof_group({**right, "paired_by": "code"}) == "right"
-    passed = {**right, "critic": {"model": "devil's advocate", "result": "passed"}}
-    assert proof.proof_group(passed) == "right"
+    label = {"id": "D8", "text": "914 [36]", "inches": "36", "page": 2, "file": FILE,
+             "box": [0, 0, 9, 9], "side": "architect", "route": "text"}  # fmt: skip
+    point_at(finding, label, "linked", "another item", by_code=False)
+    assert finding["status"] == "check" and proof.proof_group(finding) == "not_compared"
+    assert finding["splash_views"]["outcome"] == "not_like_for_like"
+    # Code's own pairing by geometry stands.
+    paired = _splash(item="Counter: back splash length", vendor='36"', inches={"vendor": "36"})
+    point_at(paired, label, "linked", "code's pairs", by_code=True)
+    assert paired["status"] == "same"
+    # The AI's typed words for the architect's side never prove it; a size beside "with the
+    # backsplash" is no splash item.
+    typed = _splash(item="Counter: back splash length", vendor='36"', status="same")
+    assert splash_views.downgrade_unlike({**typed, "architect": '36" long backsplash'}, {})
+    depth = _splash(item="Countertop depth with backsplash", vendor='25 1/2"', status="same")
+    assert splash_views.downgrade_unlike(depth, {}) is None
 
 
 def test_the_escalation_keeps_the_splash_steps_reason() -> None:

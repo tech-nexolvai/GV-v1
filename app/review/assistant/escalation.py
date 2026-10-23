@@ -485,6 +485,10 @@ def _printed_compare(item: _Item, step: StepName, ctx: EscalationContext | None 
     finding = item.finding
     if finding.get("status") != "check":
         return
+    splash = import_module("app.review.assistant.splash_views")
+    record = finding.get(splash.FIELD)
+    if isinstance(record, Mapping) and record.get("outcome") in ("likely_problem", "same"):
+        return  # the splash step compared it on the architect's words: its outcome stands
     checks = finding.get("checks") or {}
     if checks.get("printed_vendor") != "match" or checks.get("printed_architect") != "match":
         return
@@ -496,7 +500,6 @@ def _printed_compare(item: _Item, step: StepName, ctx: EscalationContext | None 
     a, v = _decimal(inches.get("architect")), _decimal(inches.get("vendor"))
     if a is None or v is None:
         return
-    splash = import_module("app.review.assistant.splash_views")
     unlike = splash.unlike(finding, ctx.phrases if ctx is not None else None)
     if unlike is not None:
         if not isinstance(finding.get(splash.FIELD), Mapping):
@@ -505,10 +508,6 @@ def _printed_compare(item: _Item, step: StepName, ctx: EscalationContext | None 
             item.changed = True
         item.note(step, "no_change", f"not like for like: {unlike}")
         return
-    if splash.splash_item(finding):
-        # Code saw the architect's size named as the same splash's: the Right keeps that proof.
-        record = finding.get(splash.FIELD)
-        finding[splash.FIELD] = {**(record if isinstance(record, Mapping) else {}), "alike": True}
     if _same(a, v):
         _settle_right(
             item,

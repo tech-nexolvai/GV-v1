@@ -25,17 +25,21 @@ copies cannot be worked out, no sheet but the paired one is used). The views the
 
 **What counts as printed:** the architect's own words, read from the drawing's text, printing a
 size right beside the part's name: before it with at most a measure word between (`4" BACKSPLASH`,
-`4" HIGH BACKSPLASH`: a height), or after it with its measure said (`BACKSPLASH 3/4" THK`). Any
-other size of the phrase is another part's (`24" WIDE COUNTERTOP W/ 4" BACKSPLASH`: the 24" is the
-top's), a size whose measure is not said is not used, and a general note (`TYP.`, `U.O.N.`) is
-never one item's size. Dimension labels inside a found view are counted, never tied to the splash
+`4" HIGH BACKSPLASH`: a height), or after it with its measure said when the phrase starts with
+the part's name (`BACKSPLASH 3/4" THK`). Any other size of the phrase is another part's
+(`24" WIDE COUNTERTOP W/ 4" BACKSPLASH`: the 24" is the top's), two sizes joined as one callout
+(`4" X 3/4"`) or a size whose measure is not said are not used, and a general note (`U.O.N.`,
+`ALL ... UNLESS NOTED`) is never one item's size. Dimension labels inside a found view are counted, never tied to the splash
 by code.
 
 **Like for like** (#1909): a back splash is never compared with a side splash, a height never with
 a thickness or a length, and a splash's Right never stands on an architect size code does not see
 printed as the same splash's (`unlike`, `right_unproved`: the meeting set's "back splash length
-36"" against the plan's top width 36" was a false Right). The outputs apply it to every Right,
-whatever step made it.
+36"" against the plan's top width 36" was a false Right). The steps that make a Right on equal
+values apply it: this step (to the helpers' Rights), the escalation's printed compare, the
+look-again's proofs and the round reference; code's own pairing by geometry and the devil's
+advocate's pass stand. Only words code read count, never the AI's typed words. (The simple
+check's compare has its own strict end words: the top of a side splash, the face of a splash.)
 
 **Outcomes** (the item keeps its vendor spot; code never guesses a value):
 
@@ -99,8 +103,8 @@ __all__ = [
     "look_in_line",
     "not_alike",
     "note_readings",
+    "pack_phrases",
     "part_of",
-    "right_unproved",
     "settle",
     "splash_item",
     "splash_question_items",
@@ -234,7 +238,8 @@ def part_of(text: object, rules: Sequence[Rule] | None = None) -> Part | None:
 #: A word before the part's name that makes it an end of another dimension, not the thing
 #: measured ("counter height to the top of the splash", "outlet in the backsplash").
 _END_BEFORE: Final = re.compile(
-    r"\b(?:to|from|of|in|on|at|above|below|under|over|behind|into|beside|near)"
+    r"(?:\b(?:to|from|of|in|on|at|above|below|under|over|behind|into|beside|near|with|incl"
+    r"|including|plus|less|minus|without|excluding|and)|\bw/)"
     r"(?:\s+(?:the|a|an))?\s*$",
     re.IGNORECASE,
 )
@@ -342,7 +347,8 @@ def unlike(
 ) -> str | None:
     """Why a splash item's two sides are not like for like, or `None` (alike, or not a splash
     item). The vendor's side names the part it measures (the item's words). The architect's side
-    must be shown to size the same part by printed words: its label's own text (`4" BACKSPLASH`),
+    must be shown to size the same part by printed words code read (never the AI's typed words):
+    its label's own text (`4" BACKSPLASH`),
     or a printed phrase within `NEAR_PT` of its label that prints the architect's same value right
     beside the part's name (`phrases`: the pages' `dims.json` phrases by (file, page)). A splash
     word merely near the label proves nothing. Then the kind (back, side) and the measure (height,
@@ -354,11 +360,11 @@ def unlike(
     value = _architect_value(finding)
     dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
     label = (dims or {}).get("architect")
+    # Only what code read on the drawing counts: the label's own text, or the page's phrases;
+    # never the words the AI typed for the architect's side.
     architect = None
     if isinstance(label, Mapping):
         architect = _printed_part(label.get("text"), None, rules)
-    if architect is None and not isinstance(label, Mapping):
-        architect = _printed_part(finding.get("architect"), None, rules)
     if architect is None and phrases is not None and value is not None:
         spot = _architect_spot(finding)
         if spot is not None:
@@ -387,28 +393,6 @@ def splash_item(finding: Mapping[str, Any]) -> bool:
     return _vendor_part(finding, _rules()) is not None
 
 
-def right_unproved(finding: Mapping[str, Any], rules: Sequence[Rule] | None = None) -> str | None:
-    """Why a Right on a splash is not like for like, from the finding alone (the outputs' last
-    word, whatever step made the Right), or `None`. A pairing code proved by geometry, a step's
-    own like-for-like proof (`FIELD.alike`), the devil's advocate's pass (a blind second pick of
-    the same label, code checking both ends), the reviewer's decision and a GV rule stand."""
-    if finding.get("status") != "same" or finding.get("decision"):
-        return None
-    if finding.get("paired_by") == "code" or finding.get("source") not in (None, "architect"):
-        return None
-    critic = finding.get("critic")
-    if (
-        isinstance(critic, Mapping)
-        and critic.get("model") == "devil's advocate"
-        and critic.get("result") == "passed"
-    ):
-        return None  # a blind second pick chose the same label and code checked both ends
-    record = finding.get(FIELD)
-    if isinstance(record, Mapping) and (record.get("alike") or record.get("outcome") == "same"):
-        return None
-    return unlike(finding, None, rules)
-
-
 def not_alike(why: str) -> dict[str, Any]:
     """The step's record on an item whose two sides are not like for like (`unlike`)."""
     return {"outcome": "not_like_for_like", "why": f"not like for like: {why}"}
@@ -432,7 +416,27 @@ def downgrade_unlike(finding: Mapping[str, Any], phrases: Phrases | None) -> dic
     out["status"] = "check"
     out["keep_reason"] = "measures_something_else"
     out.pop("settled", None)
-    out[FIELD] = not_alike(why)
+    record = finding.get(FIELD)
+    said = not_alike(why)
+    if isinstance(record, Mapping) and record.get("why"):
+        # The step's own record (the views it looked at) is kept beside the reason.
+        said = {**record, **said, "why": f"{said['why']}; {record['why']}"}
+    out[FIELD] = said
+    return out
+
+
+def pack_phrases(folder: Path | str | None) -> Phrases:
+    """Each page's printed phrases (`dims.json`), by (file, page), for `unlike`; empty without a
+    pack."""
+    if folder is None:
+        return {}
+    dims = _read(Path(folder) / "dims.json")
+    out: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
+    for entry in (dims or {}).get("pages") or [] if isinstance(dims, Mapping) else []:
+        if isinstance(entry, Mapping) and isinstance(entry.get("page"), int):
+            out[(str(entry.get("file")), int(entry["page"]))] = [
+                p for p in entry.get("phrases") or [] if isinstance(p, Mapping)
+            ]
     return out
 
 
@@ -648,6 +652,14 @@ def _usable(candidate: Any, facts: Facts) -> bool:
     return facts.roles.get(key) != "brand_prototype" and key not in facts.older
 
 
+def _same_project(candidate: Any, project: str | None, pair: Any) -> bool:
+    """The same project: the same known project, or, when no sheet's project is known, a set of
+    one project (when any sheet's project is known, a sheet of unknown project is never used)."""
+    if project is not None:
+        return getattr(candidate, "project", None) == project
+    return all(getattr(c, "project", None) is None for c in pair.candidates)
+
+
 def _pair_of(work: Any, finding: Mapping[str, Any]) -> Any | None:
     page = finding.get("page")
     for pair in getattr(work, "across", ()) or ():
@@ -800,7 +812,7 @@ def companion_views(
     for candidate in pair.candidates:
         if (str(candidate.file), int(candidate.page)) == (file, page):
             continue
-        if not _usable(candidate, facts) or getattr(candidate, "project", None) != project:
+        if not _usable(candidate, facts) or not _same_project(candidate, project, pair):
             continue  # another project's sheet (or one of unknown project) is never used
         read = facts.index_of(str(candidate.file), int(candidate.page))
         their_tags = {_key(t) for t in read.get("item_tags") or []} | {
@@ -836,7 +848,7 @@ def _callout_targets(
     views = import_module("app.review.assistant.simple_check.views")
     numbers: dict[tuple[str, int], tuple[str | None, list[Any]]] = {}
     for candidate in pair.candidates:
-        if not _usable(candidate, facts) or getattr(candidate, "project", None) != project:
+        if not _usable(candidate, facts) or not _same_project(candidate, project, pair):
             continue
         key = (str(candidate.file), int(candidate.page))
         page_phrases = [
@@ -917,11 +929,13 @@ def _sizes(text: str) -> list[tuple[str, int, int]]:
     return out
 
 
-#: A general note (`TYP.`, `U.O.N.`, `ALL ... UNLESS NOTED`): never one item's size.
+#: A general note (`U.O.N.`, `ALL ... UNLESS NOTED`): never one item's size (`TYP.` is read).
 _GENERAL: Final = re.compile(
-    r"\bU\.?\s?O\.?\s?N\b|\bTYP(?:ICAL)?\b|\bALL\b|\bUNLESS\b|\bOTHERWISE\b|\bU\.?N\.?O\b",
+    r"\bU\.?\s?O\.?\s?N\b|\bALL\b|\bUNLESS\b|\bOTHERWISE\b|\bU\.?N\.?O\b|\bGENERAL\b",
     re.IGNORECASE,
 )
+#: Two sizes joined as one callout (`4" X 3/4"`): which is which is not said, so neither is read.
+_PAIRED_SIZES: Final = re.compile(r"^\s*[xX\u00d7]\s*$")
 #: Between a size and the part's name after it: nothing, or one measure word (`4" HIGH`).
 _BEFORE_PART: Final = re.compile(r"^\s*(?:([A-Za-z]{1,9})\.?\s+)?$")
 #: Between the part's name and a size after it: nothing, a colon or one measure word.
@@ -935,8 +949,11 @@ def note_readings(
     only right beside the part's name: before it, with at most one measure word between
     (`4" BACKSPLASH`, `4" HIGH BACKSPLASH`: a height), or after it, its measure said by the word
     after it (`BACKSPLASH 3/4" THK`). Any other size of the phrase is another part's
-    (`24" WIDE COUNTERTOP W/ 4" BACKSPLASH`: the 24" is the top's). A general note (`TYP.`,
-    `U.O.N.`) is never read."""
+    (`24" WIDE COUNTERTOP W/ 4" BACKSPLASH`: the 24" is the top's). A general note
+    (`U.O.N.`, `ALL ... UNLESS NOTED`) is never read; `TYP.` on the item's own view is. Two sizes
+    joined as one callout (`4" X 3/4" BACKSPLASH`) are not read: which is the height is not said.
+    A size after the part's name counts only when the phrase starts with it (`BACKSPLASH 3/4"
+    THK`; in `COUNTERTOP W/ BACKSPLASH 25" DEEP` the 25" is the top's)."""
     out: list[Reading] = []
     for phrase in phrases:
         box = _box(phrase.get("box"))
@@ -958,6 +975,11 @@ def note_readings(
                 value = to_inches(token)
                 if value is None or value <= 0:
                     continue
+                joined = (n > 0 and _PAIRED_SIZES.match(text[sizes[n - 1][2] : at])) or (
+                    n + 1 < len(sizes) and _PAIRED_SIZES.match(text[end : sizes[n + 1][1]])
+                )
+                if joined:
+                    continue
                 measure: str | None = None
                 if end <= mention.start():
                     between = _BEFORE_PART.match(text[end : mention.start()])
@@ -969,7 +991,7 @@ def note_readings(
                     else:
                         found = _measures(word)
                         measure = found[0] if len(found) == 1 else None
-                elif at >= mention.end():
+                elif at >= mention.end() and not text[: mention.start()].strip():
                     between = _AFTER_PART.match(text[mention.end() : at])
                     if between is None:
                         continue
@@ -1296,7 +1318,6 @@ def _compared(
         out["status"] = "same"
         out["settled"] = {"outcome": "right", "method": METHOD, "how": how, "was": "check"}
         out["why"] = f"{item}: {how}: the same."
-        record["alike"] = True
         record["outcome"] = "same"
     else:
         # A difference code read in the architect's words, not on a dimension line: no blind
@@ -1494,7 +1515,7 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
     if not found and not splashes:
         return None
     facts = Facts.from_pack(Path(folder))
-    counts = {"looked": 0, "right": 0, "different": 0, "asked": 0, "not_compared": 0, "unlike": 0}
+    counts = {"looked": 0, "right": 0, "likely": 0, "asked": 0, "not_compared": 0, "unlike": 0}
     for finding in splashes:
         downgraded = downgrade_unlike(finding, facts.phrases)
         if downgraded is not None:
@@ -1521,7 +1542,12 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
             continue
         counts["looked"] += 1
         status = settled.finding.get("status")
-        key = {"same": "right", "different": "different"}.get(str(status), "not_compared")
+        if status == "same":
+            key = "right"
+        elif likely_problems.FIELD in settled.finding:
+            key = "likely"
+        else:
+            key = "not_compared"
         counts[key] += 1
         if settled.finding.get("arch_box") != finding.get("arch_box"):
             # Compared on another view: its picture is that view's spot, never the old one's.

@@ -46,6 +46,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+from importlib import import_module
 from typing import Any, Final, Literal
 
 __all__ = [
@@ -472,6 +473,14 @@ def point_at(
     finding["status"] = "same" if same else "different"
     if by_code:
         finding["paired_by"] = "code"
+    elif same:
+        # Like for like (2026-10-23): a splash's Right needs the architect's size printed as the
+        # same splash's (`splash_views.unlike`); a linked label alone does not show it.
+        splash = import_module("app.review.assistant.splash_views")
+        down = splash.downgrade_unlike(finding, None)
+        if down is not None:
+            finding.clear()
+            finding.update(down)
     if not same and match.get("unchanged") and earlier_round(match):
         # The vendor repeats, on its newest round, a value the architect does not print.
         finding["round_status"] = "still_wrong"

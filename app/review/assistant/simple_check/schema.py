@@ -142,8 +142,6 @@ END_WORDS: Final[tuple[str, ...]] = (
     "top_of_counter",
     "underside_of_counter",
     "top_of_splash",
-    "top_of_side_splash",
-    "face_of_splash",
     "underside_of_upper",
     "top_of_unit",
     "wall_face",
