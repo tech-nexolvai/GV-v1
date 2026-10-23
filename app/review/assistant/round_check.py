@@ -52,7 +52,7 @@ from typing import Any, Final, Literal
 import numpy as np
 
 from app.review.assistant.chat_trust import inch_words
-from app.review.assistant.proof import proof_group, should_be_value, vendor_value
+from app.review.assistant.proof import UNDECIDED, proof_group, should_be_value, vendor_value
 
 __all__ = [
     "MAX_FIT_PT",
@@ -530,7 +530,7 @@ def round_two(
     drawings_all = [d for ds in by_area.values() for d in ds]
     for finding in findings:
         # What round 1 could not compare: re-checked on round 2.
-        if proof_group(finding) != "not_compared" or finding.get("status") == "same":
+        if proof_group(finding) not in UNDECIDED or finding.get("status") == "same":
             continue
         where = _vendor_box(finding)
         if where is None:

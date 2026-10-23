@@ -232,7 +232,7 @@ def undecided(finding: Mapping[str, Any]) -> bool:
         return False  # GV's site-fit rule decided it by its own arithmetic: nothing to climb
     if finding.get("created_by") == "sink_offset":
         return False  # GV's sink front offset: code proved it or said why not (#1807)
-    return proof.proof_group(finding) == "not_compared" and finding.get("status") != "same"
+    return proof.proof_group(finding) in proof.UNDECIDED and finding.get("status") != "same"
 
 
 def _labels_in(

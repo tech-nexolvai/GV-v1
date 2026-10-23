@@ -287,6 +287,7 @@ def test_counts_split_the_screen_counts_and_follow_decisions() -> None:
         "clouded": 1,
         "right": 1,
         "rule_note": 0,
+        "likely_problem": 0,
         "not_compared": 3,
         "dismissed": 0,
     }

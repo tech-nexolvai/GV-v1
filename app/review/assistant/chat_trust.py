@@ -130,6 +130,7 @@ _GROUP_STATUS: Final[Mapping[str, str]] = {
     "clouded": "Wrong",
     "right": "Right",
     "rule_note": "Ask the architect (GV rule)",
+    "likely_problem": "Likely problem (please check and confirm)",
     "not_compared": "Not compared",
     "dismissed": "Not a problem",
 }

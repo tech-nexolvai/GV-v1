@@ -167,7 +167,12 @@ from app.review.assistant.chat_scope import (
     scoped_recorded,
     widened,
 )
-from app.review.assistant.chat_summary import code_summary, needs_code_summary, rule_note_line
+from app.review.assistant.chat_summary import (
+    code_summary,
+    likely_line,
+    needs_code_summary,
+    rule_note_line,
+)
 from app.review.assistant.chat_timings import Timings
 from app.review.assistant.chat_tools import (
     BATCH_LISTS,
@@ -247,6 +252,7 @@ from app.review.assistant.full_check_plan import (
 )
 from app.review.assistant.full_check_specialists import specialist_system
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
+from app.review.assistant.likely_problems import COUNT_WORDS as LIKELY_COUNT
 from app.review.assistant.pair_findings import add_to_answer as add_code_pairs
 from app.review.assistant.product_scope import (
     PriceRule,
@@ -609,6 +615,11 @@ class EngineSettings:
     page_match_model: str | None = None
     """The AI page matcher's model for vendor drawings paired across separate uploads (#1798,
     `assistant_page_match_model`); `None`: off (code pairs alone)."""
+    whole_look_model: str | None = None
+    """The roster's whole-drawing look per paired vendor drawing (`whole_look`,
+    `GV_ASSISTANT_WHOLE_LOOK_MODEL`): its model id; `None`: off."""
+    whole_look_effort: str = "medium"
+    """Its effort (`GV_ASSISTANT_WHOLE_LOOK_EFFORT`)."""
 
 
 @dataclass(slots=True)
@@ -922,6 +933,12 @@ class _Agent:
     """A code-planned helper whose pages wait for the AI page matcher (#1883): called in its
     own thread before its first call; it waits until its pages are paired (or left unpaired) and
     returns its brief with those pairs (`None`: its prompt stands)."""
+    opening: tuple[Mapping[str, Any], ...] = ()
+    """Content before its brief in its first message (the whole-drawing look's pictures, drawn by
+    code: `whole_look.opening`); set by `ready` at the latest."""
+    skip: bool = False
+    """Nothing to do (a whole-drawing look whose page no architect drawing is paired with): it
+    reports at once, with no call."""
 
 
 @dataclass(slots=True)
@@ -3163,6 +3180,8 @@ class ChatEngine:
         unseen = f", {groups['not_compared']} not compared" if groups["not_compared"] else ""
         if groups["rule_note"]:
             unseen = f", {groups['rule_note']} {RULE_NOTE_COUNT}{unseen}"
+        if groups["likely_problem"]:
+            unseen = f", {groups['likely_problem']} {LIKELY_COUNT}{unseen}"
         coverage = book.coverage_map()["counts"] if book.coverage_used else None
         trust = report.get("counts") or {}
         products = products_words(self.settings.products)
@@ -3414,9 +3433,13 @@ class ChatEngine:
             )
             # #1839: the sizes the architect specifies that break a GV rule (decided, ask the
             # architect), said apart from what could not be compared.
-            noted = proof_counts([f for f in self.book.live() if vendor_facing(f)])["rule_note"]
+            shown = proof_counts([f for f in self.book.live() if vendor_facing(f)])
+            noted = shown["rule_note"]
             if noted:
                 lines.append(rule_note_line(noted))
+            if shown["likely_problem"]:
+                # The whole-drawing look's claims code could not prove (2026-10-23).
+                lines.append(likely_line(shown["likely_problem"]))
             for words in (*lines, nothing.replace("list.", "list (PDF / Excel).")):
                 if words:
                     index = self._add_block({"type": "text", "text": words, "by": "code"})
@@ -4250,11 +4273,14 @@ class ChatEngine:
         except Exception:  # noqa: BLE001 - the helper still gets its brief
             _log.warning("assistant chat helper footer could not be made")
             footer = ""
+        if agent.skip:
+            return "Nothing to compare: no architect drawing is paired with it.", True, None
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": agent.prompt + helper_lines(self.task_spec) + footer}
+                    *(dict(block) for block in agent.opening),
+                    {"type": "text", "text": agent.prompt + helper_lines(self.task_spec) + footer},
                 ],
             }
         ]

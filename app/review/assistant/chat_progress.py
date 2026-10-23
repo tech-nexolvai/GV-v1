@@ -60,6 +60,8 @@ def progress_numbers(
         "right_so_far": groups.get("right", 0) + groups.get("dismissed", 0),
         # Decided (#1839): the architect's size breaks a GV rule, GV asks the architect.
         "rule_note_so_far": groups.get("rule_note", 0),
+        # The whole-drawing look's claims code could not prove (2026-10-23): please check.
+        "likely_so_far": groups.get("likely_problem", 0),
         "eta_seconds": eta,
     }
 

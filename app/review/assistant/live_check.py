@@ -92,6 +92,8 @@ _OUTCOME: Final[Mapping[str, str]] = {
     "dismissed": "right",
     # #1839: the architect's size breaks a GV rule and the vendor follows it: decided.
     "rule_note": "rule_note",
+    # 2026-10-23: the whole-drawing look found it, code could not prove it: please check.
+    "likely_problem": "likely_problem",
     "not_compared": "not_compared",
 }
 #: What a phase is (shown again after the page matcher's step).
@@ -655,7 +657,9 @@ class LiveCheck:
             "should_be": _text(proof.get("should_be")),
             "product": str(finding.get("category") or "other"),
             "reason": (
-                _text(proof.get("reason")) if outcome in ("not_compared", "rule_note") else None
+                _text(proof.get("reason"))
+                if outcome in ("not_compared", "rule_note", "likely_problem")
+                else None
             ),
             "needs": (
                 _text(proof.get("settle"))
@@ -806,6 +810,7 @@ class LiveCheck:
             "wrong": sum(1 for r in shown if r["outcome"] == "wrong" and r["same_as"] is None),
             "right": sum(1 for r in shown if r["outcome"] == "right"),
             "rule_note": sum(1 for r in shown if r["outcome"] == "rule_note"),
+            "likely_problem": sum(1 for r in shown if r["outcome"] == "likely_problem"),
             "not_compared": sum(1 for r in shown if r["outcome"] == "not_compared"),
             # A look that agreed but is not shown as Wrong yet still waits (for its record).
             "waiting_second_look": len(self._waiting) + len(self._held),

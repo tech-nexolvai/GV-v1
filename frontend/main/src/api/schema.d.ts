@@ -4972,6 +4972,41 @@ export interface components {
             version: number;
         };
         /**
+         * ChatFindingLikelyOut
+         * @description What the whole-drawing look claimed (`likely_problems.payload`): never red by itself; a
+         *     Likely problem until code proves it.
+         */
+        ChatFindingLikelyOut: {
+            /**
+             * By
+             * @default whole_drawing_look
+             * @constant
+             */
+            by: "whole_drawing_look";
+            /**
+             * Kind
+             * @description What differs: a missing or extra piece, a count, a size, the layout.
+             * @enum {string}
+             */
+            kind: "missing_piece" | "extra_piece" | "count" | "size" | "layout";
+            /**
+             * Reason
+             * @description The AI's reason, one line.
+             */
+            reason?: string | null;
+            /**
+             * Sure
+             * @description How sure the look was.
+             * @enum {string}
+             */
+            sure: "sure" | "likely";
+            /**
+             * Words
+             * @description The letter's line: "Please check and confirm: ...".
+             */
+            words: string;
+        };
+        /**
          * ChatFindingOut
          * @description One difference the assistant reported, with code-made evidence and checks.
          */
@@ -5137,15 +5172,17 @@ export interface components {
         ChatFindingProofOut: {
             /**
              * Group
-             * @description clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks the architect, `rule_note`); not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').
+             * @description clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks the architect, `rule_note`); likely_problem: the whole-drawing look found a design difference code could not prove (shown dashed, never solid red; the letter says 'Please check and confirm', `likely_problem`); not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').
              * @enum {string}
              */
-            group: "clouded" | "right" | "rule_note" | "not_compared" | "dismissed";
+            group: "clouded" | "right" | "rule_note" | "likely_problem" | "not_compared" | "dismissed";
             /**
              * Label
              * @description not_compared: the trade's words for the reason (Field verify, RFI to the architect, Not reviewed: <reason>, Illegible).
              */
             label?: string | null;
+            /** @description A whole-drawing look's claim: what to check and confirm (the spots are the finding's own boxes). */
+            likely_problem?: components["schemas"]["ChatFindingLikelyOut"] | null;
             /**
              * Not Compared
              * @description not_compared: the reason (the list's group).
@@ -5795,14 +5832,14 @@ export interface components {
              * Outcome
              * @enum {string}
              */
-            outcome: "wrong" | "right" | "rule_note" | "not_compared";
+            outcome: "wrong" | "right" | "rule_note" | "likely_problem" | "not_compared";
             /** Page */
             page?: number | null;
             /**
              * Previous
              * @description Its outcome before, when it changed.
              */
-            previous?: ("wrong" | "right" | "rule_note" | "not_compared") | null;
+            previous?: ("wrong" | "right" | "rule_note" | "likely_problem" | "not_compared") | null;
             /**
              * Product
              * @description The product id the item is filed under.
@@ -5974,6 +6011,12 @@ export interface components {
          *     blind second look (they become Wrong only if it agrees).
          */
         ChatLiveTallyOut: {
+            /**
+             * Likely Problem
+             * @description Likely problems from the whole-drawing look (please check).
+             * @default 0
+             */
+            likely_problem: number;
             /** Not Compared */
             not_compared: number;
             /** Right */
@@ -6436,6 +6479,12 @@ export interface components {
              * @description Time left at the pace so far; null before any page is done.
              */
             eta_seconds?: number | null;
+            /**
+             * Likely So Far
+             * @description Likely problems the whole-drawing look found (please check).
+             * @default 0
+             */
+            likely_so_far: number;
             /** Pages Done */
             pages_done: number;
             /** Pages Total */
@@ -8877,6 +8926,12 @@ export interface components {
              * @description Ask the architect: the architect's size breaks a GV rule (#1839).
              */
             ask_architect: number;
+            /**
+             * Likely Problem
+             * @description Likely problem: the whole-drawing look found it, code did not prove it (please check and confirm).
+             * @default 0
+             */
+            likely_problem: number;
             /**
              * Not Compared
              * @description Not compared, each with its reason.

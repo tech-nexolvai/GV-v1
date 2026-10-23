@@ -201,6 +201,17 @@ class Settings(BaseSettings):
     assistant_page_match_model: Literal["off", "claude-sonnet-5-5", "claude-opus-5-5"] = (
         "claude-sonnet-5-5"
     )
+    # The whole-drawing look (Anant, 2026-10-23): one AI look per paired vendor drawing, beside the
+    # roster's page helpers, for the big design differences number-by-number reading misses
+    # (missing units, other counts and heights); its claims are "Likely problem" unless code
+    # proves them. Inside the fixed price (its share, `full_check_roster.SHARES`); `off`: none.
+    # Opus 5.5 by measurement (Set 3, 2026-10-23, same prompt): Sonnet 5.5 found 3 of the 21 items
+    # GV's answer key must find ($0.97 a set); Opus 5.5 at medium effort found 10 of them, and the
+    # big design differences the number helpers missed, at about $0.12 a look ($2.57 a set).
+    assistant_whole_look_model: Literal["off", "claude-sonnet-5-5", "claude-opus-5-5"] = (
+        "claude-opus-5-5"
+    )
+    assistant_whole_look_effort: Literal["low", "medium", "high"] = "medium"
     # The simple check's compare call: the model and effort for every drawing, the stronger model
     # for drawings the work list marks hard (no code labels, very dense, hand-lettered architect),
     # how many calls run at once, the reply's token room (thinking included) and the retries on a
