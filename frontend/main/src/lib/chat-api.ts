@@ -420,6 +420,15 @@ export type FindingSource =
   /** Made by code from the reading ledger: an item one side shows and the other never does. */
   | 'completeness';
 
+/** Which upload's page picture: a file by its name (as a box names it), or the architect's file; none: the vendor's. */
+export interface PageWhere {
+  file?: string | null;
+  side?: 'vendor' | 'architect' | null;
+}
+
+/** A page's picture in the set pack (100 dpi): the vendor's page, or with `where` another upload's. */
+export type PagePicture = (page: number, where?: PageWhere) => string;
+
 /** A spot on a page, in PDF points of the original upload (origin top-left). */
 export interface FindingBox {
   page: number;
@@ -533,6 +542,20 @@ export interface ChatFinding {
   proof?: FindingProof | null;
   /** #1611: `code` when code paired the architect's and the vendor's labels by itself. */
   paired_by?: string | null;
+  /** #1558: the numbered dimension label each side was built from, by side (architect, vendor). */
+  dims?: Partial<Record<string, FindingDim>> | null;
+}
+
+/** #1558: a numbered dimension label a finding's side was built from; `box` is x0, y0, x1, y1 in PDF points. */
+export interface FindingDim {
+  id: string;
+  page: number;
+  file?: string | null;
+  text: string;
+  inches: string;
+  route?: string;
+  side?: string | null;
+  box: number[];
 }
 
 /** #1581: the zero-click cloud drawing's group for a finding, and its words. */
@@ -1293,7 +1316,11 @@ export const chatPaths = {
   /** #1710: a running full check's whole live state (a page that reconnects). */
   live: (chatId: string) => `${BASE}/chats/${id(chatId)}/live`,
   /** #1717: the vendor's page picture in the set pack (100 dpi), for the evidence panel's boxed spot. */
-  planPage: (packageId: string, page: number) => `${BASE}/packages/${id(packageId)}/plan-pages/${page}`,
+  planPage: (packageId: string, page: number, where: PageWhere = {}) => {
+    // Results v2 (2026-10-23): another upload's page (the architect's side of the drawer), by name or by side.
+    const query = where.file ? `?file=${encodeURIComponent(where.file)}` : where.side === 'architect' ? '?side=architect' : '';
+    return `${BASE}/packages/${id(packageId)}/plan-pages/${page}${query}`;
+  },
   /** #1569: code's plan for a full check of the set, and where it is unsure (no AI call). */
   fullCheckPlan: (packageId: string) => `${BASE}/packages/${id(packageId)}/full-check-plan`,
   /** Results v2 (2026-10-23): what each vendor page shows (title, project, sheet), from the set pack. */

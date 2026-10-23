@@ -6,11 +6,11 @@ import { Spinner } from '@/components/chat/chat-motion';
 import { OutcomeGlyph, type DrawingsRequest } from '@/components/chat/chat-result';
 import { RoundChip } from '@/components/chat/chat-trust';
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
-import type { ChatFile, ChatFinding, FindingDecision, FindingDecisionExtra, FindingDecisionValue } from '@/lib/chat-api';
-import { architectOnVendorPage, drawerChips, drawerKind, howWeKnow, KIND_WORDS, referenceSide, ringOnCrop, ringOnPage, vendorOnly, vendorSide, type DrawerKind, type Ring } from '@/lib/chat-drawer';
+import type { ChatFile, ChatFinding, FindingBox, FindingDecision, FindingDecisionExtra, FindingDecisionValue, PagePicture, PageWhere } from '@/lib/chat-api';
+import { architectOnVendorPage, drawerChips, drawerKind, howWeKnow, KIND_WORDS, noArchitectPictureWords, overallSpot, referenceSide, ringInCrop, ringOnCrop, ringOnPage, vendorOnly, vendorSide, type DrawerKind, type Ring } from '@/lib/chat-drawer';
 import { architectPage, decisionHelpRows, pageWords, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
 import { isInternal, proofGroup, ruleNoteWords, type RuleNoteWords } from '@/lib/chat-proof';
-import { boxOnPicture, decisionsWords, isDrawingNeededItem, itemParts, pageHeading, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultTab } from '@/lib/chat-result';
+import { boxOnPicture, decisionsWords, isDrawingNeededItem, isRefusedString, itemParts, pageHeading, shortValue, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultTab } from '@/lib/chat-result';
 import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { cn } from '@/lib/utils';
@@ -43,7 +43,7 @@ const RING_TONE: Record<RingTone, string> = {
  * One picture, large, with zoom and pan; with `ring` (worked out once the picture's own size is
  * known) the spot is ringed, and with `focus` the picture opens zoomed onto it (a whole page).
  */
-export function ZoomPane({ src, label, frameClassName, ring = null, tone = 'neutral', focus = false }: { src: string; label: string; frameClassName?: string; ring?: ((width: number, height: number) => Ring | null) | null; tone?: RingTone; focus?: boolean }) {
+export function ZoomPane({ src, label, frameClassName, ring = null, inner = null, tone = 'neutral', focus = false }: { src: string; label: string; frameClassName?: string; ring?: ((width: number, height: number) => Ring | null) | null; inner?: ((width: number, height: number) => Ring | null) | null; tone?: RingTone; focus?: boolean }) {
   const reduced = useReducedMotion();
   const frame = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
@@ -90,6 +90,9 @@ export function ZoomPane({ src, label, frameClassName, ring = null, tone = 'neut
   const placed = fit && natural && size ? { width: natural.width * fit, height: natural.height * fit, x: (size.width - natural.width * fit) / 2, y: (size.height - natural.height * fit) / 2 } : null;
   const spot = natural && ring ? ring(natural.width, natural.height) : null;
   const ringBox = placed && spot ? { left: placed.x + spot.left * placed.width, top: placed.y + spot.top * placed.height, width: spot.width * placed.width, height: spot.height * placed.height } : null;
+  // A second, smaller spot inside the first (a refused string's printed overall), dashed.
+  const innerSpot = natural && inner ? inner(natural.width, natural.height) : null;
+  const innerBox = placed && innerSpot ? { left: placed.x + innerSpot.left * placed.width, top: placed.y + innerSpot.top * placed.height, width: innerSpot.width * placed.width, height: innerSpot.height * placed.height } : null;
 
   // A whole page opens zoomed onto its spot, once (the effect waits for the picture and the frame).
   const ringKey = ringBox && size ? [ringBox.left, ringBox.top, ringBox.width, ringBox.height, size.width, size.height].map((value) => value.toFixed(1)).join(',') : null;
@@ -97,7 +100,8 @@ export function ZoomPane({ src, label, frameClassName, ring = null, tone = 'neut
     if (!focus || focused.current || !ringKey) return;
     const [left, top, width, height, frameWidth, frameHeight] = ringKey.split(',').map(Number);
     focused.current = true;
-    const zoom = clampZoom(Math.min((frameWidth * 0.32) / Math.max(width, 1), (frameHeight * 0.32) / Math.max(height, 1)));
+    // At most 4x: a whole page is a 100 dpi picture, and more only blurs it.
+    const zoom = Math.min(4, clampZoom(Math.min((frameWidth * 0.32) / Math.max(width, 1), (frameHeight * 0.32) / Math.max(height, 1))));
     setView({ zoom, x: -(left + width / 2 - frameWidth / 2) * zoom, y: -(top + height / 2 - frameHeight / 2) * zoom });
   }, [focus, ringKey]);
 
@@ -149,6 +153,14 @@ export function ZoomPane({ src, label, frameClassName, ring = null, tone = 'neut
               data-tone={tone}
               className={cn('pointer-events-none absolute rounded-[6px] shadow-[0_0_0_2px_rgb(255_255_255/0.85)]', RING_TONE[tone])}
               style={{ left: ringBox.left - pad, top: ringBox.top - pad, width: ringBox.width + 2 * pad, height: ringBox.height + 2 * pad, borderWidth: 2.5 / view.zoom, borderStyle: tone === 'likely' ? 'dashed' : 'solid' }}
+            />
+          )}
+          {innerBox && (
+            <span
+              aria-hidden="true"
+              data-slot="chat-evidence-ring-inner"
+              className={cn('pointer-events-none absolute rounded-[4px] border-dashed', RING_TONE[tone])}
+              style={{ left: innerBox.left - pad / 2, top: innerBox.top - pad / 2, width: innerBox.width + pad, height: innerBox.height + pad, borderWidth: 2 / view.zoom, borderStyle: 'dashed' }}
             />
           )}
         </div>
@@ -231,8 +243,8 @@ export interface EvidenceViewerProps {
   pictureUrl: (pictureId: string) => string;
   /** Where "Open in review screen" goes; the link is left out when there is none. */
   fullPageHref?: string | null;
-  /** #1717: the vendor's page picture (100 dpi, the set pack's), to show the spot boxed; absent when there is none. */
-  pagePicture?: ((page: number) => string) | null;
+  /** #1717: the vendor's page picture (100 dpi, the set pack's), to show the spot boxed; absent when there is none. Results v2: another upload's page with `where`. */
+  pagePicture?: PagePicture | null;
   /** #1717: the cloud drawing at a page ("Open on the cloud drawing"); absent when there is none. */
   cloudAt?: ((page: number) => string) | null;
   /** #1717 (owner decision 3): the optional override lives here, not on the rows. */
@@ -367,6 +379,7 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
 
           {results && kind ? (
             <ResultsBody
+              key={finding.id}
               finding={finding}
               kind={kind}
               results={results}
@@ -479,15 +492,26 @@ const TONE_OF: Record<DrawerKind, RingTone> = {
 interface PicturePlan {
   src: string;
   ring: ((width: number, height: number) => Ring | null) | null;
+  /** A second, smaller spot inside the ring (a refused string's printed overall), dashed. */
+  inner?: ((width: number, height: number) => Ring | null) | null;
   focus: boolean;
+}
+
+/** Whose page picture a box is on: its own file when it names one; else the vendor's (own) or the architect's file. */
+function whereOf(box: FindingBox | null, own: boolean): PageWhere {
+  if (box?.file) return { file: box.file };
+  return own ? {} : { side: 'architect' };
 }
 
 /**
  * The drawer of a finished full check: where (page, area, project), the item, the two pictures side
- * by side, how we know (2-3 plain steps), and small chips.
+ * by side, how we know (2-3 plain steps), and small chips. A vendor string code did not compare
+ * (the client meeting, 2026-10-23) shows ONE picture of its row instead: its numbers are the AI's
+ * unproven reading, never "vendor vs …" values.
  */
-function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, note, decision }: { finding: ChatFinding; kind: DrawerKind; results: ResultsDrawer; number: string | null; pictureUrl: (pictureId: string) => string; pagePicture: ((page: number) => string) | null; note: RuleNoteWords | null; decision: FindingDecision | null }) {
+function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, note, decision }: { finding: ChatFinding; kind: DrawerKind; results: ResultsDrawer; number: string | null; pictureUrl: (pictureId: string) => string; pagePicture: PagePicture | null; note: RuleNoteWords | null; decision: FindingDecision | null }) {
   const [whole, setWhole] = useState(false);
+  const [wholeReference, setWholeReference] = useState(false);
   const parts = itemParts(finding.item);
   const heading = pageHeading(finding.page, results.pageTitles, [finding]);
   const noDrawing = results.neededPages.has(finding.page);
@@ -496,6 +520,8 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
   const vendorWords = vendorSide(finding, kind);
   const referenceWords = referenceSide(finding, kind, decision);
   const own = kind !== 'drawing_needed' && vendorOnly(finding);
+  const refused = kind === 'not_compared' && isRefusedString(finding, 'not_compared');
+  const overall = refused ? overallSpot(finding) : null;
   const steps = howWeKnow(finding, kind, { noArchitectDrawing: noDrawing });
   const chips = kind === 'drawing_needed' ? [] : drawerChips(finding, { number, noArchitectDrawing: noDrawing, inRequest });
   const part = kind === 'clouded' ? wrongPartWords(finding) : null;
@@ -504,26 +530,43 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
 
   // The vendor's side: the evidence crop ringed; else (or "Whole page") the vendor's page picture.
   const vendorSpot: PicturePlan | null = finding.vendor_picture_id
-    ? { src: pictureUrl(finding.vendor_picture_id), ring: (w, h) => ringOnCrop(vendorBox, w, h), focus: false }
-    : pagePicture && vendorBox ? { src: pagePicture(vendorBox.page), ring: (w, h) => ringOnPage(vendorBox, w, h), focus: true }
+    ? { src: pictureUrl(finding.vendor_picture_id), ring: (w, h) => ringOnCrop(vendorBox, w, h), inner: overall ? (w, h) => ringInCrop(vendorBox, overall, w, h) : null, focus: false }
+    : pagePicture && vendorBox ? { src: pagePicture(vendorBox.page), ring: (w, h) => ringOnPage(vendorBox, w, h), inner: overall ? (w, h) => ringOnPage(overall, w, h) : null, focus: true }
       : pagePicture && kind === 'drawing_needed' ? { src: pagePicture(finding.page), ring: null, focus: false }
         : null;
-  const vendorPagePlan: PicturePlan | null = pagePicture ? { src: pagePicture(page), ring: vendorBox ? (w, h) => ringOnPage(vendorBox, w, h) : null, focus: false } : null;
+  const vendorPagePlan: PicturePlan | null = pagePicture ? { src: pagePicture(page), ring: vendorBox ? (w, h) => ringOnPage(vendorBox, w, h) : null, inner: overall ? (w, h) => ringOnPage(overall, w, h) : null, focus: false } : null;
   const vendorPlan = whole && vendorPagePlan ? vendorPagePlan : vendorSpot;
 
-  // The reference: the architect's crop ringed green; the architect's spot on the same sheet; the vendor's own measured spot.
+  // The reference: the architect's crop ringed green; the architect's spot on the same sheet; the
+  // vendor's own measured spot; else the architect's page itself, ringed when its spot is known
+  // (results v2 follow-up: the drawer said "no picture" though the item names an architect page).
   const archBox = finding.arch_box ?? null;
-  const referencePlan: PicturePlan | null = kind === 'drawing_needed' ? null
+  const rules = finding.source === 'rules' || Boolean(finding.rule_check_id);
+  const onVendorPage = architectOnVendorPage(finding);
+  const archPageNumber = archBox?.page ?? (own || rules ? null : finding.vs_page ?? null);
+  const referenceSpot: PicturePlan | null = kind === 'drawing_needed' ? null
     : finding.arch_picture_id ? { src: pictureUrl(finding.arch_picture_id), ring: (w, h) => ringOnCrop(archBox, w, h), focus: false }
-      : pagePicture && archBox && architectOnVendorPage(finding) ? { src: pagePicture(archBox.page), ring: (w, h) => ringOnPage(archBox, w, h), focus: true }
+      : pagePicture && archBox && onVendorPage ? { src: pagePicture(archBox.page), ring: (w, h) => ringOnPage(archBox, w, h), focus: true }
         : own ? vendorSpot
-          : null;
+          : pagePicture && archBox ? { src: pagePicture(archBox.page, whereOf(archBox, false)), ring: (w, h) => ringOnPage(archBox, w, h), focus: true }
+            : pagePicture && archPageNumber !== null ? { src: pagePicture(archPageNumber, { side: 'architect' }), ring: null, focus: false }
+              : null;
+  // "Whole page" on the reference side too: that file's page, the spot ringed when it is known.
+  const ownPage = archBox?.page ?? finding.vs_page ?? page;
+  const referencePagePlan: PicturePlan | null = !pagePicture || kind === 'drawing_needed' ? null
+    : own ? { src: pagePicture(ownPage, whereOf(archBox, true)), ring: archBox ? (w, h) => ringOnPage(archBox, w, h) : vendorBox && ownPage === page ? (w, h) => ringOnPage(vendorBox, w, h) : null, focus: false }
+      : archBox ? { src: onVendorPage ? pagePicture(archBox.page) : pagePicture(archBox.page, whereOf(archBox, false)), ring: (w, h) => ringOnPage(archBox, w, h), focus: false }
+        : null;
+  const referencePlan = wholeReference && referencePagePlan ? referencePagePlan : referenceSpot;
   const referenceTone: RingTone = kind === 'clouded' || kind === 'right' || kind === 'dismissed' || kind === 'likely_problem' ? 'right' : 'neutral';
+  const architectPageWords = archPageNumber !== null ? ` page ${archPageNumber}` : '';
   const referenceCaption = kind === 'drawing_needed' ? null
     : own && part?.drawn ? `Measured on the vendor’s own drawing: this line is drawn ${part.drawn} long`
     : own ? `Measured on the vendor’s own drawing${noDrawing ? ' (no architect drawing of this unit)' : ''}`
-      : finding.source === 'rules' || finding.rule_check_id ? 'GV’s rule'
-        : `Architect${finding.vs_page || archBox?.page ? ` page ${archBox?.page ?? finding.vs_page}` : ''}`;
+      : rules && !archBox ? 'GV’s rule'
+        : !finding.arch_picture_id && !archBox && archPageNumber !== null ? `Architect${architectPageWords} · the spot is not marked`
+          : `Architect${architectPageWords}`;
+  const referenceToggle = referencePagePlan !== null && referenceSpot !== null;
 
   return (
     <div data-slot="chat-evidence-results" className="grid min-h-0 flex-1 content-start gap-5 overflow-y-auto px-6 py-5 max-md:px-4">
@@ -539,6 +582,25 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
         </SheetTitle>
       </div>
 
+      {refused ? (
+        <div data-slot="chat-evidence-pair" data-refused="true" className="grid min-w-0 gap-3">
+          <SideCard
+            side="vendor"
+            words={{ label: 'The row on the vendor’s drawing', value: '', tone: null }}
+            plan={vendorPlan}
+            tone="neutral"
+            tall
+            label={`Vendor page ${page}`}
+            footer={
+              <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <span>Vendor page <span className="num">{page}</span></span>
+                {vendorPagePlan && <WholeButton whole={whole} onToggle={() => setWhole(!whole)} />}
+                {vendorPlan && <span data-slot="chat-evidence-legend"><span aria-hidden="true" className="max-md:hidden">· </span>{overall ? 'Solid box: the row of sizes; dashed box: its overall' : 'Box: the row of sizes and its overall'}</span>}
+              </span>
+            }
+          />
+        </div>
+      ) : (
       <div data-slot="chat-evidence-pair" className="grid min-w-0 gap-3 sm:grid-cols-2">
         <SideCard
           side="vendor"
@@ -549,11 +611,7 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
           footer={
             <span className="flex min-w-0 items-center gap-2">
               <span>Vendor page <span className="num">{page}</span></span>
-              {vendorPagePlan && kind !== 'drawing_needed' && (
-                <button type="button" data-slot="chat-evidence-whole" aria-pressed={whole} onClick={() => setWhole(!whole)} className="rounded font-medium text-foreground underline underline-offset-2 hover:no-underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
-                  {whole ? 'Back to the spot' : 'Whole page'}
-                </button>
-              )}
+              {vendorPagePlan && kind !== 'drawing_needed' && <WholeButton whole={whole} onToggle={() => setWhole(!whole)} />}
             </span>
           }
         />
@@ -572,9 +630,23 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
             <p className="border-t px-3.5 py-2 text-xs text-muted-foreground">Ask GV for it, then run the check again</p>
           </figure>
         ) : (
-          <SideCard side="architect" words={referenceWords} plan={referencePlan} tone={referenceTone} label={referenceCaption ?? 'Reference'} footer={referenceCaption ? <span>{referenceCaption}</span> : null} emptyWords={noDrawing ? 'No architect drawing of this item in the upload' : 'No picture of the architect’s drawing for this item'} />
+          <SideCard
+            side="architect"
+            words={referenceWords}
+            plan={referencePlan}
+            tone={referenceTone}
+            label={referenceCaption ?? 'Reference'}
+            footer={referenceCaption ? (
+              <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <span>{referenceCaption}</span>
+                {referenceToggle && <WholeButton whole={wholeReference} onToggle={() => setWholeReference(!wholeReference)} />}
+              </span>
+            ) : null}
+            emptyWords={noArchitectPictureWords(finding, noDrawing)}
+          />
         )}
       </div>
+      )}
 
       {steps.length > 0 && (
         <section aria-label="How we know" data-slot="chat-evidence-how" className="grid min-w-0 gap-2 rounded-xl bg-muted/60 px-4 py-3.5">
@@ -597,20 +669,46 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
   );
 }
 
-/** One side: its value large, then its picture (zoomable, the spot ringed), then where it is from. */
-function SideCard({ side, words, plan, tone, label, footer, emptyWords }: { side: 'vendor' | 'architect'; words: { label: string; value: string; tone: 'wrong' | 'likely' | 'right' | null }; plan: PicturePlan | null; tone: RingTone; label: string; footer: React.ReactNode; emptyWords?: string }) {
+/** One side: its value large (a long value said short, in full below), then its picture (zoomable, the spot ringed), then where it is from. */
+function SideCard({ side, words, plan, tone, label, footer, emptyWords, tall = false }: { side: 'vendor' | 'architect'; words: { label: string; value: string; tone: 'wrong' | 'likely' | 'right' | null }; plan: PicturePlan | null; tone: RingTone; label: string; footer: React.ReactNode; emptyWords?: string; tall?: boolean }) {
+  const value = words.value ? { ...shortValue(words.value), words: /[a-z]{2,}/i.test(words.value.replace(/\bmm\b/gi, '')) } : null;
+  const frame = tall ? 'h-[320px] max-md:h-[240px]' : 'h-[300px] max-md:h-[190px]';
   return (
     <figure data-slot="chat-evidence-side" data-side={side} className="grid min-w-0 content-start overflow-hidden rounded-xl border">
       <figcaption className="flex min-w-0 items-baseline justify-between gap-2 border-b px-3.5 py-2.5">
-        <span className="text-[13px] text-muted-foreground">{words.label}</span>
-        <span className={cn('num truncate text-[22px] leading-7 font-semibold max-md:text-[19px]', words.tone === 'wrong' && 'text-outcome-fail-fg', words.tone === 'right' && 'text-outcome-pass-fg')}>{words.value}</span>
+        <span className="shrink-0 text-[13px] text-muted-foreground">{words.label}</span>
+        {value && (
+          <span
+            data-slot="chat-evidence-value"
+            data-words={value.words ? 'true' : undefined}
+            title={value.full ?? undefined}
+            // A size in the numbers' face, large; words (a note, a tag) in the text face, smaller.
+            className={cn('min-w-0 truncate font-semibold', value.words ? 'text-[16px] leading-7' : 'num text-[22px] leading-7 max-md:text-[19px]', words.tone === 'wrong' && 'text-outcome-fail-fg', words.tone === 'right' && 'text-outcome-pass-fg')}
+          >
+            {value.short}
+          </span>
+        )}
       </figcaption>
+      {value?.full && (
+        <p data-slot="chat-evidence-value-full" className="border-b px-3.5 py-2 text-[13px] leading-[19px] break-words text-foreground/85">
+          <span className="text-muted-foreground">In full: </span>{value.full}
+        </p>
+      )}
       <div className="p-2">
-        {plan ? <ZoomPane key={`${plan.src}-${plan.focus}`} src={plan.src} label={label} ring={plan.ring} tone={tone} focus={plan.focus} frameClassName="h-[300px] max-md:h-[190px]" />
-          : <div data-slot="chat-evidence-missing" className="grid h-[300px] place-items-center rounded-lg border border-dashed px-6 text-center text-[13px] text-muted-foreground max-md:h-[160px]">{emptyWords ?? 'No picture for this item'}</div>}
+        {plan ? <ZoomPane key={`${plan.src}-${plan.focus}`} src={plan.src} label={label} ring={plan.ring} inner={plan.inner ?? null} tone={tone} focus={plan.focus} frameClassName={frame} />
+          : <div data-slot="chat-evidence-missing" className={cn('grid place-items-center rounded-lg border border-dashed px-6 text-center text-[13px] text-muted-foreground', tall ? 'h-[320px] max-md:h-[200px]' : 'h-[300px] max-md:h-[160px]')}>{emptyWords ?? 'No picture for this item'}</div>}
       </div>
       {footer && <p className="border-t px-3.5 py-2 text-xs text-muted-foreground">{footer}</p>}
     </figure>
+  );
+}
+
+/** "Whole page" / "Back to the spot" under a side's picture. */
+function WholeButton({ whole, onToggle }: { whole: boolean; onToggle: () => void }) {
+  return (
+    <button type="button" data-slot="chat-evidence-whole" aria-pressed={whole} onClick={onToggle} className="rounded font-medium text-foreground underline underline-offset-2 hover:no-underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+      {whole ? 'Back to the spot' : 'Whole page'}
+    </button>
   );
 }
 
