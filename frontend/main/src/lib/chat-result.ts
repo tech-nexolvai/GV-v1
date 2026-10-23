@@ -189,10 +189,10 @@ export function pairingUnsureItems(coverage: ChatCoverage | null | undefined, ti
         architect: null,
         vendor: null,
         status: 'check',
-        why: 'the AI page matcher was sure of the first page, and code could not confirm it, so nothing on this page was compared with the architect',
+        why: 'the architect page could not be confirmed, so nothing on this page was compared with the architect',
         verified: false,
         source: 'architect',
-        proof: { group: 'not_compared', not_compared: 'pairing_unsure', reason: why, settle: 'your pick of the architect page that shows this item, then run the check again' },
+        proof: { group: 'not_compared', not_compared: 'pairing_unsure', reason: why, settle: 'a person to confirm which architect page shows this item and compare it' },
       } satisfies ChatFinding;
     });
 }
@@ -253,7 +253,7 @@ export function missingDrawingsOnly(action: ChatReviewAction | null | undefined,
   if (!action || action.action !== 'not_for_sending' || needed <= 0) return false;
   const reason = action.reason.toLowerCase();
   if (!/no architect drawing/.test(reason)) return false;
-  return !/(?:was|were) not compared|not reached|a step did not finish|no page's comparison|stopped|fixed price|price limit|step limit|restarted|problem/.test(reason.replace(/^the check did not finish:\s*/, ''));
+  return !/(?:was|were) not compared|pairing unsure|not reached|a step did not finish|no page's comparison|stopped|fixed price|price limit|step limit|restarted|problem/.test(reason.replace(/^the check did not finish:\s*/, ''));
 }
 
 // ── The drawings request (draft only: Anant sends it himself) ───

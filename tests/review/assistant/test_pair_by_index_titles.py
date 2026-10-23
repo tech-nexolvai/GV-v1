@@ -5,7 +5,7 @@ pick the right architect page for every vendor page, sure of each; code accepted
 a title counted as evidence only when GV typed it. Now:
 
 - the item title the set index read on both pages (each checked printed) is strong evidence when
-  the two are the same after a fixed tidy-up (capitals, signs, the hand words: "VANITY - TYPE 1
+  the two are the same after a fixed tidy-up (capitals, signs, the hand words: "SAMPLE VANITY - TYPE 1
   REVERSED UNITS" is "Vanity type-1"); only an exact match counts ("KITCHEN" is not
   "KITCHENETTE");
 - two numbered unit types that differ ("TYPE 1", "TYPE 3") rule the pair out;
@@ -48,9 +48,15 @@ from tests.review.assistant.test_cross_file_projects import _entry, _label, _phr
 SHOP, ARCH = "shop.pdf", "arch.pdf"
 
 #: The vendor pages' item titles, as the set index read them.
-VENDOR = {1: "VANITY - TYPE 1 REVERSED UNITS", 2: "KITCHEN", 3: "VANITY - TYPE 1"}
+VENDOR = {1: "SAMPLE VANITY - TYPE 1 REVERSED UNITS", 2: "KITCHEN", 3: "SAMPLE VANITY - TYPE 1"}
 #: The architect pages' item titles.
-ARCHITECT = {1: "VANITY - TYPE 3", 2: "VANITY TYPE-1", 3: "KITCHENETTE", 4: "BENCH", 5: "WARDROBE"}
+ARCHITECT = {
+    1: "SAMPLE VANITY - TYPE 3",
+    2: "SAMPLE VANITY TYPE-1",
+    3: "KITCHENETTE",
+    4: "BENCH",
+    5: "WARDROBE",
+}
 #: A private id or a matcher label in a reason.
 _PRIVATE = re.compile(r"\bp\d{3,5}\b|\bA\d{1,3}\b")
 
@@ -66,10 +72,27 @@ def _sizes(side: str, sizes: tuple[int, int, int] = (63, 22, 34)) -> list[dict[s
     ]
 
 
-def _work(matches: dict[str, Any] | None) -> Any:
-    pages = [_entry(SHOP, p, "vendor") for p in VENDOR] + [
-        _entry(ARCH, p, "architect") for p in ARCHITECT
+def _work(
+    matches: dict[str, Any] | None,
+    vendor: dict[int, str] | None = None,
+    architect: dict[int, str] | None = None,
+    sizes: dict[int, tuple[int, int, int]] | None = None,
+    two_on: int | None = None,
+) -> Any:
+    """The synthetic set: `vendor` and `architect` titles by page; `sizes` an architect page's
+    sizes (else the kitchenette's own, the rest the vendor's); `two_on` a vendor page holding two
+    vendor drawings."""
+    vendor = vendor or VENDOR
+    architect = architect or ARCHITECT
+    sizes = sizes if sizes is not None else {3: (100, 40, 36)}
+    pages = [_entry(SHOP, p, "vendor") for p in vendor] + [
+        _entry(ARCH, p, "architect") for p in architect
     ]
+    if two_on is not None:
+        pages[two_on - 1]["halves"] = [
+            {"box": [0.0, 0.0, 600.0, 800.0], "role": "vendor", "from_upload": True},
+            {"box": [600.0, 0.0, 1200.0, 800.0], "role": "vendor", "from_upload": True},
+        ]
     dims = {
         "pages": [
             *(
@@ -79,24 +102,24 @@ def _work(matches: dict[str, Any] | None) -> Any:
                     "labels": _sizes("vendor"),
                     "phrases": [_phrase(t, [700, 700, 900, 710])],
                 }
-                for p, t in VENDOR.items()
+                for p, t in vendor.items()
             ),
             *(
                 {
                     "file": ARCH,
                     "page": p,
-                    "labels": _sizes("architect", (100, 40, 36) if p == 3 else (63, 22, 34)),
+                    "labels": _sizes("architect", sizes.get(p, (63, 22, 34))),
                     "phrases": [_phrase(t, [700, 700, 900, 710])],
                 }
-                for p, t in ARCHITECT.items()
+                for p, t in architect.items()
             ),
         ]
     }
     index = {
         "version": 1,
         "pages": {
-            **{f"{SHOP}#{p}": _read(SHOP, p, item=t) for p, t in VENDOR.items()},
-            **{f"{ARCH}#{p}": _read(ARCH, p, item=t) for p, t in ARCHITECT.items()},
+            **{f"{SHOP}#{p}": _read(SHOP, p, item=t) for p, t in vendor.items()},
+            **{f"{ARCH}#{p}": _read(ARCH, p, item=t) for p, t in architect.items()},
         },
     }
     return worklist_from(
@@ -149,25 +172,33 @@ def _paired_pages(pair: Any) -> list[int]:
 
 
 def test_titles_match_exactly_after_a_fixed_tidy_up() -> None:
-    assert unit_title("Vanity - TYPE-1 Reversed Units") == ("vanity type 1", "1")
-    assert unit_title("KITCHEN REGULAR UNITS") == ("kitchen", None)
-    assert same_item("VANITY - TYPE 1 REVERSED UNITS", "VANITY TYPE-1")
+    assert unit_title("Vanity - TYPE-1 Reversed Units") == ("vanity type 1", frozenset({"1"}))
+    assert unit_title("KITCHEN REGULAR UNITS") == ("kitchen", frozenset())
+    assert same_item("SAMPLE VANITY - TYPE 1 REVERSED UNITS", "SAMPLE VANITY TYPE-1")
     assert same_item("ACCESSIBLE KITCHEN REVERSE UNITS", "Accessible Kitchen")
     # Only an exact match: a near name is a clue, never proof.
     assert not same_item("KITCHEN", "KITCHENETTE")
     assert not same_item("KITCHEN", "STANDARD KITCHEN")
-    assert not same_item("VANITY - TYPE 1", "VANITY - TYPE 3")
-    assert not same_item("UNIT", "UNIT")  # says nothing of the item
-    assert not same_item(None, "VANITY")
+    assert not same_item("SAMPLE VANITY - TYPE 1", "SAMPLE VANITY - TYPE 3")
+    # Generic names repeat from one unit to the next: two words besides the unit type, or none.
+    assert not same_item("UNIT", "UNIT")
+    assert not same_item("KITCHEN", "KITCHEN")
+    assert not same_item("UNIT TYPE 1", "UNIT TYPE 1")
+    assert not same_item(None, "SAMPLE VANITY")
+    # A hand word code does not read as a hand is never left out ("OPP" stays in).
+    assert not same_item("SAMPLE KITCHEN OPP", "SAMPLE KITCHEN")
 
 
 def test_type_1_never_pairs_with_type_3() -> None:
-    vendor = Facts("p1.v0", index_title="VANITY - TYPE 1")
+    vendor = Facts("p1.v0", index_title="SAMPLE VANITY - TYPE 1")
     ranked = {
         s.ref: s
         for s in rank(
             vendor,
-            [Facts("a1", index_title="VANITY - TYPE 3"), Facts("a2", index_title="VANITY TYPE-1")],
+            [
+                Facts("a1", index_title="SAMPLE VANITY - TYPE 3"),
+                Facts("a2", index_title="SAMPLE VANITY TYPE-1"),
+            ],
         )
     }
     assert ranked["a1"].contradicts is not None and "another unit type" in ranked["a1"].contradicts
@@ -185,7 +216,9 @@ def test_the_same_checked_title_pairs_and_type_3_is_ruled_out() -> None:
     by = {c.page: c for c in pair.candidates}
     assert by[1].contradicts is not None  # TYPE 3
     # Same sizes everywhere: before, only the matcher pointed at page 2, and code refused it.
-    assert 'titled "VANITY TYPE-1"' in pair.why or 'is its "VANITY TYPE-1"' in pair.why
+    assert (
+        'titled "SAMPLE VANITY TYPE-1"' in pair.why or 'is its "SAMPLE VANITY TYPE-1"' in pair.why
+    )
     # Reversed units against an unmarked page: compared without positions from an end.
     assert pair.opposite_hand is not None
 
@@ -236,7 +269,7 @@ def test_no_matcher_label_or_private_id_in_any_reason() -> None:
     for skipped in work.skipped:
         assert not _PRIVATE.search(skipped.reason), skipped.reason
     # The matcher's "the plan on A2" is said as the page it stands for.
-    assert 'the plan on architect page 2 ("VANITY TYPE-1")' in _across(work, 1).why
+    assert 'the plan on architect page 2 ("SAMPLE VANITY TYPE-1")' in _across(work, 1).why
 
 
 def test_a_hand_named_on_both_sides_is_never_compared_by_its_positions() -> None:
@@ -261,3 +294,57 @@ def test_the_reviewer_is_shown_the_two_pages_in_the_right_order() -> None:
     assert worklist._unsure(ruled, None, sure) == ()
     assert worklist._unsure(ranked, None, MatchAnswer(("a1",), confident=False)) == ()
     assert worklist._unsure(ranked, None, None) == ()
+
+
+# ---- what the independent review found ---------------------------------------------------------
+
+LOOK_ALIKE = {
+    1: "SAMPLE PANTRY CABINET",
+    2: "BENCH",
+    3: "SAMPLE PANTRY CABINET",
+    4: "WARDROBE",
+    5: "DESK",
+}
+#: No size the vendor prints: only the titles tell the pages apart.
+OTHER_SIZES = {p: (100, 40, 36) for p in LOOK_ALIKE}
+
+
+def test_two_pages_of_one_title_far_apart_are_look_alikes_never_paired() -> None:
+    vendor = {1: "SAMPLE PANTRY CABINET"}
+    unasked = _work(None, vendor, LOOK_ALIKE, OTHER_SIZES)
+    pair = _across(_work(_matched(unasked, {1: 3}), vendor, LOOK_ALIKE, OTHER_SIZES), 1)
+    assert pair.chosen == (), pair.why
+    assert pair.unsure and DRAWING_NEEDED not in pair.why
+    # One item drawn on two pages in a row (its sheets): paired with the matcher's pick.
+    sheets = {**LOOK_ALIKE, 2: "SAMPLE PANTRY CABINET", 3: "BENCH"}
+    unasked = _work(None, vendor, sheets, OTHER_SIZES)
+    pair = _across(_work(_matched(unasked, {1: 2}), vendor, sheets, OTHER_SIZES), 1)
+    assert _paired_pages(pair) == [2], pair.why
+
+
+def test_a_vendor_page_of_two_drawings_gives_neither_its_title() -> None:
+    vendor = {1: "SAMPLE PANTRY CABINET"}
+    architect = {**LOOK_ALIKE, 3: "SAMPLE DESK"}
+    unasked = _work(None, vendor, architect, OTHER_SIZES, two_on=1)
+    for pair in unasked.across:
+        assert all("titled" not in " ".join(c.evidence) for c in pair.candidates), pair.why
+
+
+def test_the_whole_sheet_is_never_compared_when_code_rules_a_view_out() -> None:
+    standard = Facts("p1.v0", index_title="SAMPLE VANITY TOP")
+    views = [Facts("v1"), Facts("v2", markers=frozenset({"ACCESSIBLE"}))]
+    assert worklist._view_ruled_out(standard, views, "SAMPLE VANITY TOP")
+    # The sheet's own title says accessible: every view on it is the accessible one.
+    marked = Facts("p1.v0", index_title="ACCESSIBLE VANITY TOP", markers=frozenset({"ACCESSIBLE"}))
+    plain_views = [Facts("v1", markers=frozenset({"ACCESSIBLE"})), Facts("v2")]
+    assert not worklist._view_ruled_out(marked, plain_views, "ACCESSIBLE VANITY TOP")
+    assert worklist._view_ruled_out(marked, plain_views, "VANITY TOP")
+
+
+def test_a_label_that_could_be_a_printed_name_drops_the_matchers_reason() -> None:
+    labels = {"A1": "p1001", "A2": "p1002"}
+    assert worklist._without_labels("the plan on A2.", labels) == "the plan on p1002."
+    # "UNIT A2" is printed on the drawings: which page is meant is not known.
+    assert worklist._without_labels("matches Unit A2 kitchen", labels) == ""
+    assert worklist._without_labels("see sheet A501", labels) == ""
+    assert worklist._without_labels("no label at all", labels) == "no label at all"

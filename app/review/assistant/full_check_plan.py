@@ -717,8 +717,8 @@ UNPAIRED_RETRY_NOTE: Final = (
 UNSURE_NOTE: Final = "Not compared with the architect: pairing unsure ({why})"
 #: Its line in the Not-compared list: what would settle it.
 UNSURE_NEEDS: Final = (
-    "the reviewer's pick of the architect page that shows this item (the AI page matcher was sure "
-    "of the first, and code could not confirm it), then the check is run again"
+    "a person to confirm which architect page shows this item and compare it: the drawing is in "
+    "the upload, but the pairing could not be confirmed"
 )
 #: An unpaired page's line in the Not-compared list (the set's rows): what would settle it.
 UNPAIRED_NEEDS: Final = (
@@ -768,7 +768,7 @@ _UNPAIRED_PLAIN: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
 _UNPAIRED_DEFAULT: Final = "the architect's drawing of this item could not be identified for sure"
 
 
-_UNSURE: Final = re.compile(rf"{PAIRING_UNSURE}: ([^?]{{1,300}}\?)")
+_UNSURE: Final = re.compile(rf"{PAIRING_UNSURE}: ([^?]{{1,2000}}\?)")
 
 
 def unsure_words(reason: str | None) -> str | None:

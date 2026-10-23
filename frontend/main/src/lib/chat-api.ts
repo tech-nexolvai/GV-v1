@@ -1091,7 +1091,7 @@ export interface CoveragePage {
   drawing_needed?: boolean | null;
   /** Why, in plain words. */
   drawing_needed_why?: string | null;
-  /** The AI page matcher was sure of an architect page and code could not confirm it: the drawing is in the upload, the reviewer picks. */
+  /** The AI page matcher was sure of an architect page and code could not confirm it: the drawing is in the upload; a person confirms the page. */
   pairing_unsure?: boolean | null;
   /** The two candidate pages, as a person finds them ('architect page 9 ("STANDARD KITCHEN") or architect page 2?'). */
   pairing_unsure_why?: string | null;

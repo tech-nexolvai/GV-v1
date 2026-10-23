@@ -497,7 +497,7 @@ class AcrossPair(_Frozen):
     unsure: tuple[str, ...] = ()
     """Not paired, but the AI page matcher is sure of an architect item code could not confirm
     (`pairing.PAIRING_UNSURE`): the matcher's pick, then code's own pick or first other item. The
-    drawing is in the upload: never "drawing needed"; the reviewer picks."""
+    drawing is in the upload: never "drawing needed"; a person confirms the page."""
 
 
 class WorkList(_Frozen):

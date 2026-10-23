@@ -55,7 +55,7 @@ sure on 20 of 20 vendor drawings, and code accepted 4. The item title the set in
 pages (checked printed) now counts as strong evidence when the two match exactly after a fixed
 tidy-up (`unit_title`, `same_item`: "KITCHEN" is never "KITCHENETTE"); two numbered unit types
 that differ ("TYPE 1", "TYPE 3") rule the pair out. A sure matcher pick code still cannot confirm
-is "pairing unsure" (`PAIRING_UNSURE`): both pages are shown to the reviewer, never "drawing
+is "pairing unsure" (`PAIRING_UNSURE`): both pages are named to the reviewer, never "drawing
 needed", never compared.
 
 Pure: plain values in, a decision out. The work list (`worklist._pair_across`) builds the facts.
@@ -109,7 +109,7 @@ __all__ = [
 UNPAIRED: Final = "not paired with an architect drawing"
 #: An unpaired drawing's reason when the AI page matcher is sure of an architect page and code
 #: cannot confirm it: the drawing is in the upload, so it is never "drawing needed"; the reviewer
-#: is shown both candidate pages (`worklist._pair_across`).
+#: is told both candidate pages (`worklist._pair_across`).
 PAIRING_UNSURE: Final = "pairing unsure"
 #: A vendor drawing needs this many printed values to be paired by its layout.
 MIN_LAYOUT_VALUES: Final = 3
@@ -206,6 +206,9 @@ class Facts:
     `set_index.verify`): "PRIMARY EN SUITE VANITY - TYPE 1". Two pages naming the same item,
     exactly after a fixed tidy-up (`unit_title`), is strong evidence; two numbered types that
     differ ("TYPE 1", "TYPE 3") rule the pair out (`rank`)."""
+    place: tuple[str, int] | None = None
+    """An architect item's file and page in it: several candidates of one title are one item only
+    when they are one run of pages of one file (its sheets, `rank`)."""
 
 
 @dataclass(frozen=True)
@@ -735,7 +738,9 @@ def _named_in(title: str, phrases: Sequence[str]) -> str | None:
 
 
 #: Words that say which hand or copy of a unit a sheet draws, never which unit: a "REVERSED UNITS"
-#: sheet draws the same unit as its regular sheet (compared mirrored, `opposite_hand`).
+#: sheet draws the same unit as its regular sheet (compared mirrored, `opposite_hand`). Only words
+#: `markers_in` also reads as a hand (or no hand at all: "regular"), so a title left without them
+#: is always flagged opposite-hand where it said one (`worklist._with_marks`).
 _HAND_WORDS: Final = frozenset(
     {
         "reverse",
@@ -745,33 +750,27 @@ _HAND_WORDS: Final = frozenset(
         "regular",
         "unit",
         "units",
-        "opp",
-        "opposite",
-        "hand",
-        "handed",
     }
 )
 #: A numbered unit type in a tidied title: "type 1", "type 3a", "type b".
 _UNIT_TYPE: Final = re.compile(r"\btype ([a-z0-9]{1,4})\b")
 
 
-def unit_title(text: object) -> tuple[str, str | None]:
+def unit_title(text: object) -> tuple[str, frozenset[str]]:
     """An item title tidied for an exact match (`title_key`: lower case, signs as spaces, so
     "TYPE-1" is "type 1"), the hand words left out ("KITCHEN REVERSED UNITS" is "kitchen"); and its
-    numbered unit type ("1" of "VANITY - TYPE 1"), or `None`. Only an exact match counts: "kitchen"
-    is not "standard kitchen", nor "kitchenette" (other tools ask the reviewer then, never guess).
-    """
+    numbered unit types ("1" of "VANITY - TYPE 1"). Only an exact match counts: "kitchen" is not
+    "standard kitchen", nor "kitchenette" (other tools ask the reviewer then, never guess)."""
     words = [w for w in title_key(text).split() if w not in _HAND_WORDS]
     tidy = " ".join(words)
-    found = _UNIT_TYPE.search(tidy)
-    return tidy, found.group(1) if found else None
+    return tidy, frozenset(_UNIT_TYPE.findall(tidy))
 
 
 def _index_title_words(title: str) -> bool:
-    """Whether a tidied title says enough to name an item (2 words or more, or one of 5 letters or
-    more), as `_title_on`."""
-    words = title.split()
-    return bool(words) and (len(words) > 1 or len(words[0]) >= 5)
+    """Whether a tidied title says enough to name an item: two words or more besides its unit
+    type ("primary vanity type 1"; never "kitchen", "vanity", nor "type 1" alone: generic names
+    repeat from one unit to the next)."""
+    return len(_UNIT_TYPE.sub(" ", title).split()) >= 2
 
 
 def same_item(one: str | None, other: str | None) -> bool:
@@ -781,6 +780,23 @@ def same_item(one: str | None, other: str | None) -> bool:
         return False
     mine, theirs = unit_title(one)[0], unit_title(other)[0]
     return mine == theirs and _index_title_words(mine)
+
+
+def _one_titled_item(vendor: Facts, candidates: Sequence[Facts]) -> frozenset[str]:
+    """The candidates whose set index title is the vendor's item (`same_item`), when they are one
+    item: one page, or one run of consecutive pages of one file (the item's sheets). Several pages
+    of that title elsewhere could be look-alikes of other units: then none (the reviewer is asked,
+    never a guess)."""
+    found = [c for c in candidates if same_item(vendor.index_title, c.index_title)]
+    if len(found) <= 1:
+        return frozenset(c.ref for c in found)
+    places = [c.place for c in found]
+    if any(p is None for p in places) or len({p[0] for p in places if p}) != 1:
+        return frozenset()
+    pages = sorted(p[1] for p in places if p)
+    if pages != list(range(pages[0], pages[0] + len(pages))):
+        return frozenset()
+    return frozenset(c.ref for c in found)
 
 
 @dataclass(frozen=True)
@@ -851,6 +867,7 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
     in_section = sum(
         1 for one in candidates if vendor.section is not None and one.section == vendor.section
     )
+    titled = _one_titled_item(vendor, candidates)
     out: list[Scored] = []
     for one in candidates:
         score = 0.0
@@ -874,13 +891,13 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
         if vendor.index_title and one.index_title:
             my_type = unit_title(vendor.index_title)[1]
             their_type = unit_title(one.index_title)[1]
-            if my_type is not None and their_type is not None and my_type != their_type:
+            if my_type and their_type and not my_type & their_type:
                 # "TYPE 1" against "TYPE 3": another unit, whatever else they share.
                 contradicts = (
                     f'the vendor\'s sheet is "{vendor.index_title}" and this one is '
                     f'"{one.index_title}": another unit type'
                 )
-            elif same_item(vendor.index_title, one.index_title) and not strong:
+            elif one.ref in titled and not strong:
                 # The same item title on both pages (each checked printed): strong.
                 strong = True
                 score += _W_TITLE

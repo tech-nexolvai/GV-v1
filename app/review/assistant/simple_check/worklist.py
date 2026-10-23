@@ -921,11 +921,14 @@ def worklist_from(
         across_context.tag_drawings.update(known_vendor.item_tags or ())
         across_context.word_drawings.update(known_vendor.words)
     across_context.item_limit = max(ITEM_TAG_MIN, ITEM_TAG_SHARE * len(mine_vendor))
+    per_page = Counter((h.file, h.file_page or h.page) for h in vendor_halves)
     for half in vendor_halves:
         page_read = read_index.get(f"{half.file}#{half.file_page or half.page}")
         if page_read is not None:
             across_context.marked[half.ref] = _marked_words(page_read)
-            if title := _plain(page_read.get("item")):
+            title = _plain(page_read.get("item"))
+            if title and per_page[(half.file, half.file_page or half.page)] == 1:
+                # The page's item is this drawing's only when it is the page's one vendor drawing.
                 across_context.index_titles[half.ref] = title
     across_context.word_limit = max(COMMON_WORD_MIN, COMMON_WORD_SHARE * len(mine_vendor))
 
@@ -1267,17 +1270,24 @@ def _saved_answers(document: Any) -> dict[str, tuple[tuple[str, ...], pairing_mo
 
 #: The AI page matcher's own picture labels ("A5"): private to its question (`page_match`).
 _MATCH_LABEL: Final = re.compile(r"\bA\d{1,3}\b(?!\.?\d)")
+#: A word before "A2" that makes it a name printed on the drawings ("UNIT A2", "SECTION A5"), not
+#: the matcher's picture label.
+_PRINTED_NAME: Final = re.compile(
+    r"\b(?:unit|type|section|detail|sheet|elevation|view|room|ref|no|number|drawing|plan)\.?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _without_labels(reason: str, labels: Mapping[str, Any]) -> str:
     """The matcher's reason with its picture labels ("the plan on A5") turned into the architect
-    item each one stands for (`p1009`, then said as a page a person finds, `_human_ids`). A label
-    it does not list is "an architect page": "A5" on a drawing is a section's name, never this."""
-
-    def item(found: re.Match[str]) -> str:
-        return str(labels.get(found.group(0)) or "an architect page")
-
-    return _MATCH_LABEL.sub(item, reason)
+    item each one stands for (`p1009`, then said as a page a person finds, `_human_ids`). When one
+    could be a name printed on the drawings ("UNIT A2", "section A5"), or is no label it was
+    shown, which page it means is not known: the reason is left out (a wrong page named would
+    mislead the reviewer who picks)."""
+    found = list(_MATCH_LABEL.finditer(reason))
+    if any(m.group(0) not in labels or _PRINTED_NAME.search(reason[: m.start()]) for m in found):
+        return ""
+    return _MATCH_LABEL.sub(lambda m: str(labels[m.group(0)]), reason)
 
 
 def _items_across(
@@ -1724,7 +1734,12 @@ def _with_marks(
         found = facts_of(drawing)
         title = context.index_titles.get(drawing.ref)
         if title:
-            found = dataclasses.replace(found, index_title=title)
+            # The hand words the title's tidy-up leaves out ("REVERSED UNITS") always flag it.
+            found = dataclasses.replace(
+                found,
+                index_title=title,
+                hand=found.hand | pairing_module.markers_in([title])[1],
+            )
         extra = context.marked.get(drawing.ref)
         if not extra or not (extra[0] or extra[1]):
             return found
@@ -1761,6 +1776,7 @@ def _item_facts(
         markers=frozenset(w for m in members for w in m.markers),
         hand=frozenset(w for m in members for w in m.hand),
         index_title=next((m.index_title for m in members if m.index_title), None),
+        place=(item.file, item.page),
     )
     return merged, members
 
@@ -1960,11 +1976,13 @@ def _pair_across(
                 item_tags=item_tags,
                 linked={r: w for r, w in linked.items() if r in own},
             )
-            best, problem = pairing_module.narrow(
-                vendor_facts, _view_facts(item, facts_of, _section_of(item, facts_of))
-            )
-            if best is None and pairing_module.same_item(
-                mine_facts.index_title, _item_facts(item, facts_of, None)[0].index_title
+            item_views = _view_facts(item, facts_of, _section_of(item, facts_of))
+            best, problem = pairing_module.narrow(vendor_facts, item_views)
+            page_title = _item_facts(item, facts_of, None)[0].index_title
+            if (
+                best is None
+                and pairing_module.same_item(mine_facts.index_title, page_title)
+                and not _view_ruled_out(vendor_facts, item_views, page_title)
             ):
                 # The page's own title names the vendor's item exactly: the whole page is its
                 # drawing, whichever of its views shows the piece.
@@ -2050,7 +2068,7 @@ def _pair_across(
     unsure = () if chosen or DRAWING_NEEDED in why else _unsure(ranked, code_pick, answer)
     if unsure:
         # The AI page matcher is sure of an architect page and code cannot confirm it: the drawing
-        # is in the upload, so the reviewer is shown both pages, never "drawing needed".
+        # is in the upload, so both pages are named in the reason, never "drawing needed".
         either = " or ".join(unsure)
         why = (
             f"{pairing_module.UNPAIRED}: {pairing_module.PAIRING_UNSURE}: {either}?; "
@@ -2354,12 +2372,30 @@ def _shown_only(
     )
 
 
+def _view_ruled_out(
+    vendor: pairing_module.Facts, views: Sequence[pairing_module.Facts], page_title: str | None
+) -> bool:
+    """Whether code rules out a view of a sheet for the vendor's drawing: then the whole sheet is
+    never its drawing (a standard and an accessible vanity on one sheet). A view unmarked against
+    a marked vendor drawing is not ruled out when the sheet's own title carries the vendor's
+    variant marker ("ACCESSIBLE ... VANITY": every view on it is the accessible one)."""
+    title_marks = pairing_module.markers_in([page_title or ""])[0]
+    for scored in pairing_module.rank(vendor, views):
+        if scored.contradicts is None:
+            continue
+        view = next(v for v in views if v.ref == scored.ref)
+        if title_marks and vendor.markers and not view.markers:
+            continue
+        return True
+    return False
+
+
 def _unsure(
     ranked: Sequence[pairing_module.Scored],
     code_pick: str | None,
     answer: pairing_module.MatchAnswer | None,
 ) -> tuple[str, ...]:
-    """The two architect items a reviewer picks from when the AI page matcher is sure of one and
+    """The architect items a person confirms between when the AI page matcher is sure of one and
     code could not confirm it (`pairing.agree` refused it): the matcher's pick, then code's own
     pick or code's first other item (code's pick first when code rules the matcher's out). Empty
     when the matcher was not sure or found none, or when code rules its pick out and holds no
@@ -2371,6 +2407,9 @@ def _unsure(
     scored = by.get(pick)
     if scored is None:
         return ()
+    if pick == code_pick:
+        # Code and the matcher agree on the item, and something later (which view) is unsure.
+        return (pick,)
     other = code_pick if code_pick not in (None, pick) else None
     if scored.contradicts is not None:
         # Code rules the matcher's pick out and picked another: code's first, then the matcher's.

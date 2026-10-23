@@ -1743,10 +1743,11 @@ class _Run:
         others = [page for page in left if page not in lone]
         parts: list[str] = []
         if picks:
-            # The architect's drawing is in the upload: the reviewer picks which page it is.
+            # The architect's drawing is in the upload: a person confirms which page it is.
             parts.append(
-                f"{len(picks)} vendor {'page needs' if len(picks) == 1 else 'pages need'} the "
-                f"reviewer to pick its architect page: pairing unsure ({_page_list(picks)})"
+                f"{len(picks)} vendor {'page was' if len(picks) == 1 else 'pages were'} not "
+                f"compared, pairing unsure: a person confirms which architect page shows "
+                f"{'it' if len(picks) == 1 else 'each'} ({_page_list(picks)})"
             )
         if alone:
             # #1885: said apart; no more looks would compare them (no architect drawing).
@@ -1855,7 +1856,7 @@ class _Run:
             reason = self.unpaired.get(page) or self.retry.get(page) or ""
             unsure = unsure_words(reason) if page in self.unpaired else None
             if unsure is not None:
-                # The architect's drawing is in the upload: the reviewer picks the page, never
+                # The architect's drawing is in the upload: a person confirms the page, never
                 # "no architect drawing found".
                 engine.extra_gaps.append(
                     {
@@ -1864,7 +1865,7 @@ class _Run:
                             f"Vendor page {page}: not compared with the architect, pairing "
                             f"unsure: {unsure}"
                         ),
-                        "why": "pairing_uncertain",
+                        "why": "pairing_unsure",
                         "needs": UNSURE_NEEDS,
                         "scope": "set",
                         "item": f"Page {page}: pairing unsure",
