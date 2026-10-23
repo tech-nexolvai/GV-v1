@@ -25,6 +25,7 @@ from app.models.assistant_chat import (
     AssistantFindingDecision,
     AssistantSetNote,
 )
+from app.models.assistant_job import AssistantJob, AssistantJobEvent
 from app.models.document import (
     Document,
     DocumentKind,
@@ -172,6 +173,8 @@ __all__ = [
     "AssistantChatFile",
     "AssistantChatMessage",
     "AssistantFindingDecision",
+    "AssistantJob",
+    "AssistantJobEvent",
     "AssistantSetNote",
     "AuditEvent",
     "CanonicalObservation",
