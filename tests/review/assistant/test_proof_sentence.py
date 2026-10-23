@@ -118,6 +118,56 @@ def test_one_sentence_says_what_is_wrong_what_it_should_be_and_by_how_much() -> 
     assert proof_words.sum_line(_proved()) is None
 
 
+def test_a_string_the_drawing_cannot_split_names_both_fixes_and_never_picks_one() -> None:
+    """A string 1/8" off where nothing says which number is wrong (GV's rule: exact match,
+    flag everything): the should-be the register and the drawing show names both ways to fix it;
+    the sentence says correct the total or the parts. Made-up values."""
+    eighth = {
+        **_summed(),
+        "architect": '40 5/8"',
+        "vendor": '40 1/2"',
+        "parts": ['2"', '36 5/8"', '2"'],
+        "printed_total": '40 1/2"',
+        "parts_sum": "40.625",
+        "inches": {"architect": None, "vendor": "40.5"},
+    }
+    assert proof_words.either_string(eighth)
+    assert proof_words.should_text(eighth) == '40 5/8" overall, or parts adding up to 40 1/2"'
+    assert proof_words.sentence(eighth) == (
+        'Vendor prints 40 1/2" for the run height string, but its own parts add up to 40 5/8" '
+        '(1/8" more than the total). Correct the total to 40 5/8", or the parts so they add up to '
+        '40 1/2".'
+    )
+    assert proof_words.sum_line(eighth) == '2" + 36 5/8" + 2" = 40 5/8", not the 40 1/2" printed'
+    # A value GV's reviewer gave settles it: then only that value.
+    agreed = _summed(decision={"decision": "agree", "should_be": '40 5/8"'})
+    assert not proof_words.either_string(agreed)
+
+
+def test_a_part_the_drawing_names_is_the_one_to_change() -> None:
+    """The drawing names the wrong part (#1887): the sentence and the sum say that part should
+    be the overall less the other parts, never "the parts add up to" a sum that is not theirs.
+    Made-up values."""
+    part = {
+        **_summed(),
+        "architect": '12 1/4"',
+        "vendor": '15"',
+        "parts": ['2 3/4"', '15"', '3"'],
+        "printed_total": '18"',
+        "parts_sum": "20.75",
+        "inches": {"architect": None, "vendor": "15"},
+        "wrong_part": {"text": '15"', "should_be": "12.25", "label": "p1.D3"},
+    }
+    assert not proof_words.either_string(part)
+    assert proof_words.should_text(part) == '12 1/4"'
+    assert proof_words.sentence(part) == (
+        'Vendor prints 15" as one part of the run height string, but the parts must add up to the '
+        '18" overall and the drawing shows this part is the wrong number. Change it to 12 1/4" '
+        '(2 3/4" over).'
+    )
+    assert proof_words.sum_line(part) == '18" - 2 3/4" - 3" = 12 1/4", not the 15" printed'
+
+
 def test_a_rule_range_a_missing_finish_and_the_prototype_read_plainly() -> None:
     filler = _proved(
         item="End filler width",

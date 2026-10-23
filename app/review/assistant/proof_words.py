@@ -43,6 +43,7 @@ __all__ = [
     "Run",
     "checked_words",
     "difference_words",
+    "either_string",
     "inches_of",
     "missing",
     "reference_kind",
@@ -313,9 +314,28 @@ def _item_phrase(finding: Mapping[str, Any]) -> str:
 
 
 def should_text(finding: Mapping[str, Any]) -> str:
-    """The green should-be value, as the vendor may read it (the reviewer's value first)."""
+    """The green should-be value, as the vendor may read it (the reviewer's value first). A vendor
+    string whose drawing does not name the wrong number names both ways to fix it
+    (`either_string`): `40 5/8" overall, or parts adding up to 40 1/2"`."""
     # `should_be_value` holds the reviewer's value (#1803), as code writes it when it is the same.
-    return vendor_text(rule.should_be_value(finding), "") or ""
+    value = vendor_text(rule.should_be_value(finding), "") or ""
+    if value and either_string(finding):
+        printed = vendor_text(rule.vendor_value(finding), "") or ""
+        if printed:
+            return f"{value} overall, or parts adding up to {printed}"
+    return value
+
+
+def either_string(finding: Mapping[str, Any]) -> bool:
+    """A vendor string that does not add up where nothing says which number is wrong: no part the
+    drawing names (`wrong_part`) and no value GV's reviewer gave. The vendor may correct the parts
+    or the overall; code never guesses which (GV's rule: exact match, flag everything, so
+    even a 1/8" miss is red, 2026-10-23)."""
+    return (
+        rule.vendor_own(finding) == "sum"
+        and wrong_part(finding) is None
+        and _reviewer_value(finding) is None
+    )
 
 
 def missing(vendor: str) -> bool:
@@ -363,7 +383,27 @@ def sentence_runs(finding: Mapping[str, Any]) -> list[Run]:
     gap = difference_words(finding)
     item = _item_phrase(finding)
     kind = reference_kind(finding)
+    if kind == "sum" and wrong_part(finding) is not None:
+        # The drawing names the wrong part (#1887): the other parts and the overall are right.
+        overall = vendor_text(str(finding.get("printed_total") or ""), "") or ""
+        where = f" of{item.removeprefix(' for')}" if item else ""
+        return [
+            ("Vendor prints ", "plain"),
+            (vendor, "vendor"),
+            (
+                (
+                    f" as one part{where}, but the parts must add up to the {overall} overall and "
+                    "the drawing shows this part is the wrong number. Change it to "
+                ),
+                "plain",
+            ),
+            (should, "should"),
+            (f" ({gap})." if gap else ".", "plain"),
+        ]
     if kind == "sum":
+        # The parts' sum (the green value alone); the drawing does not say which number is wrong,
+        # so the sentence names both ways to correct it.
+        should = vendor_text(rule.should_be_value(finding), "") or ""
         runs: list[Run] = [
             ("Vendor prints ", "plain"),
             (vendor, "vendor"),
@@ -411,6 +451,16 @@ def sum_line(finding: Mapping[str, Any]) -> str | None:
         return None
     parts = [vendor_text(str(part), "") or "" for part in finding.get("parts") or []]
     parts = [part for part in parts if part]
+    wrong = wrong_part(finding)
+    if wrong is not None:
+        # The overall less the other parts: `17 1/4" - 2 5/8" - 3" = 11 5/8", not the 14" printed`.
+        part = vendor_text(wrong[0], "") or ""
+        overall = vendor_text(str(finding.get("printed_total") or ""), "") or ""
+        if not part or part not in parts or not overall:
+            return None
+        rest = list(parts)
+        rest.remove(part)
+        return f"{' - '.join([overall, *rest])} = {inch_words(wrong[1])}, not the {part} printed"
     total = vendor_text(rule.should_be_value(finding), "") or ""
     printed = vendor_text(rule.vendor_value(finding), "") or ""
     if not parts or not total:

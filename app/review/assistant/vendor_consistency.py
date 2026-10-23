@@ -17,8 +17,11 @@ and page map (`page_map.json`). Three checks, each built to report only what cod
    at least `MIN_SCALE_SUPPORT` printed dimensions of that drawing): when two or more of the
    string's dimensions are not drawn to their own values, the labels may belong to other lines (or
    the view is not to scale), so it is not a finding (`doubt`). One that is off names the likely
-   wrong number. A string that misses its overall only by the drawing's own CAD rounding (each
-   value its drawn length rounded to 1/8", `_cad_rounding`, #1887) is not a finding (`rounding`).
+   wrong number. A string that misses its overall by as little as 1/8" is a Wrong too, even when
+   each value is its drawn length rounded by the CAD program (GV's rule: exact match, flag
+   everything; Anant, 2026-10-23, after #1888 had called such a miss rounding). When the drawing
+   cannot say which number is wrong, the red is the string as a whole: correct the parts or the
+   overall.
 2. **The same span printed twice.** Two of the vendor's dimension lines in one view (on the same
    pasted drawing, along the same axis, and proved to be in one projection: at each end one
    extension line runs across both lines, `_one_view`) that end on exactly the same two extension
@@ -139,15 +142,13 @@ _CLEAN: Final = re.compile(
     r"\d{1,3}' ?-? ?\d{1,2}(?: \d{1,2}/\d{1,2})?\"|\d{1,3}'|"
     r"\d{2,5} \[\d{1,4}(?: \d{1,2}/\d{1,2})?\])$"
 )
-#: CAD rounding (a real two-file upload, 2026-10-23): a CAD program prints each dimension rounded to
-#: the drawing's step (1/8", or 1/16" where the drawing prints sixteenths), so three 57 1/3" bays
-#: print 57 3/8" each under a 172" overall. A string whose printed sum misses its overall by at
-#: most half a step a part (`_ROUNDING_MOST_IN` at most), on a drawing where one true scale makes
-#: every one of its printed values the rounding of its own drawn length, is that rounding: never a
-#: finding. A part drawn a length its printed value cannot round from stays a Wrong.
+#: A CAD program prints each dimension rounded to the drawing's step (1/8", or 1/16" where the
+#: drawing prints sixteenths). A string that misses its overall is a Wrong even when that rounding
+#: explains the miss (GV's rule: exact match, flag everything); the step is only used to name the
+#: one wrong number of a string (`_odd_one`): the one value that is not the rounding of its own
+#: drawn length when every other value is.
 _ROUNDING_STEP_IN: Final = Fraction(1, 8)
 _ROUNDING_FINE_IN: Final = Fraction(1, 16)
-_ROUNDING_MOST_IN: Final = Fraction(1, 4)
 #: How far the true scale may sit from the drawing's (its printed dimensions share it within 1 %).
 _ROUNDING_SCALE_SHARE: Final = 0.01
 #: Where a line's end is, give or take (points): a joint's own gap is measured from its middle.
@@ -162,7 +163,7 @@ MAX_UNKNOWNS: Final = 60
 #: The page texts' cache in the set pack (the sheet index reads them once per set).
 TEXTS_FILE: Final = "page_texts.json"
 
-type Verdict = Literal["adds_up", "does_not_add_up", "doubt", "rounding"]
+type Verdict = Literal["adds_up", "does_not_add_up", "doubt"]
 type Box = tuple[float, float, float, float]
 type Point = tuple[float, float]
 type Segment = tuple[Point, Point]
@@ -602,15 +603,6 @@ def _judge(
             "its parts are drawn short of the overall's ends by about the difference (a reveal "
             "or an inset), so they do not measure the same span"
         )
-    if _cad_rounding(overall, parts, drawing, scale[0]):
-        return StringCheck(
-            overall,
-            tuple(parts),
-            "rounding",
-            total,
-            "the difference is the drawing's own rounding: each value is its drawn length "
-            "rounded to the drawing's step",
-        )
     off = _off_scale(members, scale[0])
     if len(off) >= 2:
         return doubt(
@@ -677,28 +669,6 @@ def _one_scale(members: Sequence[_Drawn], step: Fraction, pt_per_inch: float) ->
         low = max(low, (span - give) / (printed + half))
         high = min(high, (span + give) / (printed - half))
     return low <= high
-
-
-def _cad_rounding(
-    overall: _Label, parts: Sequence[_Label], drawing: Sequence[_Label], pt_per_inch: float
-) -> bool:
-    """The string misses its overall only by the drawing's rounding (see `_ROUNDING_STEP_IN`):
-
-    - the printed difference is at most half the drawing's step a part (and `_ROUNDING_MOST_IN`);
-    - every value is plain inches (a millimetre value's inches are a conversion, not the CAD's
-      rounding);
-    - one true scale, within `_ROUNDING_SCALE_SHARE` of the drawing's, makes each value (the
-      overall and every part) the rounding of its drawn length (`_one_scale`).
-
-    A part drawn a length its printed value cannot round from (a 15" part drawn 14 3/8") leaves no
-    such scale: not rounding."""
-    off = abs(sum((p.inches for p in parts), Fraction(0)) - overall.inches)
-    step = _rounding_step(drawing)
-    if off > min(step * len(parts) / 2, _ROUNDING_MOST_IN):
-        return False
-    if any(m.units is not None for m in (overall, *parts)):
-        return False
-    return _one_scale(_drawn_members(overall, parts), step, pt_per_inch)
 
 
 def _odd_one(
@@ -961,6 +931,14 @@ def _string_finding(
         )
     elif check.reason:
         why += f" A hint: {check.reason}."
+    if check.culprit is None:
+        # GV's rule (exact match, flag everything): even a 1/8" miss is a Wrong. Code never
+        # guesses which number the vendor must change when the drawing does not show it.
+        why += (
+            f" The parts add up to {total} but the overall says {overall.text} "
+            f"({format_inches(abs(check.off_by))} off), and the drawing does not show which "
+            "number is wrong: correct the parts or the overall."
+        )
     why += _drawn_note([overall, *parts])
     # The red cloud goes round the wrong number and the green says what it should be: the part
     # the drawing names, else the printed overall against the parts' sum.
@@ -1284,7 +1262,6 @@ def check_set(
         "adds_up": sum(1 for c in checks if c.verdict == "adds_up"),
         "does_not_add_up": sum(1 for c in checks if c.verdict == "does_not_add_up"),
         "doubt": sum(1 for c in checks if c.verdict == "doubt"),
-        "rounding": sum(1 for c in checks if c.verdict == "rounding"),
     }
     reported: set[tuple[str, int, Fraction]] = set()
     for check in checks:
@@ -1579,7 +1556,6 @@ def judge_strings(
       unless the drawing names one part as the wrong number: dropped (code's own finding, red at
       that part with what it should be, replaces it);
     - code's string adds up: dropped (the reading grouped dimensions of another chain);
-    - code's string misses only by the drawing's rounding: dropped (no finding: CAD rounding);
     - code's string does not add up with other parts: dropped (code's own finding replaces it);
     - no string of code's, or a doubt: left as it is (never red: Not compared)."""
     to_inches = import_module("app.review.assistant.finding_checks").to_inches
@@ -1598,7 +1574,7 @@ def judge_strings(
             for check in checks
             if check.overall.page == finding.get("page")
             and Fraction(printed) == check.overall.inches
-            and check.verdict in ("adds_up", "does_not_add_up", "rounding")
+            and check.verdict in ("adds_up", "does_not_add_up")
         ]
         placed = [c for c in same if _overlaps(finding.get("vendor_box"), c.overall)]
         if placed:
@@ -1615,12 +1591,6 @@ def judge_strings(
             dropped[str(finding["id"])] = (
                 f"Code measured this string on the drawing: {listed} = {overall} printed, it adds "
                 "up; the reading grouped dimensions of another chain."
-            )
-        elif check.verdict == "rounding":
-            dropped[str(finding["id"])] = (
-                f"Code measured this string on the drawing: {listed} against {overall} printed "
-                "differs only by the drawing's rounding (each value is its drawn length rounded), "
-                "so it is not a mistake."
             )
         elif None not in read and parts == ours and check.wrong_part is None:
             verified.append(str(finding["id"]))

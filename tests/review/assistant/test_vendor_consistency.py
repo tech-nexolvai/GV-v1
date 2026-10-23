@@ -170,7 +170,6 @@ def test_a_string_whose_part_is_drawn_short_is_a_wrong_at_that_part(tmp_path: Pa
         "adds_up": 0,
         "does_not_add_up": 1,
         "doubt": 0,
-        "rounding": 0,
     }
     (finding,) = result.findings
     assert finding["source"] == "vendor_arithmetic"
@@ -227,25 +226,49 @@ def _string_sheet(
     return body + _dim(440, 440 + 10 * ppi, 150, '10"') + _dim(440, 440 + 12 * ppi, 110, '12"')
 
 
-def test_three_equal_bays_printed_to_the_eighth_are_cad_rounding(tmp_path: Path) -> None:
+def _either_red(finding: dict[str, Any], printed: str, summed: str) -> None:
+    """A string red as a whole: the drawing does not say which number is wrong, so the red is on
+    the printed overall and the should-be names both ways to correct it (GV's rule: exact
+    match, flag everything)."""
+    from app.review.assistant import proof, proof_words
+
+    assert finding["source"] == "vendor_arithmetic" and finding["status"] == "different"
+    assert finding["vendor"] == finding["printed_total"] == printed
+    assert finding["architect"] == summed  # the parts' sum
+    assert "wrong_part" not in finding
+    assert "the drawing does not show which number is wrong" in finding["why"]
+    assert "correct the parts or the overall." in finding["why"]
+    assert "architect" not in finding["why"].lower()
+    assert proof.vendor_value(finding) == printed
+    assert proof.should_be_value(finding) == summed
+    assert proof_words.either_string(finding)
+    assert proof_words.should_text(finding) == f"{summed} overall, or parts adding up to {printed}"
+    said = proof_words.sentence(finding)
+    assert f"Correct the total to {summed}, or the parts so they add up to {printed}." in said
+    assert "architect" not in said.lower()
+
+
+def test_three_equal_bays_printed_to_the_eighth_are_red_as_a_whole(tmp_path: Path) -> None:
     """172" in three equal bays: each is 57 1/3", printed 57 3/8" (the CAD's 1/8" rounding), so
-    the parts print 172 1/8". Not a finding."""
+    the parts print 172 1/8". GV's rule: exact match, flag everything, so it is a Wrong,
+    red on the string as a whole: every value is its drawn length rounded, so the drawing cannot
+    say which number is wrong."""
     third = 172 / 3
     sheet = _string_sheet('172"', [(third, '57 3/8"')] * 3, ppi=2.0, x0=40.0)
     result = _check(tmp_path, sheet)
-    assert result.strings["rounding"] == 1 and result.strings["does_not_add_up"] == 0
-    assert result.findings == []
-    (check,) = [c for c in result.checks if c.verdict == "rounding"]
-    assert "rounding" in check.reason
+    assert result.strings["does_not_add_up"] == 1 and "rounding" not in result.strings
+    (finding,) = result.findings
+    _either_red(finding, '172"', '172 1/8"')
+    assert '(1/8" off)' in finding["why"]
 
 
-def test_recesses_drawn_just_under_two_inches_are_cad_rounding(tmp_path: Path) -> None:
+def test_recesses_drawn_just_under_two_inches_are_red_as_a_whole(tmp_path: Path) -> None:
     """2" + 20 1/8" + 2" under 24": the recesses are drawn 1 15/16" (printed 2"), so the parts
-    print 24 1/8". Not a finding."""
+    print 24 1/8". 1/8" off: a Wrong on the string as a whole."""
     sheet = _string_sheet('24"', [(1.9375, '2"'), (20.125, '20 1/8"'), (1.9375, '2"')], ppi=8.0)
     result = _check(tmp_path, sheet)
-    assert result.strings["rounding"] == 1
-    assert result.findings == []
+    (finding,) = result.findings
+    _either_red(finding, '24"', '24 1/8"')
 
 
 def test_a_part_drawn_far_from_its_value_stays_red_with_the_part_as_should_be(
@@ -268,18 +291,20 @@ def test_an_eighth_slip_the_strings_own_lines_show_is_red_at_its_part(tmp_path: 
     slip, red at that part, should be 8 1/4"."""
     sheet = _string_sheet('31"', [(22.75, '22 3/4"'), (8.25, '8 1/8"')], ppi=8.0)
     result = _check(tmp_path, sheet)
-    assert result.strings["rounding"] == 0
     (finding,) = result.findings
     assert finding["vendor"] == '8 1/8"' and finding["architect"] == '8 1/4"'
+    assert finding["wrong_part"]["text"] == '8 1/8"'
 
 
-def test_the_same_eighth_drawn_as_rounding_is_not_red(tmp_path: Path) -> None:
+def test_the_same_eighth_drawn_as_rounding_is_red_on_the_string(tmp_path: Path) -> None:
     """31" = 22 3/4" + 8 1/8" with the parts drawn 22 13/16" + 8 3/16" (each printed to the
-    nearest 1/8"): the CAD's rounding, not a finding."""
+    nearest 1/8"): the CAD's rounding explains the 1/8", but GV counts it as a vendor mistake.
+    The drawing cannot say which number is wrong: red on the string, both fixes named."""
     sheet = _string_sheet('31"', [(22.8125, '22 3/4"'), (8.1875, '8 1/8"')], ppi=8.0)
     result = _check(tmp_path, sheet)
-    assert result.strings["rounding"] == 1
-    assert result.findings == []
+    (finding,) = result.findings
+    _either_red(finding, '31"', '30 7/8"')
+    assert finding["dims"]["vendor"]["text"] == '31"'  # the red round the printed overall
 
 
 def test_a_string_that_adds_up_gives_nothing(tmp_path: Path) -> None:
@@ -804,12 +829,14 @@ def test_a_grouped_string_whose_part_the_drawing_names_is_replaced_by_codes_own(
     assert "its own finding replaces" in judged.dropped["F7"]
 
 
-def test_a_grouped_string_code_measures_as_cad_rounding_is_dropped(tmp_path: Path) -> None:
+def test_a_grouped_string_code_measures_off_by_an_eighth_is_verified(tmp_path: Path) -> None:
+    """A reading's string 1/8" off its overall, the same parts code measured: verified (never
+    dropped as rounding: GV's rule, exact match)."""
     third = 172 / 3
     result = _check(tmp_path, _string_sheet('172"', [(third, '57 3/8"')] * 3, ppi=2.0, x0=40.0))
-    grouped = _ledger_string(['57 3/8"'] * 3, '172"', string_geometry="verified")
+    grouped = _ledger_string(['57 3/8"'] * 3, '172"')
     judged = vc.judge_strings([grouped], result.checks)
-    assert judged.verified == () and "rounding" in judged.dropped["F7"]
+    assert judged.verified == ("F7",) and judged.dropped == {}
 
 
 def test_two_overalls_of_one_value_and_no_spot_are_left_alone(tmp_path: Path) -> None:
@@ -889,18 +916,20 @@ def test_the_line_work_is_read_once_per_set_and_kept_in_its_pack(
     assert vc.line_work(uploads)("set.pdf", 6) == segments and calls == [2, 3, 5]
 
 
-def test_two_readings_never_make_a_miss_within_cad_rounding_red() -> None:
-    """Two readings agreeing on a five-part string 1/8" off its overall prove the values, not
-    that the drawing did not round them: Not compared. A miss rounding cannot make stays red."""
+def test_two_readings_of_a_string_an_eighth_off_make_it_red() -> None:
+    """Two readings agreeing on a five-part string 1/8" off its overall: code's sum proves it does
+    not add up, and GV counts that as a vendor mistake (GV's rule: exact match, flag everything), so it
+    is red. Only a miss within the readings' 1/16" is not."""
     from app.review.assistant import proof
     from app.review.assistant.full_check_advocate import compare_strings
 
     parts = ['5 1/4"', '12 3/8"', '5 1/4"', '3"', '30"']  # 55 7/8" printed 56"
-    rounded = _ledger_string(parts, '56"', string_geometry="two_reads")
-    assert proof.within_rounding(rounded)
-    assert proof.proof_group(rounded) == "not_compared"
+    eighth = _ledger_string(parts, '56"', string_geometry="two_reads")
+    assert proof.proof_group(eighth) == "clouded"
     chains = {"chains": [{"parts": parts, "overall": '56"', "direction": "across"}], "note": ""}
-    assert compare_strings(parts, '56"', chains)[0] == "within_rounding"
+    assert compare_strings(parts, '56"', chains)[0] == "proved"
+    near = ['5 1/4"', '12 3/8"', '5 1/4"', '3"', '30 1/16"']  # 55 15/16" printed 56"
+    chains = {"chains": [{"parts": near, "overall": '56"', "direction": "across"}], "note": ""}
+    assert compare_strings(near, '56"', chains)[0] == "within_rounding"
     slip = _ledger_string(['20"', '41"'], '60"', string_geometry="two_reads")
-    assert not proof.within_rounding(slip)
     assert proof.proof_group(slip) == "clouded"

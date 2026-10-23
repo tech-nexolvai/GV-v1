@@ -58,7 +58,7 @@ from app.review.assistant import (
 )
 from app.review.assistant import full_check_advocate as advocate
 from app.review.assistant.chat_trust import inch_words
-from app.review.assistant.finding_checks import to_inches, wrong_part
+from app.review.assistant.finding_checks import wrong_part
 from app.review.assistant.round_reference import round_only
 from app.review.assistant.vendor_text import vendor_text
 
@@ -105,7 +105,6 @@ __all__ = [
     "vendor_facing",
     "vendor_own",
     "vendor_value",
-    "within_rounding",
     "witnesses_of",
 ]
 
@@ -337,27 +336,6 @@ def string_verified(finding: Mapping[str, Any]) -> bool:
     )
 
 
-def within_rounding(finding: Mapping[str, Any]) -> bool:
-    """A vendor string whose printed parts miss its printed overall by no more than CAD rounding
-    can (three 57 1/3" bays print 57 3/8" under 172"): code's geometry must rule the rounding out
-    before it is red (`vendor_consistency` does; two AI reads cannot)."""
-    if finding.get("source") != "vendor_arithmetic":
-        return False
-    parts = finding.get("parts")
-    total = _inches_of(finding.get("printed_total"))
-    if not isinstance(parts, list) or len(parts) < 2 or total is None:
-        return False
-    values = [_inches_of(part) for part in parts]
-    if any(value is None for value in values):
-        return False
-    off = total - sum((v for v in values if v is not None), Decimal(0))
-    return off != 0 and advocate.within_cad_rounding(off, len(parts))
-
-
-def _inches_of(text: object) -> Decimal | None:
-    return to_inches(text) if isinstance(text, str) else None
-
-
 def _advocate(finding: Mapping[str, Any]) -> Mapping[str, Any] | None:
     critic = finding.get("critic")
     if isinstance(critic, Mapping) and critic.get("model") == _ADVOCATE:
@@ -419,8 +397,6 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
         return False  # a total the architect never prints (code's summed chain) is never proof
     if finding.get("source") == "vendor_arithmetic" and not string_verified(finding):
         return False  # an AI-grouped string: only code's geometry proves the parts are one chain
-    if within_rounding(finding) and finding.get("string_geometry") == TWO_READS:
-        return False  # two reads prove the values, not that the drawing did not round them
     if classification.architect_conflict(finding) is not None:
         return False  # the architect prints the vendor's value, or not the "should be" (#1802)
     if not _read_by_code(finding):
