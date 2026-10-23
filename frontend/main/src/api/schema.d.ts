@@ -5194,6 +5194,8 @@ export interface components {
              * @description The non-AI witnesses behind it: printed, ocr_ink, text, rule, arithmetic, ledger, units.
              */
             witnesses?: string[] | null;
+            /** @description A vendor string's wrong part named by code's geometry (#1887), with how long its line is drawn; an older finding's drawn length is read from its own words. */
+            wrong_part?: components["schemas"]["ChatFindingWrongPartOut"] | null;
         };
         /**
          * ChatFindingProofOut
@@ -5461,6 +5463,33 @@ export interface components {
             ref: string;
             /** Version */
             version: number;
+        };
+        /**
+         * ChatFindingWrongPartOut
+         * @description A vendor string's wrong part, named by code's geometry (#1887): the overall is right, and
+         *     this part should be the overall less the other parts. The results screen's proof.
+         */
+        ChatFindingWrongPartOut: {
+            /**
+             * Drawn
+             * @description How long its line is drawn at the drawing's scale: 11 5/8". Null when not kept.
+             */
+            drawn?: string | null;
+            /**
+             * Overall
+             * @description The printed overall, drawn to its value: 18".
+             */
+            overall?: string | null;
+            /**
+             * Should Be
+             * @description What it should be, in inches: "11.625".
+             */
+            should_be: string;
+            /**
+             * Text
+             * @description The wrong part as printed: 14".
+             */
+            text: string;
         };
         /**
          * ChatFullCheckPlanOut

@@ -7,6 +7,7 @@ and their own steps. The SSE events (`chat_engine.py`) carry the same shapes.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
@@ -45,6 +46,7 @@ __all__ = [
     "ChatFindingSettledOut",
     "ChatFindingUpdateBlock",
     "ChatFindingUpdateOut",
+    "ChatFindingWrongPartOut",
     "ChatFullCheckPlanOut",
     "ChatFunnelOut",
     "ChatListOut",
@@ -703,6 +705,29 @@ class ChatFindingLikelyOut(BaseModel):
     by: Literal["whole_drawing_look"] = "whole_drawing_look"
 
 
+class ChatFindingWrongPartOut(BaseModel):
+    """A vendor string's wrong part, named by code's geometry (#1887): the overall is right, and
+    this part should be the overall less the other parts. The results screen's proof."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str = Field(description='The wrong part as printed: 14".')
+    should_be: str = Field(description='What it should be, in inches: "11.625".')
+    drawn: str | None = Field(
+        default=None,
+        description="How long its line is drawn at the drawing's scale: 11 5/8\". Null when not "
+        "kept.",
+    )
+    overall: str | None = Field(
+        default=None, description='The printed overall, drawn to its value: 18".'
+    )
+
+
+#: The drawn length in an older wrong-part finding's words ("the 14" dimension is drawn as 11 5/8"").
+_DRAWN_WORDS = re.compile(r"dimension is drawn as ([^,;()]+?\")")
+_OVERALL_WORDS = re.compile(r"the ([^ ]+?\") overall is drawn to its value")
+
+
 class ChatFindingProofOut(BaseModel):
     """Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read
     (`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a
@@ -838,6 +863,11 @@ class ChatFindingOut(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _wrong_part_words(cls, raw: object) -> object:
+        return _wrong_part_of(raw)
+
     id: str
     page: int
     vs_page: int | None = None
@@ -949,6 +979,11 @@ class ChatFindingOut(BaseModel):
         description="Where the zero-click cloud drawing puts it, and why (#1581); worked out on "
         "read, so it follows the reviewer's latest decision.",
     )
+    wrong_part: ChatFindingWrongPartOut | None = Field(
+        default=None,
+        description="A vendor string's wrong part named by code's geometry (#1887), with how long "
+        "its line is drawn; an older finding's drawn length is read from its own words.",
+    )
     check_reason: (
         Literal["different_extent", "which_governs", "pairing_not_certain", "scaled", "site_verify"]
         | None
@@ -1002,6 +1037,26 @@ class ChatFindingOut(BaseModel):
         "(proved: the same parts and overall, and code's sum is off; gap: code's lines show a part "
         "left out, so no reading was asked; not_verified: the fixed price did not reach it).",
     )
+
+
+def _wrong_part_of(raw: object) -> object:
+    """A stored finding's wrong part with its drawn length and printed overall filled from the
+    finding's own words when an older finding did not keep them."""
+    if not isinstance(raw, dict):
+        return raw
+    part = raw.get("wrong_part")
+    if not isinstance(part, dict) or not part.get("text"):
+        return raw
+    why = str(raw.get("why") or "")
+    filled = dict(part)
+    if not filled.get("drawn"):
+        found = _DRAWN_WORDS.search(why)
+        filled["drawn"] = found.group(1).strip() if found else None
+    if not filled.get("overall"):
+        found = _OVERALL_WORDS.search(why)
+        filled["overall"] = found.group(1) if found else raw.get("printed_total")
+    filled["should_be"] = str(filled.get("should_be") or "")
+    return {**raw, "wrong_part": filled}
 
 
 class ChatFindingBlock(BaseModel):

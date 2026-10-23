@@ -988,6 +988,13 @@ def _string_finding(
             "text": wrong[0].text,
             "should_be": str(Decimal(wrong[1].numerator) / Decimal(wrong[1].denominator)),
             "label": wrong[0].ref,
+            # How long the wrong part's line is drawn, at the drawing's scale (the screen's proof).
+            "drawn": (
+                format_inches(_sixteenths(check.culprit_drawn))
+                if check.culprit_drawn is not None
+                else None
+            ),
+            "overall": overall.text,
         }
     return finding
 

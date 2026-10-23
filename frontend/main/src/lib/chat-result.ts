@@ -34,6 +34,16 @@ export const TAB_WORDS: Record<ResultTab, { word: string; hint: string }> = {
   not_compared: { word: 'Not compared', hint: 'Each with its reason' },
 };
 
+/**
+ * A tile's caption with its unit where two counts could be read against each other (2026-10-23):
+ * Drawing needed counts pages, Not compared counts items, as the top line says pages.
+ */
+export function tileHint(tab: ResultTab, count: number): string {
+  if (tab === 'drawing_needed') return count === 1 ? '1 page not in the upload. Ask GV' : `${count} pages not in the upload. Ask GV`;
+  if (tab === 'not_compared') return count === 1 ? '1 item, with its reason' : `${count} items, each with its reason`;
+  return TAB_WORDS[tab].hint;
+}
+
 /** The tiles shown: all six, always in the same place (a zero is shown faded). */
 export function resultTabs(): ResultTab[] {
   return [...RESULT_TABS];
@@ -193,8 +203,8 @@ export function headline(input: { wrong: number; likely: number; pages: PageCoun
   const first = `${mistakes}${confirm}.`;
   if (!pages) return first;
   const parts = [`${pages.compared} of ${pages.total} pages checked against the architect`];
-  if (pages.needed > 0) parts.push(`${pages.needed} ${pages.needed === 1 ? 'has' : 'have'} no architect drawing in this upload`);
-  if (pages.other > 0) parts.push(`${pages.other} not compared`);
+  if (pages.needed > 0) parts.push(`${plural(pages.needed, 'page has', 'pages have')} no architect drawing in this upload`);
+  if (pages.other > 0) parts.push(`${plural(pages.other, 'page', 'pages')} not compared`);
   return `${first} ${parts.join('; ')}.`;
 }
 
@@ -363,6 +373,26 @@ export function suggestedShouldBe(finding: Pick<ChatFinding, 'proof' | 'architec
   if (proof && !/\(reviewer\)\s*$/.test(proof)) return proof.replace(/\s*\(.*\)\s*$/, '');
   const architect = finding.architect?.trim() ?? '';
   return /\d/.test(architect) && !/GV Review'?s record|recorded check/i.test(architect) ? architect : '';
+}
+
+/**
+ * #1887: a vendor string whose wrong part code's geometry named (the overall is right): the part,
+ * what it should be, how long its line is drawn and the overall, in the screen's words.
+ */
+export interface WrongPartWords {
+  part: string;
+  should: string;
+  drawn: string | null;
+  overall: string | null;
+}
+
+export function wrongPartWords(finding: Pick<ChatFinding, 'wrong_part' | 'source' | 'printed_total'>): WrongPartWords | null {
+  const part = finding.wrong_part;
+  if (finding.source !== 'vendor_arithmetic' || !part?.text) return null;
+  const should = inchNumber(part.should_be);
+  if (should === null || should <= 0) return null;
+  const overall = part.overall?.trim() || finding.printed_total?.trim() || null;
+  return { part: quoteMarks(part.text), should: `${inchWords(should)}″`, drawn: part.drawn?.trim() ? quoteMarks(part.drawn.trim()) : null, overall: overall ? quoteMarks(overall) : null };
 }
 
 /** "5″ short" / "2″ over": the vendor's value against what it should be, from code's numbers. */

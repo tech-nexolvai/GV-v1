@@ -30,7 +30,9 @@ import {
   resultTabs,
   shouldBeValue,
   TAB_WORDS,
+  tileHint,
   vendorValue,
+  wrongPartWords,
   verdictOf,
   workLine,
   workSteps,
@@ -189,7 +191,7 @@ export function FullCheckResult(props: FullCheckResultProps) {
           >
             <span className="flex min-h-9 min-w-0 items-start gap-1.5 text-[13px] leading-[18px] font-semibold max-md:min-h-8 max-md:text-xs max-md:leading-4"><OutcomeGlyph kind={each} className="max-md:size-4" /><span className="min-w-0 break-words">{TAB_WORDS[each].word}</span></span>
             <span data-slot="chat-result-count" className={cn('num text-[26px] leading-9 font-medium tracking-[-0.02em] max-md:text-2xl max-md:leading-8', counts[each] === 0 ? 'text-muted-foreground/60' : COUNT_TONE[each])}>{counts[each]}</span>
-            <span className="text-xs leading-[17px] text-muted-foreground max-md:hidden">{TAB_WORDS[each].hint}</span>
+            <span className="text-xs leading-[17px] text-muted-foreground max-md:hidden">{tileHint(each, counts[each])}</span>
           </button>
         ))}
       </div>
@@ -416,7 +418,7 @@ function ResultHead({ files, chatId, reviewAction, previewPage, onRunAgain, revi
   // that, so no "Run the check again"; asking GV for the drawings is the next step.
   const missingOnly = missingDrawingsOnly(reviewAction, needed);
   const ask = onAsk && requested > 0
-    ? <button type="button" data-slot="chat-result-ask-gv" onClick={onAsk} className={missingOnly ? BUTTON_PRIMARY : BUTTON}><Mail className="size-4" aria-hidden="true" />Ask GV for {requested} {requested === 1 ? 'drawing' : 'drawings'}</button>
+    ? <button type="button" data-slot="chat-result-ask-gv" onClick={onAsk} className={missingOnly ? BUTTON_DARK : BUTTON}><Mail className="size-4" aria-hidden="true" />Ask GV for {requested} {requested === 1 ? 'drawing' : 'drawings'}</button>
     : null;
   const primary = verdict?.draft
     ? missingOnly ? ask : onRunAgain && <button type="button" data-slot="chat-result-run-again" onClick={onRunAgain} className={BUTTON_PRIMARY}><RotateCw className="size-4" aria-hidden="true" />Run the check again</button>
@@ -526,6 +528,8 @@ export function PackageLine({ review }: { review: CloudReview }) {
 
 const BUTTON_PRIMARY = 'inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none active:scale-[0.97] motion-reduce:active:scale-100';
 const BUTTON = 'inline-flex h-9 items-center gap-1.5 rounded-lg border bg-background px-3 text-sm font-medium transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none';
+/** An action that is not the brand's (asking GV): the neutral dark primary, never red or maroon (red means Wrong). */
+const BUTTON_DARK = 'inline-flex h-9 items-center gap-1.5 rounded-lg bg-foreground px-3.5 text-sm font-medium text-background transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none active:scale-[0.97] motion-reduce:active:scale-100';
 
 function FileRow({ icon: Icon, name, file, href, note }: { icon: typeof FileText; name: string; file: ChatFile; href: string; note?: string }) {
   const pdf = /\.pdf$/i.test(file.name) || file.mime === 'application/pdf';
@@ -581,6 +585,17 @@ function Where({ finding, number, likely = false, noDrawing = false, underPage =
 }
 
 function ValuesLine({ finding }: { finding: ChatFinding }) {
+  const part = wrongPartWords(finding);
+  if (part && !finding.decision) {
+    // #1887: the part code's geometry named is wrong; the overall is right.
+    return (
+      <p data-slot="chat-result-values" className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1 text-[13px] text-muted-foreground">
+        <span className="inline-flex items-baseline gap-1.5">Vendor <span className="num text-[15px] font-semibold text-outcome-fail-fg">{part.part}</span></span>
+        <ArrowRight className="size-3.5 shrink-0 self-center text-muted-foreground/70" aria-label="should be" />
+        <span className="inline-flex items-baseline gap-1.5">Should be <span className="num text-[15px] font-semibold text-outcome-pass-fg">{part.should}</span>{part.overall && <span className="text-xs">the {part.overall} overall is right</span>}</span>
+      </p>
+    );
+  }
   const vendor = vendorValue(finding);
   const should = shouldBeValue(finding);
   const difference = differenceWords(finding);
@@ -603,9 +618,19 @@ function RowEvidence({ finding, pictureUrl }: { finding: ChatFinding; pictureUrl
   const crops: React.ReactNode[] = [];
   // The decided side names (#1581): a vendor's own string or span is never labelled "Architect".
   const labels = sideLabels(finding);
-  if (finding.vendor_picture_id) crops.push(<Crop key="v" src={pictureUrl(finding.vendor_picture_id)} who={labels.vendor} page={finding.vendor_box?.page ?? finding.page} />);
+  const part = wrongPartWords(finding);
+  // #1887: the crop is the wrong part's spot, not the printed total.
+  if (finding.vendor_picture_id) crops.push(<Crop key="v" src={pictureUrl(finding.vendor_picture_id)} who={part ? `Vendor: the ${part.part} part` : labels.vendor} page={finding.vendor_box?.page ?? finding.page} />);
   else if (finding.vendor && !/\d/.test(finding.vendor)) crops.push(<WordsBox key="v" who={labels.vendor}>{finding.vendor}</WordsBox>);
-  if (finding.parts?.length) {
+  if (finding.parts?.length && part) {
+    // #1887: the sum is off, and the drawing names the part: its line is drawn to what it should be.
+    crops.push(
+      <WordsBox key="s" who="Measured by code">
+        <span className="num line-clamp-2 text-xs leading-[17px]">{finding.parts.map((each) => each.replace(/"/g, '″')).join(' + ')}{finding.printed_total ? ` ≠ ${finding.printed_total.replace(/"/g, '″')}` : ''}</span>
+        <span className="mt-1 block text-[12.5px] text-foreground"><span className="num">{part.part}</span> line drawn <span className="num font-semibold whitespace-nowrap text-outcome-pass-fg">{part.drawn ?? part.should}</span></span>
+      </WordsBox>,
+    );
+  } else if (finding.parts?.length) {
     const sum = finding.parts_sum ? inchWords(Number(finding.parts_sum)) : null;
     crops.push(
       <WordsBox key="s" who="Added up by code">

@@ -467,6 +467,11 @@ export interface ChatFinding {
   round_status?: RoundStatus | null;
   /** Compared with the vendor's own earlier round: information only, never counted as right (2026-10-22). */
   round_match?: RoundMatch | null;
+  /**
+   * #1887: a vendor string's wrong part named by code's geometry (the overall is right): what it
+   * should be (inches, "11.625"), how long its line is drawn, and the printed overall.
+   */
+  wrong_part?: FindingWrongPart | null;
   /** Chat v3, `source: vendor_arithmetic`: the vendor's parts and the total it printed, as printed. */
   parts?: string[] | null;
   printed_total?: string | null;
@@ -630,6 +635,17 @@ export interface FindingSettled {
   /** What code did and found, in one plain sentence. */
   how: string;
   was?: 'check';
+}
+
+export interface FindingWrongPart {
+  /** The wrong part as printed: 14". */
+  text: string;
+  /** What it should be, in inches: "11.625". */
+  should_be: string;
+  /** How long its line is drawn at the drawing's scale: 11 5/8". */
+  drawn?: string | null;
+  /** The printed overall, drawn to its value: 18". */
+  overall?: string | null;
 }
 
 export interface FindingAlsoOn {

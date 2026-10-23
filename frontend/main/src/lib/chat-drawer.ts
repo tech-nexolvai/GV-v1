@@ -8,7 +8,7 @@
 
 import type { ChatFinding, FindingBox, FindingDecision, ProofGroup } from '@/lib/chat-api';
 import { ruleNoteWords } from '@/lib/chat-proof';
-import { isDrawingNeededItem, shouldBeValue, vendorValue } from '@/lib/chat-result';
+import { isDrawingNeededItem, shouldBeValue, vendorValue, wrongPartWords } from '@/lib/chat-result';
 import { inchNumber, inchWords } from '@/lib/chat-trust';
 
 /** The drawer's group, with Drawing needed apart (a page, not a finding). */
@@ -106,6 +106,8 @@ export function vendorSide(finding: ChatFinding, kind: DrawerKind): SideWords {
 /** "Should be 11 5/8″" (green), or what the architect shows, or the GV rule. */
 export function referenceSide(finding: ChatFinding, kind: DrawerKind, decision: FindingDecision | null | undefined = finding.decision): SideWords {
   if (kind === 'drawing_needed') return { label: 'Architect’s drawing', value: 'Not in the upload', tone: null };
+  const part = kind === 'clouded' && decision?.decision !== 'agree' ? wrongPartWords(finding) : null;
+  if (part) return { label: 'Should be', value: part.should, tone: 'right' };
   const should = kind === 'clouded' ? shouldBeValue(finding, decision) : null;
   if (should) return { label: 'Should be', value: should.main, tone: 'right' };
   const architect = finding.architect?.trim() ? finding.architect.trim().replace(/"/g, '″').replace(/'/g, '′') : '—';
@@ -150,6 +152,16 @@ export function howWeKnow(finding: ChatFinding, kind: DrawerKind, options: { noA
     steps.push(sentence(note?.why ?? finding.proof?.reason));
     steps.push(note ? sentence(`${note.standard}; the vendor prints the architect’s size`) : null);
     steps.push('GV asks the architect to confirm; nothing is asked of the vendor.');
+  } else if (kind === 'clouded' && wrongPartWords(finding)) {
+    // #1887: code's geometry named the wrong part; the overall is right.
+    const part = wrongPartWords(finding)!;
+    const sum = finding.parts_sum ? inchNumber(finding.parts_sum) : null;
+    const total = sum !== null ? `${inchWords(sum)}″` : /=\s*([^≠]+?)\s*≠/.exec(finding.sum_text ?? '')?.[1]?.trim();
+    steps.push(total && part.overall ? `The parts add up to ${marks(total)}, but the overall says ${part.overall}.` : sentence(finding.sum_text));
+    if (part.overall) steps.push(`The ${part.overall} line is drawn ${part.overall} long, so the overall is right.`);
+    steps.push(part.drawn
+      ? `The ${part.part} line is drawn only ${part.drawn} long, so the ${part.part} is the mistake.`
+      : `At the drawing’s scale the ${part.part} is the mistake: the overall less the other parts is ${part.should}.`);
   } else if (kind === 'clouded') {
     const parts = finding.parts?.length ? finding.parts.map(marks).join(' + ') : null;
     const sum = finding.parts_sum ? inchNumber(finding.parts_sum) : null;

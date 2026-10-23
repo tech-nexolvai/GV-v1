@@ -10,7 +10,7 @@ import type { ChatFile, ChatFinding, FindingDecision, FindingDecisionExtra, Find
 import { architectOnVendorPage, drawerChips, drawerKind, howWeKnow, KIND_WORDS, referenceSide, ringOnCrop, ringOnPage, vendorOnly, vendorSide, type DrawerKind, type Ring } from '@/lib/chat-drawer';
 import { architectPage, decisionHelpRows, pageWords, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
 import { isInternal, proofGroup, ruleNoteWords, type RuleNoteWords } from '@/lib/chat-proof';
-import { boxOnPicture, decisionsWords, isDrawingNeededItem, itemParts, pageHeading, shouldBeValue, suggestedShouldBe, vendorValue, type PageTitles, type ResultTab } from '@/lib/chat-result';
+import { boxOnPicture, decisionsWords, isDrawingNeededItem, itemParts, pageHeading, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultTab } from '@/lib/chat-result';
 import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { cn } from '@/lib/utils';
@@ -498,7 +498,8 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
   const own = kind !== 'drawing_needed' && vendorOnly(finding);
   const steps = howWeKnow(finding, kind, { noArchitectDrawing: noDrawing });
   const chips = kind === 'drawing_needed' ? [] : drawerChips(finding, { number, noArchitectDrawing: noDrawing, inRequest });
-  const tell = kind === 'clouded' ? reviewerWords(finding).tell : null;
+  const part = kind === 'clouded' ? wrongPartWords(finding) : null;
+  const tell = part ? `Change the ${part.part} part to ${part.should}${part.overall ? `: the ${part.overall} overall is right` : ''}.` : kind === 'clouded' ? reviewerWords(finding).tell : null;
   const page = vendorBox?.page ?? finding.page;
 
   // The vendor's side: the evidence crop ringed; else (or "Whole page") the vendor's page picture.
@@ -519,6 +520,7 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
           : null;
   const referenceTone: RingTone = kind === 'clouded' || kind === 'right' || kind === 'dismissed' || kind === 'likely_problem' ? 'right' : 'neutral';
   const referenceCaption = kind === 'drawing_needed' ? null
+    : own && part?.drawn ? `Measured on the vendor’s own drawing: this line is drawn ${part.drawn} long`
     : own ? `Measured on the vendor’s own drawing${noDrawing ? ' (no architect drawing of this unit)' : ''}`
       : finding.source === 'rules' || finding.rule_check_id ? 'GV’s rule'
         : `Architect${finding.vs_page || archBox?.page ? ` page ${archBox?.page ?? finding.vs_page}` : ''}`;

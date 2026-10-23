@@ -92,7 +92,7 @@ describe('not seen is not right', () => {
   it('lists a not-looked-at item under Not compared: no outcome word of its own (#1712)', async () => {
     const user = userEvent.setup();
     const { unmount } = render(<AssistantMessage message={answer({ findings: FINDINGS.slice(0, 3) })} chatId="c-1" models={[OPUS]} fullCheck />);
-    const tabs = () => [...document.querySelectorAll<HTMLElement>('[data-slot="chat-result-tiles"] [role="tab"]')].filter((tile) => tile.dataset.empty !== 'true' || tile.dataset.tab === 'wrong').map((tile) => tile.textContent?.replace(/[A-Z][^0-9]*$/, ''));
+    const tabs = () => [...document.querySelectorAll<HTMLElement>('[data-slot="chat-result-tiles"] [role="tab"]')].filter((tile) => tile.dataset.empty !== 'true' || tile.dataset.tab === 'wrong').map((tile) => `${tile.firstElementChild?.textContent}${tile.querySelector('[data-slot="chat-result-count"]')?.textContent}`);
     expect(tabs()).toEqual(['Wrong0', 'Right1', 'Not compared2']);
     unmount();
     render(<AssistantMessage message={answer({ findings: FINDINGS })} chatId="c-1" models={[OPUS]} fullCheck />);

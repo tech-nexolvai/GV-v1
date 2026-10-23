@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from app.review.assistant.chat_contract import ChatCoverageOut, ChatCoveragePageOut
+from app.review.assistant.chat_contract import ChatCoverageOut, ChatCoveragePageOut, ChatFindingOut
 from app.review.assistant.chat_service import PLAN_CHECK_FOLDER, vendor_page_titles
 from app.review.assistant.full_check_plan import (
     UNPAIRED_NOTE,
@@ -128,3 +128,48 @@ def test_no_pack_no_titles(tmp_path: Path) -> None:
     _pack(tmp_path, str(package), [{"name": "vendor.pdf", "sha256": "c" * 64}])
     # The pack folder exists but its page map is not made yet.
     assert vendor_page_titles(tmp_path, package) == []
+
+
+def _string(**extra: object) -> dict[str, object]:
+    return {
+        "id": "F1", "page": 3, "item": "Sample unit: dimension string (up)", "category": "other",
+        "architect": '11 5/8"', "vendor": '14"', "status": "different", "verified": False,
+        "source": "vendor_arithmetic", "created_by": "consistency", "parts": ['2 3/8"', '14"', '4"'],
+        "printed_total": '18"', **extra,
+    }  # fmt: skip
+
+
+def test_a_wrong_part_keeps_its_drawn_length_for_the_screen() -> None:
+    kept = ChatFindingOut.model_validate(
+        _string(
+            wrong_part={
+                "text": '14"',
+                "should_be": "11.625",
+                "label": "D3",
+                "drawn": '11 5/8"',
+                "overall": '18"',
+            }
+        )
+    )
+    assert kept.wrong_part is not None
+    assert (
+        kept.wrong_part.text,
+        kept.wrong_part.should_be,
+        kept.wrong_part.drawn,
+        kept.wrong_part.overall,
+    ) == ('14"', "11.625", '11 5/8"', '18"')
+
+
+def test_an_older_wrong_part_reads_its_drawn_length_from_its_own_words() -> None:
+    why = (
+        "The drawing names the wrong number: at the drawing's scale (5 of its dimensions agree) "
+        'the 14" dimension is drawn as 11 5/8", and the 18" overall is drawn to its value, so '
+        'the 14" part should be 11 5/8" (18" - 2 3/8" - 4").'
+    )
+    older = ChatFindingOut.model_validate(
+        _string(why=why, wrong_part={"text": '14"', "should_be": "11.625"})
+    )
+    assert older.wrong_part is not None and older.wrong_part.drawn == '11 5/8"'
+    assert older.wrong_part.overall == '18"'
+    # No wrong part (the overall is the wrong number): nothing is made up.
+    assert ChatFindingOut.model_validate(_string(why=why)).wrong_part is None

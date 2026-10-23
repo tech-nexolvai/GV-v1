@@ -5563,6 +5563,17 @@
             ],
             "description": "The non-AI witnesses behind it: printed, ocr_ink, text, rule, arithmetic, ledger, units.",
             "title": "Witnesses"
+          },
+          "wrong_part": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingWrongPartOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A vendor string's wrong part named by code's geometry (#1887), with how long its line is drawn; an older finding's drawn length is read from its own words."
           }
         },
         "required": [
@@ -6145,6 +6156,51 @@
           "finding"
         ],
         "title": "ChatFindingUpdateOut",
+        "type": "object"
+      },
+      "ChatFindingWrongPartOut": {
+        "description": "A vendor string's wrong part, named by code's geometry (#1887): the overall is right, and\nthis part should be the overall less the other parts. The results screen's proof.",
+        "properties": {
+          "drawn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How long its line is drawn at the drawing's scale: 11 5/8\". Null when not kept.",
+            "title": "Drawn"
+          },
+          "overall": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The printed overall, drawn to its value: 18\".",
+            "title": "Overall"
+          },
+          "should_be": {
+            "description": "What it should be, in inches: \"11.625\".",
+            "title": "Should Be",
+            "type": "string"
+          },
+          "text": {
+            "description": "The wrong part as printed: 14\".",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "should_be"
+        ],
+        "title": "ChatFindingWrongPartOut",
         "type": "object"
       },
       "ChatFullCheckPlanOut": {

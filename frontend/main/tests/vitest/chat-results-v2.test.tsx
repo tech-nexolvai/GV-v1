@@ -43,7 +43,8 @@ const COVERAGE: ChatCoverage = {
 };
 
 const FINDINGS: ChatFinding[] = [
-  finding('w1', { page: 3, item: 'Sample unit A: height string', source: 'vendor_arithmetic', created_by: 'consistency', arch_picture_id: null, parts: ['2 3/8"', '14"', '4"'], parts_sum: '20.375', printed_total: '18"', vendor: '18"', architect: '20 3/8"', proof: { group: 'clouded', should_be: '20 3/8" (the vendor’s own parts)', proof: 'Code added the printed parts' }, impact: { score: 80, rank: 1, why: '' } }),
+  // #1887's shape: code's geometry names the wrong part (the 14″ line is drawn 11 5/8″); the 18″ overall is right.
+  finding('w1', { page: 3, item: 'Sample unit A: height string', source: 'vendor_arithmetic', created_by: 'consistency', arch_picture_id: null, parts: ['2 3/8"', '14"', '4"'], parts_sum: '20.375', printed_total: '18"', vendor: '14"', architect: '11 5/8"', wrong_part: { text: '14"', should_be: '11.625', drawn: '11 5/8"', overall: '18"' }, sum_text: '2 3/8" + 14" + 4" = 20 3/8" ≠ 18" printed (off 2 3/8")', proof: { group: 'clouded', should_be: '11 5/8" (the overall less the other parts)', proof: 'Code measured the string on the drawing' }, impact: { score: 80, rank: 1, why: '' } }),
   finding('w2', { page: 1, item: 'Sample unit B: overall width', proof: { group: 'clouded', should_be: '24"' }, impact: { score: 50, rank: 2, why: '' } }),
   finding('l1', { page: 2, item: 'Sample unit C: drawer count', status: 'check', vendor: '3 drawers', architect: '4 drawers', proof: { group: 'likely_problem', likely_problem: { kind: 'count', words: 'Please check and confirm: the vendor draws 3 drawers; the architect shows 4.', reason: 'the architect’s elevation shows four drawer fronts', sure: 'likely', by: 'whole_drawing_look' } } }),
   finding('r1', { page: 1, item: 'Sample unit B: depth', status: 'same', architect: '22"', vendor: '22"', proof: { group: 'right' } }),
@@ -73,9 +74,9 @@ describe('results v2, without React', () => {
 
   it('says the top line plainly, each number the tiles’ or the pages’', () => {
     expect(headline({ wrong: 3, likely: 0, pages: { total: 99, compared: 54, needed: 45, other: 0 } }))
-      .toBe('3 proven mistakes for the vendor to fix. 54 of 99 pages checked against the architect; 45 have no architect drawing in this upload.');
+      .toBe('3 proven mistakes for the vendor to fix. 54 of 99 pages checked against the architect; 45 pages have no architect drawing in this upload.');
     expect(headline({ wrong: 1, likely: 2, pages: pageCounts(COVERAGE) }))
-      .toBe('1 proven mistake for the vendor to fix, and 2 likely problems for the vendor to confirm. 2 of 6 pages checked against the architect; 2 have no architect drawing in this upload; 2 not compared.');
+      .toBe('1 proven mistake for the vendor to fix, and 2 likely problems for the vendor to confirm. 2 of 6 pages checked against the architect; 2 pages have no architect drawing in this upload; 2 pages not compared.');
     expect(headline({ wrong: 0, likely: 0, pages: null })).toBe('No proven mistakes.');
   });
 
@@ -117,9 +118,14 @@ describe('results v2, without React', () => {
   });
 
   it('says how we know in plain steps, never an internal name', () => {
-    const string = howWeKnow(FINDINGS[0], 'clouded', { noArchitectDrawing: true });
-    expect(string[0]).toBe('2 3/8″ + 14″ + 4″ = 20 3/8″, but the overall says 18″.');
-    expect(string.length).toBeLessThanOrEqual(3);
+    expect(howWeKnow(FINDINGS[0], 'clouded', { noArchitectDrawing: true })).toEqual([
+      'The parts add up to 20 3/8″, but the overall says 18″.',
+      'The 18″ line is drawn 18″ long, so the overall is right.',
+      'The 14″ line is drawn only 11 5/8″ long, so the 14″ is the mistake.',
+    ]);
+    // An older string with no part named by the drawing keeps the sum against the overall.
+    const older = { ...FINDINGS[0], wrong_part: null, vendor: '18"', architect: '20 3/8"', proof: { group: 'clouded' as const, should_be: '20 3/8" (sum of the vendor’s own parts)' } };
+    expect(howWeKnow(older, 'clouded')[0]).toBe('2 3/8″ + 14″ + 4″ = 20 3/8″, but the overall says 18″.');
     const likely = howWeKnow(FINDINGS[2], 'likely_problem');
     expect(likely).toEqual([
       'The vendor draws 3 drawers; the architect shows 4.',
@@ -128,7 +134,7 @@ describe('results v2, without React', () => {
     ]);
     const internal = howWeKnow({ ...FINDINGS[1], proof: { group: 'clouded', proof: 'A helper AI found it and the critic passed it' } }, 'clouded');
     expect(internal.join(' ')).not.toMatch(/helper|critic|\bAI\b/);
-    expect(vendorSide(FINDINGS[0], 'clouded')).toEqual({ label: 'Vendor shows', value: '18″', tone: 'wrong' });
+    expect(vendorSide(FINDINGS[0], 'clouded')).toEqual({ label: 'Vendor shows', value: '14″', tone: 'wrong' });
     expect(drawerChips({ ...FINDINGS[0], also_on: [{ finding_id: 'x', page: 44 }, { finding_id: 'y', page: 3 }] }, { number: 'C-01', noArchitectDrawing: true })).toEqual([
       'Also on page 44',
       'In the comment letter as C-01',
@@ -143,7 +149,13 @@ describe('results v2 on the screen', () => {
     render(<AssistantMessage message={answer({ findings: FINDINGS, coverage: COVERAGE })} chatId="c-1" models={[OPUS]} fullCheck pageTitles={TITLES} />);
     const node = screen.getByRole('article', { name: 'Answer' });
     expect(tiles(node)).toEqual(['wrong:2', 'likely_problem:1', 'rule_note:0', 'drawing_needed:2', 'right:1', 'not_compared:1']);
-    expect(node.querySelector('[data-slot="chat-result-headline"]')?.textContent).toBe('2 proven mistakes for the vendor to fix, and 1 likely problem for the vendor to confirm. 2 of 6 pages checked against the architect; 2 have no architect drawing in this upload; 2 not compared.');
+    expect(node.querySelector('[data-slot="chat-result-headline"]')?.textContent).toBe('2 proven mistakes for the vendor to fix, and 1 likely problem for the vendor to confirm. 2 of 6 pages checked against the architect; 2 pages have no architect drawing in this upload; 2 pages not compared.');
+    // Each count says its unit: pages on the card, items or pages on the tiles.
+    const hints = [...node.querySelectorAll<HTMLElement>('[data-slot="chat-result-tiles"] [role="tab"]')].map((tile) => tile.lastElementChild?.textContent);
+    expect(hints[3]).toBe('2 pages not in the upload. Ask GV');
+    expect(hints[5]).toBe('1 item, with its reason');
+    // The wrong part, not the right overall: "Vendor 14″ → Should be 11 5/8″ · the 18″ overall is right".
+    expect(node.querySelector('[data-id="w1"] [data-slot="chat-result-values"]')?.textContent).toBe('Vendor 14″Should be 11 5/8″the 18″ overall is right');
     // The work line never says "checked": the top line does.
     expect(node.querySelector('[data-slot="chat-work-line"]')?.textContent).not.toMatch(/Checked/);
 
@@ -181,7 +193,11 @@ describe('results v2 on the screen', () => {
     const head = within(node).getByRole('region', { name: 'Review result' });
     expect(within(head).queryByRole('button', { name: 'Run the check again' })).toBeNull();
     expect(head.querySelector('[data-slot="chat-review-sentence"]')?.textContent).toBe('This package is a draft until the architect’s drawings are added: ask GV for them, then run the check again.');
-    await user.click(within(head).getByRole('button', { name: 'Ask GV for 2 drawings' }));
+    const ask = within(head).getByRole('button', { name: 'Ask GV for 2 drawings' });
+    // An action, not an outcome: the neutral dark button, never red or maroon.
+    expect(ask.className).toContain('bg-foreground');
+    expect(ask.className).not.toMatch(/bg-primary|outcome-fail/);
+    await user.click(ask);
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText('A draft for you to edit and send yourself. Nothing is sent from here.')).toBeTruthy();
     const text = (within(dialog).getByRole('textbox', { name: 'The request' }) as HTMLTextAreaElement).value;
@@ -207,13 +223,18 @@ describe('results v2 on the screen', () => {
     expect(panel.dataset.results).toBe('true');
     expect(panel.querySelector('[data-slot="chat-evidence-position"]')?.textContent).toBe('1 of 2 items');
     const sides = [...panel.querySelectorAll<HTMLElement>('[data-slot="chat-evidence-side"]')];
-    expect(sides.map((side) => side.querySelector('figcaption')?.textContent)).toEqual(['Vendor shows18″', 'Should be20 3/8″']);
+    expect(sides.map((side) => side.querySelector('figcaption')?.textContent)).toEqual(['Vendor shows14″', 'Should be11 5/8″']);
     // The vendor's own string: the should-be is measured on the vendor's own drawing, never "No evidence picture".
-    expect(sides[1].textContent).toContain('Measured on the vendor’s own drawing (no architect drawing of this unit)');
+    expect(sides[1].textContent).toContain('Measured on the vendor’s own drawing: this line is drawn 11 5/8″ long');
     expect(sides[1].querySelector('img')?.getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/vend-w1');
     expect(panel.textContent).not.toContain('No evidence picture');
     const how = within(panel).getByRole('region', { name: 'How we know' });
-    expect(within(how).getAllByRole('listitem')[0].textContent).toBe('2 3/8″ + 14″ + 4″ = 20 3/8″, but the overall says 18″.');
+    expect(within(how).getAllByRole('listitem').map((step) => step.textContent)).toEqual([
+      'The parts add up to 20 3/8″, but the overall says 18″.',
+      'The 18″ line is drawn 18″ long, so the overall is right.',
+      'The 14″ line is drawn only 11 5/8″ long, so the 14″ is the mistake.',
+    ]);
+    expect(how.querySelector('[data-slot="chat-evidence-tell"]')?.textContent).toBe('Change the 14″ part to 11 5/8″: the 18″ overall is right.');
     expect([...panel.querySelectorAll('[data-slot="chat-evidence-chips"] li')].map((chip) => chip.textContent)).toEqual(['In the comment letter as C-01', 'Architect drawing: not in the upload · in the GV request']);
     await user.keyboard('j');
     expect(panel.querySelector('[data-slot="chat-evidence-position"]')?.textContent).toBe('2 of 2 items');
