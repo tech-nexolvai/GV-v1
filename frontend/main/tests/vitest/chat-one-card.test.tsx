@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 
 import { AssistantMessage } from '@/components/chat/chat-message';
 import type { ChatCoverage, ChatFinding } from '@/lib/chat-api';
-import { copyLines } from '@/lib/chat-drawer';
+import { copyLines, referenceSide } from '@/lib/chat-drawer';
 import { drawingNeededItems, drawingNeededPages, resultGroups } from '@/lib/chat-result';
 import type { ViewMessage } from '@/lib/chat-messages';
 import { finding, OPUS } from './fixtures/chat';
@@ -70,5 +70,12 @@ describe('one item, one card', () => {
     const panel = await screen.findByRole('dialog');
     const also = within(panel).getByRole('region', { name: 'Also reported' });
     expect(also.textContent).toContain('A page helper: Not compared (vendor 12″, architect 21 15/16″)');
+  });
+});
+
+describe('a card whose copies disagree', () => {
+  it('names every architect size in its header, never one of them alone', () => {
+    const card = { ...LIKELY, architect: '21"', same_item: { copies: [], conflict: ['21"', '22"'] } } as ChatFinding;
+    expect(referenceSide(card, 'not_compared')).toEqual({ label: 'Architect shows', value: '21″ or 22″ (copies disagree)', tone: null });
   });
 });

@@ -145,6 +145,10 @@ export function referenceSide(finding: ChatFinding, kind: DrawerKind, decision: 
   const should = kind === 'clouded' ? shouldBeValue(finding, decision) : null;
   if (should) return { label: 'Should be', value: should.main, tone: 'right' };
   const architect = finding.architect?.trim() ? finding.architect.trim().replace(/"/g, '″').replace(/'/g, '′') : '—';
+  // One item whose copies pair it with different architect sizes (one card, Not compared): every
+  // size, never one of them as if it were the architect's.
+  const conflict = finding.same_item?.conflict ?? [];
+  if (conflict.length > 1) return { label: 'Architect shows', value: `${conflict.map((size) => size.replace(/"/g, '″')).join(' or ')} (copies disagree)`, tone: null };
   if (kind === 'rule_note') return { label: 'Architect shows', value: architect, tone: null };
   if (finding.source === 'rules' || finding.rule_check_id) return { label: 'GV’s rule', value: architect, tone: kind === 'right' ? 'right' : null };
   return { label: vendorOnly(finding) ? 'Vendor’s own drawing' : 'Architect shows', value: architect, tone: kind === 'right' || kind === 'dismissed' ? 'right' : null };
