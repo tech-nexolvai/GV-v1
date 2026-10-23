@@ -5193,6 +5193,10 @@ class ChatEngine:
                 self._trust_phase()
             except Exception:  # noqa: BLE001 - the answer is stored without its trust report
                 _log.exception("assistant chat trust report failed")
+            if stopped is None and self.cancel.is_set():
+                # Stop pressed while code's checks ran (they stop early): a stopped answer,
+                # never a finished one with checks left out.
+                stopped = "cancelled"
         elif settings.mode == "full_check":
             # A stopped full check still gets code's $0 finish (#1515): the ledger's findings and
             # sums and the trust report with the recorded results, before the files and the

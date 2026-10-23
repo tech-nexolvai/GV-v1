@@ -5087,6 +5087,10 @@ class _Run:
                 engine._trust_phase()
             except Exception:  # noqa: BLE001 - stored without its trust report
                 _log.exception("assistant roster trust report failed")
+            if stopped is None and engine.cancel.is_set():
+                # Stop pressed while the finish's own checks ran (they stop early): a stopped
+                # answer, never a finished one with checks left out.
+                stopped = "cancelled"
         engine._close_checks()
         try:
             self._class_no_vendor()

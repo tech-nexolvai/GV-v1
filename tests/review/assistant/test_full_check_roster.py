@@ -1694,6 +1694,25 @@ def test_stop_ends_the_final_checks_by_code_within_seconds_and_keeps_the_work(
     assert harness.files == []  # the files are made when the check is continued
 
 
+def test_a_stop_during_the_finishs_code_checks_is_a_stopped_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of the Stop change: Stop pressed while the finish's own code checks run (they now
+    stop early) makes a stopped answer, never a finished one: no files, a Continue, `cancelled`."""
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    _five_wrongs(harness)
+
+    def trust_phase() -> None:
+        engine.cancel.set()  # the reviewer pressed Stop while the finish's checks ran
+
+    monkeypatch.setattr(engine, "_trust_phase", trust_phase)
+    outcome = _run(harness)._finish(None)
+    assert outcome.stopped == "cancelled"
+    assert harness.files == []  # the files are made when the check is continued
+    assert any(b.get("type") == "resume" for b in outcome.blocks)
+
+
 def test_after_stop_only_the_ledgers_sums_are_added(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

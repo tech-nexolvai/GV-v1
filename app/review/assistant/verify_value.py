@@ -121,7 +121,7 @@ BIG_BOX_PT2: Final = 2500.0
 #: dimension's spot: its drawn ink is not read (2026-10-23). Reading a whole sheet's ink took most
 #: of an hour on a 99-page set (every short stroke a fraction bar to read part by part), and the
 #: reads cannot tell which of its numbers is the one claimed (`BIG_BOX_PT2`). Its typed text is
-#: still read (route 1).
+#: still read (route 1), and typed text that prints another value is still told (`mismatch`).
 WHOLE_SHEET_PT2: Final = 1_000_000.0
 #: How far outside the box a character may start and still count as at the spot (points): a box
 #: drawn tight round a dimension often clips its inch mark or its last digit.
@@ -2134,6 +2134,12 @@ def _drawn(
             "cannot_read", "none", None, text_reads, "no OCR engine is installed here", value
         )
     if (spot[2] - spot[0]) * (spot[3] - spot[1]) > WHOLE_SHEET_PT2:
+        # Its ink is not read, but its typed text printing another value is still told (as the
+        # end of this route tells it): code disagreeing keeps such an item off red.
+        if printed and not text.doubtful:
+            return Verified(
+                "mismatch", "text", printed, text_reads, f"the drawing prints {printed} here", value
+            )
         return Verified("cannot_read", "none", None, text_reads, _WHOLE_SHEET, value)
     # The box's own text is exact: when it prints a near-miss of the value (`63 1/2"` when `63"`
     # is claimed), no OCR read of the ink may confirm it (an engine loses a stacked fraction).

@@ -796,7 +796,8 @@ class _NeverRead:
 def test_a_box_that_is_most_of_the_sheet_is_not_read_as_one_spot(tmp_path: Path) -> None:
     """2026-10-23: a box larger than `WHOLE_SHEET_PT2` (an AI's box round a whole sheet) is not
     one dimension's spot: its drawn ink is never read (that took most of an hour on a 99-page
-    set and cannot tell which number is the one claimed); its typed text still is."""
+    set and cannot tell which number is the one claimed); its typed text still is (a matching
+    value here; another value: the next test)."""
     strokes = _write(tmp_path, _pdf(stamp=stroke_ops('34"', 20, 100)), name="strokes.pdf")
     sheet = _box(-400, -400, 1000, 700)
     assert (sheet["x1"] - sheet["x0"]) * (sheet["y1"] - sheet["y0"]) > vv.WHOLE_SHEET_PT2
@@ -809,3 +810,16 @@ def test_a_box_that_is_most_of_the_sheet_is_not_read_as_one_spot(tmp_path: Path)
     )
     typed = _write(tmp_path, _pdf(stamp=_text(20, 100, "1168 [46]")), name="typed.pdf")
     assert vv.verify_value(typed, 1, sheet, '46"', readers=never).route == "text"
+
+
+def test_a_whole_sheet_box_still_says_its_typed_text_prints_another_value(tmp_path: Path) -> None:
+    """Review of the whole-sheet rule: a box that is most of the sheet, with drawn ink, whose typed
+    text prints another value than the one claimed, still says so ("mismatch", as before the
+    rule): code disagreeing is what keeps such an item off red. Its ink is still never read."""
+    data = _pdf(stamp=_text(20, 100, "1168 [46]") + b"\n" + stroke_ops('34"', 20, 200))
+    both = _write(tmp_path, data, name="both.pdf")
+    sheet = _box(-400, -400, 1000, 700)
+    never = (_NeverRead("Tesseract"), _NeverRead("RapidOCR"))
+    found = vv.verify_value(both, 1, sheet, '47"', readers=never)
+    assert (found.result, found.route) == ("mismatch", "text")
+    assert "1168 [46]" in found.reason
