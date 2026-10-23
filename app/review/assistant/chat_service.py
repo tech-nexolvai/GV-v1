@@ -953,6 +953,9 @@ class MessageJob:
     run_anyway: bool = False
     """The reviewer chose Run anyway after a pre-flight stop."""
     """The AI page matcher's model for separate uploads (#1798); `None`: off."""
+    whole_look_model: str | None = None
+    """The whole-drawing look's model (`whole_look`); `None`: off."""
+    whole_look_effort: str = "medium"
     set_index_model: str | None = None
     """The set index's model for separate uploads (`set_index.py`); `None`: off."""
     plan_answers: Mapping[str, str] | None = None
@@ -1395,6 +1398,8 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             page_match_model=job.page_match_model,
             preflight_model=job.preflight_model,
             run_anyway=job.run_anyway,
+            whole_look_model=job.whole_look_model,
+            whole_look_effort=job.whole_look_effort,
             set_index_model=job.set_index_model,
             identity=job.identity,
             numbering=numbering(job.factory, job.package_id, job.chat_id, run.message_id),

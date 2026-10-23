@@ -14,7 +14,7 @@
 
 import type { ChatFinding, FindingDecision, FindingStatus, ProofGroup } from '@/lib/chat-api';
 
-export const PROOF_GROUPS: readonly ProofGroup[] = ['clouded', 'right', 'rule_note', 'not_compared', 'dismissed'];
+export const PROOF_GROUPS: readonly ProofGroup[] = ['clouded', 'right', 'rule_note', 'likely_problem', 'not_compared', 'dismissed'];
 
 export type ProofCounts = Record<ProofGroup, number>;
 
@@ -91,7 +91,7 @@ function codeGroup(finding: ChatFinding): ProofGroup {
  */
 export function asShown(finding: ChatFinding, decision: FindingDecision | null = finding.decision ?? null): ChatFinding {
   const group = proofGroup(finding, decision);
-  const status: FindingStatus | null = group === 'clouded' ? 'different' : group === 'right' ? 'same' : group === 'not_compared' || group === 'rule_note' ? 'check' : null;
+  const status: FindingStatus | null = group === 'clouded' ? 'different' : group === 'right' ? 'same' : group === 'not_compared' || group === 'rule_note' || group === 'likely_problem' ? 'check' : null;
   return status === null || status === finding.status ? finding : { ...finding, status };
 }
 
@@ -149,6 +149,7 @@ export const PROOF_WORDS: Record<ProofGroup, string> = {
   clouded: 'Wrong, proved by code (clouded)',
   right: 'Right',
   rule_note: 'Breaks a GV rule (architect’s size): ask the architect',
+  likely_problem: 'Likely problem: please check and confirm',
   not_compared: 'Not compared',
   dismissed: 'Right (reviewer)',
 };

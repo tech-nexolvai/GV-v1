@@ -382,15 +382,23 @@ def _percent(value: Decimal) -> str:
     return f"{(value * 100).quantize(_TENTH).normalize():f}%"
 
 
-def _review_needed_reason(not_compared: int, items: int, share: Decimal, noted: int) -> str:
+def _review_needed_reason(
+    not_compared: int, items: int, share: Decimal, noted: int, likely: int = 0
+) -> str:
     """ "52 items need a person before this can be approved: 52 of 55 items (95%) were not
-    compared, more than the 10% allowed." """
+    compared, more than the 10% allowed." `likely`: of them, the whole-drawing look's likely
+    problems (2026-10-23), said as such."""
     need = "needs" if not_compared == 1 else "need"
+    what = (
+        "not compared"
+        if not likely
+        else f"not compared or likely problems to check ({likely} likely)"
+    )
     reason = (
         f"{_plural(not_compared, 'item')} {need} a person before this can be approved: "
         f"{not_compared} of {_plural(items, 'item')} "
         f"({_percent(Decimal(not_compared) / items)}) {'was' if not_compared == 1 else 'were'} "
-        f"not compared, more than the {_percent(share)} allowed."
+        f"{what}, more than the {_percent(share)} allowed."
     )
     if noted:
         reason += f" {_plural(noted, 'minor correction')} noted as well."
@@ -469,14 +477,17 @@ def review_action(
     limit = review_needed_share() if share is None else share
     unreviewed = _not_reviewed(given)
     asked = sum(1 for finding in given if proof_group(finding) == "rule_note")
-    if _review_needed(not_compared, items, limit):
+    # The whole-drawing look's likely problems (2026-10-23) need a person as much as an item not
+    # compared: never "Approved" while one is open.
+    likely = sum(1 for finding in given if proof_group(finding) == "likely_problem")
+    if _review_needed(not_compared + likely, items, limit):
         notes = [NOT_REVIEWED_NOTE]
         if asked:
             notes.append(RULE_NOTE_NOTE)
         return result(
             "review_needed",
             "RN",
-            _review_needed_reason(not_compared, items, limit, len(sent)),
+            _review_needed_reason(not_compared + likely, items, limit, len(sent), likely),
             " ".join(notes),
         )
     if sent:
@@ -489,8 +500,10 @@ def review_action(
                 else f"{len(sent)} corrections, all minor (no change to fabrication)."
             ),
         )
-    if unreviewed or asked:
+    if unreviewed or asked or likely:
         parts = [f"{_plural(unreviewed, 'item')} not reviewed by code"] if unreviewed else []
+        if likely:
+            parts.append(f"{_plural(likely, 'likely problem')} to check and confirm")
         if asked:
             parts.append(
                 f"{_plural(asked, 'size')} the architect specifies "

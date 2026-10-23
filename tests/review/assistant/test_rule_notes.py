@@ -190,6 +190,7 @@ def test_a_rule_note_is_decided_and_counted_apart() -> None:
         "clouded": 1,
         "right": 1,
         "rule_note": 2,
+        "likely_problem": 0,
         "not_compared": 0,
         "dismissed": 0,
     }

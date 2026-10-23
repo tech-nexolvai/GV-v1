@@ -51,6 +51,9 @@ from typing import Any, Final, Literal
 
 from app.review.assistant import not_compared, proof_words
 from app.review.assistant.impact import by_impact
+from app.review.assistant.likely_problems import HEADING as LIKELY_HEADING
+from app.review.assistant.likely_problems import LETTER_LEAD as LIKELY_LEAD
+from app.review.assistant.likely_problems import please_check
 from app.review.assistant.proof import (
     NO_REQUIREMENT_REASON,
     REVIEWER,
@@ -92,10 +95,12 @@ __all__ = [
     "Member",
     "PackageContext",
     "PackageIdentity",
+    "PleaseCheck",
     "Previous",
     "Question",
     "Status",
     "check_state",
+    "checks_of",
     "comment_labels",
     "corrections_of",
     "incomplete_reason",
@@ -118,12 +123,14 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-type Status = Literal["wrong", "right", "rule_note", "not_compared"]
+type Status = Literal["wrong", "right", "rule_note", "likely_problem", "not_compared"]
 #: The register's status words.
 STATUS_WORDS: Final[Mapping[Status, str]] = {
     "wrong": "Wrong",
     "right": "Right",
     "rule_note": RULE_NOTE_WORDS,
+    # 2026-10-23: the whole-drawing look's claim code could not prove: never an error.
+    "likely_problem": LIKELY_HEADING,
     "not_compared": "Not compared",
 }
 #: The register's "Architect questions" sheet (#1839): one row per size the architect specifies
@@ -256,6 +263,8 @@ def register_status(finding: Mapping[str, Any], closed: Sequence[str] = ()) -> S
         return "right"
     if group == "rule_note":
         return "rule_note"
+    if group == "likely_problem":
+        return "likely_problem"
     return "not_compared"
 
 
@@ -567,6 +576,44 @@ class Question:
         ]
 
 
+@dataclass(frozen=True, slots=True)
+class PleaseCheck:
+    """A likely problem the whole-drawing look found and code could not prove (2026-10-23): one
+    line of the letter's "Please check and confirm" (never a correction, never red)."""
+
+    page: int | None
+    item: str
+    words: str
+    """ "the architect's drawing shows 2 units; the vendor's drawing shows 1 unit." """
+    finding_id: str = ""
+
+
+def checks_of(findings: Sequence[Mapping[str, Any]]) -> list[PleaseCheck]:
+    """The letter's "Please check and confirm" lines (`proof_group` "likely_problem"), by page.
+    Every line goes through the vendor-text guard: the letter is sent to the vendor."""
+    out: list[PleaseCheck] = []
+    for finding in findings:
+        if proof_group(finding) != "likely_problem":
+            continue
+        words = please_check(finding)
+        if words.startswith(LIKELY_LEAD):
+            words = words.split(": ", 1)[1] if ": " in words else words
+            # The item's name leads the line in the letter already.
+            item = _item(finding)
+            if words.startswith(f"{item}: "):
+                words = words[len(item) + 2 :]
+        out.append(
+            PleaseCheck(
+                page=_page_of(finding),
+                item=_item(finding),
+                words=vendor_text(words, "") or "",
+                finding_id=str(finding.get("id") or ""),
+            )
+        )
+    out.sort(key=lambda c: (c.page or 0, c.item))
+    return out
+
+
 def questions_of(
     findings: Sequence[Mapping[str, Any]],
     *,
@@ -625,6 +672,8 @@ class Letter:
     questions: tuple[Question, ...] = ()
     """The sizes the architect specifies that break a GV rule (#1839): GV asks the architect;
     nothing is asked of the vendor."""
+    checks: tuple[PleaseCheck, ...] = ()
+    """The whole-drawing look's likely problems (2026-10-23): "Please check and confirm"."""
 
     @property
     def reviewer_line(self) -> str:
@@ -796,6 +845,7 @@ def letter_of(
             else ""
         ),
         questions=tuple(questions_of(findings, areas=context.areas)),
+        checks=tuple(checks_of(findings)),
     )
 
 
@@ -834,6 +884,9 @@ def _proof_words(finding: Mapping[str, Any], status: Status) -> str:
         return "Closed: this round prints what it should be"
     if status == "right":
         return "Matches the drawings"
+    if status == "likely_problem":
+        # 2026-10-23: never an error: the vendor is asked to check and confirm.
+        return please_check(finding)
     if status == "rule_note":
         # #1839: the architect's size breaks a GV rule; GV asks the architect, not the vendor.
         note = proof_of(finding).get("rule_note") or {}
@@ -851,6 +904,8 @@ def _item_action_of(finding: Mapping[str, Any], status: Status) -> str:
         return item_action(finding)
     if status == "rule_note":
         return "None (GV asks the architect)"
+    if status == "likely_problem":
+        return "Please check and confirm"
     return "None" if status == "right" else "Not reviewed"
 
 
@@ -870,6 +925,7 @@ def register_rows(
     closed = context.state.closed
     groups: dict[Status, list[list[str]]] = {
         "wrong": [],
+        "likely_problem": [],
         "rule_note": [],
         "not_compared": [],
         "right": [],
@@ -896,13 +952,21 @@ def register_rows(
                 vendor_value(finding),
                 (
                     (proof_words.should_text(finding) if wrong else should_be_value(finding))
-                    if status not in ("not_compared", "rule_note")
+                    if status not in ("not_compared", "rule_note", "likely_problem")
                     else ""
                 ),
                 (
                     proof_words.reference_words(finding)
                     if wrong
-                    else _rule_reference(finding) if status == "rule_note" else governs(finding)
+                    else (
+                        _rule_reference(finding)
+                        if status == "rule_note"
+                        else (
+                            f"architect {finding.get('architect')}"
+                            if status == "likely_problem"
+                            else governs(finding)
+                        )
+                    )
                 ),
                 _proof_words(finding, status),
                 "",
@@ -910,8 +974,14 @@ def register_rows(
                 "",
             ]
         )
-    rows = [*groups["wrong"], *groups["rule_note"], *groups["not_compared"], *groups["right"]]
-    ranked = len(groups["wrong"]) + len(groups["rule_note"]) + len(groups["not_compared"])
+    rows = [
+        *groups["wrong"],
+        *groups["likely_problem"],
+        *groups["rule_note"],
+        *groups["not_compared"],
+        *groups["right"],
+    ]
+    ranked = len(rows) - len(groups["right"])
     for rank, row in enumerate(rows[:ranked], start=1):
         row[_COL["Impact rank"]] = str(rank)
     # The guard on internal words (#1622): every cell is vendor-facing.

@@ -41,6 +41,7 @@ from reportlab.platypus import (  # type: ignore[import-untyped]
     TableStyle,
 )
 
+from app.review.assistant.likely_problems import HEADING as LIKELY_HEADING
 from app.review.assistant.rule_notes import HEADING as RULE_NOTE_HEADING
 from app.review.assistant.send_package import LETTER_KIND, ROUND_WORDS, Letter
 
@@ -304,6 +305,36 @@ def _questions(letter: Letter, styles: Mapping[str, ParagraphStyle]) -> list[Any
     return story
 
 
+def _checks(letter: Letter, styles: Mapping[str, ParagraphStyle]) -> list[Any]:
+    """The whole-drawing look's likely problems (2026-10-23): never a correction (no red, no
+    "should be"); the vendor is asked to check each one and confirm, with where it is."""
+    if not letter.checks:
+        return []
+    count = len(letter.checks)
+    story: list[Any] = [
+        Paragraph(f"{escape(LIKELY_HEADING)} ({count})", styles["section"]),
+        Paragraph(
+            escape(
+                f"{'This difference' if count == 1 else 'These differences'} between your "
+                "drawings and the architect's drawings could not be confirmed by measurement. "
+                f"Please check {'it' if count == 1 else 'each one'} and confirm, or revise the "
+                "drawing."
+            ),
+            styles["label"],
+        ),
+        Spacer(1, 4),
+    ]
+    for item in letter.checks:
+        page = f"Page {item.page}" if item.page is not None else "Page not marked"
+        story.append(
+            Paragraph(
+                f"<b>{escape(page)} · {escape(item.item)}</b>: {escape(item.words)}",
+                styles["body"],
+            )
+        )
+    return story
+
+
 def _sentence(runs: tuple[tuple[str, str], ...]) -> str:
     """The sentence's pieces as markup: the vendor's value red, the should-be green, both bold."""
     out: list[str] = []
@@ -336,6 +367,7 @@ def _story(letter: Letter, width: float) -> list[Any]:
     ]
     story += _previous(letter, styles, width)
     story += _corrections(letter, styles, width)
+    story += _checks(letter, styles)
     story += _questions(letter, styles)
     story.append(Paragraph(f"Not compared ({letter.not_compared})", styles["section"]))
     if letter.not_compared:

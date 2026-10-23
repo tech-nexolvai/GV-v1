@@ -513,7 +513,22 @@ export interface ChatFinding {
 }
 
 /** #1581: the zero-click cloud drawing's group for a finding, and its words. */
-export type ProofGroup = 'clouded' | 'right' | 'rule_note' | 'not_compared' | 'dismissed';
+export type ProofGroup = 'clouded' | 'right' | 'rule_note' | 'likely_problem' | 'not_compared' | 'dismissed';
+
+/**
+ * The whole-drawing look's claim (`likely_problems.py`): a design difference code could not prove.
+ * Shown dashed, never solid red; the letter says "Please check and confirm". Its spots are the
+ * finding's own boxes.
+ */
+export interface FindingLikelyProblem {
+  kind: 'missing_piece' | 'extra_piece' | 'count' | 'size' | 'layout';
+  /** "Please check and confirm: …" */
+  words: string;
+  /** The AI's reason, one line. */
+  reason?: string | null;
+  sure: 'sure' | 'likely';
+  by?: 'whole_drawing_look';
+}
 
 /**
  * #1839: the GV rule an architect's size breaks while the vendor prints that same size: decided,
@@ -552,6 +567,8 @@ export interface FindingProof {
   settle?: string | null;
   /** #1839, rule_note: the GV rule and the question for the architect. */
   rule_note?: FindingRuleNote | null;
+  /** likely_problem: the whole-drawing look's claim (what to check and confirm). */
+  likely_problem?: FindingLikelyProblem | null;
 }
 
 /** #1569: code's impact score (0-100), its place among the items of its status, and why. */

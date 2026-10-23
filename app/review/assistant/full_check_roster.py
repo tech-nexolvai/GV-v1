@@ -100,6 +100,7 @@ from app.review.assistant import (
     pick_cache,
     round_picks,
     same_ends,
+    whole_look,
     witness,
 )
 from app.review.assistant import proof as proof_rule
@@ -179,11 +180,15 @@ _MICROS: Final = 1_000_000
 #: was never spent, so the numbers pickers (where the red clouds come from) and the gap closers that
 #: finish what they leave get more, the drawn-things readers about the same per page.
 #: #1805: the escalation's look-again is a share of its own (it was 4% carved out of the lead's).
+#: The whole-drawing look (Anant, 2026-10-23, `whole_look`) runs beside the page helpers: its share
+#: (Opus 5.5 measured about $0.12 a look, $2.60 for Set 3's 21 looks at a $17.75 price) came from the numbers helpers, the drawn-things helpers and the gap closers (the paid full-price
+#: run of 2026-10-21 left about 40% of its price unspent); the protected later steps keep theirs.
 SHARES: Final[Mapping[str, float]] = {
-    "numbers": 0.33,
-    "drawn": 0.16,
+    "numbers": 0.28,
+    "drawn": 0.12,
     "tags": 0.03,
-    "gaps": 0.18,
+    "whole_look": 0.14,
+    "gaps": 0.13,
     "provers": 0.05,
     "advocate": 0.07,
     "lead": 0.10,
@@ -203,6 +208,7 @@ _KEPT_TO_THE_END: Final = ("reads",)
 #: The timings phase each share is shown on (`Timings.set_budget`).
 TIMINGS_PHASES: Final[Mapping[str, tuple[str, ...]]] = {
     "helpers": ("numbers", "drawn", "tags"),
+    whole_look.LENS: (whole_look.LENS,),
     "gap_closers": ("gaps",),
     "provers": ("provers",),
     "lead_review": ("lead",),
@@ -1341,6 +1347,8 @@ class _Run:
     #: files: the same read is never made twice (the look-again's, or one read ahead).
     proof_reads: dict[tuple[Any, ...], dict[str, Any]] = field(default_factory=dict)
     proof_reads_lock: threading.Lock = field(default_factory=threading.Lock)
+    #: The whole-drawing looks of this run and what code did with their claims (`whole_look`).
+    looked: whole_look.WholeLooks = field(default_factory=whole_look.WholeLooks)
     #: The proving reads made ahead while the AI steps run (`_read_ahead`), and how to stop them.
     _ahead: threading.Thread | None = None
     _ahead_stop: threading.Event = field(default_factory=threading.Event)
@@ -1776,6 +1784,13 @@ class _Run:
 
         return _Agent(**given)
 
+    def _waits(self, agent: Any) -> bool:
+        """It waits for the page matcher (it starts after the others). A whole-drawing look on GV's
+        combined sheets only draws its pictures first: it does not wait."""
+        if agent.lens == whole_look.LENS:
+            return agent.call_id in self.looked.waiting
+        return agent.ready is not None
+
     def _tools(self, names: frozenset[str]) -> tuple[Mapping[str, Any], ...]:
         return tuple(tool for tool in HELPER_TOOLS if tool["name"] in names)
 
@@ -1963,11 +1978,24 @@ class _Run:
         tag_groups = tag_page_groups([job.pages for job in plan.jobs if job.lens != "numbers"])
         for group in tag_groups:
             agents.append(self._tag_agent(group, page_map, of_pages=len(tag_pages)))
+        # The whole-drawing look per paired vendor drawing (Anant, 2026-10-23): beside the page
+        # helpers, in its own share; its pictures are drawn in its own thread (`ready`).
+        looks = whole_look.roster_agents(
+            self, sorted(whole_plan), page_map, matching, self.looked, done=carried
+        )
+        if looks:
+            looks_pool = _Pool(self.plan.budgets[whole_look.LENS])
+            for agent in looks:
+                looks_pool.add(agent)
+        else:
+            pool.limit += self.plan.budgets[whole_look.LENS]
+        agents += looks
         # The helpers that wait for the page matcher start after those that can start now (the
         # tag readers, the pages code or a saved answer paired): none holds a place idle.
-        agents.sort(key=lambda agent: agent.ready is not None)
+        agents.sort(key=lambda agent: self._waits(agent))
         for agent in agents:
-            pool.add(agent)
+            if agent.lens != whole_look.LENS:
+                pool.add(agent)
         self.agents = list(agents)
         # The page helpers and the gap closers never spend the later checks' money (#1641), nor
         # what the finishing steps need for the red candidates already there (#1821).
@@ -1989,15 +2017,28 @@ class _Run:
             except Exception:  # noqa: BLE001 - the pages stay as their helpers left them
                 _log.exception("assistant roster could not settle the unpaired pages")
             tag_reports: list[tuple[Any, str]] = []
+            looked: list[tuple[Any, Mapping[str, Any]]] = []
             for agent, entry in zip(agents, entries, strict=True):
                 if agent.lens == "tags":
                     tag_reports.append((agent, str(entry.get("report") or "")))
+                    continue
+                if agent.lens == whole_look.LENS:
+                    looked.append((agent, entry))
                     continue
                 self._salvage(agent, entry)
                 if entry.get("stopped") == "cost_cap":
                     self._capped(agent.description, "; the pages it left are listed")
             if tag_reports:
                 self._apply_tags(tag_reports)
+            if looked:
+                # Each look's claims, by code: proved pairs take the normal path, the rest are
+                # Likely problems, and what names a wrong label or drawing is dropped.
+                try:
+                    whole_look.apply_roster(self, looked, self.looked)
+                except Exception:  # noqa: BLE001 - the page helpers' findings stand
+                    _log.exception("assistant roster could not apply the whole-drawing looks")
+                for where in self.looked.unread:
+                    self._note(whole_look.UNREAD_NOTE.format(where=where))
             engine._queue_second_reads(engine.book.live())
             if not engine.cancel.is_set():
                 self._read_ahead()
@@ -3103,7 +3144,7 @@ class _Run:
             f
             for f in by_impact([judged(f) for f in live])
             if f.get("status") in ("different", "check")
-            and proof_rule.proof_group(f) == "not_compared"
+            and proof_rule.proof_group(f) in proof_rule.UNDECIDED
             and f.get("source") not in CODE_PAIRED_SOURCES
         ]
         planned = sorted(
@@ -4283,7 +4324,7 @@ class _Run:
             dict(f)
             for f in by_impact(live)
             if f.get("status") == "different"
-            and proof_rule.proof_group(f) == "not_compared"
+            and proof_rule.proof_group(f) in proof_rule.UNDECIDED
             and str(f["id"]) not in self.escalated
         ]
 

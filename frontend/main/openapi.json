@@ -4932,6 +4932,62 @@
         "title": "ChatFindingLaterOut",
         "type": "object"
       },
+      "ChatFindingLikelyOut": {
+        "description": "What the whole-drawing look claimed (`likely_problems.payload`): never red by itself; a\nLikely problem until code proves it.",
+        "properties": {
+          "by": {
+            "const": "whole_drawing_look",
+            "default": "whole_drawing_look",
+            "title": "By",
+            "type": "string"
+          },
+          "kind": {
+            "description": "What differs: a missing or extra piece, a count, a size, the layout.",
+            "enum": [
+              "missing_piece",
+              "extra_piece",
+              "count",
+              "size",
+              "layout"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The AI's reason, one line.",
+            "title": "Reason"
+          },
+          "sure": {
+            "description": "How sure the look was.",
+            "enum": [
+              "sure",
+              "likely"
+            ],
+            "title": "Sure",
+            "type": "string"
+          },
+          "words": {
+            "description": "The letter's line: \"Please check and confirm: ...\".",
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "words",
+          "sure"
+        ],
+        "title": "ChatFindingLikelyOut",
+        "type": "object"
+      },
       "ChatFindingOut": {
         "description": "One difference the assistant reported, with code-made evidence and checks.",
         "properties": {
@@ -5510,11 +5566,12 @@
         "description": "Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read\n(`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a\nproblem override.",
         "properties": {
           "group": {
-            "description": "clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks the architect, `rule_note`); not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').",
+            "description": "clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks the architect, `rule_note`); likely_problem: the whole-drawing look found a design difference code could not prove (shown dashed, never solid red; the letter says 'Please check and confirm', `likely_problem`); not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').",
             "enum": [
               "clouded",
               "right",
               "rule_note",
+              "likely_problem",
               "not_compared",
               "dismissed"
             ],
@@ -5532,6 +5589,17 @@
             ],
             "description": "not_compared: the trade's words for the reason (Field verify, RFI to the architect, Not reviewed: <reason>, Illegible).",
             "title": "Label"
+          },
+          "likely_problem": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingLikelyOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A whole-drawing look's claim: what to check and confirm (the spots are the finding's own boxes)."
           },
           "not_compared": {
             "anyOf": [
@@ -6953,6 +7021,7 @@
               "wrong",
               "right",
               "rule_note",
+              "likely_problem",
               "not_compared"
             ],
             "title": "Outcome",
@@ -6976,6 +7045,7 @@
                   "wrong",
                   "right",
                   "rule_note",
+                  "likely_problem",
                   "not_compared"
                 ],
                 "type": "string"
@@ -7351,6 +7421,13 @@
       "ChatLiveTallyOut": {
         "description": "Found so far (`check_tally`): proved Wrongs only, and the differences waiting for the\nblind second look (they become Wrong only if it agrees).",
         "properties": {
+          "likely_problem": {
+            "default": 0,
+            "description": "Likely problems from the whole-drawing look (please check).",
+            "minimum": 0.0,
+            "title": "Likely Problem",
+            "type": "integer"
+          },
           "not_compared": {
             "minimum": 0.0,
             "title": "Not Compared",
@@ -8611,6 +8688,12 @@
             ],
             "description": "Time left at the pace so far; null before any page is done.",
             "title": "Eta Seconds"
+          },
+          "likely_so_far": {
+            "default": 0,
+            "description": "Likely problems the whole-drawing look found (please check).",
+            "title": "Likely So Far",
+            "type": "integer"
           },
           "pages_done": {
             "title": "Pages Done",
@@ -14291,6 +14374,13 @@
             "description": "Ask the architect: the architect's size breaks a GV rule (#1839).",
             "minimum": 0.0,
             "title": "Ask Architect",
+            "type": "integer"
+          },
+          "likely_problem": {
+            "default": 0,
+            "description": "Likely problem: the whole-drawing look found it, code did not prove it (please check and confirm).",
+            "minimum": 0.0,
+            "title": "Likely Problem",
             "type": "integer"
           },
           "not_compared": {
