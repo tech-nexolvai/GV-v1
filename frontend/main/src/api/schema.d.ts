@@ -5443,6 +5443,8 @@ export interface components {
              * @default 0
              */
             more: number;
+            /** @description The pre-flight health report (code, $0): what was found, whether the check goes on, who acts; `null` before the page map is made. */
+            preflight?: components["schemas"]["ChatPreflightOut"] | null;
             /**
              * Price Pages
              * @description The content pages in scope the price counts: the pages the plan compares (drawings of the products asked; title and divider pages left out).
@@ -6130,6 +6132,12 @@ export interface components {
              * @description The simple full check only: an earlier run of this chat (its folder name under `simple/`, said in the work-items block) whose saved compare answers and blind looks are verified again, with no model call ($0).
              */
             replay?: string | null;
+            /**
+             * Run Anyway
+             * @description A full check only: run even when the pre-flight check would pause it (a swapped, broken or other-project file). Every warning is still recorded.
+             * @default false
+             */
+            run_anyway: boolean;
             /** @description #1551: the reviewer's correction of how the app understood the question (Edit on the 'Understood as' line); the question's words are sent unchanged in `text`. */
             task?: components["schemas"]["ChatTaskSpecIn"] | null;
             /**
@@ -6148,7 +6156,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatWorkItemsBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"] | components["schemas"]["ChatUnderstoodBlock"] | components["schemas"]["ChatFallbackBlock"] | components["schemas"]["ChatPackageBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatWorkItemsBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"] | components["schemas"]["ChatUnderstoodBlock"] | components["schemas"]["ChatFallbackBlock"] | components["schemas"]["ChatPackageBlock"] | components["schemas"]["ChatPreflightBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -6428,6 +6436,106 @@ export interface components {
             label: string;
             /** Value */
             value: string;
+        };
+        /** ChatPreflightBlock */
+        ChatPreflightBlock: {
+            preflight: components["schemas"]["ChatPreflightOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "preflight";
+        };
+        /**
+         * ChatPreflightLineOut
+         * @description One line of the pre-flight health report (`preflight.py`): what code found, whether the
+         *     check goes on, and who acts.
+         */
+        ChatPreflightLineOut: {
+            /**
+             * Estimate
+             * @description Code's estimate before the check runs (the AI page matcher confirms after).
+             * @default false
+             */
+            estimate: boolean;
+            /**
+             * Goes On
+             * @description Whether the check goes on.
+             * @default true
+             */
+            goes_on: boolean;
+            /**
+             * Id
+             * @description What kind of line: "matched", "needs_drawing", "files_swapped"…
+             */
+            id: string;
+            /**
+             * Level
+             * @description stop: the whole check stops before money is spent (only a swapped or broken file, or another project's architect file); warn: many pages are touched; note: some pages; ok: plain facts.
+             * @enum {string}
+             */
+            level: "stop" | "warn" | "note" | "ok";
+            /**
+             * Pages
+             * @description The vendor pages it touches.
+             */
+            pages?: number[];
+            /**
+             * Todo
+             * @description What to do, when someone has to act.
+             */
+            todo?: string | null;
+            /**
+             * Who
+             * @default nobody
+             * @enum {string}
+             */
+            who: "you" | "GV" | "the vendor" | "the architect" | "nobody";
+            /**
+             * Words
+             * @description What was found, in plain words.
+             */
+            words: string;
+        };
+        /**
+         * ChatPreflightOut
+         * @description The pre-flight health report before a full check (`preflight.py`), $0; in an answer, also
+         *     the supervisor's look and whether the check paused.
+         */
+        ChatPreflightOut: {
+            /**
+             * Estimate
+             * @description Some numbers are code's estimate before the check runs.
+             * @default false
+             */
+            estimate: boolean;
+            /** Lines */
+            lines?: components["schemas"]["ChatPreflightLineOut"][];
+            /**
+             * Paused
+             * @description In an answer: the check paused before spending (Run anyway runs it).
+             * @default false
+             */
+            paused: boolean;
+            /**
+             * Run Anyway
+             * @description In an answer: the reviewer chose Run anyway.
+             * @default false
+             */
+            run_anyway: boolean;
+            /**
+             * State
+             * @description working: code's pairing estimate is still being worked out (ask again).
+             * @default ready
+             * @enum {string}
+             */
+            state: "working" | "ready";
+            /**
+             * Stops
+             * @description The ids of the lines that stop the check.
+             */
+            stops?: string[];
+            supervisor?: components["schemas"]["ChatSupervisorOut"] | null;
         };
         /**
          * ChatProductScopeOut
@@ -7111,6 +7219,30 @@ export interface components {
              */
             words: string;
         };
+        /**
+         * ChatSupervisorOut
+         * @description The supervisor's second look at the plan before money is spent (`plan_supervisor.py`).
+         */
+        ChatSupervisorOut: {
+            /**
+             * By
+             * @default ai
+             * @enum {string}
+             */
+            by: "ai" | "code";
+            /** Cost Usd */
+            cost_usd?: string | null;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "ok" | "warn" | "stop" | "not_run";
+            /**
+             * Why
+             * @description One plain sentence.
+             */
+            why?: string | null;
+        };
         /** ChatTaskOut */
         ChatTaskOut: {
             /** Active Form */
@@ -7307,6 +7439,11 @@ export interface components {
              * @description "What's right" items not compared (not counted above).
              */
             not_compared?: number | null;
+            /**
+             * Problems
+             * @description What went wrong in this check, in plain words (pages that could not be read, pages with no architect drawing and why, steps skipped, money that ran out); empty when nothing did.
+             */
+            problems?: string[] | null;
             /** @description The products checked and how many findings of other products code dropped (for the record, not shown); null on older answers. */
             product_scope?: components["schemas"]["ChatProductScopeOut"] | null;
             /** @description A full check's reading coverage (#1862): numbers read of those printed; null on other answers, older answers and set packs made before it was counted. */

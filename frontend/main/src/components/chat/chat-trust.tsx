@@ -1,8 +1,9 @@
 import { useId, useState } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, CircleAlert } from 'lucide-react';
 
 import { Collapse } from '@/components/chat/chat-motion';
 import { ReadingCoverage } from '@/components/chat/chat-reading';
+import { NumText } from '@/components/simple-review/words';
 import type { ChatCoverage, ChatFinding, ChatTrust, ChatUnknown, TrustLevel } from '@/lib/chat-api';
 import { coverageCounts, coverageWords } from '@/lib/chat-findings';
 import {
@@ -151,7 +152,7 @@ function TimingsTable({ trust }: { trust: ChatTrust | null | undefined }) {
     <div data-slot="chat-trust-timings" className="mt-2 grid min-w-0 gap-2">
       <p className="text-xs font-medium text-muted-foreground">Time and cost by phase (phases that ran together overlap)</p>
       <TimingTable rows={rows} caption="Time and cost by phase" slot="chat-trust-timings-phases" head="Phase" />
-      {helpers.length > 0 && <TimingTable rows={helpers} caption="Time and cost by helper" slot="chat-trust-timings-helpers" head="Helper" />}
+      {helpers.length > 0 && <TimingTable rows={helpers} caption="Time and cost by group of pages" slot="chat-trust-timings-helpers" head="Pages" />}
     </div>
   );
 }
@@ -204,6 +205,8 @@ export function HowChecked({ findings, trust, coverage, coverageStrip, unknowns,
   const notChecked = [...(trust?.not_checked ?? [])];
   if (notOpened && !notChecked.some((line) => line.toLowerCase().includes('not opened'))) notChecked.push(notOpened);
   const heading = 'text-xs font-medium text-muted-foreground';
+  // What went wrong in this check (code, plain words); absent on older answers.
+  const problems = trust?.problems ?? null;
 
   return (
     <section data-slot="chat-trust" aria-label="How this was checked" className="min-w-0 border-t pt-3">
@@ -216,9 +219,31 @@ export function HowChecked({ findings, trust, coverage, coverageStrip, unknowns,
       >
         <ChevronRight aria-hidden="true" className={cn('size-4 shrink-0 transition-transform duration-150 motion-reduce:transition-none', open && 'rotate-90')} />
         How this was checked
+        {problems && problems.length > 0 && (
+          <span data-slot="chat-trust-problem-count" className="font-normal">
+            · <span className="num">{problems.length}</span> {problems.length === 1 ? 'problem' : 'problems'}
+          </span>
+        )}
       </button>
       <Collapse open={open} id={bodyId}>
         <div className="mt-2 grid gap-4 rounded-xl border bg-card p-4 text-[13px]">
+          {problems && (
+            <div data-slot="chat-trust-problems" className="grid gap-1.5">
+              <p className={heading}>What went wrong</p>
+              {problems.length === 0 ? (
+                <p className="text-muted-foreground">Nothing went wrong in this check.</p>
+              ) : (
+                <ul aria-label="What went wrong" className="grid gap-1.5">
+                  {problems.map((line) => (
+                    <li key={line} className="flex min-w-0 gap-2">
+                      <CircleAlert aria-hidden="true" className="mt-[3px] size-3.5 shrink-0 text-foreground" />
+                      <NumText text={line} className="min-w-0 break-words" />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
           {levels && rated > 0 && (
             <div className="grid gap-1.5">
               <p className={heading}>How sure the findings are</p>
@@ -249,7 +274,7 @@ export function HowChecked({ findings, trust, coverage, coverageStrip, unknowns,
 
           {trust?.reading && <ReadingCoverage reading={trust.reading} pagePicture={pagePicture} />}
 
-          {(ledger || gv || trust?.evidence) && (
+          {(ledger || (gv && gv.total > 0) || trust?.evidence) && (
             <div className="grid gap-1 text-muted-foreground">
               <p className={heading}>Checked by code</p>
               {trust?.evidence && (
@@ -267,7 +292,7 @@ export function HowChecked({ findings, trust, coverage, coverageStrip, unknowns,
                   </ul>
                 </Disclosure>
               ) : <p data-slot="chat-trust-ledger" className="tabular-nums">Read and checked by code: <span className="text-foreground">{ledger}</span></p>)}
-              {gv && (leftOut.length ? (
+              {gv && gv.total > 0 && (leftOut.length ? (
                 <Disclosure slot="chat-trust-gv" label={<>Matches GV Review’s own checks: <span className="text-foreground">{gv.matched} of {gv.total}</span> · {leftOut.length} left out</>}>
                   <ul data-slot="chat-trust-left-out" aria-label="Left out of this answer" className="grid gap-1">
                     {leftOut.map((item, at) => (

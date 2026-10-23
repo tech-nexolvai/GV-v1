@@ -64,6 +64,9 @@ __all__ = [
     "ChatPlanAnswerIn",
     "ChatPlanDoubtOut",
     "ChatPlanOptionOut",
+    "ChatPreflightBlock",
+    "ChatPreflightLineOut",
+    "ChatPreflightOut",
     "ChatProgressBlock",
     "ChatProgressOut",
     "ChatReadingGroupOut",
@@ -81,6 +84,7 @@ __all__ = [
     "ChatStepOut",
     "ChatSummaryOut",
     "ChatSummaryReviewOut",
+    "ChatSupervisorOut",
     "ChatTaskOut",
     "ChatTaskSpecIn",
     "ChatTextBlock",
@@ -241,6 +245,11 @@ class ChatMessageIn(BaseModel):
         "`simple/`, said in the work-items block) whose saved compare answers and blind looks are "
         "verified again, with no model call ($0).",
     )
+    run_anyway: bool = Field(
+        default=False,
+        description="A full check only: run even when the pre-flight check would pause it (a "
+        "swapped, broken or other-project file). Every warning is still recorded.",
+    )
     compare_missing: bool = Field(
         default=False,
         description="#1710, with `replay` ('Compare them again'): the drawings that run has no "
@@ -257,6 +266,8 @@ class ChatMessageIn(BaseModel):
             raise ValueError("pilot goes with a full check only")
         if (self.compare_model or self.compare_effort or self.replay) and self.mode != "full_check":
             raise ValueError("compare_model, compare_effort and replay go with a full check only")
+        if self.run_anyway and self.mode != "full_check":
+            raise ValueError("run_anyway goes with a full check only")
         if self.compare_missing and not self.replay:
             raise ValueError("compare_missing goes with replay (the run to compare again)")
         if self.plan_answers is not None:
@@ -1492,6 +1503,12 @@ class ChatTrustOut(BaseModel):
         description="A full check's reading coverage (#1862): numbers read of those printed; null "
         "on other answers, older answers and set packs made before it was counted.",
     )
+    problems: list[str] | None = Field(
+        default=None,
+        description="What went wrong in this check, in plain words (pages that could not be read, "
+        "pages with no architect drawing and why, steps skipped, money that ran out); empty when "
+        "nothing did.",
+    )
 
 
 class ChatTrustBlock(BaseModel):
@@ -1879,6 +1896,74 @@ class ChatPackageBlock(BaseModel):
     package: ChatPackageOut
 
 
+class ChatPreflightLineOut(BaseModel):
+    """One line of the pre-flight health report (`preflight.py`): what code found, whether the
+    check goes on, and who acts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(description='What kind of line: "matched", "needs_drawing", "files_swapped"…')
+    level: Literal["stop", "warn", "note", "ok"] = Field(
+        description="stop: the whole check stops before money is spent (only a swapped or broken "
+        "file, or another project's architect file); warn: many pages are touched; note: some "
+        "pages; ok: plain facts."
+    )
+    words: str = Field(description="What was found, in plain words.")
+    goes_on: bool = Field(default=True, description="Whether the check goes on.")
+    who: Literal["you", "GV", "the vendor", "the architect", "nobody"] = "nobody"
+    todo: str | None = Field(default=None, description="What to do, when someone has to act.")
+    pages: list[int] = Field(default_factory=list, description="The vendor pages it touches.")
+    estimate: bool = Field(
+        default=False,
+        description="Code's estimate before the check runs (the AI page matcher confirms after).",
+    )
+
+
+class ChatSupervisorOut(BaseModel):
+    """The supervisor's second look at the plan before money is spent (`plan_supervisor.py`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    verdict: Literal["ok", "warn", "stop", "not_run"]
+    why: str | None = Field(default=None, description="One plain sentence.")
+    by: Literal["ai", "code"] = "ai"
+    cost_usd: str | None = None
+
+
+class ChatPreflightOut(BaseModel):
+    """The pre-flight health report before a full check (`preflight.py`), $0; in an answer, also
+    the supervisor's look and whether the check paused."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Literal["working", "ready"] = Field(
+        default="ready",
+        description="working: code's pairing estimate is still being worked out (ask again).",
+    )
+    lines: list[ChatPreflightLineOut] = Field(default_factory=list)
+    stops: list[str] = Field(
+        default_factory=list, description="The ids of the lines that stop the check."
+    )
+    estimate: bool = Field(
+        default=False, description="Some numbers are code's estimate before the check runs."
+    )
+    supervisor: ChatSupervisorOut | None = None
+    paused: bool = Field(
+        default=False,
+        description="In an answer: the check paused before spending (Run anyway runs it).",
+    )
+    run_anyway: bool = Field(
+        default=False, description="In an answer: the reviewer chose Run anyway."
+    )
+
+
+class ChatPreflightBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["preflight"]
+    preflight: ChatPreflightOut
+
+
 ChatBlock = Annotated[
     ChatThinkingBlock
     | ChatTextBlock
@@ -1898,7 +1983,8 @@ ChatBlock = Annotated[
     | ChatResolverBlock
     | ChatUnderstoodBlock
     | ChatFallbackBlock
-    | ChatPackageBlock,
+    | ChatPackageBlock
+    | ChatPreflightBlock,
     Field(discriminator="type"),
 ]
 
@@ -2361,6 +2447,11 @@ class ChatFullCheckPlanOut(BaseModel):
         default=None,
         description="How far the drawings are read (#1872): a full check starts its AI steps only "
         "once every page is read (`state` ready); `null` before the reading starts.",
+    )
+    preflight: ChatPreflightOut | None = Field(
+        default=None,
+        description="The pre-flight health report (code, $0): what was found, whether the check "
+        "goes on, who acts; `null` before the page map is made.",
     )
 
 

@@ -9,6 +9,7 @@ import { EvidenceViewer } from '@/components/chat/chat-evidence';
 import { FindingsSections, type DecisionProps } from '@/components/chat/chat-findings';
 import { FullCheckProgress, type CloudReview } from '@/components/chat/chat-full-check';
 import { LiveCheck } from '@/components/chat/chat-live';
+import { PreflightPaused } from '@/components/chat/chat-preflight';
 import { FullCheckResult } from '@/components/chat/chat-result';
 import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
@@ -288,6 +289,8 @@ export interface AssistantMessageProps {
    * it can send (`previousQuestion` in `chat-messages` finds the question).
    */
   onRetry?: () => void;
+  /** A full check the pre-flight check paused: runs it again past the stop (Run anyway). */
+  onRunAnyway?: () => void;
   /**
    * #1514: go on from an answer a server restart interrupted ("Continue from where you stopped").
    * The page passes it on the newest interrupted answer when it can send.
@@ -329,7 +332,7 @@ export interface LiveStopControls {
   onAskStop: (open: boolean) => void;
 }
 
-export function AssistantMessage({ message, chatId, models, onReload, onRetry, onContinue, latest = false, makeMarkupPdf, fullPageHref, pagePicture = null, fullCheck = false, decide, remakeCloud, focusFindingId = null, liveStop = null }: AssistantMessageProps) {
+export function AssistantMessage({ message, chatId, models, onReload, onRetry, onRunAnyway, onContinue, latest = false, makeMarkupPdf, fullPageHref, pagePicture = null, fullCheck = false, decide, remakeCloud, focusFindingId = null, liveStop = null }: AssistantMessageProps) {
   const running = message.status === 'running';
   // #1727: the live card while a full check runs (from the first moment: getting ready). An older
   // server that sends only `progress` keeps the one calm line instead.
@@ -583,6 +586,8 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const hasResult = fullCheck && (findings.length > 0 || coverage !== null || made.cloud !== null || made.report !== null);
   const resultShown = hasResult && !running && !folding;
   const textItems = items.filter((item) => item.kind === 'text');
+  // The pre-flight check paused this full check before spending: its own card says why.
+  const paused = fullCheck && !running && !resultShown && Boolean(message.preflight?.paused);
 
   return (
     <article
@@ -652,7 +657,8 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           {howChecked}
         </div>
       )}
-      {fullCheck && !resultShown && textItems.map((item) => renderItem(item, items.indexOf(item)))}
+      {paused && <PreflightPaused preflight={message.preflight!} onRunAnyway={onRunAnyway ?? null} />}
+      {fullCheck && !resultShown && !paused && textItems.map((item) => renderItem(item, items.indexOf(item)))}
       {looseTasks}
 
       {(message.cites?.length ?? 0) > 0 && <CiteChips cites={message.cites ?? []} pictureUrl={pictureUrl} />}

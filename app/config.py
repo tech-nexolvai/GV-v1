@@ -201,6 +201,13 @@ class Settings(BaseSettings):
     assistant_page_match_model: Literal["off", "claude-sonnet-5-5", "claude-opus-5-5"] = (
         "claude-sonnet-5-5"
     )
+    # The supervisor (`plan_supervisor.py`): one cheap look at a roster full check's plan before
+    # any paid step (under $0.02; about $0.001 with Haiku). It can only warn, or pause the check
+    # for a swapped, broken or other-project file; off: code's own stops only.
+    assistant_preflight_supervisor: bool = True
+    assistant_preflight_supervisor_model: Literal["claude-haiku-5-5", "claude-sonnet-5-5"] = (
+        "claude-haiku-5-5"
+    )
     # The whole-drawing look (Anant, 2026-10-23): one AI look per paired vendor drawing, beside the
     # roster's page helpers, for the big design differences number-by-number reading misses
     # (missing units, other counts and heights); its claims are "Likely problem" unless code
