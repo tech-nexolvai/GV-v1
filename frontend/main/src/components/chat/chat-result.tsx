@@ -8,7 +8,7 @@ import type { ChatCoverage, ChatFile, ChatFinding, ChatPackageState, ChatReviewA
 import { chatPaths } from '@/lib/chat-api';
 import { categoriesPresent, categoryWords, sideLabels } from '@/lib/chat-findings';
 import { fileSize, openHref } from '@/lib/chat-messages';
-import {
+import { isPairingUnsureItem,
   byPage,
   commentNumber,
   decisionsWords,
@@ -752,7 +752,8 @@ function PageHead({ heading, count, noDrawing }: { heading: ReturnType<typeof pa
 function CompactRow({ kind, finding, onOpen, underPage = false }: { kind: 'right' | 'rule_note' | 'not_compared' | 'dismissed'; finding: ChatFinding; onOpen: (findingId: string) => void; underPage?: boolean }) {
   const { thing } = itemParts(finding.item);
   // A vendor string code did not compare: its numbers are the AI's unproven reading, never shown as values (2026-10-23).
-  const refused = kind === 'not_compared' && isRefusedString(finding, 'not_compared');
+  // A pairing-unsure page has no value to show (its row names the candidate pages).
+  const refused = (kind === 'not_compared' && isRefusedString(finding, 'not_compared')) || isPairingUnsureItem(finding);
   const vendor = vendorValue(finding);
   const architect = finding.architect && !refused ? finding.architect.replace(/"/g, '″').replace(/'/g, '′') : null;
   const note = kind === 'rule_note' ? ruleNoteWords(finding) : null;

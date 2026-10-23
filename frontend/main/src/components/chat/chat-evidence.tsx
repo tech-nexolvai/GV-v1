@@ -687,8 +687,14 @@ function PairingUnsure({ finding, heading, pagePicture }: { finding: ChatFinding
           <span className="sr-only"> · vendor page {finding.page}</span>
         </SheetTitle>
       </div>
+      <section aria-label="How we know" data-slot="chat-evidence-how" className="grid min-w-0 gap-2 rounded-xl bg-muted/60 px-4 py-3.5">
+        <h3 className="text-[13px] font-semibold">Why the app does not pick</h3>
+        <ol className="grid list-decimal gap-1 pl-5 text-[13.5px] leading-[21px] text-muted-foreground marker:text-muted-foreground">
+          {words.steps.map((step) => <li key={step} className="pl-1">{step}</li>)}
+        </ol>
+      </section>
       <div data-slot="chat-evidence-pair" className="grid min-w-0 gap-3 sm:grid-cols-2">
-        <figure data-slot="chat-evidence-side" data-side="vendor" className="grid min-w-0 content-start overflow-hidden rounded-xl border">
+        <figure data-slot="chat-evidence-side" data-side="vendor" className="grid min-w-0 content-start self-start overflow-hidden rounded-xl border">
           <figcaption className="border-b px-3.5 py-2.5 text-[13px] text-muted-foreground">The vendor’s drawing</figcaption>
           <div className="p-2">
             {pagePicture ? <ZoomPane src={pagePicture(finding.page)} label={`Vendor page ${finding.page}`} ring={null} inner={null} tone="neutral" focus={false} frameClassName="h-[300px] max-md:h-[220px]" /> : <NoPicture />}
@@ -711,12 +717,6 @@ function PairingUnsure({ finding, heading, pagePicture }: { finding: ChatFinding
           })}
         </div>
       </div>
-      <section aria-label="How we know" data-slot="chat-evidence-how" className="grid min-w-0 gap-2 rounded-xl bg-muted/60 px-4 py-3.5">
-        <h3 className="text-[13px] font-semibold">Why the app does not pick</h3>
-        <ol className="grid list-decimal gap-1 pl-5 text-[13.5px] leading-[21px] text-muted-foreground marker:text-muted-foreground">
-          {words.steps.map((step) => <li key={step} className="pl-1">{step}</li>)}
-        </ol>
-      </section>
       <SheetDescription className="sr-only">{words.steps.join(' ')}</SheetDescription>
     </div>
   );
