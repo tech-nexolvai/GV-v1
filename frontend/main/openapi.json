@@ -5602,6 +5602,25 @@
         "title": "ChatFindingOut",
         "type": "object"
       },
+      "ChatFindingPageOut": {
+        "description": "One upload's page.",
+        "properties": {
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file",
+          "page"
+        ],
+        "title": "ChatFindingPageOut",
+        "type": "object"
+      },
       "ChatFindingProofOut": {
         "description": "Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read\n(`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a\nproblem override.",
         "properties": {
@@ -5878,6 +5897,14 @@
             ],
             "description": "Its page in that file; null: no architect page (see why).",
             "title": "Page"
+          },
+          "pair": {
+            "description": "Every architect page its vendor page is paired with (then its brand prototype pages): where code looks for its architect value.",
+            "items": {
+              "$ref": "#/components/schemas/ChatFindingPageOut"
+            },
+            "title": "Pair",
+            "type": "array"
           },
           "why": {
             "anyOf": [

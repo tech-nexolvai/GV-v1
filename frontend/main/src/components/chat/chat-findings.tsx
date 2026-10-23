@@ -16,6 +16,7 @@ import {
   groupByArea,
   itemTitle,
   pagesWords,
+  comparedPage,
   pageWords,
   reviewerWords,
   sideLabels,
@@ -375,7 +376,7 @@ export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
       </div>
       <div className="grid min-w-0 content-start gap-3">
         <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-          <LargePicture src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} label={sideLabels(finding).architect} page={architectPage(finding)} box={finding.arch_box} tone={status} onOpen={onOpen} />
+          <LargePicture src={finding.arch_picture_id && !finding.reference_page?.outside ? pictureUrl(finding.arch_picture_id) : null} label={sideLabels(finding).architect} page={architectPage(finding)} box={finding.arch_box} tone={status} onOpen={onOpen} />
           <LargePicture src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} label={sideLabels(finding).vendor} page={vendorPage(finding)} box={finding.vendor_box} tone={status} onOpen={onOpen} />
         </div>
         <div className="flex flex-wrap justify-end gap-2">
@@ -549,7 +550,7 @@ function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl
               </span>
             )}
             {tag && <span data-slot="chat-finding-source" className="text-xs text-muted-foreground">{tag.replace(/^vs /, 'Compared with the ')}</span>}
-            {finding.vs_page != null && finding.vs_page !== finding.page && <span className="hidden text-xs text-muted-foreground tabular-nums lg:inline">vs page {finding.vs_page}</span>}
+            {comparedPage(finding) !== null && <span className="hidden text-xs text-muted-foreground tabular-nums lg:inline">vs page {comparedPage(finding)}</span>}
             {(finding.also_on?.length ?? 0) > 0 && <span data-slot="chat-finding-also" className="text-xs text-muted-foreground tabular-nums">{alsoOnWords(finding)}</span>}
           </span>
         </span>

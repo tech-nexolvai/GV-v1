@@ -16,8 +16,9 @@ states something is backed:
 - or it is a size code finds printed on that page, on that side's drawing (`dims.json`'s labels;
   a page whose labels are not known yet is never held against it). The architect's page is the
   finding's one reference page (`reference_page`: its pair's file and page), never the vendor's
-  page number; an item whose architect side has no reference page, or sits off its pair, is
-  kept from the vendor;
+  page number; an item whose architect side has no reference page is kept from the vendor, and
+  so is a Wrong or a Right whose architect spot sits off its pair (a Not compared one stays
+  listed for GV's reviewer);
 - or it is the vendor's value of a difference between two drawings whose architect side has its
   spot or label: the item stays listed (Not compared: "no spot", with the read-number tool's
   reason), never red, so a found difference is not lost because the page scan missed the
@@ -39,6 +40,7 @@ from decimal import Decimal
 from typing import Any, Final
 
 from app.review.assistant.finding_checks import claim_value, to_inches
+from app.review.assistant.reference_page import vendor_only
 
 __all__ = ["MAX_NOTE", "Labels", "dropped", "unbacked"]
 
@@ -54,6 +56,8 @@ _ABSENT: Final = re.compile(
 _LOCATED: Final = frozenset({"printed", "ocr_ink", "text", "arithmetic"})
 #: Statuses that reach the vendor's files (Wrong and Not compared).
 _SHOWN: Final = frozenset({"different", "check"})
+#: Statuses that say the item was compared (Wrong and Right).
+_DECIDED: Final = frozenset({"different", "same"})
 #: The longest note a dropped finding keeps (the finding book's limit for a reason).
 MAX_NOTE: Final = 300
 #: A printed size and a stated one agree within this (inches).
@@ -150,32 +154,59 @@ def _reference(finding: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return record if isinstance(record, Mapping) else None
 
 
-def _where(finding: Mapping[str, Any], side: str) -> tuple[str | None, list[int]]:
-    """The file and pages where `side`'s value is printed. The architect's: its reference page
-    (its pair's file and page) when the finding has one, and none when that says there is no
-    architect page; never the vendor's page number in the vendor's file (stream V: an architect
-    value was looked for on the vendor's page 8 when its pair was the architect's page 20). Else
-    (a combined sheet) the page it was compared with, then its own page."""
+def _where(finding: Mapping[str, Any], side: str) -> list[tuple[str | None, list[int]]]:
+    """Where `side`'s value is printed: (file, pages) to look in. The architect's: every page its
+    pair holds (`reference_page`'s `pair`, each in its own file), or its one reference page; none
+    when it says there is no architect page. Never the vendor's page number in the vendor's file
+    (stream V: an architect value was looked for on the vendor's page 8 when its pair was the
+    architect's page 20). An item checked within the vendor's own drawings, or one with no
+    reference page (a combined sheet): the page it was compared with, then its own page."""
     if side == "vendor":
         box = finding.get("vendor_box")
         file = str(box["file"]) if isinstance(box, Mapping) and box.get("file") else None
         page = finding.get("page")
-        return file, [page] if isinstance(page, int) else []
+        return [(file, [page] if isinstance(page, int) else [])]
     record = _reference(finding)
-    if record is not None:
-        page = record.get("page")
-        file = str(record["file"]) if record.get("file") else None
-        return file, [page] if isinstance(page, int) and file is not None else []
+    if record is not None and not vendor_only(finding):
+        places: list[tuple[str | None, list[int]]] = []
+        pair = record.get("pair")
+        for where in pair if isinstance(pair, list) else []:
+            if (
+                isinstance(where, Mapping)
+                and where.get("file")
+                and isinstance(where.get("page"), int)
+            ):
+                places.append((str(where["file"]), [int(where["page"])]))
+        if not places and record.get("file") and isinstance(record.get("page"), int):
+            places.append((str(record["file"]), [int(record["page"])]))
+        return places
     where = (finding.get("vs_page"), finding.get("page"))
-    return _box_file(finding), [p for p in where if isinstance(p, int)]
+    return [(_box_file(finding), [p for p in where if isinstance(p, int)])]
+
+
+def _printed_at(
+    labels: Labels,
+    places: Sequence[tuple[str | None, list[int]]],
+    sides: Sequence[str],
+    size: Decimal,
+) -> bool | None:
+    """`_printed` over several files' pages: True when any prints it; None when none is known."""
+    known = False
+    for file, pages in places:
+        found = _printed(labels, file, pages, sides, size)
+        if found:
+            return True
+        known = known or found is False
+    return False if known else None
 
 
 def unbacked(finding: Mapping[str, Any], labels: Labels) -> str | None:
     """Why `finding` cannot be shown to the vendor (a plain line), or None when it can."""
     record = _reference(finding)
-    if record is not None and record.get("outside"):
-        # Its architect side is on a page the pair does not hold: never compared on its pair,
-        # whatever its status (a Right there is not a Right).
+    if record is not None and record.get("outside") and finding.get("status") in _DECIDED:
+        # A Wrong or a Right whose architect side is on a page its pair does not hold: never
+        # compared on its pair (a Right there is not a Right). A Not compared one stays listed
+        # for GV's reviewer, its own spot shown.
         return _note(finding, str(record.get("why") or "Its architect page is not its pair's."))
     if finding.get("status") not in _SHOWN:
         return None
@@ -199,14 +230,15 @@ def unbacked(finding: Mapping[str, Any], labels: Labels) -> str | None:
         if side == "architect" and made_by_code and size is not None:
             continue  # GV's rule requirement, or code's sum of the vendor's parts
         if size is not None:
-            file, pages = _where(finding, side)
-            if side == "architect" and record is not None and not pages:
+            places = _where(finding, side)
+            pages = [page for _file, found in places for page in found]
+            if side == "architect" and not pages:
                 return _note(
                     finding,
-                    f"{record.get('why') or 'No architect page is paired with this page.'} "
+                    f"{(record or {}).get('why') or 'No architect page is paired with this page.'} "
                     "Code cannot find the architect's value, and the item gives no spot on it.",
                 )
-            if _printed(labels, file, pages, _SIDES[side], size) is not False:
+            if _printed_at(labels, places, _SIDES[side], size) is not False:
                 continue
             if side == "vendor" and _found_difference(finding):
                 # A difference found between two drawings whose vendor value code cannot find

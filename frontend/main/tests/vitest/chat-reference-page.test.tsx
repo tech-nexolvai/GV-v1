@@ -105,3 +105,16 @@ describe('the drawer reads the reference page', () => {
     expect(asked.some((url) => url.includes('/plan-pages/20'))).toBe(false);
   });
 });
+
+describe('a spot off its pair', () => {
+  it('is never shown as the architect’s picture; the pair’s page is, with a note', async () => {
+    const off = finding('o1', {
+      ...PAIRED, id: 'o1', arch_box: { page: 3, x0: 1, y0: 1, x1: 9, y1: 9, file: ARCH_B }, arch_picture_id: 'arch-o1',
+      reference_page: { file: ARCH_B, page: 7, why: 'The architect’s spot is not on the page paired with this vendor page.', outside: true },
+    });
+    const { architect } = await openRow('o1', [off]);
+    expect(architect!.querySelector('img')?.getAttribute('src')).toBe(`/api/v1/packages/p/plan-pages/7?file=${encodeURIComponent(ARCH_B)}`);
+    expect(architect!.textContent).toContain('the item’s spot (page 3) is not on its paired page');
+    expect(referenceWhere(off)).toEqual({ file: ARCH_B, page: 7 });
+  });
+});

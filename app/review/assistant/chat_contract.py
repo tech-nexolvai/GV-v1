@@ -639,6 +639,15 @@ class ChatFindingAlsoOnOut(BaseModel):
     arch_box: ChatBoxOut | None = None
 
 
+class ChatFindingPageOut(BaseModel):
+    """One upload's page."""
+
+    model_config = ConfigDict(frozen=True)
+
+    file: str
+    page: int
+
+
 class ChatFindingReferenceOut(BaseModel):
     """The one architect page a finding is compared on (`reference_page.stamp`, stream V): set
     from its vendor page's pair at the check's finish. Every picture, caption and "Whole page"
@@ -656,6 +665,11 @@ class ChatFindingReferenceOut(BaseModel):
     outside: bool = Field(
         default=False,
         description="The item's architect spot or page is not on its pair (never sent).",
+    )
+    pair: list[ChatFindingPageOut] = Field(
+        default_factory=list,
+        description="Every architect page its vendor page is paired with (then its brand "
+        "prototype pages): where code looks for its architect value.",
     )
 
 

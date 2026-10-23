@@ -2041,8 +2041,9 @@ class ChatEngine:
 
     def _show_finding(self, finding: dict[str, Any]) -> None:
         """A new or changed finding: its block (replaced in place) and the `finding` event. One
-        made after the reference pages were stamped gets its own (`_stamp_reference_pages`)."""
-        if getattr(self, "_reference_stamped", False) and reference_page.KEY not in finding:
+        made or changed after the reference pages were stamped is stamped again from its pair
+        (`_stamp_reference_pages`), so its reference page never goes stale."""
+        if getattr(self, "_reference_stamped", False):
             stamped = self._with_reference(finding)
             if stamped != finding and self.book.replace(stamped):
                 finding = stamped
@@ -4200,10 +4201,15 @@ class ChatEngine:
         if cross is None:
             return
         self._reference_stamped = True
-        for finding in self.book.live():
-            stamped = self._with_reference(finding)
-            if stamped != finding and self.book.replace(stamped):
-                self._show_finding(stamped)
+        with self.finding_lock:
+            changed = [
+                stamped
+                for finding in self.book.live()
+                if (stamped := self._with_reference(finding)) != finding
+                and self.book.replace(stamped)
+            ]
+        for stamped in changed:
+            self._show_finding(stamped)
 
     def _with_reference(self, finding: dict[str, Any]) -> dict[str, Any]:
         cross = self._cross

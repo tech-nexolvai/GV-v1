@@ -118,6 +118,22 @@ def test_a_vs_page_off_the_pair_is_refused(tmp_path: Path) -> None:
     assert kept["vs_page"] == 3
 
 
+def test_a_spot_on_the_pair_with_a_vs_page_off_it_is_refused(tmp_path: Path) -> None:
+    book = _book(tmp_path)
+    spot = {"page": 7, "x0": 10, "y0": 10, "x1": 40, "y1": 20, "file": ARCH_B}
+    with pytest.raises(SandboxRefused, match="vs_page"):
+        book.report(_finding(vs_page=2, arch_box=spot), "lead")
+
+
+def test_the_vendors_own_check_may_box_the_vendors_own_drawing(tmp_path: Path) -> None:
+    book = _book(tmp_path)
+    own = {**VENDOR_BOX, "file": VENDOR}
+    finding, _notes = book.report(
+        _finding(source="vendor_arithmetic", arch_box=own, parts=['10"', '27"']), "lead"
+    )
+    assert finding["arch_box"]["file"] == VENDOR
+
+
 def test_an_update_moving_the_spot_off_the_pair_is_refused(tmp_path: Path) -> None:
     book = _book(tmp_path)
     spot = {"page": 7, "x0": 10, "y0": 10, "x1": 40, "y1": 20, "file": ARCH_B}
@@ -145,13 +161,19 @@ def _stamped(finding: dict[str, Any]) -> dict[str, Any]:
 def test_two_architect_files_the_reference_is_the_pairs_file_and_page() -> None:
     # No spot, no vs_page: the pair's page of the SECOND architect file, not page 3 of the first.
     record = _stamped(_finding())
-    assert record == {"file": ARCH_B, "page": 7, "why": None}
+    assert (record["file"], record["page"], record["why"], record["outside"]) == (
+        ARCH_B,
+        7,
+        None,
+        False,
+    )
+    assert record["pair"] == [{"file": ARCH_B, "page": 7}]
 
 
 def test_the_spot_on_the_pair_is_the_reference() -> None:
     box = {"page": 3, "x0": 1, "y0": 1, "x1": 2, "y1": 2, "file": ARCH_A}
     record = _stamped(_finding(page=4, vendor_box={**VENDOR_BOX, "page": 4}, arch_box=box))
-    assert record == {"file": ARCH_A, "page": 3, "why": None}
+    assert (record["file"], record["page"], record["outside"]) == (ARCH_A, 3, False)
 
 
 def test_a_spot_off_the_pair_is_marked_outside_and_shows_the_pairs_page() -> None:
@@ -169,6 +191,31 @@ def test_an_unpaired_page_has_no_architect_page_and_says_why() -> None:
 def test_a_vendor_only_card_has_no_architect_page() -> None:
     record = _stamped(_finding(source="vendor_arithmetic", parts=['10"', '28"'], vs_page=7))
     assert record["page"] is None and "vendor's own drawings" in str(record["why"])
+
+
+def test_the_vendors_own_check_with_boxes_on_its_own_page_is_never_outside() -> None:
+    # A span printed twice: both boxes on the vendor's own page of a paired vendor page.
+    own = {**VENDOR_BOX, "file": VENDOR}
+    for change in (
+        {"source": "cross_view", "reference_side": "vendor"},
+        {"created_by": "consistency"},
+    ):
+        record = _stamped(_finding(arch_box=own, vs_page=3, **change))
+        assert record["outside"] is False and record["page"] is None
+
+
+def test_an_unpaired_pages_own_spot_is_its_page_never_outside() -> None:
+    # Code's run-by-run pairing gives an unpaired page's item its own architect spot.
+    box = {"page": 2, "x0": 1, "y0": 1, "x1": 2, "y1": 2, "file": ARCH_A}
+    record = _stamped(_finding(page=5, vendor_box={**VENDOR_BOX, "page": 5}, arch_box=box))
+    assert (record["file"], record["page"], record["outside"]) == (ARCH_A, 2, False)
+
+
+def test_one_page_number_in_two_architect_files_of_the_pair_is_on_the_pair() -> None:
+    pairs = {8: (("plan.pdf", 3), ("elevations.pdf", 3))}
+    finding = _finding(page=8, vendor_box={**VENDOR_BOX, "page": 8}, vs_page=3)
+    record = stamp(finding, pairs)[KEY]
+    assert record["outside"] is False and (record["file"], record["page"]) == ("plan.pdf", 3)
 
 
 def test_a_page_the_cross_pairing_did_not_decide_gets_no_stamp() -> None:
@@ -194,6 +241,25 @@ def test_spot_guard_looks_on_the_reference_page_never_the_vendors_page_number() 
     assert asked == [(ARCH_B, 7)]
 
 
+def test_spot_guard_looks_on_every_page_of_a_two_page_pair() -> None:
+    def labels(file: str | None, page: int) -> list[dict[str, Any]]:
+        return [{"side": "unknown", "inches": "37" if (file, page) == (ARCH_A, 3) else "99"}]
+
+    finding = stamp(_finding(page=4, vendor_box={**VENDOR_BOX, "page": 4}), PAIRS.pairs)
+    assert unbacked(finding, labels) is None  # printed on the pair's SECOND page
+
+
+def test_spot_guard_keeps_the_vendors_own_check_as_before() -> None:
+    finding = stamp(_finding(source="cross_view", reference_side="vendor", vs_page=4), PAIRS.pairs)
+    asked: list[tuple[str | None, int]] = []
+
+    def labels(file: str | None, page: int) -> list[dict[str, Any]]:
+        asked.append((file, page))
+        return [{"side": "unknown", "inches": "37"}]
+
+    assert unbacked(finding, labels) is None and asked[0][1] == 4
+
+
 def test_spot_guard_keeps_an_unpaired_architect_value_from_the_vendor() -> None:
     def labels(file: str | None, page: int) -> list[dict[str, Any]]:
         return [{"side": "unknown", "inches": "37"}]  # the value IS on the vendor's page
@@ -210,6 +276,9 @@ def test_spot_guard_drops_a_right_whose_spot_is_off_its_pair() -> None:
     finding = stamp(_finding(status="same", arch_box=box), PAIRS.pairs)
     why = unbacked(finding, lambda _f, _p: [])
     assert why is not None and "not on the page paired" in why
+    # A Not compared one stays listed for GV's reviewer (its own spot is shown).
+    listed = stamp(_finding(status="check", arch_box=box), PAIRS.pairs)
+    assert unbacked(listed, lambda _f, _p: []) is None
 
 
 # ---- zoom and the read tools: no silent vendor file ------------------------------------------------

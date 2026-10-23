@@ -16,6 +16,11 @@ architect value on the vendor's page number in the vendor's file. On a set with 
   page is not paired; the vendor's own drawings; GV's rule). Nothing guesses a page then.
 - `"outside": True` with it: the item's architect spot or `vs_page` is on a page the pair does not
   hold (`spot_guard` keeps such an item from the vendor: it was not compared on its pair).
+- `"pair"`: every (file, page) the item may be compared on (its pair, then its brand prototype
+  drawings): `spot_guard` looks for an architect value on each of them.
+
+An item checked within the vendor's own drawings is never "outside": its boxes are on the vendor's
+own drawings by design. An unpaired page's own spot (code's run-by-run pairing) is its page.
 
 A page the cross-file pairing did not decide (a one-file set, GV's combined sheets, a page with no
 drawing) gets no stamp: its architect page is the sheet's own, as before.
@@ -28,7 +33,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
-__all__ = ["KEY", "Pairs", "allowed", "outside_words", "stamp"]
+__all__ = ["KEY", "Pairs", "allowed", "outside_words", "stamp", "vendor_only", "vendor_page"]
 
 #: The finding field.
 KEY: Final = "reference_page"
@@ -85,6 +90,15 @@ def outside_words(page: int, spot: tuple[str | None, int], pair: Sequence[tuple[
     )
 
 
+def vendor_only(finding: Mapping[str, Any]) -> bool:
+    """An item checked within the vendor's own drawings (a string that does not add up, a span
+    printed twice, two views of one side): its boxes are on the vendor's (or one side's) own
+    drawings, and no architect page is compared."""
+    return str(finding.get("source") or "") in _VENDOR_ONLY_SOURCES or (
+        str(finding.get("created_by") or "") in _VENDOR_ONLY_MAKERS
+    )
+
+
 def stamp(
     finding: Mapping[str, Any],
     pairs: Pairs,
@@ -94,56 +108,54 @@ def stamp(
 ) -> dict[str, Any]:
     """`finding` with its `reference_page` (see the module), set from `pairs` alone."""
     out = dict(finding)
+    record: dict[str, Any] = {"file": None, "page": None, "why": None, "outside": False}
+    if vendor_only(finding):
+        record["why"] = "Checked within the vendor's own drawings: no architect page is compared."
+        out[KEY] = record
+        return out
     page = vendor_page(finding)
     if page is None or (page not in pairs and page not in (unpaired or {})):
         # Not a page the cross-file pairing decided (a combined sheet, no drawing): as before.
         return out
     pair = tuple((str(f), int(p)) for f, p in pairs.get(page, ()))
     may = allowed(page, pairs, references)
+    record["pair"] = [{"file": f, "page": p} for f, p in may]
     box = finding.get("arch_box") if isinstance(finding.get("arch_box"), Mapping) else None
     box_page = _int(box.get("page")) if box else None
     box_file = str(box["file"]) if box and box.get("file") else None
     vs_page = _int(finding.get("vs_page"))
     vs_page = _own(vs_page) if vs_page else None
-    record: dict[str, Any] = {"file": None, "page": None, "why": None}
     if box is not None and box_page is not None:
         spot = (box_file, _own(box_page))
         if any(spot == where or (box_file is None and spot[1] == where[1]) for where in may):
             file = box_file or next(f for f, p in may if p == spot[1])
             record.update(file=file, page=spot[1])
+        elif not pair:
+            # An unpaired page whose item has its own spot (code's run-by-run pairing, #1883):
+            # the spot is the item's page; there is no pair to hold it against.
+            record.update(file=box_file, page=spot[1])
         else:
-            if pair:
-                record.update(file=pair[0][0], page=pair[0][1])
+            record.update(file=pair[0][0], page=pair[0][1], outside=True)
             record["why"] = (
                 "The architect's spot is not on the page paired with this vendor page: "
-                + (outside_words(page, spot, pair) if pair else "the page is not paired.")
+                + outside_words(page, spot, pair)
             )
-            record["outside"] = True
         out[KEY] = record
         return out
-    source = str(finding.get("source") or "")
-    if source in _VENDOR_ONLY_SOURCES or str(finding.get("created_by") or "") in (
-        _VENDOR_ONLY_MAKERS
-    ):
-        record["why"] = "Checked within the vendor's own drawings: no architect page is compared."
-        out[KEY] = record
-        return out
-    if source == "rules" or finding.get("rule_check_id"):
+    if str(finding.get("source") or "") == "rules" or finding.get("rule_check_id"):
         record["why"] = "GV's rule: no architect page is compared."
         out[KEY] = record
         return out
     if vs_page is not None and pair:
         named = [where for where in may if where[1] == vs_page]
-        if len(named) == 1:
+        if named:
             record.update(file=named[0][0], page=named[0][1])
-            out[KEY] = record
-            return out
-        record.update(file=pair[0][0], page=pair[0][1])
-        record["why"] = (
-            f"The item names architect page {vs_page}, which is not the page paired with vendor "
-            f"page {page} ({_names(pair)})."
-        )
-        record["outside"] = True
+        else:
+            record.update(file=pair[0][0], page=pair[0][1], outside=True)
+            record["why"] = (
+                f"The item names architect page {vs_page}, which is not the page paired with "
+                f"vendor page {page} ({_names(pair)})."
+            )
         out[KEY] = record
         return out
     if pair:

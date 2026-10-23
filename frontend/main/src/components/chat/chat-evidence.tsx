@@ -401,7 +401,7 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
 
             <div className="grid min-w-0 grid-cols-2 gap-3 max-md:gap-2">
               <ValueCard side="vendor" finding={finding} label={sideLabels(finding).vendor} value={vendor.main} tone={group === 'clouded' ? 'wrong' : null} note={vendor.note ? `Printed ${finding.vendor}` : null} src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} />
-              <ValueCard side="architect" finding={finding} label={should ? 'Should be' : sideLabels(finding).architect} value={should ? should.main : finding.architect ? finding.architect.replace(/"/g, '″').replace(/'/g, '′') : '—'} tone={should ? 'right' : null} note={should?.note ? `From ${should.note}` : null} src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} />
+              <ValueCard side="architect" finding={finding} label={should ? 'Should be' : sideLabels(finding).architect} value={should ? should.main : finding.architect ? finding.architect.replace(/"/g, '″').replace(/'/g, '′') : '—'} tone={should ? 'right' : null} note={should?.note ? `From ${should.note}` : null} src={finding.arch_picture_id && !finding.reference_page?.outside ? pictureUrl(finding.arch_picture_id) : null} />
             </div>
 
             {pagePicture && (finding.vendor_box || finding.arch_box) && <PageSpot finding={finding} src={finding.vendor_box ? pagePicture(finding.vendor_box.page, whereOf(finding.vendor_box, true)) : pagePicture(finding.arch_box!.page, whereOf(finding.arch_box!, false))} />}
@@ -542,7 +542,11 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
   // The reference: the architect's crop ringed green; the architect's spot on the same sheet; the
   // vendor's own measured spot; else the architect's page itself, ringed when its spot is known
   // (results v2 follow-up: the drawer said "no picture" though the item names an architect page).
-  const archBox = finding.arch_box ?? null;
+  // A spot code found off the item's pair (stream V) is not its page: its picture is never shown
+  // as the architect's; the pair's page is, with a note.
+  const offPair = Boolean(finding.reference_page?.outside);
+  const archBox = offPair ? null : finding.arch_box ?? null;
+  const archPicture = offPair ? null : finding.arch_picture_id ?? null;
   const rules = finding.source === 'rules' || Boolean(finding.rule_check_id);
   const onVendorPage = architectOnVendorPage(finding);
   // One page of truth (stream V): with no spot, the architect page is the item's reference page
@@ -552,7 +556,7 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
   const archPageNumber = archBox?.page ?? (own || rules ? null : stamped ? reference?.page ?? null : finding.vs_page ?? null);
   const referenceFile: PageWhere = stamped ? (reference?.file ? { file: reference.file } : {}) : { side: 'architect' };
   const referenceSpot: PicturePlan | null = kind === 'drawing_needed' ? null
-    : finding.arch_picture_id ? { src: pictureUrl(finding.arch_picture_id), ring: (w, h) => ringOnCrop(archBox, w, h), focus: false }
+    : archPicture ? { src: pictureUrl(archPicture), ring: (w, h) => ringOnCrop(archBox, w, h), focus: false }
       : pagePicture && archBox && onVendorPage ? { src: pagePicture(archBox.page, whereOf(archBox, true)), ring: (w, h) => ringOnPage(archBox, w, h), focus: true }
         : own ? vendorSpot
           : pagePicture && archBox ? { src: pagePicture(archBox.page, whereOf(archBox, false)), ring: (w, h) => ringOnPage(archBox, w, h), focus: true }
@@ -577,7 +581,8 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
     : own && part?.drawn ? `Measured on the vendor’s own drawing: this line is drawn ${part.drawn} long`
     : own ? `Measured on the vendor’s own drawing${noDrawing ? ' (no architect drawing of this unit)' : ''}`
       : rules && !archBox ? 'GV’s rule'
-        : !finding.arch_picture_id && !archBox && archPageNumber !== null ? `Architect${architectPageWords} · the spot is not marked`
+        : offPair && archPageNumber !== null ? `Architect${architectPageWords} · the item’s spot (page ${finding.arch_box?.page ?? '?'}) is not on its paired page`
+        : !archPicture && !archBox && archPageNumber !== null ? `Architect${architectPageWords} · the spot is not marked`
           : `Architect${architectPageWords}`;
   const referenceToggle = referencePagePlan !== null && referenceSpot !== null;
 
@@ -907,8 +912,8 @@ function ValueCard({ side, finding, label, value, tone, note, src }: { side: 've
         <span className="text-[12.5px] text-muted-foreground">{label}</span>
         <span className={cn('num truncate text-[20px] leading-[26px] font-semibold max-md:text-[17px]', tone === 'wrong' && 'text-outcome-fail-fg', tone === 'right' && 'text-outcome-pass-fg')}>{value}</span>
       </figcaption>
-      <div className="p-2">{src ? <ZoomPane key={src} src={src} label={`${sideLabels(finding)[side]}, page ${page}`} frameClassName="h-[190px] max-md:h-[140px]" /> : <NoPicture compact />}</div>
-      <p className="border-t px-3 py-1.5 text-xs text-muted-foreground">{note ?? <>Page <span className="num">{page}</span></>}</p>
+      <div className="p-2">{src ? <ZoomPane key={src} src={src} label={page !== null ? `${sideLabels(finding)[side]}, page ${page}` : sideLabels(finding)[side]} frameClassName="h-[190px] max-md:h-[140px]" /> : <NoPicture compact />}</div>
+      <p className="border-t px-3 py-1.5 text-xs text-muted-foreground">{note ?? (page !== null ? <>Page <span className="num">{page}</span></> : 'No architect page')}</p>
     </figure>
   );
 }

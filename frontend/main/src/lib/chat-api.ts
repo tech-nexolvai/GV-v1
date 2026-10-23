@@ -447,6 +447,8 @@ export interface ReferencePage {
   why?: string | null;
   /** Its architect spot is not on its pair (such an item is never sent). */
   outside?: boolean;
+  /** Every architect page its vendor page is paired with. */
+  pair?: { file: string; page: number }[];
 }
 
 /**

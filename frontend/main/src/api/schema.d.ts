@@ -5200,6 +5200,16 @@ export interface components {
             wrong_part?: components["schemas"]["ChatFindingWrongPartOut"] | null;
         };
         /**
+         * ChatFindingPageOut
+         * @description One upload's page.
+         */
+        ChatFindingPageOut: {
+            /** File */
+            file: string;
+            /** Page */
+            page: number;
+        };
+        /**
          * ChatFindingProofOut
          * @description Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read
          *     (`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a
@@ -5304,6 +5314,11 @@ export interface components {
              * @description Its page in that file; null: no architect page (see why).
              */
             page?: number | null;
+            /**
+             * Pair
+             * @description Every architect page its vendor page is paired with (then its brand prototype pages): where code looks for its architect value.
+             */
+            pair?: components["schemas"]["ChatFindingPageOut"][];
             /**
              * Why
              * @description Why there is no architect page, or why its spot is refused.
