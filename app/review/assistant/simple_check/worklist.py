@@ -1562,7 +1562,12 @@ def _enrich(
         if title:
             for drawing in item.drawings:
                 context.index_titles[drawing.ref] = title
-        title_hand = pairing_module.markers_in([title])[1] if title else frozenset()
+        # The page's hand words (its title's, and the set index's for the page) are every view's:
+        # a view paired alone is still flagged opposite-hand. Flagging greys positions from an end,
+        # never makes a red.
+        title_hand = (pairing_module.markers_in([title])[1] if title else frozenset()) | (
+            _marked_words(page_read)[1] if views else frozenset()
+        )
         if not views:
             words = _marked_words(page_read)
             for drawing in item.drawings:
@@ -2074,7 +2079,12 @@ def _pair_across(
         prefix = f"{pairing_module.UNPAIRED}: "
         if honest is not None:
             why = f"{honest}; {why.removeprefix(prefix)}"
-    unsure = () if chosen or DRAWING_NEEDED in why else _unsure(ranked, code_pick, answer)
+    # The saved answer as given: a pick code rules out now is still what the matcher was sure of.
+    unsure = (
+        ()
+        if chosen or DRAWING_NEEDED in why
+        else _unsure(ranked, code_pick, answer or (saved[1] if saved is not None else None))
+    )
     if unsure:
         # The AI page matcher is sure of an architect page and code cannot confirm it: the drawing
         # is in the upload, so both pages are named in the reason, never "drawing needed".
@@ -2190,6 +2200,7 @@ def _views_disagree(
         s
         for s in ranked
         if s.strong
+        and not s.agree_only
         and s.contradicts is not None
         and s.contradicts.startswith("its title names a plan")
         and s.ref in pool
@@ -2406,8 +2417,9 @@ def _unsure(
 ) -> tuple[str, ...]:
     """The architect items a person confirms between when the AI page matcher is sure of one and
     code could not confirm it (`pairing.agree` refused it): the matcher's pick, then code's own
-    pick or code's first other item (code's pick first when code rules the matcher's out). Empty
-    when the matcher was not sure or found none."""
+    pick, its own next pick, or code's first other item (code's pick first when code rules the
+    matcher's out). Empty when the matcher was not sure or found none, or when code rules its
+    pick out for another variant or section and has no pick of its own."""
     if answer is None or not answer.confident or not answer.matches:
         return ()
     by = {s.ref: s for s in ranked}
@@ -2419,12 +2431,24 @@ def _unsure(
         # Code and the matcher agree on the item, and something later (which view) is unsure.
         return (pick,)
     other = code_pick if code_pick not in (None, pick) else None
+    if scored.contradicts is not None and other is None:
+        # The page whose title is the vendor's item (agree-only evidence) is the one to offer.
+        other = next(
+            (s.ref for s in ranked if s.contradicts is None and s.titled and s.ref != pick), None
+        )
     if scored.contradicts is not None:
-        # Code rules the matcher's pick out: code's own pick first when it has one. Never "no
-        # architect drawing" while the matcher names one (a type list code reads wrong).
-        return (pick,) if other is None else (other, pick)
+        # Code rules the matcher's pick out: code's own pick first when it has one. A unit type
+        # alone (a type list code may read wrong) leaves the matcher's page to a person; any other
+        # rule-out (another variant, another section) is no drawing of this item.
+        if other is not None:
+            return (other, pick)
+        return (pick,) if "another unit type" in scored.contradicts else ()
     if other is None:
-        other = next((s.ref for s in ranked if s.contradicts is None and s.ref != pick), None)
+        # The matcher's own next pick, else code's first other item.
+        other = next(
+            (m for m in answer.matches[1:] if m != pick and m in by and by[m].contradicts is None),
+            next((s.ref for s in ranked if s.contradicts is None and s.ref != pick), None),
+        )
     return (pick,) if other is None else (pick, other)
 
 

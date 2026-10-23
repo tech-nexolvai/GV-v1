@@ -37,6 +37,7 @@ from app.review.assistant.simple_check.pairing import (
     Facts,
     MatchAnswer,
     Scored,
+    clear_winner,
     opposite_hand,
     rank,
     same_item,
@@ -245,10 +246,12 @@ def test_the_same_checked_title_pairs_and_type_3_is_ruled_out() -> None:
 def test_a_sure_matcher_pick_of_type_3_is_never_paired() -> None:
     unasked = _work(None)
     pair = _across(_work(_matched(unasked, {3: 1})), 3)
-    # Code rules TYPE 3 out, so the matcher's saved pick no longer stands among the candidates
-    # it would be shown now; code pairs the one page of the same title, never the TYPE 3 page.
-    assert _paired_pages(pair) == [2], pair.why
-    assert 1 not in _paired_pages(pair)
+    # Code rules TYPE 3 out, and the title alone never pairs without the matcher: a person
+    # confirms, offered the page of the same title first, never "no drawing".
+    assert pair.chosen == (), pair.why
+    ids = _ids(unasked, 3)
+    assert pair.unsure == (ids[2], ids[1])
+    assert DRAWING_NEEDED not in pair.why
 
 
 def test_matcher_sure_but_code_unsure_is_pairing_unsure_never_drawing_needed() -> None:
@@ -307,10 +310,18 @@ def test_the_reviewer_is_shown_the_two_pages_in_the_right_order() -> None:
     # Code could not confirm the matcher's pick: the matcher's first, then code's first other.
     assert worklist._unsure(ranked, None, sure) == ("a1", "a2")
     # Code rules the pick out and picked another: code's pick first.
-    ruled = (Scored("a2", 5.0, ("x",), strong=True), Scored("a1", 1.0, ("y",), contradicts="type"))
+    typed = "the vendor's sheet is X and this one is Y: another unit type"
+    ruled = (Scored("a2", 5.0, ("x",), strong=True), Scored("a1", 1.0, ("y",), contradicts=typed))
     assert worklist._unsure(ruled, "a2", sure) == ("a2", "a1")
-    # Ruled out with no pick of code's own: the matcher's page alone, never "no drawing".
+    # Ruled out by its unit type alone, no pick of code's own: the matcher's page, to a person.
     assert worklist._unsure(ruled, None, sure) == ("a1",)
+    # Ruled out as another variant: no drawing of this item (it stays "drawing needed").
+    variant = (Scored("a1", 1.0, ("y",), contradicts="it is marked ADA and the vendor's is not"),)
+    assert worklist._unsure(variant, None, sure) == ()
+    # The matcher's own next pick is the second page offered.
+    both = MatchAnswer(("a1", "a3"), confident=True)
+    three = (*ranked, Scored("a3", 0.5, ("z",)))
+    assert worklist._unsure(three, None, both) == ("a1", "a3")
     # A matcher not sure, or no answer: nothing to choose.
     assert worklist._unsure(ranked, None, MatchAnswer(("a1",), confident=False)) == ()
     assert worklist._unsure(ranked, None, None) == ()
@@ -418,3 +429,11 @@ def test_a_reversed_sheet_title_flags_the_pair_whatever_view_it_is_narrowed_to()
     assert pair.opposite_hand is not None, pair.why
     plain = _sheet_of_two_views("SAMPLE VANITY TOP")
     assert plain.chosen and plain.opposite_hand is None, plain.why
+
+
+def test_code_never_picks_on_the_title_weight() -> None:
+    # A title plus sizes too few to pick on: code's own pick stands on code's evidence alone.
+    titled = Scored("a1", 5.33, ("t", "s"), strong=True, titled=4.0)
+    other = Scored("a2", 1.0, ("w",))
+    assert clear_winner((titled, other)) is None
+    assert clear_winner((Scored("a1", 5.33, ("s",), strong=True), other)) is not None

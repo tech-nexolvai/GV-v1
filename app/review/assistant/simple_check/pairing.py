@@ -752,8 +752,9 @@ _HAND_WORDS: Final = frozenset(
 )
 #: A numbered unit type in a tidied title: "type 1", "type 3a", "type b".
 _UNIT_TYPE: Final = re.compile(r"\btype ([a-z0-9]{1,4})\b")
-#: A list of unit types in a tidied title: "type 1 and 2", "type 1 2" ("TYPE 1/2").
-_TYPE_LIST: Final = re.compile(r"\btype ([a-z0-9]{1,4}(?:(?: and| or)? \d{1,2}\b)*)")
+#: A list of unit types in a tidied title, joined by "and" / "or" ("TYPE 1 & 2", "TYPE A OR B"):
+#: a bare number after a type is never read as one ("TYPE A - 2 BEDROOM").
+_TYPE_LIST: Final = re.compile(r"\btype ([a-z0-9]{1,4}(?: (?:and|or) [a-z0-9]{1,4}\b)*)")
 
 
 def unit_title(text: object) -> tuple[str, frozenset[str]]:
@@ -771,7 +772,7 @@ def _index_title_words(title: str) -> bool:
     """Whether a tidied title says enough to name an item: two words or more besides its unit
     type ("primary vanity type 1"; never "kitchen", "vanity", nor "type 1" alone: generic names
     repeat from one unit to the next)."""
-    return len(_UNIT_TYPE.sub(" ", title).split()) >= 2
+    return len(_TYPE_LIST.sub(" ", title).split()) >= 2
 
 
 def same_item(one: str | None, other: str | None) -> bool:
@@ -822,6 +823,9 @@ class Scored:
     (`clear_winner`)."""
     linked: bool = False
     """A key plan's callout beside the vendor's item tag points to it (`Facts.linked`)."""
+    titled: float = 0.0
+    """The part of `score` the set index's item title gave it: an AI's read, so never counted
+    toward code's own pick (`clear_winner`)."""
 
 
 def _same_size(a: Fraction, b: Fraction) -> bool:
@@ -1023,6 +1027,7 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
                 strong or bool(linked) or small_tag or index_titled,
                 agree_only,
                 bool(linked),
+                _W_TITLE if index_titled else 0.0,
             )
         )
     order = {s.ref: n for n, s in enumerate(out)}
@@ -1038,10 +1043,12 @@ def clear_winner(ranked: Sequence[Scored]) -> Scored | None:
     open_ = [s for s in ranked if s.contradicts is None]
     if not open_:
         return None
-    best = open_[0]
-    if best.score < CODE_BAR or not best.strong or best.agree_only:
+    # The set index's titles are an AI's read: code's own pick stands on code's evidence alone.
+    own = sorted(open_, key=lambda s: -(s.score - s.titled))
+    best = own[0]
+    if best.score - best.titled < CODE_BAR or not best.strong or best.agree_only:
         return None
-    if len(open_) > 1 and best.score - open_[1].score < CODE_MARGIN:
+    if len(own) > 1 and (best.score - best.titled) - (own[1].score - own[1].titled) < CODE_MARGIN:
         return None
     return best
 
