@@ -58,6 +58,7 @@ from app.review.assistant import (
 )
 from app.review.assistant import full_check_advocate as advocate
 from app.review.assistant.chat_trust import inch_words
+from app.review.assistant.finding_checks import to_inches, wrong_part
 from app.review.assistant.round_reference import round_only
 from app.review.assistant.vendor_text import vendor_text
 
@@ -104,6 +105,7 @@ __all__ = [
     "vendor_facing",
     "vendor_own",
     "vendor_value",
+    "within_rounding",
     "witnesses_of",
 ]
 
@@ -168,6 +170,7 @@ AI_ONLY_REASON: Final = "Not clouded: code could not read both values at their s
 _ADVOCATE: Final = "devil's advocate"
 #: Trust levels a clouded item may have (with a code witness).
 _PROVED_LEVELS: Final = frozenset({"confirmed", "likely"})
+
 #: Why code could not settle an item (`decision_resolver.keep_reason`), in one plain line.
 KEEP_WORDS: Final[Mapping[str, str]] = {
     "architect_prints_nothing": "the architect prints no size here",
@@ -334,6 +337,27 @@ def string_verified(finding: Mapping[str, Any]) -> bool:
     )
 
 
+def within_rounding(finding: Mapping[str, Any]) -> bool:
+    """A vendor string whose printed parts miss its printed overall by no more than CAD rounding
+    can (three 57 1/3" bays print 57 3/8" under 172"): code's geometry must rule the rounding out
+    before it is red (`vendor_consistency` does; two AI reads cannot)."""
+    if finding.get("source") != "vendor_arithmetic":
+        return False
+    parts = finding.get("parts")
+    total = _inches_of(finding.get("printed_total"))
+    if not isinstance(parts, list) or len(parts) < 2 or total is None:
+        return False
+    values = [_inches_of(part) for part in parts]
+    if any(value is None for value in values):
+        return False
+    off = total - sum((v for v in values if v is not None), Decimal(0))
+    return off != 0 and advocate.within_cad_rounding(off, len(parts))
+
+
+def _inches_of(text: object) -> Decimal | None:
+    return to_inches(text) if isinstance(text, str) else None
+
+
 def _advocate(finding: Mapping[str, Any]) -> Mapping[str, Any] | None:
     critic = finding.get("critic")
     if isinstance(critic, Mapping) and critic.get("model") == _ADVOCATE:
@@ -395,6 +419,8 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
         return False  # a total the architect never prints (code's summed chain) is never proof
     if finding.get("source") == "vendor_arithmetic" and not string_verified(finding):
         return False  # an AI-grouped string: only code's geometry proves the parts are one chain
+    if within_rounding(finding) and finding.get("string_geometry") == TWO_READS:
+        return False  # two reads prove the values, not that the drawing did not round them
     if classification.architect_conflict(finding) is not None:
         return False  # the architect prints the vendor's value, or not the "should be" (#1802)
     if not _read_by_code(finding):
@@ -574,6 +600,9 @@ def vendor_value(finding: Mapping[str, Any]) -> str:
     """The vendor's wrong value, short, as code read it: its inches (`16"` for "407 [16]"), the
     printed total of a string that does not add up, the value code read at the spot or the filler
     widths GV's limits caught (#1554); else the vendor's value as the finding words it."""
+    part = wrong_part(finding)
+    if part is not None:
+        return _short(part[0], 40)  # the part code's geometry names (the overall is right)
     if finding.get("source") == "vendor_arithmetic" and finding.get("printed_total"):
         return _short(finding.get("printed_total"), 40)
     inches = _decimal((finding.get("inches") or {}).get("vendor"))
@@ -600,6 +629,9 @@ def should_be_value(finding: Mapping[str, Any]) -> str:
     limits = _gv_limits(finding)
     if limits is not None:
         return limits
+    part = wrong_part(finding)
+    if part is not None:
+        return inch_words(part[1])  # the overall less the other parts
     if finding.get("source") == "vendor_arithmetic":
         summed = _decimal(finding.get("parts_sum"))
         if summed is not None:

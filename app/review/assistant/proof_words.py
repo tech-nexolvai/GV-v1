@@ -34,6 +34,7 @@ from typing import Any, Final, Literal
 
 from app.review.assistant import classification
 from app.review.assistant import proof as rule
+from app.review.assistant.finding_checks import wrong_part
 from app.review.assistant.vendor_text import inch_words, item_name, vendor_text
 
 __all__ = [
@@ -125,6 +126,9 @@ def inches_of(text: object) -> Decimal | None:
 
 
 def _vendor_inches(finding: Mapping[str, Any]) -> Decimal | None:
+    part = wrong_part(finding)
+    if part is not None:
+        return inches_of(part[0])
     if finding.get("source") == "vendor_arithmetic" and finding.get("printed_total"):
         return inches_of(finding.get("printed_total"))
     found = _decimal((finding.get("inches") or {}).get("vendor"))
@@ -135,6 +139,9 @@ def _should_inches(finding: Mapping[str, Any]) -> Decimal | None:
     given = _reviewer_value(finding)
     if given is not None:
         return inches_of(given)
+    part = wrong_part(finding)
+    if part is not None:
+        return part[1]
     if finding.get("source") == "vendor_arithmetic":
         summed = _decimal(finding.get("parts_sum"))
         if summed is not None:

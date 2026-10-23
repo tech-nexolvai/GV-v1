@@ -620,6 +620,9 @@ class EngineSettings:
     `GV_ASSISTANT_WHOLE_LOOK_MODEL`): its model id; `None`: off."""
     whole_look_effort: str = "medium"
     """Its effort (`GV_ASSISTANT_WHOLE_LOOK_EFFORT`)."""
+    set_index_model: str | None = None
+    """The set index's model (`set_index.py`, `assistant_set_index_model`): each page of a
+    two-file set read once for its project, set and views; `None`: off (no project is known)."""
 
 
 @dataclass(slots=True)

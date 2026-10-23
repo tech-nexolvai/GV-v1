@@ -59,6 +59,7 @@ from app.review.assistant import round_reference, witness
 from app.review.assistant.chat_findings import finding_categories, live_findings, page_ranges
 from app.review.assistant.classification import READER_ERROR, READER_ERROR_WORDS
 from app.review.assistant.dim_findings import label_checks
+from app.review.assistant.finding_checks import wrong_part
 from app.review.assistant.vendor_text import item_name
 from app.review.assistant.work_pool import run_ordered
 
@@ -1112,6 +1113,9 @@ def cloud_kind(finding: Mapping[str, Any]) -> str | None:
 def needs_text(finding: Mapping[str, Any]) -> str:
     """What the vendor's value needs to be: code's inches when it read the architect's value. The
     vendor's own string (#1554) needs no architect value: its parts add up to code's sum."""
+    part = wrong_part(finding)
+    if part is not None:
+        return inch_words(part[1])
     if finding.get("source") == "vendor_arithmetic":
         summed = _decimal(finding.get("parts_sum"))
         if summed is not None:

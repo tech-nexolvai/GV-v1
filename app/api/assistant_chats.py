@@ -1600,6 +1600,11 @@ def _message(
                 else settings.assistant_whole_look_model
             ),
             whole_look_effort=settings.assistant_whole_look_effort,
+            set_index_model=(
+                None
+                if settings.assistant_set_index_model == "off"
+                else settings.assistant_set_index_model
+            ),
             simple=_simple_options(settings, body) if mode == "full_check" else None,
             plan_answers=(
                 None
