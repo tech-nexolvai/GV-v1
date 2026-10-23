@@ -309,11 +309,20 @@ const COPY_GROUP: Record<string, string> = {
  * reported it, its card, its values, and why it could not be proved; first, when they disagree on
  * the architect's size, why the card is Not compared.
  */
-export function copyLines(finding: Pick<ChatFinding, 'same_item'>): string[] {
+export function copyLines(finding: Pick<ChatFinding, 'same_item'> & { id?: string }): string[] {
   const folded = finding.same_item;
   if (!folded) return [];
   const lines: string[] = [];
   if (folded.conflict?.length) lines.push(`The copies pair the vendor’s number with different architect sizes (${folded.conflict.map(marks).join(', ')}), so it is not compared.`);
+  if (finding.id && isDrawingNeededItem({ id: finding.id })) {
+    // A Drawing-needed page's card: its folded rows are this page's other items (not copies of
+    // one item), each named, none compared yet.
+    for (const copy of folded.copies ?? []) {
+      const item = copy.item?.trim() || 'An item';
+      lines.push(`${item}${copy.vendor ? ` (vendor ${marks(copy.vendor)})` : ''}: not compared, no architect drawing of this page.`);
+    }
+    return lines;
+  }
   for (const copy of folded.copies ?? []) {
     const who = copy.by ? `${copy.by.charAt(0).toUpperCase()}${copy.by.slice(1)}` : 'Another reader';
     const group = copy.group ? COPY_GROUP[copy.group] ?? 'Listed' : 'Listed';

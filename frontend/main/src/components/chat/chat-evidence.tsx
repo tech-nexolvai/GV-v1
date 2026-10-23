@@ -662,9 +662,9 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
       {note && <ArchitectQuestion note={note} />}
       {copies.length > 0 && (
         <section aria-label="Also reported" data-slot="chat-evidence-copies" className="grid min-w-0 gap-2 rounded-xl border px-4 py-3.5">
-          <h3 className="text-[13px] font-semibold">Also reported (the same item)</h3>
+          <h3 className="text-[13px] font-semibold">{kind === 'drawing_needed' ? 'Also on this page' : 'Also reported (the same item)'}</h3>
           <ul className="grid gap-1 text-[13px] leading-[20px] text-muted-foreground">
-            {copies.map((line) => <li key={line} className="break-words">{line}</li>)}
+            {copies.map((line, at) => <li key={`${at}-${line}`} className="break-words">{line}</li>)}
           </ul>
         </section>
       )}

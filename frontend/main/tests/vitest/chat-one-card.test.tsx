@@ -57,6 +57,8 @@ describe('one item, one card', () => {
     expect(pages).toEqual([{ page: 1, why: 'no drawing of the same item was found', folded: [{ finding_id: 'F2', item: 'Sample unit: drawn items', vendor: 'sink model K-1' }] }]);
     const [item] = drawingNeededItems(pages, null);
     expect(item.same_item?.copies.map((copy) => [copy.finding_id, copy.group])).toEqual([['F2', 'not_compared']]);
+    // Its rows are this page's other items, each named (never "the same item").
+    expect(copyLines(item)).toEqual(['Sample unit: drawn items (vendor sink model K-1): not compared, no architect drawing of this page.']);
   });
 
   it('shows the copies in the drawer as "Also reported (the same item)"', async () => {
