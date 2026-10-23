@@ -156,7 +156,7 @@ from app.review.assistant.full_check_schedule import (
 from app.review.assistant.full_check_specialists import HELPER_CORE, PACK_SHAPES, knowledge_text
 from app.review.assistant.impact import by_impact
 from app.review.assistant.reply_json import json_of_reply, log_unreadable, object_of_reply
-from app.review.assistant.splash_views import look_in_line
+from app.review.assistant.splash_views import look_in_line, splash_question_items
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.untrusted import fence
 from app.review.assistant.work_pool import code_workers, run_ordered
@@ -4845,9 +4845,12 @@ class _Run:
         except Exception:  # noqa: BLE001 - the deeper look goes on without the free steps
             _log.exception("assistant roster escalation's free steps failed")
         waiting = self._unproved()
-        if not waiting:
+        # The splash step's small AI question (`assistant_splash_question` on): its open splash
+        # items with the views code found to look in join this one look-again (no new call).
+        asked = splash_question_items(engine.book.live(), self.escalated)
+        if not waiting and not asked:
             return
-        unread = [f for f in waiting if not self._read_by_code(f)]
+        unread = [f for f in waiting if not self._read_by_code(f)] + asked
         if unread and self._left() <= 0:
             self._note(
                 f"the escalation's deeper look: {len(unread)} items not verified within the "

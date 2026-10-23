@@ -158,7 +158,7 @@ def _summary(stopped: str | None, cap_hit: str | None = None) -> str:
         ),
         _proved(_finding("Buffet outlets", page=4, difference="9")),
         _finding("Bay sizes", "check", page=7),
-        _finding("Backsplash", "same", page=2),
+        _finding("Vanity top depth", "same", page=2),
     ]
     return code_summary(
         findings,

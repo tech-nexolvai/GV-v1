@@ -72,10 +72,14 @@ def test_what_the_architects_words_print() -> None:
     assert read('4" BACKSPLASH') == [(Fraction(4), "height")]
     assert read('4" HIGH BACKSPLASH') == [(Fraction(4), "height")]
     assert read('BACKSPLASH 3/4" THK') == [(Fraction(3, 4), "thickness")]
-    assert read('3/4" THK x 4" H QUARTZ BACKSPLASH') == [
-        (Fraction(3, 4), "thickness"),
-        (Fraction(4), "height"),
-    ]
+    assert read('BACKSPLASH HEIGHT: 4"') == [(Fraction(4), "height")]
+    # A size counts only right beside the part's name: the others are another part's.
+    assert read('24" WIDE COUNTERTOP W/ 4" BACKSPLASH') == [(Fraction(4), "height")]
+    assert read('25" DEEP COUNTERTOP W/ BACKSPLASH') == []
+    assert read('3/4" THK x 4" H QUARTZ BACKSPLASH') == []
+    # A general note is never one item's size.
+    assert read('ALL BACKSPLASHES 4" HIGH U.O.N.') == []
+    assert read('4" BACKSPLASH TYP.') == []
     # A size whose measure the words do not say is never used.
     assert read('3/4" X 4" QUARTZ BACKSPLASH') == []
     assert read("SOLID SURFACE SPLASH SS 01") == []
@@ -88,13 +92,28 @@ def test_what_the_architects_words_print() -> None:
 
 
 def test_like_for_like() -> None:
-    near = {(FILE, 2): [_phrase("SPLASH", 100, 100)]}
     label = {"text": '4"', "box": [110, 120, 120, 128], "file": FILE, "page": 2}
-    named = _splash(status="same", architect='4"', dims={"architect": label})
-    # The architect's label is beside its own word "SPLASH": alike.
-    assert splash_views.unlike(named, near) is None
-    # Nothing names the architect's size a splash's: not alike (the meeting set's 36" top width).
+    named = _splash(
+        status="same",
+        architect='4"',
+        dims={"architect": label},
+        inches={"vendor": "4", "architect": "4"},
+    )
+    # A phrase beside the architect's label prints its same value as the splash's: alike.
+    assert splash_views.unlike(named, {(FILE, 2): [_phrase('4" BACKSPLASH', 100, 100)]}) is None
+    # A splash word near the label proves nothing (the label may be the top's own size).
+    assert splash_views.unlike(named, {(FILE, 2): [_phrase("SPLASH", 100, 100)]}) is not None
     assert splash_views.unlike(named, {}) is not None
+    wide = _splash(
+        item="Vanity: back splash length",
+        vendor='36"',
+        status="same",
+        architect='36"',
+        dims={"architect": {**label, "text": '36"'}},
+        inches={"vendor": "36", "architect": "36"},
+    )
+    for near in ('4" BACKSPLASH', 'COUNTERTOP 36" WIDE W/ BACKSPLASH'):
+        assert splash_views.unlike(wide, {(FILE, 2): [_phrase(near, 100, 100)]}) is not None
     side = _splash(item="Vanity: side splash height", architect='4" BACKSPLASH')
     assert "side splash against a back splash" in str(splash_views.unlike(side))
     other = _splash(architect='1 1/2" THK BACKSPLASH')
@@ -153,7 +172,7 @@ def test_the_escalations_right_needs_like_for_like() -> None:
     assert found["status"] == "check" and proof.proof_group(found) == "not_compared"
     assert found["splash_views"]["outcome"] == "not_like_for_like"
     # The same item with the architect's own word beside its label is settled Right.
-    phrases = {(FILE, 20): [_phrase("BACKSPLASH", 22, 10)]}
+    phrases = {(FILE, 20): [_phrase('BACKSPLASH 36" LONG', 22, 10)]}
     result = escalate(
         [dict(finding)], EscalationContext(main_file="shop.pdf", labels=labels, phrases=phrases)
     )
@@ -177,7 +196,10 @@ def test_no_splash_drawn_is_kept_only_when_code_has_no_doubt() -> None:
     assert splash_views.settle(_look_said(), Search((ELEVATION,)), phrases) is None
     # The page holds numbers in pen strokes code cannot read (a section drawn in strokes): code
     # cannot confirm "no splash drawn", so it is no Likely problem.
-    doubt = Search((ELEVATION,), stray={2: 17})
+    # A few unread numbers on the page are no doubt (a hand-drafted page misses some).
+    few = Search((ELEVATION,), stray={2: 2}, doubt=False)
+    assert splash_views.settle(_look_said(), few, phrases) is None
+    doubt = Search((ELEVATION,), stray={2: 17}, doubt=True)
     settled = splash_views.settle(_look_said(), doubt, phrases)
     assert settled is not None
     found = settled.finding
@@ -222,3 +244,66 @@ def test_the_small_ai_question_is_off_unless_asked() -> None:
     assert splash_views.look_in_line(on) == (
         "look for the splash size in: the section 'VANITY SECTION' (page 2)"
     )
+    # On, the item joins the roster's existing look-again (no new call); off, nothing does.
+    assert splash_views.splash_question_items([off]) == []
+    assert [f["id"] for f in splash_views.splash_question_items([on])] == ["F1"]
+    assert splash_views.splash_question_items([on], done={"F1"}) == []
+
+
+def test_views_ask_the_architect_only_like_for_like() -> None:
+    rules = splash_views._rules()
+    phrases = {(FILE, 2): [_phrase('4" BACKSPLASH', 100, 100), _phrase('6" SIDE SPLASH', 500, 100)]}
+    vague = _splash(item="Vanity: splash height")
+    settled = splash_views.settle(vague, Search((SECTION, ELEVATION)), phrases, rules=rules)
+    # The back splash and the side splash are two parts, not two views disagreeing; the vendor's
+    # value does not say which it is: Not compared, no question to the architect.
+    assert settled.added == [] and settled.finding["status"] == "check"
+    # One view printing the same part two ways: GV asks the architect.
+    twice = {(FILE, 2): [_phrase('4" BACKSPLASH', 100, 100), _phrase('6" BACKSPLASH', 100, 300)]}
+    settled = splash_views.settle(_splash(), Search((SECTION,)), twice, rules=rules)
+    [asked] = settled.added
+    assert asked["why"].startswith("The architect's own drawings disagree: the section")
+    assert "its the" not in asked["why"]
+
+
+def test_a_splash_right_made_by_any_step_needs_like_for_like() -> None:
+    # A Right a later step made (the verifier's proof, the round reference, the simple check)
+    # on a splash length against an architect size code never saw named as the splash's.
+    right = _splash(
+        item="Counter: back splash length",
+        vendor='36"',
+        architect="914 [36]",
+        status="same",
+        dims={"architect": {"text": "914 [36]", "box": [0, 0, 9, 9], "file": FILE, "page": 2}},
+    )
+    assert proof.proof_group(right) == "not_compared"
+    named = {**right, "dims": {"architect": {"text": 'BACKSPLASH 36" LONG', "box": [0, 0, 9, 9]}}}
+    assert proof.proof_group(named) == "right"
+    assert proof.proof_group({**right, "paired_by": "code"}) == "right"
+    passed = {**right, "critic": {"model": "devil's advocate", "result": "passed"}}
+    assert proof.proof_group(passed) == "right"
+
+
+def test_the_escalation_keeps_the_splash_steps_reason() -> None:
+    labels = {
+        ("shop.pdf", 8): [
+            {"id": "D1", "text": '4"', "inches": "4", "box": [10, 10, 20, 18], "side": "vendor"}
+        ],
+        (FILE, 20): [
+            {"id": "D8", "text": '4"', "inches": "4", "box": [10, 10, 20, 18], "side": "architect"}
+        ],
+    }
+    record = {"outcome": "not_compared", "why": "the architect shows no splash size (looked at: x)"}
+    finding = _splash(
+        page=8,
+        vs_page=20,
+        inches={"vendor": "4", "architect": "4"},
+        checks={},
+        vendor_box={"x0": 5, "y0": 5, "x1": 25, "y1": 22, "page": 8, "file": "shop.pdf"},
+        arch_box={"x0": 5, "y0": 5, "x1": 25, "y1": 22, "page": 20, "file": FILE},
+        splash_views=record,
+    )
+    result = escalate([finding], EscalationContext(main_file="shop.pdf", labels=labels))
+    found = next((f for f in result.changed if f["id"] == "F1"), finding)
+    assert found["status"] == "check"
+    assert found["splash_views"]["why"] == record["why"]

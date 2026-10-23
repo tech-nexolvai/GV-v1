@@ -485,13 +485,6 @@ def _printed_compare(item: _Item, step: StepName, ctx: EscalationContext | None 
     finding = item.finding
     if finding.get("status") != "check":
         return
-    splash = import_module("app.review.assistant.splash_views")
-    unlike = splash.unlike(finding, ctx.phrases if ctx is not None else None)
-    if unlike is not None:
-        finding[splash.FIELD] = splash.not_alike(unlike)
-        item.changed = True
-        item.note(step, "no_change", f"not like for like: {unlike}")
-        return
     checks = finding.get("checks") or {}
     if checks.get("printed_vendor") != "match" or checks.get("printed_architect") != "match":
         return
@@ -503,6 +496,19 @@ def _printed_compare(item: _Item, step: StepName, ctx: EscalationContext | None 
     a, v = _decimal(inches.get("architect")), _decimal(inches.get("vendor"))
     if a is None or v is None:
         return
+    splash = import_module("app.review.assistant.splash_views")
+    unlike = splash.unlike(finding, ctx.phrases if ctx is not None else None)
+    if unlike is not None:
+        if not isinstance(finding.get(splash.FIELD), Mapping):
+            # The splash step's own reason (the views it looked at) is kept when it has one.
+            finding[splash.FIELD] = splash.not_alike(unlike)
+            item.changed = True
+        item.note(step, "no_change", f"not like for like: {unlike}")
+        return
+    if splash.splash_item(finding):
+        # Code saw the architect's size named as the same splash's: the Right keeps that proof.
+        record = finding.get(splash.FIELD)
+        finding[splash.FIELD] = {**(record if isinstance(record, Mapping) else {}), "alike": True}
     if _same(a, v):
         _settle_right(
             item,

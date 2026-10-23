@@ -78,6 +78,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from importlib import import_module
 from typing import Any, Final, Literal
 
 from app.review.assistant.finding_checks import wrong_part
@@ -1158,6 +1159,16 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
                 "not_proved",
                 f"called the same, but {against}",
                 "both values read at their spots, and code's check agreeing",
+            )
+        unlike = import_module("app.review.assistant.splash_views").right_unproved(finding)
+        if unlike is not None:
+            # Like for like (2026-10-23): a splash's Right needs the architect's size named as
+            # the same splash's, whatever step made it (the meeting set's splash length against
+            # the plan's top width).
+            return _not(
+                "different_reference",
+                f"not like for like: {unlike}",
+                "the architect's printed size for the same splash",
             )
         if finding.get("compared") is False:
             return _not(

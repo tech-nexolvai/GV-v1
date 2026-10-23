@@ -3,51 +3,64 @@
 Anant: "check elevation and section drawings for splash details when they are absent from
 architectural plans". A vendor's splash size is often compared with the one architect view it was
 paired with (a plan), which prints no splash size, while the same sheet's section, or the item's
-other sheet, does. This step runs after code's other checks, on the vendor splash items that ended
-"the architect gives no size", and looks for the size on the item's other views, in this order:
+other sheet, does. This step runs after code's other checks (before the measuring by scale), on
+the open vendor splash items the architect gives no size for, of a vendor drawing paired with a
+separate architect file (on GV's combined sheets the area's sections are already in the compare).
+It looks for the size on the item's other views, in this order:
 
 1. **The same sheet**: the other views of the architect sheet the vendor drawing was paired with
    (`AcrossCandidate.views`: the views code found, or the set index's checked ones), when the
-   view's title names the same item or only its kind (`ELEVATION`, `SECTION`: the sheet's item).
-2. **The same item elsewhere** in the project: the one other architect sheet whose checked item
-   name equals this one's, or that prints the vendor's own item tag. Two such sheets: no look.
+   view's title names the same item, or only its kind (`SECTION`) on a sheet no view of which names
+   another item.
+2. **The same item elsewhere** in the same project: the one other architect sheet whose checked
+   item name equals this one's, or that prints the vendor's own item tag. Two such sheets: no look.
 3. **The architect's pointers**: a section or detail callout (`views.callouts`) printed on those
-   views, followed only to a sheet whose number is exactly the callout's and a view numbered
-   exactly so (every tool links only an exact match; nothing is guessed).
+   views, followed only to the one sheet of the project whose number is exactly the callout's, and
+   a view numbered exactly so (every tool links only an exact match; nothing is guessed).
 
 Never a brand prototype sheet (R1: the architect governs; a prototype splash is what the updated
-design removed), a key plan, another project's sheet, or an older copy of a sheet. The views the
-pack's `look_in_views` names are searched (countertop: plan, elevation, section).
+design removed), a key plan, another project's sheet, or an older copy of a sheet (when older
+copies cannot be worked out, no sheet but the paired one is used). The views the pack's
+`look_in_views` names are searched (countertop: plan, elevation, section).
 
-**What counts as printed:** the architect's own words naming the splash with a size beside them,
-read from the drawing's text (`4" BACKSPLASH`, `BACKSPLASH 3/4" THK`), one measure each (a size
-whose measure the words do not say, as in `3/4" X 4" SPLASH`, is not used). Dimension labels inside
-a found view are counted, never tied to the splash by code (which one measures the splash is not
-known without a reading of the picture: the small AI question, `assistant_splash_question`, off by
-default, then only points the existing look-again at the found view).
+**What counts as printed:** the architect's own words, read from the drawing's text, printing a
+size right beside the part's name: before it with at most a measure word between (`4" BACKSPLASH`,
+`4" HIGH BACKSPLASH`: a height), or after it with its measure said (`BACKSPLASH 3/4" THK`). Any
+other size of the phrase is another part's (`24" WIDE COUNTERTOP W/ 4" BACKSPLASH`: the 24" is the
+top's), a size whose measure is not said is not used, and a general note (`TYP.`, `U.O.N.`) is
+never one item's size. Dimension labels inside a found view are counted, never tied to the splash
+by code.
 
 **Like for like** (#1909): a back splash is never compared with a side splash, a height never with
-a thickness or a length, and a splash's size never with an architect size code does not see named
-as the splash's (`unlike`: the meeting set's "back splash length 36"" against the plan's top width
-36" was a false Right).
+a thickness or a length, and a splash's Right never stands on an architect size code does not see
+printed as the same splash's (`unlike`, `right_unproved`: the meeting set's "back splash length
+36"" against the plan's top width 36" was a false Right). The outputs apply it to every Right,
+whatever step made it.
 
-**Outcomes** (the item keeps its spot; code never guesses a value):
+**Outcomes** (the item keeps its vendor spot; code never guesses a value):
 
 - printed the same: Right (both values read by code, the architect's from its words);
-- printed differently: a difference that needs the usual pairing proof (the blind look and code's
-  ends, `proof.pairing_proved`) before it can be red; otherwise Not compared;
-- two found views print it differently: GV asks the architect (the #1907 pattern), and the vendor
-  is compared with the governing view (a section over an elevation over a plan, settled);
+- printed differently: a Likely problem ("please check and confirm"), never red: the architect's
+  size is in its words, not on a dimension line, so no blind pick or code's ends can prove the two
+  measure the same thing;
+- two found views (or one view twice) print it differently: GV asks the architect (the #1907
+  shape), and the vendor is compared with the governing view (a section over an elevation over a
+  plan, settled);
 - a thickness no view prints: the job's backsplash thickness, labelled "job value" (the owner's
   default, 2026-10-23): the same is Right, a different one a Likely problem, never red;
 - nothing printed: Not compared, "the architect shows no splash size", naming every view looked
-  at, and saying when a view prints its numbers in pen strokes code cannot read yet. A drawn
-  splash with no size is left to the measuring by scale (`scale_measure`), which runs next.
+  at, and saying when numbers there are pen strokes code cannot read yet. A drawn splash with no
+  size is left to the measuring by scale (`scale_measure`), which runs next.
 
 The whole-drawing look's "the architect draws no splash" (a Likely problem) is not kept when a
-found view, or the architect's page, holds numbers in pen strokes code cannot read: code cannot
-confirm the absence (the meeting set's sections draw the splash in strokes), so the item is Not
-compared with that reason.
+found view prints the splash's size, or when a found view or the page holds so many pen-stroke
+numbers code could not read (`Search.doubt`) that code cannot confirm the absence (the meeting
+set's sections draw the splash in strokes); the item is then Not compared with that reason. With
+a few unread numbers, it stays as the look said.
+
+The small AI question (`assistant_splash_question`, off by default) only adds the open items this
+step found views for to the roster's existing look-again, with the views to look in
+(`splash_question_items`, `look_in_line`): no new call.
 
 Verification: `tests/review/assistant/test_splash_views.py` and the made-up uploads in
 `tests/review/assistant/test_hard_uploads.py`.
@@ -62,6 +75,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
+from functools import lru_cache
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
@@ -86,7 +100,10 @@ __all__ = [
     "not_alike",
     "note_readings",
     "part_of",
+    "right_unproved",
     "settle",
+    "splash_item",
+    "splash_question_items",
     "subject_of",
     "unlike",
 ]
@@ -167,6 +184,11 @@ def _rules() -> tuple[Rule, ...]:
 
 
 def _pattern(words: Iterable[str]) -> re.Pattern[str]:
+    return _compiled(tuple(words))
+
+
+@lru_cache(maxsize=256)
+def _compiled(words: tuple[str, ...]) -> re.Pattern[str]:
     alternatives = "|".join(
         re.escape(w).replace("\\ ", r"\s*") for w in sorted(words, key=len, reverse=True)
     )
@@ -285,43 +307,106 @@ def _architect_spot(finding: Mapping[str, Any]) -> tuple[str, int, tuple[float, 
 type Phrases = Mapping[tuple[str, int], Sequence[Mapping[str, Any]]]
 
 
+_WHOLE: Final = (-1e9, -1e9, 1e9, 1e9)
+
+
+def _printed_part(
+    text: object, value: Fraction | None, rules: Sequence[Rule], view: Companion | None = None
+) -> Part | None:
+    """The part a printed phrase sizes, when it prints `value` (any value when `None`) right
+    beside the part's name (`note_readings`), else `None`."""
+    flat = " ".join(str(text or "").split())
+    if not flat:
+        return None
+    place = view or Companion("", 0, "drawing", "", _WHOLE, "")
+    found = note_readings(place, [{"text": flat, "box": [0.0, 0.0, 1.0, 1.0]}], rules)
+    return next((r.part for r in found if value is None or r.value == value), None)
+
+
+def _architect_value(finding: Mapping[str, Any]) -> Fraction | None:
+    raw = (
+        (finding.get("inches") or {}).get("architect")
+        if isinstance(finding.get("inches"), Mapping)
+        else None
+    )
+    try:
+        return Fraction(Decimal(str(raw))) if raw is not None else None
+    except (InvalidOperation, ValueError):
+        return None
+
+
 def unlike(
     finding: Mapping[str, Any],
     phrases: Phrases | None = None,
     rules: Sequence[Rule] | None = None,
 ) -> str | None:
     """Why a splash item's two sides are not like for like, or `None` (alike, or not a splash
-    item). The vendor's side names the part (the item's words); the architect's side must too: its
-    own value's words, or a printed phrase within `NEAR_PT` of its label (`phrases`: the pages'
-    `dims.json` phrases by (file, page)). Then the kind (back, side) and the measure (height,
+    item). The vendor's side names the part it measures (the item's words). The architect's side
+    must be shown to size the same part by printed words: its label's own text (`4" BACKSPLASH`),
+    or a printed phrase within `NEAR_PT` of its label that prints the architect's same value right
+    beside the part's name (`phrases`: the pages' `dims.json` phrases by (file, page)). A splash
+    word merely near the label proves nothing. Then the kind (back, side) and the measure (height,
     thickness, length) must not differ."""
     rules = _rules() if rules is None else rules
     vendor = _vendor_part(finding, rules)
     if vendor is None:
         return None
-    architect = part_of(finding.get("architect"), rules)
+    value = _architect_value(finding)
     dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
     label = (dims or {}).get("architect")
-    if architect is None and isinstance(label, Mapping):
-        architect = part_of(label.get("text"), rules)
-    if architect is None and phrases is not None:
+    architect = None
+    if isinstance(label, Mapping):
+        architect = _printed_part(label.get("text"), None, rules)
+    if architect is None and not isinstance(label, Mapping):
+        architect = _printed_part(finding.get("architect"), None, rules)
+    if architect is None and phrases is not None and value is not None:
         spot = _architect_spot(finding)
         if spot is not None:
             file, page, box = spot
-            near = [
-                part
-                for phrase in phrases.get((file, page), ())
-                if (at := _box(phrase.get("box"))) is not None and _gap(at, box) <= NEAR_PT
-                if (part := part_of(phrase.get("text"), rules)) is not None
-            ]
+            near = sorted(
+                (
+                    (_gap(at, box), part)
+                    for phrase in phrases.get((file, page), ())
+                    if (at := _box(phrase.get("box"))) is not None and _gap(at, box) <= NEAR_PT
+                    if (part := _printed_part(phrase.get("text"), value, rules)) is not None
+                ),
+                key=lambda pair: pair[0],
+            )
             if near:
-                architect = near[0]
+                architect = near[0][1]
     if architect is None:
         return (
             f"the architect's size is not shown to be the {vendor.part}'s (it may be another "
             "part's size, such as the top's own)"
         )
     return _clash(vendor, architect)
+
+
+def splash_item(finding: Mapping[str, Any]) -> bool:
+    """Whether the item measures a part of the packs' `look_in_views` (a splash)."""
+    return _vendor_part(finding, _rules()) is not None
+
+
+def right_unproved(finding: Mapping[str, Any], rules: Sequence[Rule] | None = None) -> str | None:
+    """Why a Right on a splash is not like for like, from the finding alone (the outputs' last
+    word, whatever step made the Right), or `None`. A pairing code proved by geometry, a step's
+    own like-for-like proof (`FIELD.alike`), the devil's advocate's pass (a blind second pick of
+    the same label, code checking both ends), the reviewer's decision and a GV rule stand."""
+    if finding.get("status") != "same" or finding.get("decision"):
+        return None
+    if finding.get("paired_by") == "code" or finding.get("source") not in (None, "architect"):
+        return None
+    critic = finding.get("critic")
+    if (
+        isinstance(critic, Mapping)
+        and critic.get("model") == "devil's advocate"
+        and critic.get("result") == "passed"
+    ):
+        return None  # a blind second pick chose the same label and code checked both ends
+    record = finding.get(FIELD)
+    if isinstance(record, Mapping) and (record.get("alike") or record.get("outcome") == "same"):
+        return None
+    return unlike(finding, None, rules)
 
 
 def not_alike(why: str) -> dict[str, Any]:
@@ -377,6 +462,11 @@ class Facts:
     """Each page's role (the page map)."""
     older: frozenset[tuple[str, int]] = frozenset()
     """Architect pages that are older copies of a later sheet (`sheet_revisions`)."""
+    printed: Mapping[tuple[str, int], int] = field(default_factory=dict)
+    """The numbers each page prints on the architect's side, read or not (`reading_coverage`)."""
+    older_known: bool = True
+    """Older copies were worked out; `False` (it failed): no other sheet than the paired one is
+    used (fail closed)."""
 
     @classmethod
     def from_pack(cls, folder: Path) -> Facts:
@@ -388,6 +478,7 @@ class Facts:
                     p for p in entry.get("phrases") or [] if isinstance(p, Mapping)
                 ]
         unread: dict[tuple[str, int], tuple[tuple[float, float, float, float], ...]] = {}
+        printed: dict[tuple[str, int], int] = {}
         coverage = import_module("app.review.assistant.reading_coverage").load(folder)
         for entry in (coverage or {}).get("pages") or []:
             if not isinstance(entry, Mapping) or not isinstance(entry.get("page"), int):
@@ -400,10 +491,19 @@ class Facts:
                 and one.get("kind") == "strokes"
                 and (b := _box(one.get("box"))) is not None
             )
+            key = (str(entry.get("file")), int(entry["page"]))
             if boxes:
-                unread[(str(entry.get("file")), int(entry["page"]))] = boxes
+                unread[key] = boxes
+            side = (
+                (entry.get("sides") or {}).get("architect")
+                if isinstance(entry.get("sides"), Mapping)
+                else None
+            )
+            if isinstance(side, Mapping) and isinstance(side.get("printed"), int):
+                printed[key] = int(side["printed"])
         index = import_module("app.review.assistant.set_index").load(folder)
         page_map = _read(folder / "page_map.json")
+        older = _older(folder, page_map, index)
         roles: dict[tuple[str, int], str] = {}
         for entry in (page_map or {}).get("pages") or [] if isinstance(page_map, Mapping) else []:
             if isinstance(entry, Mapping) and isinstance(entry.get("page"), int):
@@ -413,14 +513,16 @@ class Facts:
             unread=unread,
             index=index,
             roles=roles,
-            older=_older(folder, page_map, index),
+            older=older if older is not None else frozenset(),
+            printed=printed,
+            older_known=older is not None,
         )
 
     def index_of(self, file: str, page: int) -> Mapping[str, Any]:
         return self.index.get(f"{file}#{page}") or {}
 
 
-def _older(folder: Path, page_map: Any, index: Any) -> frozenset[tuple[str, int]]:
+def _older(folder: Path, page_map: Any, index: Any) -> frozenset[tuple[str, int]] | None:
     """The architect's pages that are older copies of a later sheet (an earlier revision)."""
     if not isinstance(page_map, Mapping):
         return frozenset()
@@ -447,9 +549,9 @@ def _older(folder: Path, page_map: Any, index: Any) -> frozenset[tuple[str, int]
             )
             out |= {(file, page) for page in found}
         return frozenset(out)
-    except Exception:  # noqa: BLE001 - no older copy known: none left out
+    except Exception:  # noqa: BLE001 - not known: only the paired sheet is used (fail closed)
         _log.warning("splash views: older copies not worked out", exc_info=True)
-        return frozenset()
+        return None
 
 
 # ---- the views to look in -----------------------------------------------------------------------
@@ -557,22 +659,24 @@ def _pair_of(work: Any, finding: Mapping[str, Any]) -> Any | None:
     return None
 
 
-def _paired_page(finding: Mapping[str, Any], pair: Any) -> int | None:
-    """The architect page the item was compared with: its own `vs_page` (or its spot's page on
-    the architect's file), else the one page code paired the vendor drawing with."""
+def _paired_page(finding: Mapping[str, Any], pair: Any) -> tuple[str, int] | None:
+    """The architect sheet (file, its own page) the item was compared with: its spot's when it is
+    on an architect file, else its `vs_page` on the one architect file it can be, else the one
+    sheet code paired the vendor drawing with; `None` when that is not one sheet."""
     spot = finding.get("arch_box")
-    pages = {int(c.page) for c in pair.candidates if c.id in pair.chosen}
+    chosen = {(str(c.file), int(c.page)) for c in pair.candidates if c.id in pair.chosen}
     files = {str(c.file) for c in pair.candidates}
     if (
         isinstance(spot, Mapping)
         and isinstance(spot.get("page"), int)
         and str(spot.get("file") or "") in files
     ):
-        return int(spot["page"])
+        return str(spot["file"]), int(spot["page"])
     vs = finding.get("vs_page")
     if isinstance(vs, int) and not isinstance(vs, bool):
-        return vs
-    return next(iter(pages)) if len(pages) == 1 else None
+        named = {f for f, page in chosen if page == vs} or (files if len(files) == 1 else set())
+        return (next(iter(named)), vs) if len(named) == 1 else None
+    return next(iter(chosen)) if len(chosen) == 1 else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -587,9 +691,32 @@ class Search:
     """Per page looked at: numbers in pen strokes code could not read outside every view found
     (a view code could not find, such as a section titled in strokes)."""
 
+    doubt: bool = False
+    """Code cannot confirm the architect draws no such part here: a found view, or a page looked
+    at, holds at least `DOUBT_UNREAD` numbers in pen strokes code could not read, a third or more
+    of the numbers printed there (a page with a few unread numbers does not count)."""
+
     @property
     def found(self) -> bool:
         return bool(self.views or self.notes)
+
+
+#: The fewest unread pen-stroke numbers, and their least share of the numbers printed in a view
+#: or on a page, that leave "the architect draws none" unconfirmed (`Search.doubt`).
+DOUBT_UNREAD: Final = 5
+DOUBT_SHARE: Final = Fraction(1, 3)
+
+
+def _doubt(facts: Facts, file: str, views: Sequence[Companion], stray: Mapping[int, int]) -> bool:
+    for view in views:
+        if view.unread >= DOUBT_UNREAD and view.unread >= DOUBT_SHARE * (view.unread + view.labels):
+            return True
+    for page in {*stray, *(v.page for v in views)}:
+        unread = len(facts.unread.get((file, page), ()))
+        printed = facts.printed.get((file, page), unread)
+        if unread >= DOUBT_UNREAD and unread >= DOUBT_SHARE * max(printed, 1):
+            return True
+    return False
 
 
 def _stray(
@@ -616,10 +743,11 @@ def companion_views(
     pair = _pair_of(work, finding)
     if pair is None:
         return Search()
-    page = _paired_page(finding, pair)
-    if page is None:
+    paired = _paired_page(finding, pair)
+    if paired is None:
         return Search()
-    sheet = next((c for c in pair.candidates if int(c.page) == page), None)
+    file, page = paired
+    sheet = next((c for c in pair.candidates if str(c.file) == file and int(c.page) == page), None)
     if sheet is None:
         return Search()
     if not _usable(sheet, facts):
@@ -644,20 +772,36 @@ def companion_views(
         seen.add(key)
         found.append(comp)
 
-    # 1. The same sheet: its views that name the item (or only their kind).
-    for drawing in _views_of(sheet):
+    # 1. The same sheet: its views that name the item, or only their kind when no view of the
+    # sheet names another item (a sheet of several items: a bare "SECTION" may be another's).
+    own = _views_of(sheet)
+    several = bool(item) and any(
+        _item_words(t) and not _item_words(t) & item
+        for d in own
+        for t in getattr(d, "titles", ()) or ()
+    )
+    for drawing in own:
+        titles = list(getattr(drawing, "titles", ()) or ())
+        if several and titles and all(not _item_words(t) for t in titles):
+            continue
         if _names_item(drawing, item):
             add(drawing, "the same sheet")
+    if not facts.older_known:
+        # Older copies of sheets could not be told apart: no other sheet is used.
+        notes.append("older copies of sheets could not be told apart: only this sheet was used")
+        pages = [page, *(v.page for v in found)]
+        stray = _stray(facts, file, pages, found)
+        return Search(tuple(found), tuple(notes), stray, _doubt(facts, file, found, stray))
     # 2. The same item elsewhere in the project: exactly one other sheet.
     project = getattr(sheet, "project", None)
     name = _key(sheet_index.get("item"))
     tags = {_key(t) for t in vendor_index.get("item_tags") or [] if len(_key(t)) >= 4}
     others = []
     for candidate in pair.candidates:
-        if int(candidate.page) == page or not _usable(candidate, facts):
+        if (str(candidate.file), int(candidate.page)) == (file, page):
             continue
-        if project and getattr(candidate, "project", None) not in (None, project):
-            continue
+        if not _usable(candidate, facts) or getattr(candidate, "project", None) != project:
+            continue  # another project's sheet (or one of unknown project) is never used
         read = facts.index_of(str(candidate.file), int(candidate.page))
         their_tags = {_key(t) for t in read.get("item_tags") or []} | {
             _key(t) for d in _views_of(candidate) for t in getattr(d, "tags", ()) or ()
@@ -673,10 +817,11 @@ def companion_views(
             f"{', '.join(str(c.page) for c in others[:6])}): none is used"
         )
     # 3. The architect's callouts on the views found, to a sheet and view numbered exactly so.
-    for target in _callout_targets(pair, found, facts):
+    for target in _callout_targets(pair, found, facts, project):
         add(target, "a callout")
     pages = [page, *(v.page for v in found)]
-    return Search(tuple(found), tuple(notes), _stray(facts, str(sheet.file), pages, found))
+    stray = _stray(facts, file, pages, found)
+    return Search(tuple(found), tuple(notes), stray, _doubt(facts, file, found, stray))
 
 
 def _item_name(finding: Mapping[str, Any]) -> str:
@@ -685,11 +830,13 @@ def _item_name(finding: Mapping[str, Any]) -> str:
     return item.split(":", 1)[0] if ":" in item else ""
 
 
-def _callout_targets(pair: Any, found: Sequence[Companion], facts: Facts) -> list[Any]:
+def _callout_targets(
+    pair: Any, found: Sequence[Companion], facts: Facts, project: str | None
+) -> list[Any]:
     views = import_module("app.review.assistant.simple_check.views")
     numbers: dict[tuple[str, int], tuple[str | None, list[Any]]] = {}
     for candidate in pair.candidates:
-        if not _usable(candidate, facts):
+        if not _usable(candidate, facts) or getattr(candidate, "project", None) != project:
             continue
         key = (str(candidate.file), int(candidate.page))
         page_phrases = [
@@ -770,41 +917,71 @@ def _sizes(text: str) -> list[tuple[str, int, int]]:
     return out
 
 
+#: A general note (`TYP.`, `U.O.N.`, `ALL ... UNLESS NOTED`): never one item's size.
+_GENERAL: Final = re.compile(
+    r"\bU\.?\s?O\.?\s?N\b|\bTYP(?:ICAL)?\b|\bALL\b|\bUNLESS\b|\bOTHERWISE\b|\bU\.?N\.?O\b",
+    re.IGNORECASE,
+)
+#: Between a size and the part's name after it: nothing, or one measure word (`4" HIGH`).
+_BEFORE_PART: Final = re.compile(r"^\s*(?:([A-Za-z]{1,9})\.?\s+)?$")
+#: Between the part's name and a size after it: nothing, a colon or one measure word.
+_AFTER_PART: Final = re.compile(r"^\s*[:=,-]?\s*(?:([A-Za-z]{1,9})\.?\s*[:=]?\s*)?$")
+
+
 def note_readings(
     view: Companion, phrases: Sequence[Mapping[str, Any]], rules: Sequence[Rule]
 ) -> list[Reading]:
-    """The part's sizes the architect's words print inside `view` (see the module): a phrase
-    naming the part with one size whose measure its words say, or one size printed right before
-    the part's name (`4" BACKSPLASH`: a height)."""
+    """The part's sizes the architect's words print inside `view` (see the module). A size counts
+    only right beside the part's name: before it, with at most one measure word between
+    (`4" BACKSPLASH`, `4" HIGH BACKSPLASH`: a height), or after it, its measure said by the word
+    after it (`BACKSPLASH 3/4" THK`). Any other size of the phrase is another part's
+    (`24" WIDE COUNTERTOP W/ 4" BACKSPLASH`: the 24" is the top's). A general note (`TYP.`,
+    `U.O.N.`) is never read."""
     out: list[Reading] = []
     for phrase in phrases:
         box = _box(phrase.get("box"))
         text = " ".join(str(phrase.get("text") or "").split())
-        if box is None or not text or not _inside(box, view.box):
+        if box is None or not text or not _inside(box, view.box) or _GENERAL.search(text):
             continue
-        part = part_of(text, rules)
-        if part is None:
+        rule = next((r for r in rules if _pattern(r.words).search(text)), None)
+        if rule is None:
             continue
         sizes = _sizes(text)
         if not sizes:
             continue
-        if len(sizes) == 1:
-            token, _a, end = sizes[0]
-            measure = part.measure or _measure_after(text, end, len(text), _rule_of(part, rules))
-            value = to_inches(token)
-            if measure is not None and value is not None and value > 0:
+        for mention in _pattern(rule.words).finditer(text):
+            kinds = [
+                k for k, words in rule.kinds.items() if _pattern(words).search(mention.group(0))
+            ]
+            kind = kinds[0] if len(kinds) == 1 else None
+            for n, (token, at, end) in enumerate(sizes):
+                value = to_inches(token)
+                if value is None or value <= 0:
+                    continue
+                measure: str | None = None
+                if end <= mention.start():
+                    between = _BEFORE_PART.match(text[end : mention.start()])
+                    if between is None:
+                        continue
+                    word = between.group(1)
+                    if word is None:
+                        measure = "height"
+                    else:
+                        found = _measures(word)
+                        measure = found[0] if len(found) == 1 else None
+                elif at >= mention.end():
+                    between = _AFTER_PART.match(text[mention.end() : at])
+                    if between is None:
+                        continue
+                    upto = sizes[n + 1][1] if n + 1 < len(sizes) else len(text)
+                    words = _measures(text[end:upto][:12])
+                    if between.group(1):
+                        words = _measures(between.group(1)) or words
+                    measure = words[0] if len(words) == 1 else None
+                if measure is None:
+                    continue
                 out.append(
-                    Reading(Fraction(value), text, Part(part.part, part.kind, measure), view, box)
-                )
-            continue
-        # Several sizes: each one only with its own measure word right after it.
-        for n, (token, _a, end) in enumerate(sizes):
-            upto = sizes[n + 1][1] if n + 1 < len(sizes) else len(text)
-            words = _measures(text[end:upto][:12])
-            value = to_inches(token)
-            if len(words) == 1 and value is not None and value > 0:
-                out.append(
-                    Reading(Fraction(value), text, Part(part.part, part.kind, words[0]), view, box)
+                    Reading(Fraction(value), text, Part(rule.part, kind, measure), view, box)
                 )
     return out
 
@@ -990,9 +1167,8 @@ def settle(
         for r in note_readings(v, phrases.get((v.file, v.page), ()), rules)
         if _clash(part, r.part) is None
     ]
-    unread = sum(v.unread for v in views) + sum(search.stray.values())
     absence = _absence_claim(finding)
-    if absence and not readings and not unread:
+    if absence and not readings and not search.doubt:
         return None  # nothing code reads says otherwise: the look's Likely problem stays
     out = dict(finding)
     record: dict[str, Any] = {
@@ -1015,14 +1191,24 @@ def settle(
             + _unread_words(views, search.stray)
         )
         return _not_compared(out, record, views, question)
+    kinds = {r.part.kind for r in readings if r.part.kind}
+    if part.kind is None and len(kinds) > 1:
+        record["why"] = (
+            f"the architect prints sizes for the {' and the '.join(sorted(kinds))} {part.part}; the "
+            f"vendor's value does not say which one it is (looked at: {looked})"
+        )
+        return _not_compared(out, record, views, question)
     governing = _governing(readings)
-    values = {r.value for r in governing}
     added: list[dict[str, Any]] = []
-    disagree = {r.value for r in readings} - values
-    if governing and disagree:
-        other = next(r for r in readings if r.value in disagree)
-        added.append(_ask_architect(finding, governing[0], other, part))
-        record["views_disagree"] = True
+    if governing:
+        like = [r for r in readings if _clash(r.part, governing[0].part) is None]
+        other = next((r for r in like if r.value != governing[0].value), None)
+        if other is not None:
+            # Two of the architect's views (or one view twice) print the part differently: GV
+            # asks the architect, never red because of it.
+            added.append(_ask_architect(finding, governing[0], other, part))
+            record["views_disagree"] = True
+    values = {r.value for r in governing}
     if len(values) > 1:
         record["why"] = (
             f"the architect's {governing[0].view.words} prints the {part.words} two ways "
@@ -1110,13 +1296,28 @@ def _compared(
         out["status"] = "same"
         out["settled"] = {"outcome": "right", "method": METHOD, "how": how, "was": "check"}
         out["why"] = f"{item}: {how}: the same."
+        record["alike"] = True
+        record["outcome"] = "same"
     else:
-        # A difference code read: red only with the pairing proof (the blind look and code's
-        # ends, `proof.pairing_proved`), never on this step alone.
-        out["status"] = "different"
+        # A difference code read in the architect's words, not on a dimension line: no blind
+        # pick or code's ends can prove the two measure the same, so it is a Likely problem
+        # ("please check and confirm"), never red.
+        out["status"] = "check"
         out.pop("paired_by", None)
+        out["keep_reason"] = "architect_prints_nothing"
         out["why"] = f"{item}: {how}: they differ."
-    record["outcome"] = out["status"]
+        out[likely_problems.FIELD] = {
+            "by": METHOD,
+            "kind": "size",
+            "proof": "likely_only",
+            "sure": "likely",
+            "why": out["why"],
+            "words": (
+                f"{likely_problems.LETTER_LEAD}: {item}: the architect's {found.view.words} "
+                f"shows {found.text}; the vendor's drawing shows {_inches_words(vendor)}."
+            ),
+        }
+        record["outcome"] = "likely_problem"
     out[FIELD] = record
     return out
 
@@ -1199,8 +1400,8 @@ def _ask_architect(
         "vendor": other.text,
         "status": "check",
         "why": (
-            f"The architect's own drawings disagree: its {other.view.words} shows {other.text}, "
-            f"its {governing.view.words} shows {governing.text}. GV compares the {part.part} with "
+            f"The architect's own drawings disagree: {other.view.words} shows {other.text}, "
+            f"{governing.view.words} shows {governing.text}. GV compares the {part.part} with "
             f"the {governing.view.kind}; GV asks the architect."
         ),
         "verified": True,
@@ -1325,7 +1526,10 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
         if settled.finding.get("arch_box") != finding.get("arch_box"):
             # Compared on another view: its picture is that view's spot, never the old one's.
             picture = getattr(book, "_picture", None)
-            made = picture(settled.finding["arch_box"]) if callable(picture) else (None, None)
+            try:
+                made = picture(settled.finding["arch_box"]) if callable(picture) else (None, None)
+            except OSError:
+                made = (None, None)  # no picture is never a failed step
             settled.finding["arch_picture_id"] = made[0]
         with engine.finding_lock:
             if book.replace(settled.finding):
@@ -1338,6 +1542,24 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
     if counts["looked"] or counts["unlike"]:
         _log.warning("assistant splash views: %s", counts)
     return counts
+
+
+def splash_question_items(
+    findings: Iterable[Mapping[str, Any]], done: Iterable[str] = ()
+) -> list[dict[str, Any]]:
+    """The open splash items this step gave views to look in (`look_in`: only when the small AI
+    question is on), not yet looked at again: the roster's look-again reads those views for them
+    (`look_in_line`). Empty when the question is off."""
+    seen = {str(d) for d in done}
+    out = []
+    for finding in findings:
+        record = finding.get(FIELD)
+        if not isinstance(record, Mapping) or not record.get("look_in"):
+            continue
+        if finding.get("status") != "check" or str(finding.get("id")) in seen:
+            continue
+        out.append(dict(finding))
+    return out
 
 
 #: The roster's look-again line for an item with views to look in (the small AI question, on).

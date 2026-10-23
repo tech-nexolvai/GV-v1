@@ -588,24 +588,22 @@ def test_splash_sized_on_the_same_sheets_section_is_compared(tmp_path: Path) -> 
     assert settled.added == []
 
 
-def test_splash_that_differs_is_red_only_with_the_blind_proof(tmp_path: Path) -> None:
+def test_splash_that_differs_is_a_likely_problem_never_red(tmp_path: Path) -> None:
     from app.review.assistant import proof
 
     outcome = _splash_set(tmp_path, ((('6" BACKSPLASH'), 780.0, 400.0),))
     found = _looked(outcome, _splash()).finding
-    # (b) code read both values and they differ: a difference that needs the pairing proof.
-    assert found["status"] == "different"
-    assert found.get("paired_by") is None and proof.needs_pairing(found)
-    assert not proof.code_proved({**found, "trust_level": "confirmed", "witnesses": ["printed"]})
-    assert _group(found) != "clouded"
-    # With the blind look agreeing (the devil's advocate passed it), the usual red path.
+    # (b) code read both values and they differ, but the architect's is in its words, not on a
+    # dimension line: no blind pick or code's ends can prove the pairing, so a Likely problem
+    # ("please check and confirm"), never red, whatever else says so.
+    assert _group(found) == "likely_problem" and found["architect"] == '6" BACKSPLASH'
     passed = {
         **found,
         "trust_level": "confirmed",
         "witnesses": ["printed"],
         "critic": {"model": "devil's advocate", "result": "passed"},
     }
-    assert proof.code_proved(passed)
+    assert not proof.code_proved(passed) and _group(passed) != "clouded"
 
 
 def test_splash_views_that_disagree_ask_the_architect(tmp_path: Path) -> None:
@@ -620,7 +618,7 @@ def test_splash_views_that_disagree_ask_the_architect(tmp_path: Path) -> None:
     # (c) the section governs (6"), the elevation says 4": GV asks the architect, never red
     # because of it; the vendor is compared with the section.
     assert settled.finding["architect"] == '6" BACKSPLASH'
-    assert settled.finding["status"] == "different"
+    assert _group(settled.finding) == "likely_problem"
     [asked] = settled.added
     assert asked["source"] == "cross_view" and asked["reference_side"] == "architect"
     said = classify(asked, proved=False)
