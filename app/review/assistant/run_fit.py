@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -323,6 +324,61 @@ def _marked(segments: Sequence[Segment], orientation: str, across: float, at: fl
     return False
 
 
+class _Marks:
+    """One page's line work for `_marked`, sorted once: only the pieces that can mark a span's end
+    (a slanted stroke `MARK_MIN_PT` to `MARK_MAX_PT` long), each kept in the cells of a grid its
+    reach touches. `marked` gives `_marked`'s answer: a piece within `MARK_REACH_PT` of the point
+    is always in the point's cell, and each piece is measured exactly as `_marked` measures it.
+    A run check asks this of every gap of every row against every overall of a page: reading all
+    of a big page's line work each time took most of a 99-page set's finish (2026-10-23)."""
+
+    CELL_PT: Final = 16.0
+
+    def __init__(self, segments: Sequence[Segment]) -> None:
+        self.segments = segments
+        self._cells: dict[str, dict[tuple[int, int], list[Segment]]] | None = None
+
+    def _sorted(self) -> dict[str, dict[tuple[int, int], list[Segment]]]:
+        """The grid, made on the first question (most pages' runs never need a mark)."""
+        if self._cells is not None:
+            return self._cells
+        self._cells = {"h": {}, "v": {}}
+        reach, cell = MARK_REACH_PT, self.CELL_PT
+        for segment in self.segments:
+            (ax, ay), (bx, by) = segment
+            dx, dy = bx - ax, by - ay
+            length = (dx * dx + dy * dy) ** 0.5
+            if not MARK_MIN_PT <= length <= MARK_MAX_PT:
+                continue
+            if not all(math.isfinite(v) for v in (ax, ay, bx, by)):
+                continue
+            for orientation in ("h", "v"):
+                along, square = (abs(dy), abs(dx)) if orientation == "v" else (abs(dx), abs(dy))
+                if square < 0.17 * length or along < 0.17 * length:
+                    continue
+                cells = self._cells[orientation]
+                for gx in range(
+                    math.floor((min(ax, bx) - reach) / cell),
+                    math.floor((max(ax, bx) + reach) / cell) + 1,
+                ):
+                    for gy in range(
+                        math.floor((min(ay, by) - reach) / cell),
+                        math.floor((max(ay, by) + reach) / cell) + 1,
+                    ):
+                        cells.setdefault((gx, gy), []).append(segment)
+        return self._cells
+
+    def marked(self, orientation: str, across: float, at: float) -> bool:
+        """`_marked(segments, orientation, across, at)`."""
+        px, py = (across, at) if orientation == "v" else (at, across)
+        if orientation not in ("h", "v") or not (math.isfinite(px) and math.isfinite(py)):
+            return _marked(self.segments, orientation, across, at)
+        near = self._sorted()[orientation].get(
+            (math.floor(px / self.CELL_PT), math.floor(py / self.CELL_PT))
+        )
+        return near is not None and _marked(near, orientation, across, at)
+
+
 def _middle(box: tuple[float, float, float, float], orientation: str) -> float:
     """A box's middle along the axis."""
     x0, y0, x1, y1 = box
@@ -347,14 +403,14 @@ def _take_in(
     row: Sequence[consistency.Label],
     labels: Sequence[consistency.Label],
     used: set[str],
-    segments: Sequence[Segment],
+    marks: _Marks,
 ) -> consistency.Label | None:
     """The one label of a gap in the row (see the module), or `None`."""
     g0, g1 = gap
     ref = row[0]
     if not (
-        _marked(segments, ref.orientation, ref.across, g0)
-        and _marked(segments, ref.orientation, ref.across, g1)
+        marks.marked(ref.orientation, ref.across, g0)
+        and marks.marked(ref.orientation, ref.across, g1)
     ):
         return None
     band = _text_band(ref.box, ref.orientation)
@@ -400,14 +456,14 @@ def _string(
     overall: consistency.Label,
     row: Sequence[consistency.Label],
     labels: Sequence[consistency.Label],
-    segments: Sequence[Segment] | None,
+    marks: _Marks | None,
 ) -> list[Part] | None:
     """The row as the overall's string: tiled end to end by its own labels, or with a narrow end
-    part taken in (see the module)."""
+    part taken in (see the module); `marks`: the page's line work (`_Marks`)."""
     whole = consistency.proved_chain(overall, row)
     if whole is not None:
         return [Part(p, p.start, p.end) for p in whole]
-    if segments is None:
+    if marks is None:
         return None
     lo, hi = overall.start - consistency.GAP_PT, overall.end + consistency.GAP_PT
     inside = sorted((la for la in row if la.start >= lo and la.end <= hi), key=lambda la: la.start)
@@ -427,7 +483,7 @@ def _string(
     parts = [Part(p, p.start, p.end) for p in inside]
     if inside[0].start - overall.start > consistency.GAP_PT:
         gap = (overall.start, inside[0].start)
-        label = _take_in(gap, overall.start, inside, labels, used, segments)
+        label = _take_in(gap, overall.start, inside, labels, used, marks)
         if label is None:
             return None
         used.add(label.id)
@@ -436,7 +492,7 @@ def _string(
         return None
     if overall.end - inside[-1].end > consistency.GAP_PT:
         gap = (inside[-1].end, overall.end)
-        label = _take_in(gap, overall.end, inside, labels, used, segments)
+        label = _take_in(gap, overall.end, inside, labels, used, marks)
         if label is None:
             return None
         parts.append(Part(label, gap[0], gap[1], taken_in=True))
@@ -491,6 +547,7 @@ def runs_on(drawing: DrawingLabels, segments: Segments | None) -> list[Run]:
         elif (lineless := _loose(raw, drawing.file, drawing.page)) is not None:
             loose.append(lineless)
     lines = segments(drawing.file, drawing.page) if segments is not None else None
+    marks = _Marks(lines) if lines is not None else None
     out: list[Run] = []
     for orientation in ("h", "v"):
         axis = [la for la in labels if la.orientation == orientation]
@@ -502,7 +559,7 @@ def runs_on(drawing: DrawingLabels, segments: Segments | None) -> list[Run]:
                 if abs(row[0].across - overall.across) < consistency.ROW_APART_PT:
                     continue
                 others = axis + [la for la in loose if la.orientation == orientation]
-                parts = _string(overall, row, others, lines)
+                parts = _string(overall, row, others, marks)
                 if parts is not None:
                     out.append(Run(drawing, overall, tuple(parts), orientation, row[0].across))
     return out
@@ -699,6 +756,48 @@ def _stack_of(run: Run, candidates: Sequence[Run]) -> Run | None:
     return found[0] if len(found) == 1 else None
 
 
+class _Memo:
+    """One set's runs (`runs_on`) and part kinds (`kinds_of`), each worked out once: the drawings
+    the work list left unpaired are each judged against every other one (`_left_over`), so an
+    architect drawing's runs were read again for every vendor drawing. Both are pure functions of
+    the drawing (its file, page, ref, labels and words) and the line work, so the answers are the
+    same; `Run`s are kept by the drawing's value, so a later copy of the drawing gets the first's.
+    """
+
+    def __init__(self) -> None:
+        self._runs: dict[tuple[Any, ...], list[Run]] = {}
+        self._kinds: dict[tuple[int, int], tuple[Run, RunFit, list[str | None]]] = {}
+        self._keys: dict[int, tuple[DrawingLabels, tuple[Any, ...]]] = {}
+
+    def _key(self, drawing: DrawingLabels) -> tuple[Any, ...]:
+        known = self._keys.get(id(drawing))
+        if known is not None and known[0] is drawing:
+            return known[1]
+        key = (
+            drawing.file,
+            drawing.page,
+            drawing.ref,
+            json.dumps([drawing.labels, drawing.phrases], sort_keys=True, default=str),
+        )
+        self._keys[id(drawing)] = (drawing, key)
+        return key
+
+    def runs(self, drawing: DrawingLabels, segments: Segments | None) -> list[Run]:
+        key = (*self._key(drawing), id(segments))
+        found = self._runs.get(key)
+        if found is None:
+            found = self._runs[key] = runs_on(drawing, segments)
+        return found
+
+    def kinds(self, run: Run, fit: RunFit, segments: Segments | None) -> list[str | None]:
+        key = (id(run), id(fit))
+        found = self._kinds.get(key)
+        if found is None or found[0] is not run or found[1] is not fit:
+            found = (run, fit, kinds_of(run, fit, segments))
+            self._kinds[key] = found
+        return list(found[2])
+
+
 def check_drawings(
     vendor: DrawingLabels,
     architects: Sequence[DrawingLabels],
@@ -706,12 +805,15 @@ def check_drawings(
     products: Sequence[Product],
     *,
     by_run: bool = False,
+    memo: _Memo | None = None,
 ) -> list[Paired]:
     """The vendor drawing's runs judged against the architect drawings' (see the module).
     `by_run`: the work list paired neither drawing (`_left_over`), so the run itself must prove
-    they are one: besides the same kinds in the same order, every fixed part prints the same."""
-    vendor_runs = runs_on(vendor, segments)
-    architect_runs = [run for drawing in architects for run in runs_on(drawing, segments)]
+    they are one: besides the same kinds in the same order, every fixed part prints the same.
+    `memo`: one set's runs and kinds, worked out once (`check_pack`)."""
+    memo = memo if memo is not None else _Memo()
+    vendor_runs = memo.runs(vendor, segments)
+    architect_runs = [run for drawing in architects for run in memo.runs(drawing, segments)]
     out: list[Paired] = []
     for product in products:
         fit = product.run_fit
@@ -719,12 +821,12 @@ def check_drawings(
             continue
         roles = {kind.kind: kind.role for kind in fit.parts}
         for run in (r for r in vendor_runs if r.orientation == "h"):
-            mine = kinds_of(run, fit, segments)
+            mine = memo.kinds(run, fit, segments)
             matches: list[tuple[Run, list[str]]] = []
             for other in (r for r in architect_runs if r.orientation == "h"):
                 if len(other.parts) != len(run.parts):
                     continue
-                merged = _merged(mine, kinds_of(other, fit, segments))
+                merged = _merged(mine, memo.kinds(other, fit, segments))
                 if merged is not None:
                     matches.append((other, merged))
             if len(matches) != 1:
@@ -947,9 +1049,12 @@ def check_pack(
     uploads: Path | None,
     main_file: str | None = None,
     products: Sequence[Product] | None = None,
+    *,
+    stop: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Every item of the set pack's runs (`dims.json`, the work list's pairing, the uploads' line
-    work), for the products whose rule is in the registry (`products`: the check's own)."""
+    work), for the products whose rule is in the registry (`products`: the check's own). `stop`:
+    Stop was pressed: no item at all (a Continue checks the whole set again, 2026-10-23)."""
     if folder is None:
         return []
     chosen = [p for p in (products if products is not None else registry().products) if p.run_fit]
@@ -969,22 +1074,29 @@ def check_pack(
             pages[(str(entry.get("file")), int(entry["page"]))] = entry
     segments = consistency.line_work(uploads, Path(folder)) if uploads is not None else None
     out: list[dict[str, Any]] = []
+    memo = _Memo()
     for item in work.items:
+        if stop is not None and stop():
+            return []
         vendor = _drawing(item.vendor, pages)
         architects = [d for d in (_drawing(a, pages) for a in item.architect) if d is not None]
         if vendor is None or not architects:
             continue
         area = re.sub(r"^\s*\d{1,3}\s*[.)]\s*", "", item.area or "").strip() or None
         try:
-            for paired in check_drawings(vendor, architects, segments, chosen):
+            for paired in check_drawings(vendor, architects, segments, chosen, memo=memo):
                 out.extend(findings_of(paired, area, segments))
         except Exception:  # noqa: BLE001 - a drawing code cannot read gives no finding
             _log.exception("run fit: work item %s could not be checked", item.id)
     vendors, architects = _left_over(work, pages)
     if vendors and architects:
         for vendor in vendors:
+            if stop is not None and stop():
+                return []
             try:
-                for paired in check_drawings(vendor, architects, segments, chosen, by_run=True):
+                for paired in check_drawings(
+                    vendor, architects, segments, chosen, by_run=True, memo=memo
+                ):
                     out.extend(findings_of(paired, None, segments))
             except Exception:  # noqa: BLE001 - a drawing code cannot read gives no finding
                 _log.exception("run fit: drawing %s could not be checked", vendor.ref)
@@ -1073,8 +1185,12 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
         return None
     workspace = engine.tools.workspace
     book = engine.book
+    cancel = getattr(engine, "cancel", None)
     found = check_pack(
-        workspace.set_pack, getattr(workspace, "uploads", None), getattr(book, "main_file", None)
+        workspace.set_pack,
+        getattr(workspace, "uploads", None),
+        getattr(book, "main_file", None),
+        stop=None if cancel is None else cancel.is_set,
     )
     if not found:
         return None

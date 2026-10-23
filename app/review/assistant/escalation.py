@@ -154,6 +154,12 @@ class EscalationContext:
     """GV's markup (`annotations.json`): its typed notes are never the architect's value."""
     unopened: frozenset[int] | None = None
     """The main file's pages the check never opened (its coverage); None: not known (none)."""
+    stop: Callable[[], bool] | None = None
+    """Stop was pressed (2026-10-23): the tag reader and the ladder try no further item (each one
+    tried is kept); GV's stickers, which only ever take a red away, are still told apart."""
+    count: Callable[[int], Callable[[], None]] | None = None
+    """The live line's item count (`ChatEngine.count_items`): given the items to try, it returns
+    the function that counts one tried."""
 
 
 @dataclass(slots=True)
@@ -360,7 +366,7 @@ def _equal_parts(item: _Item, ctx: EscalationContext) -> None:
     item.changed = True
     _check(item, "printed_vendor", "match")
     item.note("equal_parts", "read", f"{_ref(label)}: {how}")
-    _printed_compare(item, "equal_parts")
+    _printed_compare(item, "equal_parts", ctx)
 
 
 def _label_of(ctx: EscalationContext, side: object) -> dict[str, Any] | None:
@@ -467,16 +473,22 @@ def _labels_step(item: _Item, ctx: EscalationContext) -> None:
         item.note("labels", "no_change", "no code label prints the item's value in its box")
         return
     item.note("labels", "read", "code read " + "; ".join(found))
-    _printed_compare(item, "labels")
+    _printed_compare(item, "labels", ctx)
 
 
-def _printed_compare(item: _Item, step: StepName) -> None:
+def _printed_compare(item: _Item, step: StepName, ctx: EscalationContext | None = None) -> None:
     """A "Your decision" item whose two values code now read at their spots: equal is Right
     (the resolver's printed-against-printed rule); different is a difference code read, which
-    still needs a pairing proof to be clouded."""
+    still needs a pairing proof to be clouded. Like for like only (2026-10-23): a splash's size is
+    never settled against an architect size code does not see named as the same splash's
+    (`splash_views.unlike`: the meeting set's splash length against the plan's top width)."""
     finding = item.finding
     if finding.get("status") != "check":
         return
+    splash = import_module("app.review.assistant.splash_views")
+    record = finding.get(splash.FIELD)
+    if isinstance(record, Mapping) and record.get("outcome") in ("likely_problem", "same"):
+        return  # the splash step compared it on the architect's words: its outcome stands
     checks = finding.get("checks") or {}
     if checks.get("printed_vendor") != "match" or checks.get("printed_architect") != "match":
         return
@@ -487,6 +499,14 @@ def _printed_compare(item: _Item, step: StepName) -> None:
     inches = finding.get("inches") or {}
     a, v = _decimal(inches.get("architect")), _decimal(inches.get("vendor"))
     if a is None or v is None:
+        return
+    unlike = splash.unlike(finding, ctx.phrases if ctx is not None else None)
+    if unlike is not None:
+        if not isinstance(finding.get(splash.FIELD), Mapping):
+            # The splash step's own reason (the views it looked at) is kept when it has one.
+            finding[splash.FIELD] = splash.not_alike(unlike)
+            item.changed = True
+        item.note(step, "no_change", f"not like for like: {unlike}")
         return
     if _same(a, v):
         _settle_right(
@@ -545,7 +565,7 @@ def _under_markup_step(item: _Item, ctx: EscalationContext) -> None:
     _check(item, "printed_vendor", "match")
     item.changed = True
     item.note("under_markup", "read", f"code read {text} under GV's markup")
-    _printed_compare(item, "under_markup")
+    _printed_compare(item, "under_markup", ctx)
 
 
 def _carrier(
@@ -1002,7 +1022,10 @@ def _before_ladder(
     for finding in live:
         item = _Item(finding)
         _sticker_step(item, ctx)
-        _tag_step(item, ctx)
+        if ctx.stop is None or not ctx.stop():
+            # Stop: GV's stickers are still told apart (that only ever takes a red away); the tag
+            # reader, which can decide an item, waits for a Continue (2026-10-23).
+            _tag_step(item, ctx)
         if not item.changed:
             continue
         item.finding.update(judged(item.finding))
@@ -1251,9 +1274,15 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     early = _before_ladder(live, ctx, result)
     by_id = {str(f["id"]): f for f in live}
     areas = _areas(ctx)
-    for finding in by_impact(live):
+    order = by_impact(live)
+    waiting = sum(1 for f in order if str(f["id"]) not in early and undecided(f))
+    tried = ctx.count(waiting) if ctx.count is not None else (lambda: None)
+    for finding in order:
         if str(finding["id"]) in early or not undecided(finding):
             continue
+        if ctx.stop is not None and ctx.stop():
+            break  # Stop: the items not tried stay as they are (Continue tries them)
+        tried()
         result.tried += 1
         item = _Item(by_id[str(finding["id"])])
         for step in FREE_STEPS:
@@ -1322,6 +1351,8 @@ def context_from_pack(
     strokes: Callable[[str, int, tuple[float, float, float, float]], Any] | None = None,
     changes: Sequence[Mapping[str, Any]] = (),
     unopened: frozenset[int] | None = None,
+    stop: Callable[[], bool] | None = None,
+    count: Callable[[int], Callable[[], None]] | None = None,
 ) -> EscalationContext:
     """The free steps' facts from a set pack (`dims.json`, `pairs.json`, the stickers code hid
     (`<name>_stickers.json`), and for a missing item `page_texts.json`, `health.json`,
@@ -1377,6 +1408,8 @@ def context_from_pack(
         pictures=pictures,
         annotations=notes,
         unopened=unopened,
+        stop=stop,
+        count=count,
     )
 
 
@@ -1421,6 +1454,11 @@ def _under_reader(pdf_paths: Mapping[str, Path]) -> UnderReader:
     return read
 
 
+def _stop_of(engine: Any) -> Callable[[], bool] | None:
+    cancel = getattr(engine, "cancel", None)
+    return cancel.is_set if cancel is not None else None
+
+
 def escalate_answer(engine: Any) -> Escalation | None:
     """The engine's hook (whole-set work, after the resolver, before the trust report): the free
     steps on the answer's undecided items, each change shown, folded copies dropped with their
@@ -1449,6 +1487,8 @@ def escalate_answer(engine: Any) -> Escalation | None:
             for entry in book.coverage_map()["pages"]
             if entry.get("status") == "not_opened"
         ),
+        stop=_stop_of(engine),
+        count=getattr(engine, "count_items", None),
     )
     with engine.finding_lock:
         result = escalate(book.live(), ctx)
@@ -1460,5 +1500,8 @@ def escalate_answer(engine: Any) -> Escalation | None:
                 continue
             if book.replace(finding):
                 engine._show_finding(finding)
+    items_counted = getattr(engine, "items_counted", None)
+    if items_counted is not None:
+        items_counted()
     _log.info("assistant escalation: %s", result.block())
     return result

@@ -8,11 +8,15 @@ item; on Set 3 the AI never reported two outlet spacings code had paired (s3-28,
 stayed out of the answer. This module turns every pair into an item by itself:
 
 - **The values** are the printed labels code read (`dims.json`), compared exactly: more than 1/16"
-  apart is Wrong (the architect's value is what it should be), else Right. Both sides must be
-  printed: a pair of an architect's chain with one vendor label (`kind: sum`) is never Wrong, since
-  the architect never prints that total (orchestrator, 2026-10-18). When the chain's sum differs
-  from the vendor's label the item is Not compared, "Not reviewed: architect gives no overall"
-  ("architect's parts add to 110\"; vendor shows 107 3/4\""); when it agrees it is Right.
+  apart is Wrong (the architect's value is what it should be), else Right. A pair of an
+  architect's chain with one vendor label (`kind: sum`, the architect prints no overall): code
+  adds the parts and compares the sum like a printed overall (client meeting, 2026-10-23) when the
+  drawing proves the parts are one chain end to end along the run, by the rules the vendor-string
+  check proves strings with (`vendor_consistency.proved_run`: one dimension line, touching ends,
+  extension lines at every end, no printed overall); red is then allowed only under the usual
+  proof rules. When code is unsure (the 2026-10-18 rule), the item is Not compared, "Not reviewed:
+  architect gives no overall" ("architect's parts add to 110\"; vendor shows 107 3/4\""); when
+  it agrees it is Right.
 - **The item** is named from what the pair's ends land on ("left wall to outlet 1 of the row at
   46\" (centre)"), under the page's area. The pair defines the item, never the value: a 9" on the
   same page that belongs to another item is a different item.
@@ -176,6 +180,7 @@ def _finding(
         for flag in raw.get("flags") or ()
     )
 
+    proved_chain = chain and _one_run(arch_raws, labels, file, arch_page)
     span = _span_words(pair.get("how")) or "the same two points on both drawings"
     method = "by what both ends land on" if pair.get("method") == "anchors" else "by drawn position"
     printed = (
@@ -183,20 +188,27 @@ def _finding(
     )
     why = f"Code paired these two dimensions {method} ({span}), no scale used. " + (
         f"The architect prints no overall here, only parts ({' + '.join(arch_texts)} = "
-        f"{arch_text}); the vendor prints {vendor_text}. A total the architect never prints is "
-        "not compared."
-        if different and chain
+        f"{arch_text}); code proved they are one chain end to end on one dimension line and "
+        f"compares their sum like a printed overall; the vendor prints {vendor_text}, "
+        f"{_inches_text(abs(off))} {'more' if off > 0 else 'less'}."
+        if different and proved_chain
         else (
-            f"The architect prints {printed}; the vendor prints {vendor_text}, "
-            f"{_inches_text(abs(off))} {'more' if off > 0 else 'less'}."
-            + (
-                " One of them is marked verify in field or plus or minus, so the difference is "
-                "no proof of a mistake."
-                if noted
-                else ""
+            f"The architect prints no overall here, only parts ({' + '.join(arch_texts)} = "
+            f"{arch_text}); the vendor prints {vendor_text}. A total the architect never prints is "
+            "not compared."
+            if different and chain
+            else (
+                f"The architect prints {printed}; the vendor prints {vendor_text}, "
+                f"{_inches_text(abs(off))} {'more' if off > 0 else 'less'}."
+                + (
+                    " One of them is marked verify in field or plus or minus, so the difference is "
+                    "no proof of a mistake."
+                    if noted
+                    else ""
+                )
+                if different
+                else f"Both print the same: the architect {printed}, the vendor {vendor_text}."
             )
-            if different
-            else f"Both print the same: the architect {printed}, the vendor {vendor_text}."
         )
     )
     vendor_ref = f"p{page}.{vendors[0].get('id')}"
@@ -206,7 +218,11 @@ def _finding(
         "category": "other",
         "architect": arch_text,
         "vendor": vendor_text,
-        "status": ("check" if chain or noted else "different") if different else "same",
+        "status": (
+            ("check" if (chain and not proved_chain) or noted else "different")
+            if different
+            else "same"
+        ),
         "why": why,
         "verified": False,
         "source": "architect",
@@ -220,16 +236,52 @@ def _finding(
     if arch_page != page:
         finding["vs_page"] = arch_page
     if chain:
-        # What the Not-compared row says (`classification`): the parts, their sum, the vendor's.
+        # What the Not-compared row says (`classification`): the parts, their sum, the vendor's;
+        # `chain_proved`: code proved one chain, so its sum counts like a printed overall.
         finding["architect_parts"] = {
             "parts": arch_texts,
             "total": arch_text,
             "vendor": _inches_text(vendor_in),
+            "chain_proved": proved_chain,
         }
+        if proved_chain and finding["arch_box"] is not None:
+            box = finding["arch_box"]
+            finding["dims"]["architect"] = {
+                "id": "+".join(ids),
+                "page": arch_page,
+                "file": file,
+                "text": arch_text,
+                "inches": str(Decimal(arch_in.numerator) / Decimal(arch_in.denominator)),
+                "route": "text",
+                "side": "architect",
+                "box": [box["x0"], box["y0"], box["x1"], box["y1"]],
+                "derived": {"sum_of": ids, "parts": arch_texts},
+            }
     else:
         assert arch_raws[0] is not None
         finding["dims"]["architect"] = _provenance(arch_raws[0], file, arch_page)
     return finding
+
+
+def _one_run(
+    arch_raws: Sequence[Mapping[str, Any] | None],
+    labels: Mapping[tuple[str, int, str], Mapping[str, Any]],
+    file: str,
+    page: int,
+) -> bool:
+    """Whether the architect's chain is one run end to end with no printed overall, by the
+    vendor-string check's own rules (`vendor_consistency.proved_run`)."""
+    consistency = import_module("app.review.assistant.vendor_consistency")
+    parts = [consistency.read_label(raw, file, page) for raw in arch_raws if raw is not None]
+    if len(parts) != len(arch_raws) or any(part is None for part in parts):
+        return False
+    drawing = [
+        found
+        for (f, p, _id), raw in labels.items()
+        if f == file and p == page and str(raw.get("side") or "") == "architect"
+        if (found := consistency.read_label(raw, file, page)) is not None
+    ]
+    return bool(consistency.proved_run(parts, drawing))
 
 
 def findings_from(
@@ -356,8 +408,11 @@ def proved_changes(code: Mapping[str, Any], existing: Mapping[str, Any]) -> dict
         # An item named only by its record id gets the pair's own name (what its ends land on).
         changes["item"] = code["item"]
     if code.get("architect_parts"):
-        # A summed chain: Not compared, whatever the answer's own reading said (never red).
+        # A summed chain: Not compared unless code proved it is one chain (then its sum counts
+        # like a printed overall, with code's own spot), whatever the answer's own reading said.
         changes["architect_parts"] = dict(code["architect_parts"])
+        if code["architect_parts"].get("chain_proved") and code.get("arch_box"):
+            changes["arch_box"] = code["arch_box"]
     if not existing.get("arch_box") and code.get("arch_box"):
         changes["arch_box"] = code["arch_box"]
     if not existing.get("vendor_box") and code.get("vendor_box"):

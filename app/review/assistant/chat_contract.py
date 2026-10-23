@@ -1749,6 +1749,14 @@ class ChatProgressOut(BaseModel):
         "parallel); then code's proving steps, the devil's advocate, the escalation, the finish.",
     )
     step_number: int | None = Field(default=None, description="The step's place, from 1.")
+    items_done: int | None = Field(
+        default=None,
+        description="While checking (2026-10-23): the items code's current final check has "
+        "checked ('checking 45 of 125 items'); null when the step has no count.",
+    )
+    items_total: int | None = Field(
+        default=None, description="While checking: the items that check has to check."
+    )
     areas_done: int | None = Field(
         default=None, description="A big set (#1874): the areas whose chain has finished."
     )
@@ -2272,12 +2280,15 @@ class ChatLivePhaseOut(BaseModel):
         "with a separate architect's file, n of m drawings; the comparing starts page by page as "
         "they are paired). Within double_checking: code_checks (code's own checks of the whole "
         "set, no count), verifying (code checks each answered drawing), second_looks, "
-        "final_checks (no count); `stopped` on a done check that was stopped.",
+        "final_checks (the items code's current final check has checked, unit items, when it "
+        "counts them; else no count); `stopped` on a done check that was stopped.",
     )
     done: int | None = Field(default=None, description="How many of `total` are done.")
     total: int | None = Field(default=None, description="null: no count for this phase.")
-    unit: Literal["drawings", "pages", "looks", "files"] | None = Field(
-        default=None, description="What `done` and `total` count (pages: the roster check)."
+    unit: Literal["drawings", "pages", "looks", "files", "items"] | None = Field(
+        default=None,
+        description="What `done` and `total` count (pages: the roster check; items: the final "
+        "checks by code, one count per check).",
     )
     started_at: datetime = Field(description="When the check started (the elapsed clock).")
     phase_started_at: datetime

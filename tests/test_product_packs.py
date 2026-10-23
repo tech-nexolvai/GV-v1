@@ -101,6 +101,9 @@ def test_the_template_loads_as_a_pack(tmp_path: Path) -> None:
     assert widget.size_formats == ("diameter",)
     assert [(t.code, t.unit) for t in widget.semantic_types] == [("WG_MOUNT_HT", "in")]
     assert widget.impact_words == ("mounting height",)
+    [plate] = widget.look_in_views
+    assert plate.part == "widget_plate" and plate.views == ("elevation", "section")
+    assert plate.kinds == {"front": ("front plate",), "back": ("back plate",)}
 
 
 @pytest.mark.parametrize(
@@ -136,6 +139,17 @@ def test_the_template_loads_as_a_pack(tmp_path: Path) -> None:
             lambda p: p.update(end_words=[{"name": "Widget Top"}]),
             "lowercase letters, digits and _",
         ),
+        (
+            lambda p: p.update(
+                look_in_views=[{"part": "plate", "words": ["plate"], "views": ["roof"]}]
+            ),
+            "look_in_views 'plate' views: roof",
+        ),
+        (lambda p: p.update(look_in_views=[{"part": "plate"}]), "needs the words that name it"),
+        (
+            lambda p: p.update(look_in_views=[{"part": "plate", "words": ["plate"], "where": 1}]),
+            "unknown field",
+        ),
     ],
     ids=[
         "word-of-another-pack",
@@ -153,6 +167,9 @@ def test_the_template_loads_as_a_pack(tmp_path: Path) -> None:
         "bad-semantic-unit",
         "part-without-words",
         "bad-end-word-name",
+        "look-in-unknown-view",
+        "look-in-without-words",
+        "look-in-unknown-field",
     ],
 )
 def test_a_pack_that_does_not_hold_together_is_refused(
@@ -292,3 +309,13 @@ def test_the_ledger_files_items_as_before(item: str) -> None:
     words = ledger._words(item)
     assert item_product(words) == _old_ledger_category(words)
     assert ledger._category(item) == _old_ledger_category(words)
+
+
+def test_the_countertop_pack_looks_for_splashes_on_the_other_views() -> None:
+    # The owner, 2026-10-23: a splash the paired drawing prints no size for is looked for on the
+    # item's plan, elevation and section (`splash_views`); a back splash is never a side splash.
+    countertop = registry().get("countertop")
+    assert countertop is not None
+    [splash] = countertop.look_in_views
+    assert splash.part == "splash" and splash.views == ("plan", "elevation", "section")
+    assert set(splash.kinds) == {"back", "side"}

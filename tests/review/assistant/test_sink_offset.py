@@ -592,3 +592,38 @@ def test_the_simple_check_keeps_the_note_when_the_comparisons_item_is_not_kept()
     fake._add = lambda _one: True
     run_module._Run._record(fake, [(one, SimpleNamespace(id="I1"))])
     assert fake.engine.book.live() == [] and fake.dropped == ["N1"]
+
+
+def test_the_stroke_grid_gives_the_same_ticks_as_reading_every_stroke() -> None:
+    """Speed (2026-10-23): a frame's short slanted strokes are kept in a grid (`_Ticks`), and every
+    question about a tick gets exactly the answer of reading every stroke: ticks crossing a line,
+    strokes ending at a point, long strokes, a cell's edge and a point with no number."""
+    import random
+
+    chance = random.Random(1906)
+    strokes = []
+    for _ in range(2500):
+        ax, ay = chance.uniform(-30, 500), chance.uniform(-30, 500)
+        length = chance.choice([0.3, 1.0, 2.5, 6.0, 11.9, 12.0, 12.4, 30.0])
+        angle = chance.uniform(0.2, 1.3) * chance.choice([1, -1, 2, -2])
+        strokes.append(((ax, ay), (ax + length * math.cos(angle), ay + length * math.sin(angle))))
+    strokes += [
+        ((8.0, 8.0), (10.0, 6.0)),
+        ((15.9, 0.0), (16.1, 2.0)),
+        ((float("nan"), 1.0), (2.0, 2.0)),
+    ]
+    with_grid = so._Frame.of(strokes, "bottom")
+    plain = so._Frame(
+        with_grid.across, with_grid.places, with_grid.along, with_grid.slanted, with_grid.all
+    )
+    assert plain == with_grid and plain.ticks is None and with_grid.ticks is not None
+    points = [(chance.uniform(-40, 520), chance.uniform(-40, 520)) for _ in range(3000)]
+    points += [((a[0] + b[0]) / 2 + 0.5, (a[1] + b[1]) / 2) for a, b in with_grid.slanted[:400]]
+    points += [(b[0] + 0.3, b[1] - 0.2) for _a, b in with_grid.slanted[:400]]
+    points += [(9.0, 7.0), (16.0, 1.0), (float("nan"), 2.0)]
+    for u, v in points:
+        assert so._crossed(with_grid, u, v) == so._crossed(plain, u, v), (u, v)
+        assert so._ticked(with_grid, (u, v)) == so._ticked(plain, (u, v)), (u, v)
+    assert any(so._ticked(with_grid, p) for p in points) and any(
+        so._crossed(with_grid, u, v) for u, v in points
+    )

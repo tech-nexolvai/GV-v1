@@ -254,3 +254,26 @@ def test_run_anyway_goes_with_a_full_check_only() -> None:
     assert full.run_anyway
     with pytest.raises(ValidationError):
         ChatMessageIn.model_validate({**base, "text": "Hello", "mode": "chat", "run_anyway": True})
+
+
+def test_a_second_look_stop_for_a_shop_drawing_reference_is_only_a_warning(
+    tmp_path: Path,
+) -> None:
+    """The reviewer's choice of reference is trusted (client meeting, 2026-10-23): the cabinet
+    maker's shop drawings are the right reference for GV's countertops. Only code's own "same file
+    twice" stops for a swap; the second look's doubt about the reference is a warning."""
+    folder = _pack(tmp_path)
+    engine = _Engine(
+        folder, answer=_reply("stop", "files_swapped", "The architect's file is a shop drawing.")
+    )
+    found = gate(
+        engine,  # type: ignore[arg-type]
+        _plan(),
+        None,
+        model_name="claude-haiku-5-5",
+        run_anyway=False,
+        price_micros=0,
+    )
+    assert found is not None and not found.paused
+    assert found.supervisor.verdict == "warn"
+    assert found.report.stops == ()

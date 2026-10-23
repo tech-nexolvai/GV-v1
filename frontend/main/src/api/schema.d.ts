@@ -5997,7 +5997,7 @@ export interface components {
             started_at: string;
             /**
              * Step
-             * @description Within comparing: matching (the AI page matcher pairs the vendor's drawings with a separate architect's file, n of m drawings; the comparing starts page by page as they are paired). Within double_checking: code_checks (code's own checks of the whole set, no count), verifying (code checks each answered drawing), second_looks, final_checks (no count); `stopped` on a done check that was stopped.
+             * @description Within comparing: matching (the AI page matcher pairs the vendor's drawings with a separate architect's file, n of m drawings; the comparing starts page by page as they are paired). Within double_checking: code_checks (code's own checks of the whole set, no count), verifying (code checks each answered drawing), second_looks, final_checks (the items code's current final check has checked, unit items, when it counts them; else no count); `stopped` on a done check that was stopped.
              */
             step?: ("matching" | "code_checks" | "verifying" | "second_looks" | "final_checks" | "stopped") | null;
             /**
@@ -6013,9 +6013,9 @@ export interface components {
             total?: number | null;
             /**
              * Unit
-             * @description What `done` and `total` count (pages: the roster check).
+             * @description What `done` and `total` count (pages: the roster check; items: the final checks by code, one count per check).
              */
-            unit?: ("drawings" | "pages" | "looks" | "files") | null;
+            unit?: ("drawings" | "pages" | "looks" | "files" | "items") | null;
             /** @description How long a check of this set usually takes, once code knows its pages (null: no honest range; the screen then says no time). */
             usual?: components["schemas"]["ChatLiveUsualOut"] | null;
         };
@@ -6663,6 +6663,16 @@ export interface components {
              * @description Time left: from the plan's expected time in a roster full check (#1874), else at the pace so far; null before any page is done or past the estimate.
              */
             eta_seconds?: number | null;
+            /**
+             * Items Done
+             * @description While checking (2026-10-23): the items code's current final check has checked ('checking 45 of 125 items'); null when the step has no count.
+             */
+            items_done?: number | null;
+            /**
+             * Items Total
+             * @description While checking: the items that check has to check.
+             */
+            items_total?: number | null;
             /**
              * Likely So Far
              * @description Likely problems the whole-drawing look found (please check).
@@ -14743,7 +14753,12 @@ export interface operations {
     };
     plan_page_api_v1_packages__package_id__plan_pages__page__get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description That upload's page (its name as the set lists it, as a finding's box names it); none: the vendor's file. */
+                file?: string | null;
+                /** @description architect: the architect's file's page (when `file` is not given). */
+                side?: ("vendor" | "architect") | null;
+            };
             header?: never;
             path: {
                 package_id: string;

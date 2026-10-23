@@ -101,6 +101,12 @@ describe('the live card', () => {
     expect(screen.getByRole('heading', { name: 'Double-checking' })).toBeTruthy();
   });
 
+  it('a long final code check counts its items under a moving bar', () => {
+    render(<LiveCheck live={liveState({ phase: phase({ phase: 'double_checking', step: 'final_checks', done: 45, total: 125, unit: 'items' }) })} />);
+    expect(screen.getByRole('progressbar').getAttribute('data-indeterminate')).toBe('true');
+    expect(document.querySelector('[data-slot="chat-live-count"]')?.textContent).toBe('All drawings compared · checking 45 of\u00a0125 items');
+  });
+
   it('before any Wrong is proved the feed says where they will appear', () => {
     render(<LiveCheck live={liveState({ findings: [], tally: { wrong: 0, right: 0, rule_note: 0, likely_problem: 0, not_compared: 0, waiting_second_look: 0 } })} />);
     expect(document.querySelector('[data-slot="chat-live-feed-empty"]')?.textContent).toBe('Wrong items appear here as soon as they are proved.');

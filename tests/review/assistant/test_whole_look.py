@@ -151,10 +151,14 @@ def _label(label_id: str, side: str, text: str, inches: str, box: list[float], w
     }  # fmt: skip
 
 
-def _setup(tmp_path: Path) -> tuple[FindingBook, Look]:
+def _setup(
+    tmp_path: Path,
+    more: list[dict[str, Any]] | None = None,
+    phrases: list[dict[str, Any]] | None = None,
+) -> tuple[FindingBook, Look]:
     """Page 2: the architect's upper height 3'-6" (D1) and width 4'-0" (D4) over the vendor's
     round 1 at 30" (D2); page 3: the vendor's round 2 prints 42" (D3); page 4: the brand
-    prototype prints 2'-6" (D5)."""
+    prototype prints 2'-6" (D5). `more` and `phrases`: page 2's other labels and its words."""
     workspace = workspace_with_pdf(tmp_path, pages=4)
     folder = tmp_path / "pack"
     folder.mkdir()
@@ -166,7 +170,8 @@ def _setup(tmp_path: Path) -> tuple[FindingBook, Look]:
                 _label("D1", "architect", "3'-6\"", "42", [100, 100, 130, 110], "v"),
                 _label("D2", "vendor", '30"', "30", [100, 500, 130, 510], "v"),
                 _label("D4", "architect", "4'-0\"", "48", [200, 100, 230, 110], "h"),
-            ]},
+                *(more or []),
+            ], "phrases": phrases or []},
             {"file": FILE, "page": 3, "labels": [
                 _label("D3", "vendor", '42"', "42", [100, 100, 130, 110], "v"),
             ]},
@@ -199,8 +204,14 @@ def _claim(kind: str, vendor: dict, architect: dict, **more: Any) -> dict[str, A
     }
 
 
+def _code_pairs_both(vendor: Any, architect: Any) -> bool:
+    """Stands for code's own pairs pairing the two labels (`whole_look.code_paired`)."""
+    return True
+
+
 def _apply(book: FindingBook, look: Look, claims: list[dict[str, Any]], **more: Any) -> Any:
     shown: list[dict[str, Any]] = []
+    more.setdefault("same_part", _code_pairs_both)
     applied = apply_look(
         book=book,
         labels=book.dim_labels,
@@ -509,3 +520,131 @@ def test_the_same_likely_problem_on_two_rounds_is_one_item(tmp_path: Path) -> No
     kept = next(f for f in book.live() if f["id"] == applied.likely[0])
     assert kept[likely_problems.FIELD]["rounds"] == [1, 2]
     assert "(rounds 1 and 2)" in likely_problems.please_check(kept)
+
+
+# ---- the client meeting of 2026-10-23: field cut, like for like, Reverse ---------------------------
+
+#: Page 2's vendor top: a 49" overall over the 48" top, the 1" field cut at its wall end (D6), the
+#: words FIELD CUT beside it; the architect prints a 1" overhang at the other end (D9).
+_FIELD_CUT_LABELS = [
+    _label("D6", "vendor", '1"', "1", [150, 450, 160, 460], "h"),
+    _label("D7", "vendor", '49"', "49", [300, 430, 315, 440], "h"),
+    _label("D8", "vendor", '48"', "48", [300, 455, 315, 465], "h"),
+    _label("D9", "architect", "25 [1]", "1", [400, 150, 410, 160], "h"),
+]
+_FIELD_CUT_WORDS = [{"text": "FIELD CUT", "box": [90, 470, 135, 480], "side": "vendor"}]
+
+
+def test_a_claim_on_the_vendors_field_cut_is_dropped(tmp_path: Path) -> None:
+    book, look = _setup(tmp_path, _FIELD_CUT_LABELS, _FIELD_CUT_WORDS)
+    claim = _claim(
+        "layout",
+        _side(3, "D6", '1" step at the left end'),
+        _side(1, "D9", '1" at the right end'),
+        item='Top: the 1" step is at the other end',
+    )
+    applied, shown = _apply(book, look, [claim])
+    assert not applied.recorded and not applied.likely and not shown
+    assert "field cut" in applied.dropped[0][1]
+    # Without the FIELD CUT words the same 1" is an ordinary dimension (code confirms the pair).
+    plain, _look = _setup(tmp_path / "plain", _FIELD_CUT_LABELS, [])
+    again, _ = _apply(plain, look, [claim])
+    assert again.likely and not again.dropped
+
+
+def test_a_two_label_claim_code_cannot_confirm_is_dropped_not_shown(tmp_path: Path) -> None:
+    book, look = _setup(tmp_path)
+    size = _claim("size", _side(3, "D2", '30"'), _side(1, "D1", "3'-6\""))
+    layout = _claim(
+        "layout", _side(3, "D2", '30"'), _side(1, "D1", "3'-6\""), item="Uppers: layout"
+    )
+    applied, shown = _apply(book, look, [size, layout], same_part=lambda v, a: False)
+    assert not applied.recorded and not applied.likely and not shown and not book.live()
+    assert [why for _item, why in applied.dropped] == [
+        "code could not confirm that both labels measure the same part from the same ends"
+    ] * 2
+    # A claim with one label (or none) is not a comparison of two labels: still a Likely problem.
+    one = _claim("count", _side(3, "D2", "2 units"), _side(1, None, "3 units"), item="Units")
+    kept, _ = _apply(book, look, [one], same_part=lambda v, a: False)
+    assert kept.likely
+
+
+def test_code_paired_reads_codes_own_pairs(tmp_path: Path) -> None:
+    folder = tmp_path / "pack"
+    folder.mkdir()
+    pairs = {
+        "pairs": [
+            {"vendor": 'p2.D2 30"', "architect": "p2.D1 3'-6\"", "status": "different"},
+            {"vendor": 'p3.D3 42"', "architect": "p2.D9 x", "status": "not_paired"},
+        ]
+    }
+    (folder / "pairs.json").write_text(json.dumps(pairs), encoding="utf-8")
+    same = whole_look.code_paired(folder)
+    assert same({"page": 2, "id": "D2"}, {"page": 2, "id": "D1"})
+    assert not same({"page": 2, "id": "D2"}, {"page": 2, "id": "D4"})
+    assert not same({"page": 3, "id": "D3"}, {"page": 2, "id": "D9"})  # code did not pair them
+    assert not whole_look.code_paired(None)({"page": 2, "id": "D2"}, {"page": 2, "id": "D1"})
+
+
+def test_a_left_right_claim_the_references_reverse_variant_explains_is_dropped(
+    tmp_path: Path,
+) -> None:
+    claim = _claim(
+        "layout",
+        _side(3, None, "sink 25 1/2 from the right end"),
+        _side(1, None, "sink 25 1/2 from the left end"),
+        item="Top: the sink sits at the other end",
+        why="The sink centre looks mirrored on the reversed unit.",
+    )
+    reverse = [{"text": "ST-BV // ST-BV-Reverse", "box": [400, 300, 480, 310], "side": "architect"}]
+    book, look = _setup(tmp_path, phrases=reverse)
+    applied, shown = _apply(book, look, [claim])
+    assert not applied.likely and not shown
+    assert "Reverse variant" in applied.dropped[0][1]
+    # A different size from the same end is a size difference: the Reverse variant explains only
+    # which end, never another number (the review of 2026-10-23).
+    sized = _claim(
+        "layout",
+        _side(3, None, "sink 25 1/2 from the left end"),
+        _side(1, None, "sink 23 1/2 from the left end"),
+        item="Top: the sink centre",
+    )
+    kept_size, _ = _apply(book, look, [sized])
+    assert kept_size.likely and not kept_size.dropped
+    one_number = _claim(
+        "layout",
+        _side(3, None, "sink 30 from the left end"),
+        _side(1, None, "sink at the right end"),
+        item="Top: the sink end",
+    )
+    kept_one, _ = _apply(book, look, [one_number])
+    assert kept_one.likely and not kept_one.dropped
+    # "MIRROR ABOVE" is a mirror on the wall, not a unit drawn the other way round.
+    mirror = [{"text": "MIRROR ABOVE", "box": [400, 300, 480, 310], "side": "architect"}]
+    on_wall, _look = _setup(tmp_path / "mirror", phrases=mirror)
+    kept_mirror, _ = _apply(on_wall, look, [claim])
+    assert kept_mirror.likely and not kept_mirror.dropped
+    # Where the reference has no Reverse variant, the same claim is a Likely problem.
+    plain, _look = _setup(tmp_path / "plain")
+    kept, _ = _apply(plain, look, [claim])
+    assert kept.likely
+    # A count is not about which end: never explained by the Reverse variant.
+    count = _claim("count", _side(3, None, "2 doors"), _side(1, None, "3 doors"), item="Doors")
+    counted, _ = _apply(book, look, [count])
+    assert counted.likely
+
+
+def test_the_owners_switch_keeps_an_unconfirmed_claim_as_a_likely_problem_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(whole_look.UNCONFIRMED_ENV, "likely")
+    book, look = _setup(tmp_path)
+    size = _claim("size", _side(3, "D2", '30"'), _side(1, "D1", "3'-6\""))
+    applied, _shown = _apply(book, look, [size], same_part=lambda v, a: False)
+    assert applied.likely and not applied.recorded and not applied.dropped
+    (finding,) = book.live()
+    assert finding[likely_problems.FIELD]["proof"] == "likely_only"
+    assert proof.proof_group(finding) == "likely_problem"  # never clouded
+    # The field cut is still never compared, whatever the switch says.
+    monkeypatch.setenv(whole_look.UNCONFIRMED_ENV, "nonsense")
+    assert whole_look.unconfirmed_mode() == "drop"

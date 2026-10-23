@@ -74,6 +74,22 @@ class Run:
 
 
 @dataclass(frozen=True)
+class TitledView:
+    """One titled view of a sheet, as an architect prints it: a view-number bubble left of its
+    title, the scale under the title, and the view's drawing above it (its runs, and its notes:
+    `(text, x, y)` in PDF points, y up; `strokes`: the same drawn as pen strokes, no text)."""
+
+    number: str
+    title: str
+    x: float
+    y: float
+    scale: str = '1/2" = 1\'-0"'
+    notes: Sequence[tuple[str, float, float]] = ()
+    strokes: Sequence[tuple[str, float, float]] = ()
+    runs: Sequence[Run] = ()
+
+
+@dataclass(frozen=True)
 class Sheet:
     """One page: a title (none: no title at all), notes, runs, plan outlines, a table, its /Rotate."""
 
@@ -85,6 +101,10 @@ class Sheet:
     table: Sequence[Sequence[str]] = ()
     rotate: int = 0
     title_size: int = 18
+    views: Sequence[TitledView] = ()
+    """Titled views (a plan and a section on one sheet, as an architect's sheet holds them)."""
+    sheet_number: str | None = None
+    """The sheet's own number, printed large in its title block (bottom right)."""
 
 
 # ---- pen strokes: digits drawn as lines (no text), as some CAD exports print them ------------------
@@ -190,6 +210,29 @@ def _draw_sheet(page: canvas.Canvas, sheet: Sheet) -> None:
                 page.rect(60 + c * col_w, top - (r + 1) * row_h, col_w, row_h)
                 page.drawString(64 + c * col_w, top - (r + 1) * row_h + 5, cell)
     for run in sheet.runs:
+        draw_run(page, run)
+    for view in sheet.views:
+        draw_view(page, view)
+    if sheet.sheet_number:
+        page.setFont("Helvetica-Bold", 30)
+        page.drawString(PAGE[0] - 160, 40, sheet.sheet_number)
+
+
+def draw_view(page: canvas.Canvas, view: TitledView) -> None:
+    """A titled view: its bubble, title and scale, its notes (text or pen strokes) and runs."""
+    page.setFont("Helvetica-Bold", 12)
+    page.drawString(view.x, view.y, view.title)
+    page.setFont("Helvetica", 10)
+    page.drawRightString(view.x - 14, view.y, view.number)
+    page.circle(view.x - 19, view.y + 3.5, 9)
+    page.setFont("Helvetica", 8)
+    page.drawString(view.x, view.y - 13, view.scale)
+    page.setFont("Helvetica", 8)
+    for text, x, y in view.notes:
+        page.drawString(x, y, text)
+    for text, x, y in view.strokes:
+        stroke_text(page, x, y, text, size=8)
+    for run in view.runs:
         draw_run(page, run)
 
 

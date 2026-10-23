@@ -41,6 +41,7 @@ from vocabulary.product_packs import (
     SKILL_FILE,
     Attribute,
     EndWord,
+    LookInViews,
     PackError,
     PackSemanticType,
     PartKind,
@@ -48,6 +49,7 @@ from vocabulary.product_packs import (
     end_words,
     example,
     line,
+    look_in_views,
     part_kinds,
     patterns,
     phrases,
@@ -216,6 +218,7 @@ class Product:
     impact_words: tuple[str, ...] = ()
     item_words: tuple[str, ...] = ()
     item_codes: tuple[str, ...] = ()
+    look_in_views: tuple[LookInViews, ...] = ()
     example: Mapping[str, Any] | None = None
     """`example.json`: one made-up worked example (`input`, `reply`) for the compare prompt."""
     folder: Path | None = None
@@ -459,6 +462,7 @@ def _checked(
         impact_words=phrases(entry.get("impact_words"), f"{where} impact_words"),
         item_words=phrases(entry.get("item_words"), f"{where} item_words"),
         item_codes=patterns(entry.get("item_codes"), f"{where} item_codes"),
+        look_in_views=look_in_views(entry.get("look_in_views"), where),
         example=example(folder, where),
         folder=folder,
     )

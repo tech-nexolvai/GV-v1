@@ -49,7 +49,8 @@ import json
 import logging
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from importlib import import_module
@@ -883,8 +884,9 @@ class NumberReader:
             path = self.pack / READINGS_FILE
             # One writer per pack, and what another reader stored meanwhile kept (#1850): each
             # `read_answer` has its own reader, so readings made at once on code's pool would
-            # otherwise each rewrite the file without the others'.
-            with _writer_lock(path):
+            # otherwise each rewrite the file without the others'. Worker processes read beside
+            # each other too (`spot_pool`, 2026-10-23): one writer across processes as well.
+            with _writer_lock(path), _file_lock(path):
                 try:
                     document = json.loads(path.read_text("utf-8"))
                     stored = document.get("readings") if isinstance(document, dict) else None
@@ -902,6 +904,28 @@ class NumberReader:
                     held.replace(path)
                 except OSError:
                     _log.warning("read_number: the readings could not be stored in the set pack")
+
+
+@contextmanager
+def _file_lock(path: Path) -> Iterator[None]:
+    """The readings file's lock across processes (`<file>.lock`, `flock`); none where the system
+    has no `fcntl` (each process's own lock then still holds)."""
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - not on the systems this runs on
+        yield
+        return
+    try:
+        handle = path.with_name(f".{path.name}.lock").open("a")
+    except OSError:
+        yield
+        return
+    with handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 #: One lock per readings file, for every reader of this process (#1850).

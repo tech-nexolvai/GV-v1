@@ -284,8 +284,8 @@ def scaled(finding: Mapping[str, Any]) -> bool:
     """A side measured off the drawing or taken from a scale note, not printed: never proof. The
     printed scale notes are wrong wherever GV resized a pasted drawing (tools research,
     2026-10-18), so only printed values and code's arithmetic count."""
-    if finding.get("check_reason") == "scaled":
-        return True
+    if finding.get("check_reason") == "scaled" or finding.get("measured_by_scale"):
+        return True  # code measured the reference by its scale (`scale_measure`): never proof
     return any(_SCALED.search(str(finding.get(key) or "")) for key in ("architect", "vendor"))
 
 
@@ -398,8 +398,11 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
         return False  # the tag reader did not prove it (#1859)
     if finding.get("source") == "brand_prototype" and not classification.prototype_governs(finding):
         return False  # R1: the architect gives the item, so the prototype is reference only
-    if finding.get("architect_parts"):
-        return False  # a total the architect never prints (code's summed chain) is never proof
+    parts = finding.get("architect_parts")
+    if parts and not (isinstance(parts, Mapping) and parts.get("chain_proved")):
+        # A total the architect never prints (code's summed chain) is proof only when code proved
+        # the parts are one chain end to end along the run (client meeting, 2026-10-23).
+        return False
     if finding.get("source") == "vendor_arithmetic" and not string_verified(finding):
         return False  # an AI-grouped string: only code's geometry proves the parts are one chain
     if classification.architect_conflict(finding) is not None:

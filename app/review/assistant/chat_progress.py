@@ -18,6 +18,8 @@ from app.review.assistant.proof import proof_group
 
 #: Seconds between progress events while nothing changes.
 TICK_SECONDS: Final = 5.0
+#: The most often the final checks' item count is sent (seconds).
+ITEMS_EVERY_S: Final = 1.0
 
 PHASES: Final = ("reading", "checking", "writing")
 #: A roster full check's steps, in order (#1874): the live line names the one it is in. On a big
@@ -146,6 +148,8 @@ class FullCheckProgress:
         self._step: tuple[str, int | None, int | None] | None = None
         self._expected: float | None = None
         self._reading: tuple[int, int] | None = None
+        self._items: tuple[int, int] | None = None
+        self._items_at = 0.0
 
     def current(self) -> dict[str, Any]:
         findings, coverage, pages = self._snapshot()
@@ -153,6 +157,8 @@ class FullCheckProgress:
         numbers = progress_numbers(findings, coverage, pages, self._phase, elapsed)
         if self._reading is not None and self._phase == "reading":
             numbers["reading_done"], numbers["reading_total"] = self._reading
+        if self._items is not None and self._phase == "checking":
+            numbers["items_done"], numbers["items_total"] = self._items
         numbers = with_work(numbers, self._work, elapsed)
         return with_step(numbers, self._step, self._expected, elapsed)
 
@@ -178,6 +184,23 @@ class FullCheckProgress:
         drawings: 40 of 188 pages"."""
         self._reading = (done, total)
         self.changed(force=True)
+
+    def set_items(self, done: int, total: int) -> None:
+        """The final checks by code (2026-10-23): items checked so far of the step's own
+        ("checking 45 of 125 items"), so a long code step is never a bar that does not move.
+        Published at most once a second, and always at the first and the last item."""
+        done, total = max(0, int(done)), max(0, int(total))
+        self._items = (min(done, total), total) if total else None
+        now = self._clock()
+        if done in (0, total) or now - self._items_at >= ITEMS_EVERY_S:
+            self._items_at = now
+            self.changed(force=True)
+
+    def end_items(self) -> None:
+        """The step's count is over (the next step says its own, or none)."""
+        if self._items is not None:
+            self._items = None
+            self.changed(force=True)
 
     def set_work(self, done: int, total: int) -> None:
         """The simple full check's drawings compared so far, of the work list's (#1665)."""

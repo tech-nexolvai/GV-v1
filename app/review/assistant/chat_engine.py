@@ -272,6 +272,7 @@ from app.review.assistant.rate_limits import Limits, ModelLimiter, limiter_for
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.run_fit import add_to_answer as add_run_fit
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
+from app.review.assistant.scale_measure import add_to_answer as add_scale_measures
 from app.review.assistant.send_package import (
     ZIP_MIME,
     PackageIdentity,
@@ -281,6 +282,7 @@ from app.review.assistant.send_package import (
 )
 from app.review.assistant.sharpen import helper_lines
 from app.review.assistant.sink_offset import add_to_answer as add_sink_offset
+from app.review.assistant.splash_views import add_to_answer as add_splash_views
 from app.review.assistant.spot_guard import dropped as spot_dropped
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
@@ -526,6 +528,8 @@ CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
     "run_fit": "GV's site-fit rule",
     "filler_range": "GV's filler range",
     "sink_offset": "GV's sink rules",
+    "splash_views": "the splash sizes on the architect's other views",
+    "scale_measure": "the measuring by scale where the architect prints no size",
 }
 
 
@@ -643,6 +647,9 @@ class EngineSettings:
     parse_processes: int = 0
     """Worker processes that parse drawing pages for a full check's code checks
     (`GV_ASSISTANT_PARSE_PROCESSES`, `verify_value.use_parse_processes`; 0: threads, #1874)."""
+    spot_processes: int = 0
+    """Worker processes for a full check's spot reads (`GV_ASSISTANT_SPOT_PROCESSES`,
+    `spot_pool`; 0: on the check's own threads, 2026-10-23)."""
     preflight_model: str | None = None
     """The supervisor's model (`plan_supervisor.py`); `None`: off (code's own stops only)."""
     run_anyway: bool = False
@@ -2064,6 +2071,40 @@ class ChatEngine:
         if self._progress is not None:
             self._progress.changed()
 
+    def count_items(self, total: int) -> Callable[[], None]:
+        """The final checks by code (2026-10-23): "checking n of `total` items" on the live
+        line while a long code step runs; the returned function counts one item done (from any
+        thread). Never raises: progress never stops the check."""
+        progress = self._progress
+        if progress is None or total <= 0:
+            return lambda: None
+        lock = threading.Lock()
+        done = [0]
+
+        def show() -> None:
+            try:
+                progress.set_items(done[0], total)
+            except Exception:  # noqa: BLE001 - progress never stops the check
+                _log.debug("assistant chat item count not shown")
+
+        def one() -> None:
+            with lock:
+                done[0] += 1
+                show()
+
+        with lock:
+            show()
+        return one
+
+    def items_counted(self) -> None:
+        """The long code step that counted its items is over (`count_items`)."""
+        progress = self._progress
+        if progress is not None:
+            try:
+                progress.end_items()
+            except Exception:  # noqa: BLE001 - progress never stops the check
+                _log.debug("assistant chat item count not ended")
+
     def _show_progress(self, progress: dict[str, Any]) -> None:
         """Full check: the progress numbers, one block replaced in place, and `progress`."""
         with self._lock:
@@ -2868,12 +2909,17 @@ class ChatEngine:
         # The drawn-ink reads (#1531, $0 OCR) run while the model checks run.
         with ThreadPoolExecutor(max_workers=1) as ink:
             drawn = ink.submit(
-                drawn_ink_checks, book.live(), book.pdf_paths(), stop=self.cancel.is_set
+                drawn_ink_checks,
+                book.live(),
+                book.pdf_paths(),
+                stop=self.cancel.is_set,
+                count=self.count_items,
             )
             # The simple full check makes no second or third reads and has no critic: its two AI
             # roles are the compare call and the blind look (CONTRACT-SIMPLE).
             skipped = 0 if self._simple else self._post_checks()
         inks = drawn.result()
+        self.items_counted()
         with self.finding_lock:
             for inked in with_drawn_ink(book.live(), inks):
                 if book.replace(inked):
@@ -2909,12 +2955,23 @@ class ChatEngine:
             (CODE_CHECK_NAMES["filler_range"], lambda: add_filler_range(self)),
             # GV's sink rules on the vendor's plans (#1807, #1906), pages with no architect too.
             (CODE_CHECK_NAMES["sink_offset"], lambda: add_sink_offset(self)),
+            # A splash the paired drawing prints no size for: looked for on the item's other
+            # views (its section, its elevation; 2026-10-23), before the measuring by scale.
+            (CODE_CHECK_NAMES["splash_views"], lambda: add_splash_views(self)),
+            # Where the architect prints no size: measured by its own scale (2026-10-23), last,
+            # on every item the steps above left open.
+            (CODE_CHECK_NAMES["scale_measure"], lambda: add_scale_measures(self)),
         )
         # The pack's state before the checks read its labels counts too: it may turn `ready` while
         # they run on partial labels (#1768 review).
         unlabelled = pack_without_labels(self.tools.workspace.set_pack)
         with self.timings.phase("finish_checks"):
             for name, step in steps:
+                if self.cancel.is_set() and name != CODE_CHECK_NAMES["ledger"]:
+                    # Stop (2026-10-23): the reading ledger's own sums (the work the helpers
+                    # recorded, milliseconds) are still added; no other check starts (each reads
+                    # the whole set again, a minute on a big one): a Continue runs them all.
+                    break
                 left_out = self.book.left_out_for_room.get("code", 0)
                 try:
                     step()
@@ -5146,6 +5203,10 @@ class ChatEngine:
                 self._trust_phase()
             except Exception:  # noqa: BLE001 - the answer is stored without its trust report
                 _log.exception("assistant chat trust report failed")
+            if stopped is None and self.cancel.is_set():
+                # Stop pressed while code's checks ran (they stop early): a stopped answer,
+                # never a finished one with checks left out.
+                stopped = "cancelled"
         elif settings.mode == "full_check":
             # A stopped full check still gets code's $0 finish (#1515): the ledger's findings and
             # sums and the trust report with the recorded results, before the files and the
