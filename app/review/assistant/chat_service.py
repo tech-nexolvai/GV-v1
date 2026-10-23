@@ -673,7 +673,9 @@ def broken_words(
             reading_why=None if reading is None else reading.why,
         )
     )
-    return {**report.out(), "state": "ready"} if report.stops else None
+    if not report.stops:
+        return None
+    return {**report.out(), "lines": [line.out() for line in report.stops], "state": "ready"}
 
 
 def preflight_words(

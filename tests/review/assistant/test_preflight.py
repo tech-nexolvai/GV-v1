@@ -482,3 +482,62 @@ def test_a_broken_upload_is_said_even_without_a_page_map(tmp_path: Path) -> None
     failed = broken_words([{"name": VENDOR, "pages": 4}], folder)
     assert failed is not None
     assert "could not be read (the PDF could not be opened)" in failed["lines"][0]["words"]
+
+
+def test_a_one_page_shop_drawing_uploaded_as_the_architects_stops_and_kinds_count() -> None:
+    dims = _dims({(ARCH, 1): _labels(['24"', '30"', '18"', '72"', '6"'])})
+    texts = {(ARCH, 1): "MILLWORK SHOP DRAWING SUBMITTED FOR APPROVAL"}
+    listing = [
+        {"name": VENDOR, "pages": 1, "sha256": "aaa", "kind": "the vendor's shop drawings"},
+        {"name": ARCH, "pages": 1, "sha256": "bbb", "kind": "the architect's drawings"},
+    ]
+    # No upload roles in the page map: the uploads' kinds say which file is the architect's.
+    page_map = {"files": [VENDOR, ARCH], "pages": []}
+    report = build(
+        Inputs(listing=listing, page_map=page_map, main_file=VENDOR, dims=dims, texts=texts)
+    )
+    assert [line.id for line in report.stops] == ["files_swapped"]
+    # The same bytes uploaded as both sides (the pack then reads one file): a stop too.
+    same = [{**listing[0]}, {**listing[1], "sha256": "aaa"}]
+    assert (
+        "same file"
+        in build(Inputs(listing=same, page_map=page_map, main_file=VENDOR)).stops[0].words
+    )
+
+
+def test_an_architect_file_with_no_readable_size_is_a_warning_not_a_stop() -> None:
+    dims = _dims({(VENDOR, 1): _labels(['24"']), (ARCH, 1): []})
+    report = build(Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR, dims=dims))
+    assert report.stops == ()
+    line = _line(report, "no_sizes")
+    assert line.level == "warn" and line.goes_on and line.who == "the architect"
+
+
+def test_a_divider_pages_project_applies_to_the_pages_after_it() -> None:
+    index = _index(
+        [
+            {
+                "file": ARCH,
+                "page": 1,
+                "projects": ["North Tower"],
+                "set_kind": "architectural",
+                "introduces": True,
+            },
+            {"file": ARCH, "page": 2, "projects": [], "set_kind": "unknown"},
+            {"file": VENDOR, "page": 1, "projects": ["North Tower"], "introduces": True},
+            {"file": VENDOR, "page": 2, "projects": []},
+            {
+                "file": VENDOR,
+                "page": 3,
+                "projects": ["Brand Look"],
+                "set_kind": "prototype",
+                "introduces": True,
+            },
+            {"file": VENDOR, "page": 4, "projects": []},
+        ]
+    )
+    architect, vendor, pages = preflight._projects(
+        Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR, index=index)
+    )
+    assert list(architect.values()) == ["North Tower"] and list(vendor.values()) == ["North Tower"]
+    assert pages == {"north tower": {1, 2}}

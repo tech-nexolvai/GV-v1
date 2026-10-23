@@ -221,8 +221,20 @@ def _files(inputs: Inputs) -> list[str]:
     return names or [str(item.get("name")) for item in inputs.listing if item.get("name")]
 
 
+def _architect_kind(item: Mapping[str, Any]) -> bool:
+    """Uploaded as the architect's drawings (`set_pack._is_architect_kind`'s rule)."""
+    return str(item.get("kind") or "").strip().lower().startswith("the architect")
+
+
 def _architect_files(inputs: Inputs) -> list[str]:
-    return [f for f in _files(inputs) if _role(inputs.page_map, f) == "architect"]
+    """The files uploaded as the architect's: the page map's roles, else the uploads' kinds."""
+    by_role = [f for f in _files(inputs) if _role(inputs.page_map, f) == "architect"]
+    by_kind = [
+        str(item.get("name"))
+        for item in inputs.listing
+        if _architect_kind(item) and str(item.get("name")) != inputs.main_file
+    ]
+    return list(dict.fromkeys([*by_role, *by_kind]))
 
 
 def _vendor_entries(inputs: Inputs) -> list[Mapping[str, Any]]:
@@ -269,7 +281,7 @@ def _broken(inputs: Inputs) -> list[Line]:
                     todo="Upload the full PDF.",
                 )
             )
-    if inputs.reading_state == "failed":
+    if inputs.reading_state == "failed" and not lines:
         lines.append(
             Line(
                 "broken_file",
@@ -326,11 +338,19 @@ def _swapped(inputs: Inputs) -> list[Line]:
     as the vendor's; or, on its own pages, no sign of an architect's drawing at all and vendor
     signs on at least half of the pages that tell; or the set index reads most of its pages as a
     shop drawing. Conservative: a file with too little to tell is never stopped."""
+    by_name = {str(item.get("name")): item for item in inputs.listing}
+    vendor = by_name.get(inputs.main_file or "")
+    if vendor is not None and any(
+        _architect_kind(item)
+        and item is not vendor
+        and item.get("sha256")
+        and item.get("sha256") == vendor.get("sha256")
+        for item in inputs.listing
+    ):
+        return [_swapped_line("it is the same file as the vendor's")]
     architects = _architect_files(inputs)
     if not architects:
         return []
-    by_name = {str(item.get("name")): item for item in inputs.listing}
-    vendor = by_name.get(inputs.main_file or "")
     labels = _labels(inputs)
     for name in architects:
         item = by_name.get(name)
@@ -348,24 +368,27 @@ def _swapped(inputs: Inputs) -> list[Line]:
         ]
         shop = sum(1 for kind in kinds if kind == "shop drawing")
         by_index = len(kinds) >= 3 and shop * 10 >= len(kinds) * 6
-        by_code = told >= 3 and architect_signs == 0 and vendor_signs * 2 >= told
-        if same or by_index or by_code:
-            why = (
-                "it is the same file as the vendor's"
-                if same
-                else "its pages read like shop drawings, not the architect's design"
-            )
-            return [
-                Line(
-                    "files_swapped",
-                    "stop",
-                    f"The file uploaded as the architect's looks like a vendor shop drawing ({why}).",
-                    goes_on=False,
-                    who="you",
-                    todo="Upload the architect's drawings as the architect's file.",
-                )
-            ]
+        # Every page that tells reads like a shop drawing and none like the architect's; on a
+        # longer file, at least half of them and none like the architect's.
+        by_code = architect_signs == 0 and (
+            (told >= 1 and vendor_signs == told) or (told >= 3 and vendor_signs * 2 >= told)
+        )
+        if same:
+            return [_swapped_line("it is the same file as the vendor's")]
+        if by_index or by_code:
+            return [_swapped_line("its pages read like shop drawings, not the architect's design")]
     return []
+
+
+def _swapped_line(why: str) -> Line:
+    return Line(
+        "files_swapped",
+        "stop",
+        f"The file uploaded as the architect's looks like a vendor shop drawing ({why}).",
+        goes_on=False,
+        who="you",
+        todo="Upload the architect's drawings as the architect's file.",
+    )
 
 
 def _key(text: object) -> str:
@@ -395,11 +418,22 @@ def _projects(inputs: Inputs) -> tuple[dict[str, str], dict[str, str], dict[str,
     vendor: dict[str, str] = {}
     vendor_pages: dict[str, set[int]] = {}
     architects = set(_architect_files(inputs))
-    for entry in (inputs.index or {}).values():
-        if str(entry.get("set_kind") or "") in ("prototype", "brand standard", "reference"):
-            continue
-        names = [str(n) for n in entry.get("projects") or [] if str(n).strip()]
+    entries = sorted(
+        (e for e in (inputs.index or {}).values() if isinstance(e.get("page"), int)),
+        key=lambda e: (str(e.get("file")), int(e["page"])),
+    )
+    #: The project a cover or divider page names applies to the pages after it (in its file).
+    current: dict[str, list[str]] = {}
+    for entry in entries:
         file = str(entry.get("file"))
+        printed = [str(n) for n in entry.get("projects") or [] if str(n).strip()]
+        reference = str(entry.get("set_kind") or "") in ("prototype", "brand standard", "reference")
+        if entry.get("introduces"):
+            # A prototype's divider introduces reference pages: they get no project.
+            current[file] = [] if reference else printed
+        names = printed or (current.get(file, []) if len(current.get(file, [])) == 1 else [])
+        if reference:
+            continue
         for name in names:
             if file in architects:
                 architect.setdefault(_key(name), name)
@@ -458,6 +492,22 @@ def _other_project(inputs: Inputs) -> list[Line]:
 
 def _pairing_lines(inputs: Inputs) -> list[Line]:
     lines: list[Line] = []
+    architects = set(_architect_files(inputs))
+    if (
+        architects
+        and inputs.dims is not None
+        and not any(mine for (file, _page), mine in _labels(inputs).items() if file in architects)
+    ):
+        lines.append(
+            Line(
+                "no_sizes",
+                "warn",
+                "The architect's file prints no sizes code could read (it may hold only plans or notes): "
+                "vendor pages are checked only against the vendor's own drawings and GV's rules.",
+                who="the architect",
+                todo="Ask for the architect's dimensioned elevations of these items.",
+            )
+        )
     pairs = inputs.pairs
     if pairs is not None and pairs.vendor_pages:
         total = pairs.vendor_pages
@@ -475,9 +525,11 @@ def _pairing_lines(inputs: Inputs) -> list[Line]:
                 Line(
                     "matched",
                     "ok",
-                    f"Code's first guess: {pairs.paired} of {_count(total, 'vendor page')} have a "
-                    f"likely architect page. When the check runs, AI confirms each and tries the "
-                    f"other {pairs.to_ask}; the final numbers come with the result.",
+                    f"Code's first guess: {pairs.paired} of {_count(total, 'vendor page')} "
+                    f"{'has' if total == 1 else 'have'} a likely architect page. When the "
+                    "check runs, AI confirms each"
+                    + (f" and tries the other {pairs.to_ask}" if pairs.to_ask else "")
+                    + "; the final numbers come with the result.",
                     estimate=True,
                 )
             )
