@@ -6157,6 +6157,17 @@
             "title": "More",
             "type": "integer"
           },
+          "preflight": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatPreflightOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The pre-flight health report (code, $0): what was found, whether the check goes on, who acts; `null` before the page map is made."
+          },
           "price_pages": {
             "anyOf": [
               {
@@ -7659,6 +7670,12 @@
             "description": "The simple full check only: an earlier run of this chat (its folder name under `simple/`, said in the work-items block) whose saved compare answers and blind looks are verified again, with no model call ($0).",
             "title": "Replay"
           },
+          "run_anyway": {
+            "default": false,
+            "description": "A full check only: run even when the pre-flight check would pause it (a swapped, broken or other-project file). Every warning is still recorded.",
+            "title": "Run Anyway",
+            "type": "boolean"
+          },
           "task": {
             "anyOf": [
               {
@@ -7717,6 +7734,7 @@
                       "finding_dropped": "#/components/schemas/ChatFindingDroppedBlock",
                       "finding_update": "#/components/schemas/ChatFindingUpdateBlock",
                       "package": "#/components/schemas/ChatPackageBlock",
+                      "preflight": "#/components/schemas/ChatPreflightBlock",
                       "progress": "#/components/schemas/ChatProgressBlock",
                       "resolver": "#/components/schemas/ChatResolverBlock",
                       "resume": "#/components/schemas/ChatResumeBlock",
@@ -7788,6 +7806,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatPackageBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatPreflightBlock"
                     }
                   ]
                 },
@@ -8429,6 +8450,161 @@
           "label"
         ],
         "title": "ChatPlanOptionOut",
+        "type": "object"
+      },
+      "ChatPreflightBlock": {
+        "properties": {
+          "preflight": {
+            "$ref": "#/components/schemas/ChatPreflightOut"
+          },
+          "type": {
+            "const": "preflight",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "preflight"
+        ],
+        "title": "ChatPreflightBlock",
+        "type": "object"
+      },
+      "ChatPreflightLineOut": {
+        "description": "One line of the pre-flight health report (`preflight.py`): what code found, whether the\ncheck goes on, and who acts.",
+        "properties": {
+          "estimate": {
+            "default": false,
+            "description": "Code's estimate before the check runs (the AI page matcher confirms after).",
+            "title": "Estimate",
+            "type": "boolean"
+          },
+          "goes_on": {
+            "default": true,
+            "description": "Whether the check goes on.",
+            "title": "Goes On",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "What kind of line: \"matched\", \"needs_drawing\", \"files_swapped\"\u2026",
+            "title": "Id",
+            "type": "string"
+          },
+          "level": {
+            "description": "stop: the whole check stops before money is spent (only a swapped or broken file, or another project's architect file); warn: many pages are touched; note: some pages; ok: plain facts.",
+            "enum": [
+              "stop",
+              "warn",
+              "note",
+              "ok"
+            ],
+            "title": "Level",
+            "type": "string"
+          },
+          "pages": {
+            "description": "The vendor pages it touches.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "todo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What to do, when someone has to act.",
+            "title": "Todo"
+          },
+          "who": {
+            "default": "nobody",
+            "enum": [
+              "you",
+              "GV",
+              "the vendor",
+              "the architect",
+              "nobody"
+            ],
+            "title": "Who",
+            "type": "string"
+          },
+          "words": {
+            "description": "What was found, in plain words.",
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "level",
+          "words"
+        ],
+        "title": "ChatPreflightLineOut",
+        "type": "object"
+      },
+      "ChatPreflightOut": {
+        "description": "The pre-flight health report before a full check (`preflight.py`), $0; in an answer, also\nthe supervisor's look and whether the check paused.",
+        "properties": {
+          "estimate": {
+            "default": false,
+            "description": "Some numbers are code's estimate before the check runs.",
+            "title": "Estimate",
+            "type": "boolean"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/ChatPreflightLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "paused": {
+            "default": false,
+            "description": "In an answer: the check paused before spending (Run anyway runs it).",
+            "title": "Paused",
+            "type": "boolean"
+          },
+          "run_anyway": {
+            "default": false,
+            "description": "In an answer: the reviewer chose Run anyway.",
+            "title": "Run Anyway",
+            "type": "boolean"
+          },
+          "state": {
+            "default": "ready",
+            "description": "working: code's pairing estimate is still being worked out (ask again).",
+            "enum": [
+              "working",
+              "ready"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "stops": {
+            "description": "The ids of the lines that stop the check.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Stops",
+            "type": "array"
+          },
+          "supervisor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatSupervisorOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "ChatPreflightOut",
         "type": "object"
       },
       "ChatProductScopeOut": {
@@ -9980,6 +10156,58 @@
         "title": "ChatSummaryReviewOut",
         "type": "object"
       },
+      "ChatSupervisorOut": {
+        "description": "The supervisor's second look at the plan before money is spent (`plan_supervisor.py`).",
+        "properties": {
+          "by": {
+            "default": "ai",
+            "enum": [
+              "ai",
+              "code"
+            ],
+            "title": "By",
+            "type": "string"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "verdict": {
+            "enum": [
+              "ok",
+              "warn",
+              "stop",
+              "not_run"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          },
+          "why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "One plain sentence.",
+            "title": "Why"
+          }
+        },
+        "required": [
+          "verdict"
+        ],
+        "title": "ChatSupervisorOut",
+        "type": "object"
+      },
       "ChatTaskOut": {
         "properties": {
           "active_form": {
@@ -10478,6 +10706,21 @@
             ],
             "description": "\"What's right\" items not compared (not counted above).",
             "title": "Not Compared"
+          },
+          "problems": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What went wrong in this check, in plain words (pages that could not be read, pages with no architect drawing and why, steps skipped, money that ran out); empty when nothing did.",
+            "title": "Problems"
           },
           "product_scope": {
             "anyOf": [

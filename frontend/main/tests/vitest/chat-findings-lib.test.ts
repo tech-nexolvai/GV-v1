@@ -229,9 +229,9 @@ describe('trust', () => {
     expect(levelCounts([finding('n')], null)).toBeNull();
     expect(levelCounts([confirmed], { levels: { confirmed: 9, likely: 2, to_check: 1 } })).toEqual({ confirmed: 9, likely: 2, to_check: 1 });
     expect(checkLines(checkCounts([confirmed, disagreed], null))).toEqual([
-      'Printed at the spot: 3 of 4 values found (1 drawn as pen strokes)',
-      'Second independent read: 1 agree · 1 disagree · 0 unsure',
-      'Checked on the drawing by the lead: 1 of 2',
+      'Found printed on the drawing: 3 of 4 values (1 drawn as pen strokes)',
+      'Read again by a second AI: 1 agree · 1 disagree · 0 unsure',
+      'Looked at again on the drawing: 1 of 2',
       'GV rules applied by code: none for these findings',
     ]);
   });

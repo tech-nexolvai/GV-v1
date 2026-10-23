@@ -1305,6 +1305,9 @@ class _Run:
     #: compared this time either, but Continue asks the matcher again.
     retry: dict[int, str] = field(default_factory=dict)
     pairs: dict[str, str] = field(default_factory=dict)
+    #: The pre-flight gate's report and the supervisor's look (`plan_supervisor.Gate`), for the
+    #: "what went wrong" list at the end (`check_problems`).
+    preflight: Any = None
     #: The drawn run's drawings and line work (`same_ends`), read once per run.
     _drawn_sides: dict[Any, Any] = field(default_factory=dict)
     _line_work: dict[tuple[str, int], Sequence[Any]] = field(default_factory=dict)
@@ -1865,6 +1868,23 @@ class _Run:
             warm.result()
         if plan is None:
             return None  # no page map: the lead plans, as before (nothing was done yet)
+        # Before any paid step: the pre-flight report, code's stops and the supervisor's look;
+        # a stop pauses the check here (nothing spent but the look), exact copies are dropped.
+        from app.review.assistant import plan_supervisor as supervisor
+
+        checked = supervisor.for_full_check(engine, plan, matching)
+        self.preflight = checked
+        if checked is not None and checked.paused:
+            return supervisor.paused_outcome(engine, checked)
+        if checked is not None:
+            copies = supervisor.duplicate_notes(
+                checked, [p for job in plan.jobs for p in job.pages]
+            )
+            if copies:
+                plan = replace(
+                    remaining_plan(plan, {page for page, _why in copies}),
+                    skipped=(*plan.skipped, *copies),
+                )
         if matching is not None:
             # The first helpers' pages are asked about first; pages no helper compares last.
             matching.start([page for job in plan.jobs for page in job.pages])
@@ -4875,6 +4895,12 @@ class _Run:
         except Exception:  # noqa: BLE001 - stored without its score
             _log.exception("assistant roster accuracy failed")
         text = engine._agree_counts(text)
+        try:
+            from app.review.assistant import check_problems
+
+            check_problems.attach(engine, check_problems.for_roster(self, stopped))
+        except Exception:  # noqa: BLE001 - stored without its problems list
+            _log.exception("assistant roster could not list what went wrong")
         engine._finish_timings()
         api_content = [
             {"role": "user", "content": engine.user_content},

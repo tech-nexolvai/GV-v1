@@ -9,6 +9,7 @@ import { chatPaths, type ChatAccuracy, type ChatCoverage, type ChatFile, type Ch
 import { coverageCounts, coverageWords, type FindingCounts } from '@/lib/chat-findings';
 import { allPicked, fullCheckPrice, progressWords, type FullCheckPriceParts } from '@/lib/chat-full-check';
 import { planAnswers, usePlanCheck } from '@/lib/chat-plan-check';
+import { preflightStops } from '@/lib/chat-preflight';
 import { fileKind, fileSize, openHref, type ViewMessage } from '@/lib/chat-messages';
 import { activeProducts, comingLater, useProductCatalog } from '@/lib/products';
 import type { ProofCounts } from '@/lib/chat-proof';
@@ -88,8 +89,8 @@ export interface FullCheckButtonProps {
   summary: string;
   /** #1823: the price rule ("$2 + $0.35 a content page, at least $5"), said until the plan counts the pages. */
   priceRule?: string | null;
-  /** Runs it, with the reviewer's answers to the plan check (#1569), if any. */
-  onRun: (answers?: ChatPlanAnswer[]) => void;
+  /** Runs it, with the reviewer's answers to the plan check (#1569), if any; `runAnyway` past a pre-flight stop. */
+  onRun: (answers?: ChatPlanAnswer[], options?: { runAnyway?: boolean }) => void;
   /** Why it cannot run now, in plain words; null when it can. */
   blocked: string | null;
   /** `primary`: the empty chat's main action. `bar`: the smaller one in the top bar. */
@@ -107,6 +108,8 @@ export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', 
   const plan = usePlanCheck(loadPlan, open);
   const doubts = plan.status === 'ready' ? plan.plan.doubts : [];
   const price = fullCheckPrice(plan.status === 'ready' ? plan.plan : null, priceRule);
+  // A pre-flight stop (a swapped, broken or other-project file): Run reads "Run anyway".
+  const stops = plan.status === 'ready' && preflightStops(plan.plan);
   return (
     <Popover open={open} onOpenChange={(next) => { setOpen(next); if (next) setPicked({}); }}>
       <PopoverTrigger
@@ -124,7 +127,7 @@ export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', 
         <ScanSearch className="size-4" aria-hidden="true" />
         Run full check
       </PopoverTrigger>
-      <PopoverContent align={variant === 'primary' ? 'center' : 'end'} className="w-[min(24rem,calc(100vw-24px))] gap-3 rounded-xl p-3 font-sans">
+      <PopoverContent align={variant === 'primary' ? 'center' : 'end'} className="max-h-[min(40rem,calc(100vh-96px))] w-[min(26rem,calc(100vw-24px))] gap-3 overflow-y-auto rounded-xl p-3 font-sans">
         <p data-slot="chat-full-check-summary" className="text-sm font-medium tabular-nums">{summary}</p>
         <FullCheckPrice parts={price} />
         {scope && <p data-slot="chat-full-check-scope" className="text-xs font-medium text-foreground">{scope}</p>}
@@ -132,7 +135,13 @@ export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', 
           Checks every page against the architect and GV’s rules, then code draws the cloud drawing and the check report.
         </p>
         <PlanCheck state={plan} picked={picked} onPick={(id, value) => setPicked((now) => ({ ...now, [id]: value }))} />
-        <div className="flex justify-end gap-2">
+        {stops && (
+          <p data-slot="chat-full-check-stops" className="border-t pt-2 text-xs font-medium text-foreground">
+            GV Review would pause this check: nothing is spent until you choose.
+          </p>
+        )}
+        {/* The buttons stay in view when a long pre-flight list scrolls (a phone). */}
+        <div className="sticky -bottom-3 -mb-3 flex justify-end gap-2 bg-popover pt-1 pb-3">
           <button type="button" onClick={() => setOpen(false)} className="h-8 rounded-lg border bg-background px-3 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
             Cancel
           </button>
@@ -141,12 +150,13 @@ export function FullCheckButton({ summary, onRun, blocked, variant = 'primary', 
             onClick={() => {
               const answers = planAnswers(doubts, picked);
               setOpen(false);
-              if (answers.length) onRun(answers);
+              if (stops) onRun(answers.length ? answers : undefined, { runAnyway: true });
+              else if (answers.length) onRun(answers);
               else onRun();
             }}
             className="h-8 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none"
           >
-            Run
+            {stops ? 'Run anyway' : 'Run'}
           </button>
         </div>
       </PopoverContent>

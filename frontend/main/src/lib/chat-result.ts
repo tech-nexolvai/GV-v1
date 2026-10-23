@@ -11,7 +11,7 @@
 
 import type { ChatFinding, ChatFile, ChatPackageState, ChatReviewAction, ChatTimings, FindingDecision } from '@/lib/chat-api';
 import { isInternal, proofGroup } from '@/lib/chat-proof';
-import { inchNumber, inchWords } from '@/lib/chat-trust';
+import { inchNumber, inchWords, PHASE_WORDS } from '@/lib/chat-trust';
 
 export type ResultTab = 'wrong' | 'right' | 'rule_note' | 'not_compared';
 
@@ -240,18 +240,6 @@ export function clockWords(seconds: number | null | undefined): string | null {
   return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${rest}` : `${minutes}:${rest}`;
 }
 
-const PHASE_WORDS: Record<string, string> = {
-  set_pack: 'Read the drawings',
-  seeding: 'GV Review’s own checks',
-  planning: 'Planned the work',
-  compare: 'Compared each vendor drawing with the architect’s',
-  finish_checks: 'Checked by code',
-  advocate: 'Second look at each difference',
-  not_compared: 'Made the Not-compared list',
-  cloud_drawing: 'Made the cloud drawing',
-  report: 'Made the check report',
-  package: 'Made the package',
-};
 
 export interface WorkStep {
   words: string;
