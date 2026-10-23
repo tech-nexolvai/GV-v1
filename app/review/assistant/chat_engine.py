@@ -3030,6 +3030,7 @@ class ChatEngine:
         self._guard_spots()
         self._resolve_decisions()
         self._escalate()
+        self._drop_off_pair()
         book = self.book
         statuses = round_statuses(book.live())
         with self._lock:
@@ -4210,6 +4211,32 @@ class ChatEngine:
             ]
         for stamped in changed:
             self._show_finding(stamped)
+
+    def _drop_off_pair(self) -> None:
+        """After the resolver and the escalation: any item they left with an architect spot off
+        its pair (stamped again, `_with_reference`) is kept from the vendor, as the spot guard
+        keeps one before them. No known path makes one; this holds if one ever does."""
+        if self._cross is None:
+            return
+        with self.finding_lock:
+            off = [
+                (
+                    str(finding["id"]),
+                    str(record.get("why") or "Its architect page is not its pair's."),
+                )
+                for finding in self.book.live()
+                if isinstance(record := self._with_reference(finding).get(reference_page.KEY), dict)
+                and record.get("outside")
+            ]
+        for finding_id, why in off:
+            reason = f"Internal note, not for the vendor: {why}"[:300]
+            try:
+                with self.finding_lock:
+                    self.book.drop({"finding_id": finding_id, "reason": reason})
+            except Exception:  # noqa: BLE001 - one refused drop never stops the others
+                _log.exception("assistant chat could not drop an item off its pair")
+                continue
+            self._show_dropped(finding_id, reason)
 
     def _with_reference(self, finding: dict[str, Any]) -> dict[str, Any]:
         cross = self._cross

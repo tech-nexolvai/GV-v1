@@ -349,3 +349,32 @@ def test_two_architect_files_side_alone_gives_no_page_the_file_gives_the_right_o
     assert plan_page_picture(tmp_path, package_id, 3, side="architect") is None
     named = plan_page_picture(tmp_path, package_id, 7, file=ARCH_B)
     assert named is not None and named.parent.name == set_pack.stem(ARCH_B)
+
+
+# ---- after the resolver and the escalation: an item moved off its pair is still kept back ---------
+
+
+def test_an_item_moved_off_its_pair_after_the_guard_is_dropped(tmp_path: Path) -> None:
+    import threading
+    from types import SimpleNamespace
+
+    from app.review.assistant.chat_engine import ChatEngine
+
+    book = _book(tmp_path)
+    spot = {"page": 7, "x0": 10, "y0": 10, "x1": 40, "y1": 20, "file": ARCH_B}
+    kept, _notes = book.report(_finding(vs_page=7, arch_box=spot), "lead")
+    moved, _notes = book.report(_finding(vs_page=7, arch_box=spot, item="Moved later"), "lead")
+    # A later step (none known today) points the second item at another architect page.
+    book.findings[moved["id"]]["arch_box"] = {**spot, "page": 2, "file": ARCH_A}
+    book.findings[moved["id"]]["vs_page"] = 2
+    shown: list[str] = []
+    engine = SimpleNamespace(
+        _cross=PAIRS,
+        finding_lock=threading.RLock(),
+        book=book,
+        _show_dropped=lambda i, _r: shown.append(i),
+    )
+    engine._with_reference = lambda f: ChatEngine._with_reference(engine, f)  # type: ignore[arg-type]
+    ChatEngine._drop_off_pair(engine)  # type: ignore[arg-type]
+    assert shown == [moved["id"]]
+    assert [f["id"] for f in book.live()] == [kept["id"]]
