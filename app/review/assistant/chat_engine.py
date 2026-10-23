@@ -93,6 +93,7 @@ from app.review.assistant import (
     likely_problems,
     not_compared,
     reading_coverage,
+    reference_page,
     same_item_pages,
     set_proofs,
 )
@@ -1115,6 +1116,8 @@ class ChatEngine:
         self._plan: FanOutPlan | None = None
         self._cross: CrossPairs | None = None
         """The vendor pages paired across separate uploads (#1798), once worked out."""
+        self._reference_stamped = False
+        """Every finding has its one reference page (`_stamp_reference_pages`)."""
         self._read_share = _Share(limit=settings.message_cap_micros)
         self._markup_base: Future[Any] | None = None
         self._trust_index: int | None = None
@@ -2037,7 +2040,12 @@ class ChatEngine:
         self.emit("finding_update", {"index": index, "update": json.loads(json.dumps(update))})
 
     def _show_finding(self, finding: dict[str, Any]) -> None:
-        """A new or changed finding: its block (replaced in place) and the `finding` event."""
+        """A new or changed finding: its block (replaced in place) and the `finding` event. One
+        made after the reference pages were stamped gets its own (`_stamp_reference_pages`)."""
+        if getattr(self, "_reference_stamped", False) and reference_page.KEY not in finding:
+            stamped = self._with_reference(finding)
+            if stamped != finding and self.book.replace(stamped):
+                finding = stamped
         with self._lock:
             index = self._positions.get(finding["id"])
             if index is None:
@@ -3017,6 +3025,7 @@ class ChatEngine:
 
     def _finish_trust(self, skipped: int) -> None:
         self._fold_same_wrongs()
+        self._stamp_reference_pages()
         self._guard_spots()
         self._resolve_decisions()
         self._escalate()
@@ -4160,6 +4169,7 @@ class ChatEngine:
             return None
         run.start()
         self._cross = run.finish()
+        self.book.pairs_now = lambda: self._cross
         return self._cross
 
     def page_matching(self, page_map: Mapping[str, Any] | None) -> Any:
@@ -4170,6 +4180,9 @@ class ChatEngine:
         run = import_module("app.review.assistant.page_match").prepare_run(self, page_map)
         if run is not None:
             self._cross = run.cross
+            # A helper's architect spot is checked against its page's pair as it stands then
+            # (the pairs last built: each helper's own pages were decided before it started).
+            self.book.pairs_now = lambda: run.cross
         return run
 
     def finish_page_matching(self, run: Any) -> None:
@@ -4177,6 +4190,28 @@ class ChatEngine:
         closers and the finishing steps read them)."""
         if run is not None:
             self._cross = run.finish()
+            self.book.pairs_now = lambda: self._cross
+
+    def _stamp_reference_pages(self) -> None:
+        """Every finding's one reference page, from its vendor page's final pair
+        (`reference_page.stamp`): every picture, caption and code check after this reads it.
+        Nothing when the set is not two separate uploads paired by the full check."""
+        cross = self._cross
+        if cross is None:
+            return
+        self._reference_stamped = True
+        for finding in self.book.live():
+            stamped = self._with_reference(finding)
+            if stamped != finding and self.book.replace(stamped):
+                self._show_finding(stamped)
+
+    def _with_reference(self, finding: dict[str, Any]) -> dict[str, Any]:
+        cross = self._cross
+        if cross is None:
+            return finding
+        return reference_page.stamp(
+            finding, cross.pairs, references=cross.references, unpaired=cross.unpaired
+        )
 
     def scoped_jobs(
         self, page_map: Mapping[str, Any] | None, *, pairs: bool = True

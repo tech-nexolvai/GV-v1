@@ -214,7 +214,8 @@ function EvidencePair({ finding, pictureUrl, onOpen }: { finding: ChatFinding; p
 function LargePicture({ src, label, page, box, tone, onOpen }: {
   src: string | null;
   label: string;
-  page: number;
+  /** Null: no architect page (never the vendor's number in its place). */
+  page: number | null;
   box: ChatFinding['arch_box'];
   tone: RowStatus;
   onOpen: () => void;
@@ -225,7 +226,7 @@ function LargePicture({ src, label, page, box, tone, onOpen }: {
     <figure className="grid min-w-0 gap-1.5">
       <figcaption className="flex items-baseline gap-1.5 text-xs text-muted-foreground">
         <span className="font-medium text-foreground">{label}</span>
-        <span className="tabular-nums">page {page}</span>
+        <span className="tabular-nums">{page !== null ? `page ${page}` : 'no architect page'}</span>
       </figcaption>
       {src ? (
         <button

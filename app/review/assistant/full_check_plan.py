@@ -174,6 +174,9 @@ class CrossPairs:
     unpaired: Mapping[int, str] = field(default_factory=dict)
     words: Mapping[int, str] = field(default_factory=dict)
     """How each paired page was paired (plain words)."""
+    references: Mapping[int, tuple[tuple[str, int], ...]] = field(default_factory=dict)
+    """Each paired page's brand prototype (file, page)s: reference only, never its shown page
+    (`reference_page`), but a spot on one is on the item's own drawings."""
 
     @classmethod
     def of(cls, work: Any) -> CrossPairs:
@@ -181,6 +184,7 @@ class CrossPairs:
         as not paired (a page with any pair counts as paired)."""
         pairs: dict[int, list[tuple[str, int]]] = {}
         words: dict[int, str] = {}
+        references: dict[int, list[tuple[str, int]]] = {}
         for item in getattr(work, "items", ()):
             if item.paired_by is None:
                 continue
@@ -191,6 +195,11 @@ class CrossPairs:
                 if where not in found:
                     found.append(where)
             words.setdefault(page, item.paired_by)
+            kept = references.setdefault(page, [])
+            for drawing in getattr(item, "reference", ()):
+                where = (drawing.file, drawing.own_page)
+                if where not in kept:
+                    kept.append(where)
         unpaired: dict[int, str] = {}
         main = getattr(work, "file", None)
         for skipped in getattr(work, "skipped", ()):
@@ -201,7 +210,12 @@ class CrossPairs:
                 and skipped.page not in pairs
             ):
                 unpaired.setdefault(skipped.page, skipped.reason)
-        return cls({p: tuple(v) for p, v in pairs.items()}, unpaired, words)
+        return cls(
+            {p: tuple(v) for p, v in pairs.items()},
+            unpaired,
+            words,
+            {p: tuple(v) for p, v in references.items() if v},
+        )
 
 
 @dataclass(slots=True)

@@ -5140,6 +5140,8 @@ export interface components {
              * @description The difference GV Review recorded that this finding is.
              */
             record_id?: string | null;
+            /** @description Two separate uploads: the architect page it is compared on, from its pair. */
+            reference_page?: components["schemas"]["ChatFindingReferenceOut"] | null;
             /**
              * Reference Side
              * @description cross_view: whose drawings disagree. `architect` then holds the REFERENCE view's value and `vendor` this view's.
@@ -5278,6 +5280,35 @@ export interface components {
             value_arch?: string | null;
             /** Value Vendor */
             value_vendor?: string | null;
+        };
+        /**
+         * ChatFindingReferenceOut
+         * @description The one architect page a finding is compared on (`reference_page.stamp`, stream V): set
+         *     from its vendor page's pair at the check's finish. Every picture, caption and "Whole page"
+         *     view of its architect side reads it.
+         */
+        ChatFindingReferenceOut: {
+            /**
+             * File
+             * @description The architect upload's name.
+             */
+            file?: string | null;
+            /**
+             * Outside
+             * @description The item's architect spot or page is not on its pair (never sent).
+             * @default false
+             */
+            outside: boolean;
+            /**
+             * Page
+             * @description Its page in that file; null: no architect page (see why).
+             */
+            page?: number | null;
+            /**
+             * Why
+             * @description Why there is no architect page, or why its spot is refused.
+             */
+            why?: string | null;
         };
         /**
          * ChatFindingRoundMatchOut

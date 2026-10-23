@@ -41,12 +41,13 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import uuid4
 
-from app.review.assistant import field_cut
+from app.review.assistant import field_cut, reference_page
 from app.review.assistant.chat_corrections import parse_ref
 from app.review.assistant.dim_findings import (
     LabelRefused,
     fill_from_labels,
     label_for_cite,
+    own_architect_page,
     typed_architect_spot,
 )
 from app.review.assistant.dim_index import DimLabels, labels_for
@@ -984,6 +985,10 @@ class FindingBook:
     page_words: Callable[[int], str] | None = None
     """A page's printed words and its area's title (the set pack), read to re-file an "other"
     item to a product before the scope drops it (`product_scope.refiled`)."""
+    pairs_now: Callable[[], Any] | None = None
+    """A full check of two separate uploads: the cross-file pairs as they stand now
+    (`full_check_plan.CrossPairs`). An AI finding's architect spot must then be on its vendor
+    page's pair (`_pinned`); `None`: not known (no refusal)."""
     _cites: int = 0
     """The recorded differences this answer must account for (set by the engine)."""
     left_out_for_room: dict[str, int] = field(default_factory=dict)
@@ -1142,6 +1147,44 @@ class FindingBook:
         pack = self.workspace.set_pack
         return None if pack is None else pack / "hires"
 
+    def _pinned(self, finding: dict[str, Any], raw_box: object) -> None:
+        """An AI finding's architect side on its vendor page's pair (stream V, 2026-10-23): its
+        spot's (file, page) and its `vs_page` must be on the architect pages code paired with
+        that vendor page; a spot with no file named takes the pair's file of that page (the
+        default, the first architect file, may be another one). Refused (`SandboxRefused`, what
+        to do instead) otherwise. A page with no known pair is left as given: the spot guard
+        keeps an unpaired page's architect side from the vendor at the finish."""
+        cross = self.pairs_now() if self.pairs_now is not None else None
+        if cross is None:
+            return
+        page = reference_page.vendor_page(finding)
+        pairs = getattr(cross, "pairs", {}) or {}
+        if page is None or page not in pairs:
+            return
+        pair = reference_page.allowed(page, pairs)
+        may = reference_page.allowed(page, pairs, getattr(cross, "references", None))
+        box = finding.get("arch_box")
+        if isinstance(box, Mapping) and isinstance(box.get("page"), int):
+            spot = (str(box.get("file") or "") or None, own_architect_page(int(box["page"])))
+            if (spot[0], spot[1]) in may:
+                return
+            named = isinstance(raw_box, Mapping) and bool(raw_box.get("file"))
+            same = {f for f, p in may if p == spot[1]}
+            if not named and len(same) == 1:
+                finding["arch_box"] = {**box, "page": spot[1], "file": same.pop()}
+                return
+            raise SandboxRefused("arch_box: " + reference_page.outside_words(page, spot, pair))
+        vs_page = finding.get("vs_page")
+        if (
+            isinstance(vs_page, int)
+            and not isinstance(vs_page, bool)
+            and not any(p == own_architect_page(vs_page) for _f, p in may)
+        ):
+            raise SandboxRefused(
+                "vs_page: "
+                + reference_page.outside_words(page, (None, own_architect_page(vs_page)), pair)
+            )
+
     def _picture(self, box: Mapping[str, Any] | None) -> tuple[str | None, str | None]:
         """A crop of the box's area as a chat picture: (picture id, why there is none)."""
         if box is None:
@@ -1262,6 +1305,7 @@ class FindingBook:
             raise SandboxRefused(f"unknown argument {min(unknown)!r}")
         raw, dims, label_notes = self._labelled(raw, None)
         fields = self._fields(raw, partial=False)
+        self._pinned(fields, raw.get("arch_box"))
         if not self._in_scope(fields, created_by):
             assert self.product_scope is not None
             raise SandboxRefused(self.product_scope.refusal(fields["category"]))
@@ -1567,6 +1611,11 @@ class FindingBook:
         changes = self._fields(given, partial=True)
         if not changes:
             raise SandboxRefused("give at least one field to change")
+        if {"page", "vs_page", "arch_box", "vendor_box"} & set(changes):
+            pinned = {**current, **changes}
+            self._pinned(pinned, given.get("arch_box"))
+            if changes.get("arch_box") is not None:
+                changes["arch_box"] = pinned["arch_box"]
         scope = self.product_scope
         if "category" in changes and scope is not None:
             with self._lock:

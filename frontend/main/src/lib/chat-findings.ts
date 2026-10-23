@@ -106,16 +106,35 @@ export function vendorPage(finding: Pick<ChatFinding, 'page' | 'vendor_box'>): n
   return finding.vendor_box?.page ?? finding.page;
 }
 
-/**
- * The page the architect's evidence is on: its box's page, else the page it was compared with, else
- * the finding's own page (GV's combined sheets hold both drawings on one page).
- */
-export function architectPage(finding: Pick<ChatFinding, 'page' | 'vs_page' | 'arch_box'>): number {
-  return finding.arch_box?.page ?? finding.vs_page ?? finding.page;
+/** Where a finding's architect side is: an upload (null: the set's only architect file) and its page. */
+export interface ReferenceWhere {
+  file: string | null;
+  page: number;
 }
 
-/** The Page cell: "12", or "12 vs 40" when it was compared with another page. */
-export function pageWords(finding: Pick<ChatFinding, 'page' | 'vs_page'>): string {
+/**
+ * The architect page a finding is compared on: its spot's page (what its picture shows; on its
+ * pair, or code kept it from the vendor). With no spot, two separate uploads: its one reference
+ * page, set from its pair (`reference_page`); null when it has none, never the vendor's page
+ * number. An older answer, or GV's combined sheets: the page it was compared with, else its own
+ * page (one sheet holds both drawings).
+ */
+export function referenceWhere(finding: Pick<ChatFinding, 'page' | 'vs_page' | 'arch_box' | 'reference_page'>): ReferenceWhere | null {
+  if (finding.arch_box) return { file: finding.arch_box.file ?? null, page: finding.arch_box.page };
+  const reference = finding.reference_page;
+  if (reference) return reference.page != null ? { file: reference.file ?? null, page: reference.page } : null;
+  return { file: null, page: finding.vs_page ?? finding.page };
+}
+
+/** The page the architect's evidence is on (`referenceWhere`); null: no architect page. */
+export function architectPage(finding: Pick<ChatFinding, 'page' | 'vs_page' | 'arch_box' | 'reference_page'>): number | null {
+  return referenceWhere(finding)?.page ?? null;
+}
+
+/** The Page cell: "12", or "12 vs 40" when it was compared with another page (its reference page when it has one). */
+export function pageWords(finding: Pick<ChatFinding, 'page' | 'vs_page' | 'reference_page'>): string {
+  const reference = finding.reference_page;
+  if (reference) return reference.page != null ? `${finding.page} vs ${reference.page}` : `${finding.page}`;
   return finding.vs_page != null && finding.vs_page !== finding.page ? `${finding.page} vs ${finding.vs_page}` : `${finding.page}`;
 }
 

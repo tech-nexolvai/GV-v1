@@ -5337,6 +5337,17 @@
             "description": "The difference GV Review recorded that this finding is.",
             "title": "Record Id"
           },
+          "reference_page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingReferenceOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Two separate uploads: the architect page it is compared on, from its pair."
+          },
           "reference_side": {
             "anyOf": [
               {
@@ -5833,6 +5844,55 @@
           "model"
         ],
         "title": "ChatFindingReadOut",
+        "type": "object"
+      },
+      "ChatFindingReferenceOut": {
+        "description": "The one architect page a finding is compared on (`reference_page.stamp`, stream V): set\nfrom its vendor page's pair at the check's finish. Every picture, caption and \"Whole page\"\nview of its architect side reads it.",
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The architect upload's name.",
+            "title": "File"
+          },
+          "outside": {
+            "default": false,
+            "description": "The item's architect spot or page is not on its pair (never sent).",
+            "title": "Outside",
+            "type": "boolean"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its page in that file; null: no architect page (see why).",
+            "title": "Page"
+          },
+          "why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why there is no architect page, or why its spot is refused.",
+            "title": "Why"
+          }
+        },
+        "title": "ChatFindingReferenceOut",
         "type": "object"
       },
       "ChatFindingRoundMatchOut": {
