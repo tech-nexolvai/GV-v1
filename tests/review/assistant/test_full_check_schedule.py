@@ -221,3 +221,58 @@ def test_band_chains_wait_for_the_final_pairs_and_never_send_an_unpaired_page_on
     assert all(5 not in pages for pages in (*seen["close"], *seen["lead"])), seen
     assert _coverage(outcome)[5]["status"] == "not_comparable"
     assert len([g for g in engine.extra_gaps if g["page"] == 5]) == 1
+
+
+def test_band_chains_run_the_whole_drawing_looks_as_one_chain_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole-drawing looks (`whole_look`) run in a big set's bands too: one per area, beside
+    its band's helpers, their claims applied by code (the same Likely problems as one chain)."""
+    import dataclasses as dc
+    import json as js
+
+    from app.review.assistant import likely_problems, proof, whole_look
+    from tests.review.assistant.chat_fakes import reply, text
+    from tests.review.assistant.test_full_check_roster import SONNET
+    from tests.review.assistant.test_whole_look import _claim, _side
+
+    class _WithLooks(_Roster):
+        def __call__(self, params: Mapping[str, Any]) -> list[dict[str, Any]]:
+            if params["system"][0]["text"].startswith("You are an experienced millwork reviewer"):
+                self._seen("whole_look", params)
+                claim = _claim(
+                    "missing_piece",
+                    _side(3, None, "no upper cabinet"),
+                    _side(1, None, "an upper cabinet"),
+                    item="Upper cabinet",
+                    vendor_spot={"x0": 0, "y0": 0, "x1": 50, "y1": 50},
+                )
+                return reply(text(js.dumps({"claims": [claim]})), model=SONNET)
+            return super().__call__(params)
+
+    def run(folder: Path, banded: bool) -> tuple[Any, _WithLooks, list[list[Band]]]:
+        cut: list[list[Band]] = []
+        if banded:
+
+            def two_bands(jobs: Any) -> list[Band]:
+                bands = bands_of(jobs, most=2, every=1)
+                cut.append(bands)
+                return bands
+
+            monkeypatch.setattr(full_check_roster, "bands_of", two_bands)
+        script = _WithLooks()
+        harness = _roster(folder, script)
+        harness.engine.settings = dc.replace(harness.engine.settings, whole_look_model=SONNET)
+        return harness.run(), script, cut
+
+    _clean_ink(monkeypatch)
+    single, one_script, _ = run(tmp_path / "one", banded=False)
+    outcome, script, cut = run(tmp_path / "two", banded=True)
+
+    assert len(cut[0]) == 2
+    assert script.calls["whole_look"] == one_script.calls["whole_look"] == 2
+    likely = [f for f in _findings(outcome) if likely_problems.FIELD in f]
+    assert sorted(f["page"] for f in likely) == [3, 5]
+    assert all(proof.proof_group(f) == "likely_problem" for f in likely)
+    assert all(f["created_by"] == whole_look.CREATED_BY for f in likely)
+    assert sorted(map(_key, _findings(outcome))) == sorted(map(_key, _findings(single)))
