@@ -988,6 +988,22 @@ def test_cancel_between_steps_stops_and_closes_the_open_calls(tmp_path: Path) ->
     assert "cancelled" in results[1]["content"][0]["text"] and results[1]["is_error"] is True
 
 
+def test_a_stop_during_codes_checks_after_the_answer_is_a_stopped_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of the Stop change: Stop pressed while code's checks run after the AI's answer
+    (they now stop early) makes a stopped answer, never a finished one with checks left out."""
+    from app.review.assistant.chat_engine import ChatEngine
+
+    cancel = threading.Event()
+    monkeypatch.setattr(ChatEngine, "_trust_phase", lambda self: cancel.set())
+    harness = Harness(tmp_path, ScriptedProvider(lead=[reply(text("All done."))]), cancel=cancel)
+
+    outcome = harness.run()
+
+    assert outcome.stopped == "cancelled"
+
+
 def test_cancel_in_the_middle_of_a_stream_keeps_what_was_shown(tmp_path: Path) -> None:
     provider = ScriptedProvider(lead=[reply(text("Half an answer here"), cancel_after=3)])
     harness = Harness(tmp_path, provider)

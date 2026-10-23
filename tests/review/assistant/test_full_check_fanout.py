@@ -671,7 +671,11 @@ def test_a_helper_is_sent_back_once_to_finish_its_checklist_then_the_lead_gets_t
     assert coverage[3]["note"] == "checklist: no CHECKLIST line" and coverage[1]["note"] is None
 
 
-def test_a_stopped_full_check_still_gets_codes_finish_and_its_files(tmp_path: Path) -> None:
+def test_a_stopped_full_check_keeps_its_recorded_work_and_codes_sums(tmp_path: Path) -> None:
+    """Stop (2026-10-23, Anant: "stop within a few seconds, keeping all work, Continue resumes"):
+    the stopped answer keeps what was recorded: the reading ledger's sums (milliseconds), the
+    helper's finding with code's sum, its trust report and files; code's checks that read the
+    whole set again (strings by geometry, finishes, rules) wait for Continue."""
     calls: list[str] = []
     string = {
         "page": 2,

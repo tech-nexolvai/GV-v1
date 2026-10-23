@@ -29,7 +29,9 @@ from app.review.assistant.chat_contract import (
     ChatLiveStateOut,
     ChatLiveStoppingOut,
     ChatLiveTallyOut,
+    ChatProgressOut,
 )
+from app.review.assistant.chat_progress import FullCheckProgress
 from app.review.assistant.live_check import EVENTS, FILES_EXPECTED, LIVE_VERSION, LiveCheck
 from tests.review.assistant.test_proof_drawing import _ai_only, _proved
 
@@ -387,6 +389,55 @@ def test_the_roster_sends_fewer_events_and_decides_its_findings_once_at_writing(
         and snapshot.counts.drawings_total is None
     )
     _valid(screen)
+
+
+def test_the_final_checks_by_code_show_their_item_count() -> None:
+    """2026-10-23: a long final check by code says how far it is ("checking 45 of 125 items"),
+    each check with its own count, and the phase without a count once that check is over."""
+    live, screen = _live(mode="roster")
+    progress = {"phase": "checking", "pages_done": 60, "pages_total": 60}
+    live.observe("progress", {"index": 0, "progress": progress})
+    phase = screen.last("check_phase")["phase"]
+    assert (phase["phase"], phase["step"], phase["total"]) == (
+        "double_checking",
+        "final_checks",
+        None,
+    )
+    counted = {**progress, "items_done": 45, "items_total": 125}
+    live.observe("progress", {"index": 0, "progress": counted})
+    phase = screen.last("check_phase")["phase"]
+    assert (phase["step"], phase["done"], phase["total"], phase["unit"]) == (
+        "final_checks",
+        45,
+        125,
+        "items",
+    )
+    sent = len(screen.named("check_phase"))
+    live.observe("progress", {"index": 0, "progress": counted})
+    assert len(screen.named("check_phase")) == sent  # the same count is not sent again
+    live.observe("progress", {"index": 0, "progress": progress})
+    phase = screen.last("check_phase")["phase"]
+    assert (phase["step"], phase["done"], phase["total"], phase["unit"]) == (
+        "final_checks",
+        None,
+        None,
+        None,
+    )
+    _valid(screen)
+
+
+def test_the_progress_line_counts_items_only_while_checking() -> None:
+    sent: list[dict[str, Any]] = []
+    clock = iter(float(n) for n in range(10_000))
+    progress = FullCheckProgress(lambda: ([], None, 10), sent.append, clock=lambda: next(clock))
+    progress.set_items(1, 4)
+    assert "items_total" not in sent[-1]  # still comparing: no item count
+    progress.phase("checking")
+    progress.set_items(2, 4)
+    assert (sent[-1]["items_done"], sent[-1]["items_total"]) == (2, 4)
+    ChatProgressOut.model_validate(sent[-1])
+    progress.end_items()
+    assert "items_total" not in sent[-1]
 
 
 def test_a_screen_that_fails_never_stops_the_check() -> None:

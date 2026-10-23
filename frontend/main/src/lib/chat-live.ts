@@ -160,7 +160,7 @@ export function nowWords(live: LiveState): { words: string; page: number | null;
 
 /** The bar: a share of the whole check (0-100), or null for a step with no count (an indeterminate bar). */
 export function barShare(live: LiveState): number | null {
-  const { phase, done, total } = live.phase;
+  const { phase, done, total, unit } = live.phase;
   const part = total ? Math.min(1, Math.max(0, (done ?? 0) / total)) : null;
   switch (phase) {
     case 'getting_ready':
@@ -170,6 +170,8 @@ export function barShare(live: LiveState): number | null {
       if (live.phase.step === 'matching') return part === null ? null : 2 + part * 3;
       return part === null ? null : 5 + part * 75;
     case 'double_checking':
+      // The final checks count each check's own items: a moving count, not one bar (it would step back).
+      if (unit === 'items') return null;
       return part === null ? null : 80 + part * 15;
     case 'making_files':
       return part === null ? 95 : 95 + part * 5;
@@ -188,6 +190,7 @@ export function barWords(live: LiveState): string {
   if (phase === 'double_checking') {
     if (step === 'second_looks' && total) return `All drawings compared · second look ${done ?? 0} of\u00a0${total}`;
     if (step === 'verifying' && total) return `All drawings compared · checked by code ${done ?? 0} of\u00a0${total}`;
+    if (step === 'final_checks' && unit === 'items' && total) return `All drawings compared · checking ${done ?? 0} of\u00a0${total} items`;
     return 'All drawings compared · checking by code';
   }
   if (phase === 'making_files') return total ? `Making the files · ${done ?? 0} of\u00a0${total}` : 'Making the files';
