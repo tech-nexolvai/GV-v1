@@ -46,9 +46,11 @@ __all__ = [
     "HEADING",
     "KEEP_REASON",
     "SHORT_WORDS",
+    "VIEWS",
     "RuleNote",
     "origin_of",
     "rule_note_of",
+    "views_note_of",
 ]
 
 #: The proof group's name.
@@ -63,6 +65,9 @@ COUNT_WORDS: Final = "break a GV rule (ask the architect)"
 HEADING: Final = "Questions for the architect (GV rules)"
 #: The keep reason the GV rule checks give such an item (`filler_range`, `sink_offset`).
 KEEP_REASON: Final = "architect_outside_gv_rule"
+#: A rule note's kind when the architect's own two views of a piece print different sizes for the
+#: same span (2026-10-23): GV asks the architect which is right.
+VIEWS: Final = "architect_views"
 #: Two printed values closer than this are the same (a sixteenth: the drawings' own step).
 _TOLERANCE: Final = Fraction(1, 16)
 #: Where the settings come from, as the question says it.
@@ -96,15 +101,31 @@ class RuleNote:
     """The rulebook's id when the check names one (CT-SINK-OFFSET-FRONT-001)."""
     place: str | None = None
     """Where, for the question: the area and the architect's page ("Pantry, architect's page 1")."""
+    kind: str = "gv_rule"
+    """`gv_rule` (#1839), or `VIEWS`: the architect's own views disagree (2026-10-23). For
+    `VIEWS`, `settings` is the governing view ("elevation"), `architect` its size, and `other`
+    the other view's words."""
+    other: str = ""
+    """`VIEWS` only: the other view and its size ("plan, page 1: 72\"")."""
+    governs: str = ""
+    """`VIEWS` only: what the governing view governs ("cabinet widths")."""
 
     @property
     def standard(self) -> str:
-        """ "GV's standard is 1"-2"" (or the project's value)."""
+        """ "GV's standard is 1"-2"" (or the project's value); for `VIEWS`, which view governs."""
+        if self.kind == VIEWS:
+            return f"GV compares {self.governs or 'this size'} with the {self.settings}"
         return f"{_ORIGIN_WORDS.get(self.origin, self.origin)} is {self.settings}"
 
     @property
     def why(self) -> str:
         """One plain line: what the architect specifies, the rule, and that the vendor follows."""
+        if self.kind == VIEWS:
+            return (
+                f"the architect's own drawings disagree on the {self.name}: its {self.other}, "
+                f"its {self.settings}{self._at()} shows {self.architect}; {self.standard}; "
+                "never red against the vendor until the architect answers"
+            )
         return (
             f"the architect specifies {self.architect} for the {self.name}; {self.standard}; the "
             "vendor prints the architect's size, so nothing is asked of the vendor"
@@ -113,14 +134,23 @@ class RuleNote:
     @property
     def question(self) -> str:
         """The ready question for the architect (an RFI line)."""
+        if self.kind == VIEWS:
+            return (
+                f"Architect: your {self.other}, your {self.settings}{self._at()} shows "
+                f"{self.architect} for the {self.name}. Please confirm which is right."
+            )
         where = f" ({self.place})" if self.place else ""
         return (
             f"Architect: the {self.name} is specified at {self.architect}{where}; "
             f"{self.standard}. Please confirm the size."
         )
 
+    def _at(self) -> str:
+        return f" ({self.place})" if self.place else ""
+
     def as_dict(self) -> dict[str, Any]:
-        """The proof's `rule_note` block (`chat_contract.ChatFindingRuleNoteOut`)."""
+        """The proof's `rule_note` block (`chat_contract.ChatFindingRuleNoteOut`; `kind` is kept
+        in the stored proof for the letter, and not part of the API's block)."""
         return {
             "name": self.name,
             "rule_id": self.rule_id,
@@ -129,6 +159,7 @@ class RuleNote:
             "architect": self.architect,
             "standard": self.standard,
             "question": self.question,
+            "kind": self.kind,
         }
 
 
@@ -240,3 +271,64 @@ def rule_note_of(finding: Mapping[str, Any]) -> RuleNote | None:
         rule_id=rule_id,
         place=_place(finding, architect_label),
     )
+
+
+def views_note_of(finding: Mapping[str, Any]) -> RuleNote | None:
+    """GV's question to the architect when the architect's own two views of a piece print
+    different sizes for the same span (2026-10-23), else `None` (it stays Not compared, "the
+    architect's drawings disagree"). Only when code read both sizes from the drawings' own text
+    at their spots: the finding's `dims` labels (route `text`), or code's check that each value
+    is printed at its box (`checks.printed_architect` and `printed_vendor` "match"). The finding
+    is a cross-view one on the architect's side (`ledger`, or the work list's
+    `architect_views`): `architect` is the governing view's size, `vendor` the other view's."""
+    if finding.get("source") != "cross_view" or finding.get("reference_side") != "architect":
+        return None
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    assert isinstance(dims, Mapping)
+    governing, other = _printed(dims.get("architect")), _printed(dims.get("vendor"))
+    checks = finding.get("checks") if isinstance(finding.get("checks"), Mapping) else {}
+    assert isinstance(checks, Mapping)
+    if governing is None or other is None:
+        if checks.get("printed_architect") != "match" or checks.get("printed_vendor") != "match":
+            return None
+        governing = _fraction(_value(finding.get("architect")))
+        other = _fraction(_value(finding.get("vendor")))
+    if governing is None or other is None or abs(governing - other) <= _TOLERANCE:
+        return None
+    views = dims.get("views") if isinstance(dims.get("views"), Mapping) else {}
+    assert isinstance(views, Mapping)
+    main = str(views.get("governing") or "governing drawing")
+    second = str(views.get("other") or "other drawing")
+    pages = (views.get("governing_page"), views.get("other_page"))
+    if pages == (None, None):
+        pages = (finding.get("vs_page"), finding.get("page"))
+    other_words = (
+        f"{second}{f' (page {pages[1]})' if isinstance(pages[1], int) else ''} shows "
+        f"{_inches(other)}"
+    )
+    place = f"page {pages[0]}" if isinstance(pages[0], int) else None
+    return RuleNote(
+        name=_thing(finding),
+        settings=main,
+        origin="GV standard",
+        architect=_inches(governing),
+        place=place,
+        kind=VIEWS,
+        other=other_words,
+        governs=str(views.get("governs") or ""),
+    )
+
+
+def _value(text: object) -> str | None:
+    """A printed size as exact inches (`finding_checks.to_inches`), as a decimal string."""
+    from app.review.assistant.finding_checks import to_inches
+
+    found = to_inches(str(text)) if isinstance(text, str) else None
+    return None if found is None else str(found)
+
+
+def _thing(finding: Mapping[str, Any]) -> str:
+    """The item's name, short: "vanity overall width"."""
+    item = " ".join(str(finding.get("item") or "").split())
+    item = re.sub(r"\s*\((?:same item, different views|typical units)\)$", "", item)
+    return (item[:1].lower() + item[1:]) if item else "size"

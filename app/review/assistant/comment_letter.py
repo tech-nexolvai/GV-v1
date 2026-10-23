@@ -13,8 +13,10 @@ INDUSTRY-REVIEW.md, section 4):
 4. **Comments**: one entry per cloud on the GV cloud drawing, with the same comment number (C-07):
    page, item, its action (Correct as noted / Submit specified item), "Vendor shows X", "Architect
    requires Y" (or GV rule, or the vendor's own parts) and the source; "New" on a later round.
-5. **Not compared**: how many items, and where they are listed.
-6. The next step for the vendor, and the enclosures.
+5. **Drawings that could not be read** (2026-10-23): one line when the vendor's numbers on some
+   pages are drawn as lines, not text, asking for PDFs saved with real text.
+6. **Not compared**: how many items, and where they are listed.
+7. The next step for the vendor, and the enclosures.
 
 US Letter, portrait. Loaded by name, never imported from `app/api/` (reportlab).
 """
@@ -275,10 +277,13 @@ def _questions(letter: Letter, styles: Mapping[str, ParagraphStyle]) -> list[Any
     """#1839: the sizes the architect specifies that break a GV rule, printed the same by the
     vendor. Never a comment: the vendor follows the architect, so nothing is asked of it; GV asks
     the architect. Neutral words and colour (no red, no "should be")."""
-    if not letter.questions:
-        return []
-    count = len(letter.questions)
-    story: list[Any] = [
+    views = [q for q in letter.questions if q.kind == "architect_views"]
+    rules = [q for q in letter.questions if q.kind != "architect_views"]
+    story = _views_questions(views, styles)
+    if not rules:
+        return story
+    count = len(rules)
+    story += [
         Paragraph(f"{escape(RULE_NOTE_HEADING)} ({count})", styles["section"]),
         Paragraph(
             escape(
@@ -292,13 +297,43 @@ def _questions(letter: Letter, styles: Mapping[str, ParagraphStyle]) -> list[Any
         ),
         Spacer(1, 4),
     ]
-    for item in letter.questions:
+    for item in rules:
         page = f"Page {item.page}" if item.page is not None else "Page not marked"
         story.append(
             Paragraph(
                 f"<b>{escape(page)} · {escape(item.item)}</b>: the architect specifies "
                 f"<b>{escape(item.architect)}</b>, as the vendor shows; "
                 f"{escape(item.rule)} {escape(item.settings)} ({escape(item.origin)}).",
+                styles["body"],
+            )
+        )
+    return story
+
+
+def _views_questions(questions: Any, styles: Mapping[str, ParagraphStyle]) -> list[Any]:
+    """The architect's own drawings print different sizes for one piece (2026-10-23): GV asks the
+    architect which is right. Nothing is asked of the vendor until then; never red."""
+    if not questions:
+        return []
+    count = len(questions)
+    story: list[Any] = [
+        Paragraph(f"Questions for the architect (drawings disagree) ({count})", styles["section"]),
+        Paragraph(
+            escape(
+                f"The architect's own drawings show {'a different size' if count == 1 else 'different sizes'} "
+                f"for {'this item' if count == 1 else 'these items'} in two views. GV is asking the "
+                "architect which is right. Nothing is asked of you until then; any change will "
+                "come as a revised drawing or a new comment."
+            ),
+            styles["label"],
+        ),
+        Spacer(1, 4),
+    ]
+    for item in questions:
+        page = f"Page {item.page}" if item.page is not None else "Page not marked"
+        story.append(
+            Paragraph(
+                f"<b>{escape(page)} · {escape(item.item)}</b>: {escape(item.question)}",
                 styles["body"],
             )
         )
@@ -369,6 +404,12 @@ def _story(letter: Letter, width: float) -> list[Any]:
     story += _corrections(letter, styles, width)
     story += _checks(letter, styles)
     story += _questions(letter, styles)
+    if letter.unreadable_line:
+        # Pages whose numbers are pen strokes code could not read (2026-10-23): one line.
+        story += [
+            Paragraph("Drawings that could not be read", styles["section"]),
+            Paragraph(escape(letter.unreadable_line), styles["body"]),
+        ]
     story.append(Paragraph(f"Not compared ({letter.not_compared})", styles["section"]))
     if letter.not_compared:
         story.append(

@@ -40,13 +40,14 @@ pairing estimate is worked out elsewhere (`preflight_pairs`, the heavy work list
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal
+
+from app.review.assistant.sheet_revisions import Older, exact_copies, older_copies
 
 __all__ = [
     "BIG_UPLOAD_PAGES",
@@ -85,8 +86,6 @@ _TYPED_FEW: Final = 20
 _MARKUPS_MANY: Final = 10
 #: A page "in millimetres": at least this many millimetre-only values not read on it.
 _MM_ONLY: Final = 5
-#: Duplicates: a page's text at least this long (characters), the same labels too.
-_DUPLICATE_TEXT: Final = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +187,9 @@ class Report:
     lines: tuple[Line, ...]
     duplicates: Mapping[int, int] = field(default_factory=dict)
     """A vendor page that is an exact copy of an earlier one -> that earlier page."""
+    older: Mapping[int, Older] = field(default_factory=dict)
+    """A vendor page that is an older copy of a sheet (an earlier revision) -> the newest copy
+    (`sheet_revisions`): left out of the check, said so."""
     facts: Mapping[str, Any] = field(default_factory=dict)
     """The plain facts the supervisor is shown (`plan_supervisor`)."""
 
@@ -668,30 +670,9 @@ def duplicate_pages(
     main_file: str | None, dims: Any, texts: Mapping[tuple[str, int], str]
 ) -> dict[int, int]:
     """A vendor page that is an exact copy of an earlier page of the same file (the same printed
-    text, at least `_DUPLICATE_TEXT` characters, and the same dimension labels) -> that page."""
-    if not main_file:
-        return {}
-    labels = {
-        int(p["page"]): tuple(sorted(str(label.get("text")) for label in p.get("labels") or []))
-        for p in _pages(dims)
-        if str(p.get("file")) == main_file
-    }
-    seen: dict[str, int] = {}
-    out: dict[int, int] = {}
-    for (file, page), text in sorted(texts.items()):
-        if file != main_file:
-            continue
-        flat = " ".join(str(text).split())
-        if len(flat) < _DUPLICATE_TEXT:
-            continue
-        key = hashlib.sha256(
-            (flat + "\x00" + "\x01".join(labels.get(page, ()))).encode("utf-8")
-        ).hexdigest()
-        if key in seen:
-            out[page] = seen[key]
-        else:
-            seen[key] = page
-    return out
+    text, at least `sheet_revisions.DUPLICATE_TEXT` characters, and the same dimension labels)
+    -> that page."""
+    return exact_copies(main_file, dims, texts)
 
 
 def _reading_lines(inputs: Inputs) -> list[Line]:
@@ -751,7 +732,29 @@ def _health_lines(inputs: Inputs) -> list[Line]:
             scanned.append(int(page["page"]))
         elif facts.get("drawn_letters"):
             drawn.append(int(page["page"]))
+    unread = sorted(
+        int(e["page"])
+        for e in _pages(inputs.page_map)
+        if str(e.get("file")) == inputs.main_file
+        and isinstance(e.get("page"), int)
+        and e.get("numbers_unread") == "strokes"
+    )
     lines: list[Line] = []
+    if unread:
+        # A vendor page whose numbers are only pen strokes code could not read (2026-10-23:
+        # "flag everything"): said on the page; the letter asks the vendor for real text.
+        lines.append(
+            Line(
+                "numbers_unread",
+                "warn",
+                f"{'Page' if len(unread) == 1 else 'Pages'} {_page_list(unread)}: the numbers "
+                "can't be read (drawn as lines, not text). They are listed as not compared.",
+                who="the vendor",
+                todo="Ask the vendor to save PDFs with real text (Save as PDF or Export, not "
+                "Print to PDF).",
+                pages=tuple(unread),
+            )
+        )
     if scanned:
         lines.append(
             Line(
@@ -803,7 +806,30 @@ def _units_and_scale(inputs: Inputs) -> list[Line]:
         if file == inputs.main_file and len(mine) >= _SIDE_LABELS
     }
     no_scale = sorted((vendor & labelled) - measured) if inputs.scales is not None else []
+    # Millimetres that disagree with the inches beside them (`660 [27"]`): settled with GV,
+    # "inches count; ignore millimetres". A plain note: the inches are used, nobody acts.
+    ignored: dict[int, str] = {}
+    for (name, number), printed in sorted(_labels(inputs).items()):
+        if name != inputs.main_file:
+            continue
+        for label in printed:
+            if label.get("mm_ignored") and number not in ignored:
+                ignored[number] = " ".join(str(label.get("text") or "").split())
     lines: list[Line] = []
+    if ignored:
+        pages = sorted(ignored)
+        example = ignored[pages[0]]
+        lines.append(
+            Line(
+                "mm_ignored",
+                "note",
+                f"{'Page' if len(pages) == 1 else 'Pages'} {_page_list(pages)} "
+                f"{'prints' if len(pages) == 1 else 'print'} millimetres that do not match the "
+                f"inches beside them (such as {example}): the inches are used and the "
+                "millimetres are ignored.",
+                pages=tuple(pages),
+            )
+        )
     if mm_pages:
         lines.append(
             Line(
@@ -829,8 +855,22 @@ def _units_and_scale(inputs: Inputs) -> list[Line]:
     return lines
 
 
-def _upload_lines(inputs: Inputs, duplicates: Mapping[int, int]) -> list[Line]:
+def _upload_lines(
+    inputs: Inputs, duplicates: Mapping[int, int], older: Mapping[int, Older] | None = None
+) -> list[Line]:
     lines: list[Line] = []
+    if older:
+        copies = sorted(older)
+        shown = " ".join(older[p].words for p in copies[:3])
+        more = f" And {len(copies) - 3} more older copies." if len(copies) > 3 else ""
+        lines.append(
+            Line(
+                "older_copies",
+                "note",
+                f"{shown}{more} Only the newest copy of a sheet is checked.",
+                pages=tuple(copies),
+            )
+        )
     if duplicates:
         copies = sorted(duplicates)
         firsts = [duplicates[p] for p in copies]
@@ -942,6 +982,9 @@ def _pages_line(inputs: Inputs) -> Line | None:
 def build(inputs: Inputs) -> Report:
     """The report (see the module): the stops first, then what was found, then the notes."""
     duplicates = duplicate_pages(inputs.main_file, inputs.dims, inputs.texts)
+    older = older_copies(
+        inputs.page_map, inputs.texts, inputs.main_file, exact=duplicates, index=inputs.index
+    )
     stops = [*_broken(inputs), *_swapped(inputs)]
     if not stops:
         stops.extend(_other_project(inputs))
@@ -954,11 +997,11 @@ def build(inputs: Inputs) -> Report:
         *_reading_lines(inputs),
         *_health_lines(inputs),
         *_units_and_scale(inputs),
-        *_upload_lines(inputs, duplicates),
+        *_upload_lines(inputs, duplicates, older),
         *_inputs_lines(inputs),
     ]
     lines = (*stops, *found)
-    return Report(lines=lines, duplicates=duplicates, facts=_facts(inputs, lines))
+    return Report(lines=lines, duplicates=duplicates, older=older, facts=_facts(inputs, lines))
 
 
 def _facts(inputs: Inputs, lines: Sequence[Line]) -> dict[str, Any]:

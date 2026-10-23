@@ -404,6 +404,7 @@ class _Run:
         warm.join()
         # Code's own findings ($0), judged by the code checks (GV-note fix).
         engine.add_code_findings()
+        self._architect_views()
         with engine.timings.phase("advocate"):
             self._judge_code_findings()
         self._tell("decide", engine.book.live())
@@ -522,6 +523,20 @@ class _Run:
             _log.debug("simple check progress not shown")
 
     # -- 2. code's own findings --
+
+    def _architect_views(self) -> None:
+        """GV's questions to the architect where its own plan and elevation of a piece print
+        different sizes (the work list's `views_disagree`, 2026-10-23): one "Ask the architect"
+        item per span, never red."""
+        worklist = import_module("app.review.assistant.simple_check.worklist")
+        try:
+            for fields in worklist.architect_views_findings(self.items):
+                added = self.engine.book.add_code_finding(fields, created_by="code")
+                if added is not None:
+                    self.engine._show_finding(added)
+        except Exception:  # noqa: BLE001 - the check goes on, not for sending
+            _log.exception("simple check: the architect's own views were not compared")
+            self.broken.append("the architect's own views")
 
     def _judge_code_findings(self) -> None:
         """Each Wrong code finding with a code witness, judged by the advocate's code checks with

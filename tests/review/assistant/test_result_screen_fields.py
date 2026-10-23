@@ -76,7 +76,7 @@ def test_drawing_needed_reasons_said_up_front_have_plain_words() -> None:
     assert unpaired_words(
         "unpaired: drawing needed: the architect's drawings of its project (4 pages) print no "
         "sizes of any piece (outlines, schedules or plans only)"
-    ) == ("the architect's drawings of it print no sizes")
+    ) == ("the architect shows this item without sizes")
     assert unpaired_words(
         "unpaired: drawing needed: the architect shows this item only as a tag on a plan (A-1)"
     ) == ("the architect shows it only as a tag on a plan")

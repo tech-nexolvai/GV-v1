@@ -54,6 +54,7 @@ from typing import Any, Final
 from app.review.assistant import dim_pairs, view_scales
 from app.review.assistant.full_check_plan import DIVIDER_NOTE, read_page_map
 from app.review.assistant.product_scope import named_products
+from app.review.assistant.sheet_revisions import exact_copies, older_copies
 from app.review.assistant.simple_check import pairing as pairing_module
 from app.review.assistant.simple_check import projects as projects_module
 from app.review.assistant.simple_check import views as views_module
@@ -66,6 +67,7 @@ from app.review.assistant.simple_check.schema import (
     PageCover,
     Sheet,
     Skipped,
+    ViewsDisagree,
     WorkItem,
     WorkList,
     label_ref,
@@ -100,7 +102,9 @@ __all__ = [
     "MIN_DRAWING_PT",
     "MIN_PAGE_DIMS",
     "NO_DRAWING_NOTE",
+    "NUMBERS_UNREAD",
     "RankMemo",
+    "architect_views_findings",
     "build_worklist",
     "combined_files",
     "worklist_from",
@@ -142,6 +146,9 @@ NO_DRAWING_NOTE: Final = (
     "a table, notes or pictures page: it prints no dimensions, so there is no drawing to "
     "compare (code)"
 )
+#: A page-map entry's key when its numbers are drawn as lines code could not read
+#: (`set_pack.NUMBERS_UNREAD`): a drawing all the same, never "a table, notes or pictures page".
+NUMBERS_UNREAD: Final = "numbers_unread"
 _UNIT: Final = re.compile(r"[\"'\u2032\u2033]|\bmm\b", re.IGNORECASE)
 #: An item-like tag (`pairing.item_tags_in`) names one piece when the vendor prints it on at most
 #: this share of its drawings (or `ITEM_TAG_MIN` drawings): `LM-004`, printed on a third of a real
@@ -498,6 +505,7 @@ def build_worklist(
     annotations = _read(folder / "annotations.json")
     return worklist_from(
         page_map,
+        texts=_page_texts(folder, page_map),
         dims=_read(folder / "dims.json"),
         scales=_read(folder / "scales.json"),
         notes=_read(folder / "notes.json"),
@@ -509,6 +517,22 @@ def build_worklist(
         combined=combined_files(page_map, annotations),
         memo=memo,
     )
+
+
+def _page_texts(folder: Path, page_map: Mapping[str, Any]) -> dict[tuple[str, int], str]:
+    """Each page's printed text (kept in the pack by the vendor check, `page_texts`), for the
+    older copies of a sheet (`sheet_revisions`). Empty when it cannot be read: then no page is
+    left out as an older copy."""
+    files = [str(name) for name in page_map.get("files") or [] if name]
+    if not files:
+        return {}
+    try:
+        from app.review.assistant.vendor_consistency import page_texts
+
+        return page_texts(folder, files)
+    except Exception as failed:  # noqa: BLE001 - the work list goes on, every page checked
+        _log.warning("work list: page texts not read: %s", type(failed).__name__)
+        return {}
 
 
 def combined_files(page_map: Mapping[str, Any], annotations: Any) -> Mapping[str, bool] | None:
@@ -551,6 +575,7 @@ def worklist_from(
     memo: RankMemo | None = None,
     health: Any = None,
     set_index: Any = None,
+    texts: Mapping[tuple[str, int], str] | None = None,
 ) -> WorkList:
     """The work list from the pack's documents (pure: `build_worklist` reads them). `annotations`
     (the pack's `annotations.json`): GV's typed item titles are read from it, only where one is
@@ -562,7 +587,10 @@ def worklist_from(
     whole as typed text: a page of them printing no dimension has no drawing, `NO_DRAWING_NOTE`).
     `set_index`: the set index (`set_index.INDEX_FILE`, each page's read checked by code): the projects
     and reference sets a vendor drawing is paired within, and the views' sizes; without it every
-    architect item is a candidate (no project is known)."""
+    architect item is a candidate (no project is known). `texts`: each page's printed text
+    (`vendor_consistency.page_texts`): a vendor page that is an older copy of a sheet printed
+    again later (an earlier revision, `sheet_revisions`) is skipped, said so; without it every
+    page is checked."""
     file = _main_file(page_map, main_file)
     if file is None:
         return WorkList(file="", items=(), skipped=(), pages=())
@@ -585,6 +613,16 @@ def worklist_from(
 
     def skip(page: int, reason: str, drawing: str | None = None) -> None:
         skipped.append(Skipped(file=file, page=page, drawing=drawing, reason=reason))
+
+    # An older copy of a sheet printed again later (an earlier revision): only the newest is
+    # checked (owner, 2026-10-23).
+    older = older_copies(
+        page_map,
+        texts or {},
+        file,
+        exact=exact_copies(file, dims, texts or {}),
+        index=set_index,
+    )
 
     pages = set_pages(page_map, file)
     # Another upload's pages: one file per work list (label ids name pages, not files), except a
@@ -650,6 +688,10 @@ def worklist_from(
             skip(page, str(entry["skip"]))
             cover[page] = PageCover(page=page, how="skipped", reason=str(entry["skip"]))
             continue
+        elif own in older:
+            skip(page, older[own].reason)
+            cover[page] = PageCover(page=page, how="skipped", reason=older[own].reason)
+            continue
         raw_halves = [h for h in entry.get("halves") or [] if isinstance(h, Mapping)]
         if separate:
             raw_halves = [h for h in raw_halves if wanted(entry_file, h)]
@@ -657,8 +699,12 @@ def worklist_from(
             skip(page, DIVIDER_NOTE)
             cover[page] = PageCover(page=page, how="skipped", reason=DIVIDER_NOTE)
             continue
-        if not separate and _prints_no_drawing(
-            dims_pages.get((entry_file, own)), health_pages.get((entry_file, own)), raw_halves
+        if (
+            not separate
+            and not entry.get(NUMBERS_UNREAD)
+            and _prints_no_drawing(
+                dims_pages.get((entry_file, own)), health_pages.get((entry_file, own)), raw_halves
+            )
         ):
             skip(page, NO_DRAWING_NOTE)
             cover[page] = PageCover(page=page, how="skipped", reason=NO_DRAWING_NOTE)
@@ -1033,6 +1079,9 @@ def worklist_from(
             opposite_hand=(
                 across_pairs[half.ref].opposite_hand if half.ref in across_pairs else None
             ),
+            views_disagree=(
+                across_pairs[half.ref].views_disagree if half.ref in across_pairs else None
+            ),
         )
         if alone_drawing:
             alone.append(made)
@@ -1280,7 +1329,11 @@ class _Across:
     """A drawing's variant and opposite-hand words the set index read on it (checked printed),
     by the drawing's ref: on top of code's own (`pairing.markers_in`)."""
     no_sizes: set[str] = field(default_factory=set)
-    """The views the set index says print no sizes of the piece (an outline, a schedule)."""
+    """The views the set index says print no sizes of the piece (an outline, a schedule), and
+    the plans whose every size code reads is a room or wall size (`room_only`)."""
+    room_only: set[str] = field(default_factory=set)
+    """Of those, the plans that print only room and wall sizes (`_room_only`): they print sizes,
+    none of a piece."""
     word_drawings: Counter[str] = field(default_factory=Counter)
     """How many of the vendor's drawings print each naming word."""
     word_limit: float = math.inf
@@ -1475,15 +1528,36 @@ def _enrich(
             words = _marked_words(page_read)
             for drawing in item.drawings:
                 context.marked[drawing.ref] = words
+        placed = 0
         for at, one in _index_views(read, found):
             if at is None or at >= len(views):
                 continue
+            placed += 1
             context.marked[views[at].ref] = _marked_words(one)
             if not one.get("prints_sizes"):
                 context.no_sizes.add(views[at].ref)
             if one.get("kind") == "schedule":
                 context.no_sizes.add(views[at].ref)
+            if (
+                one.get("kind") == "plan"
+                and one.get("prints_sizes")
+                and (_CEILING_PLAN.search(str(one.get("title") or "")) or _room_only(views[at]))
+            ):
+                # A plan whose every size is a room or wall size (a unit plan), or a reflected
+                # ceiling plan (its sizes place lights and soffits): it prints sizes, none of a
+                # piece (owner, 2026-10-23).
+                context.no_sizes.add(views[at].ref)
+                context.room_only.add(views[at].ref)
         if read and not any(v.get("prints_sizes") for v in read):
+            context.no_sizes.add(item.id)
+        elif (
+            read
+            and views
+            and placed == len(read) == len(views)
+            and all(v.ref in context.no_sizes for v in views)
+            and any(v.ref in context.room_only for v in views)
+        ):
+            # Every view read and placed: elevations with no sizes, plans with room sizes only.
             context.no_sizes.add(item.id)
         tags = pairing_module.item_tags_in(
             [
@@ -1540,6 +1614,69 @@ def _enrich(
             )
         )
     return out, context
+
+
+#: A plan's string that runs wall to wall: its sizes add up to at least this (inches, 16 feet: a
+#: room or a unit; a run of millwork that long is rare, and a piece's own string is shorter).
+ROOM_STRING_IN: Final = Fraction(192)
+#: A plan prints room and wall sizes only when code reads at least this many sizes in it.
+ROOM_MIN_SIZES: Final = 4
+#: A room plan may also print up to this many sizes off its room strings, each under
+#: `ROOM_STRAY_UNDER_IN` (a wall's thickness) or whole feet with no inches (a graphic scale's
+#: `10'`).
+ROOM_MAX_STRAY: Final = 2
+ROOM_STRAY_UNDER_IN: Final = Fraction(12)
+_WHOLE_FEET: Final = re.compile(r"\d+\s*['\u2032]")
+#: A reflected ceiling plan's title: its sizes place the ceiling's lights and soffits.
+_CEILING_PLAN: Final = re.compile(r"\bRCP\b|\bREFLECTED\s+CEILING\b", re.IGNORECASE)
+#: A size printed with an inch or a foot mark (a keynote's `8.1` or a door number is none).
+_SIZE_MARK: Final = re.compile(r"[\"'\u2032\u2033]")
+
+
+def _room_only(view: Drawing) -> bool:
+    """Whether every size code reads in a plan is a room or wall size (owner, 2026-10-23: tell
+    room and wall sizes from piece sizes): each printed size (an inch or foot mark, read from
+    the text) lies on a string (one dimension line: the same direction, lined up within
+    `_ROW_PT`) whose sizes add up to `ROOM_STRING_IN` or more, wall to wall. A piece's size
+    (a counter's 25 1/2", a cabinet's 30") on a string of its own fails it. At least
+    `ROOM_MIN_SIZES` sizes; any label not read from the text, or turned, fails it too: when
+    unsure, the plan keeps its sizes."""
+    sizes: list[Label] = []
+    for label in view.labels:
+        text = " ".join(str(label.text or "").split())
+        if not _SIZE_MARK.search(text):
+            if re.fullmatch(r"\d+(?:\.\d+)?", text):
+                continue  # a keynote or a door number, no size
+            return False
+        if (label.route or "text") != "text" or label.orientation not in ("h", "v"):
+            return False
+        if _inches_of(label.inches) is None:
+            return False
+        sizes.append(label)
+    if len(sizes) < ROOM_MIN_SIZES:
+        return False
+    stray = 0
+    on_room_strings = 0
+    for label in sizes:
+        across = 1 if label.orientation == "h" else 0
+        middle = (label.box[across] + label.box[across + 2]) / 2
+        row = [
+            other
+            for other in sizes
+            if other.orientation == label.orientation
+            and abs((other.box[across] + other.box[across + 2]) / 2 - middle) <= _ROW_PT
+        ]
+        if sum((_inches_of(o.inches) or Fraction(0)) for o in row) >= ROOM_STRING_IN:
+            on_room_strings += 1
+            continue
+        value = _inches_of(label.inches) or Fraction(0)
+        text = " ".join(str(label.text or "").split())
+        if value < ROOM_STRAY_UNDER_IN or _WHOLE_FEET.fullmatch(text):
+            # A wall's thickness, or a graphic scale's "10'": no piece's size.
+            stray += 1
+            continue
+        return False
+    return stray <= ROOM_MAX_STRAY and on_room_strings >= ROOM_MIN_SIZES
 
 
 def _marked_words(read: Mapping[str, Any]) -> tuple[frozenset[str], frozenset[str]]:
@@ -1725,6 +1862,46 @@ def _pair_across(
     answer = None
     if saved is not None:
         answer = pairing_module.reuse(saved[0], saved[1], asked)
+    disagree = _views_disagree(mine_facts, ranked, {c.id: c for c in pool}, facts_of)
+    if disagree is not None and (
+        answer is None or {disagree.governing_ref, disagree.other_ref} & set(answer.matches)
+    ):
+        # The architect's own plan and elevation of the piece print different sizes: compared
+        # with the view that governs (GV's view roles), and GV asks the architect.
+        governing = disagree.governing_ref.split(".")[0]
+        other = disagree.other_ref.split(".")[0]
+        sizes = "; ".join(
+            f"{_inch(o.inches)} on its {disagree.other} against {_inch(g.inches)} on its "
+            f"{disagree.governing}"
+            for g, o in disagree.spans
+        )
+        return AcrossPair(
+            vendor=vendor,
+            section=section if mine_facts.section is not None else None,
+            candidates=tuple(
+                pool_item.model_copy(
+                    update={
+                        "score": s.score,
+                        "evidence": s.evidence,
+                        "contradicts": s.contradicts,
+                        "strong": s.strong,
+                    }
+                )
+                for s in ranked
+                if (pool_item := {c.id: c for c in pool}.get(s.ref)) is not None
+            ),
+            code_pick=governing,
+            asked=asked,
+            answer=None if answer is None else answer.matches,
+            chosen=(governing,),
+            why=(
+                f"code paired it with {governing}, the architect's {disagree.governing}, which "
+                f"governs {disagree.governs}; the architect's own drawings disagree ({other}, its "
+                f"{disagree.other}, shows the same piece: {sizes}): GV asks the architect, and "
+                "these sizes are never red against the vendor"
+            ),
+            views_disagree=disagree,
+        )
     if not asked:
         chosen: tuple[str, ...] = ()
         why = f"{pairing_module.UNPAIRED}: every architect item is ruled out by code ({ranked[0].contradicts})"
@@ -1777,11 +1954,14 @@ def _pair_across(
             ref
             for ref in paired
             if ref in context.no_sizes
-            and sum(
-                len(d.labels)
-                for d in ((drawings_of[ref],) if ref in drawings_of else by_id[ref].drawings)
+            and (
+                ref in context.room_only
+                or sum(
+                    len(d.labels)
+                    for d in ((drawings_of[ref],) if ref in drawings_of else by_id[ref].drawings)
+                )
+                <= MAX_SIZELESS_LABELS
             )
-            <= MAX_SIZELESS_LABELS
         ]
         if sizeless and len(sizeless) == len(paired):
             where = ", ".join(
@@ -1848,6 +2028,213 @@ def _pair_across(
     )
 
 
+#: A label of one of two drawings' strings lies on the same dimension line as another when their
+#: centres are this close across it (points).
+_ROW_PT: Final = 3.0
+
+
+def _inch(value: object) -> str:
+    """`72"`, `30 1/2"` from a label's inches."""
+    found = _inches_of(value)
+    if found is None:
+        return f'{value}"'
+    whole, rest = divmod(found.numerator, found.denominator)
+    if not rest:
+        return f'{whole}"'
+    part = f"{rest}/{found.denominator}"
+    return f'{whole} {part}"' if whole else f'{part}"'
+
+
+def _strings(drawing: Drawing) -> list[tuple[tuple[Label, ...], Label]]:
+    """The drawing's horizontal strings that add up, as code read them from the text: (its parts
+    left to right, its overall). A part row is two labels or more on one dimension line; its
+    overall is a label alone on its own line, over the parts, that is their exact sum."""
+    rows: list[list[Label]] = []
+    for label in sorted(
+        (
+            one
+            for one in drawing.labels
+            if one.orientation == "h"
+            and (one.route or "text") == "text"
+            and _inches_of(one.inches) is not None
+        ),
+        key=lambda one: (one.box[1] + one.box[3]) / 2,
+    ):
+        middle = (label.box[1] + label.box[3]) / 2
+        if rows and abs((rows[-1][0].box[1] + rows[-1][0].box[3]) / 2 - middle) <= _ROW_PT:
+            rows[-1].append(label)
+        else:
+            rows.append([label])
+    out: list[tuple[tuple[Label, ...], Label]] = []
+    for row in rows:
+        if len(row) < 2:
+            continue
+        parts = tuple(sorted(row, key=lambda one: one.box[0]))
+        total = sum((_inches_of(one.inches) or Fraction(0)) for one in parts)
+        left, right = parts[0].box[0], parts[-1].box[2]
+        overalls = [
+            alone[0]
+            for alone in rows
+            if len(alone) == 1
+            and left <= (alone[0].box[0] + alone[0].box[2]) / 2 <= right
+            and _inches_of(alone[0].inches) == total
+        ]
+        if len(overalls) == 1:
+            out.append((parts, overalls[0]))
+    return out
+
+
+def _views_disagree(
+    vendor: pairing_module.Facts,
+    ranked: Sequence[pairing_module.Scored],
+    pool: Mapping[str, AcrossCandidate],
+    facts_of: Callable[[Drawing], pairing_module.Facts],
+) -> ViewsDisagree | None:
+    """The architect's own plan and elevation of the vendor's piece printing different sizes for
+    the same string (owner, 2026-10-23), when code is sure of it, else `None` (the pairing goes
+    on as before). All must hold:
+
+    - the vendor's drawing is an elevation (its titles name only that view);
+    - code holds strong evidence that the architect's plan of one item is this piece (ruled out
+      only because it is a plan), and exactly one other item, a single elevation not ruled out,
+      shares a naming word with that plan;
+    - both print one string of as many parts that adds up, at least one part the same and at
+      least one different (`_strings`).
+
+    The elevation governs cabinet widths (GV's view roles), so it is the drawing compared with."""
+    if vendor.views != frozenset({"elevation"}):
+        return None
+    plans = [
+        s
+        for s in ranked
+        if s.strong
+        and s.contradicts is not None
+        and s.contradicts.startswith("its title names a plan")
+        and s.ref in pool
+    ]
+    if len(plans) != 1:
+        return None
+    plan_item = pool[plans[0].ref]
+    if plan_item.views or len(plan_item.drawings) != 1:
+        return None
+    plan = plan_item.drawings[0]
+    plan_facts = facts_of(plan)
+    elevations = []
+    for scored in ranked:
+        item = pool.get(scored.ref)
+        if scored.contradicts is not None or item is None or item.views or len(item.drawings) != 1:
+            continue
+        facts = facts_of(item.drawings[0])
+        if facts.views == frozenset({"elevation"}) and facts.words & plan_facts.words:
+            elevations.append(item.drawings[0])
+    if len(elevations) != 1:
+        return None
+    elevation = elevations[0]
+    found: list[list[tuple[str, Label, Label]]] = []
+    for e_parts, e_overall in _strings(elevation):
+        for p_parts, p_overall in _strings(plan):
+            if len(e_parts) != len(p_parts):
+                continue
+            count = len(e_parts)
+            spans = [
+                (f"width of part {n} of {count}", e, p)
+                for n, (e, p) in enumerate(zip(e_parts, p_parts, strict=True), start=1)
+                if _inches_of(e.inches) != _inches_of(p.inches)
+            ]
+            if not spans or len(spans) == count:
+                continue
+            if _inches_of(e_overall.inches) != _inches_of(p_overall.inches):
+                spans.insert(0, ("overall width", e_overall, p_overall))
+            found.append(spans)
+    if len(found) != 1:
+        return None
+    return ViewsDisagree(
+        governing="elevation",
+        other="plan",
+        governs="cabinet widths",
+        governing_ref=elevation.ref,
+        other_ref=plan.ref,
+        file=elevation.file,
+        governing_page=elevation.own_page,
+        other_page=plan.own_page,
+        spans=tuple((e, p) for _name, e, p in found[0]),
+        names=tuple(name for name, _e, _p in found[0]),
+        title=(elevation.titles[0] if elevation.titles else ""),
+    )
+
+
+def architect_views_findings(items: Sequence[WorkItem]) -> list[dict[str, Any]]:
+    """GV's questions to the architect where its own two views of a piece print different sizes
+    (each work item's `views_disagree`, read by code from the drawings' text): one code finding
+    per span, in the chat finding shape of a cross-view one on the architect's side, so it is
+    classified "Ask the architect" (`rule_notes.views_note_of`). The governing view's size is
+    `architect`, the other view's `vendor` (both are the architect's). Never red."""
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        found = item.views_disagree
+        if found is None:
+            continue
+        title = _plain(found.title).capitalize() or "Item"
+        for (governing, other), name in zip(
+            found.spans, found.names or ("size",) * len(found.spans), strict=False
+        ):
+            if (governing.ref, other.ref) in seen:
+                continue
+            seen.add((governing.ref, other.ref))
+            out.append(
+                {
+                    "page": item.page,
+                    "vs_page": found.governing_page,
+                    "item": f"{title}: {name}",
+                    "category": item.products[0] if len(item.products) == 1 else "other",
+                    "architect": governing.text,
+                    "vendor": other.text,
+                    "status": "check",
+                    "why": (
+                        f"The architect's own drawings disagree: its {found.other} (page "
+                        f"{found.other_page}) shows {other.text}, its {found.governing} (page "
+                        f"{found.governing_page}) shows {governing.text}. GV compares "
+                        f"{found.governs} with the {found.governing}; GV asks the architect."
+                    ),
+                    "verified": True,
+                    "source": "cross_view",
+                    "reference_side": "architect",
+                    "arch_box": _box_of(governing, found.file, found.governing_page),
+                    "vendor_box": _box_of(other, found.file, found.other_page),
+                    "dims": {
+                        "architect": _label_of(governing, found.file, found.governing_page),
+                        "vendor": _label_of(other, found.file, found.other_page),
+                        "views": {
+                            "governing": found.governing,
+                            "other": found.other,
+                            "governing_page": found.governing_page,
+                            "other_page": found.other_page,
+                            "governs": found.governs,
+                        },
+                    },
+                }
+            )
+    return out
+
+
+def _box_of(label: Label, file: str, page: int) -> dict[str, Any]:
+    x0, y0, x1, y1 = label.box
+    return {"page": page, "x0": x0, "y0": y0, "x1": x1, "y1": y1, "file": file}
+
+
+def _label_of(label: Label, file: str, page: int) -> dict[str, Any]:
+    return {
+        "id": label.id,
+        "text": label.text,
+        "inches": label.inches,
+        "route": label.route or "text",
+        "page": page,
+        "file": file,
+        "box": list(label.box),
+    }
+
+
 def _shown_only(
     answer: pairing_module.MatchAnswer,
     everything: Sequence[AcrossCandidate],
@@ -1864,7 +2251,9 @@ def _shown_only(
       `CALLOUT_REACH_PT` of it (nothing points from it to an elevation): "only as a tag on a
       plan";
     - sheets whose every view the set index reads as printing no sizes of the piece, and code
-      reads at most `MAX_SIZELESS_LABELS` labels in each: "only as an outline"."""
+      reads at most `MAX_SIZELESS_LABELS` labels in each, or a plan of room and wall sizes only
+      (`_room_only`) or a reflected ceiling plan: "the architect shows this item without
+      sizes"."""
     if not answer.matches:
         return None
     by = {c.id: c for c in everything}
@@ -1897,14 +2286,16 @@ def _shown_only(
         if item.id not in context.no_sizes:
             return None
         if any(
-            (v.ref not in context.no_sizes and item.views) or len(v.labels) > MAX_SIZELESS_LABELS
+            (v.ref not in context.no_sizes and item.views)
+            or (len(v.labels) > MAX_SIZELESS_LABELS and v.ref not in context.room_only)
             for v in drawings
         ):
             return None
     pages = ", ".join(str(c.page) for c in named)
+    rooms = any(v.ref in context.room_only for c in named for v in c.views)
     return (
-        f"the architect shows this item only as an outline (its file's page {pages}: no view "
-        "prints its sizes), with no sizes"
+        "the architect shows this item without sizes (its file's page "
+        f"{pages}: {'elevations with no sizes, plans with room and wall sizes only' if rooms else 'no view prints its sizes'})"
     )
 
 

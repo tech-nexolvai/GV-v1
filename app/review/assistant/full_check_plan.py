@@ -726,8 +726,10 @@ _UNPAIRED_PLAIN: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
         "the architect shows it only as a tag on a plan",
     ),
     (
-        re.compile(r"only as an outline|print(?:s)? no sizes", re.IGNORECASE),
-        "the architect's drawings of it print no sizes",
+        re.compile(
+            r"only as an outline|print(?:s)? no sizes|shows this item without sizes", re.IGNORECASE
+        ),
+        "the architect shows this item without sizes",
     ),
     (
         re.compile(r"no architect drawing to pair it with", re.IGNORECASE),

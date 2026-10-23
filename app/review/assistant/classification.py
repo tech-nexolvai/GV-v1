@@ -88,7 +88,7 @@ from app.review.assistant.round_reference import (
     match_words,
     round_only,
 )
-from app.review.assistant.rule_notes import RuleNote, rule_note_of
+from app.review.assistant.rule_notes import RuleNote, rule_note_of, views_note_of
 from app.review.assistant.spot_locate import VENDOR_SEARCH, search_words, spot_words
 
 __all__ = [
@@ -776,6 +776,14 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
             or "the architect's size is outside a GV rule",
             "GV's own call on the architect's size (an RFI to the architect if it matters)",
         )
+    if reason == "architect_disagrees":
+        # The architect's own views print this span differently (the simple check's guard,
+        # 2026-10-23): never red against the vendor; GV asks the architect (its own item).
+        return _not(
+            "architect_disagrees",
+            _short(finding.get("why"), 160) or "the architect's drawings disagree",
+            "the architect's answer on which drawing is right, or a revised drawing",
+        )
     if reason == "outside_gv_rule":
         # A size outside GV's usual range with no architect size for it (`filler_range`): GV's
         # practice, not a difference; a GV note, never red (the orchestrator, 2026-10-20).
@@ -786,6 +794,14 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
         )
     if finding.get("source") == "cross_view":
         side = finding.get("reference_side")
+        note = views_note_of(finding) if side == "architect" else None
+        if note is not None:
+            # The architect's own drawings disagree and code read both sizes at their spots
+            # (2026-10-23): DECIDED, GV's question to the architect; the governing view is
+            # the reference. Never red against the vendor.
+            return Classified(
+                "rule_note", "R3", "architect_disagrees", note.why, note.question, note
+            )
         if side == "architect":
             return _not(
                 "architect_disagrees",
