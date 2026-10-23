@@ -915,6 +915,10 @@ def _upload_lines(
     return lines
 
 
+#: How many job values the line names before "and N more".
+JOB_VALUES_SHOWN: Final = 4
+
+
 def _inputs_lines(inputs: Inputs) -> list[Line]:
     lines = [
         Line(
@@ -926,14 +930,20 @@ def _inputs_lines(inputs: Inputs) -> list[Line]:
         )
     ]
     if inputs.missing_values:
+        # GV settled these as values the reviewer enters per job (no company value), so they are
+        # the reviewer's to enter, never a question for GV; the list stays short.
+        names = list(inputs.missing_values)
+        shown = ", ".join(names[:JOB_VALUES_SHOWN])
+        if len(names) > JOB_VALUES_SHOWN:
+            shown += f" and {len(names) - JOB_VALUES_SHOWN} more"
         lines.append(
             Line(
                 "values_needed",
                 "note",
-                f"Ask GV for these values: {', '.join(inputs.missing_values)}. The checks that "
-                "need them wait for them.",
-                who="GV",
-                todo="Enter them under the set's settings.",
+                f"{_count(len(names), 'job value')} not entered yet: {shown}. They are set per "
+                "job; the checks that use them are skipped until they are entered.",
+                who="you",
+                todo="Enter them in the set's settings.",
             )
         )
     return lines
