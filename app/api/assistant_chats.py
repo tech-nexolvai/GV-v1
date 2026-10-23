@@ -1594,6 +1594,11 @@ def _message(
                 if settings.assistant_page_match_model == "off"
                 else settings.assistant_page_match_model
             ),
+            set_index_model=(
+                None
+                if settings.assistant_set_index_model == "off"
+                else settings.assistant_set_index_model
+            ),
             simple=_simple_options(settings, body) if mode == "full_check" else None,
             plan_answers=(
                 None

@@ -24,7 +24,12 @@ can make false reds.
 **Saved answers.** Every answer is kept in the set pack (`page_match.json`, with the candidates
 it was shown, the model, the usage and the cost), so the work list is built again at $0 (a
 replay, another chat on the same set, the roster's planning after the simple check's); a drawing
-whose candidates changed is asked again.
+whose candidates changed is asked again, unless code only ruled some out and the answer's picks
+are among the rest (`pairing.reuse`).
+
+**The set index first** (`set_index.py`, `prepare_run`): each page's project, set and views, read
+once by AI and checked by code, so the matcher is shown only the architect's pages of the vendor
+drawing's own project, never a reference set (the brand prototype) nor a key plan.
 
 The architect items' pictures are the same bytes for every vendor drawing shown the same items,
 so they carry a prompt-cache breakpoint: the first call of each group writes them, the others
@@ -55,7 +60,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from app.review.assistant.full_check_plan import CrossPairs
 from app.review.assistant.reply_json import json_of_reply
-from app.review.assistant.simple_check.pairing import MatchAnswer
+from app.review.assistant.simple_check.pairing import MatchAnswer, reuse
 from app.review.assistant.simple_check.schema import AcrossCandidate, AcrossPair, Drawing
 from app.review.assistant.simple_check.worklist import MATCH_FILE
 
@@ -442,11 +447,15 @@ def _save(folder: Path, ref: str, entry: Mapping[str, Any]) -> None:
 
 
 def _still_good(entry: Mapping[str, Any] | None, pair: AcrossPair) -> bool:
-    return (
-        entry is not None
-        and entry.get("prompt_version") == PROMPT_VERSION
-        and sorted(str(c) for c in entry.get("candidates") or []) == sorted(pair.asked)
+    """A saved answer still answers this drawing's question: the same question, and the same
+    candidates or fewer with its picks among them (`pairing.reuse`: code since rules some out)."""
+    if entry is None or entry.get("prompt_version") != PROMPT_VERSION:
+        return False
+    answer = MatchAnswer(
+        tuple(str(m) for m in entry.get("matches") or []), bool(entry.get("confident"))
     )
+    shown = [str(c) for c in entry.get("candidates") or []]
+    return reuse(shown, answer, pair.asked) is not None
 
 
 def to_ask(pairs: Sequence[AcrossPair], folder: Path) -> tuple[list[AcrossPair], int]:
@@ -676,6 +685,7 @@ def run_for_engine(
     if not model_name or folder is None:
         return None
     if work is None:
+        _read_index(engine, folder)
         worklist = import_module("app.review.assistant.simple_check.worklist")
         try:
             work = worklist.build_worklist(folder, main_file)
@@ -871,6 +881,16 @@ class MatchRun:
         return self.current()
 
 
+def _read_index(engine: ChatEngine, folder: Path) -> None:
+    """The set index first (`set_index.py`: each page's project, set and views, read once and
+    kept in the pack): a vendor drawing is then paired only within its own project, never with a
+    reference set. A failed read leaves the index as it is (no project known for its pages)."""
+    try:
+        import_module("app.review.assistant.set_index").run_for_engine(engine, folder)
+    except Exception:  # noqa: BLE001 - pairing goes on with what the index holds
+        _log.exception("assistant full check: the set index was not read")
+
+
 @contextmanager
 def _no_phase() -> Iterator[None]:
     yield
@@ -893,6 +913,9 @@ def prepare_run(engine: ChatEngine, page_map: Mapping[str, Any] | None) -> Match
     if not wait_ready(folder, engine.cancel):
         _log.warning("assistant full check: the set pack is not ready; no cross-file pairs")
         return None
+    # The set index first (each page's project, set and views, read once and kept in the pack):
+    # a vendor drawing is paired only within its own project, never with a reference set.
+    _read_index(engine, folder)
     worklist = import_module("app.review.assistant.simple_check.worklist")
     memo: dict[Any, Any] = {}
     try:
