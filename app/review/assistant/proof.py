@@ -53,6 +53,7 @@ from app.review.assistant import (
     likely_problems,
     missing_items,
     rule_notes,
+    same_item_pages,
     spot_guard,
     witness,
 )
@@ -301,10 +302,13 @@ def needs_pairing(finding: Mapping[str, Any]) -> bool:
 def vendor_own(finding: Mapping[str, Any]) -> str | None:
     """`sum` when the proof is the vendor's own string (its parts against its printed total),
     `span` when the vendor prints the same span twice and code proved it by geometry (the
-    consistency check: both dimension lines end on the same two extension lines), else `None`:
-    then there is no architect's side to show."""
+    consistency check: both dimension lines end on the same two extension lines), `pages` when the
+    vendor prints the same item in two sizes on two pages and code read both (`same_item_pages`:
+    which one is wrong is not known), else `None`: then there is no architect's side to show."""
     if finding.get("source") == "vendor_arithmetic":
         return "sum"
+    if same_item_pages.marked(finding):
+        return "pages"
     if (
         finding.get("source") == "cross_view"
         and finding.get("reference_side") == "vendor"
@@ -318,6 +322,7 @@ def vendor_own(finding: Mapping[str, Any]) -> str | None:
 LEFT_CAPTIONS: Final[Mapping[str | None, str]] = {
     "sum": "Vendor's own parts (green: their sum)",
     "span": "Vendor's other dimension of the same span (green: what governs)",
+    "pages": "Vendor's other drawing of the same item (which one is right is not known)",
     None: "Architect / rule (green: what governs)",
 }
 
@@ -605,6 +610,9 @@ def should_be_value(finding: Mapping[str, Any]) -> str:
     limits = _gv_limits(finding)
     if limits is not None:
         return limits
+    either = same_item_pages.either_words(finding)
+    if either is not None:
+        return either  # two pages disagree: code never picks which one is right (#1906)
     part = wrong_part(finding)
     if part is not None:
         return inch_words(part[1])  # the overall less the other parts
@@ -665,6 +673,9 @@ def governs(finding: Mapping[str, Any]) -> str:
         return "sum of the vendor's own parts"
     if _gv_limits(finding) is not None:
         return "GV filler rule"
+    pages = same_item_pages.governs_words(finding)
+    if pages is not None:
+        return pages
     standard = _gv_standard(finding)
     if source == "rules":
         return standard or words

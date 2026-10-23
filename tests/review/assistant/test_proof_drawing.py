@@ -609,6 +609,29 @@ def test_the_vendor_s_own_string_or_span_is_not_labelled_architect(tmp_path: Pat
     assert "ARCHITECT DRAWING" not in proof
 
 
+def test_two_vendor_pages_that_disagree_name_no_should_be(tmp_path: Path) -> None:
+    """The same item in two sizes on two of the vendor's drawings (#1906): the card shows both,
+    and says one of them is wrong without picking which."""
+    pages = _proved(
+        id="F7",
+        item="Base B-30 width",
+        source="cross_view",
+        reference_side="vendor",
+        created_by="ledger",
+        architect='37"',
+        vendor='46"',
+        inches={"architect": "37", "vendor": "46"},
+        critic=None,
+        same_item_pages={"pages": [{"page": 1, "value": '37"'}, {"page": 1, "value": '46"'}]},
+    )
+    assert vendor_own(pages) == "pages" and proof_group(pages) == "clouded"
+    out = _draw(tmp_path, [pages])
+    proof = _words("".join(page.extract_text() for page in PdfReader(str(out)).pages))
+    assert "VENDOR'S OTHER DRAWING OF THE SAME ITEM" in proof
+    assert "correct one so both pages agree" in proof
+    assert "Change it to" not in proof and "ARCHITECT DRAWING" not in proof
+
+
 # ---- the Not-compared list (#1619) -----------------------------------------------------------------
 
 

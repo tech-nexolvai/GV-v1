@@ -1332,6 +1332,7 @@ _REFERENCE_CAPTIONS: Final[Mapping[str, str]] = {
     "architect": "Architect drawing",
     "prototype": "Brand prototype (reference)",
     "span": "Vendor's other dimension of the same span",
+    "pages": "Vendor's other drawing of the same item",
     "sum": "The vendor's own parts, added up",
     "rule": "GV rule",
     "reviewer": "GV's reviewer",
@@ -1340,6 +1341,7 @@ _REFERENCE_SHOWS: Final[Mapping[str, str]] = {
     "architect": "Architect shows ",
     "prototype": "Brand prototype shows ",
     "span": "Other dimension shows ",
+    "pages": "One of them is wrong: ",
     "sum": "Parts add up to ",
     "rule": "GV rule requires ",
     "reviewer": "Should be ",
@@ -1382,7 +1384,7 @@ def _where_words(finding: Mapping[str, Any], areas: Mapping[int, str]) -> str:
 def _reference_caption(finding: Mapping[str, Any], kind: str) -> str:
     words = _REFERENCE_CAPTIONS[kind]
     box = _box_of(finding.get("arch_box"))
-    if kind in ("architect", "prototype", "span") and box is not None:
+    if kind in ("architect", "prototype", "span", "pages") and box is not None:
         separate = architect_file(finding)
         if separate is not None:
             return f"{words} · {separate} page {box[1]}"
@@ -1920,7 +1922,7 @@ def proof_markup_pdf(
             reference_shot = None
             arch = _box_of(finding.get("arch_box"))
             kind = proof_words.reference_kind(finding)
-            if arch is not None and kind in ("architect", "prototype", "span"):
+            if arch is not None and kind in ("architect", "prototype", "span", "pages"):
                 name, arch_page, arch_area = arch
                 arch_pdf = known.get(name) if name else source
                 if arch_pdf == source:

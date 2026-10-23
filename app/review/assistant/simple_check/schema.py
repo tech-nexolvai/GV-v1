@@ -465,6 +465,11 @@ class WorkList(_Frozen):
     version: int = SCHEMA_VERSION
     file: str
     items: tuple[WorkItem, ...]
+    alone: tuple[WorkItem, ...] = ()
+    """The vendor drawings no architect drawing is paired with (each also in `skipped`, with
+    why): never compared with an architect, but GV's rules that need only the vendor's own
+    values, GV's standards and the job's values still run on them (`sink_offset`). Their
+    `architect` is empty."""
     skipped: tuple[Skipped, ...]
     pages: tuple[PageCover, ...]
     """Every page of the file, in order."""
