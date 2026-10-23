@@ -1162,6 +1162,8 @@ class FindingBook:
         cross = self.pairs_now() if self.pairs_now is not None else None
         if cross is None or reference_page.vendor_only(finding):
             return  # the vendor's own drawings: its boxes are on them by design
+        if not reference_page.decided(finding, getattr(cross, "file", None)):
+            return  # another vendor file, or compared with the vendor's own drawing
         page = reference_page.vendor_page(finding)
         pairs = getattr(cross, "pairs", {}) or {}
         if page is None or page not in pairs:

@@ -4243,7 +4243,11 @@ class ChatEngine:
         if cross is None:
             return finding
         return reference_page.stamp(
-            finding, cross.pairs, references=cross.references, unpaired=cross.unpaired
+            finding,
+            cross.pairs,
+            references=cross.references,
+            unpaired=cross.unpaired,
+            vendor_file=cross.file,
         )
 
     def scoped_jobs(

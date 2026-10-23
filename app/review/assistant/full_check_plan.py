@@ -177,6 +177,9 @@ class CrossPairs:
     references: Mapping[int, tuple[tuple[str, int], ...]] = field(default_factory=dict)
     """Each paired page's brand prototype (file, page)s: reference only, never its shown page
     (`reference_page`), but a spot on one is on the item's own drawings."""
+    file: str | None = None
+    """The vendor's file the pairs' page numbers are of (the work list's file): an item on another
+    vendor file (an older round uploaded on its own) is not on these pages."""
 
     @classmethod
     def of(cls, work: Any) -> CrossPairs:
@@ -215,6 +218,7 @@ class CrossPairs:
             unpaired,
             words,
             {p: tuple(v) for p, v in references.items() if v},
+            str(main) if main else None,
         )
 
 

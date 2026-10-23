@@ -20,7 +20,10 @@ architect value on the vendor's page number in the vendor's file. On a set with 
   drawings): `spot_guard` looks for an architect value on each of them.
 
 An item checked within the vendor's own drawings is never "outside": its boxes are on the vendor's
-own drawings by design. On an unpaired page, a spot code paired by itself (its run-by-run pairing)
+own drawings by design. Nor is an item compared with the vendor's own earlier round, or one on
+another vendor file than the pairs' (an older round uploaded on its own): the pairing does not
+decide their page (`decided`), so they are left as they are. A page number two architect files of
+the pair both have, with no file named, is never guessed: no page, and why. On an unpaired page, a spot code paired by itself (its run-by-run pairing)
 is the item's page; any other spot there is "outside" (no pair holds it).
 
 A page the cross-file pairing did not decide (a one-file set, GV's combined sheets, a page with no
@@ -34,7 +37,16 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
-__all__ = ["KEY", "Pairs", "allowed", "outside_words", "stamp", "vendor_only", "vendor_page"]
+__all__ = [
+    "KEY",
+    "Pairs",
+    "allowed",
+    "decided",
+    "outside_words",
+    "stamp",
+    "vendor_only",
+    "vendor_page",
+]
 
 #: The finding field.
 KEY: Final = "reference_page"
@@ -100,6 +112,35 @@ def vendor_only(finding: Mapping[str, Any]) -> bool:
     )
 
 
+def _compared_with_vendor(finding: Mapping[str, Any]) -> bool:
+    """An item whose reference is the vendor's own drawing (an earlier round, another vendor
+    drawing, `round_reference.round_only`): its architect-side spot is on a vendor file by design,
+    never an architect page off its pair."""
+    if finding.get("reference_side") == "vendor":
+        return True
+    dims = finding.get("dims")
+    label = dims.get("architect") if isinstance(dims, Mapping) else None
+    return isinstance(label, Mapping) and str(label.get("side") or "") == "vendor"
+
+
+def decided(finding: Mapping[str, Any], vendor_file: str | None) -> bool:
+    """Whether the cross-file pairing decides this item's architect page: not when its vendor
+    spot is on another vendor file than the pairs' (an older round uploaded on its own: its page
+    N is another drawing), nor when it is compared with the vendor's own drawing."""
+    box = finding.get("vendor_box")
+    file = box.get("file") if isinstance(box, Mapping) else None
+    if vendor_file and file and str(file) != vendor_file:
+        return False
+    return not _compared_with_vendor(finding)
+
+
+def _one_file(found: Sequence[tuple[str, int]]) -> str | None:
+    """The file of `found` when they are all one file; None when two files hold that page (a page
+    number alone never says which: nothing is guessed)."""
+    files = {f for f, _p in found}
+    return files.pop() if len(files) == 1 else None
+
+
 #: Code's own pairing of an item's two drawings (`run_fit` by the run, `pair_findings`).
 _CODE_PAIRERS: Final = frozenset({"run_fit", "pairs"})
 
@@ -117,13 +158,18 @@ def stamp(
     *,
     references: Pairs | None = None,
     unpaired: Mapping[int, str] | None = None,
+    vendor_file: str | None = None,
 ) -> dict[str, Any]:
-    """`finding` with its `reference_page` (see the module), set from `pairs` alone."""
+    """`finding` with its `reference_page` (see the module), set from `pairs` alone (pages of
+    `vendor_file`, the vendor's file; an item `decided` says the pairing does not decide is left
+    as it is)."""
     out = dict(finding)
     record: dict[str, Any] = {"file": None, "page": None, "why": None, "outside": False}
     if vendor_only(finding):
         record["why"] = "Checked within the vendor's own drawings: no architect page is compared."
         out[KEY] = record
+        return out
+    if not decided(finding, vendor_file):
         return out
     page = vendor_page(finding)
     if page is None or (page not in pairs and page not in (unpaired or {})):
@@ -140,8 +186,14 @@ def stamp(
     if box is not None and box_page is not None:
         spot = (box_file, _own(box_page))
         if any(spot == where or (box_file is None and spot[1] == where[1]) for where in may):
-            file = box_file or next(f for f, p in may if p == spot[1])
-            record.update(file=file, page=spot[1])
+            file = box_file or _one_file([w for w in may if w[1] == spot[1]])
+            if file is None:
+                record["why"] = (
+                    f"Two architect files paired with vendor page {page} have a page "
+                    f"{spot[1]}, and the item does not say which."
+                )
+            else:
+                record.update(file=file, page=spot[1])
         elif not pair and paired_by_code(finding):
             # An unpaired page whose item code paired by itself (its run-by-run pairing, its
             # own dimension pairs): code's spot is the item's page.
@@ -166,8 +218,13 @@ def stamp(
         return out
     if vs_page is not None and pair:
         named = [where for where in may if where[1] == vs_page]
-        if named:
-            record.update(file=named[0][0], page=named[0][1])
+        if named and (file := _one_file(named)) is not None:
+            record.update(file=file, page=vs_page)
+        elif named:
+            record["why"] = (
+                f"Two architect files paired with vendor page {page} have a page {vs_page}, "
+                "and the item does not say which."
+            )
         else:
             record.update(file=pair[0][0], page=pair[0][1], outside=True)
             record["why"] = (

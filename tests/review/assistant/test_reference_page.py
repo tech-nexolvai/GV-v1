@@ -219,7 +219,55 @@ def test_one_page_number_in_two_architect_files_of_the_pair_is_on_the_pair() -> 
     pairs = {8: (("plan.pdf", 3), ("elevations.pdf", 3))}
     finding = _finding(page=8, vendor_box={**VENDOR_BOX, "page": 8}, vs_page=3)
     record = stamp(finding, pairs)[KEY]
-    assert record["outside"] is False and (record["file"], record["page"]) == ("plan.pdf", 3)
+    # On the pair (never outside), but which file is not said: no page is guessed.
+    assert record["outside"] is False and (record["file"], record["page"]) == (None, None)
+    assert "Two architect files" in str(record["why"])
+    # The set's own page number of the second file (2003) says no more: still no guess.
+    record = stamp({**finding, "vs_page": 2003}, pairs)[KEY]
+    assert (record["file"], record["page"]) == (None, None)
+    # A spot naming its file is that file's page.
+    box = {"page": 3, "x0": 1, "y0": 1, "x1": 2, "y1": 2, "file": "elevations.pdf"}
+    record = stamp({**finding, "arch_box": box}, pairs)[KEY]
+    assert (record["file"], record["page"]) == ("elevations.pdf", 3)
+    # A spot with no file on that page number: no guess either.
+    record = stamp({**finding, "arch_box": {**box, "file": None}}, pairs)[KEY]
+    assert (record["file"], record["page"], record["outside"]) == (None, None, False)
+
+
+def test_an_item_compared_with_the_vendors_earlier_round_is_left_as_it_is() -> None:
+    # Its reference is the vendor's older round, uploaded as its own file: never "off its pair".
+    older = {"page": 3, "x0": 1, "y0": 1, "x1": 2, "y1": 2, "file": "Made up vendor round 1.pdf"}
+    for change in (
+        {"reference_side": "vendor"},
+        {"dims": {"architect": {"label": "D3", "side": "vendor"}}},
+    ):
+        finding = _finding(arch_box=older, status="check", **change)
+        assert KEY not in stamp(finding, PAIRS.pairs, vendor_file=VENDOR)
+        assert unbacked(stamp(finding, PAIRS.pairs, vendor_file=VENDOR), {}) is None
+
+
+def test_an_item_on_another_vendor_file_is_not_on_the_pairs_pages() -> None:
+    # Page 3 of an older vendor round is another drawing than page 3 of the vendor's file.
+    box = {"page": 9, "x0": 1, "y0": 1, "x1": 2, "y1": 2, "file": ARCH_A}
+    other = {**VENDOR_BOX, "file": "Made up vendor round 1.pdf"}
+    finding = _finding(vendor_box=other, arch_box=box)
+    assert KEY not in stamp(finding, PAIRS.pairs, vendor_file=VENDOR)
+    # The same item on the vendor's file is off its pair.
+    mine = _finding(vendor_box={**VENDOR_BOX, "file": VENDOR}, arch_box=box)
+    assert stamp(mine, PAIRS.pairs, vendor_file=VENDOR)[KEY]["outside"] is True
+
+
+def test_report_leaves_an_item_on_another_vendor_file_alone(tmp_path: Path) -> None:
+    listing = [
+        *_listing(),
+        {"name": "Made up vendor round 1.pdf", "pages": 6, "kind": "the vendor's shop drawings"},
+    ]
+    book = FindingBook(workspace=_workspace(tmp_path, listing), listing=listing, page_count=6)
+    book.pairs_now = lambda: CrossPairs(pairs=PAIRS.pairs, file=VENDOR)
+    spot = {"page": 2, "x0": 10, "y0": 10, "x1": 40, "y1": 20, "file": ARCH_A}
+    vendor = {**VENDOR_BOX, "file": "Made up vendor round 1.pdf"}
+    finding, _notes = book.report(_finding(vendor_box=vendor, arch_box=spot), "helper:1")
+    assert finding["arch_box"]["file"] == ARCH_A
 
 
 def test_a_page_the_cross_pairing_did_not_decide_gets_no_stamp() -> None:
