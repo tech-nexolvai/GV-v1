@@ -116,7 +116,9 @@ def test_findings_stream_are_stored_and_reload_the_same_with_their_pictures(post
         assert finding["impact"]["rank"] == 1
         # ... and where the zero-click cloud drawing puts it (#1581), also worked out on read.
         assert finding["proof"]["group"] == "not_compared"
-        assert live[0] == {k: v for k, v in finding.items() if k not in ("impact", "proof")}
+        # ... and a vendor string's wrong part (read from its own words for older answers).
+        on_read = ("impact", "proof", "wrong_part")
+        assert live[0] == {k: v for k, v in finding.items() if k not in on_read}
         assert _named(events, "coverage")[-1]["coverage"] == coverage
         assert _named(events, "trust")[-1]["trust"] == message["blocks"][5]["trust"]
         reloaded = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
@@ -255,7 +257,9 @@ def test_following_a_running_message_replays_its_findings(postgres_engine, tmp_p
         # the stored block.
         assert [data["index"] for data in replayed] == [0, 0]
         assert replayed[-1]["finding"] == {
-            k: v for k, v in stored["blocks"][0]["finding"].items() if k not in ("impact", "proof")
+            k: v
+            for k, v in stored["blocks"][0]["finding"].items()
+            if k not in ("impact", "proof", "wrong_part")
         }
         assert [name for name, _ in seen].index("finding") < [n for n, _ in seen].index("trust")
         _until_saved(registry, chat_id)
