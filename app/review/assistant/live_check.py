@@ -622,6 +622,20 @@ class LiveCheck:
             ):
                 self.phase(name, done=done, total=total, unit="pages")
             return
+        if name == "double_checking":
+            # The final checks by code (2026-10-23): the item count of the check running now,
+            # "checking 45 of 125 items", when it counts them.
+            done, total = progress.get("items_done"), progress.get("items_total")
+            if isinstance(total, int) and total > 0 and isinstance(done, int):
+                counted = (name, "final_checks", min(done, total), total, "items")
+                if counted != tuple(self._phase[k] for k in _PHASE_KEYS[:5]):
+                    self.phase(
+                        name, step="final_checks", done=counted[2], total=total, unit="items"
+                    )
+                return
+            if self._phase["phase"] == name and self._phase.get("unit") == "items":
+                self.phase(name, step="final_checks")  # that check is over: no count now
+                return
         if self._phase["phase"] != name:
             self.phase(name, step="final_checks")
 

@@ -102,7 +102,7 @@ import math
 import re
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from importlib import import_module
@@ -172,6 +172,8 @@ COVER: Final = 0.9
 _SAME_PT: Final = 0.3
 _END_PT: Final = 0.8
 _TICK_PT: Final = 3.0
+#: The longest slanted stroke that is a tick or an arrowhead's side (points).
+_TICK_LONGEST_PT: Final = 12.0
 _LABEL_GAP_PT: Final = 8.0
 #: A line covering this share of the cut-out's width counts as a possible second front edge (a
 #: dashed cabinet face under the top).
@@ -325,6 +327,42 @@ def _turn_box(box: Sequence[float], side: Side) -> Box:
     return (min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1]))
 
 
+class _Ticks:
+    """A frame's slanted strokes up to `_TICK_LONGEST_PT` long, kept in a grid by their middle
+    (speed, 2026-10-23): `_crossed` and `_ticked` ask about every cut-out side and dimension end
+    of a page, and reading all of a big page's strokes each time took minutes on a 99-page set.
+    `near` gives every stroke whose middle may be within `reach` of a point (a few more never
+    hurt: each is still measured exactly as before), so the answers are the same."""
+
+    CELL_PT: Final = 8.0
+
+    def __init__(self, slanted: Sequence[Segment]) -> None:
+        self._cells: dict[tuple[int, int], list[Segment]] = {}
+        self._odd: list[Segment] = []
+        """Strokes with a coordinate that is not a number: asked about every time, as before."""
+        for a, b in slanted:
+            if not all(math.isfinite(v) for v in (*a, *b)):
+                self._odd.append((a, b))
+                continue
+            if math.dist(a, b) > _TICK_LONGEST_PT:
+                continue  # never a tick or an arrowhead (`_crossed`, `_ticked` skip it)
+            middle = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+            cell = (math.floor(middle[0] / self.CELL_PT), math.floor(middle[1] / self.CELL_PT))
+            self._cells.setdefault(cell, []).append((a, b))
+
+    def near(self, at: Point, reach: float) -> list[Segment]:
+        if not (math.isfinite(at[0]) and math.isfinite(at[1])):
+            return [s for cell in self._cells.values() for s in cell] + self._odd
+        out = list(self._odd)
+        size = self.CELL_PT
+        for gx in range(math.floor((at[0] - reach) / size), math.floor((at[0] + reach) / size) + 1):
+            for gy in range(
+                math.floor((at[1] - reach) / size), math.floor((at[1] + reach) / size) + 1
+            ):
+                out.extend(self._cells.get((gx, gy), ()))
+        return out
+
+
 @dataclass(frozen=True, slots=True)
 class _Frame:
     """One drawing's line work in one frame: pieces along `u` (at a `v`, sorted by `v`), along `v`
@@ -338,6 +376,8 @@ class _Frame:
     """(v0, v1, u) of each piece at right angles to it."""
     slanted: tuple[Segment, ...]
     all: tuple[Segment, ...]
+    ticks: _Ticks | None = field(default=None, compare=False, repr=False)
+    """The short slanted strokes by where they are (`_Ticks`), for `_crossed` and `_ticked`."""
 
     @classmethod
     def of(cls, segments: Iterable[Segment], side: Side) -> _Frame:
@@ -357,7 +397,9 @@ class _Frame:
                 slanted.append((p, q))
         across.sort(key=lambda piece: piece[2])
         places = tuple(piece[2] for piece in across)
-        return cls(tuple(across), places, tuple(along), tuple(slanted), tuple(kept))
+        return cls(
+            tuple(across), places, tuple(along), tuple(slanted), tuple(kept), _Ticks(slanted)
+        )
 
     def _at(self, v: float) -> tuple[tuple[float, float, float], ...]:
         """The pieces parallel to the front within `_SAME_PT` of `v`."""
@@ -586,8 +628,9 @@ def _crossed(frame: _Frame, u: float, v: float) -> bool:
     """A tick across a line at right angles to the front (at `u`) at its end `v`: a short slanted
     stroke whose middle is at that end and that runs to both sides of the line (a rounded corner's
     arc starts there but stays on one side)."""
-    for a, b in frame.slanted:
-        if math.dist(a, b) > 12.0:
+    strokes = frame.slanted if frame.ticks is None else frame.ticks.near((u, v), _TICK_PT)
+    for a, b in strokes:
+        if math.dist(a, b) > _TICK_LONGEST_PT:
             continue
         middle = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
         if math.dist(middle, (u, v)) <= _TICK_PT and (a[0] - u) * (b[0] - u) < 0:
@@ -597,9 +640,12 @@ def _crossed(frame: _Frame, u: float, v: float) -> bool:
 
 def _ticked(frame: _Frame, at: Point) -> bool:
     """A tick or an arrowhead at a dimension's end: a slanted stroke crossing it or ending there."""
-    for a, b in frame.slanted:
+    # A stroke ending within `_END_PT` of the point has its middle within half its length more.
+    reach = max(_TICK_PT, _TICK_LONGEST_PT / 2 + _END_PT)
+    strokes = frame.slanted if frame.ticks is None else frame.ticks.near(at, reach)
+    for a, b in strokes:
         length = math.dist(a, b)
-        if length > 12.0:
+        if length > _TICK_LONGEST_PT:
             continue
         middle = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
         if math.dist(middle, at) <= _TICK_PT or min(math.dist(a, at), math.dist(b, at)) <= _END_PT:
@@ -728,10 +774,18 @@ def plans_on(
         return x0 - 2 <= p[0] <= x1 + 2 and y0 - 2 <= p[1] <= y1 + 2
 
     mine = [(a, b) for a, b in segments if on_drawing(a) and on_drawing(b)]
-    upright = _Frame.of(mine, "bottom")
+    # Each turn of the drawing's line work is made once (speed, 2026-10-23: it was made again
+    # for every side of every cut-out code tried); a frame is never changed.
+    frames: dict[str, _Frame] = {"bottom": _Frame.of(mine, "bottom")}
+
+    def frame_of(side: Side) -> _Frame:
+        if side not in frames:
+            frames[side] = _Frame.of(mine, side)
+        return frames[side]
+
     out: list[SinkPlan] = []
-    for rect in _rectangles(upright, pt_per_in):
-        plan = _plan(mine, labels, rect, pt_per_in)
+    for rect in _rectangles(frames["bottom"], pt_per_in):
+        plan = _plan(mine, labels, rect, pt_per_in, frame_of)
         if plan is not None:
             out.append(plan)
     return sorted(out, key=lambda plan: plan.order)
@@ -742,12 +796,15 @@ def _plan(
     labels: Sequence[Mapping[str, Any]],
     rect: Box,
     pt_per_in: float,
+    frame_of: Callable[[Side], _Frame] | None = None,
 ) -> SinkPlan | None:
-    """The cut-out's plan: its back by the faucet hole, its run's lines and its front offsets."""
+    """The cut-out's plan: its back by the faucet hole, its run's lines and its front offsets.
+    `frame_of`: the drawing's line work turned each way, made once (`plans_on`)."""
+    turn = frame_of if frame_of is not None else (lambda side: _Frame.of(segments, side))
     fronts: list[tuple[Side, _Frame, Box, float]] = []
     for side in _SIDES:
         # Turned so that `side` is the front (down): a faucet hole behind the cut-out (up).
-        frame = _Frame.of(segments, side)
+        frame = turn(side)
         u0, v0, u1, v1 = _turn_box(rect, side)
         region = (u0, v0 - HOLE_REACH_IN * pt_per_in, u1, v0 - _SAME_PT)
         holes = _holes(frame, region, pt_per_in)
@@ -817,7 +874,7 @@ def _plan(
     )
     # Its width: the same reading turned a quarter, so its sides are the two edges.
     across = _ACROSS[side]
-    turned = _Frame.of(segments, across)
+    turned = turn(across)
     t0, s0, t1, s1 = _turn_box(rect, across)
     widths, _band = _offsets(
         turned, labels, across, t0 - reach, t1 + reach, s0, s1, pt_per_in, (t0, t1)
@@ -1360,12 +1417,14 @@ def check_pack(
     segments: Segments | None = None,
     *,
     settings: Mapping[str, Setting] | None = None,
+    stop: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Every sink plan item of the set pack's vendor drawings (`dims.json`, the work list's
     pairing, the uploads' line work), against the values in force: `setting` is the front
     offset's, `settings` every rule's by its id (`settings_from`; a rule with no value in force is
     not checked). The vendor drawings no architect drawing is paired with (`WorkList.alone`, the
-    newest round of each) are read too: GV's rules govern them alone."""
+    newest round of each) are read too: GV's rules govern them alone. `stop`: Stop was pressed: no
+    item at all (a Continue checks the whole set again, 2026-10-23)."""
     rules = dict(settings or {})
     if setting is not None:
         rules[FRONT.id] = setting
@@ -1398,6 +1457,8 @@ def check_pack(
     ] = []
     alone = [item for item in getattr(work, "alone", ()) if item.newest_round]
     for item, by_itself in [*((i, False) for i in work.items), *((i, True) for i in alone)]:
+        if stop is not None and stop():
+            return []
         try:
             vendor = _drawing(
                 item.vendor, pages, texts.get((item.vendor.file, item.vendor.own_page), "")
@@ -1606,6 +1667,7 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
         main_file,
         category,
         settings=settings,
+        stop=getattr(getattr(engine, "cancel", None), "is_set", None),
     )
     if not found:
         return None

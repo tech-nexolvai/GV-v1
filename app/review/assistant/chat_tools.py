@@ -1335,31 +1335,12 @@ class ChatTools:
         drawing's text, else its drawn ink; a spot it cannot read is read again by `read_number`
         (#1746), whose answer replaces it only when it reads the number. Raises when the spot
         cannot be read at all."""
-        module = import_module("app.review.assistant.verify_value")
-        found = dict(
-            module.verify_value(
-                self.workspace.uploads / name,
-                page,
-                dict(zip(("x0", "y0", "x1", "y1"), box, strict=True)),
-                expected,
-                page_cache=self._hires(),
-            ).as_dict()
+        spot_pool = import_module("app.review.assistant.spot_pool")
+        return dict(
+            spot_pool.verify_answer_at(
+                self.workspace.uploads, self.workspace.set_pack, name, page, box, expected, side
+            )
         )
-        if found["result"] == "cannot_read":
-            try:
-                again = self.read_answer(name, page, side, box=tuple(box), claim=expected)
-                found["read_again"] = True
-                if again.outcome == "read":
-                    found = {**again.as_verify(expected), "read_again": True}
-                else:
-                    # Its machine reason too (#1805): a "readers disagree" or "cut off" is never
-                    # overridden by an older proof.
-                    found["read_number_code"] = again.code
-                    if again.reason:
-                        found["words"] = f"{found['words']}; read_number: {again.reason}"
-            except Exception as failed:  # noqa: BLE001 - the first answer stands
-                _log_failure(failed)
-        return found
 
     def read_answer(
         self,

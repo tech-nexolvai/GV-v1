@@ -61,7 +61,7 @@ from app.review.assistant.classification import READER_ERROR, READER_ERROR_WORDS
 from app.review.assistant.dim_findings import label_checks
 from app.review.assistant.finding_checks import wrong_part
 from app.review.assistant.vendor_text import item_name
-from app.review.assistant.work_pool import run_ordered
+from app.review.assistant.work_pool import code_workers, run_ordered
 
 __all__ = [
     "ACCURACY_CALIBRATION_LINE",
@@ -552,11 +552,13 @@ def drawn_ink_checks(
     *,
     budget_s: float = DRAWN_INK_BUDGET_S,
     stop: Callable[[], bool] = lambda: False,
+    count: Callable[[int], Callable[[], None]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """The drawn-ink route (#1531) for every finding side its text route left `pending`, in the
     order a reviewer acts on them (differences first), within `budget_s` seconds. `{finding id:
     {verify_<side>: answer, ...}}`, with the values and boxes they were read for (`with_drawn_ink`
-    applies an answer only to a finding that still claims them). $0, no network."""
+    applies an answer only to a finding that still claims them). $0, no network. `count`: the
+    live line's item count (`ChatEngine.count_items`)."""
     module = load_module(CHECKS_MODULE)
     run = getattr(module, "drawn_checks", None) if module is not None else None
     if run is None:
@@ -574,14 +576,41 @@ def drawn_ink_checks(
     out: dict[str, dict[str, Any]] = {}
     started = monotonic()
 
+    spot_pool = import_module("app.review.assistant.spot_pool")
+    in_workers = spot_pool.processes() > 0
+    counted = count(len(waiting)) if count is not None else (lambda: None)
+
     def read(finding: Mapping[str, Any]) -> dict[str, Any] | None:
         # The budget is looked at as each finding starts, in order, as the one-at-a-time loop did.
         if monotonic() - started > budget_s:
             return None
+        try:
+            return _read(finding)
+        finally:
+            counted()
+
+    def _read(finding: Mapping[str, Any]) -> dict[str, Any]:
+        if in_workers:
+            # In a worker process (2026-10-23): the same read, beside the others.
+            return dict(
+                spot_pool.run(
+                    CHECKS_MODULE,
+                    "drawn_checks",
+                    dict(finding),
+                    dict(pdf_paths),
+                    affinity=finding.get("page"),
+                )
+            )
         return dict(run(finding, pdf_paths))
 
     # On code's pool (#1850): the findings are read at once, their answers kept in this order.
-    done = run_ordered(waiting, read, stop=stop, name="gv-drawn-ink")
+    done = run_ordered(
+        waiting,
+        read,
+        workers=max(code_workers(), spot_pool.processes()),
+        stop=stop,
+        name="gv-drawn-ink",
+    )
     for finding, outcome in zip(waiting, done, strict=True):
         if not outcome.ran or (outcome.error is None and outcome.value is None):
             break  # stopped, or the budget was used up: the findings after it stay unread

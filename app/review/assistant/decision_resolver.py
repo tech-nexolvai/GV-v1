@@ -1423,14 +1423,15 @@ def recount_words(text: str, counts: Mapping[str, int]) -> str:
 # ---- the engine's hook ---------------------------------------------------------------------------
 
 
-def _verifier(pdf_paths: Mapping[str, Path]) -> Verify:
-    """`verify_value` with its drawn-ink route ($0, local OCR): text first, then the vendor's ink."""
+def _verifier(pdf_paths: Mapping[str, Path], stop: Callable[[], bool] | None = None) -> Verify:
+    """`verify_value` with its drawn-ink route ($0, local OCR): text first, then the vendor's ink.
+    `stop`: Stop was pressed, so nothing more is read (2026-10-23)."""
     checks = import_module("app.review.assistant.finding_checks")
     paths = dict(pdf_paths)
     started = monotonic()
 
     def verify(box: Mapping[str, Any], value: str) -> str:
-        if monotonic() - started > VERIFY_BUDGET_S:
+        if monotonic() - started > VERIFY_BUDGET_S or (stop is not None and stop()):
             return "cannot_read"  # the answer does not wait longer for code's witness
         name = box.get("file")
         path = paths.get(str(name)) if name is not None else None
@@ -1547,7 +1548,7 @@ def resolve_answer(engine: Any) -> list[dict[str, Any]]:
     ctx = ResolverContext(
         areas=page_areas(scope.load_page_map(workspace.set_folder), book.main_file),
         settings=settings_in_force(rules),
-        verify=_verifier(pdf_paths),
+        verify=_verifier(pdf_paths, engine.cancel.is_set),
         read=_reader(engine),
         legend=_legend_reader(pdf_paths),
     )

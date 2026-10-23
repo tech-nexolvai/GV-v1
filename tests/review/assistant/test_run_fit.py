@@ -9,6 +9,7 @@ made-up "bench" product shows a new product needs only a registry entry.
 
 from __future__ import annotations
 
+import math
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -666,3 +667,46 @@ def test_the_simple_check_drops_its_compare_items_on_a_label_the_rule_decided() 
     other = SimpleNamespace(vendor={"id": "D99", "page": 1})
     kept = run_module._Run._without_run_fit(fake, [(decided, "a"), (other, "b")])
     assert kept == [(other, "b")]
+
+
+def test_the_line_work_grid_gives_the_same_marks_as_reading_every_piece() -> None:
+    """Speed (2026-10-23): a page's line work is sorted into a grid once (`_Marks`), and every
+    question about an end mark gets exactly the answer of reading every piece (`_marked`): ticks,
+    arrowheads, long lines, square pieces, pieces on a cell's edge and a point with no number."""
+    import random
+
+    chance = random.Random(1906)
+    segments: list[Any] = []
+    for _ in range(3000):
+        ax, ay = chance.uniform(-40, 640), chance.uniform(-40, 640)
+        length = chance.choice([0.5, 0.8, 1.2, 3.0, 8.0, 12.0, 12.5, 40.0])
+        angle = chance.choice([0.0, 0.1, 0.5, 0.785, 1.2, 1.5708, chance.uniform(0, 6.3)])
+        segments.append(((ax, ay), (ax + length * math.cos(angle), ay + length * math.sin(angle))))
+    segments += [((16.0, 16.0), (20.0, 20.0)), ((31.9, 0.0), (32.1, 4.0)), ((5.0, 5.0), (5.0, 5.0))]
+    marks = rf._Marks(segments)
+    points = [(chance.uniform(-50, 650), chance.uniform(-50, 650)) for _ in range(4000)]
+    points += [(a[0] + 0.3, a[1] - 0.2) for a, _b in segments[:500]]
+    points += [(16.0, 16.0), (32.0, 2.0), (float("nan"), 3.0), (3.0, float("inf"))]
+    for orientation in ("h", "v", "x"):
+        for across, at in points:
+            assert marks.marked(orientation, across, at) == rf._marked(
+                segments, orientation, across, at
+            ), (orientation, across, at)
+    assert any(marks.marked("h", across, at) for across, at in points)
+
+
+def test_a_sets_runs_are_worked_out_once_with_the_same_answers() -> None:
+    """Speed (2026-10-23): the drawings the work list left unpaired are judged against each other
+    (every vendor drawing against every architect drawing), so each drawing's runs and kinds are
+    worked out once per set (`_Memo`); the pairs found are the same as without it."""
+    design = cabinet_run(F(3), F(24), [F(16)] * 3)
+    site = cabinet_run(F(3), F(24), [F(14)] * 3)
+    vendor = _drawing(run_sheet(VENDOR, "vendor", site))
+    architect = _drawing(run_sheet(ARCHITECT, "architect", design))
+    plain = rf.check_drawings(vendor, [architect], None, [CABINET], by_run=True)
+    memo = rf._Memo()
+    first = rf.check_drawings(vendor, [architect], None, [CABINET], by_run=True, memo=memo)
+    again = rf.check_drawings(vendor, [architect], None, [CABINET], by_run=True, memo=memo)
+    assert first == plain == again
+    copy = rf.DrawingLabels(architect.file, architect.page, architect.labels, architect.phrases)
+    assert memo.runs(copy, None) is memo.runs(architect, None)

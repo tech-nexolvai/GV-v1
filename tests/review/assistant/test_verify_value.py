@@ -642,3 +642,184 @@ def test_check_finding_reads_text_now_and_drawn_ink_later(
     later = drawn_checks({**finding, "checks": checks}, {"set.pdf": pdf})
     assert set(later) == {"verify_vendor"}
     assert (later["verify_vendor"]["result"], later["verify_vendor"]["route"]) == ("match", "drawn")
+
+
+def _bars_one_by_one(paths: list[Any]) -> list[Any]:
+    """The fraction-bar search as it read every path for every short stroke (before 2026-10-23)."""
+    out = []
+    for bar in paths:
+        width, height = bar.box[2] - bar.box[0], bar.box[3] - bar.box[1]
+        flat = height <= 0.25 and 0.8 <= width <= 5
+        upright = width <= 0.25 and 0.8 <= height <= 5
+        if not (flat or upright):
+            continue
+        x0, y0, x1, y1 = bar.box
+        if flat:
+            above = [
+                p
+                for p in paths
+                if p is not bar
+                and y0 - 1.2 <= p.box[3] <= y0 + 0.2
+                and p.box[0] >= x0 - 0.5
+                and p.box[2] <= x1 + 0.5
+                and p.box[3] - p.box[1] > 0.6
+            ]
+            below = [
+                p
+                for p in paths
+                if p is not bar
+                and y1 - 0.2 <= p.box[1] <= y1 + 1.2
+                and p.box[0] >= x0 - 0.5
+                and p.box[2] <= x1 + 0.5
+                and p.box[3] - p.box[1] > 0.6
+            ]
+        else:
+            above = [
+                p
+                for p in paths
+                if p is not bar
+                and x0 - 1.2 <= p.box[2] <= x0 + 0.2
+                and p.box[1] >= y0 - 0.5
+                and p.box[3] <= y1 + 0.5
+                and p.box[2] - p.box[0] > 0.6
+            ]
+            below = [
+                p
+                for p in paths
+                if p is not bar
+                and x1 - 0.2 <= p.box[0] <= x1 + 1.2
+                and p.box[1] >= y0 - 0.5
+                and p.box[3] <= y1 + 0.5
+                and p.box[2] - p.box[0] > 0.6
+            ]
+        if above and below:
+            out.append((bar, "flat" if flat else "upright", above, below))
+    return out
+
+
+def test_the_fraction_bar_search_finds_what_reading_every_path_found() -> None:
+    """Speed (2026-10-23): a spot's paths are sorted once (`_Near`) for the fraction-bar search;
+    it finds the same bars, with the same parts in the same order, as reading every path for every
+    short stroke did (stacked fractions both ways, crowded spots, boxes on the edges)."""
+    import random
+
+    chance = random.Random(1906)
+    for round_ in range(40):
+        paths = []
+        for _ in range(chance.choice([3, 30, 300])):
+            x, y = chance.uniform(0, 40), chance.uniform(0, 40)
+            w = chance.choice([0.1, 0.2, 0.25, 1.0, 2.0, 4.0, 5.0, 6.0])
+            h = chance.choice([0.1, 0.25, 0.7, 1.5, 3.0, 5.0])
+            if chance.random() < 0.5:
+                w, h = h, w
+            paths.append(vv._Path((x, y, x + w, y + h), (((x, y), (x + w, y + h)),), False, 0.3))
+        # A stacked fraction drawn exactly: a bar with a digit right above and below it.
+        paths.append(vv._Path((10.0, 10.0, 12.0, 10.1), (), False, 0.3))
+        paths.append(vv._Path((10.2, 8.2, 11.5, 9.9), (), False, 0.3))
+        paths.append(vv._Path((10.2, 10.2, 11.5, 11.9), (), False, 0.3))
+        chance.shuffle(paths)
+        assert vv._bars(paths) == _bars_one_by_one(paths), round_
+    assert vv._bars(paths)
+
+
+def test_a_read_is_kept_in_the_set_pack_and_never_read_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Speed (2026-10-23): a drawn-ink read of a set's PDF is kept in its set pack (`spot_reads/`):
+    the same spot and value are read once, in a run, a Continue or another worker process; another
+    value, box or PDF is read again, and a PDF no check keeps is never kept."""
+    pdf = _write(tmp_path, _pdf(stamp=_text(20, 100, "1168 [46]")))
+    other = _write(tmp_path, _pdf(stamp=_text(20, 100, "1168 [46]")), name="other.pdf")
+    pack = tmp_path / "pack"
+    box = _around(20, 100, 60)
+    real = vv._verify
+    calls: list[str] = []
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        calls.append(str(args[3]))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(vv, "_verify", counted)
+    vv.keep_reads_in(pack, [pdf])
+    try:
+        first = vv.verify_value(pdf, 1, box, '46"')
+        again = vv.verify_value(pdf, 1, box, '46"')
+        assert again == first and calls == ['46"']
+        assert len(list((pack / vv.KEPT_READS).rglob("*.json"))) == 1
+        vv.verify_value(pdf, 1, box, '47"')
+        vv.verify_value(pdf, 1, _around(20, 100, 61), '46"')
+        vv.verify_value(other, 1, box, '46"')
+        vv.verify_value(other, 1, box, '46"')
+        assert calls == ['46"', '47"', '46"', '46"', '46"']
+        vv.verify_value(pdf, 1, box, '46"', drawn=False)  # the text route alone is never kept
+        assert calls[-1] == '46"' and len(calls) == 6
+        assert vv.kept_folders()[str(pdf.resolve())] == pack
+        assert str(other.resolve()) not in vv.kept_folders()
+    finally:
+        vv.keep_reads_in(None, [pdf])
+    assert str(pdf.resolve()) not in vv.kept_folders()
+
+
+def test_an_engine_reads_the_same_picture_once() -> None:
+    """Speed (2026-10-23): an OCR engine reads the same picture the same way every time, so each
+    picture it was shown is read once (`_Seen`): the same lines come back, a copy each time; a
+    different picture, size or call is read again."""
+    seen = vv._Seen()
+    reads: list[str] = []
+
+    def read(text: str) -> Any:
+        return lambda: reads.append(text) or [text]
+
+    one = np.zeros((4, 6), dtype=np.uint8)
+    other = one.copy()
+    other[1, 1] = 255
+    first = seen.read(("engine", True), one, read("12"))
+    first.append("changed by the caller")
+    assert seen.read(("engine", True), one.copy(), read("never")) == ["12"]
+    assert seen.read(("engine", False), one, read("34")) == ["34"]
+    assert seen.read(("engine", True), other, read("56")) == ["56"]
+    assert seen.read(("engine", True), one.reshape(6, 4), read("78")) == ["78"]
+    assert reads == ["12", "34", "56", "78"]
+
+
+class _NeverRead:
+    """An engine that must not be asked."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.reads_inch_marks = name == "Tesseract"
+
+    def __call__(self, picture: Any, *, single_line: bool) -> list[str]:
+        raise AssertionError("a whole sheet's ink was read")
+
+
+def test_a_box_that_is_most_of_the_sheet_is_not_read_as_one_spot(tmp_path: Path) -> None:
+    """2026-10-23: a box larger than `WHOLE_SHEET_PT2` (an AI's box round a whole sheet) is not
+    one dimension's spot: its drawn ink is never read (that took most of an hour on a 99-page
+    set and cannot tell which number is the one claimed); its typed text still is (a matching
+    value here; another value: the next test)."""
+    strokes = _write(tmp_path, _pdf(stamp=stroke_ops('34"', 20, 100)), name="strokes.pdf")
+    sheet = _box(-400, -400, 1000, 700)
+    assert (sheet["x1"] - sheet["x0"]) * (sheet["y1"] - sheet["y0"]) > vv.WHOLE_SHEET_PT2
+    never = (_NeverRead("Tesseract"), _NeverRead("RapidOCR"))
+    found = vv.verify_value(strokes, 1, sheet, '34"', readers=never)
+    assert (found.result, found.route) == ("cannot_read", "none")
+    assert "most of the sheet" in found.reason
+    assert vv.verify_value(strokes, 1, _around(20, 100, 30), '34"', readers=STROKES).result == (
+        "match"
+    )
+    typed = _write(tmp_path, _pdf(stamp=_text(20, 100, "1168 [46]")), name="typed.pdf")
+    assert vv.verify_value(typed, 1, sheet, '46"', readers=never).route == "text"
+
+
+def test_a_whole_sheet_box_still_says_its_typed_text_prints_another_value(tmp_path: Path) -> None:
+    """Review of the whole-sheet rule: a box that is most of the sheet, with drawn ink, whose typed
+    text prints another value than the one claimed, still says so ("mismatch", as before the
+    rule): code disagreeing is what keeps such an item off red. Its ink is still never read."""
+    data = _pdf(stamp=_text(20, 100, "1168 [46]") + b"\n" + stroke_ops('34"', 20, 200))
+    both = _write(tmp_path, data, name="both.pdf")
+    sheet = _box(-400, -400, 1000, 700)
+    never = (_NeverRead("Tesseract"), _NeverRead("RapidOCR"))
+    found = vv.verify_value(both, 1, sheet, '47"', readers=never)
+    assert (found.result, found.route) == ("mismatch", "text")
+    assert "1168 [46]" in found.reason

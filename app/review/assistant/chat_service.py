@@ -1067,6 +1067,8 @@ class MessageJob:
     """A full check's specialists started together, at most (#1874)."""
     parse_processes: int = 0
     """Worker processes that parse drawing pages for a full check's code checks (#1874)."""
+    spot_processes: int = 0
+    """Worker processes for a full check's spot reads (`spot_pool`, 2026-10-23)."""
     whole_look_model: str | None = None
     """The whole-drawing look's model (`whole_look`); `None`: off."""
     whole_look_effort: str = "medium"
@@ -1514,6 +1516,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             calls_at_once=job.calls_at_once,
             full_check_agents=job.full_check_agents,
             parse_processes=job.parse_processes,
+            spot_processes=job.spot_processes,
             preflight_model=job.preflight_model,
             run_anyway=job.run_anyway,
             whole_look_model=job.whole_look_model,
