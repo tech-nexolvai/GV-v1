@@ -426,6 +426,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/packages/{package_id}/vendor-pages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What each vendor page shows: title, project, sheet (no AI call)
+         * @description The result screen's "By page" headings and the drawings request (2026-10-23): what the set
+         *     pack already knows of each vendor page; empty until the pack is made.
+         */
+        get: operations["vendor_pages_api_v1_packages__package_id__vendor_pages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/product-types": {
         parameters: {
             query?: never;
@@ -4564,6 +4585,17 @@ export interface components {
              * @description Who recorded it; null: never recorded.
              */
             by?: string | null;
+            /**
+             * Drawing Needed
+             * @description No architect drawing of this vendor page is in the upload (#1885: the pairing left it unpaired for good; its own checks still ran). The result screen's 'Drawing needed': GV is asked for the architect's drawing. Worked out on read from the page's note, so older answers say it too.
+             * @default false
+             */
+            drawing_needed: boolean;
+            /**
+             * Drawing Needed Why
+             * @description drawing_needed: why, in plain words ("no drawing of the same item was found in the architect's file").
+             */
+            drawing_needed_why?: string | null;
             /** Note */
             note?: string | null;
             /** Page */
@@ -7611,6 +7643,38 @@ export interface components {
             type: "unknowns";
             /** Unknowns */
             unknowns: components["schemas"]["ChatUnknownOut"][];
+        };
+        /**
+         * ChatVendorPageOut
+         * @description One page of the vendor's file, as the set pack names it (no AI call).
+         */
+        ChatVendorPageOut: {
+            /** Page */
+            page: number;
+            /**
+             * Project
+             * @description The project printed on the page.
+             */
+            project?: string | null;
+            /**
+             * Sheet
+             * @description Its sheet number as printed.
+             */
+            sheet?: string | null;
+            /**
+             * Title
+             * @description The piece the page draws as printed in its title block, else its area.
+             */
+            title?: string | null;
+        };
+        /**
+         * ChatVendorPagesOut
+         * @description `GET /packages/{package_id}/vendor-pages`: what each vendor page shows, for the result
+         *     screen's "By page" headings and the drawings request; empty until the set pack is made.
+         */
+        ChatVendorPagesOut: {
+            /** Pages */
+            pages?: components["schemas"]["ChatVendorPageOut"][];
         };
         /**
          * ChatVerifiedValueOut
@@ -14662,6 +14726,44 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vendor_pages_api_v1_packages__package_id__vendor_pages_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatVendorPagesOut"];
+                };
+            };
+            /** @description No such drawing set (or no access). */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

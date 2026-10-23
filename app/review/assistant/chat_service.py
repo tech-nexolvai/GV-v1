@@ -146,6 +146,7 @@ __all__ = [
     "shutdown_chats",
     "sync_uploads",
     "use_pack_starter",
+    "vendor_page_titles",
     "write_checkpoint",
 ]
 
@@ -590,6 +591,55 @@ def plan_page_picture(chat_root: Path, package_id: UUID, page: int) -> Path | No
     except Exception:  # noqa: BLE001 - no picture, the question still shows
         return None
     return picture if picture.is_file() else None
+
+
+def vendor_page_titles(chat_root: Path, package_id: UUID) -> list[dict[str, Any]]:
+    """What each page of the vendor's file shows, for the result screen's "By page" headings and
+    the drawings request: the piece the page draws as printed in its title block (the set index,
+    #1889), else its area as code's page map names it; the project printed on the page; its sheet
+    number. Only what code already keeps in the set pack: never an AI call. Empty when the pack is
+    not made (yet)."""
+    workspace = ChatWorkspace(_plan_root(chat_root, package_id))
+    listing = read_listing(workspace)
+    main = main_upload(listing)
+    if main is None:
+        return []
+    try:
+        folder: Path = import_module("app.review.assistant.set_pack").pack_folder(
+            chat_root, listing
+        )
+        page_map = read_page_map(folder) or {}
+        index: Mapping[str, Mapping[str, Any]] = import_module(
+            "app.review.assistant.set_index"
+        ).load(folder)
+    except Exception as failed:  # noqa: BLE001 - the screen shows page numbers only
+        _log.warning("assistant vendor page titles failed: %s", type(failed).__name__)
+        return []
+    name = str(main.get("name") or "")
+    out: list[dict[str, Any]] = []
+    for entry in page_map.get("pages") or []:
+        if not isinstance(entry, Mapping) or str(entry.get("file") or "") != name:
+            continue
+        try:
+            page = int(entry.get("page") or 0)
+        except (TypeError, ValueError):
+            continue
+        if page < 1:
+            continue
+        read = index.get(f"{name}#{page}") or {}
+        projects = [str(p).strip() for p in read.get("projects") or [] if str(p).strip()]
+        sheets = [str(n).strip() for n in entry.get("sheet_numbers") or [] if str(n).strip()]
+        title = str(read.get("item") or "").strip() or str(entry.get("area") or "").strip()
+        sheet = str(read.get("sheet") or "").strip() or (sheets[0] if sheets else "")
+        out.append(
+            {
+                "page": page,
+                "title": title[:120] or None,
+                "project": projects[0][:120] if projects else None,
+                "sheet": sheet[:40] or None,
+            }
+        )
+    return sorted(out, key=lambda one: int(one["page"]))
 
 
 def full_check_plan(

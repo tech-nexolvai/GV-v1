@@ -17,7 +17,7 @@ import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState
 import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionChoice, type FindingDecisionExtra, type RemadeFiles } from '@/lib/chat-api';
 import { coverageCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
 import { fullCheckBubble, fullCheckFiles, withoutCodeNote } from '@/lib/chat-full-check';
-import { commentNumber, resultGroups } from '@/lib/chat-result';
+import { commentNumber, drawingNeededItems, drawingNeededPages, resultGroups, type PageTitles } from '@/lib/chat-result';
 import { asShown, proofGroup } from '@/lib/chat-proof';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 import { startingLive } from '@/lib/chat-live';
@@ -307,6 +307,8 @@ export interface AssistantMessageProps {
   fullPageHref?: string | null;
   /** #1717: the vendor's page picture (the set pack's, 100 dpi), for the evidence panel's boxed spot. */
   pagePicture?: ((page: number) => string) | null;
+  /** Results v2: what each vendor page shows (the set pack), for the "By page" headings and the drawings request. */
+  pageTitles?: PageTitles | null;
   /**
    * Chat v4: the answer to a full check. Since #1508 it renders as the work fold → the summary strip
    * (Wrong · To check · Right · Not compared · Pages · Accuracy) → the cloud drawing (large) and the
@@ -332,7 +334,7 @@ export interface LiveStopControls {
   onAskStop: (open: boolean) => void;
 }
 
-export function AssistantMessage({ message, chatId, models, onReload, onRetry, onRunAnyway, onContinue, latest = false, makeMarkupPdf, fullPageHref, pagePicture = null, fullCheck = false, decide, remakeCloud, focusFindingId = null, liveStop = null }: AssistantMessageProps) {
+export function AssistantMessage({ message, chatId, models, onReload, onRetry, onRunAnyway, onContinue, latest = false, makeMarkupPdf, fullPageHref, pagePicture = null, pageTitles = null, fullCheck = false, decide, remakeCloud, focusFindingId = null, liveStop = null }: AssistantMessageProps) {
   const running = message.status === 'running';
   // #1727: the live card while a full check runs (from the first moment: getting ready). An older
   // server that sends only `progress` keeps the one calm line instead.
@@ -354,6 +356,15 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const pictureUrl = (pictureId: string) => chatPaths.picture(chatId, pictureId);
   const [filter, setFilter] = useState<FindingFilter>(NO_FILTER);
   const [viewing, setViewing] = useState<string | null>(focusFindingId);
+  // Results v2 (audit gap 10): the drawer steps through the open tile's rows, in the order shown.
+  const [steps, setSteps] = useState<readonly string[] | null>(null);
+  const openFrom = (findingId: string | null, list?: readonly string[]) => {
+    setSteps(list ?? null);
+    setViewing(findingId);
+  };
+  // The drawings request to GV: every Drawing-needed page is in it unless the reviewer leaves it out.
+  const [leftOut, setLeftOut] = useState<ReadonlySet<number>>(() => new Set());
+  const request = { leftOut, onToggle: (page: number) => setLeftOut((now) => { const next = new Set(now); if (next.has(page)) next.delete(page); else next.add(page); return next; }) };
   // #1578: a link from the job tracker opens its finding, and brings the answer into view behind it.
   const [focused, setFocused] = useState(focusFindingId);
   if (focused !== focusFindingId) {
@@ -413,9 +424,14 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const architectView = fullCheck && !running;
   const shown = architectView ? findings.map((finding) => asShown(finding, decisionOf(finding))) : findings;
   // The viewer's arrows step through the findings in the order the sections show them.
+  const neededItems = architectView ? drawingNeededItems(drawingNeededPages(coverage), pageTitles) : [];
   const ordered = architectView ? (() => {
     const groups = resultGroups(findings, decisionOf);
-    return [...groups.wrong, ...groups.ruleNotes, ...groups.notCompared, ...groups.dismissed, ...groups.right];
+    const all = [...groups.wrong, ...groups.likely, ...groups.ruleNotes, ...neededItems, ...groups.notCompared, ...groups.dismissed, ...groups.right];
+    if (!steps) return all;
+    const byId = new Map(all.map((finding) => [finding.id, finding]));
+    const stepped = steps.map((id) => byId.get(id)).filter((finding): finding is ChatFinding => Boolean(finding));
+    return stepped.length ? stepped : all;
   })() : sectionOrder(shown, filter);
   // #1803: after each saved decision of a full check, the draft (cloud drawing, letter, register,
   // Not-compared list, package) is made again by itself, a moment later so quick decisions share one
@@ -638,9 +654,12 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
               timings: message.trust?.timings ?? null,
             }}
             pictureUrl={pictureUrl}
-            onOpen={setViewing}
+            onOpen={openFrom}
             onRunAgain={retry ?? null}
             review={review}
+            coverage={coverage}
+            pageTitles={pageTitles}
+            request={request}
             rounds={roundCounts(findings, message.trust)}
             activity={items.some((item) => item.kind === 'activity') ? <div className="grid min-w-0 gap-3">{items.filter((item) => item.kind === 'activity').map((item) => renderItem(item, items.indexOf(item)))}</div> : null}
             summary={textItems.length ? (
@@ -667,11 +686,11 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       {!fullCheck && findings.length > 0 && narrow && <ConfidenceLine findings={findings} trust={message.trust} />}
       {!fullCheck && howChecked}
       {!fullCheck && !howChecked && coverageStrip}
-      {findings.length > 0 && (
+      {(findings.length > 0 || neededItems.length > 0) && (
         <EvidenceViewer
           findings={ordered}
           openId={viewing}
-          onOpen={setViewing}
+          onOpen={(id) => { if (id === null) setSteps(null); setViewing(id); }}
           pictureUrl={pictureUrl}
           fullPageHref={resultShown ? null : fullPageHref}
           pagePicture={pagePicture}
@@ -679,6 +698,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           decisionFor={resultShown ? decisionFor : null}
           numberOf={resultShown ? (finding) => commentNumber(finding, message.package_state) : null}
           notice={decideFailed}
+          results={resultShown ? { neededPages: new Set(neededItems.map((item) => item.page)), request, pageTitles } : null}
           draft={resultShown && review ? { updating: review.updating, failed: review.failed, updatedAt: review.updatedAt, stale: review.stale ?? false, refusal: review.refusal ?? null, decided: review.decided, pkg: made.pkg, href: made.pkg ? made.pkg.url || chatPaths.file(chatId, made.pkg.id) : null, onRetry: review.onUpdate } : null}
         />
       )}

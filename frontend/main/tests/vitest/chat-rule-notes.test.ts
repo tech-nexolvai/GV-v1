@@ -35,8 +35,8 @@ describe('rule notes (#1839)', () => {
     const groups = resultGroups(findings);
     expect(groups.ruleNotes.map((f) => f.id)).toEqual(['a']);
     expect(groups.notCompared.map((f) => f.id)).toEqual(['b']);
-    expect(resultTabs(groups)).toEqual(['wrong', 'right', 'rule_note', 'not_compared']);
-    expect(resultTabs(resultGroups([findings[1]]))).toEqual(['wrong', 'right', 'not_compared']);
+    // Results v2 (2026-10-23): all six tiles, always in the same place.
+    expect(resultTabs()).toEqual(['wrong', 'likely_problem', 'rule_note', 'drawing_needed', 'right', 'not_compared']);
     expect(proofCounts(findings)).toMatchObject({ clouded: 1, rule_note: 1, not_compared: 1 });
   });
 

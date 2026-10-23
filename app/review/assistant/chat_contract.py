@@ -99,6 +99,8 @@ __all__ = [
     "ChatUnderstoodScopeOut",
     "ChatUnknownOut",
     "ChatUnknownsBlock",
+    "ChatVendorPageOut",
+    "ChatVendorPagesOut",
     "ChatWorkItemOut",
     "ChatWorkItemsBlock",
 ]
@@ -1053,6 +1055,28 @@ class ChatCoveragePageOut(BaseModel):
     status: Literal["same", "different", "not_comparable", "not_opened"]
     note: str | None = None
     by: str | None = Field(default=None, description="Who recorded it; null: never recorded.")
+    drawing_needed: bool = Field(
+        default=False,
+        description="No architect drawing of this vendor page is in the upload (#1885: the "
+        "pairing left it unpaired for good; its own checks still ran). The result screen's "
+        "'Drawing needed': GV is asked for the architect's drawing. Worked out on read from the "
+        "page's note, so older answers say it too.",
+    )
+    drawing_needed_why: str | None = Field(
+        default=None,
+        description='drawing_needed: why, in plain words ("no drawing of the same item was '
+        "found in the architect's file\").",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drawing_needed(cls, raw: object) -> object:
+        if not isinstance(raw, dict) or "drawing_needed" in raw:
+            return raw
+        from app.review.assistant.full_check_plan import unpaired_note_why
+
+        why = unpaired_note_why(raw.get("note"))
+        return raw if why is None else {**raw, "drawing_needed": True, "drawing_needed_why": why}
 
 
 class ChatCoverageCountsOut(BaseModel):
@@ -2445,6 +2469,29 @@ class ChatPagesReadOut(BaseModel):
     total: int = Field(default=0, description="The set's pages.")
     unreadable: int = Field(default=0, description="Pages that could not be read (skipped).")
     why: str | None = Field(default=None, description="Why the drawings could not be read.")
+
+
+class ChatVendorPageOut(BaseModel):
+    """One page of the vendor's file, as the set pack names it (no AI call)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page: int = Field(ge=1)
+    title: str | None = Field(
+        default=None,
+        description="The piece the page draws as printed in its title block, else its area.",
+    )
+    project: str | None = Field(default=None, description="The project printed on the page.")
+    sheet: str | None = Field(default=None, description="Its sheet number as printed.")
+
+
+class ChatVendorPagesOut(BaseModel):
+    """`GET /packages/{package_id}/vendor-pages`: what each vendor page shows, for the result
+    screen's "By page" headings and the drawings request; empty until the set pack is made."""
+
+    model_config = ConfigDict(frozen=True)
+
+    pages: list[ChatVendorPageOut] = Field(default_factory=list)
 
 
 class ChatFullCheckPlanOut(BaseModel):

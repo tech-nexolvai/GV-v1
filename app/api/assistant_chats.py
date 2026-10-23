@@ -100,6 +100,7 @@ from app.review.assistant.chat_contract import (
     ChatMessageOut,
     ChatOut,
     ChatRemadeOut,
+    ChatVendorPagesOut,
 )
 from app.review.assistant.chat_corrections import corrections_by_answer, with_corrections
 from app.review.assistant.chat_decisions import (
@@ -149,6 +150,7 @@ from app.review.assistant.chat_service import (
     shutdown_chats,
     start_set_pack,
     sync_uploads,
+    vendor_page_titles,
 )
 from app.review.assistant.chat_store import (
     add_assistant_message,
@@ -816,6 +818,25 @@ def plan_page(
     if path is None:
         raise _not_found()
     return FileResponse(path, media_type="image/png")
+
+
+@router.get(
+    "/packages/{package_id}/vendor-pages",
+    response_model=ChatVendorPagesOut,
+    summary="What each vendor page shows: title, project, sheet (no AI call)",
+    responses={404: {"description": "No such drawing set (or no access)."}},
+)
+def vendor_pages(
+    request: Request,
+    package_id: UUID,
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+) -> ChatVendorPagesOut:
+    """The result screen's "By page" headings and the drawings request (2026-10-23): what the set
+    pack already knows of each vendor page; empty until the pack is made."""
+    _package(session, package_id, principal)
+    pages = vendor_page_titles(_chat_root(request.app), package_id)
+    return ChatVendorPagesOut.model_validate({"pages": pages})
 
 
 # ---- an answer's findings: the marked-up PDF and the CSV -----------------------------------------

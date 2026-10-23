@@ -39,6 +39,7 @@ import { PlusMenu } from '@/components/chat/chat-plus-menu';
 import { AssistantMessage, UserMessage } from '@/components/chat/chat-message';
 import { UnderstoodLine } from '@/components/chat/chat-understood';
 import { ApiError } from '@/api/client';
+import { type PageTitles } from '@/lib/chat-result';
 import { CHECK_MODEL, chatFailureWords, chatPaths, CONTINUE_TEXT, isAbort, LIVE_CHAT_API, type Chat, type ChatApi, type ChatEvent, type ChatMessage, type ChatMode, type ChatModels, type ChatPlanAnswer, type ChatProduct, type ChatTaskEdit } from '@/lib/chat-api';
 import { confirmWords, effectiveProducts, FULL_CHECK_TEXT, isFullCheck, lastProducts, pickable, priceRuleShort, priceRuleWords, scopeSentence, toggleProduct } from '@/lib/chat-full-check';
 import { useProductCatalog } from '@/lib/products';
@@ -231,6 +232,24 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
   const chat = chatId && loaded?.chatId === chatId ? loaded.chat : null;
   const failedToLoad = chatId && loadError?.chatId === chatId && !chat ? loadError : null;
   const messages = chatId && thread?.chatId === chatId ? thread.messages : NO_MESSAGES;
+
+  // ── What each vendor page shows (results v2: "By page" headings, the drawings request) ──
+  const [titles, setTitles] = useState<{ packageId: string; pages: PageTitles } | null>(null);
+  const hasFullCheck = messages.some((message) => message.mode === 'full_check' || message.role === 'assistant' && Boolean(message.review_action));
+  useEffect(() => {
+    if (!api.vendorPages || !hasFullCheck) return undefined;
+    let current = true;
+    api.vendorPages(packageId).then(
+      (pages) => current && setTitles({ packageId, pages: new Map(pages.map((page) => [page.page, page])) }),
+      // Without them the headings say the page number and the items' own area.
+      () => undefined,
+    );
+    return () => {
+      current = false;
+    };
+  }, [api, packageId, hasFullCheck]);
+  const pageTitles = titles?.packageId === packageId ? titles.pages : null;
+
   const name = chat?.package_name ?? listName;
 
   // ── Products (chat v4; #1547: the registry's active products) ──
@@ -761,6 +780,7 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     remakeCloud={api.remakeCloud ? (messageId) => api.remakeCloud!(chatId, messageId) : undefined}
                     fullPageHref={formatRoute({ page: 'review', packageId })}
                     pagePicture={(page) => chatPaths.planPage(packageId, page)}
+                    pageTitles={pageTitles}
                     fullCheck={isFullCheck(message, asked?.role === 'user' ? asked : null)}
                     focusFindingId={focusFinding && message.id === focusFinding.messageId ? focusFinding.findingId : null}
                     liveStop={at === messages.length - 1 ? liveStop : null}

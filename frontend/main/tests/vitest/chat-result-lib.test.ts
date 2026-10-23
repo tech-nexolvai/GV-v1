@@ -132,8 +132,8 @@ describe('the review result (#1717)', () => {
 
 describe('the work line (#1717)', () => {
   it('says what the check did, the time last', () => {
-    expect(workLine({ drawingsDone: 12, drawingsTotal: 12, pagesTotal: 20, filesMade: 5, seconds: 151, stopped: false })).toEqual({ words: 'Checked 12 drawings on 20 pages · 5 files made', time: '2:31' });
-    expect(workLine({ drawingsDone: 8, drawingsTotal: 12, pagesTotal: 20, filesMade: 0, seconds: null, stopped: true })).toEqual({ words: 'Compared 8 of 12 drawings on 20 pages · stopped before the end', time: null });
+    expect(workLine({ drawingsDone: 12, drawingsTotal: 12, pagesTotal: 20, filesMade: 5, seconds: 151, stopped: false })).toEqual({ words: 'Looked at 12 drawings on 20 pages · 5 files made', time: '2:31' });
+    expect(workLine({ drawingsDone: 8, drawingsTotal: 12, pagesTotal: 20, filesMade: 0, seconds: null, stopped: true })).toEqual({ words: 'Looked at 8 of 12 drawings on 20 pages · stopped before the end', time: null });
     expect(clockWords(3725)).toBe('1:02:05');
   });
 

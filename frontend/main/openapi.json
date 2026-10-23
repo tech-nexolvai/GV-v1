@@ -4035,6 +4035,24 @@
             "description": "Who recorded it; null: never recorded.",
             "title": "By"
           },
+          "drawing_needed": {
+            "default": false,
+            "description": "No architect drawing of this vendor page is in the upload (#1885: the pairing left it unpaired for good; its own checks still ran). The result screen's 'Drawing needed': GV is asked for the architect's drawing. Worked out on read from the page's note, so older answers say it too.",
+            "title": "Drawing Needed",
+            "type": "boolean"
+          },
+          "drawing_needed_why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "drawing_needed: why, in plain words (\"no drawing of the same item was found in the architect's file\").",
+            "title": "Drawing Needed Why"
+          },
           "note": {
             "anyOf": [
               {
@@ -11114,6 +11132,71 @@
           "unknowns"
         ],
         "title": "ChatUnknownsBlock",
+        "type": "object"
+      },
+      "ChatVendorPageOut": {
+        "description": "One page of the vendor's file, as the set pack names it (no AI call).",
+        "properties": {
+          "page": {
+            "minimum": 1.0,
+            "title": "Page",
+            "type": "integer"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The project printed on the page.",
+            "title": "Project"
+          },
+          "sheet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its sheet number as printed.",
+            "title": "Sheet"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The piece the page draws as printed in its title block, else its area.",
+            "title": "Title"
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "title": "ChatVendorPageOut",
+        "type": "object"
+      },
+      "ChatVendorPagesOut": {
+        "description": "`GET /packages/{package_id}/vendor-pages`: what each vendor page shows, for the result\nscreen's \"By page\" headings and the drawings request; empty until the set pack is made.",
+        "properties": {
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatVendorPageOut"
+            },
+            "title": "Pages",
+            "type": "array"
+          }
+        },
+        "title": "ChatVendorPagesOut",
         "type": "object"
       },
       "ChatVerifiedValueOut": {
@@ -25762,6 +25845,53 @@
           }
         },
         "summary": "A page's picture for a plan-check question",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
+    "/api/v1/packages/{package_id}/vendor-pages": {
+      "get": {
+        "description": "The result screen's \"By page\" headings and the drawings request (2026-10-23): what the set\npack already knows of each vendor page; empty until the pack is made.",
+        "operationId": "vendor_pages_api_v1_packages__package_id__vendor_pages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatVendorPagesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such drawing set (or no access)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What each vendor page shows: title, project, sheet (no AI call)",
         "tags": [
           "assistant chats"
         ]

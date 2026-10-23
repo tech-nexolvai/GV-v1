@@ -1048,6 +1048,10 @@ export interface CoveragePage {
   status: CoverageStatus;
   /** Why it is not comparable, or what differs. */
   note?: string | null;
+  /** #1885 (results v2): no architect drawing of this vendor page is in the upload; GV is asked for it. */
+  drawing_needed?: boolean | null;
+  /** Why, in plain words. */
+  drawing_needed_why?: string | null;
 }
 
 /** The page-by-page map of a whole-set answer: which pages were compared and how they came out. */
@@ -1276,6 +1280,8 @@ export const chatPaths = {
   planPage: (packageId: string, page: number) => `${BASE}/packages/${id(packageId)}/plan-pages/${page}`,
   /** #1569: code's plan for a full check of the set, and where it is unsure (no AI call). */
   fullCheckPlan: (packageId: string) => `${BASE}/packages/${id(packageId)}/full-check-plan`,
+  /** Results v2 (2026-10-23): what each vendor page shows (title, project, sheet), from the set pack. */
+  vendorPages: (packageId: string) => `${BASE}/packages/${id(packageId)}/vendor-pages`,
   /** #1522: the reviewer's Agree / Not a problem on one finding (POST). */
   decision: (chatId: string, messageId: string, findingId: string) =>
     `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/findings/${id(findingId)}/decision`,
@@ -1337,6 +1343,20 @@ export function createChat(packageId: string): Promise<CreatedChat> {
 export function getFullCheckPlan(packageId: string, products?: readonly ChatProduct[] | null): Promise<ChatFullCheckPlan> {
   const query = (products ?? []).map((product) => `products=${encodeURIComponent(product)}`).join('&');
   return json<ChatFullCheckPlan>(query ? `${chatPaths.fullCheckPlan(packageId)}?${query}` : chatPaths.fullCheckPlan(packageId));
+}
+
+/** One vendor page as the set pack names it (no AI call). */
+export interface VendorPage {
+  page: number;
+  title?: string | null;
+  project?: string | null;
+  sheet?: string | null;
+}
+
+/** Results v2: what each vendor page shows, for the "By page" headings and the drawings request; empty until the pack is made. */
+export async function getVendorPages(packageId: string): Promise<VendorPage[]> {
+  const body = await json<{ pages?: VendorPage[] | null }>(chatPaths.vendorPages(packageId));
+  return body.pages ?? [];
 }
 
 export function getChat(chatId: string): Promise<Chat> {
@@ -1496,6 +1516,8 @@ export interface ChatApi {
   consistency?: typeof runConsistencyCheck;
   /** #1569: the plan check; optional so a fake API can leave it out (then no questions). */
   plan?: typeof getFullCheckPlan;
+  /** Results v2: the vendor pages' titles; optional so a fake API can leave it out (page numbers only then). */
+  vendorPages?: typeof getVendorPages;
 }
 
 export const LIVE_CHAT_API: ChatApi = {
@@ -1511,4 +1533,5 @@ export const LIVE_CHAT_API: ChatApi = {
   remakeCloud: remakeCloudDrawing,
   consistency: runConsistencyCheck,
   plan: getFullCheckPlan,
+  vendorPages: getVendorPages,
 };
