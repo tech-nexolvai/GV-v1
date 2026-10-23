@@ -112,6 +112,8 @@ describe('a full-check answer', () => {
 
   const rows = (node: HTMLElement) => [...node.querySelectorAll<HTMLElement>('[data-slot="chat-result-row"]')].map((row) => row.dataset.id);
   const tiles = (node: HTMLElement) => [...node.querySelectorAll<HTMLElement>('[data-slot="chat-result-tiles"] [role="tab"]')].map((tile) => `${tile.dataset.tab}:${tile.textContent}`);
+  // A tile's tab, word and count, without its caption.
+  const counted = (node: HTMLElement) => [...node.querySelectorAll<HTMLElement>('[data-slot="chat-result-tiles"] [role="tab"]')].map((tile) => `${tile.dataset.tab}:${tile.firstElementChild?.textContent}${tile.querySelector('[data-slot="chat-result-count"]')?.textContent}`);
 
   it('reads summary first: the work line, the review result and files, then three tiles that are the tabs, then How this was checked (#1717)', async () => {
     const user = userEvent.setup();
@@ -130,10 +132,14 @@ describe('a full-check answer', () => {
       expect(order[at - 1]!.compareDocumentPosition(order[at]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
     // One place per number: the tiles hold the counts; no headline, stat cards or counted section heads.
+    // Results v2 (2026-10-23): six tiles, always in the same place; glyph + word + count + hint.
     expect(tiles(node)).toEqual([
-      'wrong:Wrong2Red on the cloud drawing, with what it should be',
+      'wrong:Wrong2Proven. Red on the cloud drawing',
+      'likely_problem:!Likely problem0Found, not proven. Vendor asked to confirm',
+      'rule_note:?Ask the architect0The architect’s own size needs a yes',
+      'drawing_needed:Drawing needed00 pages not in the upload. Ask GV',
       'right:Right2Match the architect or GV’s rules',
-      'not_compared:Not compared1Each with its reason and what is needed',
+      'not_compared:Not compared11 item, with its reason',
     ]);
     expect(node.querySelector('[data-slot="chat-summary-headline"], [data-slot="chat-kpis"], [data-slot="chat-cloud-drawing"], [data-slot="chat-package"]')).toBeNull();
     // The accuracy once, in the footer.
@@ -199,7 +205,7 @@ describe('a full-check answer', () => {
     ];
     render(<AssistantMessage message={answer({ findings: proved, files: [CLOUD, REPORT] })} chatId="c-1" models={[OPUS]} fullCheck decide={vi.fn()} />);
     const node = screen.getByRole('article', { name: 'Answer' });
-    expect(tiles(node).map((tile) => tile.replace(/[A-Z][^0-9]*$/, ''))).toEqual(['wrong:Wrong1', 'right:Right1', 'not_compared:Not compared2']);
+    expect(counted(node)).toEqual(['wrong:Wrong1', 'likely_problem:!Likely problem0', 'rule_note:?Ask the architect0', 'drawing_needed:Drawing needed0', 'right:Right1', 'not_compared:Not compared2']);
     const head = within(node).getByRole('region', { name: 'Review result' });
     expect(head.textContent).not.toMatch(/draft|signed review/i);
     expect(head.querySelector('a')?.getAttribute('aria-label')).toBe('Open the cloud drawing');
@@ -245,7 +251,7 @@ describe('a full-check answer', () => {
     const mixed = [...findings, finding('r3', { item: 'Toe kick height', status: 'same', compared: false, proof: { group: 'not_compared', not_compared: 'not_seen', label: 'Not reviewed: not looked at on both drawings', reason: 'only the vendor’s side was read' } })];
     render(<AssistantMessage message={answer({ findings: mixed, files: [CLOUD] })} chatId="c-1" models={[OPUS]} fullCheck decide={vi.fn()} />);
     const node = screen.getByRole('article', { name: 'Answer' });
-    expect(tiles(node).map((tile) => tile.replace(/[A-Z][^0-9]*$/, ''))).toEqual(['wrong:Wrong2', 'right:Right2', 'not_compared:Not compared2']);
+    expect(counted(node)).toEqual(['wrong:Wrong2', 'likely_problem:!Likely problem0', 'rule_note:?Ask the architect0', 'drawing_needed:Drawing needed0', 'right:Right2', 'not_compared:Not compared2']);
   });
 
   it('is still a full check after a reload, when the saved question has no mode (#1508)', () => {
@@ -331,7 +337,7 @@ describe('a full-check answer', () => {
     await user.click(within(panel).getByRole('button', { name: 'Remove the red mark' }));
     expect(decide).toHaveBeenCalledWith('msg-1', 'w2', 'not_a_problem', expect.objectContaining({ note: 'Field fit' }));
     await waitFor(() => expect(tiles(node)[0]).toMatch(/^wrong:Wrong1/));
-    expect(tiles(node)[1]).toMatch(/^right:Right3/);
+    expect(tiles(node)[4]).toMatch(/^right:Right3/);
     expect(within(screen.getByRole('dialog')).getByText('Right (reviewer).')).toBeTruthy();
     // The draft is made again by itself, a moment later.
     await waitFor(() => expect(remake).toHaveBeenCalledWith('msg-1'), { timeout: 3000 });
@@ -437,10 +443,15 @@ describe('a full-check answer', () => {
     await user.click(within(node).getByRole('button', { name: /^C-02: Sink base width, page \d+\. Open the evidence$/ }));
     const panel = await screen.findByRole('dialog');
     expect(panel.querySelector('[data-slot="chat-evidence-number"]')?.textContent).toBe('C-02');
-    expect([...panel.querySelectorAll('[data-slot="chat-evidence-side"] figcaption')].map((caption) => caption.textContent)).toEqual(['Vendor46″', 'Should be37″']);
-    const spot = within(panel).getByRole('region', { name: 'On the drawing' });
-    expect(within(spot).getByRole('img').getAttribute('src')).toBe('/api/v1/packages/pkg-1/plan-pages/4');
-    expect(within(spot).getByRole('button', { name: 'Architect spot' })).toBeTruthy();
+    // Results v2: the two big pictures side by side (the evidence crops); "Whole page" shows the vendor's page picture.
+    expect([...panel.querySelectorAll('[data-slot="chat-evidence-side"] figcaption')].map((caption) => caption.textContent)).toEqual(['Vendor shows46″', 'Should be37″']);
+    const sides = () => [...panel.querySelectorAll<HTMLElement>('[data-slot="chat-evidence-side"]')];
+    expect(sides().map((side) => side.querySelector('img')?.getAttribute('src'))).toEqual(['/api/v1/chats/c-1/pictures/vend-w1', '/api/v1/chats/c-1/pictures/arch-w1']);
+    await user.click(within(sides()[0]).getByRole('button', { name: 'Whole page' }));
+    expect(sides()[0].querySelector('img')?.getAttribute('src')).toBe('/api/v1/packages/pkg-1/plan-pages/4');
+    expect(within(sides()[0]).getByRole('button', { name: 'Back to the spot' })).toBeTruthy();
+    expect(within(panel).getByRole('region', { name: 'How we know' }).textContent).toContain('Printed at both spots, read by code.');
+    expect(panel.querySelector('[data-slot="chat-evidence-kind"]')?.textContent).toBe('Wrong · proven');
     expect(within(panel).getByRole('link', { name: /Open on the cloud drawing/ }).getAttribute('href')).toBe('/api/v1/chats/c-1/files/f-c?inline=true');
   });
 

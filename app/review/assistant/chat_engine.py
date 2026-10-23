@@ -104,6 +104,7 @@ from app.review.assistant.chat_context import (
     context_tokens,
     history_summary,
 )
+from app.review.assistant.chat_contract import ChatCoverageOut
 from app.review.assistant.chat_findings import (
     CODE_ROOM_MAKERS,
     COVERAGE_CHECK_PREFIX,
@@ -2042,7 +2043,10 @@ class ChatEngine:
         under the lock, and sent under it: helpers record coverage at once, and a map read before
         another helper's must never land after it (its pages would show as not opened)."""
         with self._lock:
-            coverage = self.book.coverage_map()
+            # Kept and sent as a read says it (`drawing_needed` on each page: the results screen's tile).
+            coverage = ChatCoverageOut.model_validate(self.book.coverage_map()).model_dump(
+                mode="json"
+            )
             index = self._coverage_index
             if index is None:
                 self.blocks.append({"type": "coverage", "coverage": coverage})

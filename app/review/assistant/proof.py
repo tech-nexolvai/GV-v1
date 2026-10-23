@@ -683,6 +683,9 @@ def governs(finding: Mapping[str, Any]) -> str:
     words = _SOURCE_WORDS.get(source, source.replace("_", " "))
     architect = _short(finding.get("architect"), 60)
     if source == "vendor_arithmetic":
+        # #1887: code's geometry named the wrong part; the overall is right.
+        if wrong_part(finding) is not None:
+            return "the overall less the other parts"
         return "sum of the vendor's own parts"
     if _gv_limits(finding) is not None:
         return "GV filler rule"

@@ -80,7 +80,7 @@ describe('not seen is not right', () => {
     }));
     render(<AssistantMessage message={answer({ findings: placed })} chatId="c-1" models={[OPUS]} fullCheck />);
     const node = screen.getByRole('article', { name: 'Answer' });
-    expect([...node.querySelectorAll<HTMLElement>('[data-slot="chat-result-tiles"] [role="tab"]')].map((tile) => tile.dataset.tab)).toEqual(['wrong', 'right', 'not_compared']);
+    expect([...node.querySelectorAll<HTMLElement>('[data-slot="chat-result-tiles"] [role="tab"]')].map((tile) => tile.dataset.tab)).toEqual(['wrong', 'likely_problem', 'rule_note', 'drawing_needed', 'right', 'not_compared']);
     const rows = () => [...node.querySelectorAll<HTMLElement>('[data-slot="chat-result-row"]')].map((row) => row.dataset.id);
     expect(rows()).toEqual(['o1']);
     await user.click(within(node).getByRole('tab', { name: /^Not compared/ }));
@@ -92,7 +92,7 @@ describe('not seen is not right', () => {
   it('lists a not-looked-at item under Not compared: no outcome word of its own (#1712)', async () => {
     const user = userEvent.setup();
     const { unmount } = render(<AssistantMessage message={answer({ findings: FINDINGS.slice(0, 3) })} chatId="c-1" models={[OPUS]} fullCheck />);
-    const tabs = () => [...document.querySelectorAll<HTMLElement>('[data-slot="chat-result-tiles"] [role="tab"]')].map((tile) => tile.textContent?.replace(/[A-Z][^0-9]*$/, ''));
+    const tabs = () => [...document.querySelectorAll<HTMLElement>('[data-slot="chat-result-tiles"] [role="tab"]')].filter((tile) => tile.dataset.empty !== 'true' || tile.dataset.tab === 'wrong').map((tile) => `${tile.firstElementChild?.textContent}${tile.querySelector('[data-slot="chat-result-count"]')?.textContent}`);
     expect(tabs()).toEqual(['Wrong0', 'Right1', 'Not compared2']);
     unmount();
     render(<AssistantMessage message={answer({ findings: FINDINGS })} chatId="c-1" models={[OPUS]} fullCheck />);

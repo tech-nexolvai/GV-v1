@@ -100,6 +100,12 @@ def test_the_plan_check_asks_where_unsure_and_keeps_the_answers(postgres_engine,
         )
         (pack / "page_map.json").write_text(json.dumps(page_map), encoding="utf-8")
 
+        # The result screen's "By page" headings (2026-10-23): what the pack names each page.
+        titles = world.client.get(f"/api/v1/packages/{world.package_id}/vendor-pages")
+        assert titles.status_code == 200, titles.text
+        named = {p["page"]: p["title"] for p in titles.json()["pages"]}
+        assert sorted(named) == [1, 2, 3] and named[2] == "1. Coffee point", named
+
         plan = _plan(world)
 
         assert plan["more"] == 0 and len(plan["doubts"]) == 1
@@ -176,6 +182,9 @@ def test_the_plan_check_asks_where_unsure_and_keeps_the_answers(postgres_engine,
         assert outsider.client.get(url).status_code == 404
         assert (
             outsider.client.get(url.replace("full-check-plan", "plan-pages/2")).status_code == 404
+        )
+        assert (
+            outsider.client.get(url.replace("full-check-plan", "vendor-pages")).status_code == 404
         )
 
 
@@ -275,7 +284,9 @@ class _FakeLenses(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-def test_a_two_lens_full_check_end_to_end_against_a_fake_anthropic_server(postgres_engine, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_a_two_lens_full_check_end_to_end_against_a_fake_anthropic_server(
+    postgres_engine, tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
     from app.api.assistant_chats import ChatRuntime, chat_runtime
     from app.review.assistant.chat_provider import AnthropicSdkProvider, ProviderChoice
 

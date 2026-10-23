@@ -189,6 +189,9 @@ def test_a_string_whose_part_is_drawn_short_is_a_wrong_at_that_part(tmp_path: Pa
     assert finding["sum_text"] == '20" + 41" = 61" ≠ 60" printed (off 1")'
     assert proof.vendor_value(finding) == '41"'
     assert proof.should_be_value(finding) == '40"'
+    # The results screen's proof: how long the wrong part is drawn, and the right overall.
+    assert finding["wrong_part"]["drawn"] == '40"' and finding["wrong_part"]["overall"] == '60"'
+    assert proof.should_be(finding) == '40" (the overall less the other parts)'
 
 
 def _sheet_wrong_overall() -> bytes:

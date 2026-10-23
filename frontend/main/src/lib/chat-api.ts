@@ -467,6 +467,11 @@ export interface ChatFinding {
   round_status?: RoundStatus | null;
   /** Compared with the vendor's own earlier round: information only, never counted as right (2026-10-22). */
   round_match?: RoundMatch | null;
+  /**
+   * #1887: a vendor string's wrong part named by code's geometry (the overall is right): what it
+   * should be (inches, "11.625"), how long its line is drawn, and the printed overall.
+   */
+  wrong_part?: FindingWrongPart | null;
   /** Chat v3, `source: vendor_arithmetic`: the vendor's parts and the total it printed, as printed. */
   parts?: string[] | null;
   printed_total?: string | null;
@@ -630,6 +635,17 @@ export interface FindingSettled {
   /** What code did and found, in one plain sentence. */
   how: string;
   was?: 'check';
+}
+
+export interface FindingWrongPart {
+  /** The wrong part as printed: 14". */
+  text: string;
+  /** What it should be, in inches: "11.625". */
+  should_be: string;
+  /** How long its line is drawn at the drawing's scale: 11 5/8". */
+  drawn?: string | null;
+  /** The printed overall, drawn to its value: 18". */
+  overall?: string | null;
 }
 
 export interface FindingAlsoOn {
@@ -1048,6 +1064,10 @@ export interface CoveragePage {
   status: CoverageStatus;
   /** Why it is not comparable, or what differs. */
   note?: string | null;
+  /** #1885 (results v2): no architect drawing of this vendor page is in the upload; GV is asked for it. */
+  drawing_needed?: boolean | null;
+  /** Why, in plain words. */
+  drawing_needed_why?: string | null;
 }
 
 /** The page-by-page map of a whole-set answer: which pages were compared and how they came out. */
@@ -1276,6 +1296,8 @@ export const chatPaths = {
   planPage: (packageId: string, page: number) => `${BASE}/packages/${id(packageId)}/plan-pages/${page}`,
   /** #1569: code's plan for a full check of the set, and where it is unsure (no AI call). */
   fullCheckPlan: (packageId: string) => `${BASE}/packages/${id(packageId)}/full-check-plan`,
+  /** Results v2 (2026-10-23): what each vendor page shows (title, project, sheet), from the set pack. */
+  vendorPages: (packageId: string) => `${BASE}/packages/${id(packageId)}/vendor-pages`,
   /** #1522: the reviewer's Agree / Not a problem on one finding (POST). */
   decision: (chatId: string, messageId: string, findingId: string) =>
     `${BASE}/chats/${id(chatId)}/messages/${id(messageId)}/findings/${id(findingId)}/decision`,
@@ -1337,6 +1359,20 @@ export function createChat(packageId: string): Promise<CreatedChat> {
 export function getFullCheckPlan(packageId: string, products?: readonly ChatProduct[] | null): Promise<ChatFullCheckPlan> {
   const query = (products ?? []).map((product) => `products=${encodeURIComponent(product)}`).join('&');
   return json<ChatFullCheckPlan>(query ? `${chatPaths.fullCheckPlan(packageId)}?${query}` : chatPaths.fullCheckPlan(packageId));
+}
+
+/** One vendor page as the set pack names it (no AI call). */
+export interface VendorPage {
+  page: number;
+  title?: string | null;
+  project?: string | null;
+  sheet?: string | null;
+}
+
+/** Results v2: what each vendor page shows, for the "By page" headings and the drawings request; empty until the pack is made. */
+export async function getVendorPages(packageId: string): Promise<VendorPage[]> {
+  const body = await json<{ pages?: VendorPage[] | null }>(chatPaths.vendorPages(packageId));
+  return body.pages ?? [];
 }
 
 export function getChat(chatId: string): Promise<Chat> {
@@ -1496,6 +1532,8 @@ export interface ChatApi {
   consistency?: typeof runConsistencyCheck;
   /** #1569: the plan check; optional so a fake API can leave it out (then no questions). */
   plan?: typeof getFullCheckPlan;
+  /** Results v2: the vendor pages' titles; optional so a fake API can leave it out (page numbers only then). */
+  vendorPages?: typeof getVendorPages;
 }
 
 export const LIVE_CHAT_API: ChatApi = {
@@ -1511,4 +1549,5 @@ export const LIVE_CHAT_API: ChatApi = {
   remakeCloud: remakeCloudDrawing,
   consistency: runConsistencyCheck,
   plan: getFullCheckPlan,
+  vendorPages: getVendorPages,
 };

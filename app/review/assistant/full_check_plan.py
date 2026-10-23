@@ -78,6 +78,7 @@ __all__ = [
     "reading_of",
     "rules_summary",
     "scoped_plan",
+    "unpaired_note_why",
     "unpaired_words",
     "wait_for_page_map",
     "wait_for_reading",
@@ -715,6 +716,19 @@ UNPAIRED_NEEDS: Final = (
 #: The pairing's reasons in plain words, for the reviewer's screen and the files (vendor-facing:
 #: never "AI", never code's drawing ids). The first pattern that matches gives the words.
 _UNPAIRED_PLAIN: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
+    # #1889, "drawing needed" said up front: the architect's file lacks it, or only outlines it.
+    (
+        re.compile(r"no drawings of that project", re.IGNORECASE),
+        "the architect's file has no drawings of its project",
+    ),
+    (
+        re.compile(r"only as a tag on a plan", re.IGNORECASE),
+        "the architect shows it only as a tag on a plan",
+    ),
+    (
+        re.compile(r"only as an outline|print(?:s)? no sizes", re.IGNORECASE),
+        "the architect's drawings of it print no sizes",
+    ),
     (
         re.compile(r"no architect drawing to pair it with", re.IGNORECASE),
         "the architect's file has no drawing to pair it with",
@@ -746,6 +760,18 @@ def unpaired_words(reason: str) -> str:
         if pattern.search(reason or ""):
             return words
     return _UNPAIRED_DEFAULT
+
+
+def unpaired_note_why(note: str | None) -> str | None:
+    """The plain reason of a page's final "no architect drawing found" coverage note (#1885:
+    `UNPAIRED_NOTE`, the words in its brackets), else `None` (any other note, or none). The result
+    screen's "Drawing needed" reads it (`ChatCoveragePageOut.drawing_needed`)."""
+    head = UNPAIRED_NOTE.split("{", 1)[0]
+    text = " ".join(str(note or "").split())
+    if not text.startswith(head):
+        return None
+    why = text[len(head) :].split(")", 1)[0].strip()
+    return why or _UNPAIRED_DEFAULT
 
 
 def mostly_unpaired(unpaired: int, pages: int) -> bool:
