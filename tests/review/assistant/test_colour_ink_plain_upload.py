@@ -10,7 +10,9 @@ vendor value's colour is covered:
 - the blind pick's "vendor ink is not black" (`full_check_advocate.decide`, `round_picks.link`);
 - the simple check's own ink check (`simple_check.verify._ink_check`);
 - how the roster and the simple check tell the file's kind (the upload itself, strict when not
-  known).
+  known);
+- the text read under GV's markup (`under_markup`: the escalation's under-the-markup read and the
+  missing-item check's colour look), marked coloured on GV's combined sheets only.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ import pikepdf
 import pytest
 from PIL import Image
 
-from app.review.assistant import round_picks
+from app.review.assistant import round_picks, under_markup
 from app.review.assistant import verify_value as vv
 from app.review.assistant.full_check_advocate import Check, code_checks, decide, ink_colour
 from app.review.assistant.full_check_roster import _Run
@@ -139,7 +141,7 @@ def _round_finding() -> dict[str, Any]:
 def _link(combined: bool | None) -> tuple[dict[str, Any], str]:
     # One file whose page 1 is the architect's drawing (the set pack's set pages).
     labels = {("shop.pdf", 1): [{**_ARCHITECT, "file": "shop.pdf", "inches": "12"}]}
-    extra = {} if combined is None else {"combined_sheet": combined}
+    extra: dict[str, Any] = {} if combined is None else {"combined_sheet": combined}
     return round_picks.link(
         _round_finding(),
         {**_REPLY, "architect_pick": "D14"},
@@ -166,7 +168,7 @@ def test_a_round_pick_on_an_ordinary_upload_is_not_refused_for_colour() -> None:
 
 def test_the_simple_checks_ink_check_knows_the_file_kind() -> None:
     picture = {**_VENDOR, "route": "derived", "origin": "picture"}  # read from pixels
-    red = lambda label: (120, 1.0)  # noqa: E731
+    red = lambda label: (120, 1.0)
     assert _ink_check(picture, red, "ordinary").outcome == "pass"
     assert _ink_check(picture, red, "combined").outcome == "fail"
     assert _ink_check(picture, red, None).outcome == "fail"  # not known: the strict rule
@@ -230,3 +232,23 @@ def test_the_file_kind_comes_from_the_upload_and_is_strict_when_unknown(
     assert owner._combined(holder, {"id": "D1", "file": "combined.pdf"}) is True
     assert owner._combined(holder, {"id": "D1", "file": "missing.pdf"}) is True
     assert owner._combined(SimpleNamespace(), {"id": "D1", "file": "shop.pdf"}) is True
+
+
+# ---- the text under GV's markup --------------------------------------------------------------------
+
+
+def test_text_under_the_markup_is_marked_coloured_only_on_gvs_combined_sheet(
+    tmp_path: Path,
+) -> None:
+    ordinary = _pdf(tmp_path / "shop.pdf", stamp=False)
+    combined = _pdf(tmp_path / "combined.pdf", stamp=True)
+    # The red 12" is at (100, 300) of the page (origin bottom-left): shown top-left at (100, 100);
+    # inside the stamp it sits at (350, 350) of the page: shown at (350, 50).
+    plain = under_markup.read_under_markup(ordinary, 1, (90, 85, 140, 110))
+    pasted = under_markup.read_under_markup(combined, 1, (340, 35, 400, 60))
+    assert [w["text"] for w in plain.words] == ['12"']
+    assert [w["coloured"] for w in plain.words] == [False]  # the drawing's own red ink
+    assert [w["text"] for w in pasted.words] == ['12"']
+    assert [w["coloured"] for w in pasted.words] == [True]  # may be GV's markup
+    assert not any("may be GV's" in line for line in plain.lines())
+    assert any("may be GV's" in line for line in pasted.lines())
