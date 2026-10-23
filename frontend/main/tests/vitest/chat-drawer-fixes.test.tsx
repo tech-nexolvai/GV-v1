@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
 import { AssistantMessage } from '@/components/chat/chat-message';
 import type { ChatCoverage, ChatFinding, PageWhere } from '@/lib/chat-api';
 import { chatPaths } from '@/lib/chat-api';
-import { howWeKnow, noArchitectPictureWords, overallSpot, REFUSED_STRING_WORDS, refusedStringSteps, ringInCrop } from '@/lib/chat-drawer';
+import { architectSaysSomething, howWeKnow, noArchitectPictureWords, overallSpot, REFUSED_STRING_WORDS, refusedStringSteps, ringInCrop } from '@/lib/chat-drawer';
 import { isRefusedString, shortValue } from '@/lib/chat-result';
 import type { ViewMessage } from '@/lib/chat-messages';
 import { finding, OPUS } from './fixtures/chat';
@@ -48,6 +48,7 @@ const ARCH_BOX = { page: 6, x0: 300, y0: 200, x1: 340, y1: 214, file: 'Made-up a
 const NO_CROP = finding('n1', {
   page: 5, item: 'Sample unit B: countertop material', status: 'check', vendor: 'QZ-2 quartz, 1 1/2" edge', architect: 'QZ-2 quartz top and splash (section note)',
   vs_page: 6, arch_box: ARCH_BOX, arch_picture_id: null, vendor_box: { page: 5, x0: 10, y0: 10, x1: 40, y1: 20, file: 'vendor.pdf' },
+  check_reason: 'pairing_not_certain', keep_reason: 'architect_prints_nothing',
   proof: { group: 'not_compared', not_compared: 'nothing_to_compare', reason: 'architect gives no size or information for it', settle: 'the architect’s tag' },
 });
 
@@ -103,8 +104,26 @@ describe('the drawer fixes, without React', () => {
     expect(shortValue('the architect\'s note on the left side of it').full).toContain('architect\'s');
   });
 
+  it('never says the architect gives nothing when the architect side shows words or a size', () => {
+    expect(architectSaysSomething(NO_CROP)).toBe(true);
+    expect(howWeKnow(NO_CROP, 'not_compared')).toEqual([
+      'The architect’s drawing shows “QZ-2 quartz top and splash (section note)”, but no size for it.',
+      'The app could not confirm it is the same piece as the vendor’s, so the two were not compared.',
+      'Needed to compare it: the architect’s tag.',
+    ]);
+    const steps = howWeKnow({ ...LONG, check_reason: 'pairing_not_certain' }, 'not_compared');
+    expect(steps[0]).toBe('On the architect’s drawing: no overall printed (partial dims 1′-5″, 7′-2″, 1′-9″).');
+    expect(steps.join(' ')).not.toMatch(/gives no size or information/i);
+    expect(howWeKnow({ ...LONG, architect: "9'-0\"", check_reason: 'pairing_not_certain' }, 'not_compared')[0]).toBe('The architect’s drawing prints 9′-0″.');
+    expect(howWeKnow({ ...LONG, architect: 'no architect drawing paired' }, 'not_compared')).toEqual(['No architect drawing was paired with this item, so it was not compared.']);
+    // With no architect words, code's own reason stands.
+    expect(howWeKnow({ ...LONG, architect: null }, 'not_compared')[0]).toBe('Architect gives no size or information for it.');
+  });
+
   it('says why the architect side has no picture', () => {
-    expect(noArchitectPictureWords(LONG, false)).toBe('The architect’s drawings give no size or note for this item, so there is no spot to show');
+    // The architect's side shows words: never "gives no size or note", only that its spot is not known.
+    expect(noArchitectPictureWords(LONG, false)).toBe('The app did not find this item’s spot on the architect’s drawings, so there is no picture of it');
+    expect(noArchitectPictureWords({ ...LONG, architect: null }, false)).toBe('The architect’s drawings give no size or note for this item, so there is no spot to show');
     expect(noArchitectPictureWords(LONG, true)).toBe('No architect drawing of this item in the upload');
     expect(noArchitectPictureWords({ ...LONG, proof: null }, false)).toBe('The app did not find this item’s spot on the architect’s drawings, so there is no picture of it');
   });
@@ -159,7 +178,9 @@ describe('the drawer fixes on the screen', () => {
     const architect = panel.querySelector<HTMLElement>('[data-slot="chat-evidence-side"][data-side="architect"]')!;
     expect(architect.querySelector('[data-slot="chat-evidence-value"]')?.textContent).toBe('No overall printed');
     expect(architect.querySelector('[data-slot="chat-evidence-value-full"]')?.textContent).toBe('In full: no overall printed (partial dims 1′-5″, 7′-2″, 1′-9″)');
-    expect(architect.querySelector('[data-slot="chat-evidence-missing"]')?.textContent).toBe('The architect’s drawings give no size or note for this item, so there is no spot to show');
+    expect(architect.querySelector('[data-slot="chat-evidence-missing"]')?.textContent).toBe('The app did not find this item’s spot on the architect’s drawings, so there is no picture of it');
+    const how = within(panel).getByRole('region', { name: 'How we know' });
+    expect(how.textContent).not.toMatch(/gives no size or information/i);
     expect(within(architect).queryByRole('button', { name: 'Whole page' })).toBeNull();
   });
 

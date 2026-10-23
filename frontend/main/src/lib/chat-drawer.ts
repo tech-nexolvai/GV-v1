@@ -215,6 +215,8 @@ export function howWeKnow(finding: ChatFinding, kind: DrawerKind, options: { noA
     steps.push(sentence(finding.proof?.reason));
   } else if (kind === 'not_compared' && isRefusedString(finding, 'not_compared')) {
     steps.push(...refusedStringSteps(finding));
+  } else if (kind === 'not_compared' && architectSaysSomething(finding)) {
+    steps.push(...architectWordsSteps(finding));
   } else {
     steps.push(sentence(finding.proof?.reason ?? finding.why));
     steps.push(finding.proof?.settle ? sentence(`Needed to compare it: ${finding.proof.settle}`) : null);
@@ -243,11 +245,45 @@ export function refusedStringSteps(finding: Pick<ChatFinding, 'proof' | 'why'>):
   return steps.filter((step): step is string => Boolean(step));
 }
 
+/** Code's catch-all words for "the architect prints nothing here" (`classification`, R7). */
+const GIVES_NOTHING = /^architect gives no size or information\b/i;
+
+/**
+ * A Not-compared item whose architect side holds words (a tag, a note, "no overall printed (partial
+ * dims …)") while code's reason says the architect "gives no size or information": the screen shows
+ * the architect's words, so "How we know" must not say the architect gives nothing (the client
+ * meeting, 2026-10-23). Steps are said from the item's own reasons instead.
+ */
+export function architectSaysSomething(finding: Pick<ChatFinding, 'architect' | 'proof'>): boolean {
+  const words = finding.architect?.trim() ?? '';
+  if (!words || words === '—') return false;
+  return GIVES_NOTHING.test(finding.proof?.reason ?? '');
+}
+
+/** How we know, for an item whose architect side holds words (or a size) code could not compare. */
+export function architectWordsSteps(finding: Pick<ChatFinding, 'architect' | 'proof' | 'check_reason' | 'keep_reason'>): string[] {
+  const words = marks((finding.architect ?? '').trim()).replace(/[.;,]+$/, '');
+  if (/^(?:no\b.*\bdrawing\b|not paired\b)/i.test(words)) {
+    return ['No architect drawing was paired with this item, so it was not compared.'];
+  }
+  const size = /\d/.test(words) && !/[a-z]{2,}/i.test(words);
+  const steps: (string | null)[] = [];
+  steps.push(size ? `The architect’s drawing prints ${words}.`
+    : /^(?:no|none|not)\b/i.test(words) ? `On the architect’s drawing: ${words}.`
+      : `The architect’s drawing shows “${words}”, but no size for it.`);
+  if (finding.check_reason === 'pairing_not_certain') steps.push('The app could not confirm it is the same piece as the vendor’s, so the two were not compared.');
+  else if (size) steps.push('The app could not use it as this item’s size, so nothing is compared.');
+  else steps.push('There is no architect size to measure the vendor’s value against, so nothing is compared.');
+  steps.push(finding.proof?.settle ? sentence(`Needed to compare it: ${finding.proof.settle}`) : null);
+  return steps.filter((step): step is string => Boolean(step));
+}
+
 /** Why the architect's side has no picture, in plain words. */
-export function noArchitectPictureWords(finding: Pick<ChatFinding, 'proof' | 'source' | 'rule_check_id'>, noDrawing: boolean): string {
+export function noArchitectPictureWords(finding: Pick<ChatFinding, 'proof' | 'source' | 'rule_check_id' | 'architect'>, noDrawing: boolean): string {
   if (noDrawing) return 'No architect drawing of this item in the upload';
   if (finding.source === 'rules' || finding.rule_check_id) return 'GV’s rule decides this item: there is no architect drawing to show';
-  if (finding.proof?.not_compared === 'nothing_to_compare') return 'The architect’s drawings give no size or note for this item, so there is no spot to show';
+  // Words on the architect's side (shown above) mean the architect does say something: only its spot is unknown.
+  if (finding.proof?.not_compared === 'nothing_to_compare' && !architectSaysSomething(finding)) return 'The architect’s drawings give no size or note for this item, so there is no spot to show';
   return 'The app did not find this item’s spot on the architect’s drawings, so there is no picture of it';
 }
 
