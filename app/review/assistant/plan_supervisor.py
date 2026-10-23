@@ -39,6 +39,7 @@ import logging
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from importlib import import_module
 from typing import TYPE_CHECKING, Any, Final
 
 from app.review.assistant.preflight import STOP_KINDS, PairEstimate, Report, build, gather
@@ -74,8 +75,10 @@ _KINDS: Final = (*STOP_KINDS, "other")
 #: An unpaired page's reason that is final: code rules out every architect item, there is none,
 #: or the AI page matcher's saved answer found none.
 _CERTAIN: Final = re.compile(
-    r"ruled out|no architect drawing to pair it with|the AI page matcher", re.IGNORECASE
+    r"ruled out|no architect drawing to pair it with|drawing needed", re.IGNORECASE
 )
+#: An unpaired page the AI page matcher answered (it and code did not agree): not sure.
+_ANSWERED: Final = re.compile(r"the AI page matcher", re.IGNORECASE)
 
 SYSTEM: Final = """You supervise GV Review, a checker that compares a millwork vendor's shop \
 drawings with the architect's drawings. Before any money is spent on comparing, you get the \
@@ -241,12 +244,19 @@ def _pairs_now(engine: ChatEngine, matching: Any) -> PairEstimate | None:
         for page, why in cross.unpaired.items()
         if not _CERTAIN.search(str(why or "")) and page not in paired
     }
+    answered = {
+        page
+        for page, why in cross.unpaired.items()
+        if _ANSWERED.search(str(why or "")) and page not in paired and page not in waiting
+    }
+    unsure -= answered
     to_ask = (waiting | unsure) - paired
     return PairEstimate(
         vendor_pages=len(vendor_pages),
         paired=len(paired),
         to_ask=len(to_ask),
-        none_possible=tuple(sorted(vendor_pages - paired - to_ask)),
+        none_possible=tuple(sorted(vendor_pages - paired - to_ask - answered)),
+        unsure=tuple(sorted(answered)),
         confirmed=not waiting,
     )
 
@@ -273,11 +283,19 @@ def gate(
         read_texts = dict((texts() if callable(texts) else texts) or {})
     except Exception as failed:  # noqa: BLE001 - the report is made without the printed words
         _log.warning("plan supervisor: page texts not read: %s", type(failed).__name__)
+    grouped = None
+    try:
+        # The projects exactly as the pairing groups the set index (loaded by name: it reaches
+        # the work list's own helpers).
+        grouped = import_module("app.review.assistant.preflight_pairs").project_summary(folder)
+    except Exception as failed:  # noqa: BLE001 - the report is made without the project lines
+        _log.warning("plan supervisor: projects not grouped: %s", type(failed).__name__)
     inputs = gather(
         folder,
         listing=listing,
         main_file=main_file,
         texts=read_texts,
+        projects=grouped,
         pairs=_pairs_now(engine, matching),
         skipped=tuple(getattr(plan, "skipped", ()) or ()),
         products=tuple(engine.settings.products or ()),

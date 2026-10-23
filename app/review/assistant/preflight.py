@@ -40,7 +40,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -52,6 +52,8 @@ __all__ = [
     "Inputs",
     "Line",
     "PairEstimate",
+    "ProjectGroup",
+    "ProjectSummary",
     "Report",
     "build",
     "duplicate_pages",
@@ -82,8 +84,6 @@ _MARKUPS_MANY: Final = 10
 _MM_ONLY: Final = 5
 #: Duplicates: a page's text at least this long (characters), the same labels too.
 _DUPLICATE_TEXT: Final = 100
-_PROJECT_WORD: Final = re.compile(r"[a-z]{4,}")
-_NOT_WORD: Final = re.compile(r"[^a-z0-9]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,8 +123,33 @@ class PairEstimate:
     paired: int
     to_ask: int
     none_possible: tuple[int, ...] = ()
+    """Pages no architect page can match: code rules out every one, or the drawing is needed."""
+    unsure: tuple[int, ...] = ()
+    """Pages the matcher answered but code and it did not agree on one page: not paired, but
+    the architect's file may hold the drawing (never "no architect drawing")."""
     confirmed: bool = False
     """Every page's pairing is final (no page waits for the matcher)."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectGroup:
+    """One project of the vendor's file, as the pairing groups the set index's names."""
+
+    name: str
+    vendor_pages: tuple[int, ...] = ()
+    architect: bool = False
+    """The architect's file holds drawings of it (the pairing's own match)."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectSummary:
+    """The upload's projects by the pairing's own grouping (`preflight_pairs.project_summary`:
+    `simple_check.projects.places` on the set index, exactly as the work list calls it)."""
+
+    vendor: tuple[ProjectGroup, ...] = ()
+    architect: tuple[str, ...] = ()
+    only_plans: tuple[str, ...] = ()
+    no_sizes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +171,8 @@ class Inputs:
     stickers: int = 0
     combined: Mapping[str, bool] | None = None
     index: Mapping[str, Mapping[str, Any]] | None = None
+    """The set index's checked reads (only each page's set kind is read here)."""
+    projects: ProjectSummary | None = None
     pairs: PairEstimate | None = None
     skipped: Sequence[tuple[int, str]] = ()
     round_doubts: int = 0
@@ -391,75 +418,24 @@ def _swapped_line(why: str) -> Line:
     )
 
 
-def _key(text: object) -> str:
-    return " ".join(_NOT_WORD.sub(" ", str(text or "").lower()).split())
-
-
-def _same_project(a: str, b: str, firsts: Iterable[str], seconds: Iterable[str]) -> bool:
-    """`a` (of `firsts`) and `b` (of `seconds`) name the same project: the same letters and
-    digits, or a word of four letters or more in both that only one name on each side uses
-    ("pearland", never "suites" or "tower" when two names on a side use it)."""
-    if a.replace(" ", "") == b.replace(" ", ""):
-        return True
-    one, two = list(firsts), list(seconds)
-    for word in set(_PROJECT_WORD.findall(a)) & set(_PROJECT_WORD.findall(b)):
-        if (
-            sum(word in _PROJECT_WORD.findall(n) for n in one) == 1
-            and sum(word in _PROJECT_WORD.findall(n) for n in two) == 1
-        ):
-            return True
-    return False
-
-
-def _projects(inputs: Inputs) -> tuple[dict[str, str], dict[str, str], dict[str, set[int]]]:
-    """From the set index: the architect's projects and the vendor's (normalised -> as printed;
-    never a prototype, brand standard or reference set's), and each vendor project's pages."""
-    architect: dict[str, str] = {}
-    vendor: dict[str, str] = {}
-    vendor_pages: dict[str, set[int]] = {}
-    architects = set(_architect_files(inputs))
-    entries = sorted(
-        (e for e in (inputs.index or {}).values() if isinstance(e.get("page"), int)),
-        key=lambda e: (str(e.get("file")), int(e["page"])),
-    )
-    #: The project a cover or divider page names applies to the pages after it (in its file).
-    current: dict[str, list[str]] = {}
-    for entry in entries:
-        file = str(entry.get("file"))
-        printed = [str(n) for n in entry.get("projects") or [] if str(n).strip()]
-        reference = str(entry.get("set_kind") or "") in ("prototype", "brand standard", "reference")
-        if entry.get("introduces"):
-            # A prototype's divider introduces reference pages: they get no project.
-            current[file] = [] if reference else printed
-        names = printed or (current.get(file, []) if len(current.get(file, [])) == 1 else [])
-        if reference:
-            continue
-        for name in names:
-            if file in architects:
-                architect.setdefault(_key(name), name)
-            elif file == inputs.main_file:
-                vendor.setdefault(_key(name), name)
-                if isinstance(entry.get("page"), int) and len(names) == 1:
-                    vendor_pages.setdefault(_key(name), set()).add(int(entry["page"]))
-    return architect, vendor, vendor_pages
-
-
 def _other_project(inputs: Inputs) -> list[Line]:
-    """The architect's file looks like another project (stop): the set index's projects share
-    none; or, in a two-file set, not one vendor page has an architect page that could match it."""
-    architect, vendor, _pages_of = _projects(inputs)
+    """The architect's file looks like another project (stop): by the pairing's own grouping of
+    the set index (`ProjectSummary`), the architect's file holds projects but none of the vendor's;
+    or, in a two-file set, not one vendor page has an architect page that could match it."""
+    summary = inputs.projects
     if (
-        architect
-        and vendor
-        and not any(_same_project(a, v, architect, vendor) for a in architect for v in vendor)
+        summary is not None
+        and summary.vendor
+        and summary.architect
+        and not any(group.architect for group in summary.vendor)
     ):
         return [
             Line(
                 "other_project",
                 "stop",
-                "The architect's file looks like another project: it names "
-                f"{', '.join(sorted(architect.values())[:3])}; the vendor's names "
-                f"{', '.join(sorted(vendor.values())[:3])}.",
+                "The architect's file looks like another project: it holds "
+                f"{_names(summary.architect)}; the vendor's file holds "
+                f"{_names([group.name for group in summary.vendor])}.",
                 goes_on=False,
                 who="you",
                 todo="Upload the architect's drawings of this job.",
@@ -537,16 +513,37 @@ def _pairing_lines(inputs: Inputs) -> list[Line]:
                 )
             )
         if pairs.none_possible and len(pairs.none_possible) < total:
+            missing = len(pairs.none_possible)
+            # Before the set's pages are indexed (each page's project and views), code's own
+            # ruling-out is only a guess: the index changes the candidates (2026-10-23).
+            guess = not pairs.confirmed and inputs.index is None
+            have = "has" if missing == 1 else "have"
+            words = (
+                f"About {_count(missing, 'vendor page')} may have no architect drawing in this "
+                "upload (an estimate: the final number comes with the result)."
+                if guess
+                else f"{_count(missing, 'vendor page')} {have} no architect drawing in this "
+                "upload: checked only against the vendor's own drawings and GV's rules."
+            )
             lines.append(
                 Line(
                     "needs_drawing",
-                    "warn" if len(pairs.none_possible) * 2 > total else "note",
-                    f"{_count(len(pairs.none_possible), 'vendor page')} "
-                    f"{'has' if len(pairs.none_possible) == 1 else 'have'} no architect drawing in "
-                    "this upload: checked only against the vendor's own drawings and GV's rules.",
+                    "warn" if missing * 2 > total and not guess else "note",
+                    words,
                     who="GV",
                     todo="Send the architect's drawings of these items.",
                     pages=tuple(pairs.none_possible),
+                    estimate=guess,
+                )
+            )
+        if pairs.unsure:
+            lines.append(
+                Line(
+                    "not_sure",
+                    "note",
+                    f"{_count(len(pairs.unsure), 'vendor page')} could not be matched to an "
+                    "architect page for sure: not compared with the architect.",
+                    pages=tuple(pairs.unsure),
                 )
             )
         return lines
@@ -587,74 +584,69 @@ def _pairing_lines(inputs: Inputs) -> list[Line]:
     return lines
 
 
+def _names(names: Sequence[str], most: int = 4) -> str:
+    """Project names in one line: a semicolon between them (a name may hold a comma)."""
+    shown = list(dict.fromkeys(names))
+    more = len(shown) - most
+    text = "; ".join(shown[:most])
+    return f"{text} and {more} more" if more > 0 else text
+
+
 def _project_lines(inputs: Inputs) -> list[Line]:
-    """From the set index: several projects, a vendor project the architect's file lacks, and an
-    architect project with only floor plans."""
-    architect, vendor, vendor_pages = _projects(inputs)
+    """From the pairing's own grouping of the set index (`ProjectSummary`, never raw printed
+    names): several projects in one line, a vendor project the architect's file has no drawings
+    of, an architect project with only floor plans or no sizes."""
+    summary = inputs.projects
+    if summary is None:
+        return []
     lines: list[Line] = []
-    if len(vendor) > 1:
+    if len(summary.vendor) > 1:
         lines.append(
             Line(
                 "several_projects",
                 "note",
-                f"Several projects in one upload: {', '.join(sorted(vendor.values()))}. Each "
-                "vendor page is matched only within its own project.",
+                f"Several projects in one upload: {_names([g.name for g in summary.vendor], 8)}. "
+                "Each vendor page is matched only within its own project.",
             )
         )
-    if architect and vendor:
-        for key, name in sorted(vendor.items()):
-            if not any(_same_project(key, a, vendor, architect) for a in architect):
-                pages = tuple(sorted(vendor_pages.get(key, ())))
-                lines.append(
-                    Line(
-                        "project_missing",
-                        "warn",
-                        f"The architect's file has no drawings of {name}: its vendor pages are "
-                        "checked only against the vendor's own drawings and GV's rules.",
-                        who="GV",
-                        todo=f"Send the architect's drawings of {name}.",
-                        pages=pages,
-                    )
+    if summary.architect and any(group.architect for group in summary.vendor):
+        for group in summary.vendor:
+            if group.architect:
+                continue
+            lines.append(
+                Line(
+                    "project_missing",
+                    "warn",
+                    f"The architect's file has no drawings of {group.name}: its "
+                    f"{_count(len(group.vendor_pages), 'vendor page')} "
+                    f"{'is' if len(group.vendor_pages) == 1 else 'are'} checked only against the "
+                    "vendor's own drawings and GV's rules.",
+                    who="GV",
+                    todo=f"Send the architect's drawings of {group.name}.",
+                    pages=group.vendor_pages,
                 )
-    architects = set(_architect_files(inputs))
-    views: dict[str, list[Mapping[str, Any]]] = {}
-    for entry in (inputs.index or {}).values():
-        if str(entry.get("file")) not in architects:
-            continue
-        if str(entry.get("set_kind") or "") in ("prototype", "brand standard", "reference"):
-            continue
-        names = [str(n) for n in entry.get("projects") or [] if str(n).strip()]
-        if len(names) != 1:
-            continue
-        views.setdefault(names[0], []).extend(
-            v for v in entry.get("views") or [] if isinstance(v, Mapping)
+            )
+    for name in summary.only_plans:
+        lines.append(
+            Line(
+                "only_plans",
+                "warn",
+                f"The architect's file has only floor plans for {name}: sizes of the millwork "
+                "itself can't be compared there.",
+                who="the architect",
+                todo=f"Ask for the millwork elevations of {name}.",
+            )
         )
-    for name, found in sorted(views.items()):
-        sized = [v for v in found if v.get("prints_sizes")]
-        if found and all(
-            str(v.get("kind")) == "plan" and (v.get("whole_floor") or not v.get("prints_sizes"))
-            for v in found
-        ):
-            lines.append(
-                Line(
-                    "only_plans",
-                    "warn",
-                    f"The architect's file has only floor plans for {name}: sizes of the "
-                    "millwork itself can't be compared there.",
-                    who="the architect",
-                    todo=f"Ask for the millwork elevations of {name}.",
-                )
+    for name in summary.no_sizes:
+        lines.append(
+            Line(
+                "no_sizes",
+                "warn",
+                f"The architect's drawings of {name} print no sizes of the millwork.",
+                who="the architect",
+                todo=f"Ask for dimensioned elevations of {name}.",
             )
-        elif found and not sized:
-            lines.append(
-                Line(
-                    "no_sizes",
-                    "warn",
-                    f"The architect's drawings of {name} print no sizes of the millwork.",
-                    who="the architect",
-                    todo=f"Ask for dimensioned elevations of {name}.",
-                )
-            )
+        )
     return lines
 
 
@@ -946,7 +938,7 @@ def build(inputs: Inputs) -> Report:
 
 def _facts(inputs: Inputs, lines: Sequence[Line]) -> dict[str, Any]:
     """The plain facts the supervisor sees: no file names' paths, no picture."""
-    architect, vendor, _p = _projects(inputs)
+    summary = inputs.projects
     pairs = inputs.pairs
     return {
         "files": [
@@ -966,8 +958,19 @@ def _facts(inputs: Inputs, lines: Sequence[Line]) -> dict[str, Any]:
                 "final": pairs.confirmed,
             }
         ),
-        "architect_projects": sorted(architect.values()),
-        "vendor_projects": sorted(vendor.values()),
+        "architect_projects": [] if summary is None else list(summary.architect),
+        "vendor_projects": (
+            []
+            if summary is None
+            else [
+                {
+                    "name": g.name,
+                    "pages": len(g.vendor_pages),
+                    "architect_has_drawings": g.architect,
+                }
+                for g in summary.vendor
+            ]
+        ),
         "products": list(inputs.products),
         "findings_so_far": [
             {"what": line.words, "stops": not line.goes_on, "who": line.who} for line in lines
@@ -1006,6 +1009,7 @@ def gather(
     main_file: str | None,
     texts: Mapping[tuple[str, int], str] | None = None,
     pairs: PairEstimate | None = None,
+    projects: ProjectSummary | None = None,
     skipped: Sequence[tuple[int, str]] = (),
     missing_values: Sequence[str] = (),
     products: Sequence[str] = (),
@@ -1038,6 +1042,7 @@ def gather(
         stickers=_stickers(folder, main_file),
         combined=_combined(annotations),
         index=load_index(folder),
+        projects=projects,
         pairs=pairs,
         skipped=skipped,
         round_doubts=round_doubts,

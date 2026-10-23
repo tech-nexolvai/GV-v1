@@ -234,56 +234,6 @@ def _index(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {f"{e['file']}#{e['page']}": e for e in entries}
 
 
-def test_the_set_index_finds_another_project_and_stops() -> None:
-    index = _index(
-        [
-            {"file": ARCH, "page": 1, "projects": ["Lakeside Clinic"], "set_kind": "architectural"},
-            {
-                "file": VENDOR,
-                "page": 1,
-                "projects": ["Harbor View Hotel"],
-                "set_kind": "shop drawing",
-            },
-        ]
-    )
-    report = build(Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR, index=index))
-    (stop,) = report.stops
-    assert stop.id == "other_project" and "Lakeside Clinic" in stop.words
-    assert "Harbor View Hotel" in stop.words
-
-
-def test_the_set_index_lines_several_projects_missing_project_and_only_plans() -> None:
-    plan_view = {"title": "FLOOR PLAN", "kind": "plan", "prints_sizes": True, "whole_floor": True}
-    index = _index(
-        [
-            {
-                "file": ARCH,
-                "page": 1,
-                "projects": ["North Tower"],
-                "set_kind": "architectural",
-                "views": [plan_view],
-            },
-            {"file": ARCH, "page": 2, "projects": ["Brand Prototype"], "set_kind": "prototype"},
-            {"file": VENDOR, "page": 1, "projects": ["North Tower"], "set_kind": "shop drawing"},
-            {"file": VENDOR, "page": 2, "projects": ["South Tower"], "set_kind": "shop drawing"},
-        ]
-    )
-    report = build(Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR, index=index))
-    assert report.stops == ()
-    several = _line(report, "several_projects")
-    assert "North Tower" in several.words and "South Tower" in several.words
-    missing = _line(report, "project_missing")
-    assert "South Tower" in missing.words and missing.pages == (2,) and missing.who == "GV"
-    plans = _line(report, "only_plans")
-    assert "only floor plans for North Tower" in plans.words and plans.who == "the architect"
-    _plain(report)
-
-
-def test_without_the_index_there_are_no_project_lines() -> None:
-    report = build(Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR))
-    assert not {"several_projects", "project_missing", "only_plans"} & set(_ids(report))
-
-
 def test_a_combined_sheet_set_counts_pages_with_and_without_the_architect() -> None:
     page_map = {
         "files": [VENDOR],
@@ -423,44 +373,6 @@ def test_gather_reads_the_pack_and_the_index_when_present(tmp_path: Path) -> Non
     assert "gv_markup" in _ids(report)
 
 
-def test_several_projects_on_both_sides_match_by_their_own_words() -> None:
-    # Made-up names shaped like a real upload: short and long forms of the same project, words
-    # several projects share ("suites") never decide.
-    index = _index(
-        [
-            {
-                "file": ARCH,
-                "page": 1,
-                "projects": ["Maple Suites Brookfield"],
-                "set_kind": "architectural",
-            },
-            {
-                "file": ARCH,
-                "page": 2,
-                "projects": ["Cedar Suites Ridgeway"],
-                "set_kind": "interior design",
-            },
-            {"file": VENDOR, "page": 1, "projects": ["MS Brookfield"], "set_kind": "shop drawing"},
-            {
-                "file": VENDOR,
-                "page": 2,
-                "projects": ["Cedar Suites Ridgeway"],
-                "set_kind": "shop drawing",
-            },
-            {
-                "file": VENDOR,
-                "page": 3,
-                "projects": ["Oak Suites Lakemont"],
-                "set_kind": "shop drawing",
-            },
-        ]
-    )
-    report = build(Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR, index=index))
-    assert report.stops == ()
-    (missing,) = [line for line in report.lines if line.id == "project_missing"]
-    assert "Oak Suites Lakemont" in missing.words and missing.pages == (3,)
-
-
 def test_a_broken_upload_is_said_even_without_a_page_map(tmp_path: Path) -> None:
     from app.review.assistant.chat_service import broken_words
 
@@ -513,31 +425,145 @@ def test_an_architect_file_with_no_readable_size_is_a_warning_not_a_stop() -> No
     assert line.level == "warn" and line.goes_on and line.who == "the architect"
 
 
-def test_a_divider_pages_project_applies_to_the_pages_after_it() -> None:
-    index = _index(
-        [
-            {
-                "file": ARCH,
-                "page": 1,
-                "projects": ["North Tower"],
-                "set_kind": "architectural",
-                "introduces": True,
-            },
-            {"file": ARCH, "page": 2, "projects": [], "set_kind": "unknown"},
-            {"file": VENDOR, "page": 1, "projects": ["North Tower"], "introduces": True},
-            {"file": VENDOR, "page": 2, "projects": []},
-            {
-                "file": VENDOR,
-                "page": 3,
-                "projects": ["Brand Look"],
-                "set_kind": "prototype",
-                "introduces": True,
-            },
-            {"file": VENDOR, "page": 4, "projects": []},
-        ]
+# ---- projects: exactly the pairing's own grouping of the set index ----------------------------
+
+
+def _messy_pack(tmp_path: Path) -> Path:
+    """A two-file pack whose set index prints many names for two projects (made-up names): the
+    vendor's company, a scope phrase, long and short forms, a prototype divider."""
+    folder = tmp_path / "pack"
+    folder.mkdir()
+    drawn = [{"box": [0, 0, 100, 100], "role": "vendor", "heading": None, "round": None}]
+    arch_half = [{"box": [0, 0, 100, 100], "role": "architect", "heading": None, "round": None}]
+    page_map = {
+        "files": [VENDOR, ARCH],
+        "upload_roles": {VENDOR: "vendor", ARCH: "architect"},
+        "pages": [
+            {"file": VENDOR, "page": 1, "halves": []},
+            {"file": VENDOR, "page": 2, "halves": drawn},
+            {"file": VENDOR, "page": 3, "halves": drawn},
+            {"file": VENDOR, "page": 4, "halves": []},
+            {"file": VENDOR, "page": 5, "halves": drawn},
+            {"file": ARCH, "page": 1, "halves": []},
+            {"file": ARCH, "page": 2, "halves": arch_half},
+            {"file": ARCH, "page": 3, "halves": []},
+            {"file": ARCH, "page": 4, "halves": arch_half},
+        ],
+    }
+    reads = [
+        (VENDOR, 1, ["NORTHFIELD GRAND HOTEL"], "shop drawing", True),
+        (
+            VENDOR,
+            2,
+            ["ACME MILLWORK CO", "NORTHFIELD GRAND HOTEL - PA MW MATRIX"],
+            "shop drawing",
+            False,
+        ),
+        (VENDOR, 3, ["Public Area millwork"], "shop drawing", False),
+        (VENDOR, 4, ["Lakeview Inn"], "shop drawing", True),
+        (VENDOR, 5, ["ACME MILLWORK CO"], "shop drawing", False),
+        (ARCH, 1, ["NORTHFIELD GRAND HOTEL, TEXAS"], "architectural", True),
+        (ARCH, 2, ["Northfield Grand Hotel"], "architectural", False),
+        (ARCH, 3, ["Brand Look Prototype"], "prototype", True),
+        (ARCH, 4, [], "unknown", False),
+    ]
+    view = {"title": "ELEVATION 1", "kind": "elevation", "prints_sizes": True, "whole_floor": False}
+    index = {
+        f"{f}#{n}": {
+            "file": f,
+            "page": n,
+            "role": "architect" if f == ARCH else "vendor",
+            "projects": names,
+            "set_kind": kind,
+            "set_words": [],
+            "introduces": introduces,
+            "views": [view] if f == ARCH and n == 2 else [],
+        }
+        for f, n, names, kind, introduces in reads
+    }
+    files = {
+        "page_map.json": page_map,
+        "set_index.json": {"version": 1, "pages": index},
+        "dims.json": {"pages": []},
+        "annotations.json": [],
+        "status.json": {"state": "ready"},
+    }
+    for name, document in files.items():
+        (folder / name).write_text(json.dumps(document), encoding="utf-8")
+    return folder
+
+
+def test_messy_names_group_into_the_pairings_projects_never_raw_names(tmp_path: Path) -> None:
+    from app.review.assistant import preflight_pairs
+
+    summary = preflight_pairs.project_summary(_messy_pack(tmp_path))
+    assert summary is not None
+    groups = {g.name: g for g in summary.vendor}
+    assert set(groups) == {"NORTHFIELD GRAND HOTEL", "Lakeview Inn"}, groups
+    assert groups["NORTHFIELD GRAND HOTEL"].architect and groups[
+        "NORTHFIELD GRAND HOTEL"
+    ].vendor_pages == (1, 2, 3)
+    assert not groups["Lakeview Inn"].architect and groups["Lakeview Inn"].vendor_pages == (4, 5)
+    report = build(
+        Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR, projects=summary)
     )
-    architect, vendor, pages = preflight._projects(
-        Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR, index=index)
+    assert report.stops == ()
+    several = [line for line in report.lines if line.id == "several_projects"]
+    assert len(several) == 1
+    assert "ACME" not in several[0].words and "Public Area" not in several[0].words
+    assert "NORTHFIELD GRAND HOTEL; Lakeview Inn" in several[0].words or (
+        "Lakeview Inn; NORTHFIELD GRAND HOTEL" in several[0].words
     )
-    assert list(architect.values()) == ["North Tower"] and list(vendor.values()) == ["North Tower"]
-    assert pages == {"north tower": {1, 2}}
+    (missing,) = [line for line in report.lines if line.id == "project_missing"]
+    assert "Lakeview Inn" in missing.words and missing.pages == (4, 5) and missing.who == "GV"
+    # The brand prototype is never a project of the architect's file.
+    assert summary.architect == ("NORTHFIELD GRAND HOTEL, TEXAS",)
+
+
+def test_the_grouping_finds_another_project_and_stops() -> None:
+    from app.review.assistant.preflight import ProjectGroup, ProjectSummary
+
+    summary = ProjectSummary(
+        vendor=(ProjectGroup("Harbor View Hotel", (1, 2), architect=False),),
+        architect=("Lakeside Clinic",),
+    )
+    report = build(
+        Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR, projects=summary)
+    )
+    (stop,) = report.stops
+    assert stop.id == "other_project" and "Lakeside Clinic" in stop.words
+    # Without the grouping (no set index yet): no project line and no project stop.
+    plain = build(Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR))
+    assert not {"several_projects", "project_missing", "other_project"} & set(_ids(plain))
+
+
+def test_before_the_index_unmatched_pages_are_an_estimate() -> None:
+    pairs = PairEstimate(4, 1, 0, (2, 3, 4))
+    guess = _line(
+        build(Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR, pairs=pairs)),
+        "needs_drawing",
+    )
+    assert (
+        guess.estimate and guess.level == "note" and guess.words.startswith("About 3 vendor pages")
+    )
+    indexed = _line(
+        build(
+            Inputs(
+                listing=_listing(),
+                page_map=_page_map(),
+                main_file=VENDOR,
+                pairs=pairs,
+                index={f"{ARCH}#1": {"file": ARCH, "page": 1}},
+            )
+        ),
+        "needs_drawing",
+    )
+    assert not indexed.estimate and indexed.level == "warn"
+
+
+def test_pages_the_matcher_answered_are_not_sure_never_no_drawing() -> None:
+    pairs = PairEstimate(4, 1, 0, (), unsure=(2, 3, 4), confirmed=True)
+    report = build(Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR, pairs=pairs))
+    assert "needs_drawing" not in _ids(report)
+    assert _line(report, "not_sure").words.startswith("3 vendor pages could not be matched")
+    assert report.stops == ()
