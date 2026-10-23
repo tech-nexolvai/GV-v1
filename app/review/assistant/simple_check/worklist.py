@@ -2444,10 +2444,14 @@ def _unsure(
             return (other, pick)
         return (pick,) if "another unit type" in scored.contradicts else ()
     if other is None:
-        # The matcher's own next pick, else code's first other item.
+        # The matcher's own next pick, else code's first other item when code holds some
+        # evidence for it (never a page offered for nothing).
         other = next(
             (m for m in answer.matches[1:] if m != pick and m in by and by[m].contradicts is None),
-            next((s.ref for s in ranked if s.contradicts is None and s.ref != pick), None),
+            next(
+                (s.ref for s in ranked if s.contradicts is None and s.ref != pick and s.score > 0),
+                None,
+            ),
         )
     return (pick,) if other is None else (pick, other)
 

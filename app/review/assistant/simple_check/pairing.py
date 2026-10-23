@@ -741,20 +741,10 @@ def _named_in(title: str, phrases: Sequence[str]) -> str | None:
 #: sheet draws the same unit as its regular sheet (compared mirrored, `opposite_hand`). Only words
 #: `markers_in` also reads as a hand (or no hand at all: "regular"), so a title left without them
 #: is always flagged opposite-hand where it said one (`worklist._with_marks`).
-_HAND_WORDS: Final = frozenset(
-    {
-        "reverse",
-        "reversed",
-        "regular",
-        "unit",
-        "units",
-    }
-)
-#: A numbered unit type in a tidied title: "type 1", "type 3a", "type b".
-_UNIT_TYPE: Final = re.compile(r"\btype ([a-z0-9]{1,4})\b")
+_HAND_WORDS: Final = re.compile(r"\b(?:reversed?|regular)(?: units?)?\b")
 #: A list of unit types in a tidied title, joined by "and" / "or" ("TYPE 1 & 2", "TYPE A OR B"):
 #: a bare number after a type is never read as one ("TYPE A - 2 BEDROOM").
-_TYPE_LIST: Final = re.compile(r"\btype ([a-z0-9]{1,4}(?: (?:and|or) [a-z0-9]{1,4}\b)*)")
+_TYPE_LIST: Final = re.compile(r"\btype ([a-z0-9]{1,4}(?: (?:and|or) (?:type )?[a-z0-9]{1,4}\b)*)")
 
 
 def unit_title(text: object) -> tuple[str, frozenset[str]]:
@@ -762,9 +752,10 @@ def unit_title(text: object) -> tuple[str, frozenset[str]]:
     "TYPE-1" is "type 1"), the hand words left out ("KITCHEN REVERSED UNITS" is "kitchen"); and its
     numbered unit types ("1" of "VANITY - TYPE 1"). Only an exact match counts: "kitchen" is not
     "standard kitchen", nor "kitchenette" (other tools ask the reviewer then, never guess)."""
-    words = [w for w in title_key(text).split() if w not in _HAND_WORDS]
-    tidy = " ".join(words)
-    found = {t for one in _TYPE_LIST.findall(tidy) for t in one.split() if t not in ("and", "or")}
+    tidy = " ".join(_HAND_WORDS.sub(" ", title_key(text)).split())
+    found = {
+        t for one in _TYPE_LIST.findall(tidy) for t in one.split() if t not in ("and", "or", "type")
+    }
     return tidy, frozenset(found)
 
 
@@ -785,20 +776,13 @@ def same_item(one: str | None, other: str | None) -> bool:
 
 
 def _one_titled_item(vendor: Facts, candidates: Sequence[Facts]) -> frozenset[str]:
-    """The candidates whose set index title is the vendor's item (`same_item`), when they are one
-    item: one page, or one run of consecutive pages of one file (the item's sheets). Several pages
-    of that title elsewhere could be look-alikes of other units: then none (the reviewer is asked,
-    never a guess)."""
+    """The candidate whose set index title is the vendor's item (`same_item`), when it is the only
+    one. Two pages of that title, even side by side in one file, could be two units drawn alike (a
+    new desk and an older one of the same building): then none, and the reviewer is asked, never
+    a guess (review of #1913: a run of same-titled pages let the matcher alone choose among
+    look-alikes)."""
     found = [c for c in candidates if same_item(vendor.index_title, c.index_title)]
-    if len(found) <= 1:
-        return frozenset(c.ref for c in found)
-    places = [c.place for c in found]
-    if any(p is None for p in places) or len({p[0] for p in places if p}) != 1:
-        return frozenset()
-    pages = sorted(p[1] for p in places if p)
-    if pages != list(range(pages[0], pages[0] + len(pages))):
-        return frozenset()
-    return frozenset(c.ref for c in found)
+    return frozenset(c.ref for c in found) if len(found) == 1 else frozenset()
 
 
 @dataclass(frozen=True)
@@ -1170,7 +1154,20 @@ def agree(
                 f"{UNPAIRED}: the AI page matcher picked {pick}{reason}, but code ranks "
                 f"{best.ref} higher ({evidence_words(best)}; {pick}: {evidence_words(scored)})"
             )
-        how = "code holds strong evidence for it"
+        # The set index's title is an AI's read: on code's own evidence alone, no other item may
+        # be clearly ahead of the pick either (review of #1913: a title on one page and a view
+        # reference both print on another is a conflict, never a pair).
+        own = max((s for s in others if s.strong), key=lambda s: s.score - s.titled, default=None)
+        if own is not None and (own.score - own.titled) - (scored.score - scored.titled) >= TIER:
+            return (), (
+                f"{UNPAIRED}: the AI page matcher picked {pick}{reason}, but code's own evidence "
+                f"puts {own.ref} ahead ({evidence_words(own)}; {pick}: {evidence_words(scored)})"
+            )
+        how = (
+            "the set index reads the same item title on both pages"
+            if scored.titled and scored.score - scored.titled < CODE_BAR
+            else "code holds strong evidence for it"
+        )
     else:
         # Weak evidence only (finish tags, naming words, close sizes): the pick must be code's
         # first, ahead of every other item by `WEAK_LEAD` (two pieces of weak evidence), so a
@@ -1210,13 +1207,16 @@ def agree(
 
 def _also(by: Mapping[str, Scored], ref: str, pick: Scored) -> bool:
     """Whether the matcher's further pick is kept beside its first (a plan and an elevation of one
-    item): code holds strong evidence for it too, within `TIER` of the first, uncontradicted."""
+    item): code holds strong evidence for it too, within `TIER` of the first, uncontradicted. The
+    set index's title is an AI's read: never the only evidence for a further pick, and never
+    counted in the scores compared."""
     other = by.get(ref)
     return (
         other is not None
         and other.contradicts is None
         and other.strong
-        and other.score >= pick.score - TIER
+        and not (other.titled and other.agree_only)
+        and other.score - other.titled >= pick.score - pick.titled - TIER
     )
 
 

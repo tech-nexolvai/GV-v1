@@ -19,6 +19,7 @@ Synthetic sets only: $0, no model call (the set index and the page matcher are f
 from __future__ import annotations
 
 import re
+from fractions import Fraction
 from typing import Any
 
 from app.review.assistant.chat_contract import ChatCoveragePageOut
@@ -37,6 +38,7 @@ from app.review.assistant.simple_check.pairing import (
     Facts,
     MatchAnswer,
     Scored,
+    agree,
     clear_winner,
     opposite_hand,
     rank,
@@ -346,11 +348,65 @@ def test_two_pages_of_one_title_far_apart_are_look_alikes_never_paired() -> None
     pair = _across(_work(_matched(unasked, {1: 3}), vendor, LOOK_ALIKE, OTHER_SIZES), 1)
     assert pair.chosen == (), pair.why
     assert pair.unsure and DRAWING_NEEDED not in pair.why
-    # One item drawn on two pages in a row (its sheets): paired with the matcher's pick.
+    # Two pages in a row of that title: they may be one item's sheets, or two units drawn alike
+    # side by side (a new desk and an older one). The title tells them apart no more than far
+    # apart: never paired on the matcher alone (review of #1913), the reviewer is asked.
     sheets = {**LOOK_ALIKE, 2: "SAMPLE PANTRY CABINET", 3: "BENCH"}
     unasked = _work(None, vendor, sheets, OTHER_SIZES)
     pair = _across(_work(_matched(unasked, {1: 2}), vendor, sheets, OTHER_SIZES), 1)
-    assert _paired_pages(pair) == [2], pair.why
+    assert pair.chosen == (), pair.why
+    assert pair.unsure and DRAWING_NEEDED not in pair.why
+
+
+def test_a_title_never_outranks_codes_own_evidence_for_another_page() -> None:
+    """Review of #1913: the vendor and architect page 1 both print one view reference (code's
+    strong evidence); architect page 2 has the vendor's set index title. A matcher sure of page 2
+    is a conflict: never paired."""
+    ranked = rank(
+        Facts("v", index_title="SAMPLE RECEPTION DESK", references=frozenset({"2/A-501"})),
+        [
+            Facts("a1", references=frozenset({"2/A-501"}), place=("arch.pdf", 1)),
+            Facts("a2", index_title="SAMPLE RECEPTION DESK", place=("arch.pdf", 2)),
+            Facts("a3", place=("arch.pdf", 3)),
+            Facts("a4", place=("arch.pdf", 4)),
+        ],
+    )
+    winner = clear_winner(ranked)
+    chosen, why = agree(ranked, winner and winner.ref, MatchAnswer(("a2",), confident=True))
+    assert chosen == (), why
+    # With no conflicting evidence elsewhere, the title and a sure matcher agree.
+    ranked = rank(
+        Facts("v", index_title="SAMPLE RECEPTION DESK"),
+        [
+            Facts("a1", place=("arch.pdf", 1)),
+            Facts("a2", index_title="SAMPLE RECEPTION DESK", place=("arch.pdf", 2)),
+            Facts("a3", place=("arch.pdf", 3)),
+        ],
+    )
+    chosen, why = agree(ranked, None, MatchAnswer(("a2",), confident=True))
+    assert chosen == ("a2",) and "set index reads the same item title" in why, why
+
+
+def test_a_title_alone_never_keeps_a_further_pick() -> None:
+    """Code's own pick is a1; the matcher names a1 then a2, whose only evidence is the title."""
+    vals = tuple(Fraction(x) for x in (63, 22, 36, 18, 40, 30))
+    ranked = rank(
+        Facts(
+            "v",
+            values=vals,
+            index_title="SAMPLE EN SUITE VANITY",
+            references=frozenset({"2/A-501"}),
+        ),
+        [
+            Facts("a1", values=vals, references=frozenset({"2/A-501"}), place=("arch.pdf", 3)),
+            Facts("a2", index_title="SAMPLE EN SUITE VANITY", place=("arch.pdf", 12)),
+            Facts("a3", place=("arch.pdf", 20)),
+        ],
+    )
+    winner = clear_winner(ranked)
+    assert winner is not None and winner.ref == "a1"
+    chosen, _why = agree(ranked, "a1", MatchAnswer(("a1", "a2"), confident=True))
+    assert chosen == ("a1",)
 
 
 def test_a_vendor_page_of_two_drawings_gives_neither_its_title() -> None:
@@ -437,3 +493,18 @@ def test_code_never_picks_on_the_title_weight() -> None:
     other = Scored("a2", 1.0, ("w",))
     assert clear_winner((titled, other)) is None
     assert clear_winner((Scored("a1", 5.33, ("s",), strong=True), other)) is not None
+
+
+def test_pairing_unsure_never_offers_a_page_code_has_no_evidence_for() -> None:
+    ranked = rank(
+        Facts("v", index_title="SAMPLE RECEPTION DESK"),
+        [Facts("a1", place=("arch.pdf", 1)), Facts("a2", place=("arch.pdf", 2))],
+    )
+    assert worklist._unsure(ranked, None, MatchAnswer(("a1",), confident=True)) == ("a1",)
+
+
+def test_unit_type_lists_and_unit_words() -> None:
+    assert unit_title("SAMPLE VANITY TYPE A1 AND TYPE B")[1] == {"a1", "b"}
+    assert unit_title("SAMPLE KITCHEN REVERSED UNITS")[0] == "sample kitchen"
+    # "unit" is kept when it is not a hand word: a wall unit is not a wall.
+    assert not same_item("SAMPLE WALL UNIT ELEVATION", "SAMPLE WALL ELEVATION")
