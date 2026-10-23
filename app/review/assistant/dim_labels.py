@@ -155,7 +155,7 @@ MAX_LABELS: Final = 400
 #: pages' time over the workers): the picture route (#1830), the OCR route (#1848: a few seconds a
 #: page) and `read_number` at pack time (#1860). The drawn route's is the set pack's
 #: (`set_pack.DIMS_DRAWN_BUDGET_S`).
-PICTURES_BUDGET_S: Final = 120.0
+PICTURES_BUDGET_S: Final = 60.0
 OCR_BUDGET_S: Final = 60.0
 OCR_PAGE_S: Final = 60.0
 SWEEP_BUDGET_S: Final = 30.0

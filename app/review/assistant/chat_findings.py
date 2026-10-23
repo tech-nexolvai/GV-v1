@@ -42,8 +42,14 @@ from typing import Any, Final
 from uuid import uuid4
 
 from app.review.assistant.chat_corrections import parse_ref
-from app.review.assistant.dim_findings import LabelRefused, fill_from_labels, label_for_cite
+from app.review.assistant.dim_findings import (
+    LabelRefused,
+    fill_from_labels,
+    label_for_cite,
+    typed_architect_spot,
+)
 from app.review.assistant.dim_index import DimLabels, labels_for
+from app.review.assistant.finding_checks import WRONG_PART
 from app.review.assistant.impact import by_impact
 from app.review.assistant.product_scope import ProductScope, refiled
 from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, SandboxRefused
@@ -1006,7 +1012,19 @@ class FindingBook:
     def _labelled(
         self, raw: Mapping[str, Any], current: Mapping[str, Any] | None
     ) -> tuple[dict[str, Any], dict[str, Any] | None, list[str]]:
-        """`architect_dim` / `vendor_dim` turned into values and boxes (`dim_findings`)."""
+        """`architect_dim` / `vendor_dim` turned into values and boxes (`dim_findings`). In a
+        two-file set an architect page is the architect file's own, never the vendor's page
+        number by default (`typed_architect_spot`)."""
+        architect = _architect_upload(self.listing)
+        try:
+            raw = typed_architect_spot(
+                raw,
+                current,
+                vendor_file=self.main_file,
+                architect_file=None if architect is None else str(architect["name"]),
+            )
+        except LabelRefused as refused:
+            raise SandboxRefused(str(refused)) from None
         if raw.get("architect_dim") is None and raw.get("vendor_dim") is None:
             given = {k: v for k, v in raw.items() if k not in ("architect_dim", "vendor_dim")}
             before = (current or {}).get("dims")
@@ -1015,7 +1033,6 @@ class FindingBook:
                 if side in given or box in given:
                     dims.pop(side, None)
             return given, (dims or None), []
-        architect = _architect_upload(self.listing)
         try:
             return fill_from_labels(
                 raw,
@@ -1359,6 +1376,9 @@ class FindingBook:
             finding["text_proof"] = json.loads(json.dumps(given["text_proof"]))
         if isinstance(given.get("architect_parts"), Mapping):
             finding["architect_parts"] = json.loads(json.dumps(given["architect_parts"]))
+        if isinstance(given.get(WRONG_PART), Mapping):
+            # The vendor string's part code's geometry names as the wrong number (#1887).
+            finding[WRONG_PART] = json.loads(json.dumps(given[WRONG_PART]))
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:

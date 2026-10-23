@@ -158,24 +158,128 @@ def _check(tmp_path: Path, *pages: bytes, lines: bool = True) -> vc.ConsistencyR
 # ---- strings -------------------------------------------------------------------------------------
 
 
-def test_a_string_that_does_not_add_up_is_a_wrong_with_its_sum_as_should_be(
-    tmp_path: Path,
-) -> None:
+def test_a_string_whose_part_is_drawn_short_is_a_wrong_at_that_part(tmp_path: Path) -> None:
+    """The drawing names the wrong number: the 41" part is drawn 40" and the 60" overall is drawn
+    to its value, so the red goes round the 41" and it should be 40" (60" less 20"), never "the
+    60" should be 61"" (a real two-file upload had the same pattern)"""
+    from app.review.assistant import proof
+
     result = _check(tmp_path, _sheet_wrong())
-    assert result.strings == {"found": 1, "adds_up": 0, "does_not_add_up": 1, "doubt": 0}
+    assert result.strings == {
+        "found": 1,
+        "adds_up": 0,
+        "does_not_add_up": 1,
+        "doubt": 0,
+        "rounding": 0,
+    }
     (finding,) = result.findings
     assert finding["source"] == "vendor_arithmetic"
     assert finding["status"] == "different"
     assert finding["created_by"] == "consistency"
-    assert finding["architect"] == '61"'  # the should-be: the parts' sum
-    assert finding["vendor"] == finding["printed_total"] == '60"'
+    assert finding["architect"] == '40"'  # the should-be: the overall less the other part
+    assert finding["vendor"] == '41"'
+    assert finding["printed_total"] == '60"'
     assert finding["parts"] == ['20"', '41"']
     assert finding["item"] == "Buffet: dimension string (across, round 2)"
-    assert finding["dims"]["vendor"]["text"] == '60"'
+    assert finding["dims"]["vendor"]["text"] == '41"'
     assert finding["vendor_box"]["page"] == 1
-    # The drawing names the likely slip: the 41" piece is drawn as 40".
+    assert finding["wrong_part"]["text"] == '41"' and finding["wrong_part"]["should_be"] == "40"
     assert 'the 41" dimension is drawn as 40"' in finding["why"]
+    assert 'the 41" part should be 40"' in finding["why"]
     assert finding["sum_text"] == '20" + 41" = 61" ≠ 60" printed (off 1")'
+    assert proof.vendor_value(finding) == '41"'
+    assert proof.should_be_value(finding) == '40"'
+
+
+def _sheet_wrong_overall() -> bytes:
+    """20" + 41" drawn to their values (2 pt per inch) under an overall printed 60" but drawn 61":
+    the overall is the wrong number, and it should be the parts' sum."""
+    return (
+        _dim(300, 422, 300, '60"')
+        + _dim(300, 340, 280, '20"')
+        + _dim(340, 422, 280, '41"')
+        + _dim(450, 500, 150, '25"')
+    )
+
+
+def test_an_overall_drawn_off_its_value_is_a_wrong_with_the_sum_as_should_be(
+    tmp_path: Path,
+) -> None:
+    result = _check(tmp_path, _sheet_wrong_overall())
+    (finding,) = result.findings
+    assert finding["vendor"] == finding["printed_total"] == '60"'
+    assert finding["architect"] == '61"'  # the parts' sum
+    assert "wrong_part" not in finding
+
+
+def _string_sheet(
+    overall: str, parts: Sequence[tuple[float, str]], *, ppi: float, x0: float = 100.0
+) -> bytes:
+    """A string drawn at `ppi` points per inch: each part `(drawn inches, printed)` end to end
+    under the overall, which spans them all; a 10" and a 12" dimension elsewhere share the scale.
+    Made-up values."""
+    total = sum(drawn for drawn, _text in parts)
+    body = _dim(x0, x0 + total * ppi, 300, overall)
+    x = x0
+    for drawn, text in parts:
+        body += _dim(x, x + drawn * ppi, 280, text)
+        x += drawn * ppi
+    return body + _dim(440, 440 + 10 * ppi, 150, '10"') + _dim(440, 440 + 12 * ppi, 110, '12"')
+
+
+def test_three_equal_bays_printed_to_the_eighth_are_cad_rounding(tmp_path: Path) -> None:
+    """172" in three equal bays: each is 57 1/3", printed 57 3/8" (the CAD's 1/8" rounding), so
+    the parts print 172 1/8". Not a finding."""
+    third = 172 / 3
+    sheet = _string_sheet('172"', [(third, '57 3/8"')] * 3, ppi=2.0, x0=40.0)
+    result = _check(tmp_path, sheet)
+    assert result.strings["rounding"] == 1 and result.strings["does_not_add_up"] == 0
+    assert result.findings == []
+    (check,) = [c for c in result.checks if c.verdict == "rounding"]
+    assert "rounding" in check.reason
+
+
+def test_recesses_drawn_just_under_two_inches_are_cad_rounding(tmp_path: Path) -> None:
+    """2" + 20 1/8" + 2" under 24": the recesses are drawn 1 15/16" (printed 2"), so the parts
+    print 24 1/8". Not a finding."""
+    sheet = _string_sheet('24"', [(1.9375, '2"'), (20.125, '20 1/8"'), (1.9375, '2"')], ppi=8.0)
+    result = _check(tmp_path, sheet)
+    assert result.strings["rounding"] == 1
+    assert result.findings == []
+
+
+def test_a_part_drawn_far_from_its_value_stays_red_with_the_part_as_should_be(
+    tmp_path: Path,
+) -> None:
+    """20" = 2 5/8" + 15" + 3": the 15" part is drawn 14 3/8" and the 20" overall is drawn 20":
+    a real slip (the parts print 20 5/8"). Red at the 15", should be 14 3/8" (20" less the other
+    parts), never "the 20" should be 20 5/8"". Made-up geometry."""
+    sheet = _string_sheet('20"', [(2.625, '2 5/8"'), (14.375, '15"'), (3.0, '3"')], ppi=8.0)
+    result = _check(tmp_path, sheet)
+    (finding,) = result.findings
+    assert finding["vendor"] == '15"' and finding["architect"] == '14 3/8"'
+    assert finding["printed_total"] == '20"'
+    assert finding["dims"]["vendor"]["text"] == '15"'
+
+
+def test_an_eighth_slip_the_strings_own_lines_show_is_red_at_its_part(tmp_path: Path) -> None:
+    """31" = 22 3/4" + 8 1/8" with the 8 1/8" part drawn 8 1/4" (the overall and the other part
+    drawn to their values): 1/8" off, but no rounding makes 8 1/4" print 8 1/8", so it is a
+    slip, red at that part, should be 8 1/4"."""
+    sheet = _string_sheet('31"', [(22.75, '22 3/4"'), (8.25, '8 1/8"')], ppi=8.0)
+    result = _check(tmp_path, sheet)
+    assert result.strings["rounding"] == 0
+    (finding,) = result.findings
+    assert finding["vendor"] == '8 1/8"' and finding["architect"] == '8 1/4"'
+
+
+def test_the_same_eighth_drawn_as_rounding_is_not_red(tmp_path: Path) -> None:
+    """31" = 22 3/4" + 8 1/8" with the parts drawn 22 13/16" + 8 3/16" (each printed to the
+    nearest 1/8"): the CAD's rounding, not a finding."""
+    sheet = _string_sheet('31"', [(22.8125, '22 3/4"'), (8.1875, '8 1/8"')], ppi=8.0)
+    result = _check(tmp_path, sheet)
+    assert result.strings["rounding"] == 1
+    assert result.findings == []
 
 
 def test_a_string_that_adds_up_gives_nothing(tmp_path: Path) -> None:
@@ -679,7 +783,7 @@ def test_a_grouped_string_code_could_not_measure_is_never_red() -> None:
 def test_a_grouped_string_that_is_codes_own_chain_is_verified(tmp_path: Path) -> None:
     from app.review.assistant import proof
 
-    result = _check(tmp_path, _sheet_wrong())
+    result = _check(tmp_path, _sheet_wrong_overall())
     same = _ledger_string(['41"', '20"'])
     other = {**_ledger_string(['20"', '25"']), "id": "F8"}
     judged = vc.judge_strings([same, other], result.checks)
@@ -687,6 +791,25 @@ def test_a_grouped_string_that_is_codes_own_chain_is_verified(tmp_path: Path) ->
     assert "its own finding replaces" in judged.dropped["F8"]
     assert proof.proof_group({**same, "string_geometry": "verified"}) == "clouded"
     assert proof.proof_group(same) == "not_compared"
+
+
+def test_a_grouped_string_whose_part_the_drawing_names_is_replaced_by_codes_own(
+    tmp_path: Path,
+) -> None:
+    """The reading's red would say "the 60" should be 61""; code's own finding says the 41" part
+    should be 40": the reading's is dropped for code's."""
+    result = _check(tmp_path, _sheet_wrong())
+    judged = vc.judge_strings([_ledger_string(['41"', '20"'])], result.checks)
+    assert judged.verified == ()
+    assert "its own finding replaces" in judged.dropped["F7"]
+
+
+def test_a_grouped_string_code_measures_as_cad_rounding_is_dropped(tmp_path: Path) -> None:
+    third = 172 / 3
+    result = _check(tmp_path, _string_sheet('172"', [(third, '57 3/8"')] * 3, ppi=2.0, x0=40.0))
+    grouped = _ledger_string(['57 3/8"'] * 3, '172"', string_geometry="verified")
+    judged = vc.judge_strings([grouped], result.checks)
+    assert judged.verified == () and "rounding" in judged.dropped["F7"]
 
 
 def test_two_overalls_of_one_value_and_no_spot_are_left_alone(tmp_path: Path) -> None:
@@ -764,3 +887,20 @@ def test_the_line_work_is_read_once_per_set_and_kept_in_its_pack(
     assert calls == [2, 3]  # page 4 read once; page 3 kept; page 5 has no labels
     # Without a pack (a question, not a full check), nothing is kept.
     assert vc.line_work(uploads)("set.pdf", 6) == segments and calls == [2, 3, 5]
+
+
+def test_two_readings_never_make_a_miss_within_cad_rounding_red() -> None:
+    """Two readings agreeing on a five-part string 1/8" off its overall prove the values, not
+    that the drawing did not round them: Not compared. A miss rounding cannot make stays red."""
+    from app.review.assistant import proof
+    from app.review.assistant.full_check_advocate import compare_strings
+
+    parts = ['5 1/4"', '12 3/8"', '5 1/4"', '3"', '30"']  # 55 7/8" printed 56"
+    rounded = _ledger_string(parts, '56"', string_geometry="two_reads")
+    assert proof.within_rounding(rounded)
+    assert proof.proof_group(rounded) == "not_compared"
+    chains = {"chains": [{"parts": parts, "overall": '56"', "direction": "across"}], "note": ""}
+    assert compare_strings(parts, '56"', chains)[0] == "within_rounding"
+    slip = _ledger_string(['20"', '41"'], '60"', string_geometry="two_reads")
+    assert not proof.within_rounding(slip)
+    assert proof.proof_group(slip) == "clouded"

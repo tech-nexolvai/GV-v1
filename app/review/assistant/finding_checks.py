@@ -48,6 +48,7 @@ from units.notation import canonical_notation, is_compound
 
 __all__ = [
     "VERIFY_MODULE",
+    "WRONG_PART",
     "Checks",
     "PrintedResult",
     "TrustLevel",
@@ -67,6 +68,7 @@ __all__ = [
     "units_check",
     "value_flags",
     "verify_at_spot",
+    "wrong_part",
 ]
 
 type PrintedResult = Literal["match", "not_found", "no_text", "no_box", "not_a_number"]
@@ -368,6 +370,27 @@ def arithmetic_off_by(parts: Sequence[str], printed_total: str) -> Decimal | Non
     if total is None or any(value is None for value in values):
         return None
     return total - sum((value for value in values if value is not None), Decimal(0))
+
+
+#: A vendor string's part that code's geometry names as the wrong number (`vendor_consistency`):
+#: `{text, should_be, label}`, `should_be` in inches (the overall less the other parts).
+WRONG_PART: Final = "wrong_part"
+
+
+def wrong_part(finding: Mapping[str, Any]) -> tuple[str, Decimal] | None:
+    """A vendor string's wrong part as printed and what it should be (inches), when code's
+    geometry named one: the cloud and the "should be" then follow that part, not the printed
+    overall against the parts' sum (the overall is right). None otherwise."""
+    if finding.get("source") != "vendor_arithmetic":
+        return None
+    part = finding.get(WRONG_PART)
+    if not isinstance(part, Mapping) or not part.get("text"):
+        return None
+    try:
+        should = Decimal(str(part.get("should_be")))
+    except ArithmeticError:
+        return None
+    return (str(part["text"]), should) if should.is_finite() and should > 0 else None
 
 
 def arithmetic_check(parts: Sequence[str], printed_total: str) -> ArithmeticResult:
