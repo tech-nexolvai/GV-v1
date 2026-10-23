@@ -349,7 +349,17 @@ def test_spec_book_and_job_values_lines() -> None:
     spec = _line(report, "no_spec")
     assert spec.words.startswith("Not checked: materials, grade and hardware") and spec.who == "GV"
     values = _line(report, "values_needed")
-    assert "Sink inside width, Countertop overhang" in values.words and values.goes_on
+    assert values.words.startswith("2 job values not entered yet: Sink inside width, Countertop")
+    assert values.who == "you" and values.goes_on and "Ask GV" not in values.words
+
+
+def test_a_long_job_values_list_stays_short() -> None:
+    names = tuple(f"Value {n}" for n in range(1, 10))
+    report = build(
+        Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR, missing_values=names)
+    )
+    words = _line(report, "values_needed").words
+    assert "Value 4 and 5 more." in words and "Value 5" not in words
 
 
 def test_gather_reads_the_pack_and_the_index_when_present(tmp_path: Path) -> None:
