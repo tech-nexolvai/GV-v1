@@ -1157,10 +1157,6 @@ class ChatEngine:
         #: could not be compared: review result S0), and its Not-compared rows that are not
         #: findings (an architect that gives no size), for the Not-compared PDF and workbook.
         self.incomplete_note: str | None = None
-        #: A roster full check's vendor pages with no architect drawing paired (#1885): the result
-        #: lists them under Drawing needed, and the last step folds their "no drawing" items
-        #: under that card (`one_card`), also before their coverage says so.
-        self.drawing_needed_pages: frozenset[int] = frozenset()
         #: Code's own checks that crashed (`add_code_findings`), by name (#1768): each makes a
         #: full check "not for sending" (S0), never a quiet log line.
         self.code_checks_failed: list[str] = []
@@ -1228,6 +1224,14 @@ class ChatEngine:
             if isinstance(entry, Mapping)
             and (entry.get("status") != "not_opened" or entry.get("note"))
         ]
+        for entry in (coverage or {}).get("pages") or []:
+            # One item, one card: the items an earlier answer folded under a page's
+            # Drawing-needed card stay there as evidence (they were dropped from its findings).
+            folds = entry.get("folded") if isinstance(entry, Mapping) else None
+            if isinstance(folds, list) and isinstance(entry.get("page"), int):
+                self.book.fold_into_page(
+                    int(entry["page"]), [c for c in folds if isinstance(c, Mapping)]
+                )
         if pages:
             self.book.set_coverage({"pages": pages}, "earlier")
             self._show_coverage()
@@ -3117,7 +3121,9 @@ class ChatEngine:
             return
         from app.review.assistant.full_check_plan import unpaired_note_why
 
-        needed = set(self.drawing_needed_pages)
+        # Only pages the result really lists under Drawing needed (their coverage note says so):
+        # an item folded under a page the screen does not show there would be seen nowhere.
+        needed: set[int] = set()
         for entry in (coverage or {}).get("pages") or []:
             if isinstance(entry, Mapping) and unpaired_note_why(entry.get("note")) is not None:
                 needed.add(int(entry["page"]))

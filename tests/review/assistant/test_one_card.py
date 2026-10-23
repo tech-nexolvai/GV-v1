@@ -5,7 +5,8 @@
   same page pair. Words and a big AI region alone never join two items.
 - The card kept is the most severe copy (code-proved Wrong, Likely problem, Not compared, Right),
   unchanged; the others are kept inside it as evidence. One vendor number paired with two
-  architect numbers is Not compared, with both values.
+  architect numbers is Not compared, with both values, when no copy is more than Not compared;
+  with a Wrong, Likely problem or Ask the architect among them, every copy stays its own card.
 - A merged card is never redder or greener than its copies (every combination).
 - A "no architect drawing" item on a Drawing-needed page folds under that page's card; the
   vendor's own checks stay.
@@ -136,11 +137,65 @@ def test_one_vendor_number_with_two_architect_numbers_is_not_compared_with_both(
     assert final[0]["same_item"]["conflict"] == ['21"', '36"']
     row = not_compared.rows(final)[0]
     assert "2 different architect sizes" in row.why
-    # The same for a code-proved Wrong: its pair is in doubt, so it is never red.
+    # A code-proved Wrong is never folded into such a card (folding never hides a Wrong): both
+    # stay as they were.
     proved = _item("F3", "clouded", a_in="40")
     final = _apply([proved, _item("F4", "right")])
-    assert proof_group(proved) == "clouded"
-    assert [proof_group(f) for f in final] == ["not_compared"]
+    assert [(f["id"], proof_group(f)) for f in final] == [("F3", "clouded"), ("F4", "right")]
+    assert "same_item" not in final[0]
+    # Two code-proved Wrongs against two architect dimensions: two red cards.
+    final = _apply([proved, _item("F5", "clouded", a_in="38")])
+    assert [proof_group(f) for f in final] == ["clouded", "clouded"]
+    # A Likely problem with a disagreeing copy stays a Likely problem.
+    final = _apply(
+        [_item("F6", "likely_problem", a_in="40"), _item("F7", "not_compared", a_in="21")]
+    )
+    assert sorted(proof_group(f) for f in final) == ["likely_problem", "not_compared"]
+
+
+def test_a_carried_conflict_never_turns_a_card_red_by_folding() -> None:
+    """Continue: a card folded before (Not compared, its copies disagreed) and a new code-proved
+    copy at the same label. The new copy is never folded into the grey card, and the grey card
+    keeps its values."""
+    carried = _item("F1", "not_compared", a_in="36")
+    carried["same_item"] = {
+        "copies": [{"finding_id": "F0", "architect": '40"'}],
+        "conflict": ['36"', '40"'],
+    }
+    assert proof_group(carried) == "not_compared"
+    proved = _item("F2", "clouded", a_in="40")
+    final = _apply([carried, proved])
+    assert sorted((f["id"], proof_group(f)) for f in final) == [
+        ("F1", "not_compared"),
+        ("F2", "clouded"),
+    ]
+    # With a Right copy instead, the grey card keeps the copy and its values.
+    final = _apply([carried, _item("F3", "right")])
+    assert [f["id"] for f in final] == ["F1"]
+    assert (
+        final[0]["same_item"]["conflict"] == ['36"', '40"']
+        and proof_group(final[0]) == "not_compared"
+    )
+
+
+def test_a_check_against_the_vendors_earlier_round_never_folds() -> None:
+    proved = _item("F1", "clouded", a_in="40")
+    earlier = _item("F2", "not_compared", a_in="38")
+    earlier["dims"]["architect"]["side"] = "vendor"  # the "architect" label is the vendor's round 1
+    assert not one_card.compares_architect(earlier)
+    assert [f["id"] for f in _apply([proved, earlier])] == ["F1", "F2"]
+    same = _item("F3", "not_compared", a_in="36", reference_side="vendor")
+    assert [f["id"] for f in _apply([_item("F4", "right"), same])] == ["F4", "F3"]
+
+
+def test_a_chain_of_spots_never_joins_two_vendor_numbers() -> None:
+    """A (12") and C (22 1/2") each overlap B (vendor not read) at one architect label: A and C are
+    two vendor dimensions, so nothing is folded."""
+    a = _item("F1", "not_compared", vendor=None, v_in="12", a_in="21", at=(100.0, 100.0))
+    b = _item("F2", "not_compared", vendor=None, v_in=None, a_in="21", at=(104.0, 100.0))
+    c = _item("F3", "not_compared", vendor=None, v_in="22.5", a_in="21", at=(108.0, 100.0))
+    assert one_card.same_item(a, b) and one_card.same_item(b, c) and not one_card.same_item(a, c)
+    assert len(_apply([a, b, c])) == 3
 
 
 def test_a_proved_wrong_stays_wrong_and_keeps_the_likely_copy_as_evidence() -> None:
@@ -312,6 +367,11 @@ def test_a_merged_card_is_never_redder_or_greener_than_its_copies(size: int) -> 
             architect = {c["inches"]["architect"] for c in copies}
             groups = [proof_group(c) for c in copies]
             final = _apply(copies)
+            worst = min(groups, key=one_card.RANK.__getitem__)
+            if len(architect) > 1 and one_card.RANK[worst] < one_card.RANK["not_compared"]:
+                # Copies that disagree, one of them Wrong / Likely: nothing folds, no card changes.
+                assert [proof_group(f) for f in final] == groups, (kinds, numbers)
+                continue
             assert len(final) == 1, (kinds, numbers)
             card = proof_group(final[0])
             assert card in (*groups, "not_compared"), (kinds, numbers, card)

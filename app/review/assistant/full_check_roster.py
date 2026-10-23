@@ -5119,8 +5119,6 @@ class _Run:
             engine._store_scope()
         except Exception:  # noqa: BLE001 - stored without its scope block
             _log.exception("assistant roster scope failed")
-        # The last step folds a Drawing-needed page's "no drawing" items under its card (#1885).
-        engine.drawing_needed_pages = frozenset(self.unpaired)
         if stopped == "cancelled":
             engine._code_finish()
         else:

@@ -21,8 +21,12 @@ Which card stays: a code-proved Wrong, then a Likely problem, then Ask the archi
 compared, then Right (the most severe, decided by code). The card kept is one of the copies,
 unchanged, so it is never redder or greener than a copy that is proved; the other copies are kept
 inside it as evidence (`same_item.copies`). When the copies pair one vendor number with different
-architect numbers (or read different values at one vendor label), nobody knows which pair is right:
-the card is Not compared with every value listed (`same_item.conflict`), never Wrong or Right.
+architect numbers, nobody knows which pair is right: when none of them is more than Not compared,
+the card is Not compared with every value listed (`same_item.conflict`), never Right. A Wrong, a
+Likely problem or an Ask the architect is never folded into such a card (folding never hides a
+Wrong or changes a card's colour): every copy then stays its own card, as before. Copies with two
+different vendor numbers are never folded either (two vendor dimensions, two items), nor a check
+against the vendor's own earlier round (it never compares with the architect).
 
 An item whose only fact is "no architect drawing paired" on a page already in Drawing needed says
 what that card says: it is folded under the page's card (`drawing_needed`). The vendor's own checks
@@ -43,6 +47,7 @@ from app.review.assistant import proof
 from app.review.assistant.chat_trust import inch_words
 from app.review.assistant.classification import SAME_ITEM, internal
 from app.review.assistant.decision_resolver import MILLWORK_FAMILIES
+from app.review.assistant.round_reference import round_only
 
 __all__ = ["RANK", "Folded", "OneCard", "compares_architect", "fold", "same_item"]
 
@@ -289,6 +294,8 @@ def compares_architect(finding: Mapping[str, Any]) -> bool:
         return False
     if proof.vendor_own(finding) or finding.get("rule_check_id") or finding.get("gv_standard"):
         return False
+    if round_only(finding) or finding.get("reference_side") == "vendor":
+        return False  # compared with the vendor's own drawing (an earlier round): never folded
     return proof.gv_limits(finding) is None
 
 
@@ -423,7 +430,22 @@ def fold(findings: Sequence[Mapping[str, Any]], drawing_needed: Collection[int] 
         labels = [key for f in ordered if (key := _label_key(f, "vendor")) is not None]
         if any(not _same_label(labels[0], other) for other in labels[1:]):
             continue  # two printed vendor labels (joined through a spot): two items, both stay
+        if len({v for f in ordered if (v := _inches(f, "vendor")) is not None}) > 1:
+            continue  # two vendor numbers (joined through a chain of spots): two items
         conflict = _conflict(ordered)
+        # A card folded before (Continue, a re-report) keeps the values its copies disagreed on.
+        carried = [
+            str(value)
+            for f in ordered
+            if isinstance(f.get(SAME_ITEM), Mapping)
+            for value in (f[SAME_ITEM].get("conflict") or [])
+        ]
+        if carried:
+            conflict = sorted({*(conflict or []), *carried}, key=str)
+        if conflict and RANK.get(proof.proof_group(keep), len(RANK)) < RANK["not_compared"]:
+            # A Wrong, Likely problem or Ask the architect among copies that disagree on the
+            # architect's size: folding would hide it or change its colour, so every copy stays.
+            continue
         given = keep.get(SAME_ITEM)
         before: Mapping[str, Any] = given if isinstance(given, Mapping) else {}
         copies = list(before.get("copies") or [])
@@ -444,7 +466,7 @@ def fold(findings: Sequence[Mapping[str, Any]], drawing_needed: Collection[int] 
                 )
             )
         merged: dict[str, Any] = {"copies": copies}
-        if conflict is not None or before.get("conflict"):
-            merged["conflict"] = conflict or list(before.get("conflict") or [])
+        if conflict:
+            merged["conflict"] = conflict
         out.kept.append({**keep, SAME_ITEM: merged})
     return out

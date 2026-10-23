@@ -708,3 +708,29 @@ def test_the_owners_switch_keeps_an_unconfirmed_claim_as_a_likely_problem_only(
     # The field cut is still never compared, whatever the switch says.
     monkeypatch.setenv(whole_look.UNCONFIRMED_ENV, "nonsense")
     assert whole_look.unconfirmed_mode() == "drop"
+
+
+def test_a_claim_against_another_architect_dimension_never_joins_a_helpers_item(
+    tmp_path: Path,
+) -> None:
+    """Review of #1916: the helper pairs the vendor's D2 with the architect's D6, the look with
+    D1. Same vendor label, two architect dimensions: the look's claim is its own item, never
+    folded into the helper's (whose words would then name the other architect value)."""
+    more = [_label("D6", "architect", "3'-8\"", "44", [150, 100, 180, 110], "v")]
+    book, look = _setup(tmp_path, more=more)
+    helper, _ = book.report(
+        {
+            "page": 2, "item": "Uppers height", "category": "other", "status": "different",
+            "verified": False, "source": "architect", "vendor_dim": "D2", "architect_dim": "D6",
+        },
+        "helper:1",
+    )  # fmt: skip
+    claim = _claim("size", _side(3, "D2", '30"'), _side(1, "D1", "3'-6\""))
+    # Code did not confirm the claim's two labels measure one part: the new join path.
+    applied, _shown = _apply(book, look, [claim], same_part=lambda vendor, architect: False)
+    assert not applied.joined
+    # The helper's item keeps its own words (never the look's, which name D1's value); the
+    # unconfirmed claim follows the like-for-like rule on its own (dropped by default).
+    kept = next(f for f in book.live() if f["id"] == helper["id"])
+    assert likely_problems.FIELD not in kept
+    assert applied.dropped or len(book.live()) == 2

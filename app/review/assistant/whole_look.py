@@ -857,9 +857,32 @@ def _same_helper_item(context: _Context, probe: Mapping[str, Any]) -> dict[str, 
             continue  # GV's rule or the vendor's own check: another question, never joined
         if finding.get("status") not in ("different", "check"):
             continue
-        if same_item(probe, finding) is not None:
-            return dict(finding)
+        how = same_item(probe, finding)
+        if how is None:
+            continue
+        if how == "vendor_label" and not _same_architect_side(probe, finding):
+            continue  # one vendor dimension against two architect dimensions: two claims
+        return dict(finding)
     return None
+
+
+def _same_architect_side(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    """Whether two items name the same architect dimension, or one of them names none (a claim
+    against another architect dimension is never joined to a helper's item)."""
+
+    def key(finding: Mapping[str, Any]) -> tuple[Any, ...] | None:
+        dims = finding.get("dims")
+        label = dims.get("architect") if isinstance(dims, Mapping) else None
+        if not isinstance(label, Mapping) or not label.get("id"):
+            return None
+        return (label.get("page"), str(label["id"]), label.get("file") or None)
+
+    first, second = key(a), key(b)
+    if first is None or second is None:
+        return True
+    if first[:2] != second[:2]:
+        return False
+    return not (first[2] and second[2] and first[2] != second[2])
 
 
 def _side_of(claim: Mapping[str, Any], name: str) -> Mapping[str, Any]:
