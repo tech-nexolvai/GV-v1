@@ -961,6 +961,8 @@ class FindingBook:
     dropped: dict[str, str] = field(default_factory=dict)
     coverage: dict[int, dict[str, Any]] = field(default_factory=dict)
     coverage_used: bool = False
+    #: Items folded under a page's Drawing-needed card (`one_card`), by page.
+    page_folds: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
     scope_pages: frozenset[int] | None = None
     """A page or area answer's pages (`chat_scope`): the coverage map lists only those and the
     pages recorded; `None` (the whole set): every page of the vendor's file."""
@@ -1929,6 +1931,18 @@ class FindingBook:
             self.coverage[page] = {**entry, "note": joined[:_MAX_NOTE]}
         return self.coverage_map()
 
+    def fold_into_page(self, page: int, copies: Sequence[Mapping[str, Any]]) -> None:
+        """Items folded under a page's Drawing-needed card (`one_card`): kept as evidence, shown
+        on the page's coverage (`folded`) whatever is recorded there later."""
+        with self._lock:
+            known = self.page_folds.setdefault(page, [])
+            seen = {c.get("finding_id") for c in known}
+            known += [
+                {key: c.get(key) for key in ("finding_id", "item", "vendor")}
+                for c in copies
+                if c.get("finding_id") not in seen
+            ]
+
     def coverage_map(self) -> dict[str, Any]:
         """Every page of the vendor's file (a page never recorded: not opened), and the counts. A
         page or area answer (`scope_pages`): only its pages and the pages recorded."""
@@ -1946,6 +1960,13 @@ class FindingBook:
             )
             for page in numbers
         ]
+        with self._lock:
+            folds = {page: list(copies) for page, copies in self.page_folds.items() if copies}
+        if folds:
+            pages = [
+                {**entry, "folded": folds[entry["page"]]} if entry["page"] in folds else entry
+                for entry in pages
+            ]
         counts = {"total": len(pages), **{status: 0 for status in COVERAGE_STATUSES}}
         for entry in pages:
             counts[entry["status"]] += 1

@@ -387,6 +387,8 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
     same thing."""
     if classification.internal(finding):
         return False  # read by the AI only, never at its spot (#1652)
+    if classification.same_item_conflict(finding) is not None:
+        return False  # its copies pair the vendor's number with different architect numbers
     if round_only(finding):
         return False  # compared only with the vendor's own earlier round (Anant, 2026-10-22)
     if spot_guard.listed_only(finding):
@@ -495,6 +497,8 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
     # the architect; never clouded, never on the Not-compared list.
     if classified(finding).outcome == "rule_note":
         return "rule_note"
+    if classification.same_item_conflict(finding) is not None:
+        return "not_compared"  # its copies disagree on the architect's size (`one_card`)
     # The whole-drawing look found it and code could not prove it (2026-10-23): please check.
     return "likely_problem" if likely_problems.likely(finding) else "not_compared"
 

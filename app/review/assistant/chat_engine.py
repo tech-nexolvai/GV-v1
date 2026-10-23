@@ -92,6 +92,7 @@ from uuid import uuid4
 from app.review.assistant import (
     likely_problems,
     not_compared,
+    one_card,
     reading_coverage,
     same_item_pages,
     set_proofs,
@@ -1156,6 +1157,10 @@ class ChatEngine:
         #: could not be compared: review result S0), and its Not-compared rows that are not
         #: findings (an architect that gives no size), for the Not-compared PDF and workbook.
         self.incomplete_note: str | None = None
+        #: A roster full check's vendor pages with no architect drawing paired (#1885): the result
+        #: lists them under Drawing needed, and the last step folds their "no drawing" items
+        #: under that card (`one_card`), also before their coverage says so.
+        self.drawing_needed_pages: frozenset[int] = frozenset()
         #: Code's own checks that crashed (`add_code_findings`), by name (#1768): each makes a
         #: full check "not for sending" (S0), never a quiet log line.
         self.code_checks_failed: list[str] = []
@@ -3042,6 +3047,7 @@ class ChatEngine:
         for updated in mark_compared(book.live(), coverage, list(self.tools.seen)):
             if book.replace(updated):
                 self._show_finding(updated)
+        self._one_card(coverage)
         scope = self.scope()
         recorded = scoped_recorded(self._recorded_checks(), book.scope_pages)
         self._unknowns = unknown_records(
@@ -3096,6 +3102,37 @@ class ChatEngine:
         except Exception:  # noqa: BLE001 - the answer goes on without it
             _log.exception("reading coverage could not be shown")
             return None
+
+    def _one_card(self, coverage: Mapping[str, Any] | None) -> None:
+        """One item, one card (2026-10-23): a full check's last step, after every other step and
+        before the trust report, the counts and the files (`one_card.fold`). The copies of one
+        item (by code facts only) become one card, the others kept on it as evidence; the items
+        that only say "no architect drawing" on a Drawing-needed page fold under that card."""
+        if self.settings.mode != "full_check":
+            return
+        from app.review.assistant.full_check_plan import unpaired_note_why
+
+        needed = set(self.drawing_needed_pages)
+        for entry in (coverage or {}).get("pages") or []:
+            if isinstance(entry, Mapping) and unpaired_note_why(entry.get("note")) is not None:
+                needed.add(int(entry["page"]))
+        try:
+            result = one_card.fold(self.book.live(), needed)
+        except Exception:  # noqa: BLE001 - the answer keeps its findings as they were
+            _log.exception("assistant chat one-card fold failed")
+            return
+        for kept in result.kept:
+            if self.book.replace(kept):
+                self._show_finding(kept)
+        for page, copies in result.drawing_needed.items():
+            self.book.fold_into_page(page, copies)
+        for folded in result.folded:
+            with self.finding_lock:
+                if not self.book.absorb(folded.drop):
+                    continue
+            self._show_dropped(folded.drop, folded.reason)
+        if result.drawing_needed and self.book.coverage_used:
+            self._show_coverage()
 
     def _fold_same_wrongs(self) -> None:
         """The same Wrong item reported more than once (two helpers, or a helper and a gap

@@ -4000,6 +4000,42 @@
         "title": "ChatCoverageCountsOut",
         "type": "object"
       },
+      "ChatCoverageFoldedOut": {
+        "description": "An item folded under its page's Drawing-needed card (`one_card`).",
+        "properties": {
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          }
+        },
+        "required": [
+          "finding_id"
+        ],
+        "title": "ChatCoverageFoldedOut",
+        "type": "object"
+      },
       "ChatCoverageOut": {
         "description": "Every page of the vendor's file (a page never recorded is not_opened), and the counts.",
         "properties": {
@@ -4052,6 +4088,21 @@
             ],
             "description": "drawing_needed: why, in plain words (\"no drawing of the same item was found in the architect's file\").",
             "title": "Drawing Needed Why"
+          },
+          "folded": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatCoverageFoldedOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Drawing needed: the items a reader reported on this page whose only fact is that no architect drawing is paired, folded under this card (one item, one card).",
+            "title": "Folded"
           },
           "note": {
             "anyOf": [
@@ -4482,6 +4533,100 @@
           "lead_checked"
         ],
         "title": "ChatFindingChecksOut",
+        "type": "object"
+      },
+      "ChatFindingCopyOut": {
+        "description": "Another copy of the same item, folded into this card by the check's last step (one item,\none card, 2026-10-23): what it said, which card it would have been, and why.",
+        "properties": {
+          "architect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architect"
+          },
+          "by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who reported it, in plain words.",
+            "title": "By"
+          },
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The card the copy alone would be.",
+            "title": "Group"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why that copy could not be proved or compared, when it says.",
+            "title": "Reason"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          },
+          "vendor_box": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatBoxOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its vendor spot (evidence only: never marked on a drawing)."
+          }
+        },
+        "required": [
+          "finding_id"
+        ],
+        "title": "ChatFindingCopyOut",
         "type": "object"
       },
       "ChatFindingCriticOut": {
@@ -5404,6 +5549,17 @@
             ],
             "title": "Rule Check Id"
           },
+          "same_item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingSameItemOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Other copies of this same item on this page (two readers reported it), folded into this one card by code (one item, one card)."
+          },
           "second_read_values": {
             "anyOf": [
               {
@@ -6009,6 +6165,35 @@
           "question"
         ],
         "title": "ChatFindingRuleNoteOut",
+        "type": "object"
+      },
+      "ChatFindingSameItemOut": {
+        "description": "The copies of this item code folded into it (`one_card`).",
+        "properties": {
+          "conflict": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the copies pair one vendor number with different architect numbers (or read different values at one vendor label): every value, and the card is Not compared.",
+            "title": "Conflict"
+          },
+          "copies": {
+            "items": {
+              "$ref": "#/components/schemas/ChatFindingCopyOut"
+            },
+            "title": "Copies",
+            "type": "array"
+          }
+        },
+        "title": "ChatFindingSameItemOut",
         "type": "object"
       },
       "ChatFindingSettledOut": {

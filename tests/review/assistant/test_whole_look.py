@@ -360,6 +360,40 @@ def test_a_claim_on_a_label_a_helper_listed_joins_that_item(tmp_path: Path) -> N
     assert len(book.live()) == 1
 
 
+def test_a_likely_claim_at_a_helpers_label_joins_that_item_by_code_facts(tmp_path: Path) -> None:
+    """One item, one card: the look names the architect's label and a spot holding the helper's
+    vendor label (no vendor label of its own), so it joins the helper's item; a claim that only
+    shares the spot (no architect label) stays its own item."""
+    book, look = _setup(tmp_path)
+    helper, _ = book.report(
+        {
+            "page": 2, "item": "Uppers height", "category": "other", "status": "different",
+            "verified": False, "source": "architect", "vendor_dim": "D2", "architect_dim": "D1",
+        },
+        "helper:1",
+    )  # fmt: skip
+    spot = {"x0": 10, "y0": 20, "x1": 25, "y1": 35}  # picture 3 (vendor p2), around D2
+    claim = _claim("size", _side(3, None, '28"'), _side(1, "D1", "3'-6\""), vendor_spot=spot)
+    applied, _shown = _apply(book, look, [claim])
+    assert applied.joined == [helper["id"]] and not applied.likely
+    joined = next(f for f in book.live() if f["id"] == helper["id"])
+    assert joined[likely_problems.FIELD]["proof"] == "joined"
+    assert proof.proof_group(joined) == "likely_problem"
+    assert len(book.live()) == 1
+    # The same spot without the architect's label: a big AI spot alone never joins.
+    book, look = _setup(tmp_path / "again")
+    book.report(
+        {
+            "page": 2, "item": "Uppers height", "category": "other", "status": "different",
+            "verified": False, "source": "architect", "vendor_dim": "D2", "architect_dim": "D1",
+        },
+        "helper:1",
+    )  # fmt: skip
+    layout = _claim("layout", _side(3, None, "doors"), _side(1, None, "drawers"), vendor_spot=spot)
+    applied, _shown = _apply(book, look, [layout])
+    assert applied.likely and not applied.joined and len(book.live()) == 2
+
+
 def test_the_same_claim_twice_and_too_many_claims_are_left_out(tmp_path: Path) -> None:
     book, look = _setup(tmp_path)
     one = _claim("count", _side(4, None, "1 unit"), _side(1, None, "2 units"), item="Units")

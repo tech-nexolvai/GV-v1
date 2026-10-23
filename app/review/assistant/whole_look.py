@@ -844,6 +844,22 @@ def _existing(context: _Context, label: Mapping[str, Any]) -> dict[str, Any] | N
     return None
 
 
+def _same_helper_item(context: _Context, probe: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A live item a helper recorded that code knows is this claim's item (`one_card.same_item`:
+    the same label, spot or finish tags), still open (Wrong or Not compared); else `None`."""
+    from app.review.assistant.classification import internal
+    from app.review.assistant.one_card import same_item
+
+    for finding in context.book.live():
+        if finding.get("created_by") == CREATED_BY or internal(finding):
+            continue
+        if finding.get("status") not in ("different", "check"):
+            continue
+        if same_item(probe, finding) is not None:
+            return dict(finding)
+    return None
+
+
 def _side_of(claim: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     side = claim.get(name)
     return side if isinstance(side, Mapping) else {}
@@ -1110,7 +1126,35 @@ def _one(context: _Context, look: Look, claim: Mapping[str, Any], applied: Appli
     if architect.page != vendor.page:
         raw["vs_page"] = architect.page
     same = _same_key(look, kind, item, architect_value)
+    probe = {
+        **raw,
+        "round": vendor.round,
+        "inches": {
+            "vendor": _label_inches(v_label) if v_label else _inches(vendor_side.get("value")),
+            "architect": (
+                _label_inches(a_label) if a_label else _inches(architect_side.get("value"))
+            ),
+        },
+        "dims": {
+            side: {**label, "file": label.get("file") or drawing.file}
+            for side, label, drawing in (
+                ("vendor", v_label, vendor),
+                ("architect", a_label, architect),
+            )
+            if label is not None
+        },
+    }
     with context.lock:
+        helper = _same_helper_item(context, probe)
+        if helper is not None:
+            # A helper already listed this item (the same label, spot or tags: code facts): the
+            # look joins it, so it is one card, never a second one beside it.
+            if likely_problems.FIELD not in helper:
+                updated = mark(helper, proof="joined", **look_mark)
+                if context.book.replace(updated):
+                    context.show(updated)
+            applied.joined.append(str(helper["id"]))
+            return
         kept = context.likely.get(same)
         if kept is not None:
             # The same difference on another vendor round: one item, both rounds named.

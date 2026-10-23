@@ -74,6 +74,7 @@ from app.review.assistant.finding_checks import (
 from app.review.assistant.witness import disagreement, witnesses
 
 __all__ = [
+    "MILLWORK_FAMILIES",
     "OTHER_TRADE_FAMILIES",
     "PRECISION",
     "RESOLVER_CAP_MICROS",
@@ -171,6 +172,8 @@ _OTHER_TRADES: Final = frozenset(
 OTHER_TRADE_FAMILIES: Final = _OTHER_TRADES
 #: Tag families of the millwork GV reviews (stone, laminate, wood, solid surface, quartz).
 _MILLWORK: Final = frozenset({"ST", "LA", "WD", "PL", "PLAM", "SS", "QZ", "CT", "MW", "L", "WV"})
+#: The same families for other code (`one_card` matches two copies of a finish item by them).
+MILLWORK_FAMILIES: Final = _MILLWORK
 _ROUND_ONE: Final = re.compile(r"\(\s*round\s*1\b[^)]*\)|round\s*1\s*:[^;)]*", re.IGNORECASE)
 _SCALES_ABOUT: Final = re.compile(
     r"scal\w*\s+(?:about\s+|~\s*)?(\d+(?:\s+\d+/\d+)?\s*\"?)", re.IGNORECASE

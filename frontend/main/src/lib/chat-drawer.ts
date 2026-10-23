@@ -293,6 +293,37 @@ export function noArchitectPictureWords(finding: Pick<ChatFinding, 'proof' | 'so
   return 'The app did not find this item’s spot on the architect’s drawings, so there is no picture of it';
 }
 
+// ── One item, one card ─────────────────────────────────────
+
+const COPY_GROUP: Record<string, string> = {
+  clouded: 'Wrong',
+  likely_problem: 'Likely problem',
+  rule_note: 'Ask the architect',
+  not_compared: 'Not compared',
+  right: 'Right',
+  dismissed: 'Right (reviewer)',
+};
+
+/**
+ * The other copies of this item code folded into its card (2026-10-23), one line each: who
+ * reported it, its card, its values, and why it could not be proved; first, when they disagree on
+ * the architect's size, why the card is Not compared.
+ */
+export function copyLines(finding: Pick<ChatFinding, 'same_item'>): string[] {
+  const folded = finding.same_item;
+  if (!folded) return [];
+  const lines: string[] = [];
+  if (folded.conflict?.length) lines.push(`The copies pair the vendor’s number with different architect sizes (${folded.conflict.map(marks).join(', ')}), so it is not compared.`);
+  for (const copy of folded.copies ?? []) {
+    const who = copy.by ? `${copy.by.charAt(0).toUpperCase()}${copy.by.slice(1)}` : 'Another reader';
+    const group = copy.group ? COPY_GROUP[copy.group] ?? 'Listed' : 'Listed';
+    const values = [copy.vendor ? `vendor ${marks(copy.vendor)}` : null, copy.architect ? `architect ${marks(copy.architect)}` : null].filter(Boolean).join(', ');
+    const why = copy.reason?.trim();
+    lines.push(`${who}: ${group}${values ? ` (${values})` : ''}${why ? `: ${why.replace(/\.$/, '')}` : ''}.`);
+  }
+  return lines;
+}
+
 // ── Chips ──────────────────────────────────────────────────
 
 /** "Also on page 44", "In the comment letter as C-01", "Architect drawing: not in the upload · in the GV request". */

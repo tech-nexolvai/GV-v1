@@ -1,0 +1,406 @@
+"""One item, one card: the full check's last step folds the copies of one item (2026-10-23).
+
+Two readers can report the same item: a page helper and a look-again closer, or a helper and the
+whole-drawing look. Each copy was placed in a card on its own, so the result listed one item twice
+(in Right twice, or in Not compared and in Please check). This step runs after every other step and
+before the counts and the files. It folds copies by **code facts only**:
+
+- the same printed vendor label (code's label id), or the same vendor value at the same spot on the
+  same vendor page (the two boxes overlap by at least half);
+- the same architect label, with one copy's vendor spot on top of the other's vendor label (a
+  reader that named no vendor label, its spot holding the label the other copy names);
+- the same finish tag codes on the same page pair (finish items with no size on either side).
+
+Wording alone never merges two items, and neither does a big AI region alone: two different items
+read at one big spot stay two.
+
+Which card stays: a code-proved Wrong, then a Likely problem, then Ask the architect, then Not
+compared, then Right (the most severe, decided by code). The card kept is one of the copies,
+unchanged, so it is never redder or greener than a copy that is proved; the other copies are kept
+inside it as evidence (`same_item.copies`). When the copies pair one vendor number with different
+architect numbers (or read different values at one vendor label), nobody knows which pair is right:
+the card is Not compared with every value listed (`same_item.conflict`), never Wrong or Right.
+
+An item whose only fact is "no architect drawing paired" on a page already in Drawing needed says
+what that card says: it is folded under the page's card (`drawing_needed`). The vendor's own checks
+on that page (its sums, GV's rules) ask another question and stay.
+
+Pure code: no I/O, no AI call.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
+from typing import Any, Final
+
+from app.review.assistant import proof
+from app.review.assistant.chat_trust import inch_words
+from app.review.assistant.classification import SAME_ITEM, internal
+from app.review.assistant.decision_resolver import MILLWORK_FAMILIES
+
+__all__ = ["RANK", "Folded", "OneCard", "fold", "same_item"]
+
+#: The card that stays, most severe first (decided by code).
+RANK: Final[Mapping[str, int]] = {
+    "clouded": 0,
+    "likely_problem": 1,
+    "rule_note": 2,
+    "not_compared": 3,
+    "right": 4,
+    "dismissed": 5,
+}
+_TRUST: Final = {"confirmed": 0, "likely": 1, "to_check": 2}
+#: Two boxes are one spot when they overlap by at least this share of their union.
+_SAME_SPOT: Final = 0.5
+_TAG: Final = re.compile(r"\b([A-Z]{1,4})[ -]?(\d{1,4})\b")
+#: How code knows two copies are one item, in plain words.
+_HOW: Final[Mapping[str, str]] = {
+    "vendor_label": "the same printed vendor dimension",
+    "vendor_spot": "the same vendor value at the same spot",
+    "architect_label": "the same architect dimension, at the same vendor spot",
+    "tags": "the same finish tags on the same two pages",
+}
+_BY: Final = (
+    ("whole_look", "the whole-drawing look"),
+    ("helper", "a page helper"),
+    ("lead", "the lead reviewer"),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Folded:
+    """One copy folded away: `drop` into `keep` (a finding id, or `page:<n>` for a page's
+    Drawing-needed card)."""
+
+    keep: str
+    drop: str
+    reason: str
+
+
+@dataclass(slots=True)
+class OneCard:
+    """What the step changes: the cards kept (with their copies), the copies folded away, and the
+    items folded under a page's Drawing-needed card (`{page: [copy, ...]}`)."""
+
+    kept: list[dict[str, Any]] = field(default_factory=list)
+    folded: list[Folded] = field(default_factory=list)
+    drawing_needed: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+
+
+# ---- the code facts -------------------------------------------------------------------------------
+
+
+def _dec(value: object) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        found = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return found if found.is_finite() else None
+
+
+def _inches(finding: Mapping[str, Any], side: str) -> Decimal | None:
+    inches = finding.get("inches")
+    return _dec(inches.get(side)) if isinstance(inches, Mapping) else None
+
+
+def _label(finding: Mapping[str, Any], side: str) -> Mapping[str, Any] | None:
+    dims = finding.get("dims")
+    label = dims.get(side) if isinstance(dims, Mapping) else None
+    return label if isinstance(label, Mapping) and label.get("id") else None
+
+
+def _label_key(finding: Mapping[str, Any], side: str) -> tuple[Any, ...] | None:
+    """The label's (page, id, file); the file is compared only when both name one."""
+    label = _label(finding, side)
+    if label is None:
+        return None
+    return (label.get("page"), str(label["id"]), label.get("file") or None)
+
+
+def _same_label(a: tuple[Any, ...] | None, b: tuple[Any, ...] | None) -> bool:
+    if a is None or b is None or a[:2] != b[:2]:
+        return False
+    return not (a[2] and b[2] and a[2] != b[2])
+
+
+type _Box = tuple[Any, Any, float, float, float, float]
+
+
+def _box(raw: object, page: object = None, file: object = None) -> _Box | None:
+    """(page, file, x0, y0, x1, y1) of a box (a mapping, or a label's [x0, y0, x1, y1])."""
+    try:
+        if isinstance(raw, Mapping):
+            x0, y0, x1, y1 = (float(raw[k]) for k in ("x0", "y0", "x1", "y1"))
+            page, file = raw.get("page", page), raw.get("file") or file
+        elif isinstance(raw, Sequence) and not isinstance(raw, str) and len(raw) == 4:
+            x0, y0, x1, y1 = (float(v) for v in raw)
+        else:
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    if x1 < x0 or y1 < y0:
+        return None
+    return (page, file or None, x0, y0, x1, y1)
+
+
+def _vendor_box(finding: Mapping[str, Any]) -> _Box | None:
+    return _box(finding.get("vendor_box"), finding.get("page"))
+
+
+def _vendor_spot(finding: Mapping[str, Any]) -> _Box | None:
+    """The vendor label's own box, else the finding's vendor box."""
+    label = _label(finding, "vendor")
+    if label is not None:
+        found = _box(label.get("box"), label.get("page"), label.get("file"))
+        if found is not None:
+            return found
+    return _vendor_box(finding)
+
+
+def _same_sheet(a: _Box, b: _Box) -> bool:
+    if a[0] is not None and b[0] is not None and a[0] != b[0]:
+        return False
+    return not (a[1] and b[1] and a[1] != b[1])
+
+
+def _overlap(a: _Box, b: _Box) -> float:
+    """How much two boxes overlap: the shared area over the union (0 to 1)."""
+    if not _same_sheet(a, b):
+        return 0.0
+    w = min(a[4], b[4]) - max(a[2], b[2])
+    h = min(a[5], b[5]) - max(a[3], b[3])
+    if w < 0 or h < 0:
+        return 0.0
+    shared = w * h
+    union = (a[4] - a[2]) * (a[5] - a[3]) + (b[4] - b[2]) * (b[5] - b[3]) - shared
+    return shared / union if union > 0 else 1.0
+
+
+def _inside(spot: _Box, region: _Box) -> bool:
+    """The centre of `spot` lies in `region` (same page and file)."""
+    if not _same_sheet(spot, region):
+        return False
+    cx, cy = (spot[2] + spot[4]) / 2, (spot[3] + spot[5]) / 2
+    return region[2] <= cx <= region[4] and region[3] <= cy <= region[5]
+
+
+def _codes(text: object) -> frozenset[str]:
+    """The millwork finish tags written in `text`, normalised ("SS 01", "SS-01" -> "SS-1")."""
+    return frozenset(
+        f"{m.group(1)}-{int(m.group(2))}"
+        for m in _TAG.finditer(str(text or ""))
+        if m.group(1) in MILLWORK_FAMILIES
+    )
+
+
+def _same_round(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    return a.get("round") is None or b.get("round") is None or a.get("round") == b.get("round")
+
+
+def same_item(a: Mapping[str, Any], b: Mapping[str, Any]) -> str | None:
+    """How code knows `a` and `b` are one item ("vendor_label", "vendor_spot", "architect_label",
+    "tags"), else `None`. Only code facts count; the words never do."""
+    if a.get("page") != b.get("page") or not _same_round(a, b):
+        return None
+    v_a, v_b = _label_key(a, "vendor"), _label_key(b, "vendor")
+    if v_a is not None and v_b is not None:
+        # Two printed vendor labels: one item only when it is the same label.
+        return "vendor_label" if _same_label(v_a, v_b) else None
+    spot_a, spot_b = _vendor_spot(a), _vendor_spot(b)
+    in_a, in_b = _inches(a, "vendor"), _inches(b, "vendor")
+    if (
+        in_a is not None
+        and in_a == in_b
+        and spot_a is not None
+        and spot_b is not None
+        and _overlap(spot_a, spot_b) >= _SAME_SPOT
+    ):
+        return "vendor_spot"
+    a_a, a_b = _label_key(a, "architect"), _label_key(b, "architect")
+    if _same_label(a_a, a_b) and spot_a is not None and spot_b is not None:
+        # One reader named the vendor label, the other only a spot: that spot holds the label.
+        if v_a is not None and v_b is None and _inside(spot_a, spot_b):
+            return "architect_label"
+        if v_b is not None and v_a is None and _inside(spot_b, spot_a):
+            return "architect_label"
+        if v_a is None and v_b is None and _overlap(spot_a, spot_b) >= _SAME_SPOT:
+            return "architect_label"
+    if _tags_match(a, b):
+        return "tags"
+    return None
+
+
+def _tags_match(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    """Two finish items (no size on either side) on the same page pair with the same tag codes:
+    the architect's the same and not none, and the vendor's the same."""
+    if a.get("vs_page") is None or a.get("vs_page") != b.get("vs_page"):
+        return False
+    if any(_inches(f, side) is not None for f in (a, b) for side in ("vendor", "architect")):
+        return False
+    arch = _codes(a.get("architect"))
+    return (
+        bool(arch)
+        and arch == _codes(b.get("architect"))
+        and _codes(a.get("vendor")) == _codes(b.get("vendor"))
+    )
+
+
+# ---- the card that stays --------------------------------------------------------------------------
+
+
+def _number(finding_id: str) -> tuple[int, str]:
+    digits = "".join(ch for ch in finding_id if ch.isdigit())
+    return (int(digits) if digits else 0, finding_id)
+
+
+def _order(finding: Mapping[str, Any]) -> tuple[Any, ...]:
+    """The most severe card first; among one card's copies, the better proved."""
+    return (
+        RANK.get(proof.proof_group(finding), len(RANK)),
+        _TRUST.get(str(finding.get("trust_level") or ""), 3),
+        0 if finding.get("paired_by") == "code" else 1,
+        -len(proof.witnesses_of(finding)),
+        0 if _label(finding, "vendor") is not None else 1,
+        _number(str(finding.get("id") or "")),
+    )
+
+
+def _fixed(finding: Mapping[str, Any]) -> bool:
+    """A copy never folded away: a recorded difference, one the reviewer decided, or one that
+    carries the same item on other pages (its marks there belong to its own verdict)."""
+    return bool(finding.get("record_id") or finding.get("decision") or finding.get("also_on"))
+
+
+def _conflict(group: Sequence[Mapping[str, Any]]) -> list[str] | None:
+    """The values when the copies disagree: different architect numbers, or different vendor
+    numbers code read at its labels. `None` when they agree."""
+    architect = {v for f in group if (v := _inches(f, "architect")) is not None}
+    vendor = {
+        v
+        for f in group
+        if _label(f, "vendor") is not None and (v := _inches(f, "vendor")) is not None
+    }
+    if len(architect) < 2 and len(vendor) < 2:
+        return None
+    values = architect if len(architect) >= 2 else vendor
+    return [inch_words(v) for v in sorted(values)]
+
+
+def _by(finding: Mapping[str, Any]) -> str:
+    made = str(finding.get("created_by") or "")
+    for start, words in _BY:
+        if made.startswith(start):
+            return words
+    return "code" if made else "the check"
+
+
+def _copy(finding: Mapping[str, Any]) -> dict[str, Any]:
+    """A folded copy as evidence on the card kept: what it said, its card, and why."""
+    group = proof.proof_group(finding)
+    found = proof.proof_of(finding)
+    reason = found.get("reason") or (found.get("proof") if group == "clouded" else None)
+    return {
+        "finding_id": str(finding.get("id")),
+        "item": finding.get("item"),
+        "group": group,
+        "vendor": finding.get("vendor"),
+        "architect": finding.get("architect"),
+        "reason": reason,
+        "by": _by(finding),
+        "vendor_box": finding.get("vendor_box"),
+    }
+
+
+def _groups(findings: Sequence[Mapping[str, Any]]) -> list[list[Mapping[str, Any]]]:
+    """The findings joined by `same_item` (each joined pair is a code fact)."""
+    parent = list(range(len(findings)))
+
+    def root(at: int) -> int:
+        while parent[at] != at:
+            parent[at] = parent[parent[at]]
+            at = parent[at]
+        return at
+
+    for i, a in enumerate(findings):
+        for j in range(i + 1, len(findings)):
+            if root(i) != root(j) and same_item(a, findings[j]) is not None:
+                parent[root(j)] = root(i)
+    joined: dict[int, list[Mapping[str, Any]]] = {}
+    for at, finding in enumerate(findings):
+        joined.setdefault(root(at), []).append(finding)
+    return [group for group in joined.values() if len(group) > 1]
+
+
+def _no_drawing(finding: Mapping[str, Any]) -> bool:
+    """A Not-compared item against the architect with no architect side at all (no page, spot or
+    label): on a Drawing-needed page it only says what that card says."""
+    if proof.proof_group(finding) != "not_compared" or _fixed(finding):
+        return False
+    if str(finding.get("source") or "architect") != "architect" or proof.vendor_own(finding):
+        return False
+    if finding.get("rule_check_id") or finding.get("created_by") in ("consistency", "ledger"):
+        return False
+    return not (finding.get("vs_page") or finding.get("arch_box") or _label(finding, "architect"))
+
+
+def fold(findings: Sequence[Mapping[str, Any]], drawing_needed: Collection[int] = ()) -> OneCard:
+    """The step (see the module): `findings`, the answer's live findings; `drawing_needed`, the
+    vendor pages the result lists under Drawing needed."""
+    out = OneCard()
+    live = [f for f in findings if f.get("id") and not internal(f)]
+    gone: set[str] = set()
+    needed = set(drawing_needed)
+    for finding in live:
+        page = finding.get("page")
+        if isinstance(page, int) and page in needed and _no_drawing(finding):
+            fid = str(finding["id"])
+            gone.add(fid)
+            out.drawing_needed.setdefault(page, []).append(_copy(finding))
+            out.folded.append(
+                Folded(
+                    keep=f"page:{page}",
+                    drop=fid,
+                    reason=(
+                        f"Listed under page {page}'s Drawing needed: no architect drawing of this "
+                        "page is in the upload, so there is nothing to compare it with yet."
+                    ),
+                )
+            )
+    for group in _groups([f for f in live if str(f["id"]) not in gone]):
+        ordered = sorted(group, key=_order)
+        keep = ordered[0]
+        if any(_fixed(f) for f in ordered[1:]):
+            continue  # a copy that must stay would be folded away: both stay
+        labels = [key for f in ordered if (key := _label_key(f, "vendor")) is not None]
+        if any(not _same_label(labels[0], other) for other in labels[1:]):
+            continue  # two printed vendor labels (joined through a spot): two items, both stay
+        conflict = _conflict(ordered)
+        given = keep.get(SAME_ITEM)
+        before: Mapping[str, Any] = given if isinstance(given, Mapping) else {}
+        copies = list(before.get("copies") or [])
+        for other in ordered[1:]:
+            copies.append(_copy(other))
+            earlier = other.get(SAME_ITEM)
+            if isinstance(earlier, Mapping):
+                copies.extend(earlier.get("copies") or [])
+            out.folded.append(
+                Folded(
+                    keep=str(keep["id"]),
+                    drop=str(other["id"]),
+                    reason=(
+                        f"The same item as {keep['id']} "
+                        f"({_HOW.get(same_item(keep, other) or '', 'the same item')}): one card, "
+                        "this copy kept on it as evidence."
+                    ),
+                )
+            )
+        merged: dict[str, Any] = {"copies": copies}
+        if conflict is not None or before.get("conflict"):
+            merged["conflict"] = conflict or list(before.get("conflict") or [])
+        out.kept.append({**keep, SAME_ITEM: merged})
+    return out
