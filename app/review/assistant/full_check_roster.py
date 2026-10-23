@@ -110,6 +110,7 @@ from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
 from app.review.assistant.chat_tools import HELPER_TOOLS, new_step
 from app.review.assistant.chat_trust import judged
 from app.review.assistant.colour_rule import COLOUR_RULE
+from app.review.assistant.dim_findings import own_architect_page
 from app.review.assistant.escalation import label_provenance
 from app.review.assistant.full_check_advocate import (
     ADVOCATE_SCHEMA,
@@ -835,9 +836,14 @@ TAG_SCHEMA: Final[Mapping[str, Any]] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["page", "side", "item", "tag", "box"],
+                "required": ["page", "file", "side", "item", "tag", "box"],
                 "properties": {
-                    "page": {"type": "integer", "description": "Page"},
+                    "page": {"type": "integer", "description": "Page of that file (from 1)"},
+                    "file": {
+                        "anyOf": [{"type": "string"}, {"type": "null"}],
+                        "description": "Only when the set has a separate architect's PDF and the "
+                        "tag is printed in it: that file's name (its own page numbers); else null",
+                    },
                     "side": {
                         "type": "string",
                         "enum": ["architect", "vendor"],
@@ -869,6 +875,40 @@ For each page, list every tag printed in the drawing's own ink on the architect'
     + """ Use pdftotext -bbox on the drawings-only copy for text tags, filtered (grep or python) to the tag-like words, at most 40 lines a print; never print the set pack's JSON, a folder listing or a whole page's text. Zoom to see what each tag labels.
 Reply with the whole tag table."""
 )
+
+#: A two-file set (#1887's rule for tags): the architect's tags are read on the architect's own
+#: file, only on the pages paired with each vendor page.
+TAG_PAIRS: Final = (
+    "THE ARCHITECT'S OWN FILE: the architect's drawings are {architect}, a separate PDF. List an "
+    "architect tag only from the architect pages paired with your page below, with that file's "
+    "name and its own page number (file and page). A tag on {vendor} is the vendor's, never the "
+    "architect's, and a page with no architect page paired gets no architect tags. "
+    "Paired: {paired}."
+)
+
+
+def tag_pair_lines(
+    pages: Sequence[int],
+    pairs: Mapping[int, Sequence[tuple[str, int]]],
+    *,
+    vendor_file: str,
+    architect_file: str,
+    uploads: str,
+) -> str:
+    """The tag reader's line for a two-file set: which architect pages each of its pages is paired
+    with (`full_check_plan.CrossPairs`), "none" for a page with none."""
+    paired = "; ".join(
+        f"your p.{page} with "
+        + (
+            ", ".join(f"{uploads}/{name} p.{number}" for name, number in pairs.get(page, ()))
+            or "none"
+        )
+        for page in pages
+    )
+    return TAG_PAIRS.format(
+        architect=f"{uploads}/{architect_file}", vendor=f"{uploads}/{vendor_file}", paired=paired
+    )
+
 
 _TAG_WORD: Final = re.compile(r"[^A-Z0-9]")
 
@@ -950,8 +990,67 @@ def compare_tags(report: str) -> list[dict[str, Any]]:
     return compare_tag_rows(tag_rows(report) or [])
 
 
-def compare_tag_rows(rows: Sequence[Any]) -> list[dict[str, Any]]:
-    """`compare_tags` on rows already read (every tag reader's together, #1817)."""
+def _row_file(row: Mapping[str, Any]) -> str | None:
+    """The upload a tag row names (its name alone: the uploads are one folder), None for the
+    vendor's own."""
+    named = row.get("file")
+    if not isinstance(named, str) or not named.strip():
+        return None
+    return named.strip().rsplit("/", 1)[-1]
+
+
+def _own_rows(
+    rows: Sequence[Any], vendor_file: str, architect_file: str
+) -> list[Mapping[str, Any]]:
+    """A two-file set's rows each on its own side's file: a vendor tag on the vendor's file, an
+    architect tag on the architect's (its page that file's own: `p1012` is page 12). An
+    "architect" tag read on the vendor's file is left out: the architect's file is never read at
+    the vendor's page number (#1887)."""
+    out: list[Mapping[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        file = _row_file(row) or vendor_file
+        side = row.get("side")
+        if side == "vendor" and file == vendor_file:
+            out.append(row)
+        elif side == "architect" and file == architect_file and isinstance(row.get("page"), int):
+            out.append({**row, "page": own_architect_page(int(row["page"]))})
+    return out
+
+
+def _paired_sides(
+    sides: Mapping[str, Sequence[Mapping[str, Any]]],
+    pairs: Mapping[int, Sequence[tuple[str, int]]],
+    architect_file: str,
+) -> tuple[Mapping[str, Any], list[Mapping[str, Any]]] | None:
+    """A two-file set's piece: the first vendor tag whose page has architect tags of the piece on
+    its paired architect pages (`CrossPairs.pairs`), and those architect tags; None when no vendor
+    page's paired architect pages tag the piece (another drawing's tag is never the architect's)."""
+    for vendor in sides["vendor"]:
+        paired = {
+            number
+            for name, number in pairs.get(int(vendor.get("page") or 0), ())
+            if name == architect_file
+        }
+        here = [row for row in sides["architect"] if row.get("page") in paired]
+        if here:
+            return vendor, here
+    return None
+
+
+def compare_tag_rows(
+    rows: Sequence[Any],
+    *,
+    files: tuple[str, str] | None = None,
+    pairs: Mapping[int, Sequence[tuple[str, int]]] | None = None,
+) -> list[dict[str, Any]]:
+    """`compare_tags` on rows already read (every tag reader's together, #1817). `files`: a
+    two-file set's (vendor file, architect file); its architect tags count only on the architect
+    pages `pairs` pairs with the vendor tag's page (none when nothing is paired), and their box is
+    on the architect's file at that page, never at the vendor's page number (#1887)."""
+    if files is not None:
+        rows = _own_rows(rows, *files)
     pieces: dict[str, dict[str, list[Mapping[str, Any]]]] = {}
     for row in rows:
         if not isinstance(row, Mapping) or row.get("side") not in ("architect", "vendor"):
@@ -966,21 +1065,30 @@ def compare_tag_rows(rows: Sequence[Any]) -> list[dict[str, Any]]:
         if "architect" not in sides or "vendor" not in sides or _unrelated(sides):
             continue
         architect, vendor = sides["architect"][0], sides["vendor"][0]
-        same = {_tag_key(r["tag"]) for r in sides["architect"]} == {
+        architects = sides["architect"]
+        if files is not None:
+            found = _paired_sides(sides, pairs or {}, files[1])
+            if found is None:
+                continue
+            vendor, architects = found
+            architect = architects[0]
+        same = {_tag_key(r["tag"]) for r in architects} == {
             _tag_key(r["tag"]) for r in sides["vendor"]
         }
         finding: dict[str, Any] = {
             "page": int(vendor.get("page") or 1),
             "item": f"{str(vendor['item'])[:100]}: tag",
             "category": "other",
-            "architect": ", ".join(sorted({str(r["tag"]) for r in sides["architect"]})),
+            "architect": ", ".join(sorted({str(r["tag"]) for r in architects})),
             "vendor": ", ".join(sorted({str(r["tag"]) for r in sides["vendor"]})),
             "status": "same" if same else "different",
             "source": "architect",
             "why": "Tags compared by code from the tag table.",
             "verified": False,
         }
-        if architect.get("page") != vendor.get("page"):
+        if files is not None or architect.get("page") != vendor.get("page"):
+            # A two-file set's architect page is always named: its own number may equal the
+            # vendor's page and still be another drawing.
             finding["vs_page"] = int(architect.get("page") or finding["page"])
         for side, key, row in (
             ("architect", "arch_box", architect),
@@ -989,6 +1097,13 @@ def compare_tag_rows(rows: Sequence[Any]) -> list[dict[str, Any]]:
             box = row.get("box")
             if isinstance(box, Mapping):
                 finding[key] = {k: box[k] for k in ("page", "x0", "y0", "x1", "y1") if k in box}
+        if files is not None and isinstance(finding.get("arch_box"), Mapping):
+            # On the architect's file, at the paired page the row was read on.
+            finding["arch_box"] = {
+                **finding["arch_box"],
+                "page": finding["vs_page"],
+                "file": files[1],
+            }
         out.append(finding)
     return out
 
@@ -1942,9 +2057,12 @@ class _Run:
         tag_pages = sorted({page for job in plan.jobs for page in job.pages})
         tag_groups = tag_page_groups([job.pages for job in plan.jobs if job.lens != "numbers"])
         for group in tag_groups:
-            agents.append(self._tag_agent(group, page_map, of_pages=len(tag_pages)))
-        # The helpers that wait for the page matcher start after those that can start now (the
-        # tag readers, the pages code or a saved answer paired): none holds a place idle.
+            agents.append(
+                self._tag_agent(group, page_map, of_pages=len(tag_pages), matching=matching)
+            )
+        # The helpers that wait for the page matcher start after those that can start now (a
+        # combined set's tag readers, the pages code or a saved answer paired): none holds a place
+        # idle.
         agents.sort(key=lambda agent: agent.ready is not None)
         for agent in agents:
             pool.add(agent)
@@ -2290,11 +2408,30 @@ class _Run:
 
     # -- P1: tags --
 
+    def _two_files(self) -> tuple[str, str] | None:
+        """A two-file set's (vendor file, architect file); None for GV's combined sheets."""
+        book = getattr(self.engine, "book", None)
+        listing = getattr(book, "listing", None)
+        main = getattr(book, "main_file", None)
+        if not listing or not main:
+            return None
+        architect = architect_upload(listing)
+        if architect is None or str(architect["name"]) == main:
+            return None
+        return str(main), str(architect["name"])
+
     def _tag_agent(
-        self, pages: Sequence[int], page_map: Mapping[str, Any] | None, *, of_pages: int = 0
+        self,
+        pages: Sequence[int],
+        page_map: Mapping[str, Any] | None,
+        *,
+        of_pages: int = 0,
+        matching: Any = None,
     ) -> Any:
         """One tag reader: the whole set's, or one run of page groups' (`tag_page_groups`), its
-        cap the tags' share by its pages (the P1 pool tops it up from what others left)."""
+        cap the tags' share by its pages (the P1 pool tops it up from what others left). A two-file
+        set's reader is told each page's paired architect pages (`tag_pair_lines`), waiting for the
+        page matcher's answers on its pages as the helpers do (#1883)."""
         from app.review.assistant.full_check_brief import page_lines
         from app.review.assistant.sandbox import UPLOADS
 
@@ -2304,18 +2441,34 @@ class _Run:
         cap = self.plan.caps["tags"]
         if not whole:
             cap = cap * len(pages) // of_pages
-        return self._agent(
+        files = self._two_files()
+
+        def brief(across: Any) -> str:
+            text = TAG_BRIEF.format(
+                pages=", ".join(str(p) for p in pages),
+                file=f"{UPLOADS}/{engine.book.main_file}",
+                page_lines="\n".join(page_lines(pages, page_map)),
+            )
+            if files is None:
+                return text
+            pairs = getattr(across, "pairs", None) or {}
+            return "\n\n".join(
+                [
+                    text,
+                    tag_pair_lines(
+                        pages, pairs, vendor_file=files[0], architect_file=files[1], uploads=UPLOADS
+                    ),
+                ]
+            )
+
+        agent = self._agent(
             call_id="roster-tags" if whole else f"roster-tags-{pages[0]}",
             description=(
                 "Tags and models, the whole set"
                 if whole
                 else f"Tags and models, {page_ranges_words(list(pages))}"
             ),
-            prompt=TAG_BRIEF.format(
-                pages=", ".join(str(p) for p in pages),
-                file=f"{UPLOADS}/{engine.book.main_file}",
-                page_lines="\n".join(page_lines(pages, page_map)),
-            ),
+            prompt=brief(getattr(engine, "_cross", None)),
             model=BY_SHORT["sonnet"],
             pages=tuple(pages),
             lens="tags",
@@ -2326,6 +2479,9 @@ class _Run:
             tools=self._tools(_TAG_TOOLS),
             output_format=TAG_SCHEMA,
         )
+        if files is not None and matching is not None and set(matching.to_answer) & set(pages):
+            agent.ready = lambda: brief(matching.wait_pages(pages, engine.cancel))
+        return agent
 
     def _apply_tags(self, reports: str | Sequence[tuple[Any, str]]) -> None:
         """Every tag reader's rows compared together by code (a piece's two tags may sit in two
@@ -2348,7 +2504,10 @@ class _Run:
                 )
                 continue
             rows += found
-        for given in compare_tag_rows(rows):
+        files = self._two_files()
+        across = getattr(engine, "_cross", None)
+        pairs = getattr(across, "pairs", None) or {}
+        for given in compare_tag_rows(rows, files=files, pairs=pairs):
             try:
                 finding, _notes = engine.book.report(given, "tag_reader")
             except Exception as refused:  # noqa: BLE001 - one bad row never stops the others
