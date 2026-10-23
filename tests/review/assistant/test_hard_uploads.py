@@ -422,13 +422,6 @@ def test_twin_architect_views_are_never_paired(tmp_path: Path) -> None:
     assert outcome.paired() == {1: ()}
 
 
-@pytest.mark.xfail(
-    reason="an accessible (ADA) vendor unit is still paired with the architect's standard unit: "
-    "the one-side marker rule (#1893) only fires when the architect's drawing carries the marker, "
-    "because the vendor's markers are left out of the facts code ranks with "
-    "(worklist._ranked_across builds vendor_facts without markers / hand)",
-    strict=False,
-)
 def test_accessible_unit_is_never_paired_with_the_standard_one(tmp_path: Path) -> None:
     outcome = run_pipeline(
         tmp_path,
