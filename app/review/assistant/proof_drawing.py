@@ -100,6 +100,7 @@ from app.review.assistant.cloud_layout import (
     place_notes,
     snapped,
 )
+from app.review.assistant.finding_checks import wrong_part
 from app.review.assistant.likely_problems import GROUP as LIKELY_GROUP
 from app.review.assistant.likely_problems import HEADING as LIKELY_HEADING
 from app.review.assistant.likely_problems import LETTER_LEAD as LIKELY_LEAD
@@ -1397,14 +1398,23 @@ def _sum_panel(
     parts = [_vendor(str(part)) for part in finding.get("parts") or [] if _vendor(str(part))]
     total = _vendor(should_be_value(finding))
     printed = _vendor(vendor_value(finding))
+    wrong = wrong_part(finding)
+    overall = _vendor(str(finding.get("printed_total") or ""))
+    if wrong is not None and printed in parts and overall:
+        # The drawing names the wrong part (#1887): the overall less the other parts.
+        rest = list(parts)
+        rest.remove(printed)
+        parts = [overall, *(f"- {part}" for part in rest)]
     story: list[Any] = []
     if parts and len(parts) * cs["line"].leading + 40 <= ph:
         story += [
-            Paragraph(escape(("+ " if n else "") + part), cs["line"])
+            Paragraph(escape(("+ " if n and wrong is None else "") + part), cs["line"])
             for n, part in enumerate(parts)
         ]
     elif parts:
-        story.append(Paragraph(escape(" + ".join(parts)), cs["line"]))
+        story.append(
+            Paragraph(escape((" " if wrong is not None else " + ").join(parts)), cs["line"])
+        )
     story += [
         Paragraph(_coloured("= ", total, GREEN), cs["big"]),
         Paragraph(_coloured("printed ", printed, RED), cs["under"]),
