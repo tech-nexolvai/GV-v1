@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from fractions import Fraction
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
 
@@ -145,9 +146,8 @@ def measure_item(
     if scale is None or len(scale.labels) < view_scales.MIN_LABELS:
         return None
     if measure is None:
-        from app.review.assistant.measure import measure_on_drawing
-
-        measure = measure_on_drawing
+        # Loaded by name, as `chat_tools` does: it reads PDFs (never imported by the API).
+        measure = import_module("app.review.assistant.measure").measure_on_drawing
     cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
     start, end = (
         ({"x": box[0], "y": cy}, {"x": box[2], "y": cy})
