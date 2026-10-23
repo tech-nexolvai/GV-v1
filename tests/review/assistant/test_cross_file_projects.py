@@ -648,3 +648,16 @@ def test_a_saved_answer_holds_when_code_only_rules_candidates_out() -> None:
     assert reuse(["p1201", "p1203"], MatchAnswer((), True), ["p1203"]) == MatchAnswer((), True)
     assert reuse(["p1203"], answer, ["p1203", "p1204"]) is None  # a new candidate: ask again
     assert pairing.MIN_WEAK_POOL == 4
+
+
+def test_a_vendor_marker_alone_rules_the_pair_out() -> None:
+    """The vendor's own accessible marker (the set index's checked words) counts in code's
+    ranking: an accessible vendor unit against an architect sheet that prints none is never
+    paired, even with the key plan pointing to it and the matcher naming it."""
+    index = _index()
+    index["pages"][f"{SHOP}#2"]["variant_words"] = ["ADA"]
+    desk = _across(_work(index, _answers(["p1004"], ["p1004"], sure=True)), 2)
+    assert desk.chosen == () and desk.views == ()
+    # Without the marker, the same answer pairs the view (the marker alone made the difference).
+    plain = _across(_work(_index(), _answers(["p1004"], ["p1004"], sure=True)), 2)
+    assert plain.views == ("p1004.a1.view1",)

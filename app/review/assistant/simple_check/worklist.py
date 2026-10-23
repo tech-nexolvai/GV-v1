@@ -2048,6 +2048,10 @@ def _ranked_across(
         phrases=mine.phrases,
         item_tags=item_tags if item_tags is not None else mine.item_tags,
         linked={r: w for r, w in (linked or {}).items() if r in built},
+        # The vendor's own variant and hand markers: a marker on one side only rules a pair
+        # out (accessible against standard) or flags it (opposite hand), whichever side has it.
+        markers=mine.markers,
+        hand=mine.hand,
     )
     ranked = pairing_module.rank(vendor_facts, [built[c.id][0] for c in pool])
     by_rank = {s.ref: s for s in ranked}
