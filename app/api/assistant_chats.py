@@ -29,7 +29,8 @@ anything else is a 404 that says nothing. The routes, under `/api/v1`:
 - `GET  /packages/{package_id}/full-check-plan` (#1569): before a paid full check, code's plan in
   one line and 0-3 questions where it is unsure of the page map (whose drawing, which round, which
   architect page); the answers go with the full check (`plan_answers`). `$0`: no AI call. `GET
-  /packages/{package_id}/plan-pages/{page}`: the page's picture for a question.
+  /packages/{package_id}/plan-pages/{page}`: the page's picture for a question (`?file=` that
+  upload's page, `?side=architect` the architect's file's: the result drawer's architect side).
 
 The message runs in its own thread (`chat_service.run_message`) until it ends or Stop is pressed,
 like claude.ai: the browser going away (a closed tab, a reload) does not stop it, and it is stored
@@ -57,7 +58,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
@@ -812,9 +813,21 @@ def plan_page(
     page: Annotated[int, Path_(ge=1, le=9999)],
     principal: Authenticated,
     session: Annotated[Session, Depends(get_session)],
+    file: Annotated[
+        str | None,
+        Query(
+            max_length=512,
+            description="That upload's page (its name as the set lists it, as a finding's box "
+            "names it); none: the vendor's file.",
+        ),
+    ] = None,
+    side: Annotated[
+        Literal["vendor", "architect"] | None,
+        Query(description="architect: the architect's file's page (when `file` is not given)."),
+    ] = None,
 ) -> FileResponse:
     _package(session, package_id, principal)
-    path = plan_page_picture(_chat_root(request.app), package_id, page)
+    path = plan_page_picture(_chat_root(request.app), package_id, page, file=file, side=side)
     if path is None:
         raise _not_found()
     return FileResponse(path, media_type="image/png")

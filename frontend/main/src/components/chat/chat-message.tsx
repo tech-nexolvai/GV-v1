@@ -14,7 +14,7 @@ import { FullCheckResult } from '@/components/chat/chat-result';
 import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState } from '@/components/chat/chat-motion';
-import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionChoice, type FindingDecisionExtra, type RemadeFiles } from '@/lib/chat-api';
+import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionChoice, type FindingDecisionExtra, type PagePicture, type RemadeFiles } from '@/lib/chat-api';
 import { coverageCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
 import { fullCheckBubble, fullCheckFiles, withoutCodeNote } from '@/lib/chat-full-check';
 import { commentNumber, drawingNeededItems, drawingNeededPages, resultGroups, type PageTitles } from '@/lib/chat-result';
@@ -305,8 +305,8 @@ export interface AssistantMessageProps {
   makeMarkupPdf?: (messageId: string) => Promise<ChatFile>;
   /** Chat v2: where the evidence viewer's "Open in review screen" goes; left out when absent. */
   fullPageHref?: string | null;
-  /** #1717: the vendor's page picture (the set pack's, 100 dpi), for the evidence panel's boxed spot. */
-  pagePicture?: ((page: number) => string) | null;
+  /** #1717: the vendor's page picture (the set pack's, 100 dpi), for the evidence panel's boxed spot; results v2: another upload's page with `where`. */
+  pagePicture?: PagePicture | null;
   /** Results v2: what each vendor page shows (the set pack), for the "By page" headings and the drawings request. */
   pageTitles?: PageTitles | null;
   /**
