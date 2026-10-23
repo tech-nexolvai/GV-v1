@@ -1027,6 +1027,33 @@ def _unknown(page: int | None, what: str, why: str, needs: str) -> dict[str, Any
     return {"page": page, "what": what, "why": why, "needs": needs, "scope": "set"}
 
 
+#: A vendor page whose numbers are drawn as lines code could not read (`set_pack.NUMBERS_UNREAD`).
+UNREADABLE_WORDS: Final = "the numbers on this page can't be read (drawn as lines, not text)"
+UNREADABLE_NEEDS: Final = (
+    "a person reads the numbers on the drawing; ask the vendor to save its PDFs with real text "
+    "(Save as PDF or Export from the drawing program, not Print to PDF)"
+)
+
+
+def unreadable_pages(page_map: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """A grey item for each vendor page whose numbers are only pen strokes code could not read
+    (owner, 2026-10-23: "flag everything"): said on the page, never silently a general page."""
+    out: list[dict[str, Any]] = []
+    for entry in _entries(page_map):
+        if entry.get("numbers_unread") != "strokes":
+            continue
+        page = int(entry["page"])
+        out.append(
+            {
+                **_unknown(
+                    page, f"Vendor page {page}: {UNREADABLE_WORDS}", "unreadable", UNREADABLE_NEEDS
+                ),
+                "scope": "page",
+            }
+        )
+    return out
+
+
 def completeness(page_map: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     """The "could not compare" grey items the page map shows (areas on one side only, rounds left
     out). Never a Wrong: the drawings decide, and a reviewer may know why a sheet is missing."""
@@ -1229,10 +1256,13 @@ def check_set(
     entries = {(str(e.get("file")), int(e["page"])): e for e in _entries(page_map)}
     labels: list[_Label] = []
     vendor_pages: dict[tuple[str, int], int] = {}
+    older = _older_pages(dims, page_map, texts)
     for entry in (dims or {}).get("pages") or []:
         if not isinstance(entry, Mapping) or not isinstance(entry.get("labels"), list):
             continue
         file, page = str(entry.get("file")), int(entry.get("page") or 0)
+        if (file, page) in older:
+            continue  # an older copy of a sheet printed again later: only the newest is checked
         halves = [
             h
             for h in (entries.get((file, page)) or {}).get("halves") or []
@@ -1285,7 +1315,7 @@ def check_set(
     for found in contradictions:
         result.findings.append(_contradiction_finding(found, area_of(found.odd), entries))
     result.findings = result.findings[:MAX_FINDINGS]
-    unknowns = completeness(page_map)
+    unknowns = completeness(page_map) + unreadable_pages(page_map)
     if texts:
         missing, result.sheet_index = sheet_index(texts, page_map)
         unknowns += missing
@@ -1293,6 +1323,24 @@ def check_set(
     result.unknowns = unknowns[:MAX_UNKNOWNS]
     result.seconds = round(clock() - started, 3)
     return result
+
+
+def _older_pages(
+    dims: Mapping[str, Any] | None,
+    page_map: Mapping[str, Any] | None,
+    texts: Mapping[tuple[str, int], str] | None,
+) -> frozenset[tuple[str, int]]:
+    """The vendor pages that are older copies of a sheet printed again later in their file (an
+    earlier revision, `sheet_revisions`): their sizes are the superseded ones, never compared
+    with the newest copy's. Empty without the pages' printed text."""
+    if not texts or not page_map:
+        return frozenset()
+    revisions = import_module("app.review.assistant.sheet_revisions")
+    out: set[tuple[str, int]] = set()
+    for file in [str(f) for f in page_map.get("files") or [] if f]:
+        exact = revisions.exact_copies(file, dims, texts)
+        out |= {(file, page) for page in revisions.older_copies(page_map, texts, file, exact=exact)}
+    return frozenset(out)
 
 
 # ---- the set pack --------------------------------------------------------------------------------

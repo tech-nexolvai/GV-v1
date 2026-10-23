@@ -419,6 +419,9 @@ class PackageContext:
     """Finding id -> comment number ("C-07")."""
     areas: Mapping[int, str] = field(default_factory=dict)
     """Page -> the area's title (the page map's)."""
+    unreadable: tuple[int, ...] = ()
+    """The vendor's pages whose numbers are drawn as lines code could not read (the page map's
+    `numbers_unread`): the letter asks the vendor for PDFs with real text."""
 
     @property
     def submittal(self) -> str:
@@ -447,6 +450,20 @@ def _areas(page_map: Mapping[str, Any] | None, main_file: str) -> dict[int, str]
         for page in pages:
             out.setdefault(int(page), str(title))
     return out
+
+
+def _unreadable(page_map: Mapping[str, Any] | None, main_file: str) -> tuple[int, ...]:
+    """The main file's pages whose numbers are only pen strokes code could not read."""
+    return tuple(
+        sorted(
+            int(e["page"])
+            for e in (page_map or {}).get("pages") or []
+            if isinstance(e, Mapping)
+            and str(e.get("file")) == main_file
+            and isinstance(e.get("page"), int)
+            and e.get("numbers_unread") == "strokes"
+        )
+    )
 
 
 def package_context(
@@ -494,6 +511,7 @@ def package_context(
         ),
         labels=comment_labels(findings, numbers),
         areas=_areas(page_map, name),
+        unreadable=_unreadable(page_map, name),
     )
 
 
@@ -559,6 +577,8 @@ class Question:
     origin: str
     question: str
     finding_id: str = ""
+    kind: str = "gv_rule"
+    """`gv_rule` (#1839), or `rule_notes.VIEWS`: the architect's own drawings disagree."""
 
     def row(self, number: int) -> list[str]:
         return [
@@ -632,6 +652,12 @@ def questions_of(
             continue
         page = _page_of(finding)
         category = str(finding.get("category") or "other")
+        views = note.get("kind") == "architect_views"
+        rule = (
+            f"Architect's drawings disagree: {note.get('name')}"
+            if views
+            else f"GV rule: {note.get('name')}"
+        )
         out.append(
             Question(
                 page=page,
@@ -640,15 +666,23 @@ def questions_of(
                 item=_item(finding),
                 architect=vendor_text(note.get("architect"), "") or "",
                 vendor=vendor_text(vendor_value(finding), "") or "",
-                rule=vendor_text(f"GV rule: {note.get('name')}", "") or "",
+                rule=vendor_text(rule, "") or "",
                 settings=vendor_text(note.get("settings"), "") or "",
                 origin=vendor_text(note.get("origin"), "") or "",
                 question=vendor_text(note.get("question"), "") or "",
                 finding_id=str(finding.get("id") or ""),
+                kind="architect_views" if views else "gv_rule",
             )
         )
     out.sort(key=lambda q: (q.page or 0, q.item))
     return out
+
+
+#: The letter's ask when the vendor's numbers are drawn as lines (pen strokes), not text.
+UNREADABLE_ASK: Final = (
+    "Please save your PDFs with real text (use Save as PDF or Export from the drawing program, "
+    "not Print to PDF) and send them again."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -674,6 +708,18 @@ class Letter:
     nothing is asked of the vendor."""
     checks: tuple[PleaseCheck, ...] = ()
     """The whole-drawing look's likely problems (2026-10-23): "Please check and confirm"."""
+    unreadable: tuple[int, ...] = ()
+    """The pages whose numbers are drawn as lines, not text (2026-10-23): one line asks the
+    vendor to save its PDFs with real text (`UNREADABLE_ASK`)."""
+
+    @property
+    def unreadable_line(self) -> str | None:
+        """The letter's one line on pages code could not read, else `None`."""
+        if not self.unreadable:
+            return None
+        pages = ", ".join(str(p) for p in self.unreadable)
+        which = f"page {pages}" if len(self.unreadable) == 1 else f"pages {pages}"
+        return f"The numbers on {which} are drawn as lines, not text, so they could not be read. {UNREADABLE_ASK}"
 
     @property
     def reviewer_line(self) -> str:
@@ -846,6 +892,7 @@ def letter_of(
         ),
         questions=tuple(questions_of(findings, areas=context.areas)),
         checks=tuple(checks_of(findings)),
+        unreadable=context.unreadable,
     )
 
 

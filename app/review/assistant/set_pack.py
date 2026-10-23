@@ -847,16 +847,26 @@ def _inside(box: Sequence[float], halves: Sequence[Mapping[str, Any]]) -> bool:
     return False
 
 
+#: A page-map entry's key when its numbers are drawn as lines code could not read (a vendor's
+#: page that prints its dimensions only as pen strokes): kept as a drawing, said on the page.
+NUMBERS_UNREAD: Final = "numbers_unread"
+
+
 def settle_candidates(
-    page_map: dict[str, Any], dims: Mapping[str, Any] | None
+    page_map: dict[str, Any],
+    dims: Mapping[str, Any] | None,
+    strokes: Mapping[tuple[str, int], int] | None = None,
 ) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
     """Decide each candidate whole-page drawing from its page's labels (#1772), in place: a page
     whose labels outside its pasted drawings (every route: printed text, AutoCAD's SHX text, the
     vendor's pen strokes, and its millimetre-only values; never a derived `EQ` part) number at
     least `_DRAWING_DIMS` is one
-    whole-page drawing (its stamps are not drawings); any other stays as it was. Returns the
-    pages that had a candidate (their labels' sides are set again from their drawings) and those
-    that became drawings."""
+    whole-page drawing (its stamps are not drawings); any other stays as it was. A vendor page
+    with fewer labels that has at least `_DRAWING_DIMS` numbers drawn as lines on its dimension
+    lines code could not read (`strokes`: `reading_ink.PageInk.stroke_numbers`) is a drawing
+    too, marked `NUMBERS_UNREAD` ("flag everything", 2026-10-23): never a general page. Returns
+    the pages that had a candidate (their labels' sides are set again from their drawings) and
+    those that became drawings."""
     by_page: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     for entry in (dims or {}).get("pages") or []:
         if isinstance(entry, Mapping):
@@ -888,8 +898,11 @@ def settle_candidates(
             for label in by_page.get(key, [])
             if not label.get("derived") and not _inside(label.get("box") or (), real)
         ]
+        unread = int((strokes or {}).get(key) or 0)
         if len(outside) < _DRAWING_DIMS:
-            continue
+            if unread < _DRAWING_DIMS or candidate.get("role") != "vendor":
+                continue
+            entry[NUMBERS_UNREAD] = "strokes"
         half = {k: v for k, v in candidate.items() if k != "upload"}
         half["box"] = list(candidate["box"])
         entry["halves"] = [half]
@@ -1275,6 +1288,7 @@ def _settle_folder(
     folder: Path,
     document: dict[str, Any] | None = None,
     side: Any = None,
+    strokes: Mapping[tuple[str, int], int] | None = None,
 ) -> bool:
     """Decide the pack's candidate whole-page drawings (`settle_candidates`) from `document` (the
     labels; default: `dims.json`), set those pages' labels' and phrases' sides again from their
@@ -1287,7 +1301,9 @@ def _settle_folder(
         return False
     own = document is None
     dims = _read_json(folder / "dims.json") if own else document
-    decided, _promoted = settle_candidates(page_map, dims if isinstance(dims, Mapping) else None)
+    decided, _promoted = settle_candidates(
+        page_map, dims if isinstance(dims, Mapping) else None, strokes
+    )
     if isinstance(dims, dict):
         if side is None:
             side = import_module("app.review.assistant.dim_labels")._side
@@ -1528,7 +1544,12 @@ def write_dims(
         _write_json(folder / "health.json", {"version": PACK_VERSION, "pages": checked})
     # The candidate whole-page drawings, decided from every route's labels (#1772); the pack's
     # facts are worked out once, from the settled page map.
-    if _settle_folder(folder, document, labels._side):
+    strokes = {
+        key: int(getattr(page, "stroke_numbers", 0) or 0)
+        for key, page in ink.items()
+        if page is not None
+    }
+    if _settle_folder(folder, document, labels._side, strokes):
         settled = _read_json(folder / "page_map.json") or {}
         pages["pages"] = list(settled.get("pages") or [])
         written(document, now=True)

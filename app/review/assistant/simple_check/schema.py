@@ -65,6 +65,7 @@ __all__ = [
     "ReplyItem",
     "Sheet",
     "Skipped",
+    "ViewsDisagree",
     "WorkItem",
     "WorkList",
     "canonical_ref",
@@ -329,6 +330,34 @@ class Drawing(_Frozen):
         return self.file_page or self.page
 
 
+class ViewsDisagree(_Frozen):
+    """The architect's own two views of one piece print different sizes for the same span (a
+    plan against an elevation, `worklist._views_disagree`): code compares with the view that
+    governs the check (GV's view roles: the plan for cut-out positions, offsets and wall to wall;
+    the elevation for cabinet widths, fillers and tags; the section for the overhang) and GV asks
+    the architect which is right. Never red against the vendor because of it."""
+
+    governing: str
+    """The view that governs the check (`elevation`), and the drawing compared with."""
+    other: str
+    """The other view (`plan`)."""
+    governs: str
+    """What the governing view governs, in words ("cabinet widths")."""
+    governing_ref: str
+    other_ref: str
+    file: str = ""
+    """The architect's file both views are on."""
+    governing_page: int
+    other_page: int
+    """Their pages in the architect's own file."""
+    spans: tuple[tuple[Label, Label], ...]
+    """Each span the two print differently: (the governing view's label, the other's)."""
+    names: tuple[str, ...] = ()
+    """Each span's name, in the same order ("overall width", "width of part 2 of 3")."""
+    title: str = ""
+    """The governing drawing's printed title ("VANITY ELEVATION"), for the item's name."""
+
+
 class WorkItem(_Frozen):
     """One vendor drawing to compare, with the architect drawings of its area."""
 
@@ -353,6 +382,9 @@ class WorkItem(_Frozen):
     """The vendor's unit is drawn opposite-hand to the architect's (`AcrossPair.opposite_hand`):
     sizes are compared, a dimension from a left or right end is Not compared (code does not
     mirror it)."""
+    views_disagree: ViewsDisagree | None = None
+    """The architect's own views of it disagree (`AcrossPair.views_disagree`): compared with the
+    governing view, never red on a span they disagree on; GV asks the architect."""
     round: int | None = None
     newest_round: bool = True
     """No later round of the same area exists in the set."""
@@ -459,6 +491,9 @@ class AcrossPair(_Frozen):
     """Code knows, before any paid compare, that the architect's drawing of it is not in the
     upload (`worklist.DRAWING_NEEDED`: its project is not in the architect's file, or the
     architect's drawing of it prints no sizes)."""
+    views_disagree: ViewsDisagree | None = None
+    """The architect's own two views of it print different sizes (`worklist._views_disagree`):
+    it is paired with the governing view, and GV asks the architect."""
 
 
 class WorkList(_Frozen):

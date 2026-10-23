@@ -66,6 +66,9 @@ _SAME_SHAPE: Final = 0.75
 _MAX_SHAPED: Final = 40
 #: A label overlapping a candidate by this share (either way) means the candidate was read.
 _READ_SHARE: Final = 0.3
+#: A page where code read fewer labels than this is looked at for numbers drawn on dimension
+#: lines (`PageInk.stroke_numbers`): the set pack's own threshold for a whole-page drawing.
+FEW_LABELS: Final = 3
 
 REASON_ORDER: Final = (
     "gv_sticker",
@@ -92,6 +95,10 @@ class Candidate:
     """Every reason that applies, in `REASON_ORDER`."""
     shapes: tuple[Shape, ...] = ()
     """Its digit-sized glyphs' shapes in each direction it may read (for the alphabet test)."""
+    on_line: bool = False
+    """Two glyphs or more centred on a dimension line (`dim_labels.dimension_line`): a number
+    drawn as pen strokes in a dimension's place. Looked for only on a page where code read fewer
+    than `FEW_LABELS` labels (`PageInk.stroke_numbers`)."""
 
 
 @dataclass(slots=True)
@@ -102,6 +109,11 @@ class PageInk:
     digits: list[tuple[Shape, str]] = field(default_factory=list)
     seconds: float = 0.0
     """Processor seconds this page's counting took."""
+    stroke_numbers: int = 0
+    """On a page where code read fewer than `FEW_LABELS` labels: its candidates sitting on a
+    dimension line (`Candidate.on_line`), numbers drawn as lines that code could not read. The
+    set pack keeps such a page as a drawing whose numbers cannot be read (`set_pack`), never a
+    general page."""
 
 
 # ---- shapes ----------------------------------------------------------------------------------
@@ -176,8 +188,9 @@ class _Alphabet:
 
 def looks_like_number(candidate: Candidate, alphabet: _Alphabet | None) -> bool:
     """Whether a candidate counts as a printed number: marked as a dimension by its own strokes,
-    or one of its glyphs shaped as a digit of the set's alphabet."""
-    if candidate.marked:
+    centred on a dimension line (on a page code read almost nothing of), or one of its glyphs
+    shaped as a digit of the set's alphabet."""
+    if candidate.marked or candidate.on_line:
         return True
     return bool(alphabet) and any(alphabet.knows(s) for s in candidate.shapes)  # type: ignore[union-attr]
 
@@ -507,6 +520,7 @@ def page_ink(
     ]
     index_of = {id(path): i for i, path in enumerate(near.paths)}
     taken = np.array(read, dtype=float) if read else np.zeros((0, 4))
+    few = sum(1 for label in labels if not label.get("derived")) < FEW_LABELS
     for ink in _page_labels(near, free):
         row = list(ink.glyphs)
         if max(g.size for g in row) < il._MIN_LABEL_PT or il._not_text(row):
@@ -521,9 +535,24 @@ def page_ink(
             continue
         if int(near.mask(box, il.GATHER_PT).sum()) > _BUSY_PATHS:
             continue  # hatching or a dotted fill
-        result.candidates.append(_candidate(ink, side, near, lines, stickers, index_of))
+        found = _candidate(ink, side, near, lines, stickers, index_of)
+        if few and len(row) >= 2 and _on_dimension_line(box, parsed.segments):
+            found.on_line = True
+            result.stroke_numbers += 1
+        result.candidates.append(found)
     result.seconds = round(process_time() - started, 3)
     return result
+
+
+def _on_dimension_line(box: Box, segments: Sequence[Any]) -> bool:
+    """Whether ink in `box` sits on (or in a gap of) a dimension line with an extension line or a
+    tick at an end, read as along its longer side (`dim_labels.dimension_line`)."""
+    wide = box[2] - box[0] >= box[3] - box[1]
+    font = min(box[2] - box[0], box[3] - box[1])
+    if font <= 0:
+        return False
+    found = dl.dimension_line(box, "h" if wide else "v", segments, font, drawn=True)
+    return found is not None
 
 
 def _candidate(

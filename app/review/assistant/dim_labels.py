@@ -126,7 +126,7 @@ from app.review.assistant import (
     vendor_alphabet,
 )
 from app.review.assistant import verify_value as vv
-from app.review.assistant.finding_checks import inch_first_mm, to_inches, units_check, value_flags
+from app.review.assistant.finding_checks import printed_mm, to_inches, units_check, value_flags
 from app.review.assistant.measure import _pieces
 from extraction.visible_text import ink_picture
 
@@ -214,6 +214,9 @@ class _Reading:
     flags: tuple[str, ...] = ()
     """The notes written with the value (`finding_checks.value_flags`, #1778): `reference`
     (`(24")`), `vif` (`VIF 24"`), `approx` (`24"+/-`)."""
+    mm_ignored: bool = False
+    """Typed text whose millimetres disagree with its inches (`660 [27"]`): the inches count and
+    the millimetres are ignored (settled with GV), so `units` is left unset: never a doubt."""
 
 
 @dataclass(slots=True)
@@ -408,6 +411,21 @@ def _tokens(chars: Sequence[Any], font: float) -> list[tuple[str, tuple[Any, ...
     return [(vv._plain(text).strip(), tuple(group)) for text, group in out if text.strip()]
 
 
+def _text_units(text: str) -> dict[str, Any]:
+    """A typed value's millimetres and their check against its inches (`mm`, `units`), read the
+    same whichever unit comes first (`660 [27"]`, `31 1/4" [794]`). Millimetres that disagree
+    with the inches are kept as printed and marked `mm_ignored`, with no `units` result: the
+    inches count (settled with GV, "inches count; ignore millimetres"), so the label is never a
+    doubt because of them. Empty for a value in one unit."""
+    mm = printed_mm(text)
+    if mm is None:
+        return {}
+    units = units_check(text)
+    if units == "disagrees":
+        return {"mm": mm, "units": None, "mm_ignored": True}
+    return {"mm": mm, "units": units}
+
+
 def _bare(text: str) -> bool:
     return not any(mark in text for mark in ('"', "'", "/", "["))
 
@@ -442,16 +460,14 @@ def _row_readings(chars: Sequence[Any], font: float) -> list[_Reading]:
                 group = [c for _, part in run for c in part]
                 before = tokens[start - 1][0] if start > 0 else ""
                 after = tokens[start + size][0] if start + size < len(tokens) else ""
-                mm = inch_first_mm(joined)
                 out.append(
                     _reading(
                         joined,
                         value,
                         group,
                         bare=_bare(joined),
-                        mm=mm,
-                        units=units_check(joined) if mm is not None else None,
                         flags=_flags(joined, before, after),
+                        **_text_units(joined),
                     )
                 )
                 start += size
@@ -619,8 +635,7 @@ def _paired(readings: list[_Reading]) -> tuple[list[_Reading], bool]:
                 font=max(bare.font, bracket.font),
                 bare=False,
                 bracket=True,
-                mm=bare.text,
-                units=units_check(joined),
+                **{"mm": bare.text, **_text_units(joined)},
             )
         )
     out += [r for i, r in enumerate(readings) if i not in used]
@@ -1777,6 +1792,7 @@ def _label(reading: _Reading, line: dict[str, Any] | None, side: str) -> dict[st
         "route": reading.route,
         "mm": reading.mm,
         "units": reading.units,
+        **({"mm_ignored": True} if reading.mm_ignored else {}),
         "dim_line": None if line is None else line["dim_line"],
         "extension": None if line is None else line["extension"],
         "span_pt": None if line is None else line["span_pt"],

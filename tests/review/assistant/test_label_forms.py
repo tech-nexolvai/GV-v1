@@ -4,7 +4,8 @@ Inches count; millimetres only cross-check (they are never a verdict operand):
 
 - inches first with the millimetres in brackets (`31 1/4" [794]`, `25 [635]`) is read as the
   inches when the bracket is them times 25.4, and GV's usual millimetres first (`794 [31 1/4]`)
-  reads as before; a marked pair whose numbers disagree is refused;
+  reads as before; a marked pair whose numbers disagree is read as its inches (settled with GV:
+  "inches count; ignore millimetres"), and its label keeps the millimetres, marked ignored;
 - a reference dimension (`(24")`), verify in field (`VIF 24"`) and plus or minus (`24"+/-`) are
   read, each with its flag kept on the label; a value marked VIF or plus or minus is never red;
 - a millimetre-only value (`794mm`) is listed on its page, never a label with inches.
@@ -22,6 +23,7 @@ from app.review.assistant import dim_labels
 from app.review.assistant import pair_findings as pf
 from app.review.assistant.finding_checks import (
     inch_first_mm,
+    printed_mm,
     to_inches,
     units_check,
     value_flags,
@@ -40,6 +42,9 @@ from tests.review.assistant.test_dim_labels import _dimension, _pdf, _text
         ('31 1/4" [794]', "31.25"),
         ("31 1/4 [794]", "31.25"),
         ("2'-0\" [610]", "24"),
+        ('31 1/4" [800]', "31.25"),  # the millimetres disagree: the inches count (settled)
+        ('660 [27"]', "27"),  # millimetres first that disagree: the inches count (settled)
+        ('914 [36"]', "36"),
         ("25 [635]", "25"),  # was read as 635 inches
         ("24 [610]", "24"),  # was read as 610 inches
         ("610 [2'-0\"]", "24"),  # millimetres first, feet and inches in brackets
@@ -91,7 +96,6 @@ def test_forms_read_before_are_unchanged(text: str, inches: str) -> None:
     [
         "794mm",  # millimetres alone are never inches (and 794 mm is no exact number of inches)
         "794 mm",
-        '31 1/4" [800]',  # a marked pair whose halves disagree: refused
         "(24)",  # a bare number in brackets is a count or a tag
         "+/- 24",  # a noted value with no mark is not one sure value
         "VIF 24",
@@ -126,7 +130,7 @@ def test_value_flags(text: str, flags: tuple[str, ...]) -> None:
     [
         ('31 1/4" [794]', "agrees", "794"),
         ("25 [635]", "agrees", "635"),
-        ('31 1/4" [800]', "disagrees", None),
+        ('31 1/4" [800]', "disagrees", "800"),
         ("794 [31 1/4]", "agrees", None),  # GV's order: its own check, no inch-first mm
         ("305 [10]", "disagrees", None),
     ],
@@ -134,6 +138,23 @@ def test_value_flags(text: str, flags: tuple[str, ...]) -> None:
 def test_the_25_4_cross_check_both_ways(text: str, units: str, mm: str | None) -> None:
     assert units_check(text) == units
     assert inch_first_mm(text) == mm
+
+
+@pytest.mark.parametrize(
+    ("text", "mm"),
+    [
+        ('660 [27"]', "660"),
+        ('914 [36"]', "914"),
+        ("794 [31 1/4]", "794"),
+        ("940 (37)", "940"),
+        ('31 1/4" [794]', "794"),
+        ('31 1/4" [800]', "800"),
+        ('27"', None),
+        ("794mm", None),
+    ],
+)
+def test_printed_millimetres_either_way_round(text: str, mm: str | None) -> None:
+    assert printed_mm(text) == mm
 
 
 # ---- the labels ---------------------------------------------------------------------------------
@@ -158,6 +179,25 @@ def test_the_labels_read_the_forms_and_keep_their_notes(tmp_path: Path) -> None:
     assert labels['30"']["flags"] == ["vif"]  # the VIF printed just before it, in its row
     # Millimetres alone: listed, never a label (a 3 mm reveal is a note, not a dimension).
     assert [(m["text"], m["mm"], m["side"]) for m in found.metric] == [("794mm", "794", "vendor")]
+
+
+def test_millimetres_first_rows_are_read_as_their_inches(tmp_path: Path) -> None:
+    """`914 [36"]` and `660 [27"]` (660 mm is 26"): the label is the inches either way; the
+    millimetres are kept as printed, and where they disagree they are ignored (settled with GV:
+    "inches count; ignore millimetres"), never a doubt on the label."""
+    body = b""
+    for n, value in enumerate(['914 [36"]', '660 [27"]']):
+        x = 60 + 140 * n
+        body += _dimension(x, x + 120, 300) + _text(x + 20, 303, value)
+    pdf = tmp_path / "mm-first.pdf"
+    pdf.write_bytes(_pdf([body]))
+    found = dim_labels.page_labels(pdf, 1, [{"box": [0, 0, 600, 400], "role": "vendor"}])
+    labels = {label["text"]: label for label in found.labels}
+    agreeing, ignored = labels['914 [36"]'], labels['660 [27"]']
+    assert (agreeing["inches"], agreeing["mm"], agreeing["units"]) == ("36", "914", "agrees")
+    assert "mm_ignored" not in agreeing
+    assert (ignored["inches"], ignored["mm"], ignored["units"]) == ("27", "660", None)
+    assert ignored["mm_ignored"] is True
 
 
 def test_a_page_with_no_metric_value_keeps_its_dims_entry_as_before(tmp_path: Path) -> None:

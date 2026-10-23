@@ -295,6 +295,14 @@ _VIEW_ROLE_WORDS: Final[Mapping[str, str]] = {
 }
 
 
+#: What each view governs, in the words GV's question to the architect uses.
+_VIEW_GOVERNS: Final[Mapping[str, str]] = {
+    "plan": "cut-out positions, offsets and wall-to-wall sizes",
+    "elevation": "widths, fillers and tags",
+    "section": "the overhang",
+}
+
+
 def governing_view(item: str, kind: str) -> str | None:
     """The view GV reads this value from (settled with the client), or `None` when no view is settled."""
     words = " ".join(_words(item))
@@ -1103,6 +1111,18 @@ class ReadingLedger:
             }
             if first_ref.page != first_odd.page:
                 finding["vs_page"] = first_ref.page
+            if group.side == "architect":
+                # Which of the architect's views is which, for GV's question to the architect
+                # when code proves both values at their spots (`rule_notes.views_note_of`).
+                finding["dims"] = {
+                    "views": {
+                        "governing": first_ref.view,
+                        "other": first_odd.view,
+                        "governing_page": first_ref.page,
+                        "other_page": first_odd.page,
+                        "governs": _VIEW_GOVERNS.get(governs or "", ""),
+                    }
+                }
             if first_ref.box is not None:
                 finding["arch_box"] = first_ref.box.as_dict()
             if first_odd.box is not None:

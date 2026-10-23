@@ -613,6 +613,11 @@ class Item:
     opposite_hand: str | None = None
     """The vendor's unit is drawn opposite-hand (`schema.WorkItem.opposite_hand`): a dimension
     from a left or right end is Not compared."""
+    views_disagree: tuple[tuple[str, str, str, str, str], ...] = ()
+    """The spans the architect's own views print differently (`schema.WorkItem.views_disagree`):
+    (the governing view's label ref, its value, the other view's value, the governing view's
+    name, the other view's name). Never red against the vendor on one of them: GV asks the
+    architect."""
 
     @property
     def category(self) -> str:
@@ -651,6 +656,7 @@ class Item:
             products=tuple(getattr(work, "products", ()) or ()),
             prototype_reference=bool(getattr(work, "prototype_reference", False)),
             opposite_hand=getattr(work, "opposite_hand", None),
+            views_disagree=_views_disagree_of(getattr(work, "views_disagree", None)),
         )
 
     @classmethod
@@ -684,6 +690,34 @@ class Item:
 
 def _ref(label: Mapping[str, Any]) -> str:
     return f"p{label.get('page')}.{label.get('id')}"
+
+
+def _views_disagree_of(found: Any) -> tuple[tuple[str, str, str, str, str], ...]:
+    """`Item.views_disagree` from the work item's `schema.ViewsDisagree` (read by attribute)."""
+    if found is None:
+        return ()
+    return tuple(
+        (
+            str(governing.ref),
+            _inch_words(governing.inches),
+            _inch_words(other.inches),
+            str(found.governing),
+            str(found.other),
+        )
+        for governing, other in found.spans
+    )
+
+
+def _inch_words(value: object) -> str:
+    """`30"`, `30 1/2"` from a label's inches (a decimal string)."""
+    try:
+        exact = Fraction(str(value)).limit_denominator(64)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return f'{value}"'
+    whole, rest = divmod(exact.numerator, exact.denominator)
+    if not rest:
+        return f'{whole}"'
+    return f'{whole} {rest}/{exact.denominator}"' if whole else f'{rest}/{exact.denominator}"'
 
 
 def vendor_labels(item: Item, pack: Pack) -> list[dict[str, Any]]:
@@ -1148,6 +1182,7 @@ _KEEP: Final[Mapping[str, str]] = {
     "nothing_to_compare": "architect_prints_nothing",
     "unreadable": "unreadable",
     "layout": "layout",
+    "architect_disagrees": "architect_disagrees",
 }
 
 
@@ -1366,6 +1401,15 @@ def _verify_pair(
         # The AI said only that both run between the same two points (recipe step 2): code
         # compares the numbers and takes the older form's path for what it reads.
         verdict = "different" if _differ(v_in, a_in) else "same"
+    split = next((d for d in item.views_disagree if d[0] == _ref(architect)), None)
+    if split is not None and _differ(v_in, a_in):
+        # The architect's own views print this span differently (2026-10-23): never red against
+        # the vendor because of it; GV asks the architect which is right.
+        return one.grey(
+            f"the architect's own drawings disagree on this size (its {split[4]} shows "
+            f"{split[2]}, its {split[3]} {split[1]}): GV asks the architect",
+            "architect_disagrees",
+        )
     a_file = str(architect.get("file") or pack.main_file)
     a_page = int(architect.get("page") or 0)
     matched = ends_match(
