@@ -17,6 +17,10 @@ on one core. Here each read runs in a worker process of its own:
   starts no other.
 - **The same page meets the same worker** (`affinity`): a worker keeps the pages it parsed
   (`verify_value`'s page cache), so a page is not parsed again by every worker.
+- **Off by default.** Measured on a 60-page set (60 proving reads from a cold start): 4 threads
+  102 s, 4 worker processes 120 s, the same answers: each worker parses its pages again and runs
+  OCR on one thread, while on threads RapidOCR uses every core. The server turns them on with
+  `assistant_spot_processes` when a set shows a gain.
 - **Gentle on a shared machine.** At most `use_processes(n)` workers (the server's
   `assistant_spot_processes`; 0: on the caller's thread, as before), each with one thread for
   Tesseract, OpenMP and ONNX Runtime (`_ENVIRONMENT`, RapidOCR's sessions set to one thread), and

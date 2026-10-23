@@ -163,10 +163,11 @@ class Settings(BaseSettings):
     # Worker processes that parse drawing pages for a full check's code checks (#1874): the page
     # parser is plain Python, so on threads a big set's checks waited for each other. 0: threads.
     assistant_parse_processes: int = Field(default=3, ge=0, le=16)
-    # Worker processes for a full check's final checks by code (2026-10-23): the spot reads
-    # (`verify_value`, `read_number`, the drawn-ink pass) are plain Python and OCR, so on threads
-    # they ran on one core. 0: on the check's own threads, as before.
-    assistant_spot_processes: int = Field(default=4, ge=0, le=8)
+    # Worker processes for a full check's spot reads (`spot_pool`, 2026-10-23): the proving reads
+    # and the drawn-ink pass. 0 (the default): on the check's own threads, as before. Measured on
+    # a 60-page set (60 reads, cold start): 4 threads 102 s, 4 processes 120 s (each worker parses
+    # its pages again and runs OCR on one thread), so they stay off until a set shows a gain.
+    assistant_spot_processes: int = Field(default=0, ge=0, le=8)
     # A full check's second, drawn-things helper per page group (#1569): notes, doors and drawers,
     # hardware, extent, brand prototype, finish tags; Sonnet at low effort, capped per helper.
     assistant_drawn_helpers: bool = True
