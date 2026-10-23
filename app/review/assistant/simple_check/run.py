@@ -619,6 +619,7 @@ class _Run:
                 else self._ink(vendor)
             ),
             newer_same=same,
+            combined_sheet=self._combined(vendor),
         )
         if not code_paired and not any(c.outcome != "pass" for c in checks):
             # An AI pairing code did not make (GV Review's page review): it needs the blind look,
@@ -653,6 +654,18 @@ class _Run:
             return current
 
         self.engine._update_finding(finding_id, change)
+
+    def _combined(self, label: Mapping[str, Any]) -> bool:
+        """Whether the label's file is one of GV's combined sheets (`verify_value.combined_sheet`
+        of the upload itself): only there is a value in colour GV's markup. Unknown: the strict
+        rule."""
+        verify_value = import_module("app.review.assistant.verify_value")
+        try:
+            uploads = self.engine.tools.workspace.uploads
+            return bool(verify_value.combined_sheet_at(uploads / str(label.get("file"))))
+        except Exception:  # noqa: BLE001 - unknown kind: the strict rule
+            _log.info("simple check file kind unknown: %s", label.get("id"))
+            return True
 
     def _ink(self, label: Mapping[str, Any]) -> tuple[int, float] | None:
         """The value's own ink on the drawings-only copy (GV's markup hidden): (ink pixels, the

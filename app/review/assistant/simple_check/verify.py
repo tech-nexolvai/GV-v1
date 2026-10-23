@@ -992,13 +992,16 @@ def _roles_check(
 _VENDOR_INK_ROUTES: Final = frozenset({"text", "drawn"})
 
 
-def _ink_check(label: Mapping[str, Any], ink: Ink | None) -> Check:
+def _ink_check(label: Mapping[str, Any], ink: Ink | None, sheet: str | None = None) -> Check:
     """Whether the vendor value is GV's markup: only by the label's OWN ink. A label code read
     from the vendor's own ink (`_VENDOR_INK_ROUTES`) is the vendor's, whatever GV drew over or
     around it (a yellow note covering it, a note box round it: the old box check stopped four true
     items). Any other label's own spot is looked at (`ink`, its coloured share), and so is a label
     read by OCR from pixels (a pasted picture's, #1830, or a vector page's, #1848): pixels, not
-    the vendor's ink layer."""
+    the vendor's ink layer. On an ordinary upload (`sheet`, the vendor drawing's file kind) every
+    colour is the drawing's own ink (the colour rule), so its colour never fails the check."""
+    if sheet == "ordinary":
+        return Check("gv_ink", "pass", "an ordinary upload: every colour is its own ink")
     if label.get("route") in _VENDOR_INK_ROUTES and not ocr_read(label):
         return Check("gv_ink", "pass", "read from the vendor's own ink, never GV's markup")
     measured = ink(label) if ink is not None else None
@@ -1461,7 +1464,7 @@ def _verify_pair(
         return _right(one, checks, matched, v_in, a_in, said_different=verdict == "different")
     checks.append(_round_check(pack, item, vendor))
     checks.append(_slip_check(v_in, a_in, "drawn" in (vendor.get("route"), architect.get("route"))))
-    checks.append(_ink_check(vendor, ink))
+    checks.append(_ink_check(vendor, ink, item.vendor.sheet))
     checks.append(_flags_check(vendor, architect))
     failed = _first_failure(checks)
     if failed is not None:
