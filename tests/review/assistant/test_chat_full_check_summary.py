@@ -390,6 +390,7 @@ def test_progress_numbers_count_pages_and_items_and_estimate_the_time_left() -> 
         "decision_so_far": 2,
         "right_so_far": 1,
         "rule_note_so_far": 0,
+        "likely_so_far": 0,
         "eta_seconds": 480,
     }
     # Before any page is done there is no estimate; without coverage, pages with a finding count.

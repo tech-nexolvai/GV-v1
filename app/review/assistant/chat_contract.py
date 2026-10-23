@@ -675,6 +675,21 @@ class ChatFindingRuleNoteOut(BaseModel):
     question: str = Field(description="The ready question for the architect (an RFI line).")
 
 
+class ChatFindingLikelyOut(BaseModel):
+    """What the whole-drawing look claimed (`likely_problems.payload`): never red by itself; a
+    Likely problem until code proves it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["missing_piece", "extra_piece", "count", "size", "layout"] = Field(
+        description="What differs: a missing or extra piece, a count, a size, the layout."
+    )
+    words: str = Field(description='The letter\'s line: "Please check and confirm: ...".')
+    reason: str | None = Field(default=None, description="The AI's reason, one line.")
+    sure: Literal["sure", "likely"] = Field(description="How sure the look was.")
+    by: Literal["whole_drawing_look"] = "whole_drawing_look"
+
+
 class ChatFindingProofOut(BaseModel):
     """Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read
     (`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a
@@ -682,10 +697,14 @@ class ChatFindingProofOut(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    group: Literal["clouded", "right", "rule_note", "not_compared", "dismissed"] = Field(
+    group: Literal[
+        "clouded", "right", "rule_note", "likely_problem", "not_compared", "dismissed"
+    ] = Field(
         description="clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's "
         "size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks "
-        "the architect, `rule_note`); not_compared: could not be "
+        "the architect, `rule_note`); likely_problem: the whole-drawing look found a design "
+        "difference code could not prove (shown dashed, never solid red; the letter says "
+        "'Please check and confirm', `likely_problem`); not_compared: could not be "
         "compared under the architect-first rules (#1619: listed with its reason in the "
         "Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer "
         "marked it Right (Not a problem; the vendor's files say 'Right (reviewer)')."
@@ -749,6 +768,11 @@ class ChatFindingProofOut(BaseModel):
     )
     rule_note: ChatFindingRuleNoteOut | None = Field(
         default=None, description="rule_note: the GV rule and the question for the architect."
+    )
+    likely_problem: ChatFindingLikelyOut | None = Field(
+        default=None,
+        description="A whole-drawing look's claim: what to check and confirm (the spots are the "
+        "finding's own boxes).",
     )
 
 
@@ -1592,6 +1616,9 @@ class ChatProgressOut(BaseModel):
     rule_note_so_far: int = Field(
         default=0, description="The architect's size breaks a GV rule: GV asks (#1839)."
     )
+    likely_so_far: int = Field(
+        default=0, description="Likely problems the whole-drawing look found (please check)."
+    )
     eta_seconds: int | None = Field(
         default=None, description="Time left at the pace so far; null before any page is done."
     )
@@ -2101,7 +2128,7 @@ class ChatLiveFindingOut(BaseModel):
     id: str | None = Field(
         default=None, description="The finding's id (`F12`) once recorded in the answer."
     )
-    outcome: Literal["wrong", "right", "rule_note", "not_compared"]
+    outcome: Literal["wrong", "right", "rule_note", "likely_problem", "not_compared"]
     proved_by: Literal["code", "checked_twice"] | None = Field(
         default=None,
         description="A Wrong only: code alone, or code and the blind second look ('checked twice').",
@@ -2130,8 +2157,8 @@ class ChatLiveFindingOut(BaseModel):
     removed: bool = Field(
         default=False, description="No longer in the answer (folded into another, or left out)."
     )
-    previous: Literal["wrong", "right", "rule_note", "not_compared"] | None = Field(
-        default=None, description="Its outcome before, when it changed."
+    previous: Literal["wrong", "right", "rule_note", "likely_problem", "not_compared"] | None = (
+        Field(default=None, description="Its outcome before, when it changed.")
     )
     final: bool = Field(
         default=False,
@@ -2150,6 +2177,9 @@ class ChatLiveTallyOut(BaseModel):
     right: int = Field(ge=0)
     rule_note: int = Field(
         default=0, ge=0, description="The architect's size breaks a GV rule: GV asks (#1839)."
+    )
+    likely_problem: int = Field(
+        default=0, ge=0, description="Likely problems from the whole-drawing look (please check)."
     )
     not_compared: int = Field(ge=0)
     waiting_second_look: int = Field(ge=0)

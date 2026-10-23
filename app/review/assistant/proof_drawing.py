@@ -100,6 +100,11 @@ from app.review.assistant.cloud_layout import (
     place_notes,
     snapped,
 )
+from app.review.assistant.likely_problems import GROUP as LIKELY_GROUP
+from app.review.assistant.likely_problems import HEADING as LIKELY_HEADING
+from app.review.assistant.likely_problems import LETTER_LEAD as LIKELY_LEAD
+from app.review.assistant.likely_problems import SHORT_WORDS as LIKELY_SHORT
+from app.review.assistant.likely_problems import please_check
 from app.review.assistant.proof import (
     RULE_LINE,
     architect_file,
@@ -148,6 +153,8 @@ GREEN: Final = Color(0.0, 0.47, 0.2)
 _LIST_GREY: Final = Color(0.4, 0.4, 0.4)
 #: A rule note (#1839): neutral slate, never red, green or amber (decided, nothing for the vendor).
 _NOTE_SLATE: Final = Color(0.2, 0.27, 0.38)
+#: A likely problem (2026-10-23): dark amber, never the red of a proved Wrong.
+_LIKELY_AMBER: Final = Color(0.6, 0.35, 0.0)
 STAMP_WORDS: Final = "Checked automatically by GV Review"
 LEGEND_LINES: Final = (
     "Red cloud and red words: the vendor's value that is wrong.",
@@ -211,6 +218,8 @@ class ProofCounts:
     dismissed: int
     rule_note: int = 0
     """Sizes the architect specifies that break a GV rule (#1839): decided, never clouded."""
+    likely_problem: int = 0
+    """The whole-drawing look's claims code could not prove (2026-10-23): never clouded."""
 
 
 # ---- the note on the sheet ------------------------------------------------------------------------
@@ -1106,6 +1115,17 @@ def _cover(
                 "the architect's size breaks a GV rule",
             ),
         )
+    if counts.get("likely_problem"):
+        # 2026-10-23: the whole-drawing look's claims code could not prove: never red.
+        tiles.insert(
+            1,
+            (
+                LIKELY_SHORT,
+                counts["likely_problem"],
+                _LIKELY_AMBER,
+                "please check and confirm (not proved)",
+            ),
+        )
     cells = [
         [
             Paragraph(
@@ -1653,6 +1673,12 @@ def _rule_note_line(finding: Mapping[str, Any]) -> str:
     )
 
 
+def _likely_line(finding: Mapping[str, Any]) -> str:
+    """A likely problem on the notes pages: what to check, without the letter's lead words."""
+    words = please_check(finding)
+    return words.split(": ", 1)[1] if words.startswith(LIKELY_LEAD) else words
+
+
 def _right_or_reviewer_line(finding: Mapping[str, Any]) -> str:
     if proof_group(finding) == "dismissed":
         return _reviewer_right_line(finding)
@@ -1923,6 +1949,11 @@ def proof_markup_pdf(
     if noted:
         # #1839: decided, never clouded; nothing is asked of the vendor.
         notes += _list_entries(styles, RULE_NOTE_HEADING, noted, _rule_note_line, _NOTE_SLATE)
+    likely = groups.get(LIKELY_GROUP, [])
+    if likely:
+        # 2026-10-23: the whole-drawing look's claims code could not prove: please check, never
+        # a correction (no cloud, no "should be").
+        notes += _list_entries(styles, LIKELY_HEADING, likely, _likely_line, _LIKELY_AMBER)
     # The reviewer's "Not a problem" is Right on the vendor's files, noted "(reviewer)" (#1766).
     right = [*groups.get("right", []), *groups.get("dismissed", [])]
     notes += _list_entries(styles, "Right", right, _right_or_reviewer_line, GREEN)

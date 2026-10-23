@@ -1594,6 +1594,12 @@ def _message(
                 if settings.assistant_page_match_model == "off"
                 else settings.assistant_page_match_model
             ),
+            whole_look_model=(
+                None
+                if settings.assistant_whole_look_model == "off"
+                else settings.assistant_whole_look_model
+            ),
+            whole_look_effort=settings.assistant_whole_look_effort,
             set_index_model=(
                 None
                 if settings.assistant_set_index_model == "off"
