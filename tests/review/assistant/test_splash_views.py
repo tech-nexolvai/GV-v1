@@ -349,3 +349,28 @@ def test_the_resolver_never_remakes_an_unlike_splash_right() -> None:
     resolved = dr.resolve([down], dr.ResolverContext())
     found = next((f for f in resolved.changed if f["id"] == "F1"), down)
     assert found["status"] == "check" and proof.proof_group(found) == "not_compared"
+
+
+def test_no_sharper_read_is_paid_for_an_unlike_splash() -> None:
+    from app.review.assistant import decision_resolver as dr
+
+    asked: list[Any] = []
+
+    def reader(*args: Any, **kwargs: Any) -> Any:
+        asked.append(args)
+        raise AssertionError("never asked")
+
+    unread = _splash(
+        item="Vanity: back splash length",
+        vendor="illegible",
+        architect='36"',
+        inches={"architect": "36"},
+        keep_reason="unreadable",
+        checks={"printed_architect": "match"},
+        vendor_box={"x0": 5, "y0": 5, "x1": 25, "y1": 22, "page": 1, "file": "shop.pdf"},
+        dims={
+            "architect": {"id": "D8", "text": '36"', "box": [0, 0, 9, 9], "file": FILE, "page": 2}
+        },
+    )
+    settled, _reason, said = dr._settle_one(unread, dr.ResolverContext(read=reader))
+    assert settled is None and said is None and asked == []
