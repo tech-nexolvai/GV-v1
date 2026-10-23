@@ -14753,7 +14753,12 @@ export interface operations {
     };
     plan_page_api_v1_packages__package_id__plan_pages__page__get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description That upload's page (its name as the set lists it, as a finding's box names it); none: the vendor's file. */
+                file?: string | null;
+                /** @description architect: the architect's file's page (when `file` is not given). */
+                side?: ("vendor" | "architect") | null;
+            };
             header?: never;
             path: {
                 package_id: string;

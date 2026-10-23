@@ -13,7 +13,7 @@
  *   "Biggest first" or "By page".
  */
 
-import type { ChatCoverage, ChatFinding, ChatFile, ChatPackageState, ChatReviewAction, ChatTimings, FindingDecision } from '@/lib/chat-api';
+import type { ChatCoverage, ChatFinding, ChatFile, ChatPackageState, ChatReviewAction, ChatTimings, FindingDecision, ProofGroup } from '@/lib/chat-api';
 import { isInternal, proofGroup } from '@/lib/chat-proof';
 import { inchNumber, inchWords, PHASE_WORDS } from '@/lib/chat-trust';
 
@@ -345,6 +345,38 @@ export function vendorValue(finding: Pick<ChatFinding, 'vendor'>): ValueWords {
   const pair = /^(\d+(?:\.\d+)?)\s*\[([^\]]+)\]$/.exec(printed);
   if (pair) return { main: `${quoteMarks(pair[2].replace(/"$/, ''))}″`, note: `${pair[1]} mm` };
   return { main: quoteMarks(printed), note: null };
+}
+
+/**
+ * A vendor string code did not compare (Not compared, e.g. "code could not find the overall's whole
+ * dimension line"): its parts and overall are the AI's unproven reading, so the screen never shows
+ * them as "vendor vs …" values (the client meeting, 2026-10-23). A proven string Wrong is not this.
+ */
+export function isRefusedString(finding: Pick<ChatFinding, 'source' | 'parts' | 'arch_picture_id'>, group: ProofGroup | null | undefined): boolean {
+  if (group !== 'not_compared' || finding.arch_picture_id) return false;
+  return finding.source === 'vendor_arithmetic' || Boolean(finding.parts?.length);
+}
+
+/**
+ * A long value said short for a header ("No overall printed"), with the whole value apart to show
+ * below it ("no overall printed (partial dims 1′-3″, …)"); a short one is itself, with nothing apart.
+ */
+export function shortValue(value: string | null | undefined, most = 20): { short: string; full: string | null } {
+  // Inch and foot marks only after a number: "the architect's" keeps its apostrophe.
+  const words = String(value ?? '').replace(/\s+/g, ' ').trim().replace(/"/g, '″').replace(/(\d)'/g, '$1′');
+  if (!words) return { short: '—', full: null };
+  if (words.length <= most) return { short: words, full: null };
+  const head = words.split(/\s*[(;:]\s*|,\s+|\s+[—–-]\s+/)[0].trim();
+  const upper = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+  if (head.length >= 2 && head.length <= most + 2) return { short: upper(head), full: words };
+  let cut = '';
+  for (const word of head.split(' ')) {
+    if (`${cut} ${word}`.trim().length > most) break;
+    cut = `${cut} ${word}`.trim();
+  }
+  // Never end on a joining word ("QZ-2 quartz top and…" reads as cut mid-thought).
+  const trimmed = cut.replace(/(?:\s+(?:and|or|of|the|a|an|to|with|for|in|on|at))+$/i, '');
+  return { short: `${upper(trimmed || head.slice(0, most)).replace(/[,.;:]$/, '')}…`, full: words };
 }
 
 /** What it should be (green): the server's "12" (architect 1' - 0")" split into the value and where it comes from. */

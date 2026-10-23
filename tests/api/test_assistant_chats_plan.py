@@ -127,6 +127,18 @@ def test_the_plan_check_asks_where_unsure_and_keeps_the_answers(postgres_engine,
             world.client.get(f"/api/v1/packages/{world.package_id}/plan-pages/99").status_code
             == 404
         )
+        # The result drawer (2026-10-23): another upload's page by its name, or the architect's
+        # file's; an unknown name, or no architect's file in the set, gives none.
+        listing = json.loads(
+            (world.root / "plan-check" / str(world.package_id) / "uploads.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        page_two = f"/api/v1/packages/{world.package_id}/plan-pages/2"
+        named = world.client.get(page_two, params={"file": listing[0]["name"]})
+        assert named.status_code == 200 and named.content == picture.content
+        assert world.client.get(page_two, params={"file": "other.pdf"}).status_code == 404
+        assert world.client.get(page_two, params={"side": "architect"}).status_code == 404
 
         # The answers go with the full check, and the question is not asked again.
         chat_id = world.chat()

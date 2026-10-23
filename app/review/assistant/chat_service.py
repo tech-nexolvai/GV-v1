@@ -577,11 +577,32 @@ def _plan_root(chat_root: Path, package_id: UUID) -> Path:
     return chat_root / PLAN_CHECK_FOLDER / str(package_id)
 
 
-def plan_page_picture(chat_root: Path, package_id: UUID, page: int) -> Path | None:
-    """The vendor's page picture in the set's pack (drawings only, 100 dpi), if made."""
+def _is_architect_upload(item: Mapping[str, Any]) -> bool:
+    return str(item.get("kind") or "").startswith("the architect")
+
+
+def plan_page_picture(
+    chat_root: Path,
+    package_id: UUID,
+    page: int,
+    *,
+    file: str | None = None,
+    side: str | None = None,
+) -> Path | None:
+    """A page's picture in the set's pack (drawings only, 100 dpi), if made: the vendor's file's
+    page; with `file`, that upload's page (its name exactly as the set lists it, as a finding's
+    box names it); with `side="architect"`, the architect's file's page (the result screen's
+    drawer, 2026-10-23: the architect's side has its own whole page). An unknown file, or no
+    architect's file, gives none (never the vendor's page in its place)."""
     workspace = ChatWorkspace(_plan_root(chat_root, package_id))
     listing = read_listing(workspace)
-    main = main_upload(listing)
+    main: Mapping[str, Any] | None
+    if file is not None:
+        main = next((item for item in listing if str(item.get("name") or "") == file), None)
+    elif side == "architect":
+        main = next((item for item in listing if _is_architect_upload(item)), None)
+    else:
+        main = main_upload(listing)
     if main is None:
         return None
     try:
