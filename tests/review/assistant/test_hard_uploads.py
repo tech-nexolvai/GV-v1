@@ -838,6 +838,61 @@ def test_splash_never_from_an_older_copy_or_several_look_alikes(tmp_path: Path) 
     assert found["architect"] == '6" BACKSPLASH' and found["vs_page"] == 3
 
 
+def test_splash_step_runs_on_the_engines_findings(tmp_path: Path) -> None:
+    import threading
+    from types import SimpleNamespace
+
+    from app.review.assistant import splash_views
+
+    # The engine's hook: the open splash item is compared on the section, the false Right on a
+    # splash length against a top's width is taken back, and the compared item's picture is the
+    # section's spot (never the plan's).
+    outcome = _splash_set(tmp_path)
+    right = _splash(
+        id="F2",
+        item="Vanity: back splash length",
+        vendor='36"',
+        architect='36"',
+        status="same",
+        dims={
+            "architect": {"text": '36"', "box": [150, 300, 170, 310], "file": "arch.pdf", "page": 1}
+        },
+    )
+    found: dict[str, dict[str, Any]] = {"F1": _splash(arch_picture_id="old"), "F2": right}
+
+    class Book:
+        main_file = "shop.pdf"
+
+        def live(self) -> list[dict[str, Any]]:
+            return [dict(f) for f in found.values()]
+
+        def replace(self, finding: dict[str, Any]) -> bool:
+            found[finding["id"]] = finding
+            return True
+
+        def add_code_finding(self, given: dict[str, Any], *, created_by: str) -> dict[str, Any]:
+            made = {**given, "id": f"F{len(found) + 1}", "created_by": created_by}
+            found[made["id"]] = made
+            return made
+
+        def _picture(self, box: dict[str, Any]) -> tuple[str | None, str | None]:
+            return f"pic-{box['page']}", None
+
+    shown: list[str] = []
+    engine = SimpleNamespace(
+        settings=SimpleNamespace(mode="full_check"),
+        tools=SimpleNamespace(workspace=SimpleNamespace(set_pack=outcome.pack, skills=tmp_path)),
+        book=Book(),
+        finding_lock=threading.Lock(),
+        _show_finding=lambda f: shown.append(f["id"]),
+    )
+    counts = splash_views.add_to_answer(engine)
+    assert counts is not None and counts["right"] == 1 and counts["unlike"] == 1
+    assert found["F1"]["status"] == "same" and found["F1"]["arch_picture_id"] == "pic-1"
+    assert found["F2"]["status"] == "check" and _group(found["F2"]) == "not_compared"
+    assert set(shown) == {"F1", "F2"}
+
+
 # ---- helpers ------------------------------------------------------------------------------------
 
 

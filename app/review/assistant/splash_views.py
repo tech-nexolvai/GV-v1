@@ -1322,6 +1322,11 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
         status = settled.finding.get("status")
         key = {"same": "right", "different": "different"}.get(str(status), "not_compared")
         counts[key] += 1
+        if settled.finding.get("arch_box") != finding.get("arch_box"):
+            # Compared on another view: its picture is that view's spot, never the old one's.
+            picture = getattr(book, "_picture", None)
+            made = picture(settled.finding["arch_box"]) if callable(picture) else (None, None)
+            settled.finding["arch_picture_id"] = made[0]
         with engine.finding_lock:
             if book.replace(settled.finding):
                 engine._show_finding(settled.finding)
