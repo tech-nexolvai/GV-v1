@@ -42,7 +42,9 @@ describe('pairing unsure', () => {
   it('is a Not-compared item naming both pages, never a Drawing-needed page', () => {
     expect(drawingNeededPages(COVERAGE).map((page) => page.page)).toEqual([3]);
     const items = pairingUnsureItems(COVERAGE, TITLES);
-    expect(items.map((item) => [item.id, item.page, item.item])).toEqual([['pairing-unsure:2', 2, `Sample unit A: Pairing unsure: ${PAGES}`]]);
+    expect(items.map((item) => [item.id, item.page, item.item])).toEqual([['pairing-unsure:2', 2, `Sample unit A: Pairing unsure: ${PAGES.replace(/"([^"]*)"/g, '“$1”')}`]]);
+    // A title's quotes are curly quotes, never inch marks.
+    expect(items[0].item).not.toContain('"');
     expect(notComparedGroups(items).map((group) => [group.reason, group.words])).toEqual([['pairing_unsure', 'Pairing unsure: a person confirms the architect page']]);
     expect(items[0].item).not.toMatch(/\bA\d{1,3}\b|\bp\d{3,5}\b|no architect drawing/);
   });

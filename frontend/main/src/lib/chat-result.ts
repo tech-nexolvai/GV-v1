@@ -179,7 +179,8 @@ export function pairingUnsureItems(coverage: ChatCoverage | null | undefined, ti
     .sort((a, b) => a.page - b.page)
     .map((page) => {
       const heading = pageHeading(page.page, titles);
-      const pages = page.pairing_unsure_why?.trim() || 'which architect page shows it?';
+      // A page's title is quoted (`("SAMPLE KITCHEN")`): curly quotes, never read as inch marks.
+      const pages = (page.pairing_unsure_why?.trim() || 'which architect page shows it?').replace(/"([^"]*)"/g, '“$1”');
       const why = `Pairing unsure: ${pages}`;
       return {
         id: `${PAIRING_UNSURE_ID}${page.page}`,
