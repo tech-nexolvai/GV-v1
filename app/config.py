@@ -212,6 +212,11 @@ class Settings(BaseSettings):
     assistant_page_match_model: Literal["off", "claude-sonnet-5-5", "claude-opus-5-5"] = (
         "claude-sonnet-5-5"
     )
+    # The set index (two-file uploads): each page read once by a cheap call (project, set, views),
+    # every string checked by code, kept in the set pack; the vendor's drawings are then paired
+    # only within their own project, never with a brand prototype. About $0.01-0.02 a page.
+    # `off`: no project is known (every architect page is a candidate).
+    assistant_set_index_model: Literal["off", "claude-sonnet-5-5"] = "claude-sonnet-5-5"
     # The simple check's compare call: the model and effort for every drawing, the stronger model
     # for drawings the work list marks hard (no code labels, very dense, hand-lettered architect),
     # how many calls run at once, the reply's token room (thinking included) and the retries on a

@@ -883,6 +883,8 @@ class MessageJob:
     """A full check's specialists started together, at most (#1874)."""
     parse_processes: int = 0
     """Worker processes that parse drawing pages for a full check's code checks (#1874)."""
+    set_index_model: str | None = None
+    """The set index's model for separate uploads (`set_index.py`); `None`: off."""
     plan_answers: Mapping[str, str] | None = None
     """The reviewer's answers to the plan check (#1569), kept with the set pack before the run."""
     sharpen_model: bool = False
@@ -1325,6 +1327,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             calls_at_once=job.calls_at_once,
             full_check_agents=job.full_check_agents,
             parse_processes=job.parse_processes,
+            set_index_model=job.set_index_model,
             identity=job.identity,
             numbering=numbering(job.factory, job.package_id, job.chat_id, run.message_id),
         ),

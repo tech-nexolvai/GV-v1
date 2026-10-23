@@ -52,6 +52,7 @@ from typing import Any, Final, Literal
 import numpy as np
 
 from app.review.assistant.chat_trust import inch_words
+from app.review.assistant.finding_checks import wrong_part
 from app.review.assistant.proof import proof_group, should_be_value, vendor_value
 
 __all__ = [
@@ -398,6 +399,9 @@ def _governs(finding: Mapping[str, Any]) -> tuple[Decimal, Decimal] | None:
             low, high = _fraction(found.group(1)), _fraction(found.group(2))
             if low is not None and high is not None:
                 return low, high
+    part = wrong_part(finding)
+    if part is not None:
+        return part[1], part[1]
     if finding.get("source") == "vendor_arithmetic":
         summed = _decimal(finding.get("parts_sum"))
         return None if summed is None else (summed, summed)

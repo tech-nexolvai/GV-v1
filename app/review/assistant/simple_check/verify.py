@@ -610,6 +610,9 @@ class Item:
     prototype_reference: bool = False
     """R1 (Anant, 2026-10-20): the area has no architect drawing, so `architect` is its brand
     prototype, the reference (`schema.WorkItem.prototype_reference`)."""
+    opposite_hand: str | None = None
+    """The vendor's unit is drawn opposite-hand (`schema.WorkItem.opposite_hand`): a dimension
+    from a left or right end is Not compared."""
 
     @property
     def category(self) -> str:
@@ -647,6 +650,7 @@ class Item:
             ),
             products=tuple(getattr(work, "products", ()) or ()),
             prototype_reference=bool(getattr(work, "prototype_reference", False)),
+            opposite_hand=getattr(work, "opposite_hand", None),
         )
 
     @classmethod
@@ -1367,6 +1371,16 @@ def _verify_pair(
     matched = ends_match(
         ends["vendor_from"], ends["vendor_to"], ends["architect_from"], ends["architect_to"]
     )
+    if item.opposite_hand and any(
+        end_kind(ends[k])[1] is not None
+        for k in ("vendor_from", "vendor_to", "architect_from", "architect_to")
+    ):
+        # Code does not mirror a position: a dimension from a left or right end is not compared.
+        return one.grey(
+            f"{item.opposite_hand}: a dimension from a left or right end is not compared "
+            "(code does not mirror it)",
+            "different_reference",
+        )
     same_axis = vendor.get("orientation") == architect.get("orientation")
     disagree = "disagrees" in (vendor.get("units"), architect.get("units"))
     checks = [

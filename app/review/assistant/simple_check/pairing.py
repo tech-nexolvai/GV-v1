@@ -39,6 +39,17 @@ them), the same overall width or height within 4%, a plan against a single eleva
 or ranks it clearly first, never against a contradiction or code's own other pick. Zero wrong
 pairs matters more than coverage.
 
+**A real two-file upload (2026-10-23, four hotels in each file)** made the rule stricter and the
+items finer: only the vendor drawing's own project is a candidate, never a reference set nor a key
+plan (the work list, from the set index); an architect sheet of several titled views is narrowed
+to one view (`narrow`; look-alikes stay unpaired); item codes printed with three digits count as
+tags (`item_tags_in`; on their own they only agree with the matcher); a dense sheet's shared sizes
+count for nothing (`dense`); weak evidence never pairs among fewer than `MIN_WEAK_POOL`; a key
+plan's callout beside the vendor's item tag points to a view (`Facts.linked`); an accessible
+variant never pairs with a standard one (`markers_in`); an opposite-hand unit is flagged
+(`opposite_hand`); a saved matcher answer still holds when code only ruled candidates out
+(`reuse`).
+
 Pure: plain values in, a decision out. The work list (`worklist._pair_across`) builds the facts.
 """
 
@@ -54,8 +65,11 @@ from typing import Any, Final
 __all__ = [
     "CODE_BAR",
     "CODE_MARGIN",
+    "DENSE_SHARE",
+    "DENSE_VALUES",
     "MIN_LAYOUT_SHARE",
     "MIN_LAYOUT_VALUES",
+    "MIN_WEAK_POOL",
     "TIER",
     "UNPAIRED",
     "Candidate",
@@ -64,9 +78,15 @@ __all__ = [
     "Scored",
     "clear_winner",
     "decide",
+    "dense",
     "evidence_words",
+    "item_tags_in",
+    "markers_in",
+    "narrow",
+    "opposite_hand",
     "rank",
     "references_in",
+    "reuse",
     "section_key",
     "tags_in",
     "title_key",
@@ -148,6 +168,24 @@ class Facts:
     phrases: tuple[str, ...] = ()
     """A vendor drawing's printed phrases of two words or more (lines joined down a title block's
     cell too), normalised: a shorter name of an item ("window seat") found in its title."""
+    item_tags: frozenset[str] | None = None
+    """A vendor drawing's tags that name one piece (`item_tags_in`, printed on few of the vendor's
+    drawings: `XX-001`, `XX-801`), normalised as `tags`; `None`: every tag numbered 100 or more."""
+    linked: Mapping[str, str] = field(default_factory=dict, compare=False)
+    """For a vendor drawing: the candidates an architect plan points to, and how in plain words
+    (its item tag printed on the plan beside a callout to that view)."""
+    view_count: int = 1
+    """How many titled views the drawing's sheet holds (a multi-view sheet's titles say nothing
+    of which view is which kind)."""
+    whole_sheet: bool = False
+    """The merged facts of a sheet of several titled views (a variant marker on one of its views
+    says nothing of the others: `markers` is checked view by view, `narrow`)."""
+    markers: frozenset[str] = frozenset()
+    """The variant markers it prints (accessible: `ADA`, `ACCESSIBLE`; the set index's checked
+    words too): printed on one side only, the two are different variants (`rank`)."""
+    hand: frozenset[str] = frozenset()
+    """The opposite-hand markers it prints (`MIRROR`, `OPP. HAND`; the set index's checked words
+    too): printed on one side only, the pair is compared mirrored (`opposite_hand`)."""
 
 
 @dataclass(frozen=True)
@@ -225,6 +263,14 @@ def decide(vendor: Facts, candidates: Sequence[Facts]) -> Decision:
                     f"({_layout_words(rival, total)} against {winner.matched})",
                     found,
                 )
+            if winner.spans < MIN_SPANS and _dense_for(vendor, candidates, winner.ref):
+                return Decision(
+                    None,
+                    f"{UNPAIRED}: the printed reference {', '.join(winner.shared_references)} "
+                    f"names {winner.ref}, but it is a dense sheet: the sizes they share say "
+                    "nothing",
+                    found,
+                )
             if winner.share < MIN_REFERENCE_SHARE and winner.spans < MIN_SPANS:
                 return Decision(
                     None,
@@ -249,6 +295,13 @@ def decide(vendor: Facts, candidates: Sequence[Facts]) -> Decision:
         )
     ranked = sorted(pool, key=lambda c: (c.spans, c.share), reverse=True)
     best = ranked[0]
+    if best.spans < MIN_SPANS and _dense_for(vendor, candidates, best.ref):
+        return Decision(
+            None,
+            f"{UNPAIRED}: {best.ref} prints most of its dimensions, but it is a dense sheet, "
+            "so sharing them says nothing",
+            found,
+        )
     if best.share < MIN_LAYOUT_SHARE and best.spans < MIN_SPANS:
         return Decision(
             None,
@@ -266,6 +319,15 @@ def decide(vendor: Facts, candidates: Sequence[Facts]) -> Decision:
         )
     how = "printed reference shared by several views; " if most else ""
     return Decision(best.ref, f"{how}layout: {_layout_words(best, total)}", found)
+
+
+def _dense_for(vendor: Facts, candidates: Sequence[Facts], ref: str) -> bool:
+    """Whether candidate `ref` is a dense sheet for the vendor drawing (`dense`), on sizes of a
+    foot or more."""
+    theirs = next((c.values for c in candidates if c.ref == ref), ())
+    big = [v for v in theirs if v >= MIN_TELLING_INCHES / 2]
+    matched, _ = _share([v for v in vendor.values if v >= MIN_TELLING_INCHES / 2], big)
+    return dense(big, matched)
 
 
 def values_of(labels: Iterable[Any]) -> tuple[Fraction, ...]:
@@ -492,6 +554,16 @@ TIER: Final = 1.0
 #: With only weak code evidence, a sure AI pick must be code's first by this much (two pieces of
 #: weak evidence: two close sizes, or a size and a naming word).
 WEAK_LEAD: Final = 0.5
+#: ... and among at least this many candidates: being first of two or three on weak evidence says
+#: nothing (a real two-file upload: the vendor's new desk and an older desk of the same building, the
+#: only two architect drawings of its project, the matcher sure of the old one).
+MIN_WEAK_POOL: Final = 4
+#: A candidate printing more values than this, of which the vendor drawing shares fewer than
+#: `DENSE_SHARE`, is a dense sheet: it prints most sizes of any piece, so sharing them is no
+#: evidence of the piece (a real two-file upload: a prototype sheet with 162 dimensions was code's
+#: pick for 6 unrelated vendor drawings, sharing 6 to 8 of them).
+DENSE_VALUES: Final = 60
+DENSE_SHARE: Final = 0.2
 
 
 def tags_in(texts: Iterable[str]) -> frozenset[str]:
@@ -503,6 +575,64 @@ def tags_in(texts: Iterable[str]) -> frozenset[str]:
             if letters not in _NOT_TAG:
                 found.add(f"{letters}{int(digits)}")
     return frozenset(found)
+
+
+#: A tag whose number is printed with three digits or more (`XX-001`, `XX-801`, `EQ-512`).
+_PADDED_TAG: Final = re.compile(r"\b([A-Z]{1,4})[-_](\d{3,4})(?![\d/])")
+
+
+def item_tags_in(texts: Iterable[str]) -> frozenset[str]:
+    """The tags in `texts` printed the way an item code is (a number of three digits or more,
+    zero-padded or not: `XX-001`, `XX-801`, `XX-318`), normalised as `tags_in` (`ML1`). Whether one
+    names a piece or a finish (`LM-004` is a laminate) is decided by how many of the vendor's
+    drawings print it (`worklist`)."""
+    found: set[str] = set()
+    for text in texts:
+        for letters, digits in _PADDED_TAG.findall(str(text or "").upper()):
+            if letters not in _NOT_TAG:
+                found.add(f"{letters}{int(digits)}")
+    return frozenset(found)
+
+
+def dense(candidate: Sequence[object], matched: int) -> bool:
+    """Whether a candidate is a dense sheet for this vendor drawing: it prints more than
+    `DENSE_VALUES` values and the ones it shares with the vendor drawing are fewer than
+    `DENSE_SHARE` of them, so sharing them says nothing of which piece it is (any piece's common
+    sizes are among them)."""
+    return len(candidate) > DENSE_VALUES and matched < DENSE_SHARE * len(candidate)
+
+
+#: Code's own variant and hand markers (the set index's checked words come on top: an office's own
+#: words such as `HC` or `REV` are read there, where the model says what they mean). `HC` and `REV`
+#: alone are never read here: hollow core, revision.
+_ACCESSIBLE: Final = re.compile(r"\b(ADA|ACCESSIBLE|HANDICAP(?:PED)?)\b(?![-_.]?\d)")
+_HAND: Final = re.compile(
+    r"\b(MIRROR(?:ED)?|OPP(?:OSITE|\.)?\s*HAND(?:ED)?|REVERSED?(?:\s+HAND)?|REVERSE)\b"
+)
+
+
+def markers_in(texts: Iterable[str]) -> tuple[frozenset[str], frozenset[str]]:
+    """The variant markers and the opposite-hand markers printed in `texts` (code's own words)."""
+    variant: set[str] = set()
+    hand: set[str] = set()
+    for text in texts:
+        upper = " ".join(str(text or "").upper().split())
+        variant.update(m.group(1) for m in _ACCESSIBLE.finditer(upper))
+        hand.update(" ".join(m.group(1).split()) for m in _HAND.finditer(upper))
+    return frozenset(variant), frozenset(hand)
+
+
+def opposite_hand(vendor: Facts, architect: Facts) -> str | None:
+    """Why a pair is compared mirrored (an opposite-hand marker printed on one side only), or
+    `None`."""
+    if bool(vendor.hand) == bool(architect.hand):
+        return None
+    side, words = (
+        ("the vendor's drawing", vendor.hand)
+        if vendor.hand
+        else ("the architect's", architect.hand)
+    )
+    return f"{side} is marked {', '.join(sorted(words))}: the unit is drawn opposite-hand"
 
 
 def words_in(texts: Iterable[str]) -> frozenset[str]:
@@ -590,9 +720,16 @@ class Scored:
     """Why code says it is not this drawing (a plan against a single elevation), or `None`."""
     strong: bool = False
     """Code holds evidence it may pair on by itself: the item's title printed or typed on the
-    vendor's sheet, a view reference, spans lined up, most of its sizes printed on both, the
-    only item of its section, or an item tag (a number of 100 or more: `EQ-512`, `RM-204`)
-    printed on both. Finish tags and naming words only rank."""
+    vendor's sheet, a view reference, spans lined up, most of its sizes printed on both (the
+    candidate not a dense sheet), the only item of its section, an item tag (`item_tags_in`:
+    `EQ-512`, `XX-001`) printed on both and on no other candidate, or a plan's callout pointing
+    to it. Finish tags and naming words only rank."""
+    agree_only: bool = False
+    """Its only strong evidence is a plan's callout (`Facts.linked`) or an item code numbered
+    under 100 (`XX-001`): enough to agree with the AI page matcher, never to pair without it
+    (`clear_winner`)."""
+    linked: bool = False
+    """A key plan's callout beside the vendor's item tag points to it (`Facts.linked`)."""
 
 
 def _same_size(a: Fraction, b: Fraction) -> bool:
@@ -628,6 +765,11 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
     telling sizes close on both. A plan against a vendor drawing whose titles name only an
     elevation (or the other way round) is contradicted."""
     total = len(candidates)
+    items = (
+        vendor.item_tags
+        if vendor.item_tags is not None
+        else frozenset(t for t in vendor.tags if _ITEM_TAG.match(t))
+    )
     tag_counts: Counter[str] = Counter(t for one in candidates for t in one.tags)
     word_counts: Counter[str] = Counter(w for one in candidates for w in one.words)
     telling = [(d, v) for d, v in vendor.oriented if v >= MIN_TELLING_INCHES]
@@ -640,6 +782,13 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
         evidence: list[str] = []
         contradicts = None
         strong = False
+        small_tag = False
+        linked = vendor.linked.get(one.ref)
+        if linked:
+            # A plan's callout beside the vendor's item tag points to it: strong enough to agree
+            # with the AI page matcher, never to pair without it (`link_only`).
+            score += _W_REFERENCE
+            evidence.append(linked)
         if one.title and _title_on(one.title, vendor.text):
             strong = True
             score += _W_TITLE
@@ -674,9 +823,17 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
             [v for v in one.values if v >= MIN_TELLING_INCHES / 2],
         )
         if matched >= MIN_LAYOUT_VALUES:
-            strong = strong or share >= MIN_LAYOUT_SHARE
-            score += _W_SHARE * share
-            evidence.append(f"{matched} of its sizes printed on both")
+            sizes = [v for v in one.values if v >= MIN_TELLING_INCHES / 2]
+            if dense(sizes, matched):
+                # A dense sheet prints most sizes of any piece: its share is no evidence.
+                evidence.append(
+                    f"{matched} of its sizes printed on both (a dense sheet: "
+                    f"{len(sizes)} sizes, not counted)"
+                )
+            else:
+                strong = strong or share >= MIN_LAYOUT_SHARE
+                score += _W_SHARE * share
+                evidence.append(f"{matched} of its sizes printed on both")
         named = 0.0
         tags = sorted(t for t in vendor.tags & one.tags if _idf(tag_counts, total, t) > 0)
         for tag in tags:
@@ -685,8 +842,14 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
         for word in words:
             named += _idf(word_counts, total, word)
         if tags or words:
-            # An item tag counts as strong only where this item alone prints it.
-            strong = strong or any(_ITEM_TAG.match(t) and tag_counts[t] == 1 for t in tags)
+            # An item tag counts as strong only where this item alone prints it; one numbered
+            # under 100 (`XX-001`) only to agree with the AI page matcher (`agree_only`): code
+            # never pairs on it alone.
+            unique = [t for t in tags if t in items and tag_counts[t] == 1]
+            if any(_ITEM_TAG.match(t) for t in unique):
+                strong = True
+            elif unique:
+                small_tag = True
             score += min(_MAX_NAMED, named)
             evidence.append("both print " + ", ".join([*tags, *words][:6]))
         for axis, name in (("h", "width"), ("v", "height")):
@@ -708,8 +871,26 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
         if near:
             score += min(_MAX_NEAR, _W_NEAR * len(near))
             evidence.append(f"{len(near)} other sizes close on both")
+        if (
+            contradicts is None
+            and not one.whole_sheet
+            and bool(vendor.markers) != bool(one.markers)
+        ):
+            # An accessible variant against a standard one (`ADA` printed on one side only):
+            # another piece, whatever else they share.
+            contradicts = (
+                f"the vendor's drawing is marked {', '.join(sorted(vendor.markers))} and this "
+                "one is not"
+                if vendor.markers
+                else f"it is marked {', '.join(sorted(one.markers))} and the vendor's drawing is not"
+            )
         if contradicts is None and (
-            len(vendor.views) == 1
+            # A sheet of several titled views (vendor's or architect's) says nothing by its kinds
+            # of view: its titles are not read one by one (a real two-file upload lost the right
+            # elevation sheets for 25 vendor drawings whose only title read was "PLAN VIEW").
+            vendor.view_count <= 1
+            and one.view_count <= 1
+            and len(vendor.views) == 1
             and len(one.views) == 1
             and vendor.views != one.views
             and {*vendor.views, *one.views} == {"plan", "elevation"}
@@ -718,7 +899,18 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
                 f"its title names a {next(iter(one.views))}, the vendor drawing's a "
                 f"{next(iter(vendor.views))}"
             )
-        out.append(Scored(one.ref, round(score, 3), tuple(evidence), contradicts, strong))
+        agree_only = (bool(linked) or small_tag) and not strong
+        out.append(
+            Scored(
+                one.ref,
+                round(score, 3),
+                tuple(evidence),
+                contradicts,
+                strong or bool(linked) or small_tag,
+                agree_only,
+                bool(linked),
+            )
+        )
     order = {s.ref: n for n, s in enumerate(out)}
     return tuple(
         sorted(out, key=lambda s: (s.contradicts is None, s.score, -order[s.ref]), reverse=True)
@@ -727,12 +919,13 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
 
 def clear_winner(ranked: Sequence[Scored]) -> Scored | None:
     """Code's own pick from `rank`: the best above `CODE_BAR`, `CODE_MARGIN` ahead of the next
-    candidate code does not contradict, and not contradicted itself; else `None`."""
+    candidate code does not contradict, and not contradicted itself, on strong evidence of its own
+    (a plan's callout or a small item code alone is not enough); else `None`."""
     open_ = [s for s in ranked if s.contradicts is None]
     if not open_:
         return None
     best = open_[0]
-    if best.score < CODE_BAR or not best.strong:
+    if best.score < CODE_BAR or not best.strong or best.agree_only:
         return None
     if len(open_) > 1 and best.score - open_[1].score < CODE_MARGIN:
         return None
@@ -776,7 +969,13 @@ def agree(
       apart is never paired (the paid test, 2026-10-20: the matcher was sure of a wrong
       look-alike once). The matcher's further picks are kept only when code holds strong
       evidence for them too (a plan and an elevation of one item);
-    - the matcher finds none while code picked one: none (they disagree)."""
+    - the matcher finds none while code picked one: none (they disagree).
+
+    Weak evidence never pairs among fewer than `MIN_WEAK_POOL` candidates; a matcher answer naming
+    code's own clear pick among several items agrees on that one; with no clear pick of code's, a
+    matcher answer naming the one item a key plan's callout points to (`Scored.linked`), sure or
+    not, agrees on that one (two independent witnesses: the architect's printed pointer and the
+    AI's look)."""
     by = {s.ref: s for s in ranked}
     open_ = sorted((s for s in ranked if s.contradicts is None), key=lambda s: -s.score)
     if answer is None:
@@ -798,6 +997,22 @@ def agree(
             f"item{reason}, and code found no clear one"
         )
     pick = answer.matches[0]
+    if code_pick is not None and code_pick in answer.matches:
+        # The matcher names code's own clear pick among the items that show the piece: agreed.
+        pick = code_pick
+    elif code_pick is None:
+        pointed = [
+            m
+            for m in dict.fromkeys(answer.matches)
+            if m in by and by[m].linked and by[m].contradicts is None
+        ]
+        if len(pointed) == 1:
+            # The architect's own key plan points to it (its callout beside the vendor's item
+            # tag), and the matcher names it among the items that show the piece: agreed.
+            return tuple(pointed), (
+                f"paired with {pointed[0]}: the architect's key plan points to it, and the AI "
+                f"page matcher names it{reason} ({evidence_words(by[pointed[0]])})"
+            )
     scored = by.get(pick)
     if scored is None:
         return (), f"{UNPAIRED}: the AI page matcher named {pick}, which is not a candidate"
@@ -840,6 +1055,13 @@ def agree(
         # first, ahead of every other item by `WEAK_LEAD` (two pieces of weak evidence), so a
         # look-alike the matcher was sure of but code cannot tell apart is never paired.
         runner = others[0].score if others else 0.0
+        if best.ref == pick and others and scored.score - runner < WEAK_LEAD:
+            return (), (
+                f"{UNPAIRED}: the AI page matcher is sure of {pick}{reason}, but two architect "
+                f"drawings could be this item ({pick}, {others[0].ref}): code holds no strong "
+                f"evidence for it and does not put it clearly first ({pick}: "
+                f"{evidence_words(scored)}; {others[0].ref}: {evidence_words(others[0])})"
+            )
         if best.ref != pick or scored.score - runner < WEAK_LEAD:
             return (), (
                 f"{UNPAIRED}: the AI page matcher is sure of {pick}{reason}, but code holds no "
@@ -849,6 +1071,12 @@ def agree(
                     if best.ref != pick
                     else f" ({pick}: {evidence_words(scored)})"
                 )
+            )
+        if len(open_) < MIN_WEAK_POOL:
+            return (), (
+                f"{UNPAIRED}: the AI page matcher is sure of {pick}{reason}, but code holds no "
+                f"strong evidence for it, and being first of {len(open_)} architect drawings "
+                f"on weak evidence says nothing ({pick}: {evidence_words(scored)})"
             )
         how = "code's clear first, on weak evidence"
     extra = [m for m in dict.fromkeys(answer.matches[1:]) if m != pick and _also(by, m, scored)]
@@ -869,3 +1097,50 @@ def _also(by: Mapping[str, Scored], ref: str, pick: Scored) -> bool:
         and other.strong
         and other.score >= pick.score - TIER
     )
+
+
+def reuse(shown: Sequence[str], answer: MatchAnswer, asked: Sequence[str]) -> MatchAnswer | None:
+    """A saved matcher answer for the candidates `asked` now, or `None` (ask again). The same
+    candidates: the answer. Fewer (code since rules some out: another project, the brand
+    prototype, a key plan): the answer still holds when every candidate asked now was shown, and
+    its picks are kept among them; an answer of none holds (none of more showed the piece). When
+    every pick it made is ruled out now, what it would pick among the rest is not known."""
+    now, then = set(asked), set(shown)
+    if now == then:
+        return answer
+    if not now or not now <= then:
+        return None
+    if not answer.matches:
+        return answer
+    kept = tuple(m for m in answer.matches if m in now)
+    if not kept:
+        return None
+    return MatchAnswer(kept, answer.confident, answer.reason)
+
+
+def narrow(vendor: Facts, views: Sequence[Facts]) -> tuple[Scored | None, str]:
+    """Which view of a paired architect sheet shows the vendor's piece (`views`: the sheet's
+    titled views), by code: the one view a key plan's callout points to (no other holding strong
+    evidence), else the view code ranks first (`rank` among the sheet's views) with evidence of
+    its own, `WEAK_LEAD` ahead of the next view (`TIER` when that one holds strong evidence too).
+    Look-alike views (four "HALL ELEVATION"s) or no evidence: `None` and why."""
+    if len(views) == 1:
+        return Scored(views[0].ref, 0.0, ("the sheet's only titled view",)), ""
+    ranked = [s for s in rank(vendor, views) if s.contradicts is None]
+    if not ranked or not ranked[0].evidence or ranked[0].score <= 0:
+        return None, f"code cannot tell which of its {len(views)} views shows the piece"
+    pointed = [s for s in ranked if s.linked]
+    if len(pointed) == 1 and not any(s.strong for s in ranked if s.ref != pointed[0].ref):
+        # The architect's own key plan points to this view and no other view holds strong
+        # evidence: the printed pointer decides over look-alike words (a finish tag, a room name).
+        return pointed[0], ""
+    best = ranked[0]
+    runner = ranked[1] if len(ranked) > 1 else None
+    lead = best.score - (runner.score if runner else 0.0)
+    need = TIER if runner is not None and runner.strong else WEAK_LEAD
+    if runner is not None and lead < need:
+        return None, (
+            f"two architect drawings could be this item ({best.ref}, {runner.ref}): "
+            f"{best.ref}: {evidence_words(best)}; {runner.ref}: {evidence_words(runner)}"
+        )
+    return best, ""

@@ -629,6 +629,9 @@ class EngineSettings:
     parse_processes: int = 0
     """Worker processes that parse drawing pages for a full check's code checks
     (`GV_ASSISTANT_PARSE_PROCESSES`, `verify_value.use_parse_processes`; 0: threads, #1874)."""
+    set_index_model: str | None = None
+    """The set index's model (`set_index.py`, `assistant_set_index_model`): each page of a
+    two-file set read once for its project, set and views; `None`: off (no project is known)."""
 
 
 @dataclass(slots=True)

@@ -138,8 +138,10 @@ RENDER_DPI: Final = 100
 #: Seconds the dimension labels' drawn-ink route (OCR) may spend on ONE page (#1872: a limit per
 #: page, read in worker processes; `GV_DIM_LABELS_DRAWN_BUDGET_S`; 0 turns it off). It reads the
 #: vendor's drawn numbers label by label (#1571); a page it does not finish is `partial`, and its
-#: drawn values keep `verify_value`.
-DIMS_DRAWN_BUDGET_S: Final = 300.0
+#: drawn values keep `verify_value`. Measured (2026-10-22/23): on a typed 188-page set a page's
+#: median is 17 s and 11 pages pass 180 s for almost no label; on Set 3's pen-stroke pages 60 s
+#: was too short (7 pages partial on a loaded machine, p11/p12/p15/p16 lost 9-11 labels each).
+DIMS_DRAWN_BUDGET_S: Final = 180.0
 #: The hi-res page cache's folder inside the pack (`page_cache`, #1548): 300-dpi tiles of each page
 #: a crop was cut from, made on first need.
 HIRES: Final = "hires"
