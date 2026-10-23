@@ -148,7 +148,7 @@ export function referenceSide(finding: ChatFinding, kind: DrawerKind, decision: 
   // One item whose copies pair it with different architect sizes (one card, Not compared): every
   // size, never one of them as if it were the architect's.
   const conflict = finding.same_item?.conflict ?? [];
-  if (conflict.length > 1) return { label: 'Architect shows', value: `${conflict.map((size) => size.replace(/"/g, '″')).join(' or ')} (copies disagree)`, tone: null };
+  if (conflict.length > 1) return { label: 'Architect: copies disagree', value: conflict.map((size) => size.replace(/"/g, '″')).join(' or '), tone: null };
   if (kind === 'rule_note') return { label: 'Architect shows', value: architect, tone: null };
   if (finding.source === 'rules' || finding.rule_check_id) return { label: 'GV’s rule', value: architect, tone: kind === 'right' ? 'right' : null };
   return { label: vendorOnly(finding) ? 'Vendor’s own drawing' : 'Architect shows', value: architect, tone: kind === 'right' || kind === 'dismissed' ? 'right' : null };

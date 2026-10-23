@@ -76,6 +76,6 @@ describe('one item, one card', () => {
 describe('a card whose copies disagree', () => {
   it('names every architect size in its header, never one of them alone', () => {
     const card = { ...LIKELY, architect: '21"', same_item: { copies: [], conflict: ['21"', '22"'] } } as ChatFinding;
-    expect(referenceSide(card, 'not_compared')).toEqual({ label: 'Architect shows', value: '21″ or 22″ (copies disagree)', tone: null });
+    expect(referenceSide(card, 'not_compared')).toEqual({ label: 'Architect: copies disagree', value: '21″ or 22″', tone: null });
   });
 });
