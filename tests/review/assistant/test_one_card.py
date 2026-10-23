@@ -209,6 +209,9 @@ def test_the_same_finish_tags_on_the_same_two_pages_are_one_card() -> None:
     painted = {**helper, "vendor": "painted white", "architect": "PL-1 laminate doors"}
     veneer = {**look, "vendor": "rift oak veneer", "architect": "PL 1 laminate (section)"}
     assert len(_apply([painted, veneer])) == 2
+    # One shared colour word is not the same material (re-review of #1916).
+    laminate = {**veneer, "vendor": "white laminate"}
+    assert len(_apply([{**painted, "vendor": "painted white"}, laminate])) == 2
 
 
 def test_a_big_ai_region_or_the_same_words_alone_never_merge() -> None:
@@ -273,6 +276,16 @@ def test_two_printed_vendor_labels_joined_through_one_spot_stay_apart() -> None:
         vendor_box=_vbox((90.0, 90.0), (60.0, 30.0)),
     )
     assert len(_apply([one, two, region])) == 3
+
+
+def test_an_architect_value_the_resolver_dropped_never_comes_back_as_a_conflict() -> None:
+    """Re-review of #1916: the resolver sets the architect's inches to none on purpose (several
+    values); the label's old value is never read back into the card's conflict."""
+    merged = _item("F90", "not_compared", a_in="32")
+    merged["inches"] = {**merged["inches"], "architect": None}
+    right = _item("F91", "right", architect="D9", a_in="36")
+    final = _apply([merged, right])
+    assert len(final) == 1 and "conflict" not in final[0]["same_item"]
 
 
 def test_a_copy_that_must_stay_is_never_folded_away() -> None:
@@ -343,6 +356,9 @@ def test_no_drawing_items_fold_under_drawing_needed_and_the_vendor_checks_stay()
     assert one_card.fold([nothing, own_sum], (4,)).folded == []
     # With an architect page or spot, it is not a "no drawing" item.
     assert one_card.fold([{**nothing, "vs_page": 7}], (3,)).folded == []
+    # Nor with an architect finish code read.
+    tagged = {**nothing, "architect": "PL-1 laminate"}
+    assert one_card.fold([tagged], (3,)).folded == []
     # Nor with an architect value read: it says more than the page's card.
     sized = {**nothing, "inches": {"vendor": None, "architect": "36", "difference": None}}
     assert one_card.fold([sized], (3,)).folded == []

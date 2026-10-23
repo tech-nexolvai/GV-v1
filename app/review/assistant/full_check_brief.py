@@ -372,7 +372,14 @@ ALREADY_FOUND: Final = (
 )
 #: At most this many lines: a page with more says how many are left out.
 _FOUND_LINES: Final = 80
-_FOUND_STATUS: Final = {"same": "Right", "different": "a difference", "check": "Not compared"}
+_FOUND_STATUS: Final = {
+    "clouded": "Wrong, proved",
+    "right": "Right",
+    "rule_note": "Ask the architect",
+    "dismissed": "Right",
+    "likely_problem": "Likely problem",
+    "not_compared": "Not compared",
+}
 
 
 def _dim_ref(finding: Mapping[str, Any], side: str) -> str | None:
@@ -390,7 +397,7 @@ STILL_OPEN: Final = (
 )
 
 
-def _found_line(finding: Mapping[str, Any]) -> str:
+def _found_line(finding: Mapping[str, Any], group: str) -> str:
     vendor = _dim_ref(finding, "vendor")
     architect = _dim_ref(finding, "architect")
     sides = [
@@ -400,7 +407,7 @@ def _found_line(finding: Mapping[str, Any]) -> str:
             f"{_short(finding.get('architect'), 40)}"
         ),
     ]
-    status = _FOUND_STATUS.get(str(finding.get("status")), "listed")
+    status = _FOUND_STATUS.get(group, "listed")
     return (
         f"- p{finding.get('page')}: {_short(finding.get('item'), 80)} ({'; '.join(sides)}): "
         f"{status} [{finding.get('id')}]"
@@ -412,6 +419,7 @@ def found_on_pages(findings: Iterable[Mapping[str, Any]], pages: Iterable[int]) 
     Wrong items not to report again (`ALREADY_FOUND`), then the Not-compared ones still open
     (`STILL_OPEN`); an item for GV's reviewer only is not listed. Empty when nothing is."""
     from app.review.assistant.classification import internal
+    from app.review.assistant.proof import proof_group
 
     wanted = set(pages)
     done: list[str] = []
@@ -419,7 +427,10 @@ def found_on_pages(findings: Iterable[Mapping[str, Any]], pages: Iterable[int]) 
     for finding in findings:
         if finding.get("page") not in wanted or internal(finding):
             continue
-        (still if finding.get("status") == "check" else done).append(_found_line(finding))
+        # Settled (a proved Wrong, a Right, a GV-rule note) is done; the rest is still open.
+        group = proof_group(finding)
+        settled = group in ("clouded", "right", "rule_note", "dismissed")
+        (done if settled else still).append(_found_line(finding, group))
     parts: list[str] = []
     for head, lines in ((ALREADY_FOUND, done), (STILL_OPEN, still)):
         if not lines:

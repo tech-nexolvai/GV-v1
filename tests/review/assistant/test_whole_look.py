@@ -392,6 +392,20 @@ def test_a_likely_claim_at_a_helpers_label_joins_that_item_by_code_facts(tmp_pat
     other = _claim("size", _side(3, None, '28"'), _side(1, "D1", "3'-6\""), vendor_spot=spot)
     applied, _shown = _apply(book, look, [other])
     assert applied.likely and not applied.joined and len(book.live()) == 2
+    # A helper's own vendor-sum item at that label is not an architect comparison: no join.
+    book, look = _setup(tmp_path / "sum")
+    book.report(
+        {
+            "page": 2, "item": "Uppers height string", "category": "other", "status": "check",
+            "verified": False, "source": "vendor_arithmetic", "vendor_dim": "D2",
+            "architect": "the vendor's own parts",
+        },
+        "helper:1",
+    )  # fmt: skip
+    tight = {"x0": 14.04, "y0": 26.32, "x1": 19.3, "y1": 28.95}  # D2's own box on picture 3
+    at_label = _claim("size", _side(3, None, '30"'), _side(1, "D1", "3'-6\""), vendor_spot=tight)
+    applied, _shown = _apply(book, look, [at_label])
+    assert not applied.joined and len(book.live()) == 2
     # The same spot without the architect's label: a big AI spot alone never joins.
     book, look = _setup(tmp_path / "again")
     book.report(

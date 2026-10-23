@@ -11,7 +11,7 @@ before the counts and the files. It folds copies by **code facts only**:
   reader that named no vendor label, its spot holding the label the other copy names), and never
   two different vendor numbers;
 - the same finish tag codes on the same page pair (finish items with no size on either side); when
-  neither vendor side prints a tag, the vendor must name the same material too.
+  neither vendor side prints a tag, every word of the shorter vendor material is in the other.
 
 Wording alone never merges two items, and neither does a big AI region alone: two different items
 read at one big spot stay two. Only comparisons with the architect are folded: GV's rules, GV's
@@ -44,7 +44,7 @@ from app.review.assistant.chat_trust import inch_words
 from app.review.assistant.classification import SAME_ITEM, internal
 from app.review.assistant.decision_resolver import MILLWORK_FAMILIES
 
-__all__ = ["RANK", "Folded", "OneCard", "fold", "same_item"]
+__all__ = ["RANK", "Folded", "OneCard", "compares_architect", "fold", "same_item"]
 
 #: The card that stays, most severe first (decided by code).
 RANK: Final[Mapping[str, int]] = {
@@ -107,10 +107,12 @@ def _dec(value: object) -> Decimal | None:
 
 
 def _inches(finding: Mapping[str, Any], side: str) -> Decimal | None:
-    """The side's value in inches: as the finding's checks read it, else as its label prints it."""
+    """The side's value in inches as the finding's checks read it; for the vendor, else as its
+    label prints it (the architect's is never read back: the resolver clears it on purpose when
+    several architect values apply)."""
     inches = finding.get("inches")
     found = _dec(inches.get(side)) if isinstance(inches, Mapping) else None
-    if found is not None:
+    if found is not None or side != "vendor":
         return found
     label = _label(finding, side)
     return _dec(label.get("inches")) if label is not None else None
@@ -262,10 +264,10 @@ def _tags_match(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     if vendor:
         return True
     # No tag on either vendor side: the same finish only when the vendor names the same material
-    # (at least half the words of the shorter one), else two elements against one tag.
+    # (every word of the shorter one in the other), else two elements against one tag.
     words_a, words_b = _words(a.get("vendor")), _words(b.get("vendor"))
-    shorter = min(len(words_a), len(words_b))
-    return shorter > 0 and len(words_a & words_b) * 2 >= shorter
+    shorter, longer = sorted((words_a, words_b), key=len)
+    return bool(shorter) and shorter <= longer
 
 
 _WORD: Final = re.compile(r"[a-z]{4,}")
@@ -280,7 +282,7 @@ def _words(text: object) -> frozenset[str]:
 _ARCHITECT_SOURCES: Final = frozenset({"architect", "brand_prototype", "gv_review"})
 
 
-def _compares_architect(finding: Mapping[str, Any]) -> bool:
+def compares_architect(finding: Mapping[str, Any]) -> bool:
     """A comparison with the architect: never GV's rule, GV's limits, a GV standard or the
     vendor's own check (its sum, its other view), which ask another question."""
     if str(finding.get("source") or "architect") not in _ARCHITECT_SOURCES:
@@ -385,8 +387,8 @@ def _no_drawing(finding: Mapping[str, Any]) -> bool:
         return False
     if finding.get("rule_check_id") or finding.get("created_by") in ("consistency", "ledger"):
         return False
-    if _inches(finding, "architect") is not None:
-        return False  # an architect value was read: it says more than the page's card
+    if _inches(finding, "architect") is not None or _codes(finding.get("architect")):
+        return False  # an architect value or tag was read: it says more than the page's card
     return not (finding.get("vs_page") or finding.get("arch_box") or _label(finding, "architect"))
 
 
@@ -413,7 +415,7 @@ def fold(findings: Sequence[Mapping[str, Any]], drawing_needed: Collection[int] 
                     ),
                 )
             )
-    for group in _groups([f for f in live if str(f["id"]) not in gone and _compares_architect(f)]):
+    for group in _groups([f for f in live if str(f["id"]) not in gone and compares_architect(f)]):
         ordered = sorted(group, key=_order)
         keep = ordered[0]
         if any(_fixed(f) for f in ordered[1:]):

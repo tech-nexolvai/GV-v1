@@ -467,11 +467,14 @@ def test_a_closers_brief_lists_what_is_done_and_what_is_still_open_apart() -> No
         {"id": "F3", "page": 2, "item": "Area 1: splash", "status": "different", "vendor": '4"',
          "architect": "none", "salvaged": True},
         {"id": "F4", "page": 9, "item": "Elsewhere", "status": "same"},
+        # A difference code did not prove is Not compared: still open (re-review of #1916).
+        {"id": "F5", "page": 2, "item": "Area 1: top height", "status": "different",
+         "vendor": '34"', "architect": '36"', "trust_level": "to_check", "witnesses": []},
     ]  # fmt: skip
     text = found_on_pages(findings, [2])
     done, _, still = text.partition("STILL OPEN")
     assert done.startswith(ALREADY_FOUND)
     assert "[F1]" in done and "p2.D5" in done and "[F2]" not in done
-    assert "[F2]" in still
+    assert "[F2]" in still and "[F5]" in still and "[F5]" not in done
     assert "Elsewhere" not in text and "[F3]" not in text
     assert found_on_pages([], [2]) == ""

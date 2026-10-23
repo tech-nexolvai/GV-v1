@@ -848,11 +848,13 @@ def _same_helper_item(context: _Context, probe: Mapping[str, Any]) -> dict[str, 
     """A live item a helper recorded that code knows is this claim's item (`one_card.same_item`:
     the same label, spot or finish tags), still open (Wrong or Not compared); else `None`."""
     from app.review.assistant.classification import internal
-    from app.review.assistant.one_card import same_item
+    from app.review.assistant.one_card import compares_architect, same_item
 
     for finding in context.book.live():
         if finding.get("created_by") == CREATED_BY or internal(finding):
             continue
+        if not compares_architect(finding):
+            continue  # GV's rule or the vendor's own check: another question, never joined
         if finding.get("status") not in ("different", "check"):
             continue
         if same_item(probe, finding) is not None:
