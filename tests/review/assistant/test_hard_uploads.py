@@ -223,11 +223,13 @@ def test_numbers_drawn_as_pen_strokes_are_said_unread(tmp_path: Path) -> None:
     assert set(outcome.label_inches()) <= VALUES
     vendor = ((outcome.coverage or {}).get("sides") or {}).get("vendor") or {}
     roles = {role for _f, _p, role, _h in outcome.roles()}
-    if not (vendor.get("printed", 0) > vendor.get("read", 0) or "vendor" in roles):
-        pytest.xfail(
-            "a page whose numbers are all pen strokes (no typed number) is taken for a general "
-            "page, so nothing says its numbers could not be read"
-        )
+    # Never silently a general page ("flag everything", 2026-10-23): a vendor drawing whose
+    # numbers are counted as printed and not read, and the page says why.
+    assert "vendor" in roles, outcome.roles()
+    assert vendor.get("printed", 0) > vendor.get("read", 0), vendor
+    assert _says(outcome, "can't be read (drawn as lines, not text)")
+    assert outcome.work is not None
+    assert not any("a table, notes or pictures page" in s.reason for s in outcome.work.skipped)
 
 
 def test_millimetres_with_inches_are_read_as_inches(tmp_path: Path) -> None:
@@ -238,12 +240,9 @@ def test_millimetres_with_inches_are_read_as_inches(tmp_path: Path) -> None:
     _no_reds(outcome)
 
 
-@pytest.mark.xfail(
-    reason='millimetres that disagree with the inches (660 [27"]: 660 mm is 26") are not '
-    'noticed: code reads 27" as an ordinary label and keeps no millimetre value',
-    strict=False,
-)
 def test_millimetres_that_disagree_with_the_inches_are_not_taken_silently(tmp_path: Path) -> None:
+    """Settled with GV: "inches count; ignore millimetres". 660 [27"] (660 mm is 26") is 27",
+    its millimetres kept as printed and marked ignored: never red, never a question."""
     printed = ('610 [24"]', '660 [27"]', '457 [18"]', '1753 [69"]')
     outcome = run_pipeline(
         tmp_path, [_vendor(_elevation("VENDOR ELEVATION", (24, 27, 18), printed=printed))]
@@ -255,6 +254,12 @@ def test_millimetres_that_disagree_with_the_inches_are_not_taken_silently(tmp_pa
         if str(label.get("text", "")).startswith("660") and label.get("mm") in (None, "")
     ]
     assert not silent, silent
+    ignored = [label for label in outcome.labels() if label.get("mm_ignored")]
+    assert [(label["inches"], label["mm"]) for label in ignored] == [("27", "660")]
+    assert all(label.get("units") != "disagrees" for label in outcome.labels())
+    assert sorted(outcome.label_inches()) == sorted(Fraction(v) for v in (24, 27, 18, 69))
+    _no_reds(outcome)
+    assert outcome.vendor is not None and outcome.vendor.unknowns == []
 
 
 @pytest.mark.parametrize("rotate", [90, 180, 270])
@@ -354,12 +359,12 @@ def test_an_older_revision_of_the_same_sheet_is_not_checked_as_current(tmp_path:
     outcome = run_pipeline(tmp_path, [vendor, _architect(_elevation("ARCH ELEVATION - VANITY"))])
     _honest_basics(outcome)
     assert outcome.work is not None
+    # Only the newest copy is checked; the older one says so (owner, 2026-10-23).
     current = [item for item in outcome.work.items if item.newest_round]
-    if len(current) > 1 and not _says(outcome, "revision", "superseded", "older", "twice"):
-        pytest.xfail(
-            "the same sheet twice in one upload (REV 0 and REV 1): both are checked as current, "
-            "and nothing says one is an older revision"
-        )
+    assert [item.vendor.page for item in current] == [2], current
+    older = [s.reason for s in outcome.work.skipped if s.file == "shop.pdf" and s.page == 1]
+    assert older == ["an older copy of page 2 (REV 0; page 2 is REV 1): not checked (code)"]
+    _no_reds(outcome)
 
 
 def test_password_locked_file_says_so_and_stops(tmp_path: Path) -> None:
@@ -461,11 +466,22 @@ def test_architect_plan_and_elevation_that_disagree_are_said(tmp_path: Path) -> 
     )
     _honest_basics(outcome)
     _no_reds(outcome)
-    if not _says(outcome, "architect's drawings disagree", "architect's own", "ask the architect"):
-        pytest.xfail(
-            'the architect\'s own plan (72") and elevation (74") of one unit disagree: nothing '
-            "says so; the vendor's drawing is just left unpaired"
-        )
+    # Owner, 2026-10-23: compared with the governing view (the elevation, for cabinet widths),
+    # GV asks the architect, never red against the vendor because of it.
+    assert outcome.paired() == {1: ("p1002",)}
+    assert _says(outcome, "the architect's own drawings disagree")
+    assert outcome.work is not None
+    [item] = outcome.work.items
+    assert item.views_disagree is not None and item.views_disagree.governing == "elevation"
+    from app.review.assistant.classification import classify
+    from app.review.assistant.simple_check.worklist import architect_views_findings
+
+    asked = [classify(f, proved=False) for f in architect_views_findings(outcome.work.items)]
+    assert [a.outcome for a in asked] == ["rule_note", "rule_note"]
+    assert asked[0].settle == (
+        'Architect: your plan (page 1) shows 72", your elevation (page 2) shows 74" for the '
+        "vanity elevation: overall width. Please confirm which is right."
+    )
 
 
 # ---- helpers ------------------------------------------------------------------------------------

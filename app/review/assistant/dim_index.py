@@ -97,6 +97,8 @@ def label_line(label: Mapping[str, Any]) -> str:
         bits.append("drawn ink, OCR")
     if label.get("units") == "disagrees":
         bits.append("mm and inches disagree")
+    elif label.get("mm_ignored"):
+        bits.append("its mm do not match: inches count, mm ignored")
     if label.get("dim_line") is None:
         bits.append("no dimension line found")
     elif label.get("scale_ok") is False:
