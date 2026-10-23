@@ -2900,6 +2900,8 @@ class ChatEngine:
         self._diff_rounds(report)
         # Always present (null when not counted), so the live event and the stored block agree.
         report["reading"] = self._reading_report()
+        # A roster full check fills it at its end (`check_problems`); null on other answers.
+        report["problems"] = None
         index = self._add_block({"type": "trust", "trust": report})
         self._trust_index = index
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(report))})

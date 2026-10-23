@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
@@ -70,6 +71,11 @@ MAX_TOKENS: Final = 400
 PROMPT_ID: Final = "review-assistant-chat-plan-supervisor-{provider}-{harness}"
 _MAX_WHY: Final = 240
 _KINDS: Final = (*STOP_KINDS, "other")
+#: An unpaired page's reason that is final: code rules out every architect item, there is none,
+#: or the AI page matcher's saved answer found none.
+_CERTAIN: Final = re.compile(
+    r"ruled out|no architect drawing to pair it with|the AI page matcher", re.IGNORECASE
+)
 
 SYSTEM: Final = """You supervise GV Review, a checker that compares a millwork vendor's shop \
 drawings with the architect's drawings. Before any money is spent on comparing, you get the \
@@ -228,7 +234,14 @@ def _pairs_now(engine: ChatEngine, matching: Any) -> PairEstimate | None:
     vendor_pages = paired | set(cross.unpaired) | waiting
     if not vendor_pages:
         return None
-    to_ask = waiting - paired
+    # Only a page code rules out entirely, or the matcher's saved answer left, is certain; any
+    # other unpaired page may still pair (counted with the pages to ask).
+    unsure = {
+        page
+        for page, why in cross.unpaired.items()
+        if not _CERTAIN.search(str(why or "")) and page not in paired
+    }
+    to_ask = (waiting | unsure) - paired
     return PairEstimate(
         vendor_pages=len(vendor_pages),
         paired=len(paired),

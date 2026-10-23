@@ -466,9 +466,12 @@ def _other_project(inputs: Inputs) -> list[Line]:
             )
         ]
     pairs = inputs.pairs
+    # Every vendor page of the file is paired across the uploads (none has the architect's drawing
+    # on its own sheet or in its area) and not one could be: certain, never a page still to ask.
     if (
         pairs is not None
         and pairs.vendor_pages > 0
+        and pairs.vendor_pages >= len(_vendor_entries(inputs))
         and pairs.paired == 0
         and pairs.to_ask == 0
         and len(pairs.none_possible) >= pairs.vendor_pages

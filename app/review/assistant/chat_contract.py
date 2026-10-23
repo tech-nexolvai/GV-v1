@@ -1479,8 +1479,8 @@ class ChatTrustOut(BaseModel):
         description="A full check's reading coverage (#1862): numbers read of those printed; null "
         "on other answers, older answers and set packs made before it was counted.",
     )
-    problems: list[str] = Field(
-        default_factory=list,
+    problems: list[str] | None = Field(
+        default=None,
         description="What went wrong in this check, in plain words (pages that could not be read, "
         "pages with no architect drawing and why, steps skipped, money that ran out); empty when "
         "nothing did.",

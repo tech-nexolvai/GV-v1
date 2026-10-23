@@ -7394,7 +7394,7 @@ export interface components {
              * Problems
              * @description What went wrong in this check, in plain words (pages that could not be read, pages with no architect drawing and why, steps skipped, money that ran out); empty when nothing did.
              */
-            problems?: string[];
+            problems?: string[] | null;
             /** @description The products checked and how many findings of other products code dropped (for the record, not shown); null on older answers. */
             product_scope?: components["schemas"]["ChatProductScopeOut"] | null;
             /** @description A full check's reading coverage (#1862): numbers read of those printed; null on other answers, older answers and set packs made before it was counted. */

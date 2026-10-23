@@ -10553,12 +10553,19 @@
             "title": "Not Compared"
           },
           "problems": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "description": "What went wrong in this check, in plain words (pages that could not be read, pages with no architect drawing and why, steps skipped, money that ran out); empty when nothing did.",
-            "items": {
-              "type": "string"
-            },
-            "title": "Problems",
-            "type": "array"
+            "title": "Problems"
           },
           "product_scope": {
             "anyOf": [

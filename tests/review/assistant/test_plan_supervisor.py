@@ -221,10 +221,16 @@ def test_pages_waiting_for_the_matcher_count_as_to_ask(tmp_path: Path) -> None:
     found = gate(engine, _plan(), matching, model_name=None, run_anyway=False, price_micros=0)  # type: ignore[arg-type]
     assert found is not None and not found.paused
     nothing = _Engine(_pack(tmp_path / "b"), answer=None)
-    nothing._cross = CrossPairs({}, {1: "x", 2: "y"})
+    ruled = "not paired with an architect drawing: every architect item is ruled out by code (x)"
+    nothing._cross = CrossPairs({}, {1: ruled, 2: ruled})
     stopped = gate(nothing, _plan(), None, model_name=None, run_anyway=False, price_micros=0)  # type: ignore[arg-type]
     assert stopped is not None and stopped.paused
     assert [line.id for line in stopped.report.stops] == ["other_project"]
+    # Code's own "no clear drawing" is never certain: such pages may still pair (no stop).
+    unsure = _Engine(_pack(tmp_path / "c"), answer=None)
+    unsure._cross = CrossPairs({}, {1: "x", 2: "y"})
+    kept = gate(unsure, _plan(), None, model_name=None, run_anyway=False, price_micros=0)  # type: ignore[arg-type]
+    assert kept is not None and not kept.paused
 
 
 def test_duplicate_notes_only_when_both_pages_are_planned() -> None:
