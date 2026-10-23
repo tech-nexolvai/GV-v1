@@ -155,7 +155,7 @@ MAX_LABELS: Final = 400
 #: pages' time over the workers): the picture route (#1830), the OCR route (#1848: a few seconds a
 #: page) and `read_number` at pack time (#1860). The drawn route's is the set pack's
 #: (`set_pack.DIMS_DRAWN_BUDGET_S`).
-PICTURES_BUDGET_S: Final = 120.0
+PICTURES_BUDGET_S: Final = 60.0
 OCR_BUDGET_S: Final = 60.0
 OCR_PAGE_S: Final = 60.0
 SWEEP_BUDGET_S: Final = 30.0
@@ -3485,6 +3485,7 @@ def build_dims(
     uploads: Mapping[str, Path] | None = None,
     on_status: Callable[[dict[str, Any]], None] | None = None,
     reads: dict[int, PageRead] | None = None,
+    line_work: Path | None = None,
 ) -> dict[str, Any]:
     """The set pack's `dims.json`: every page of every upload and its labels. Three passes: the
     text route on every page first (the agent has every printed label in minutes), then the pasted
@@ -3554,6 +3555,7 @@ def build_dims(
                 ink is not None,
                 None if health is None else tuple(sorted(dict(health.get(name) or {}).items())),
                 str((uploads or {}).get(name, "")),
+                "" if line_work is None else str(line_work),
             )
             for number in range(1, count + 1)
         ]

@@ -58,7 +58,7 @@ export function SetCounts({ counts, className }: { counts: FullCheckCounts; clas
 
 /** The glyphs' words, always above the table: colour never carries the meaning alone. */
 export function SetCountsLegend({ askArchitect }: { askArchitect: boolean }) {
-  const parts = countParts({ wrong: 0, right: 0, ask_architect: askArchitect ? 1 : 0, not_compared: 0 });
+  const parts = countParts({ wrong: 0, right: 0, ask_architect: askArchitect ? 1 : 0, likely_problem: 0, not_compared: 0 });
   return (
     <ul data-slot="set-counts-legend" aria-label="Item counts" className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
       {parts.map((part) => (

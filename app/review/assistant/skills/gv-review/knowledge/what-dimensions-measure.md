@@ -21,11 +21,11 @@ places. Before you pair two heights or widths, say where each end lands.
 
 ## Worked examples (illustrative, invented numbers)
 
-**1. A splash inside a height.** The architect prints 2'-11 1/2" from the floor to the top line of
-the counter run. The vendor prints 34 1/4" to the stone's underside, then 1 1/4" stone, then a
-3 1/2" splash, with 39" overall. Which vendor number goes with 2'-11 1/2"? The architect's top line
-is the top of the stone, not of the splash (the splash line is set back and shorter). So pair
-2'-11 1/2" (35 1/2") with 34 1/4 + 1 1/4 = 35 1/2": they agree. Pairing it with the 39" overall
+**1. A splash inside a height.** The architect prints 2'-11 3/8" from the floor to the top line of
+the counter run. The vendor prints 34 1/8" to the stone's underside, then 1 1/4" stone, then a
+3 1/2" splash, with 38 7/8" overall. Which vendor number goes with 2'-11 3/8"? The architect's top
+line is the top of the stone, not of the splash (the splash line is set back and shorter). So pair
+2'-11 3/8" (35 3/8") with 34 1/8 + 1 1/4 = 35 3/8": they agree. Pairing it with the 38 7/8" overall
 would make a false Wrong. Spans: architect `floor -> top_of_counter`, vendor overall
 `floor -> top_of_splash`.
 
@@ -34,7 +34,7 @@ vendor prints 33 5/8" to the underside of a 1 1/8" top. 33 5/8 + 1 1/8 = 34 3/4 
 architect's line ends on the top face, the two agree; if it ends on the underside, they differ by
 1 1/8". Look at the architect's extension line before you call it Wrong.
 
-**3. A run to a box above the unit.** The architect prints 7'-2" from the floor to a line above a
+**3. A run to a box above the unit.** The architect prints 7'-3" from the floor to a line above a
 tall cabinet. The vendor's cabinet is 6'-11" tall. The architect's extension line stops at a soffit
 box over the cabinet, not on the cabinet's top. Spans: architect `floor -> box_above_unit`, vendor
 `floor -> cabinet_side`. Different extent: not Wrong; it goes on the list for a person.

@@ -86,6 +86,7 @@ __all__ = [
     "build_skill_folder",
     "focus_products",
     "local_skills_folder",
+    "missing_settings",
     "product_markdown",
     "rules_markdown",
 ]
@@ -379,6 +380,35 @@ def rules_markdown(
         lines.extend(_rule_section(rule, in_force))
     # The rulebook's notes carry the team's ticket numbers; the agent must never quote one (#1520).
     return without_internal_refs("\n".join(lines))
+
+
+def missing_settings(
+    session: Session, package_revision_id: UUID, products: Sequence[str] | None = None
+) -> list[str]:
+    """The settings the checks of `products` need that no layer holds and the rulebook gives no
+    default for (sink size, overhang, side thickness, width limits…), by their plain names, for
+    the pre-flight report's "Ask GV for these values" line. The same rules and layers as
+    `rules_markdown`; empty when the revision is unknown."""
+    revision = session.get(PackageRevision, package_revision_id)
+    package = None if revision is None else session.get(Package, revision.package_id)
+    if revision is None or package is None:
+        return []
+    product = package_product(package)
+    store = snapshot_store(session)
+    picked = None if products is None else {ProductType(name) for name in products}
+    rules = [
+        snapshot.rule
+        for snapshot in (store.latest(rule_id) for rule_id in store.rule_ids())
+        if snapshot is not None
+        and (
+            _picked_rule(snapshot.rule, picked)
+            if picked is not None
+            else product is None or snapshot.rule.product_type is product
+        )
+    ]
+    in_force = settings_in_force(session, package.project_id, revision.id, rules)
+    declared = {name for rule in rules for name in rule.parameters}
+    return [setting_name(name) for name in sorted(declared - set(in_force))]
 
 
 def _picked_rule(rule: Rule, picked: set[ProductType]) -> bool:

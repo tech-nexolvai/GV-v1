@@ -78,6 +78,11 @@ def test_the_plan_check_asks_where_unsure_and_keeps_the_answers(postgres_engine,
         assert first["doubts"] == [] and first["summary"] == "3 pages · 0 pairs · 3 general pages"
         # No drawing to compare: no price yet (#1823).
         assert first["price_usd"] is None and first["price_pages"] is None
+        # The pre-flight health report (code, $0): nothing stops a set like this one, and it says
+        # plainly what is never checked without a spec book.
+        preflight = first["preflight"]
+        assert preflight["stops"] == [] and preflight["state"] == "ready", preflight
+        assert "no_spec" in [line["id"] for line in preflight["lines"]]
 
         # A page map with one unsure drawing: p2's lower drawing is headed as a brand prototype
         # and no architect's drawing of its area was found.

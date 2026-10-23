@@ -167,7 +167,12 @@ from app.review.assistant.chat_scope import (
     scoped_recorded,
     widened,
 )
-from app.review.assistant.chat_summary import code_summary, needs_code_summary, rule_note_line
+from app.review.assistant.chat_summary import (
+    code_summary,
+    likely_line,
+    needs_code_summary,
+    rule_note_line,
+)
 from app.review.assistant.chat_timings import Timings
 from app.review.assistant.chat_tools import (
     BATCH_LISTS,
@@ -247,6 +252,7 @@ from app.review.assistant.full_check_plan import (
 )
 from app.review.assistant.full_check_specialists import specialist_system
 from app.review.assistant.ledger import LEDGER_TOOL_NAMES, ReadingLedger, recorded_results_check
+from app.review.assistant.likely_problems import COUNT_WORDS as LIKELY_COUNT
 from app.review.assistant.pair_findings import add_to_answer as add_code_pairs
 from app.review.assistant.product_scope import (
     PriceRule,
@@ -254,6 +260,7 @@ from app.review.assistant.product_scope import (
     scoped_gaps,
 )
 from app.review.assistant.proof import proof_counts, vendor_facing
+from app.review.assistant.rate_limits import Limits, ModelLimiter, limiter_for
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.run_fit import add_to_answer as add_run_fit
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
@@ -316,6 +323,12 @@ _log = logging.getLogger(__name__)
 HARNESS_ID: Final = "chat-v20"
 #: Helpers that may run at once, at most, whatever the setting says.
 MAX_PARALLEL_AGENTS_LIMIT: Final = 12
+#: The most calls of one model at once, server-wide, by default (`rate_limits`; #1874): the
+#: production pipeline research (2026-10-22) measured today's full checks at 15-25% of the start
+#: tier's input tokens a minute with ten at once.
+CALLS_AT_ONCE: Final = 32
+#: A full check's specialists started together, at most (#1874): the limiter decides how many run.
+FULL_CHECK_AGENTS: Final = 96
 #: Helpers one lead turn may start. More than run at once wait for a free place in the same turn:
 #: refusing them cost the lead a whole extra turn (a real full check, 2026-10-17: 7 of 13 refused).
 MAX_AGENTS_PER_TURN: Final = HELPERS_PER_TURN
@@ -609,6 +622,31 @@ class EngineSettings:
     page_match_model: str | None = None
     """The AI page matcher's model for vendor drawings paired across separate uploads (#1798,
     `assistant_page_match_model`); `None`: off (code pairs alone)."""
+    rate_tier: str = "start"
+    """The AI provider's usage tier whose per-minute limits each model's limiter keeps
+    (`GV_ASSISTANT_RATE_TIER`: start, build or scale; `rate_limits`)."""
+    calls_at_once: int = CALLS_AT_ONCE
+    """The most calls (or specialists) of one model at once, server-wide (`GV_ASSISTANT_CALLS_AT_ONCE`;
+    a busy answer halves it for a while, `rate_limits`)."""
+    full_check_agents: int = FULL_CHECK_AGENTS
+    """A full check's specialists started together, at most (`GV_ASSISTANT_FULL_CHECK_AGENTS`):
+    each then waits for a place of its model's limiter, so the number that run grows with the work
+    up to the provider's limits (#1874)."""
+    parse_processes: int = 0
+    """Worker processes that parse drawing pages for a full check's code checks
+    (`GV_ASSISTANT_PARSE_PROCESSES`, `verify_value.use_parse_processes`; 0: threads, #1874)."""
+    preflight_model: str | None = None
+    """The supervisor's model (`plan_supervisor.py`); `None`: off (code's own stops only)."""
+    run_anyway: bool = False
+    """The reviewer chose Run anyway: a pre-flight stop is recorded, the check goes on."""
+    whole_look_model: str | None = None
+    """The roster's whole-drawing look per paired vendor drawing (`whole_look`,
+    `GV_ASSISTANT_WHOLE_LOOK_MODEL`): its model id; `None`: off."""
+    whole_look_effort: str = "medium"
+    """Its effort (`GV_ASSISTANT_WHOLE_LOOK_EFFORT`)."""
+    set_index_model: str | None = None
+    """The set index's model (`set_index.py`, `assistant_set_index_model`): each page of a
+    two-file set read once for its project, set and views; `None`: off (no project is known)."""
 
 
 @dataclass(slots=True)
@@ -922,6 +960,12 @@ class _Agent:
     """A code-planned helper whose pages wait for the AI page matcher (#1883): called in its
     own thread before its first call; it waits until its pages are paired (or left unpaired) and
     returns its brief with those pairs (`None`: its prompt stands)."""
+    opening: tuple[Mapping[str, Any], ...] = ()
+    """Content before its brief in its first message (the whole-drawing look's pictures, drawn by
+    code: `whole_look.opening`); set by `ready` at the latest."""
+    skip: bool = False
+    """Nothing to do (a whole-drawing look whose page no architect drawing is paired with): it
+    reports at once, with no call."""
 
 
 @dataclass(slots=True)
@@ -931,6 +975,10 @@ class _Share:
 
     limit: int
     held: int = 0
+
+
+#: `ChatEngine._launch`'s default ceiling: the engine's `helper_ceiling`.
+_OWN_CEILING: Final = object()
 
 
 class ChatEngine:
@@ -1169,6 +1217,32 @@ class ChatEngine:
     def _max_agents(self) -> int:
         return max(1, min(MAX_PARALLEL_AGENTS_LIMIT, self.settings.max_parallel_agents))
 
+    def _limiter(self, model: ChatModel) -> ModelLimiter:
+        """The server's one limiter for `model` (`rate_limits`, #1874)."""
+        settings = self.settings
+        return limiter_for(model.id, Limits.of(settings.rate_tier, settings.calls_at_once))
+
+    @property
+    def _plan_parallel(self) -> int:
+        """The page groups a full check plans for, about (`full_check_plan.plan_jobs`: groups of
+        3-5 pages, as many as run at once): a roster check's Sonnet places (`calls_at_once`) over
+        its helpers per group (#1874: the helpers then finish in about one helper's time, the
+        slowest group is small); a lead's check, its `max_parallel_agents`."""
+        settings = self.settings
+        if settings.mode == "full_check" and settings.roster:
+            per_group = 2 if settings.drawn_helpers else 1
+            return max(self._max_agents, settings.calls_at_once // per_group)
+        return self._max_agents
+
+    @property
+    def _agents_at_once(self) -> int:
+        """Specialists one launch starts together: a roster full check starts all its own (up to
+        `full_check_agents`) and each model's limiter decides how many run (#1874); a chat's lead
+        keeps `max_parallel_agents`."""
+        if self.settings.mode == "full_check" and self.settings.roster:
+            return max(self._max_agents, self.settings.full_check_agents)
+        return self._max_agents
+
     @property
     def spent(self) -> int:
         with self._lock:
@@ -1377,6 +1451,14 @@ class ChatEngine:
             reply: _Reply | None = None
             failure: ProviderFailure | None = None
             usage: dict[str, Any] = {}
+            # The model's limiter (#1874): a place at once (unless a specialist on this thread
+            # holds one) and room in the provider's minute; a busy answer slows it down.
+            limiter = self._limiter(model)
+            own = limiter.call_slot()
+            if not limiter.acquire(self.cancel, slot=own):
+                self._cancelled_call(model, prompt_id, started, usage)
+                raise _Cancelled
+            busy_answer = False
             try:
                 stream = self.provider.open_stream(params)
                 with self._lock:
@@ -1396,24 +1478,33 @@ class ChatEngine:
                     self._cancelled_call(model, prompt_id, started, usage)
                     raise _Cancelled from None
                 failure = failure_from(raised)
-                if usage:
-                    # It broke after its stream started: its prompt is billed already (harness
-                    # audit 2026-10-19: such calls were recorded as $0 and the guard missed them).
-                    partial = _Reply([], None, None, usage, None)
-                    self._record(model, prompt_id, started, partial, failure)
-                    self._charge(model, usage)
-                    if shown is not None:
-                        self._discard_attempt()
-                    if failure.retryable and attempts == 0:
-                        attempts += 1
-                        _log.warning(
-                            "assistant chat call failed mid-stream, asking once more: %s",
-                            failure.status,
-                        )
-                        if self._sleep(_RETRY_WAIT_SECONDS):
-                            raise _Cancelled from None
-                        continue
-                    raise failure from None
+                busy_answer = failure.kind == "busy"
+            finally:
+                limiter.release(
+                    slot=own,
+                    fresh_input=_fresh_input(usage),
+                    output=int(usage.get("output_tokens") or 0),
+                    busy=busy_answer,
+                    answered=bool(usage) and not busy_answer,
+                )
+            if failure is not None and usage:
+                # It broke after its stream started: its prompt is billed already (harness
+                # audit 2026-10-19: such calls were recorded as $0 and the guard missed them).
+                partial = _Reply([], None, None, usage, None)
+                self._record(model, prompt_id, started, partial, failure)
+                self._charge(model, usage)
+                if shown is not None:
+                    self._discard_attempt()
+                if failure.retryable and attempts == 0:
+                    attempts += 1
+                    _log.warning(
+                        "assistant chat call failed mid-stream, asking once more: %s",
+                        failure.status,
+                    )
+                    if self._sleep(_RETRY_WAIT_SECONDS):
+                        raise _Cancelled from None
+                    continue
+                raise failure from None
             if reply is not None and reply.stop_reason is None and failure is None:
                 # The stream ended without its `message_delta` (the connection closed cleanly in
                 # the middle): a cut answer, never a finished one.
@@ -2893,6 +2984,8 @@ class ChatEngine:
         self._diff_rounds(report)
         # Always present (null when not counted), so the live event and the stored block agree.
         report["reading"] = self._reading_report()
+        # A roster full check fills it at its end (`check_problems`); null on other answers.
+        report["problems"] = None
         index = self._add_block({"type": "trust", "trust": report})
         self._trust_index = index
         self.emit("trust", {"index": index, "trust": json.loads(json.dumps(report))})
@@ -3163,6 +3256,8 @@ class ChatEngine:
         unseen = f", {groups['not_compared']} not compared" if groups["not_compared"] else ""
         if groups["rule_note"]:
             unseen = f", {groups['rule_note']} {RULE_NOTE_COUNT}{unseen}"
+        if groups["likely_problem"]:
+            unseen = f", {groups['likely_problem']} {LIKELY_COUNT}{unseen}"
         coverage = book.coverage_map()["counts"] if book.coverage_used else None
         trust = report.get("counts") or {}
         products = products_words(self.settings.products)
@@ -3414,9 +3509,13 @@ class ChatEngine:
             )
             # #1839: the sizes the architect specifies that break a GV rule (decided, ask the
             # architect), said apart from what could not be compared.
-            noted = proof_counts([f for f in self.book.live() if vendor_facing(f)])["rule_note"]
+            shown = proof_counts([f for f in self.book.live() if vendor_facing(f)])
+            noted = shown["rule_note"]
             if noted:
                 lines.append(rule_note_line(noted))
+            if shown["likely_problem"]:
+                # The whole-drawing look's claims code could not prove (2026-10-23).
+                lines.append(likely_line(shown["likely_problem"]))
             for words in (*lines, nothing.replace("list.", "list (PDF / Excel).")):
                 if words:
                     index = self._add_block({"type": "text", "text": words, "by": "code"})
@@ -3521,15 +3620,19 @@ class ChatEngine:
         self,
         agents: Sequence[_Agent],
         on_done: Callable[[_Agent, dict[str, Any]], None] | None = None,
+        ceiling: int | None | object = _OWN_CEILING,
     ) -> list[dict[str, Any]]:
-        """Runs helpers, at most `max_parallel_agents` at once, shown as one step; each one's entry
-        (its report, ok, stopped, steps) in order. `on_done(agent, entry)` runs in the helper's
-        thread as soon as it has reported (a full check starts its second reads there)."""
+        """Runs helpers, at most `max_parallel_agents` at once (a roster full check: as many as
+        their models' limiters allow, #1874), shown as one step; each one's entry (its report, ok,
+        stopped, steps) in order. `on_done(agent, entry)` runs in the helper's thread as soon as it
+        has reported (a full check starts its second reads there). `ceiling`: the spend these
+        helpers may reach (a roster band's own, #1874); by default `helper_ceiling`."""
         with self._lock:
             left = max(0, self.settings.message_cap_micros - self._spent)
             limit = self._spent + left * self.helper_share_percent // 100
-            if self.helper_ceiling is not None:
-                limit = min(limit, max(self._spent, self.helper_ceiling))
+            top = self.helper_ceiling if ceiling is _OWN_CEILING else ceiling
+            if isinstance(top, int):
+                limit = min(limit, max(self._spent, top))
             share = _Share(limit=limit)
             for agent in agents:
                 self._helpers_started += 1
@@ -3576,15 +3679,18 @@ class ChatEngine:
                 if brief is not None:
                     agent.prompt = brief
             pages = list(agent.pages or ())
-            self.timings.helper_started(agent.number, agent.description, pages)
-            with self.timings.phase(agent.phase, helper=agent.number):
-                try:
-                    report, ok, stopped = self._helper(agent, index, entry, share)
-                except Exception as failed:  # noqa: BLE001 - one helper failing never stops others
-                    _log.warning("assistant chat helper failed: %s", type(failed).__name__)
-                    report = _report_from_steps(entry["steps"], "it failed unexpectedly")
-                    ok, stopped = False, "error"
-            self.timings.helper_ended(agent.number, stopped)
+            # One place of its model's limiter for the whole specialist (#1874): one waiting for a
+            # place holds no money and makes no call.
+            with self._limiter(agent.model).agent_slot(self.cancel):
+                self.timings.helper_started(agent.number, agent.description, pages)
+                with self.timings.phase(agent.phase, helper=agent.number):
+                    try:
+                        report, ok, stopped = self._helper(agent, index, entry, share)
+                    except Exception as failed:  # noqa: BLE001 - one never stops the others
+                        _log.warning("assistant chat helper failed: %s", type(failed).__name__)
+                        report = _report_from_steps(entry["steps"], "it failed unexpectedly")
+                        ok, stopped = False, "error"
+                self.timings.helper_ended(agent.number, stopped)
             agent.done = True
             with self._lock:
                 entry.update({"ok": ok, "report": report, "stopped": stopped})
@@ -3600,7 +3706,7 @@ class ChatEngine:
                         "assistant chat helper follow-up failed: %s", type(failed).__name__
                     )
 
-        with ThreadPoolExecutor(max_workers=min(count, self._max_agents)) as pool:
+        with ThreadPoolExecutor(max_workers=min(count, self._agents_at_once)) as pool:
             for future in [pool.submit(run, n, agent) for n, agent in enumerate(agents)]:
                 future.result()
         with self._lock:
@@ -3988,7 +4094,7 @@ class ChatEngine:
         return scoped_plan(
             page_map,
             self.book.main_file,
-            self._max_agents,
+            self._plan_parallel,
             self.product_scope,
             None if folder is None else lambda files: page_texts(folder, files),
             across=self._cross if pairs else None,
@@ -4250,11 +4356,14 @@ class ChatEngine:
         except Exception:  # noqa: BLE001 - the helper still gets its brief
             _log.warning("assistant chat helper footer could not be made")
             footer = ""
+        if agent.skip:
+            return "Nothing to compare: no architect drawing is paired with it.", True, None
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": agent.prompt + helper_lines(self.task_spec) + footer}
+                    *(dict(block) for block in agent.opening),
+                    {"type": "text", "text": agent.prompt + helper_lines(self.task_spec) + footer},
                 ],
             }
         ]
@@ -5148,6 +5257,12 @@ def _read_key(finding: Mapping[str, Any]) -> tuple[Any, ...]:
         finding.get(key)
         for key in ("item", "architect", "vendor", "arch_picture_id", "vendor_picture_id")
     )
+
+
+def _fresh_input(usage: Mapping[str, Any]) -> int:
+    """A call's input tokens that count against the provider's minute: prompt cache reads do not
+    (`rate_limits`)."""
+    return int(usage.get("input_tokens") or 0) + int(usage.get("cache_creation_input_tokens") or 0)
 
 
 def _report_from_steps(steps: Sequence[Mapping[str, Any]], why: str) -> str:

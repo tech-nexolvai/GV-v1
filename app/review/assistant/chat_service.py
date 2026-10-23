@@ -52,6 +52,8 @@ from app.models import AssistantChatMessage
 from app.review.assistant.chat_contract import ChatMessageOut
 from app.review.assistant.chat_corrections import earlier_findings, earlier_findings_note
 from app.review.assistant.chat_engine import (
+    CALLS_AT_ONCE,
+    FULL_CHECK_AGENTS,
     FULL_CHECK_INSTRUCTION,
     ChatEngine,
     EngineSettings,
@@ -100,6 +102,7 @@ from app.review.assistant.full_check_plan import (
     reading_of,
     scoped_plan,
 )
+from app.review.assistant.full_check_schedule import expected_minutes
 from app.review.assistant.live_check import LiveCheck
 from app.review.assistant.package_store import numbering
 from app.review.assistant.plan_check import (
@@ -142,6 +145,7 @@ __all__ = [
     "set_pack_state",
     "shutdown_chats",
     "sync_uploads",
+    "use_pack_starter",
     "write_checkpoint",
 ]
 
@@ -509,17 +513,38 @@ def _sync_uploads(
     return wanted, True
 
 
+#: Starts a set pack's build somewhere else than this process (#1871): `(folder, uploads, listing)`.
+type PackStarter = Callable[[Path, Path, Sequence[Mapping[str, Any]]], None]
+_pack_starter: PackStarter | None = None
+
+
+def use_pack_starter(starter: PackStarter | None) -> None:
+    """Where this process's set packs are built from now on (`job_board.pack_starter`: a job the
+    worker runs, #1871); `None`: here, in the background (`set_pack.ensure_pack`)."""
+    global _pack_starter
+    _pack_starter = starter
+
+
 def start_set_pack(
-    workspace: ChatWorkspace, chat_root: Path, listing: Sequence[Mapping[str, Any]]
+    workspace: ChatWorkspace,
+    chat_root: Path,
+    listing: Sequence[Mapping[str, Any]],
+    *,
+    starter: PackStarter | None = None,
 ) -> ChatWorkspace:
     """The chat's workspace with its set pack (`set_pack.py`), whose building starts in the
-    background when it is not made yet: the message never waits for it."""
+    background when it is not made yet: the message never waits for it. `starter` (else the one
+    `use_pack_starter` set): the build is handed to it (the worker's job, #1871) instead."""
     if not listing:
         return workspace
     try:
         pack = import_module("app.review.assistant.set_pack")
         folder: Path = pack.pack_folder(chat_root, listing)
-        pack.ensure_pack(folder, workspace.uploads, listing)
+        handed = starter or _pack_starter
+        if handed is not None:
+            handed(folder, workspace.uploads, listing)
+        else:
+            pack.ensure_pack(folder, workspace.uploads, listing)
     except Exception as failed:  # noqa: BLE001 - the chat works without the pack
         _log.warning("assistant set pack could not start: %s", type(failed).__name__)
         return workspace
@@ -574,32 +599,42 @@ def full_check_plan(
     picture_url: Callable[[int], str],
     products: Sequence[str] | None = None,
     price: Callable[[int], int] | None = None,
+    calls_at_once: int = CALLS_AT_ONCE,
+    missing_values: Sequence[str] = (),
+    starter: PackStarter | None = None,
 ) -> dict[str, Any]:
     """The plan check before a full check (#1569): code's plan in one line and the 0-3 questions
     where it is unsure of the page map (`plan_check.doubts`), each with its page's picture and the
     drawing marked; with `price` (content pages in scope -> millionths of $, #1823), the full
     check's fixed price for `products` (`None`: every active product) and the pages it counts:
-    the same count the full check plans (`full_check_plan.scoped_plan`). The set's latest PDFs
+    the same count the full check plans (`full_check_plan.scoped_plan`), and about how many
+    minutes it takes (`full_check_schedule.expected_minutes`, #1874). The set's latest PDFs
     are copied to the set's plan-check folder (only when they changed) and the set pack is started
     when it is not made yet, so it works before the set's first chat; `building` until the page
-    map is made. Never an AI call."""
+    map is made. With the page map, the pre-flight health report too (`preflight_words`).
+    Never an AI call."""
     workspace = ChatWorkspace.open(_plan_root(chat_root, package_id))
     listing, _changed = sync_uploads(workspace, uploads())
     if not listing:
         return {"state": "none", "summary": None, "doubts": [], "more": 0}
-    workspace = start_set_pack(workspace, chat_root, listing)
+    workspace = start_set_pack(workspace, chat_root, listing, starter=starter)
     folder = workspace.set_pack
     reading = reading_words(folder)
     page_map = read_page_map(folder)
     if folder is None or page_map is None:
         state = read_status_state(folder)
-        return {
+        out: dict[str, Any] = {
             "state": "none" if state == "failed" or folder is None else "building",
             "summary": None,
             "doubts": [],
             "more": 0,
             "reading": reading,
         }
+        broken = broken_words(listing, folder if state == "failed" else None)
+        if broken is not None:
+            # A locked, damaged or empty file is said plainly before Run, never a silent skip.
+            out["preflight"] = broken
+        return out
     main = main_upload(listing)
     main_file = None if main is None else str(main["name"])
     found = doubts(page_map, main_file, read_answers(folder), limit=None)
@@ -626,18 +661,93 @@ def full_check_plan(
         "more": max(0, len(found) - MAX_DOUBTS),
         "reading": reading,
     }
-    if price is not None:
-        plan, _all = scoped_plan(
-            page_map,
+    plan, _all = scoped_plan(
+        page_map,
+        main_file,
+        MAX_AGENTS,
+        ProductScope.of(products),
+        lambda files: page_texts(folder, files),
+    )
+    if price is not None and plan is not None:
+        answer["price_pages"] = plan.pages
+        answer["price_usd"] = cost_text(price(plan.pages))
+        # The plan's expected time (#1874): "about M min" before Run.
+        answer["minutes"] = expected_minutes(plan.pages, calls_at_once)
+    try:
+        answer["preflight"] = preflight_words(
+            folder,
+            listing,
             main_file,
-            MAX_AGENTS,
-            ProductScope.of(products),
-            lambda files: page_texts(folder, files),
+            page_map,
+            skipped=() if plan is None else plan.skipped,
+            products=products or (),
+            missing_values=missing_values,
         )
-        if plan is not None:
-            answer["price_pages"] = plan.pages
-            answer["price_usd"] = cost_text(price(plan.pages))
+    except Exception as failed:  # noqa: BLE001 - the plan shows without the health report
+        _log.warning("assistant pre-flight report failed: %s", type(failed).__name__)
     return answer
+
+
+def broken_words(
+    listing: Sequence[Mapping[str, Any]], failed_pack: Path | None
+) -> dict[str, Any] | None:
+    """The pre-flight stops of an upload whose page map cannot be made: a locked, damaged or empty
+    file (`intake_problem`, no pages), or the reading failed. `None` when there is none."""
+    from app.review.assistant import preflight
+
+    reading = reading_of(failed_pack) if failed_pack is not None else None
+    report = preflight.build(
+        preflight.Inputs(
+            listing=listing,
+            reading_state="failed" if failed_pack is not None else "none",
+            reading_why=None if reading is None else reading.why,
+        )
+    )
+    if not report.stops:
+        return None
+    return {**report.out(), "lines": [line.out() for line in report.stops], "state": "ready"}
+
+
+def preflight_words(
+    folder: Path,
+    listing: Sequence[Mapping[str, Any]],
+    main_file: str | None,
+    page_map: Mapping[str, Any],
+    *,
+    skipped: Sequence[tuple[int, str]] = (),
+    products: Sequence[str] = (),
+    missing_values: Sequence[str] = (),
+) -> dict[str, Any]:
+    """The pre-flight health report (`preflight.py`) as the Run popover shows it: `working`
+    while code's pairing estimate with a separate architect's file is being worked out in the
+    background (`preflight_pairs`, started here once the reading is done), else `ready`. $0."""
+    from app.review.assistant import preflight
+
+    roles = page_map.get("upload_roles") if isinstance(page_map, Mapping) else None
+    across = isinstance(roles, Mapping) and "architect" in roles.values()
+    working = False
+    pairs = None
+    if across and reading_of(folder).state == "ready":
+        estimates = import_module("app.review.assistant.preflight_pairs")
+        state, pairs = estimates.cached(folder)
+        if state != "ready":
+            pairs = None
+            working = estimates.start(folder, main_file)
+    files = [str(name) for name in page_map.get("files") or [] if name] or (
+        [main_file] if main_file else []
+    )
+    inputs = preflight.gather(
+        folder,
+        listing=listing,
+        main_file=main_file,
+        texts=page_texts(folder, files),
+        pairs=pairs,
+        skipped=skipped,
+        missing_values=missing_values,
+        products=products,
+    )
+    report = preflight.build(inputs)
+    return {**report.out(), "state": "working" if working else "ready"}
 
 
 def reading_words(folder: Path | None) -> dict[str, Any] | None:
@@ -868,7 +978,24 @@ class MessageJob:
     simple: Mapping[str, Any] | None = None
     """The simple check's options (`simple_check.run.SimpleOptions.of`), with the pilot's size."""
     page_match_model: str | None = None
+    preflight_model: str | None = None
+    """The supervisor's model (`plan_supervisor.py`); `None`: off."""
+    run_anyway: bool = False
+    """The reviewer chose Run anyway after a pre-flight stop."""
     """The AI page matcher's model for separate uploads (#1798); `None`: off."""
+    rate_tier: str = "start"
+    """The provider's usage tier each model's limiter keeps (`rate_limits`, #1874)."""
+    calls_at_once: int = CALLS_AT_ONCE
+    """The most calls of one model at once, server-wide (#1874)."""
+    full_check_agents: int = FULL_CHECK_AGENTS
+    """A full check's specialists started together, at most (#1874)."""
+    parse_processes: int = 0
+    """Worker processes that parse drawing pages for a full check's code checks (#1874)."""
+    whole_look_model: str | None = None
+    """The whole-drawing look's model (`whole_look`); `None`: off."""
+    whole_look_effort: str = "medium"
+    set_index_model: str | None = None
+    """The set index's model for separate uploads (`set_index.py`); `None`: off."""
     plan_answers: Mapping[str, str] | None = None
     """The reviewer's answers to the plan check (#1569), kept with the set pack before the run."""
     sharpen_model: bool = False
@@ -1307,6 +1434,15 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             full_check_mode=job.full_check_mode,
             simple=_simple_of(job, run, workspace.root, workspace.set_pack),
             page_match_model=job.page_match_model,
+            rate_tier=job.rate_tier,
+            calls_at_once=job.calls_at_once,
+            full_check_agents=job.full_check_agents,
+            parse_processes=job.parse_processes,
+            preflight_model=job.preflight_model,
+            run_anyway=job.run_anyway,
+            whole_look_model=job.whole_look_model,
+            whole_look_effort=job.whole_look_effort,
+            set_index_model=job.set_index_model,
             identity=job.identity,
             numbering=numbering(job.factory, job.package_id, job.chat_id, run.message_id),
         ),

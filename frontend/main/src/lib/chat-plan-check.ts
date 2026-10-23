@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import type { ChatFullCheckPlan, ChatPlanAnswer, ChatPlanDoubt } from '@/lib/chat-api';
+import { preflightWorking } from '@/lib/chat-preflight';
 
 /**
  * The plan check before a paid full check (#1569): code's plan and its 0-3 questions, read from
@@ -11,6 +12,8 @@ import type { ChatFullCheckPlan, ChatPlanAnswer, ChatPlanDoubt } from '@/lib/cha
 /** How often to ask again while the set's pages are still being read, and how many times. */
 export const PLAN_POLL_MS = 2000;
 export const PLAN_POLL_TRIES = 15;
+/** While code works out the pre-flight pairs (about 25 s on a big set), asked again up to this many times. */
+export const PREFLIGHT_POLL_TRIES = 60;
 
 export type PlanState =
   | { status: 'idle' }
@@ -35,9 +38,12 @@ export function usePlanCheck(load: (() => Promise<ChatFullCheckPlan>) | undefine
             timer = setTimeout(ask, pollMs);
             return;
           }
-          setResult(plan.state === 'ready' ? { status: 'ready', plan } : { status: 'unavailable' });
+          // A broken upload (locked, damaged, empty) says so even with no page map.
+          setResult(plan.state === 'ready' || (plan.preflight?.stops?.length ?? 0) > 0 ? { status: 'ready', plan } : { status: 'unavailable' });
           // #1872: while the drawings are still being read, ask again so the count moves.
           if (plan.state === 'ready' && plan.reading?.state === 'reading') timer = setTimeout(ask, pollMs);
+          // The pre-flight report's pairing estimate is worked out in the background ($0): ask again.
+          else if (plan.state === 'ready' && preflightWorking(plan) && tries < PREFLIGHT_POLL_TRIES) timer = setTimeout(ask, pollMs);
         })
         .catch(() => {
           if (!stopped) setResult({ status: 'unavailable' });

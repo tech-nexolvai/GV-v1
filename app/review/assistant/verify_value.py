@@ -296,7 +296,8 @@ class _Page:
 
 _CACHE_LOCK: Final = threading.Lock()
 _PAGE_CACHE: OrderedDict[tuple[str, int, int, int], _Page] = OrderedDict()
-_PAGE_CACHE_SIZE: Final = 16
+#: Pages kept read (#1874: 16 thrashed on a big set's checks, each read again cost seconds).
+_PAGE_CACHE_SIZE: Final = 32
 _PAGE_LOCKS: dict[tuple[str, int, int, int], threading.Lock] = {}
 
 
@@ -304,25 +305,95 @@ def _vendor_page(data: bytes, page_index: int) -> bytes:
     """A one-page copy of page `page_index` with its own content and only its pasted drawings
     (`carries_drawing`), merged into it; GV Review's own signed marks emptied (`gv_marks`)."""
     with pikepdf.open(io.BytesIO(data)) as source:
-        page = source.pages[page_index]
-        out = pikepdf.new()
-        out.pages.append(page)
-        # Its layers come with it, so a layer switched off stays off (`visible_text`).
-        if "/OCProperties" in source.Root:
-            layers = source.make_indirect(source.Root["/OCProperties"])
-            out.Root["/OCProperties"] = out.copy_foreign(layers)
-        copy = out.pages[0]
-        annotations = copy.obj.get("/Annots") or pikepdf.Array()
-        # AutoCAD's SHX text comments are the vendor's text: set as invisible text, read only
-        # where the page draws strokes under them (`visible_text`).
-        shx_comment_text(out, copy, [a for a in annotations if is_shx_comment(a)])
-        copy.obj["/Annots"] = pikepdf.Array([a for a in annotations if carries_drawing(a)])
-        # GV Review's own marks, drawn on a page that came back (`gv_marks`), are never read.
-        without_gv_marks(out, copy)
-        out.flatten_annotations(mode="all")
-        buffer = io.BytesIO()
-        out.save(buffer)
-        return buffer.getvalue()
+        return _vendor_page_of(source, page_index)
+
+
+#: The PDFs held open to cut one page from (#1874): a big set's file (75-130 MB) was read and
+#: opened again for every page a check read, by many checks at once. Each is used under its own
+#: lock (a PDF object is not safe across threads); the newest few are kept.
+_SOURCES: OrderedDict[tuple[str, int, int], tuple[threading.Lock, Any]] = OrderedDict()
+_SOURCES_KEPT: Final = 3
+
+
+def _held_source(path: Path) -> tuple[threading.Lock, Any]:
+    """The PDF at `path` (this version of it) held open, with the lock to use it under."""
+    stat = path.stat()
+    key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    with _CACHE_LOCK:
+        found = _SOURCES.get(key)
+        if found is not None:
+            _SOURCES.move_to_end(key)
+            return found
+        lock = threading.Lock()
+        _SOURCES[key] = found = (lock, _LazySource(path))
+        while len(_SOURCES) > _SOURCES_KEPT:
+            _SOURCES.popitem(last=False)  # closed when no check holds it any more
+        return found
+
+
+class _LazySource:
+    """A PDF opened on first use (under its source's lock), from its file: never all read."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.pdf: Any = None
+
+    def get(self) -> Any:
+        if self.pdf is None:
+            self.pdf = pikepdf.open(self.path)
+        return self.pdf
+
+    def __del__(self) -> None:
+        if self.pdf is not None:
+            try:
+                self.pdf.close()
+            except Exception:  # noqa: BLE001 - closing at the end, best effort
+                _log.debug("verify_value could not close a held PDF")
+
+
+def vendor_page_at(path: Path, page_index: int) -> bytes:
+    """`_vendor_page` of the file at `path`, cut from the file held open (#1874): the same bytes,
+    without reading and opening the whole file again for each page."""
+    lock, source = _held_source(path)
+    with lock:
+        return _vendor_page_of(source.get(), page_index)
+
+
+def combined_sheet_at(path: Path) -> bool:
+    """`combined_sheet` of the file at `path`, cached by its version (#1874): the file is read
+    and hashed once, not again for each page."""
+    stat = path.stat()
+    key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    with _CACHE_LOCK:
+        if key in _COMBINED_AT:
+            return _COMBINED_AT[key]
+    found = combined_sheet(path.read_bytes())
+    with _CACHE_LOCK:
+        _COMBINED_AT[key] = found
+    return found
+
+
+def _vendor_page_of(source: Any, page_index: int) -> bytes:
+    """`_vendor_page` of an open PDF."""
+    page = source.pages[page_index]
+    out = pikepdf.new()
+    out.pages.append(page)
+    # Its layers come with it, so a layer switched off stays off (`visible_text`).
+    if "/OCProperties" in source.Root:
+        layers = source.make_indirect(source.Root["/OCProperties"])
+        out.Root["/OCProperties"] = out.copy_foreign(layers)
+    copy = out.pages[0]
+    annotations = copy.obj.get("/Annots") or pikepdf.Array()
+    # AutoCAD's SHX text comments are the vendor's text: set as invisible text, read only
+    # where the page draws strokes under them (`visible_text`).
+    shx_comment_text(out, copy, [a for a in annotations if is_shx_comment(a)])
+    copy.obj["/Annots"] = pikepdf.Array([a for a in annotations if carries_drawing(a)])
+    # GV Review's own marks, drawn on a page that came back (`gv_marks`), are never read.
+    without_gv_marks(out, copy)
+    out.flatten_annotations(mode="all")
+    buffer = io.BytesIO()
+    out.save(buffer)
+    return buffer.getvalue()
 
 
 def _placement(page: Any) -> Callable[[float, float], tuple[float, float]]:
@@ -413,38 +484,108 @@ def _read_page(path: Path, page_index: int) -> _Page:
             cached = _PAGE_CACHE.get(key)
             if cached is not None:
                 return cached
-        data = path.read_bytes()
-        colour_rule = combined_sheet(data)
-        vendor = _vendor_page(data, page_index)
-        chars: list[_Char] = []
-        paths: list[_Path] = []
-        with import_module("app.review.assistant.chat_drawing").PDFIUM_LOCK:
-            ink = ink_picture(vendor)
-        with pdfplumber.open(io.BytesIO(vendor)) as document:
-            page = document.pages[0]
-            shown = _placement(page)
-            corner = shown(float(page.width), float(page.height))
-            start = shown(0.0, 0.0)
-            size = (abs(corner[0] - start[0]), abs(corner[1] - start[1]))
-            for char in page.chars:
-                made = _char(char, shown, colour_rule=colour_rule)
-                if made is not None and _visible(made.box, size, ink):
-                    chars.append(made)
-            for item in (*page.curves, *page.lines, *page.rects):
-                made_path = _path(item, shown, colour_rule=colour_rule)
-                if made_path is not None:
-                    paths.append(made_path)
-            pictures = tuple(
-                _shown_box(shown, *(float(image[k]) for k in ("x0", "top", "x1", "bottom")))
-                for image in page.images
-            )
-        result = _Page(key, vendor, tuple(chars), tuple(paths), pictures, size, colour_rule)
+        colour_rule = combined_sheet_at(path)
+        vendor = vendor_page_at(path, page_index)
+        chars, paths, pictures, size = _parsed(vendor, colour_rule)
+        result = _Page(key, vendor, chars, paths, pictures, size, colour_rule)
         with _CACHE_LOCK:
             _PAGE_CACHE[key] = result
             while len(_PAGE_CACHE) > _PAGE_CACHE_SIZE:
                 old, _ = _PAGE_CACHE.popitem(last=False)
                 _PAGE_LOCKS.pop(old, None)
         return result
+
+
+def _parsed(vendor: bytes, colour_rule: bool) -> tuple[
+    tuple[_Char, ...],
+    tuple[_Path, ...],
+    tuple[tuple[float, float, float, float], ...],
+    tuple[float, float],
+]:
+    """`_parse_page` in a worker process when the server asks for them (#1874: a big set's checks
+    parse many pages, beside each other); on this thread otherwise, or when the workers broke
+    (then from now on: the check never fails for its helpers)."""
+    pool = _parse_pool()
+    if pool is not None:
+        try:
+            return pool.submit(_parse_page, vendor, colour_rule).result()  # type: ignore[no-any-return]
+        except Exception as failed:  # noqa: BLE001 - parsed here instead, the workers stopped
+            _log.warning(
+                "verify_value page workers failed, parsing here: %s", type(failed).__name__
+            )
+            use_parse_processes(0)
+    return _parse_page(vendor, colour_rule)
+
+
+def _parse_page(vendor: bytes, colour_rule: bool) -> tuple[
+    tuple[_Char, ...],
+    tuple[_Path, ...],
+    tuple[tuple[float, float, float, float], ...],
+    tuple[float, float],
+]:
+    """A one-page vendor layer's characters and character-sized paths, its pictures and its shown
+    size: plain code on the page's bytes, so it runs in a worker process as well (#1874)."""
+    chars: list[_Char] = []
+    paths: list[_Path] = []
+    with import_module("app.review.assistant.chat_drawing").PDFIUM_LOCK:
+        ink = ink_picture(vendor)
+    with pdfplumber.open(io.BytesIO(vendor)) as document:
+        page = document.pages[0]
+        shown = _placement(page)
+        corner = shown(float(page.width), float(page.height))
+        start = shown(0.0, 0.0)
+        size = (abs(corner[0] - start[0]), abs(corner[1] - start[1]))
+        for char in page.chars:
+            made = _char(char, shown, colour_rule=colour_rule)
+            if made is not None and _visible(made.box, size, ink):
+                chars.append(made)
+        for item in (*page.curves, *page.lines, *page.rects):
+            made_path = _path(item, shown, colour_rule=colour_rule)
+            if made_path is not None:
+                paths.append(made_path)
+        pictures = tuple(
+            _shown_box(shown, *(float(image[k]) for k in ("x0", "top", "x1", "bottom")))
+            for image in page.images
+        )
+    return tuple(chars), tuple(paths), pictures, size
+
+
+#: Worker processes that parse pages for the checks (#1874), when the server asks for them
+#: (`use_parse_processes`): pdfplumber is plain Python, so many checks parsing at once on threads
+#: wait for each other (a big set's page is several seconds of it). `None`: on the caller's thread.
+_PARSE_POOL: Any = None
+_PARSE_WORKERS = 0
+_POOL_LOCK: Final = threading.Lock()
+
+
+def use_parse_processes(workers: int) -> None:
+    """Parse pages in `workers` worker processes from now on (0: on the caller's thread); a pool
+    of another size is shut down (its running parses end first)."""
+    global _PARSE_WORKERS, _PARSE_POOL
+    with _POOL_LOCK:
+        workers = max(0, int(workers))
+        if workers == _PARSE_WORKERS:
+            return
+        _PARSE_WORKERS = workers
+        old, _PARSE_POOL = _PARSE_POOL, None
+    if old is not None:
+        old.shutdown(wait=True)
+
+
+def _parse_pool() -> Any:
+    """The worker processes, started on first use (`use_parse_processes`), or `None`."""
+    global _PARSE_POOL
+    with _POOL_LOCK:
+        if _PARSE_WORKERS <= 0:
+            return None
+        if _PARSE_POOL is None:
+            import multiprocessing
+            from concurrent.futures import ProcessPoolExecutor
+
+            _PARSE_POOL = ProcessPoolExecutor(
+                max_workers=_PARSE_WORKERS, mp_context=multiprocessing.get_context("spawn")
+            )
+        return _PARSE_POOL
 
 
 def _on_page(box: tuple[float, float, float, float], size: tuple[float, float]) -> bool:
@@ -462,6 +603,8 @@ def _visible(
     return _on_page(box, size) and ink.shows(box)
 
 
+#: Whether each file version (path, time, size) is one of GV's combined sheets (#1874).
+_COMBINED_AT: dict[tuple[str, int, int], bool] = {}
 #: Whether each file version is one of GV's combined sheets (`combined_sheet`).
 _COMBINED: dict[str, bool] = {}
 
@@ -1593,7 +1736,9 @@ def _in_pasted_picture(pdf: Path, page_index: int, spot: tuple[float, float, flo
             boxes = _PASTED.get(key)
         if boxes is None:
             pictures = import_module("app.review.assistant.picture_labels")
-            page_pdf = pictures.picture_page(pdf.read_bytes(), page_index)
+            lock, source = _held_source(pdf)
+            with lock:
+                page_pdf = pictures.picture_page_of(source.get(), page_index)
             boxes = () if page_pdf is None else tuple(pictures.picture_boxes(page_pdf))
             with _PASTED_LOCK:
                 _PASTED[key] = boxes

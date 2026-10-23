@@ -4972,6 +4972,41 @@ export interface components {
             version: number;
         };
         /**
+         * ChatFindingLikelyOut
+         * @description What the whole-drawing look claimed (`likely_problems.payload`): never red by itself; a
+         *     Likely problem until code proves it.
+         */
+        ChatFindingLikelyOut: {
+            /**
+             * By
+             * @default whole_drawing_look
+             * @constant
+             */
+            by: "whole_drawing_look";
+            /**
+             * Kind
+             * @description What differs: a missing or extra piece, a count, a size, the layout.
+             * @enum {string}
+             */
+            kind: "missing_piece" | "extra_piece" | "count" | "size" | "layout";
+            /**
+             * Reason
+             * @description The AI's reason, one line.
+             */
+            reason?: string | null;
+            /**
+             * Sure
+             * @description How sure the look was.
+             * @enum {string}
+             */
+            sure: "sure" | "likely";
+            /**
+             * Words
+             * @description The letter's line: "Please check and confirm: ...".
+             */
+            words: string;
+        };
+        /**
          * ChatFindingOut
          * @description One difference the assistant reported, with code-made evidence and checks.
          */
@@ -5137,15 +5172,17 @@ export interface components {
         ChatFindingProofOut: {
             /**
              * Group
-             * @description clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks the architect, `rule_note`); not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').
+             * @description clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks the architect, `rule_note`); likely_problem: the whole-drawing look found a design difference code could not prove (shown dashed, never solid red; the letter says 'Please check and confirm', `likely_problem`); not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').
              * @enum {string}
              */
-            group: "clouded" | "right" | "rule_note" | "not_compared" | "dismissed";
+            group: "clouded" | "right" | "rule_note" | "likely_problem" | "not_compared" | "dismissed";
             /**
              * Label
              * @description not_compared: the trade's words for the reason (Field verify, RFI to the architect, Not reviewed: <reason>, Illegible).
              */
             label?: string | null;
+            /** @description A whole-drawing look's claim: what to check and confirm (the spots are the finding's own boxes). */
+            likely_problem?: components["schemas"]["ChatFindingLikelyOut"] | null;
             /**
              * Not Compared
              * @description not_compared: the reason (the list's group).
@@ -5401,11 +5438,18 @@ export interface components {
             /** Doubts */
             doubts?: components["schemas"]["ChatPlanDoubtOut"][];
             /**
+             * Minutes
+             * @description About how many minutes the full check takes, with the price (#1874): the page helpers, the areas' chains and the set-wide steps at the call times measured on the server, the drawings already read. An estimate, never a promise.
+             */
+            minutes?: number | null;
+            /**
              * More
              * @description Further unsure places, compared as read.
              * @default 0
              */
             more: number;
+            /** @description The pre-flight health report (code, $0): what was found, whether the check goes on, who acts; `null` before the page map is made. */
+            preflight?: components["schemas"]["ChatPreflightOut"] | null;
             /**
              * Price Pages
              * @description The content pages in scope the price counts: the pages the plan compares (drawings of the products asked; title and divider pages left out).
@@ -5795,14 +5839,14 @@ export interface components {
              * Outcome
              * @enum {string}
              */
-            outcome: "wrong" | "right" | "rule_note" | "not_compared";
+            outcome: "wrong" | "right" | "rule_note" | "likely_problem" | "not_compared";
             /** Page */
             page?: number | null;
             /**
              * Previous
              * @description Its outcome before, when it changed.
              */
-            previous?: ("wrong" | "right" | "rule_note" | "not_compared") | null;
+            previous?: ("wrong" | "right" | "rule_note" | "likely_problem" | "not_compared") | null;
             /**
              * Product
              * @description The product id the item is filed under.
@@ -5974,6 +6018,12 @@ export interface components {
          *     blind second look (they become Wrong only if it agrees).
          */
         ChatLiveTallyOut: {
+            /**
+             * Likely Problem
+             * @description Likely problems from the whole-drawing look (please check).
+             * @default 0
+             */
+            likely_problem: number;
             /** Not Compared */
             not_compared: number;
             /** Right */
@@ -6087,6 +6137,12 @@ export interface components {
              * @description The simple full check only: an earlier run of this chat (its folder name under `simple/`, said in the work-items block) whose saved compare answers and blind looks are verified again, with no model call ($0).
              */
             replay?: string | null;
+            /**
+             * Run Anyway
+             * @description A full check only: run even when the pre-flight check would pause it (a swapped, broken or other-project file). Every warning is still recorded.
+             * @default false
+             */
+            run_anyway: boolean;
             /** @description #1551: the reviewer's correction of how the app understood the question (Edit on the 'Understood as' line); the question's words are sent unchanged in `text`. */
             task?: components["schemas"]["ChatTaskSpecIn"] | null;
             /**
@@ -6105,7 +6161,7 @@ export interface components {
             /** @description The answer's accuracy by code (its `accuracy` block, scored again with today's calibration: see `rescored`); null on older answers. */
             accuracy?: components["schemas"]["ChatAccuracyOut"] | null;
             /** Blocks */
-            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatWorkItemsBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"] | components["schemas"]["ChatUnderstoodBlock"] | components["schemas"]["ChatFallbackBlock"] | components["schemas"]["ChatPackageBlock"])[] | null;
+            blocks?: (components["schemas"]["ChatThinkingBlock"] | components["schemas"]["ChatTextBlock"] | components["schemas"]["ChatStepBlock"] | components["schemas"]["ChatFindingBlock"] | components["schemas"]["ChatFindingDroppedBlock"] | components["schemas"]["ChatFindingUpdateBlock"] | components["schemas"]["ChatCoverageBlock"] | components["schemas"]["ChatTrustBlock"] | components["schemas"]["ChatCiteBlock"] | components["schemas"]["ChatAccuracyBlock"] | components["schemas"]["ChatUnknownsBlock"] | components["schemas"]["ChatScopeBlock"] | components["schemas"]["ChatProgressBlock"] | components["schemas"]["ChatWorkItemsBlock"] | components["schemas"]["ChatResumeBlock"] | components["schemas"]["ChatResolverBlock"] | components["schemas"]["ChatUnderstoodBlock"] | components["schemas"]["ChatFallbackBlock"] | components["schemas"]["ChatPackageBlock"] | components["schemas"]["ChatPreflightBlock"])[] | null;
             /** @description With `stopped: cost_cap`: `message` (this answer's cap) or `package` (the drawing set's budget ran out). */
             cap_hit?: components["schemas"]["ChatCapHit"] | null;
             /** Cost Usd */
@@ -6386,6 +6442,106 @@ export interface components {
             /** Value */
             value: string;
         };
+        /** ChatPreflightBlock */
+        ChatPreflightBlock: {
+            preflight: components["schemas"]["ChatPreflightOut"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "preflight";
+        };
+        /**
+         * ChatPreflightLineOut
+         * @description One line of the pre-flight health report (`preflight.py`): what code found, whether the
+         *     check goes on, and who acts.
+         */
+        ChatPreflightLineOut: {
+            /**
+             * Estimate
+             * @description Code's estimate before the check runs (the AI page matcher confirms after).
+             * @default false
+             */
+            estimate: boolean;
+            /**
+             * Goes On
+             * @description Whether the check goes on.
+             * @default true
+             */
+            goes_on: boolean;
+            /**
+             * Id
+             * @description What kind of line: "matched", "needs_drawing", "files_swapped"…
+             */
+            id: string;
+            /**
+             * Level
+             * @description stop: the whole check stops before money is spent (only a swapped or broken file, or another project's architect file); warn: many pages are touched; note: some pages; ok: plain facts.
+             * @enum {string}
+             */
+            level: "stop" | "warn" | "note" | "ok";
+            /**
+             * Pages
+             * @description The vendor pages it touches.
+             */
+            pages?: number[];
+            /**
+             * Todo
+             * @description What to do, when someone has to act.
+             */
+            todo?: string | null;
+            /**
+             * Who
+             * @default nobody
+             * @enum {string}
+             */
+            who: "you" | "GV" | "the vendor" | "the architect" | "nobody";
+            /**
+             * Words
+             * @description What was found, in plain words.
+             */
+            words: string;
+        };
+        /**
+         * ChatPreflightOut
+         * @description The pre-flight health report before a full check (`preflight.py`), $0; in an answer, also
+         *     the supervisor's look and whether the check paused.
+         */
+        ChatPreflightOut: {
+            /**
+             * Estimate
+             * @description Some numbers are code's estimate before the check runs.
+             * @default false
+             */
+            estimate: boolean;
+            /** Lines */
+            lines?: components["schemas"]["ChatPreflightLineOut"][];
+            /**
+             * Paused
+             * @description In an answer: the check paused before spending (Run anyway runs it).
+             * @default false
+             */
+            paused: boolean;
+            /**
+             * Run Anyway
+             * @description In an answer: the reviewer chose Run anyway.
+             * @default false
+             */
+            run_anyway: boolean;
+            /**
+             * State
+             * @description working: code's pairing estimate is still being worked out (ask again).
+             * @default ready
+             * @enum {string}
+             */
+            state: "working" | "ready";
+            /**
+             * Stops
+             * @description The ids of the lines that stop the check.
+             */
+            stops?: string[];
+            supervisor?: components["schemas"]["ChatSupervisorOut"] | null;
+        };
         /**
          * ChatProductScopeOut
          * @description The strict product scope (Anant, 2026-10-18): the products checked, and the findings of
@@ -6419,6 +6575,16 @@ export interface components {
          *     left". Sent as `progress` events while it runs; the last one is stored.
          */
         ChatProgressOut: {
+            /**
+             * Areas Done
+             * @description A big set (#1874): the areas whose chain has finished.
+             */
+            areas_done?: number | null;
+            /**
+             * Areas Total
+             * @description A big set: the areas run as parallel chains.
+             */
+            areas_total?: number | null;
             /** Decision So Far */
             decision_so_far: number;
             /**
@@ -6433,9 +6599,15 @@ export interface components {
             drawings_total?: number | null;
             /**
              * Eta Seconds
-             * @description Time left at the pace so far; null before any page is done.
+             * @description Time left: from the plan's expected time in a roster full check (#1874), else at the pace so far; null before any page is done or past the estimate.
              */
             eta_seconds?: number | null;
+            /**
+             * Likely So Far
+             * @description Likely problems the whole-drawing look found (please check).
+             * @default 0
+             */
+            likely_so_far: number;
             /** Pages Done */
             pages_done: number;
             /** Pages Total */
@@ -6463,6 +6635,16 @@ export interface components {
              * @default 0
              */
             rule_note_so_far: number;
+            /**
+             * Step
+             * @description The roster full check's step (#1874): page helpers, gap closers, verifier, lead review, look-again; on a big set 'areas' (each area's own chain of those, in parallel); then code's proving steps, the devil's advocate, the escalation, the finish.
+             */
+            step?: ("helpers" | "gap_closers" | "verifier" | "lead_review" | "look_again" | "areas" | "proving" | "advocate" | "escalation" | "finish") | null;
+            /**
+             * Step Number
+             * @description The step's place, from 1.
+             */
+            step_number?: number | null;
             /** Wrong So Far */
             wrong_so_far: number;
         };
@@ -7062,6 +7244,30 @@ export interface components {
              */
             words: string;
         };
+        /**
+         * ChatSupervisorOut
+         * @description The supervisor's second look at the plan before money is spent (`plan_supervisor.py`).
+         */
+        ChatSupervisorOut: {
+            /**
+             * By
+             * @default ai
+             * @enum {string}
+             */
+            by: "ai" | "code";
+            /** Cost Usd */
+            cost_usd?: string | null;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "ok" | "warn" | "stop" | "not_run";
+            /**
+             * Why
+             * @description One plain sentence.
+             */
+            why?: string | null;
+        };
         /** ChatTaskOut */
         ChatTaskOut: {
             /** Active Form */
@@ -7258,6 +7464,11 @@ export interface components {
              * @description "What's right" items not compared (not counted above).
              */
             not_compared?: number | null;
+            /**
+             * Problems
+             * @description What went wrong in this check, in plain words (pages that could not be read, pages with no architect drawing and why, steps skipped, money that ran out); empty when nothing did.
+             */
+            problems?: string[] | null;
             /** @description The products checked and how many findings of other products code dropped (for the record, not shown); null on older answers. */
             product_scope?: components["schemas"]["ChatProductScopeOut"] | null;
             /** @description A full check's reading coverage (#1862): numbers read of those printed; null on other answers, older answers and set packs made before it was counted. */
@@ -8877,6 +9088,12 @@ export interface components {
              * @description Ask the architect: the architect's size breaks a GV rule (#1839).
              */
             ask_architect: number;
+            /**
+             * Likely Problem
+             * @description Likely problem: the whole-drawing look found it, code did not prove it (please check and confirm).
+             * @default 0
+             */
+            likely_problem: number;
             /**
              * Not Compared
              * @description Not compared, each with its reason.

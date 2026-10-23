@@ -64,6 +64,9 @@ __all__ = [
     "ChatPlanAnswerIn",
     "ChatPlanDoubtOut",
     "ChatPlanOptionOut",
+    "ChatPreflightBlock",
+    "ChatPreflightLineOut",
+    "ChatPreflightOut",
     "ChatProgressBlock",
     "ChatProgressOut",
     "ChatReadingGroupOut",
@@ -81,6 +84,7 @@ __all__ = [
     "ChatStepOut",
     "ChatSummaryOut",
     "ChatSummaryReviewOut",
+    "ChatSupervisorOut",
     "ChatTaskOut",
     "ChatTaskSpecIn",
     "ChatTextBlock",
@@ -241,6 +245,11 @@ class ChatMessageIn(BaseModel):
         "`simple/`, said in the work-items block) whose saved compare answers and blind looks are "
         "verified again, with no model call ($0).",
     )
+    run_anyway: bool = Field(
+        default=False,
+        description="A full check only: run even when the pre-flight check would pause it (a "
+        "swapped, broken or other-project file). Every warning is still recorded.",
+    )
     compare_missing: bool = Field(
         default=False,
         description="#1710, with `replay` ('Compare them again'): the drawings that run has no "
@@ -257,6 +266,8 @@ class ChatMessageIn(BaseModel):
             raise ValueError("pilot goes with a full check only")
         if (self.compare_model or self.compare_effort or self.replay) and self.mode != "full_check":
             raise ValueError("compare_model, compare_effort and replay go with a full check only")
+        if self.run_anyway and self.mode != "full_check":
+            raise ValueError("run_anyway goes with a full check only")
         if self.compare_missing and not self.replay:
             raise ValueError("compare_missing goes with replay (the run to compare again)")
         if self.plan_answers is not None:
@@ -675,6 +686,21 @@ class ChatFindingRuleNoteOut(BaseModel):
     question: str = Field(description="The ready question for the architect (an RFI line).")
 
 
+class ChatFindingLikelyOut(BaseModel):
+    """What the whole-drawing look claimed (`likely_problems.payload`): never red by itself; a
+    Likely problem until code proves it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["missing_piece", "extra_piece", "count", "size", "layout"] = Field(
+        description="What differs: a missing or extra piece, a count, a size, the layout."
+    )
+    words: str = Field(description='The letter\'s line: "Please check and confirm: ...".')
+    reason: str | None = Field(default=None, description="The AI's reason, one line.")
+    sure: Literal["sure", "likely"] = Field(description="How sure the look was.")
+    by: Literal["whole_drawing_look"] = "whole_drawing_look"
+
+
 class ChatFindingProofOut(BaseModel):
     """Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read
     (`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a
@@ -682,10 +708,14 @@ class ChatFindingProofOut(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    group: Literal["clouded", "right", "rule_note", "not_compared", "dismissed"] = Field(
+    group: Literal[
+        "clouded", "right", "rule_note", "likely_problem", "not_compared", "dismissed"
+    ] = Field(
         description="clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's "
         "size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks "
-        "the architect, `rule_note`); not_compared: could not be "
+        "the architect, `rule_note`); likely_problem: the whole-drawing look found a design "
+        "difference code could not prove (shown dashed, never solid red; the letter says "
+        "'Please check and confirm', `likely_problem`); not_compared: could not be "
         "compared under the architect-first rules (#1619: listed with its reason in the "
         "Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer "
         "marked it Right (Not a problem; the vendor's files say 'Right (reviewer)')."
@@ -749,6 +779,11 @@ class ChatFindingProofOut(BaseModel):
     )
     rule_note: ChatFindingRuleNoteOut | None = Field(
         default=None, description="rule_note: the GV rule and the question for the architect."
+    )
+    likely_problem: ChatFindingLikelyOut | None = Field(
+        default=None,
+        description="A whole-drawing look's claim: what to check and confirm (the spots are the "
+        "finding's own boxes).",
     )
 
 
@@ -1468,6 +1503,12 @@ class ChatTrustOut(BaseModel):
         description="A full check's reading coverage (#1862): numbers read of those printed; null "
         "on other answers, older answers and set packs made before it was counted.",
     )
+    problems: list[str] | None = Field(
+        default=None,
+        description="What went wrong in this check, in plain words (pages that could not be read, "
+        "pages with no architect drawing and why, steps skipped, money that ran out); empty when "
+        "nothing did.",
+    )
 
 
 class ChatTrustBlock(BaseModel):
@@ -1592,8 +1633,13 @@ class ChatProgressOut(BaseModel):
     rule_note_so_far: int = Field(
         default=0, description="The architect's size breaks a GV rule: GV asks (#1839)."
     )
+    likely_so_far: int = Field(
+        default=0, description="Likely problems the whole-drawing look found (please check)."
+    )
     eta_seconds: int | None = Field(
-        default=None, description="Time left at the pace so far; null before any page is done."
+        default=None,
+        description="Time left: from the plan's expected time in a roster full check (#1874), "
+        "else at the pace so far; null before any page is done or past the estimate.",
     )
     drawings_done: int | None = Field(
         default=None,
@@ -1602,6 +1648,33 @@ class ChatProgressOut(BaseModel):
     )
     drawings_total: int | None = Field(
         default=None, description="The simple full check: drawings in its work list."
+    )
+    step: (
+        Literal[
+            "helpers",
+            "gap_closers",
+            "verifier",
+            "lead_review",
+            "look_again",
+            "areas",
+            "proving",
+            "advocate",
+            "escalation",
+            "finish",
+        ]
+        | None
+    ) = Field(
+        default=None,
+        description="The roster full check's step (#1874): page helpers, gap closers, verifier, "
+        "lead review, look-again; on a big set 'areas' (each area's own chain of those, in "
+        "parallel); then code's proving steps, the devil's advocate, the escalation, the finish.",
+    )
+    step_number: int | None = Field(default=None, description="The step's place, from 1.")
+    areas_done: int | None = Field(
+        default=None, description="A big set (#1874): the areas whose chain has finished."
+    )
+    areas_total: int | None = Field(
+        default=None, description="A big set: the areas run as parallel chains."
     )
     reading_done: int | None = Field(
         default=None,
@@ -1852,6 +1925,74 @@ class ChatPackageBlock(BaseModel):
     package: ChatPackageOut
 
 
+class ChatPreflightLineOut(BaseModel):
+    """One line of the pre-flight health report (`preflight.py`): what code found, whether the
+    check goes on, and who acts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(description='What kind of line: "matched", "needs_drawing", "files_swapped"…')
+    level: Literal["stop", "warn", "note", "ok"] = Field(
+        description="stop: the whole check stops before money is spent (only a swapped or broken "
+        "file, or another project's architect file); warn: many pages are touched; note: some "
+        "pages; ok: plain facts."
+    )
+    words: str = Field(description="What was found, in plain words.")
+    goes_on: bool = Field(default=True, description="Whether the check goes on.")
+    who: Literal["you", "GV", "the vendor", "the architect", "nobody"] = "nobody"
+    todo: str | None = Field(default=None, description="What to do, when someone has to act.")
+    pages: list[int] = Field(default_factory=list, description="The vendor pages it touches.")
+    estimate: bool = Field(
+        default=False,
+        description="Code's estimate before the check runs (the AI page matcher confirms after).",
+    )
+
+
+class ChatSupervisorOut(BaseModel):
+    """The supervisor's second look at the plan before money is spent (`plan_supervisor.py`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    verdict: Literal["ok", "warn", "stop", "not_run"]
+    why: str | None = Field(default=None, description="One plain sentence.")
+    by: Literal["ai", "code"] = "ai"
+    cost_usd: str | None = None
+
+
+class ChatPreflightOut(BaseModel):
+    """The pre-flight health report before a full check (`preflight.py`), $0; in an answer, also
+    the supervisor's look and whether the check paused."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Literal["working", "ready"] = Field(
+        default="ready",
+        description="working: code's pairing estimate is still being worked out (ask again).",
+    )
+    lines: list[ChatPreflightLineOut] = Field(default_factory=list)
+    stops: list[str] = Field(
+        default_factory=list, description="The ids of the lines that stop the check."
+    )
+    estimate: bool = Field(
+        default=False, description="Some numbers are code's estimate before the check runs."
+    )
+    supervisor: ChatSupervisorOut | None = None
+    paused: bool = Field(
+        default=False,
+        description="In an answer: the check paused before spending (Run anyway runs it).",
+    )
+    run_anyway: bool = Field(
+        default=False, description="In an answer: the reviewer chose Run anyway."
+    )
+
+
+class ChatPreflightBlock(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["preflight"]
+    preflight: ChatPreflightOut
+
+
 ChatBlock = Annotated[
     ChatThinkingBlock
     | ChatTextBlock
@@ -1871,7 +2012,8 @@ ChatBlock = Annotated[
     | ChatResolverBlock
     | ChatUnderstoodBlock
     | ChatFallbackBlock
-    | ChatPackageBlock,
+    | ChatPackageBlock
+    | ChatPreflightBlock,
     Field(discriminator="type"),
 ]
 
@@ -2101,7 +2243,7 @@ class ChatLiveFindingOut(BaseModel):
     id: str | None = Field(
         default=None, description="The finding's id (`F12`) once recorded in the answer."
     )
-    outcome: Literal["wrong", "right", "rule_note", "not_compared"]
+    outcome: Literal["wrong", "right", "rule_note", "likely_problem", "not_compared"]
     proved_by: Literal["code", "checked_twice"] | None = Field(
         default=None,
         description="A Wrong only: code alone, or code and the blind second look ('checked twice').",
@@ -2130,8 +2272,8 @@ class ChatLiveFindingOut(BaseModel):
     removed: bool = Field(
         default=False, description="No longer in the answer (folded into another, or left out)."
     )
-    previous: Literal["wrong", "right", "rule_note", "not_compared"] | None = Field(
-        default=None, description="Its outcome before, when it changed."
+    previous: Literal["wrong", "right", "rule_note", "likely_problem", "not_compared"] | None = (
+        Field(default=None, description="Its outcome before, when it changed.")
     )
     final: bool = Field(
         default=False,
@@ -2150,6 +2292,9 @@ class ChatLiveTallyOut(BaseModel):
     right: int = Field(ge=0)
     rule_note: int = Field(
         default=0, ge=0, description="The architect's size breaks a GV rule: GV asks (#1839)."
+    )
+    likely_problem: int = Field(
+        default=0, ge=0, description="Likely problems from the whole-drawing look (please check)."
     )
     not_compared: int = Field(ge=0)
     waiting_second_look: int = Field(ge=0)
@@ -2327,10 +2472,21 @@ class ChatFullCheckPlanOut(BaseModel):
         description="The content pages in scope the price counts: the pages the plan compares "
         "(drawings of the products asked; title and divider pages left out).",
     )
+    minutes: int | None = Field(
+        default=None,
+        description="About how many minutes the full check takes, with the price (#1874): the "
+        "page helpers, the areas' chains and the set-wide steps at the call times measured on the "
+        "server, the drawings already read. An estimate, never a promise.",
+    )
     reading: ChatPagesReadOut | None = Field(
         default=None,
         description="How far the drawings are read (#1872): a full check starts its AI steps only "
         "once every page is read (`state` ready); `null` before the reading starts.",
+    )
+    preflight: ChatPreflightOut | None = Field(
+        default=None,
+        description="The pre-flight health report (code, $0): what was found, whether the check "
+        "goes on, who acts; `null` before the page map is made.",
     )
 
 

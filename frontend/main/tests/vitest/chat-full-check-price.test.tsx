@@ -42,6 +42,13 @@ describe('the price words', () => {
     expect(fullCheckPriceWords(null, null)).toBeNull();
     expect(fullCheckPrice(PRICED, rule)).toEqual({ price: '$16', detail: '40 content pages' });
   });
+
+  it('#1874: says about how long the check takes beside the pages, when the server says it', () => {
+    const rule = priceRuleWords(RULE);
+    expect(fullCheckPriceWords({ ...PRICED, minutes: 14 }, rule)).toBe('Fixed price $16 · 40 content pages · about 14 min');
+    expect(fullCheckPrice({ price_usd: '40.00', price_pages: null, minutes: 22 }, rule)).toEqual({ price: '$40', detail: 'about 22 min' });
+    expect(fullCheckPriceWords({ ...PRICED, minutes: 0 }, rule)).toBe('Fixed price $16 · 40 content pages');
+  });
 });
 
 describe('the price on screen', () => {

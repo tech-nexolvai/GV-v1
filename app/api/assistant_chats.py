@@ -132,6 +132,7 @@ from app.review.assistant.chat_request import (
     check_choice,
 )
 from app.review.assistant.chat_service import (
+    PAID_JOB_WORDS,
     ChatRegistry,
     MessageJob,
     PaidJobRunning,
@@ -173,6 +174,14 @@ from app.review.assistant.consistency_answer import (
     PackNotReady,
     run_check,
 )
+from app.review.assistant.job_board import (
+    ChatBusy,
+    JobFeedReader,
+    JobRegistry,
+    PaidBusy,
+    enqueue_message,
+    pack_starter,
+)
 from app.review.assistant.not_compared import XLSX_MIME
 from app.review.assistant.package_store import identity as package_identity
 from app.review.assistant.package_store import stored_numbers
@@ -181,6 +190,7 @@ from app.review.assistant.proof import reviewer_value_refusal
 from app.review.assistant.review_action import CheckState
 from app.review.assistant.sandbox import ChatWorkspace, Sandbox, open_sandbox
 from app.review.assistant.send_package import ZIP_MIME
+from app.review.assistant.skills_export import missing_settings
 from app.runs.rates import ModelRates, rates_from_environment
 from vocabulary.semantic_types import ProductType
 
@@ -207,20 +217,55 @@ def _not_found() -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
 
 
+def _in_worker(app: Any) -> bool:
+    """Whether the worker runs this deployment's messages and set packs (#1871)."""
+    settings = getattr(app.state, "settings", None)
+    return bool(getattr(settings, "assistant_run_in_worker", False))
+
+
 def _registry_of(app: Any) -> ChatRegistry:
     registry: ChatRegistry | None = getattr(app.state, _REGISTRY_STATE, None)
     if registry is None:
         with _REGISTRY_LOCK:
             registry = getattr(app.state, _REGISTRY_STATE, None)
             if registry is None:
-                registry = ChatRegistry()
+                registry = (
+                    JobRegistry(
+                        _chat_root(app),
+                        stale_seconds=float(app.state.settings.assistant_worker_stale_seconds),
+                        engine=lambda: _app_engine(app),
+                    )
+                    if _in_worker(app)
+                    else ChatRegistry()
+                )
                 setattr(app.state, _REGISTRY_STATE, registry)
     return registry
 
 
 def chat_registry(request: Request) -> ChatRegistry:
-    """The process's running messages (one per chat at most)."""
+    """The running messages (one per chat at most): this process's, and with the worker (#1871)
+    the job board's, read from the app's database."""
     return _registry_of(request.app)
+
+
+def _app_engine(app: Any) -> Any:
+    """The app's database engine, as `get_session` makes and keeps it."""
+    from app.api.dependencies import _ENGINE_STATE, _engine_lock
+    from app.db.session import engine_from_settings
+
+    with _engine_lock:
+        engine = getattr(app.state, _ENGINE_STATE, None)
+        if engine is None:
+            engine = engine_from_settings(app.state.settings)
+            setattr(app.state, _ENGINE_STATE, engine)
+    return engine
+
+
+def _pack_starter_of(request: Request, session: Session) -> Any:
+    """With the worker (#1871), a set pack is a job it runs: never built in the API."""
+    if not _in_worker(request.app):
+        return None
+    return pack_starter(_factory(session), created_by="assistant")
 
 
 # ---- a server restart (#1514) --------------------------------------------------------------------
@@ -234,16 +279,11 @@ def _chat_root(app: Any) -> Path:
 def _recover_at_start(app: Any) -> None:
     """The answers the last run of the server left without a reply, stored as interrupted."""
     try:
-        from app.api.dependencies import _ENGINE_STATE, _engine_lock
-        from app.db.session import engine_from_settings
-
-        with _engine_lock:
-            engine = getattr(app.state, _ENGINE_STATE, None)
-            if engine is None:
-                engine = engine_from_settings(app.state.settings)
-                setattr(app.state, _ENGINE_STATE, engine)
+        engine = _app_engine(app)
+        # With the worker (#1871), a question it is answering is not interrupted (`JobRegistry`).
+        registry = _registry_of(app)
         count = recover_interrupted(
-            sessionmaker(bind=engine, expire_on_commit=False), _registry_of(app), _chat_root(app)
+            sessionmaker(bind=engine, expire_on_commit=False), registry, _chat_root(app)
         )
         if count:
             _log.info("assistant chats: %d answers stored as interrupted by a restart", count)
@@ -736,6 +776,12 @@ def get_full_check_plan(
         _latest_revision_id(session, package.id),
     )
     try:
+        revision_id = _latest_revision_id(session, package.id)
+        missing = [] if revision_id is None else missing_settings(session, revision_id, products)
+    except Exception as failed:  # noqa: BLE001 - the report shows without the values line
+        _log.warning("assistant chat missing settings failed: %s", type(failed).__name__)
+        missing = []
+    try:
         plan = full_check_plan(
             _chat_root(request.app),
             package.id,
@@ -743,6 +789,9 @@ def get_full_check_plan(
             lambda page: f"/api/v1/packages/{package.id}/plan-pages/{page}",
             products=products,
             price=lambda pages: rule.price(pages, max(0, left)),
+            calls_at_once=settings.assistant_calls_at_once,
+            missing_values=missing,
+            starter=_pack_starter_of(request, session),
         )
     except Exception as failed:  # noqa: BLE001 - the full check still runs, without questions
         _log.warning("assistant chat plan check failed: %s", type(failed).__name__)
@@ -937,7 +986,12 @@ def consistency_check(
                 "uploads_missing",
                 "This drawing set has no PDFs to check.",
             )
-        workspace = start_set_pack(workspace, _chat_root(request.app), listing)
+        workspace = start_set_pack(
+            workspace,
+            _chat_root(request.app),
+            listing,
+            starter=_pack_starter_of(request, session),
+        )
         try:
             made = run_check(workspace, listing)
         except PackNotReady:
@@ -1555,6 +1609,10 @@ def _message(
             lead_max_turns=settings.assistant_lead_max_turns,
             helper_max_turns=settings.assistant_helper_max_turns,
             max_parallel_agents=settings.assistant_max_parallel_agents,
+            rate_tier=settings.assistant_rate_tier,
+            calls_at_once=settings.assistant_calls_at_once,
+            full_check_agents=settings.assistant_full_check_agents,
+            parse_processes=settings.assistant_parse_processes,
             message_cap_micros=_lowered(
                 int(settings.assistant_message_cap_usd * _MICROS), body.cap_usd
             ),
@@ -1594,6 +1652,23 @@ def _message(
                 if settings.assistant_page_match_model == "off"
                 else settings.assistant_page_match_model
             ),
+            preflight_model=(
+                settings.assistant_preflight_supervisor_model
+                if settings.assistant_preflight_supervisor
+                else None
+            ),
+            run_anyway=body.run_anyway,
+            whole_look_model=(
+                None
+                if settings.assistant_whole_look_model == "off"
+                else settings.assistant_whole_look_model
+            ),
+            whole_look_effort=settings.assistant_whole_look_effort,
+            set_index_model=(
+                None
+                if settings.assistant_set_index_model == "off"
+                else settings.assistant_set_index_model
+            ),
             simple=_simple_options(settings, body) if mode == "full_check" else None,
             plan_answers=(
                 None
@@ -1632,6 +1707,64 @@ def _resume_of(session: Session, chat_id: UUID, message_id: UUID) -> dict[str, A
     )
 
 
+def _queued(
+    request: Request,
+    chat_id: UUID,
+    body: ChatMessageIn,
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+    registry: Annotated[ChatRegistry, Depends(chat_registry)],
+    message: Annotated[_Message, Depends(_message)],
+) -> _Message:
+    """With the worker (#1871): every check made (`_message`), the message becomes a job row,
+    written in one transaction; the worker answers it and the stream follows its events from the
+    database. The one-per-chat and one-paid-check rules hold over every process (409 as before).
+    Without the worker: the message as `_message` made it (this process answers it)."""
+    if not _in_worker(request.app):
+        return message
+    run = message.run
+    try:
+        enqueue_message(
+            session,
+            job_id=run.message_id,
+            chat_id=run.chat_id,
+            package_id=run.package_id,
+            created_by=principal.id,
+            paid=run.paid,
+            request={
+                "chat_id": str(chat_id),
+                "body": body.model_dump(mode="json"),
+                "principal": {
+                    "id": principal.id,
+                    "roles": sorted(str(role) for role in principal.roles),
+                    "projects": sorted(str(project) for project in principal.projects),
+                },
+            },
+        )
+        session.commit()
+    except ChatBusy:
+        session.rollback()
+        raise CodedHTTPException(
+            status.HTTP_409_CONFLICT,
+            "message_running",
+            "A message is already being answered in this chat. Wait for it, or stop it.",
+        ) from None
+    except PaidBusy:
+        session.rollback()
+        raise CodedHTTPException(status.HTTP_409_CONFLICT, "paid_job_running", PAID_JOB_WORDS)
+    finally:
+        # This process's slot was only the checks' own: the job holds the chat from now on.
+        registry.release(run)
+    queued = registry.get(chat_id)
+    if queued is None or queued.message_id != run.message_id:
+        raise CodedHTTPException(
+            status.HTTP_409_CONFLICT,
+            "message_running",
+            "This message ended before it started. Ask again.",
+        )
+    return _Message(job=message.job, run=queued)
+
+
 @router.post(
     "/chats/{chat_id}/messages",
     response_class=EventSourceResponse,
@@ -1653,19 +1786,20 @@ def _resume_of(session: Session, chat_id: UUID, message_id: UUID) -> dict[str, A
     },
 )
 async def send_message(
-    message: Annotated[_Message, Depends(_message)],
+    message: Annotated[_Message, Depends(_queued)],
 ) -> AsyncIterator[ServerSentEvent]:
     """`message_start`, then thinking, text, steps, helpers, files and usage as they happen, then
     `message_end` with the stored message (`error` first when it failed). The browser going away
     only stops this stream: the message goes on and is stored, and `GET .../events` follows it."""
-    # A daemon, as before: a server that is stopped does not wait minutes for an answer (that
-    # question is then left without one, as after a crash).
-    threading.Thread(
-        target=run_message,
-        args=(message.job, message.run),
-        name="assistant-chat-message",
-        daemon=True,
-    ).start()
+    if not isinstance(message.run.feed, JobFeedReader):
+        # A daemon, as before: a server that is stopped does not wait minutes for an answer (that
+        # question is then left without one, as after a crash).
+        threading.Thread(
+            target=run_message,
+            args=(message.job, message.run),
+            name="assistant-chat-message",
+            daemon=True,
+        ).start()
     async for event, data in message.run.feed.follow():
         yield ServerSentEvent(event=event, raw_data=json.dumps(data, ensure_ascii=False))
 

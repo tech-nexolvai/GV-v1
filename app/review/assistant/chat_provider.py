@@ -234,6 +234,20 @@ class ServiceBreaker:
 _SPEND_LIMIT: Final = re.compile(r"\blimit\b|\bcredits?\b", re.IGNORECASE)
 
 
+#: A 429 that is the account's spending limit, not a rate limit (Anthropic: "You have reached
+#: your specified API usage limits"; #1874). Only looked at, never shown.
+_SPEND_CAP: Final = re.compile(
+    r"usage limits?\b|spend(?:ing)? (?:limit|cap)|credit balance|billing", re.IGNORECASE
+)
+_RATE_WORDS: Final = re.compile(r"rate limit|per[- ]minute|too many requests", re.IGNORECASE)
+
+
+def _spend_cap(error: BaseException) -> bool:
+    """Whether a 429 is the account's spending limit (its words say so and not a rate limit)."""
+    words = str(getattr(error, "message", "") or error)
+    return _SPEND_CAP.search(words) is not None and _RATE_WORDS.search(words) is None
+
+
 def failure_from(error: BaseException) -> ProviderFailure:
     """A provider error as a plain sentence: never the provider's words, the request or the key."""
     if isinstance(error, ProviderFailure):
@@ -278,6 +292,16 @@ def failure_from(error: BaseException) -> ProviderFailure:
             status=status,
             retryable=False,
             kind="key",
+        )
+    if isinstance(error, anthropic.RateLimitError) and _spend_cap(error):
+        # A 429 that is the account's spending limit (no retry-after; "usage limits"), never a
+        # busy service: asking again only waits again (#1874, production pipeline research).
+        return ProviderFailure(
+            "The AI service account reached its spending limit, so the AI did not answer. Tell "
+            "your admin.",
+            status=status,
+            retryable=False,
+            kind="payment",
         )
     if isinstance(error, anthropic.RateLimitError):
         # Not "retryable" (a moment's wait does not mend it), but `busy`: the engine asks again

@@ -222,15 +222,33 @@ export interface ChatProgress {
   wrong_so_far: number;
   decision_so_far: number;
   right_so_far: number;
-  /** Time left at the pace so far; null before any page is done. */
+  /** Time left: from the plan's expected time in a roster full check (#1874), else at the pace so far; null before any page is done. */
   eta_seconds: number | null;
   /** The simple full check (#1665): vendor drawings compared so far, of its work list. */
   drawings_done?: number | null;
   drawings_total?: number | null;
+  /** #1874: the roster full check's step; on a big set its areas run as parallel chains. */
+  step?: ChatCheckStep | null;
+  step_number?: number | null;
+  areas_done?: number | null;
+  areas_total?: number | null;
   /** #1872: pages read so far while the check waits for the drawings (no AI step meanwhile). */
   reading_done?: number | null;
   reading_total?: number | null;
 }
+
+/** #1874: a roster full check's steps, in order. */
+export type ChatCheckStep =
+  | 'helpers'
+  | 'gap_closers'
+  | 'verifier'
+  | 'lead_review'
+  | 'look_again'
+  | 'areas'
+  | 'proving'
+  | 'advocate'
+  | 'escalation'
+  | 'finish';
 
 /**
  * What an answer covers (#1528), worked out by code: the whole drawing set, or some pages, or one
@@ -326,7 +344,48 @@ export type ChatBlock =
   | { type: 'resolver'; resolver: ChatResolver }
   | { type: 'package'; package: ChatPackageState }
   | { type: 'understood'; understood: ChatUnderstood }
-  | { type: 'fallback'; fallback: ChatFallback };
+  | { type: 'fallback'; fallback: ChatFallback }
+  | { type: 'preflight'; preflight: ChatPreflight };
+
+/** Who has to act on a pre-flight line. */
+export type PreflightWho = 'you' | 'GV' | 'the vendor' | 'the architect' | 'nobody';
+
+/**
+ * One line of the pre-flight health report (code, $0): what was found, whether the check goes on,
+ * and who acts. Only a swapped, broken or other-project file is `stop`.
+ */
+export interface ChatPreflightLine {
+  id: string;
+  level: 'stop' | 'warn' | 'note' | 'ok';
+  words: string;
+  goes_on: boolean;
+  who: PreflightWho;
+  todo?: string | null;
+  pages?: number[];
+  /** Code's estimate before the check runs; the final numbers come with the result. */
+  estimate?: boolean;
+}
+
+/** The supervisor's second look at the plan before money is spent. */
+export interface ChatSupervisor {
+  verdict: 'ok' | 'warn' | 'stop' | 'not_run';
+  why?: string | null;
+  by?: 'ai' | 'code';
+  cost_usd?: string | null;
+}
+
+/** The pre-flight health report: in the Run popover (the plan) and in a full check's answer. */
+export interface ChatPreflight {
+  /** `working`: code is still working out which pages match the architect (ask again). */
+  state?: 'working' | 'ready';
+  lines: ChatPreflightLine[];
+  stops: string[];
+  estimate?: boolean;
+  supervisor?: ChatSupervisor | null;
+  /** In an answer: the check paused before spending anything. */
+  paused?: boolean;
+  run_anyway?: boolean;
+}
 
 /**
  * #1577: Anthropic's refusal fallback answered instead of the model asked (the model asked
@@ -472,7 +531,22 @@ export interface ChatFinding {
 }
 
 /** #1581: the zero-click cloud drawing's group for a finding, and its words. */
-export type ProofGroup = 'clouded' | 'right' | 'rule_note' | 'not_compared' | 'dismissed';
+export type ProofGroup = 'clouded' | 'right' | 'rule_note' | 'likely_problem' | 'not_compared' | 'dismissed';
+
+/**
+ * The whole-drawing look's claim (`likely_problems.py`): a design difference code could not prove.
+ * Shown dashed, never solid red; the letter says "Please check and confirm". Its spots are the
+ * finding's own boxes.
+ */
+export interface FindingLikelyProblem {
+  kind: 'missing_piece' | 'extra_piece' | 'count' | 'size' | 'layout';
+  /** "Please check and confirm: …" */
+  words: string;
+  /** The AI's reason, one line. */
+  reason?: string | null;
+  sure: 'sure' | 'likely';
+  by?: 'whole_drawing_look';
+}
 
 /**
  * #1839: the GV rule an architect's size breaks while the vendor prints that same size: decided,
@@ -511,6 +585,8 @@ export interface FindingProof {
   settle?: string | null;
   /** #1839, rule_note: the GV rule and the question for the architect. */
   rule_note?: FindingRuleNote | null;
+  /** likely_problem: the whole-drawing look's claim (what to check and confirm). */
+  likely_problem?: FindingLikelyProblem | null;
 }
 
 /** #1569: code's impact score (0-100), its place among the items of its status, and why. */
@@ -792,6 +868,8 @@ export interface ChatTrust {
   ledger?: LedgerReport | null;
   /** What it did NOT check, in code's plain words (pen-stroke numbers, pages not opened…). */
   not_checked?: string[] | null;
+  /** What went wrong in this check, one plain sentence each; empty when nothing did. */
+  problems?: string[] | null;
   /** Rounds of comments: round-1 differences fixed in a later round, still wrong, not in it, and new ones. */
   /** Findings by evidence kind. */
   evidence?: Partial<Record<EvidenceKind, number>> | null;
@@ -1087,8 +1165,12 @@ export interface ChatFullCheckPlan {
   price_usd?: string | null;
   /** The content pages in scope it counts (drawings of those products; title and divider pages left out). */
   price_pages?: number | null;
+  /** #1874: about how many minutes the full check takes (an estimate, with the price). */
+  minutes?: number | null;
   /** #1872: how far the drawings are read; the check's AI steps start only once every page is read. */
   reading?: { state: 'reading' | 'ready' | 'failed'; done: number; total: number; unreadable: number; why?: string | null } | null;
+  /** The pre-flight health report (code, $0); null until the page map is made. */
+  preflight?: ChatPreflight | null;
 }
 
 /** `POST /chats/{id}/messages`. */
@@ -1108,6 +1190,8 @@ export interface SendMessageBody {
   plan_answers?: ChatPlanAnswer[];
   /** #1551: the reviewer's corrected "Understood as" (Edit), sent with the question unchanged. */
   task?: ChatTaskEdit;
+  /** A full check only: run even though the pre-flight check would pause it. */
+  run_anyway?: boolean;
 }
 
 /** The stream's events, in the contract's words. `index` is the block's place in `blocks`. */
@@ -1140,6 +1224,7 @@ export type ChatEvent =
   | { event: 'unknowns'; data: { unknowns: ChatUnknown[] } }
   | { event: 'resolver'; data: { index?: number; resolver: ChatResolver } }
   | { event: 'fallback'; data: { index?: number; fallback: ChatFallback } }
+  | { event: 'preflight'; data: { index?: number; preflight: ChatPreflight } }
   | LiveEvent;
 
 export type ChatEventName = ChatEvent['event'];
@@ -1148,7 +1233,7 @@ const EVENT_NAMES: ReadonlySet<string> = new Set<ChatEventName>([
   'message_start', 'thinking_start', 'thinking_delta', 'thinking_end', 'text_delta', 'step_start', 'step_end',
   'tasks', 'agent_start', 'agent_step', 'agent_end', 'file', 'usage', 'message_end', 'error',
   'finding', 'finding_dropped', 'finding_update', 'coverage', 'progress', 'scope', 'trust', 'cite', 'accuracy', 'unknowns', 'understood',
-  'resolver', 'fallback', ...LIVE_EVENTS,
+  'resolver', 'fallback', 'preflight', ...LIVE_EVENTS,
 ]);
 
 /**

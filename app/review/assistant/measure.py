@@ -45,9 +45,9 @@ import pdfplumber
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.verify_value import (
     _placement,
-    _vendor_page,
-    combined_sheet,
+    combined_sheet_at,
     path_shown,
+    vendor_page_at,
 )
 
 __all__ = [
@@ -217,9 +217,8 @@ def _segments(pdf: Path, page_index: int) -> tuple[Segment, ...]:
         if key in _CACHE:
             _CACHE.move_to_end(key)
             return _CACHE[key]
-    data = pdf.read_bytes()
-    colour_rule = combined_sheet(data)  # the colour rule: GV's combined sheets only
-    one_page = _vendor_page(data, page_index)
+    colour_rule = combined_sheet_at(pdf)  # the colour rule: GV's combined sheets only
+    one_page = vendor_page_at(pdf, page_index)  # cut from the file held open (#1874)
     segments: list[Segment] = []
     with pdfplumber.open(io.BytesIO(one_page)) as document:
         page = document.pages[0]

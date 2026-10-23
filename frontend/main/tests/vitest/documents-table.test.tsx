@@ -21,7 +21,7 @@ function check(extra: Partial<Check> = {}): Check {
     ran_at: '2026-10-05T09:00:00Z',
     stopped: null,
     review_result: { action: 'revise_resubmit', words: 'Revise and resubmit' },
-    counts: { wrong: 5, right: 12, ask_architect: 0, not_compared: 30 },
+    counts: { wrong: 5, right: 12, ask_architect: 0, likely_problem: 0, not_compared: 30 },
     ...extra,
   };
 }
@@ -51,7 +51,7 @@ function summary(id: string, extra: Partial<PackageSummary> = {}): PackageSummar
 // In the server's order: newest change first.
 const ROWS: PackageSummary[] = [
   summary('b', { vendor: 'Beta Stone', full_check: check() }),
-  summary('a', { vendor: 'alpha works', full_check: check({ chat_id: 'chat-a', ran_at: '2026-10-03T09:00:00Z', review_result: { action: 'approved', words: 'Approved' }, counts: { wrong: 0, right: 20, ask_architect: 2, not_compared: 1 } }) }),
+  summary('a', { vendor: 'alpha works', full_check: check({ chat_id: 'chat-a', ran_at: '2026-10-03T09:00:00Z', review_result: { action: 'approved', words: 'Approved' }, counts: { wrong: 0, right: 20, ask_architect: 2, likely_problem: 0, not_compared: 1 } }) }),
   summary('u', { vendor: null, product_type: 'cabinet', drawings: 'reading' }),
 ];
 
@@ -74,8 +74,8 @@ describe('documents table words', () => {
   });
 
   it('counts as the result screen does: Ask the architect only when there is one', () => {
-    expect(countParts({ wrong: 1, right: 2, ask_architect: 0, not_compared: 3 }).map((part) => part.words)).toEqual(['Wrong', 'Right', 'Not compared']);
-    expect(countSentence({ wrong: 1, right: 2, ask_architect: 4, not_compared: 3 })).toBe('1 Wrong, 2 Right, 4 Ask the architect, 3 Not compared');
+    expect(countParts({ wrong: 1, right: 2, ask_architect: 0, likely_problem: 0, not_compared: 3 }).map((part) => part.words)).toEqual(['Wrong', 'Right', 'Not compared']);
+    expect(countSentence({ wrong: 1, right: 2, ask_architect: 4, likely_problem: 0, not_compared: 3 })).toBe('1 Wrong, 2 Right, 4 Ask the architect, 3 Not compared');
   });
 
   it('orders results by what they ask of the vendor, sets not checked yet last', () => {

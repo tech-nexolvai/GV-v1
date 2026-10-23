@@ -349,6 +349,10 @@ class WorkItem(_Frozen):
     """R1 (Anant, 2026-10-20): the area has no architect drawing, so `architect` holds its brand
     prototype drawings, the reference the vendor is compared with (as GV's reviewer does); its
     findings say `source: brand_prototype`, `reference: brand_prototype`."""
+    opposite_hand: str | None = None
+    """The vendor's unit is drawn opposite-hand to the architect's (`AcrossPair.opposite_hand`):
+    sizes are compared, a dimension from a left or right end is Not compared (code does not
+    mirror it)."""
     round: int | None = None
     newest_round: bool = True
     """No later round of the same area exists in the set."""
@@ -412,6 +416,16 @@ class AcrossCandidate(_Frozen):
     """The item title GV typed on the page, as typed."""
     section: str | None = None
     """The section of the set's divider pages it is in, as typed."""
+    project: str | None = None
+    """The project GV's divider pages put its page in (`projects.Place.name`), as typed."""
+    reference: bool = False
+    """Its page is in the brand prototype's part of the file: reference only, never paired (R1)."""
+    key_plan: bool = False
+    """A plan that tags many items (a furniture or key plan): never paired as an item's drawing;
+    its callouts beside an item's tag point to the item's elevation (`Facts.linked`)."""
+    views: tuple[Drawing, ...] = ()
+    """Its page's titled views, each its own drawing (`views.find_views`), when it holds two or
+    more: a pair with the page is narrowed to one of them (`pairing.narrow`)."""
     score: float = 0.0
     evidence: tuple[str, ...] = ()
     contradicts: str | None = None
@@ -434,7 +448,17 @@ class AcrossPair(_Frozen):
     answer: tuple[str, ...] | None = None
     """The matcher's picks (`None`: not answered)."""
     chosen: tuple[str, ...] = ()
+    views: tuple[str, ...] = ()
+    """The views of the chosen items it is compared with (their drawings' refs), when an item's
+    page holds several titled views."""
     why: str
+    opposite_hand: str | None = None
+    """Why the pair is compared mirrored (an opposite-hand marker printed on one side only,
+    `pairing.opposite_hand`), or `None`."""
+    needed: bool = False
+    """Code knows, before any paid compare, that the architect's drawing of it is not in the
+    upload (`worklist.DRAWING_NEEDED`: its project is not in the architect's file, or the
+    architect's drawing of it prints no sizes)."""
 
 
 class WorkList(_Frozen):

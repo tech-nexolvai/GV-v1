@@ -760,6 +760,7 @@ def _work_out_full_checks(session: Session, heads: Sequence[Any]) -> dict[UUID, 
                 "wrong": counts["clouded"],
                 "right": counts["right"],
                 "ask_architect": counts["rule_note"],
+                "likely_problem": counts["likely_problem"],
                 "not_compared": counts["not_compared"],
             },
         }

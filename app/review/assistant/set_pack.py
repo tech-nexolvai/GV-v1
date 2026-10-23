@@ -138,8 +138,10 @@ RENDER_DPI: Final = 100
 #: Seconds the dimension labels' drawn-ink route (OCR) may spend on ONE page (#1872: a limit per
 #: page, read in worker processes; `GV_DIM_LABELS_DRAWN_BUDGET_S`; 0 turns it off). It reads the
 #: vendor's drawn numbers label by label (#1571); a page it does not finish is `partial`, and its
-#: drawn values keep `verify_value`.
-DIMS_DRAWN_BUDGET_S: Final = 300.0
+#: drawn values keep `verify_value`. Measured (2026-10-22/23): on a typed 188-page set a page's
+#: median is 17 s and 11 pages pass 180 s for almost no label; on Set 3's pen-stroke pages 60 s
+#: was too short (7 pages partial on a loaded machine, p11/p12/p15/p16 lost 9-11 labels each).
+DIMS_DRAWN_BUDGET_S: Final = 180.0
 #: The hi-res page cache's folder inside the pack (`page_cache`, #1548): 300-dpi tiles of each page
 #: a crop was cut from, made on first need.
 HIRES: Final = "hires"
@@ -1422,6 +1424,15 @@ def read_pack_page(task: Any, given: Mapping[str, float]) -> Any:
             _log.warning("assistant set pack health check failed: %s", type(failed).__name__)
     read = labels.read_page(task, given)
     read.health = health
+    if task.upload and task.line_work:
+        # The page's line work for the set's anchor pairs (#1879), read here in the worker and
+        # kept in the pack, instead of page after page in the labels' process at the end.
+        try:
+            consistency = import_module("app.review.assistant.vendor_consistency")
+            upload = Path(task.upload)
+            consistency.line_work(upload.parent, Path(task.line_work))(task.name, task.number)
+        except Exception as failed:  # noqa: BLE001 - the labels' process reads it then
+            _log.warning("assistant set pack line work not kept: %s", type(failed).__name__)
     return read
 
 
@@ -1442,33 +1453,38 @@ def write_dims(
     pairs = import_module("app.review.assistant.dim_pairs")
     anchors = import_module("app.review.assistant.dim_anchors")
     pages = {"pages": list(page_map)}
-    line_work: dict[tuple[str, int], Any] = {}
-    anchored_memo: dict[Any, Any] = {}
+    # Each page's line work, read by the page workers with its labels and kept in the pack
+    # (`vendor_consistency.LINE_WORK_DIR`, #1879); a page not kept is read here once.
+    line_work = import_module("app.review.assistant.vendor_consistency").line_work(uploads, folder)
 
     def segments_of(name: str, page: int) -> Any:
-        if (name, page) not in line_work:
-            line_work[(name, page)] = anchors.page_segments(uploads / name, page - 1)
-        return line_work[(name, page)]
+        return tuple(line_work(name, page) or ())
 
     table: dict[str, Any] = {}
     last = [0.0]
 
     def written(document: dict[str, Any], *, now: bool = False) -> None:
+        """`dims.json` and the reading table as pages finish (at most every `WRITE_EVERY_S`
+        seconds, and at the end); the facts worked out from the whole set (`facts`) once, at
+        the end (#1879: worked out on every write they took minutes on a big set)."""
         if parent is not None and os.getppid() != parent:
             raise SystemExit(0)
-        # A big set's pages finish every second or two: its facts are written at most every
-        # `WRITE_EVERY_S` seconds (they are worked out from the whole document), and at the end.
         if not now and time.monotonic() - last[0] < WRITE_EVERY_S:
             return
         last[0] = time.monotonic()
         _write_json(folder / "dims.json", document)
+        # The reading table last: a page it says is ready has its labels in what was just written.
+        if table:
+            _write_json(folder / READING_FILE, {**table, "complete": False})
+
+    def facts(document: dict[str, Any]) -> None:
         # Each drawing's scale, measured from its printed dimensions (a few milliseconds).
         measured = scales.set_scales(document)
         _write_json(folder / scales.SCALES_FILE, measured)
         # Architect against vendor dimensions paired by what both ends land on (walls, the floor,
         # the same outlet), where no single scale holds; never allowed to stop the pack.
         try:
-            anchored = anchors.set_anchor_pairs(document, pages, segments_of, cache=anchored_memo)
+            anchored = anchors.set_anchor_pairs(document, pages, segments_of)
         except Exception:  # noqa: BLE001 - a fact the pack can do without
             _log.exception("anchor pairing failed; pairs.json keeps the positional pairs only")
             anchored = {}
@@ -1476,9 +1492,6 @@ def write_dims(
         _write_json(folder / pairs.PAIRS_FILE, pairs.set_pairs(document, measured, anchored))
         # Each drawing's printed notes and tags (from the phrases dims.json keeps).
         _write_json(folder / notes.NOTES_FILE, notes.set_notes(document, pages))
-        # The reading table last: a page it says is ready has its labels in what was just written.
-        if table:
-            _write_json(folder / READING_FILE, {**table, "complete": False})
 
     listing = _read_json(folder / _LISTING_FILE)
     items = {
@@ -1504,6 +1517,7 @@ def write_dims(
         reader=read_pack_page,
         health={name: items.get(name) or {"name": name} for name in names},
         uploads={name: uploads / name for name in names},
+        line_work=folder,
         on_status=table.update,
         reads=reads,
     )
@@ -1513,12 +1527,12 @@ def write_dims(
     if checked:
         _write_json(folder / "health.json", {"version": PACK_VERSION, "pages": checked})
     # The candidate whole-page drawings, decided from every route's labels (#1772); the pack's
-    # facts are written again from the settled page map.
+    # facts are worked out once, from the settled page map.
     if _settle_folder(folder, document, labels._side):
         settled = _read_json(folder / "page_map.json") or {}
         pages["pages"] = list(settled.get("pages") or [])
-        anchored_memo.clear()
         written(document, now=True)
+    facts(document)
     _write_coverage(folder, document, ink)
     if table:
         _write_json(folder / READING_FILE, {**table, "complete": True})

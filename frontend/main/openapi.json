@@ -4932,6 +4932,62 @@
         "title": "ChatFindingLaterOut",
         "type": "object"
       },
+      "ChatFindingLikelyOut": {
+        "description": "What the whole-drawing look claimed (`likely_problems.payload`): never red by itself; a\nLikely problem until code proves it.",
+        "properties": {
+          "by": {
+            "const": "whole_drawing_look",
+            "default": "whole_drawing_look",
+            "title": "By",
+            "type": "string"
+          },
+          "kind": {
+            "description": "What differs: a missing or extra piece, a count, a size, the layout.",
+            "enum": [
+              "missing_piece",
+              "extra_piece",
+              "count",
+              "size",
+              "layout"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The AI's reason, one line.",
+            "title": "Reason"
+          },
+          "sure": {
+            "description": "How sure the look was.",
+            "enum": [
+              "sure",
+              "likely"
+            ],
+            "title": "Sure",
+            "type": "string"
+          },
+          "words": {
+            "description": "The letter's line: \"Please check and confirm: ...\".",
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "words",
+          "sure"
+        ],
+        "title": "ChatFindingLikelyOut",
+        "type": "object"
+      },
       "ChatFindingOut": {
         "description": "One difference the assistant reported, with code-made evidence and checks.",
         "properties": {
@@ -5510,11 +5566,12 @@
         "description": "Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read\n(`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a\nproblem override.",
         "properties": {
           "group": {
-            "description": "clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks the architect, `rule_note`); not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').",
+            "description": "clouded: Wrong, proved by code (red cloud); right; rule_note: the architect's size breaks a GV rule and the vendor prints it too (#1839: decided, never red; GV asks the architect, `rule_note`); likely_problem: the whole-drawing look found a design difference code could not prove (shown dashed, never solid red; the letter says 'Please check and confirm', `likely_problem`); not_compared: could not be compared under the architect-first rules (#1619: listed with its reason in the Not-compared PDF and workbook, never a question to anyone); dismissed: the reviewer marked it Right (Not a problem; the vendor's files say 'Right (reviewer)').",
             "enum": [
               "clouded",
               "right",
               "rule_note",
+              "likely_problem",
               "not_compared",
               "dismissed"
             ],
@@ -5532,6 +5589,17 @@
             ],
             "description": "not_compared: the trade's words for the reason (Field verify, RFI to the architect, Not reviewed: <reason>, Illegible).",
             "title": "Label"
+          },
+          "likely_problem": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingLikelyOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A whole-drawing look's claim: what to check and confirm (the spots are the finding's own boxes)."
           },
           "not_compared": {
             "anyOf": [
@@ -6071,11 +6139,34 @@
             "title": "Doubts",
             "type": "array"
           },
+          "minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "About how many minutes the full check takes, with the price (#1874): the page helpers, the areas' chains and the set-wide steps at the call times measured on the server, the drawings already read. An estimate, never a promise.",
+            "title": "Minutes"
+          },
           "more": {
             "default": 0,
             "description": "Further unsure places, compared as read.",
             "title": "More",
             "type": "integer"
+          },
+          "preflight": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatPreflightOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The pre-flight health report (code, $0): what was found, whether the check goes on, who acts; `null` before the page map is made."
           },
           "price_pages": {
             "anyOf": [
@@ -6942,6 +7033,7 @@
               "wrong",
               "right",
               "rule_note",
+              "likely_problem",
               "not_compared"
             ],
             "title": "Outcome",
@@ -6965,6 +7057,7 @@
                   "wrong",
                   "right",
                   "rule_note",
+                  "likely_problem",
                   "not_compared"
                 ],
                 "type": "string"
@@ -7340,6 +7433,13 @@
       "ChatLiveTallyOut": {
         "description": "Found so far (`check_tally`): proved Wrongs only, and the differences waiting for the\nblind second look (they become Wrong only if it agrees).",
         "properties": {
+          "likely_problem": {
+            "default": 0,
+            "description": "Likely problems from the whole-drawing look (please check).",
+            "minimum": 0.0,
+            "title": "Likely Problem",
+            "type": "integer"
+          },
           "not_compared": {
             "minimum": 0.0,
             "title": "Not Compared",
@@ -7570,6 +7670,12 @@
             "description": "The simple full check only: an earlier run of this chat (its folder name under `simple/`, said in the work-items block) whose saved compare answers and blind looks are verified again, with no model call ($0).",
             "title": "Replay"
           },
+          "run_anyway": {
+            "default": false,
+            "description": "A full check only: run even when the pre-flight check would pause it (a swapped, broken or other-project file). Every warning is still recorded.",
+            "title": "Run Anyway",
+            "type": "boolean"
+          },
           "task": {
             "anyOf": [
               {
@@ -7628,6 +7734,7 @@
                       "finding_dropped": "#/components/schemas/ChatFindingDroppedBlock",
                       "finding_update": "#/components/schemas/ChatFindingUpdateBlock",
                       "package": "#/components/schemas/ChatPackageBlock",
+                      "preflight": "#/components/schemas/ChatPreflightBlock",
                       "progress": "#/components/schemas/ChatProgressBlock",
                       "resolver": "#/components/schemas/ChatResolverBlock",
                       "resume": "#/components/schemas/ChatResumeBlock",
@@ -7699,6 +7806,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatPackageBlock"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatPreflightBlock"
                     }
                   ]
                 },
@@ -8342,6 +8452,161 @@
         "title": "ChatPlanOptionOut",
         "type": "object"
       },
+      "ChatPreflightBlock": {
+        "properties": {
+          "preflight": {
+            "$ref": "#/components/schemas/ChatPreflightOut"
+          },
+          "type": {
+            "const": "preflight",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "preflight"
+        ],
+        "title": "ChatPreflightBlock",
+        "type": "object"
+      },
+      "ChatPreflightLineOut": {
+        "description": "One line of the pre-flight health report (`preflight.py`): what code found, whether the\ncheck goes on, and who acts.",
+        "properties": {
+          "estimate": {
+            "default": false,
+            "description": "Code's estimate before the check runs (the AI page matcher confirms after).",
+            "title": "Estimate",
+            "type": "boolean"
+          },
+          "goes_on": {
+            "default": true,
+            "description": "Whether the check goes on.",
+            "title": "Goes On",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "What kind of line: \"matched\", \"needs_drawing\", \"files_swapped\"\u2026",
+            "title": "Id",
+            "type": "string"
+          },
+          "level": {
+            "description": "stop: the whole check stops before money is spent (only a swapped or broken file, or another project's architect file); warn: many pages are touched; note: some pages; ok: plain facts.",
+            "enum": [
+              "stop",
+              "warn",
+              "note",
+              "ok"
+            ],
+            "title": "Level",
+            "type": "string"
+          },
+          "pages": {
+            "description": "The vendor pages it touches.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "todo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What to do, when someone has to act.",
+            "title": "Todo"
+          },
+          "who": {
+            "default": "nobody",
+            "enum": [
+              "you",
+              "GV",
+              "the vendor",
+              "the architect",
+              "nobody"
+            ],
+            "title": "Who",
+            "type": "string"
+          },
+          "words": {
+            "description": "What was found, in plain words.",
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "level",
+          "words"
+        ],
+        "title": "ChatPreflightLineOut",
+        "type": "object"
+      },
+      "ChatPreflightOut": {
+        "description": "The pre-flight health report before a full check (`preflight.py`), $0; in an answer, also\nthe supervisor's look and whether the check paused.",
+        "properties": {
+          "estimate": {
+            "default": false,
+            "description": "Some numbers are code's estimate before the check runs.",
+            "title": "Estimate",
+            "type": "boolean"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/ChatPreflightLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "paused": {
+            "default": false,
+            "description": "In an answer: the check paused before spending (Run anyway runs it).",
+            "title": "Paused",
+            "type": "boolean"
+          },
+          "run_anyway": {
+            "default": false,
+            "description": "In an answer: the reviewer chose Run anyway.",
+            "title": "Run Anyway",
+            "type": "boolean"
+          },
+          "state": {
+            "default": "ready",
+            "description": "working: code's pairing estimate is still being worked out (ask again).",
+            "enum": [
+              "working",
+              "ready"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "stops": {
+            "description": "The ids of the lines that stop the check.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Stops",
+            "type": "array"
+          },
+          "supervisor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatSupervisorOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "ChatPreflightOut",
+        "type": "object"
+      },
       "ChatProductScopeOut": {
         "description": "The strict product scope (Anant, 2026-10-18): the products checked, and the findings of\nother products code refused or dropped, whoever reported them.",
         "properties": {
@@ -8396,6 +8661,30 @@
       "ChatProgressOut": {
         "description": "A full check's progress, by code: \"Checking page 12 of 60 \u00b7 8 wrong so far \u00b7 about 6 min\nleft\". Sent as `progress` events while it runs; the last one is stored.",
         "properties": {
+          "areas_done": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A big set (#1874): the areas whose chain has finished.",
+            "title": "Areas Done"
+          },
+          "areas_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A big set: the areas run as parallel chains.",
+            "title": "Areas Total"
+          },
           "decision_so_far": {
             "title": "Decision So Far",
             "type": "integer"
@@ -8433,8 +8722,14 @@
                 "type": "null"
               }
             ],
-            "description": "Time left at the pace so far; null before any page is done.",
+            "description": "Time left: from the plan's expected time in a roster full check (#1874), else at the pace so far; null before any page is done or past the estimate.",
             "title": "Eta Seconds"
+          },
+          "likely_so_far": {
+            "default": 0,
+            "description": "Likely problems the whole-drawing look found (please check).",
+            "title": "Likely So Far",
+            "type": "integer"
           },
           "pages_done": {
             "title": "Pages Done",
@@ -8486,6 +8781,42 @@
             "description": "The architect's size breaks a GV rule: GV asks (#1839).",
             "title": "Rule Note So Far",
             "type": "integer"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "enum": [
+                  "helpers",
+                  "gap_closers",
+                  "verifier",
+                  "lead_review",
+                  "look_again",
+                  "areas",
+                  "proving",
+                  "advocate",
+                  "escalation",
+                  "finish"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The roster full check's step (#1874): page helpers, gap closers, verifier, lead review, look-again; on a big set 'areas' (each area's own chain of those, in parallel); then code's proving steps, the devil's advocate, the escalation, the finish.",
+            "title": "Step"
+          },
+          "step_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The step's place, from 1.",
+            "title": "Step Number"
           },
           "wrong_so_far": {
             "title": "Wrong So Far",
@@ -9825,6 +10156,58 @@
         "title": "ChatSummaryReviewOut",
         "type": "object"
       },
+      "ChatSupervisorOut": {
+        "description": "The supervisor's second look at the plan before money is spent (`plan_supervisor.py`).",
+        "properties": {
+          "by": {
+            "default": "ai",
+            "enum": [
+              "ai",
+              "code"
+            ],
+            "title": "By",
+            "type": "string"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "verdict": {
+            "enum": [
+              "ok",
+              "warn",
+              "stop",
+              "not_run"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          },
+          "why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "One plain sentence.",
+            "title": "Why"
+          }
+        },
+        "required": [
+          "verdict"
+        ],
+        "title": "ChatSupervisorOut",
+        "type": "object"
+      },
       "ChatTaskOut": {
         "properties": {
           "active_form": {
@@ -10323,6 +10706,21 @@
             ],
             "description": "\"What's right\" items not compared (not counted above).",
             "title": "Not Compared"
+          },
+          "problems": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What went wrong in this check, in plain words (pages that could not be read, pages with no architect drawing and why, steps skipped, money that ran out); empty when nothing did.",
+            "title": "Problems"
           },
           "product_scope": {
             "anyOf": [
@@ -14048,6 +14446,13 @@
             "description": "Ask the architect: the architect's size breaks a GV rule (#1839).",
             "minimum": 0.0,
             "title": "Ask Architect",
+            "type": "integer"
+          },
+          "likely_problem": {
+            "default": 0,
+            "description": "Likely problem: the whole-drawing look found it, code did not prove it (please check and confirm).",
+            "minimum": 0.0,
+            "title": "Likely Problem",
             "type": "integer"
           },
           "not_compared": {

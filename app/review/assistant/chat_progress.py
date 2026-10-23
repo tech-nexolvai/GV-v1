@@ -20,6 +20,21 @@ from app.review.assistant.proof import proof_group
 TICK_SECONDS: Final = 5.0
 
 PHASES: Final = ("reading", "checking", "writing")
+#: A roster full check's steps, in order (#1874): the live line names the one it is in. On a big
+#: set the areas run their own chains ("areas": page helpers, gap closers, verifier, lead review,
+#: look-again), then the set-wide steps.
+STEPS: Final = (
+    "helpers",
+    "gap_closers",
+    "verifier",
+    "lead_review",
+    "look_again",
+    "areas",
+    "proving",
+    "advocate",
+    "escalation",
+    "finish",
+)
 
 #: (live findings, coverage counts or None when coverage was never set, the set's page count).
 Snapshot = Callable[[], tuple[Sequence[Mapping[str, Any]], Mapping[str, Any] | None, int]]
@@ -60,6 +75,8 @@ def progress_numbers(
         "right_so_far": groups.get("right", 0) + groups.get("dismissed", 0),
         # Decided (#1839): the architect's size breaks a GV rule, GV asks the architect.
         "rule_note_so_far": groups.get("rule_note", 0),
+        # The whole-drawing look's claims code could not prove (2026-10-23): please check.
+        "likely_so_far": groups.get("likely_problem", 0),
         "eta_seconds": eta,
     }
 
@@ -76,6 +93,31 @@ def with_work(
     if 0 < done < total and elapsed > 0:
         eta = round((total - done) * elapsed / done)
     return {**numbers, "drawings_done": done, "drawings_total": total, "eta_seconds": eta}
+
+
+def with_step(
+    numbers: dict[str, Any],
+    step: tuple[str, int | None, int | None] | None,
+    expected: float | None,
+    elapsed: float,
+) -> dict[str, Any]:
+    """A roster full check's step and areas (#1874); the time left from the plan's expected time
+    when it is known (a full check finds its pages fast and proves them slowly, so the pace of
+    the pages says too little): never below a minute before the end, null past the estimate."""
+    if step is None and expected is None:
+        return numbers
+    out = dict(numbers)
+    if step is not None:
+        name, done, total = step
+        out["step"] = name
+        out["step_number"] = STEPS.index(name) + 1 if name in STEPS else None
+        if total:
+            out["areas_done"] = done or 0
+            out["areas_total"] = total
+    if expected is not None:
+        left = expected - elapsed
+        out["eta_seconds"] = round(max(60.0, left)) if left > -60 else None
+    return out
 
 
 class FullCheckProgress:
@@ -101,6 +143,8 @@ class FullCheckProgress:
         self._stop = threading.Event()
         self._ticker: threading.Thread | None = None
         self._work: tuple[int, int] | None = None
+        self._step: tuple[str, int | None, int | None] | None = None
+        self._expected: float | None = None
         self._reading: tuple[int, int] | None = None
 
     def current(self) -> dict[str, Any]:
@@ -109,7 +153,25 @@ class FullCheckProgress:
         numbers = progress_numbers(findings, coverage, pages, self._phase, elapsed)
         if self._reading is not None and self._phase == "reading":
             numbers["reading_done"], numbers["reading_total"] = self._reading
-        return with_work(numbers, self._work, elapsed)
+        numbers = with_work(numbers, self._work, elapsed)
+        return with_step(numbers, self._step, self._expected, elapsed)
+
+    def set_step(
+        self, step: str, *, areas_done: int | None = None, areas_total: int | None = None
+    ) -> None:
+        """A roster full check's step (`STEPS`, #1874), and on a big set the areas done of all."""
+        self._step = (step, areas_done, areas_total)
+        self.changed(force=True)
+
+    def elapsed(self) -> float:
+        """Seconds since the check started."""
+        return self._clock() - self._started
+
+    def set_expected(self, seconds: float) -> None:
+        """The plan's expected time for the whole check (`full_check_schedule`, #1874): the time
+        left is worked out from it rather than from the pace of the pages."""
+        self._expected = max(0.0, float(seconds))
+        self.changed(force=True)
 
     def set_reading(self, done: int, total: int) -> None:
         """The drawings' pages read so far, while the check waits for them (#1872): "Reading the

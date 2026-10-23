@@ -461,8 +461,25 @@ export function checkCounts(findings: readonly ChatFinding[], trust: ChatTrust |
     second_read: report?.second_read ?? secondRead,
     verified: report?.verified ?? { checked: findings.filter((finding) => leadChecked(finding)).length, total: findings.length },
     rules: report?.rules ?? [...rules],
-    arithmetic: report?.arithmetic ?? arithmetic,
+    arithmetic: arithmeticCounts(report?.arithmetic) ?? arithmetic,
   };
+}
+
+/**
+ * The server's arithmetic counts (`{adds_up, does_not_add_up, not_a_number}` per finding) or the
+ * screen's older shape (`{checked, agrees}`), as checked / added up; null when none was checked.
+ * (The server's shape once showed as "undefined of undefined match".)
+ */
+export function arithmeticCounts(report: unknown): CheckCounts['arithmetic'] {
+  if (!report || typeof report !== 'object') return null;
+  const counts = report as Record<string, unknown>;
+  const number = (key: string) => (typeof counts[key] === 'number' ? (counts[key] as number) : 0);
+  if (typeof counts.checked === 'number') {
+    return counts.checked > 0 ? { checked: counts.checked, agrees: number('agrees') } : null;
+  }
+  const agrees = number('adds_up');
+  const checked = agrees + number('does_not_add_up');
+  return checked > 0 ? { checked, agrees } : null;
 }
 
 /** The lines of the "How this was checked" list, each factual and counted. */
@@ -472,23 +489,59 @@ export function checkLines(counts: CheckCounts): string[] {
     const { match, not_found: missing, no_text: strokes } = counts.printed;
     const total = match + missing + strokes;
     const extra = [missing ? `${missing} not found` : null, strokes ? `${strokes} drawn as pen strokes` : null].filter(Boolean).join(', ');
-    lines.push(`Printed at the spot: ${match} of ${total} values found${extra ? ` (${extra})` : ''}`);
+    lines.push(`Found printed on the drawing: ${match} of ${total} values${extra ? ` (${extra})` : ''}`);
   } else {
-    lines.push('Printed at the spot: not run');
+    lines.push('Found printed on the drawing: not checked');
   }
-  if (counts.second_read) {
-    const { agrees, disagrees, unsure } = counts.second_read;
-    lines.push(`Second independent read: ${agrees} agree · ${disagrees} disagree · ${unsure} unsure`);
+  const reads = counts.second_read;
+  if (reads && (reads.agrees ?? 0) + (reads.disagrees ?? 0) + (reads.unsure ?? 0) > 0) {
+    const { agrees, disagrees, unsure } = reads;
+    lines.push(`Read again by a second AI: ${agrees ?? 0} agree · ${disagrees ?? 0} disagree · ${unsure ?? 0} unsure`);
   } else {
-    lines.push('Second independent read: not run');
+    lines.push('Read again by a second AI: not done');
   }
-  lines.push(`Checked on the drawing by the lead: ${counts.verified.checked} of ${counts.verified.total}`);
+  if (counts.verified.total > 0) lines.push(`Looked at again on the drawing: ${counts.verified.checked} of ${counts.verified.total}`);
   lines.push(counts.rules.length ? `GV rules applied by code: ${counts.rules.join(', ')}` : 'GV rules applied by code: none for these findings');
-  if (counts.arithmetic) lines.push(`Vendor’s arithmetic added up by code: ${counts.arithmetic.agrees} of ${counts.arithmetic.checked} match`);
+  if (counts.arithmetic) lines.push(`Vendor’s sizes added up by code: ${counts.arithmetic.agrees} of ${counts.arithmetic.checked} add up`);
   return lines;
 }
 
 // ── Timings (#1512) ─────────────────────────────────────────
+
+/**
+ * Each step of a check in plain words, for the work line and the timings table: never the
+ * internal names ("Gap closers", "Provers", "Advocate", "Escalation").
+ */
+export const PHASE_WORDS: Record<string, string> = {
+  set_pack: 'Read the drawings',
+  seeding: 'GV Review’s own checks',
+  page_match: 'Matched vendor pages to the architect’s',
+  planning: 'Planned the work',
+  prewarm: 'Got ready',
+  compare: 'Compared each vendor drawing with the architect’s',
+  helpers: 'Compared each vendor page',
+  lead: 'Main review',
+  lead_review: 'Looked again at pages still open',
+  lead_verification: 'Checked the findings on the drawings',
+  gap_closers: 'Looked again at items still open',
+  provers: 'Proved differences on the drawings',
+  provers_ahead: 'Proved differences on the drawings',
+  second_reads: 'Read numbers a second time',
+  third_reads: 'Read unclear numbers a third time',
+  critic: 'A second look at each difference',
+  finish_checks: 'Checked by code',
+  advocate: 'Second look at each difference',
+  escalation: 'A closer look at unclear items',
+  not_compared: 'Made the Not-compared list',
+  cloud_drawing: 'Made the cloud drawing',
+  report: 'Made the check report',
+  package: 'Made the package',
+};
+
+/** A phase's plain words, else the server's label. */
+export function phaseWords(phase: string, label: string): string {
+  return PHASE_WORDS[phase] ?? label;
+}
 
 /** Wall-clock seconds in words: "0.4 s", "38 s", "4 min 12 s". */
 export function secondsWords(seconds: number): string {
@@ -515,7 +568,7 @@ export function timingRows(timings: ChatTimings | null | undefined): TimingRow[]
   if (!timings || !Array.isArray(timings.phases)) return null;
   const rows: TimingRow[] = timings.phases.map((phase) => ({
     key: phase.phase,
-    label: phase.label,
+    label: phaseWords(phase.phase, phase.label),
     time: secondsWords(phase.seconds),
     cost: `$${phase.cost_usd}`,
     calls: phase.calls,

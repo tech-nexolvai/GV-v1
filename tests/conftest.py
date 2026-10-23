@@ -121,3 +121,20 @@ def _forget_inference_profile_routes() -> Iterator[None]:
     module = sys.modules.get("extraction.models.nova")
     if module is not None:
         module.PROFILE_ROUTES.forget()
+
+
+@pytest.fixture(autouse=True)
+def _forget_model_limiters() -> Iterator[None]:
+    """Each test starts with fresh AI model limiters (#1874).
+
+    `app.review.assistant.rate_limits` keeps one limiter per model for the whole process on
+    purpose (the provider's limits are the server's); a test's calls would otherwise count against
+    the next test's minute. Cleared only if the module is already loaded.
+    """
+    module = sys.modules.get("app.review.assistant.rate_limits")
+    if module is not None:
+        module.reset_limiters()
+    yield
+    module = sys.modules.get("app.review.assistant.rate_limits")
+    if module is not None:
+        module.reset_limiters()

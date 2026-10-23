@@ -11,7 +11,7 @@ Spot: name every part's label and the overall's label; code adds them. A part dr
 the overall by the same amount (an overhang, an inset) is not one string. Red when every value is
 printed.
 
-**A segment changed inside a chain.** The overall matches but one segment moved (wall to outlet 1'-5"
+**A segment changed inside a chain.** The overall matches but one segment moved (wall to outlet 1'-3"
 instead of 1'-1"). Spot: compare each segment of the architect's chain on its own, never only the
 total. Red when both labels are printed and both picks agree.
 
