@@ -1049,9 +1049,12 @@ def check_pack(
     uploads: Path | None,
     main_file: str | None = None,
     products: Sequence[Product] | None = None,
+    *,
+    stop: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Every item of the set pack's runs (`dims.json`, the work list's pairing, the uploads' line
-    work), for the products whose rule is in the registry (`products`: the check's own)."""
+    work), for the products whose rule is in the registry (`products`: the check's own). `stop`:
+    Stop was pressed: no item at all (a Continue checks the whole set again, 2026-10-23)."""
     if folder is None:
         return []
     chosen = [p for p in (products if products is not None else registry().products) if p.run_fit]
@@ -1073,6 +1076,8 @@ def check_pack(
     out: list[dict[str, Any]] = []
     memo = _Memo()
     for item in work.items:
+        if stop is not None and stop():
+            return []
         vendor = _drawing(item.vendor, pages)
         architects = [d for d in (_drawing(a, pages) for a in item.architect) if d is not None]
         if vendor is None or not architects:
@@ -1086,6 +1091,8 @@ def check_pack(
     vendors, architects = _left_over(work, pages)
     if vendors and architects:
         for vendor in vendors:
+            if stop is not None and stop():
+                return []
             try:
                 for paired in check_drawings(
                     vendor, architects, segments, chosen, by_run=True, memo=memo
@@ -1178,8 +1185,12 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
         return None
     workspace = engine.tools.workspace
     book = engine.book
+    cancel = getattr(engine, "cancel", None)
     found = check_pack(
-        workspace.set_pack, getattr(workspace, "uploads", None), getattr(book, "main_file", None)
+        workspace.set_pack,
+        getattr(workspace, "uploads", None),
+        getattr(book, "main_file", None),
+        stop=None if cancel is None else cancel.is_set,
     )
     if not found:
         return None

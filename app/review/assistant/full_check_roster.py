@@ -5106,10 +5106,13 @@ class _Run:
         self._step("finish")
         if engine._progress is not None:
             engine._progress.phase("writing")
-        try:
-            files = engine._full_check_files(stopped)
-        except Exception:  # noqa: BLE001 - the answer still ends, with its summary
-            _log.exception("assistant roster files failed")
+        if stopped != "cancelled":
+            # Stop (2026-10-23): the answer ends now with every finding kept; its files (a minute
+            # or two on a big set) are made when the check is continued.
+            try:
+                files = engine._full_check_files(stopped)
+            except Exception:  # noqa: BLE001 - the answer still ends, with its summary
+                _log.exception("assistant roster files failed")
         text = self._summary(stopped, cap_hit, files)
         index = engine._add_block({"type": "text", "text": text, "by": "code"})
         engine.emit("text_delta", {"index": index, "text": text, "by": "code"})

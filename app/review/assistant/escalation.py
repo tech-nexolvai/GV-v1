@@ -155,8 +155,8 @@ class EscalationContext:
     unopened: frozenset[int] | None = None
     """The main file's pages the check never opened (its coverage); None: not known (none)."""
     stop: Callable[[], bool] | None = None
-    """Stop was pressed (2026-10-23): the ladder tries no further item (each one tried is kept;
-    the guards before it, which only ever take a red or a Right away, still run on every item)."""
+    """Stop was pressed (2026-10-23): the tag reader and the ladder try no further item (each one
+    tried is kept); GV's stickers, which only ever take a red away, are still told apart."""
     count: Callable[[int], Callable[[], None]] | None = None
     """The live line's item count (`ChatEngine.count_items`): given the items to try, it returns
     the function that counts one tried."""
@@ -1008,7 +1008,10 @@ def _before_ladder(
     for finding in live:
         item = _Item(finding)
         _sticker_step(item, ctx)
-        _tag_step(item, ctx)
+        if ctx.stop is None or not ctx.stop():
+            # Stop: GV's stickers are still told apart (that only ever takes a red away); the tag
+            # reader, which can decide an item, waits for a Continue (2026-10-23).
+            _tag_step(item, ctx)
         if not item.changed:
             continue
         item.finding.update(judged(item.finding))

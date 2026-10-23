@@ -1417,12 +1417,14 @@ def check_pack(
     segments: Segments | None = None,
     *,
     settings: Mapping[str, Setting] | None = None,
+    stop: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Every sink plan item of the set pack's vendor drawings (`dims.json`, the work list's
     pairing, the uploads' line work), against the values in force: `setting` is the front
     offset's, `settings` every rule's by its id (`settings_from`; a rule with no value in force is
     not checked). The vendor drawings no architect drawing is paired with (`WorkList.alone`, the
-    newest round of each) are read too: GV's rules govern them alone."""
+    newest round of each) are read too: GV's rules govern them alone. `stop`: Stop was pressed: no
+    item at all (a Continue checks the whole set again, 2026-10-23)."""
     rules = dict(settings or {})
     if setting is not None:
         rules[FRONT.id] = setting
@@ -1455,6 +1457,8 @@ def check_pack(
     ] = []
     alone = [item for item in getattr(work, "alone", ()) if item.newest_round]
     for item, by_itself in [*((i, False) for i in work.items), *((i, True) for i in alone)]:
+        if stop is not None and stop():
+            return []
         try:
             vendor = _drawing(
                 item.vendor, pages, texts.get((item.vendor.file, item.vendor.own_page), "")
@@ -1663,6 +1667,7 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
         main_file,
         category,
         settings=settings,
+        stop=getattr(getattr(engine, "cancel", None), "is_set", None),
     )
     if not found:
         return None
