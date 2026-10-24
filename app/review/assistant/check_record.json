@@ -39,6 +39,13 @@
    "kept_quiet": 0,
    "unjudged_reds": 0
   },
+  "sink_centre": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0
+  },
   "run_fit": {
    "keyed_cases": 0,
    "false_reds": 0,

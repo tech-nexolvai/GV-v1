@@ -72,6 +72,7 @@ KINDS: Final[Mapping[str, str]] = {
     "vendor_pages": "the vendor prints one item in two sizes on two pages",
     "filler": "a filler outside GV's filler range",
     "sink_offset": "a sink offset against GV's standard",
+    "sink_centre": "a sink's centre against the sink base's centre",
     "run_fit": "a cabinet run does not fit the wall",
     "splash": "a back or side splash against the architect's",
     "missing_item": "a millwork item the architect shows is missing on the vendor's drawing",
@@ -85,6 +86,7 @@ KINDS: Final[Mapping[str, str]] = {
 _CREATED_BY: Final[Mapping[str, str]] = {
     "filler_range": "filler",
     "sink_offset": "sink_offset",
+    "sink_centre": "sink_centre",
     "run_fit": "run_fit",
     "splash_views": "splash",
     "architect_items": "finish_code",
