@@ -61,7 +61,9 @@ type Views = Callable[[str, int], Sequence[View]]
 type Phrases = Mapping[tuple[str, int], Sequence[Mapping[str, Any]]]
 
 _SINK: Final = re.compile(r"\bsinks?\b", re.IGNORECASE)
-_SINK_WORD: Final = re.compile(r"\bSINKS?\b|\bLAV(?:ATORY)?\b")
+_SINK_WORD: Final = re.compile(r"\bSINKS?\b")
+#: A tag printed with these words is another product's (a faucet's, a drain's), never the sink's.
+_NOT_SINK: Final = re.compile(r"\b(?:FAUCETS?|DRAINS?|TRAPS?|PULLS?|HANDLES?|STRAINERS?)\b")
 _TOP_DEPTH: Final = re.compile(
     r"\b(?:counter\s*)?top\s+depth\b|\bdepth\s+of\s+(?:the\s+)?(?:counter\s*)?top\b", re.IGNORECASE
 )
@@ -208,7 +210,7 @@ def _reference_models(
     out: list[tuple[str, str, Mapping[str, Any]]] = []
     own = [p for p in phrases.get(sheet, ()) if p.get("side") in (None, "architect")]
     for phrase in own:
-        if not _near_sink(phrase, own):
+        if not _near_sink(phrase, own) or _NOT_SINK.search(_flat(phrase.get("text")).upper()):
             continue
         box = phrase.get("box")
         for key in _tags(phrase.get("text")):
@@ -217,7 +219,7 @@ def _reference_models(
                 out.append((key, f"the reference's page {sheet[1]} prints {key} (its text)", spot))
     for view in views:
         for key, line in model_tags(view, _SINK_WORD):
-            if _family(key) == family:
+            if _family(key) == family and not _NOT_SINK.search(line.text):
                 how = (
                     f"the reference's {view.name} (page {view.page}) prints {line.text} "
                     "(pen strokes, read the same by two OCR engines)"
@@ -427,12 +429,17 @@ def _inch_words(value: Decimal) -> str:
     return str(import_module("app.review.assistant.chat_trust").inch_words(value))
 
 
+def _depth_item(finding: Mapping[str, Any]) -> bool:
+    item = _flat(finding.get("item"))
+    return bool(_TOP_DEPTH.search(item)) and not _NOT_TOP.search(item)
+
+
 def _depth_change(
     finding: Mapping[str, Any], sheet: tuple[str, int], views: Sequence[View]
 ) -> Change | None:
-    item = _flat(finding.get("item"))
-    if not _TOP_DEPTH.search(item) or _NOT_TOP.search(item):
+    if not _depth_item(finding):
         return None
+    item = _flat(finding.get("item"))
     sections = [v for v in views if v.kind == "section"]
     read: list[tuple[Decimal, Line, View]] = []
     unread: list[tuple[str, str, View]] = []
@@ -553,17 +560,21 @@ def changes(
     for finding in live:
         if not _open(finding):
             continue
+        sink = sink_item(finding) is not None
+        splash = not sink and _absence(finding) is not None and _splash_part(finding) is not None
+        depth = not sink and not splash and _depth_item(finding)
+        if not (sink or splash or depth):
+            continue  # never reads a page for an item this step does not settle
         sheet = reference_sheet(finding, page_map, main_file)
         if sheet is None:
             continue
         views = views_of(*sheet)
-        if not views and not sink_item(finding):
-            continue
-        change = (
-            _sink_change(finding, sheet, views, phrases, main_file)
-            or _splash_change(finding, views)
-            or (_depth_change(finding, sheet, views) if views else None)
-        )
+        if sink:
+            change = _sink_change(finding, sheet, views, phrases, main_file)
+        elif splash:
+            change = _splash_change(finding, views)
+        else:
+            change = _depth_change(finding, sheet, views) if views else None
         if change is not None:
             out.append((str(finding["id"]), change))
     return _fold_sink_copies(live, out)

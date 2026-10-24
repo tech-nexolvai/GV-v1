@@ -513,3 +513,14 @@ def test_an_item_code_proved_wrong_is_never_touched(monkeypatch: pytest.MonkeyPa
     depth = _section(lines=(Line("2'-0\" COUNTERTOP", (420.0, 60.0, 470.0, 64.0)),))
     assert pasted_compare.changes([_depth()], _views(depth), {}, _PAGE_MAP, VENDOR) == []
     assert len(pasted_compare.changes([_depth(id="F8")], _views(depth), {}, _PAGE_MAP, VENDOR)) == 1
+
+
+def test_a_faucets_tag_beside_the_sink_is_not_the_sinks_model() -> None:
+    lines = (
+        Line("FAUCET Z-5160", (420.0, 94.0, 460.0, 98.0)),
+        Line("ZORBA Z-5150", (420.0, 100.0, 460.0, 104.0)),
+        Line("UNDER-COUNTER SINK", (418.0, 105.0, 462.0, 109.0)),
+    )
+    ctx = _ctx(_views(_section(lines=lines)), _vendor_phrases("Z-5150"))
+    _result, changed = _run([_sink()], ctx)
+    assert proof.proof_group(changed["F1"]) == "right"

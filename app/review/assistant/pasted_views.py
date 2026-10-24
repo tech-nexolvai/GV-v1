@@ -555,7 +555,7 @@ class PastedReader:
     stamps: Mapping[tuple[str, int], Sequence[Box]]
     """The architect's pasted drawings by (file, page) (`architect_stamps`)."""
     engines: OcrEngines | None = None
-    _kept: OrderedDict[tuple[str, int, str], tuple[View, ...]] = field(default_factory=OrderedDict)
+    _kept: OrderedDict[tuple[Any, ...], tuple[View, ...]] = field(default_factory=OrderedDict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     @classmethod
@@ -587,20 +587,27 @@ class PastedReader:
         pdf = self.pdf_of(file)
         if pdf is None:
             return ()
-        key = (str(pdf), page, file)
-        with self._lock:
-            if key in self._kept:
-                self._kept.move_to_end(key)
-                return self._kept[key]
+        try:
+            stat = pdf.stat()
+        except OSError:
+            return ()
+        key = (str(pdf), stat.st_mtime_ns, stat.st_size, page, file, tuple(boxes))
+        # The real engines' readings are kept for the process (a check's two escalation passes,
+        # and the next check of the same files, read a page once); stub engines' per reader.
+        kept, lock = (_READ, _READ_LOCK) if self.engines is None else (self._kept, self._lock)
+        with lock:
+            if key in kept:
+                kept.move_to_end(key)
+                return kept[key]
         try:
             views = self._read(pdf, file, page, boxes)
         except Exception:  # noqa: BLE001 - a page that cannot be read gives no evidence
             _log.warning("pasted views: page %s of %s not read", page, file, exc_info=True)
             views = ()
-        with self._lock:
-            self._kept[key] = views
-            while len(self._kept) > _KEPT:
-                self._kept.popitem(last=False)
+        with lock:
+            kept[key] = views
+            while len(kept) > _KEPT:
+                kept.popitem(last=False)
         return views
 
     def _read(self, pdf: Path, file: str, page: int, boxes: Sequence[Box]) -> tuple[View, ...]:
@@ -628,6 +635,11 @@ class PastedReader:
             return tuple(out)
         finally:
             drawn.close()
+
+
+#: Pages read with the real engines, kept for the process (`PastedReader.__call__`).
+_READ: Final[OrderedDict[tuple[Any, ...], tuple[View, ...]]] = OrderedDict()
+_READ_LOCK: Final = threading.Lock()
 
 
 def _read_json(path: Path) -> Any:
