@@ -612,29 +612,35 @@ class PastedReader:
 
     def _read(self, pdf: Path, file: str, page: int, boxes: Sequence[Box]) -> tuple[View, ...]:
         stamp_text = import_module("extraction.stamp_text")
-        pdfium = import_module("pypdfium2")
+        guard = import_module("extraction.pdfium_guard")
         pdfplumber = import_module("pdfplumber")
         engines = self.engines or _default_engines()
         flattened = stamp_text.stamps_only(pdf.read_bytes(), page - 1)
         with pdfplumber.open(io.BytesIO(flattened)) as document:
             geometry = _geometry(document.pages[page - 1])
-        drawn = pdfium.PdfDocument(flattened)
-        try:
-            sheet = drawn[page - 1]
-            width, height = sheet.get_size()
-            out: list[View] = []
-            for box in boxes:
-                area = max((box[2] - box[0]) * (box[3] - box[1]), 1.0)
-                scale = min(SCALE, (MAX_PIXELS / area) ** 0.5)
-                bitmap = sheet.render(
-                    scale=scale,
-                    crop=(box[0], height - box[3], width - box[2], box[1]),
-                )
-                picture = _uncoloured(bitmap.to_pil())
-                out.append(read_view(file, page, box, picture, scale, engines, geometry))
-            return tuple(out)
-        finally:
-            drawn.close()
+        pictures: list[tuple[Box, Any, float]] = []
+        # Drawn under the one pdfium lock (pdfium is not thread-safe); read by OCR after it.
+        with guard.PDFIUM_LOCK:
+            drawn = guard.pdfium.PdfDocument(flattened)
+            try:
+                sheet = drawn[page - 1]
+                width, height = sheet.get_size()
+                for box in boxes:
+                    area = max((box[2] - box[0]) * (box[3] - box[1]), 1.0)
+                    scale = min(SCALE, (MAX_PIXELS / area) ** 0.5)
+                    bitmap = sheet.render(
+                        scale=scale,
+                        crop=(box[0], height - box[3], width - box[2], box[1]),
+                    )
+                    pictures.append((box, _uncoloured(bitmap.to_pil()), scale))
+                    bitmap.close()
+                sheet.close()
+            finally:
+                drawn.close()
+        return tuple(
+            read_view(file, page, box, picture, scale, engines, geometry)
+            for box, picture, scale in pictures
+        )
 
 
 #: Pages read with the real engines, kept for the process (`PastedReader.__call__`).
