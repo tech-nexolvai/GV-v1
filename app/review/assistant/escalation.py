@@ -13,7 +13,9 @@ inside the full check and its fixed price, it climbs a ladder, the biggest items
 1. **Free code steps** (this module, $0):
    - `labels`: the drawn-label reader (`dims.json`, set pack v3): code's numbered label inside the
      item's box that prints the item's value is a code reading of it (`printed_<side>`), and a
-     vendor value nobody could read becomes the label's value;
+     vendor value nobody could read becomes the label's value; a difference code reads at both
+     labels that is the vendor's overall with GV's field cut in it (`field_cut.vet`, settled: 1"
+     per wall end) is Right, as when the item is recorded;
    - `under_markup`: the drawing's own text under GV's markup (`under_markup.read_under_markup`),
      for a vendor value hidden by GV's boxes;
    - `same_item`: the same item on the vendor's other views or rounds: a copy that is already a
@@ -47,7 +49,9 @@ inside the full check and its fixed price, it climbs a ladder, the biggest items
    through the existing verifier and devil's advocate, under the pairing-proof setting, and only
    with the money left under the fixed price.
 3. **Whatever is still open** is Not compared, with its reason and what would settle it
-   (`classification`), listed in the separate Not-compared PDF, never on the cloud drawing.
+   (`classification`), listed in the separate Not-compared PDF, never on the cloud drawing. An
+   open item GV's own rule sets (the countertop's depth, the sink cut-out's size) whose job values
+   nobody entered is named with the rule and the values to enter (`job_value_rules`).
 
 Code decides every outcome, with the same witness rules as the red clouds: a step only adds code's
 readings (a label, the text under the markup, code's pairing) or folds a copy into
@@ -70,7 +74,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from app.review.assistant import classification, missing_items, proof
+from app.review.assistant import classification, job_value_rules, missing_items, proof
 from app.review.assistant.chat_trust import inch_words, judged, round_item_key
 from app.review.assistant.full_check_advocate import code_pairs
 from app.review.assistant.impact import by_impact
@@ -160,6 +164,12 @@ class EscalationContext:
     count: Callable[[int], Callable[[], None]] | None = None
     """The live line's item count (`ChatEngine.count_items`): given the items to try, it returns
     the function that counts one tried."""
+    field_cuts: Callable[[str, int], Any] | None = None
+    """A vendor page's field-cut labels (`field_cut.page_field_cuts`, the book's `field_cuts`):
+    a difference code read that is the vendor's overall with GV's field cut in it is Right."""
+    rules_md: str | None = None
+    """The chat's `rules.md` (the job values in force), for the GV rules whose job values are
+    missing (`job_value_rules`)."""
 
 
 @dataclass(slots=True)
@@ -483,6 +493,12 @@ def _printed_compare(item: _Item, step: StepName, ctx: EscalationContext | None 
     never settled against an architect size code does not see named as the same splash's
     (`splash_views.unlike`: the meeting set's splash length against the plan's top width)."""
     finding = item.finding
+    if finding.get("status") == "different":
+        # A difference code read (recorded so, or by the resolver) may be GV's field cut; never
+        # an item the splash step looked at (its own outcome stands).
+        if finding.get(import_module("app.review.assistant.splash_views").FIELD) is None:
+            _field_cut(item, step, ctx)
+        return
     if finding.get("status") != "check":
         return
     splash = import_module("app.review.assistant.splash_views")
@@ -516,8 +532,65 @@ def _printed_compare(item: _Item, step: StepName, ctx: EscalationContext | None 
             "architect's: the same",
         )
         return
+    if _field_cut(item, step, ctx, status="different"):
+        return
     finding["status"] = "different"
     item.changed = True
+
+
+def _field_cut(
+    item: _Item, step: StepName, ctx: EscalationContext | None, *, status: str = "different"
+) -> bool:
+    """GV's field cut on a difference code read at both spots (`field_cut.vet`, settled with GV):
+    the vendor's overall that is the architect's value plus one field cut per wall end the drawing
+    shows is Right, as when the item is recorded (`chat_findings`); a vendor label that prints the
+    field cut itself is never compared with the architect (the item stays as it is). True when the
+    rule spoke. The record-time check never saw an item the reading left open and code then read
+    as a difference here (a top with its field cut was Right on one page and Not compared on its
+    reversed twin)."""
+    finding = item.finding
+    if ctx is None or ctx.field_cuts is None:
+        return False
+    checks = finding.get("checks") or {}
+    if checks.get("printed_vendor") != "match" or checks.get("printed_architect") != "match":
+        return False
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else None
+    vendor = (dims or {}).get("vendor")
+    architect = (dims or {}).get("architect")
+    if not isinstance(vendor, Mapping) or not isinstance(vendor.get("page"), int):
+        return False
+    if not isinstance(architect, Mapping) or vendor.get("orientation", "h") != architect.get(
+        "orientation", "h"
+    ):
+        return False
+    # The labels the rule reads must print the two values compared (a label kept from an older
+    # reading of the item is never the rule's).
+    inches = finding.get("inches") or {}
+    for side, label in (("vendor", vendor), ("architect", architect)):
+        if not _same(_decimal(label.get("inches")), _decimal(inches.get(side))):
+            return False
+    file = str(vendor.get("file") or ctx.main_file or "")
+    try:
+        cuts = ctx.field_cuts(file, int(vendor["page"]))
+    except Exception:  # noqa: BLE001 - no field cut known: the item is kept as it is
+        _log.exception("escalation: field cut not worked out (page %s)", vendor.get("page"))
+        return False
+    rule = import_module("app.review.assistant.field_cut")
+    vetted = rule.vet(
+        dims,
+        status=status,
+        source=finding.get("source"),
+        architect=finding.get("architect"),
+        cuts=cuts,
+    )
+    if vetted is None:
+        return False
+    if vetted.outcome == "refuse":
+        item.note(step, "no_change", vetted.words)
+        return True
+    finding["field_cut"] = vetted.as_dict()
+    _settle_right(item, step, vetted.words)
+    return True
 
 
 def _under_markup_step(item: _Item, ctx: EscalationContext) -> None:
@@ -1321,10 +1394,33 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
         result.log[str(item.finding["id"])] = item.steps
         result.changed.append(item.finding)
     _fold_missing_copies(live, result)
+    _mark_job_rules(live, ctx, result)
     # One copy of each changed finding, its last state.
     last = {str(f["id"]): f for f in result.changed}
     result.changed = list(last.values())
     return result
+
+
+def _mark_job_rules(
+    live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
+) -> None:
+    """Each item still open that GV's own rule sets (the countertop's depth, the sink cut-out's
+    size) and whose job values nobody entered gets the rule and the values it is missing
+    (`job_value_rules.mark`), so its Not-compared reason says what would settle it. Never an
+    outcome: the item stays Not compared."""
+    if ctx.rules_md is None:
+        return
+    for finding in live:
+        if str(finding.get("id")) in result.absorbed or not undecided(finding):
+            continue
+        record = job_value_rules.mark(finding, ctx.rules_md)
+        if finding.get(job_value_rules.FIELD) == record:
+            continue
+        if record is None:
+            finding.pop(job_value_rules.FIELD, None)  # the job values are entered now
+        else:
+            finding[job_value_rules.FIELD] = record
+        result.changed.append(finding)
 
 
 def _areas(ctx: EscalationContext) -> dict[int, str]:
@@ -1355,6 +1451,8 @@ def context_from_pack(
     unopened: frozenset[int] | None = None,
     stop: Callable[[], bool] | None = None,
     count: Callable[[int], Callable[[], None]] | None = None,
+    field_cuts: Callable[[str, int], Any] | None = None,
+    rules_md: str | None = None,
 ) -> EscalationContext:
     """The free steps' facts from a set pack (`dims.json`, `pairs.json`, the stickers code hid
     (`<name>_stickers.json`), and for a missing item `page_texts.json`, `health.json`,
@@ -1412,6 +1510,8 @@ def context_from_pack(
         unopened=unopened,
         stop=stop,
         count=count,
+        field_cuts=field_cuts,
+        rules_md=rules_md,
     )
 
 
@@ -1461,6 +1561,14 @@ def _stop_of(engine: Any) -> Callable[[], bool] | None:
     return cancel.is_set if cancel is not None else None
 
 
+def _rules_md(workspace: Any) -> str | None:
+    """The chat's `rules.md` (the job values in force), or `None` when it cannot be read."""
+    try:
+        return str((workspace.skills / "rules.md").read_text(encoding="utf-8"))
+    except (OSError, AttributeError, TypeError, ValueError):
+        return None
+
+
 def escalate_answer(engine: Any) -> Escalation | None:
     """The engine's hook (whole-set work, after the resolver, before the trust report): the free
     steps on the answer's undecided items, each change shown, folded copies dropped with their
@@ -1491,6 +1599,8 @@ def escalate_answer(engine: Any) -> Escalation | None:
         ),
         stop=_stop_of(engine),
         count=getattr(engine, "count_items", None),
+        field_cuts=getattr(book, "field_cuts", None),
+        rules_md=_rules_md(workspace),
     )
     with engine.finding_lock:
         result = escalate(book.live(), ctx)

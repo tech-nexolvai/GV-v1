@@ -65,7 +65,10 @@ The rules, in the order they are applied:
   carries a value but no box or label, which `spot_locate` could not place) was never looked at:
   it is Not compared as `no_spot` ("the value has no spot on the drawing"), never "Illegible"
   (#1738).
-- **R10, a job value or GV setting is missing.**
+- **R10, a job value or GV setting is missing.** Also an open item GV's own rule sets rather than
+  the architect's drawing (the countertop's depth = cabinet depth + overhang; the sink cut-out's
+  size from the sink's inside size) whose job values nobody entered (`job_value_rules`): the rule
+  and the values to enter, never "different reference points".
 
 The escalation ladder (`escalation.py`, then the roster's one deeper look) runs BEFORE an item
 falls to Not compared. Pure code: no I/O, no AI call. The full check, the resolver's leftovers and
@@ -80,6 +83,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
+from app.review.assistant import job_value_rules
 from app.review.assistant.finding_checks import wrong_part
 from app.review.assistant.round_picks import pick_words
 from app.review.assistant.round_reference import (
@@ -714,6 +718,9 @@ def _unproved(finding: Mapping[str, Any]) -> Classified:
     stopped = _advocate_stop(finding)
     if stopped is not None:
         return stopped
+    ruled = _job_rule(finding)
+    if ruled is not None:
+        return ruled
     if _read_by_code(finding):
         return _not(
             "different_reference",
@@ -862,6 +869,9 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
             _short(splash.get("why"), 300),
             "the architect's printed splash size for {thing} (its section or elevation)",
         )
+    ruled = _job_rule(finding)
+    if ruled is not None:
+        return ruled
     if reason in ("architect_prints_nothing",) or named == "pairing_not_certain":
         why = f"architect gives no size or information for it{_measured(finding)}"
         return _not("nothing_to_compare", why, "the architect's size or note for {thing}")
@@ -913,10 +923,78 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
             "one side shows the item and the other never does, by the readings",
             "{thing} on both drawings",
         )
+    unpaired = _unpaired(finding)
+    if unpaired is not None:
+        return unpaired
+    architect = _flat(finding.get("architect"))
+    if (
+        VENDOR_ABSENT.match(architect)
+        and not vendor_absent(finding.get("vendor"))
+        and not _UNREAD_WORDS.search(architect)
+        and not _ARCHITECT_UNREAD.search(architect)
+    ):
+        # The reading says the architect's drawing does not show it (R7): nothing was compared.
+        # Never when it says the architect's value could not be read ("no tag legible").
+        return _not(
+            "nothing_to_compare",
+            f"architect gives no size or information for it (the reading: "
+            f'"{_short(finding.get("architect"), 60)}"){_measured(finding)}',
+            "the architect's size or note for {thing}",
+        )
     return _not(
         "not_proved",
         _short(finding.get("why"), 120) or "the drawings do not settle it",
         "a printed value at both spots",
+    )
+
+
+#: The reading says no architect page was agreed for the item ("no agreed architect drawing").
+_ARCHITECT_UNPAIRED: Final = re.compile(r"\bno\s+agreed\b|\bpair(?:ed|ing)?\b", re.IGNORECASE)
+#: The reading says the architect's words could not be read ("no tag legible"): not an absence.
+_ARCHITECT_UNREAD: Final = re.compile(r"\b(?:legible|readable|read)\b", re.IGNORECASE)
+
+
+def _job_rule(finding: Mapping[str, Any]) -> Classified | None:
+    """An item GV's own rule sets (the countertop's depth, the sink cut-out's size), whose job
+    values nobody entered (`job_value_rules`, named by the escalation): a job value is missing,
+    with the rule and the values to enter, never "different reference points". Not compared
+    either way: never red, never Right."""
+    record = finding.get(job_value_rules.FIELD)
+    if not isinstance(record, Mapping) or not record.get("missing"):
+        return None
+    if finding.get("keep_reason") in ("unreadable", "needs_job_value") or not _vendor_read(finding):
+        return (
+            None  # the vendor's own value is the problem: entering job values would not settle it
+        )
+    why, settle = job_value_rules.words(record)
+    return _not("missing_setting", why, settle)
+
+
+def _unpaired(finding: Mapping[str, Any]) -> Classified | None:
+    """An item on a vendor page no architect page is paired with (`reference_page`: pairing
+    unsure, or no architect drawing of it in the upload): nothing was compared, so its reason is
+    the missing pair, never "difference not proved by code" (R7)."""
+    record = finding.get("reference_page")
+    architect = _flat(finding.get("architect"))
+    unpaired = (
+        isinstance(record, Mapping)
+        and record.get("page") is None
+        and not record.get("pair")
+        and str(record.get("why") or "").startswith("No architect page is paired")
+    )
+    # An older item with no reference page: the reading's own words say no page was agreed.
+    said_so = not isinstance(record, Mapping) and bool(
+        VENDOR_ABSENT.match(architect) and _ARCHITECT_UNPAIRED.search(architect)
+    )
+    if not (unpaired or said_so):
+        return None
+    said = _short(finding.get("architect"), 60)
+    return _not(
+        "no_sheet",
+        f"no architect page is paired with vendor page {_page(finding)}, so nothing was compared"
+        + (f' (the reading: "{said}")' if said else ""),
+        f"the architect page that shows {{thing}} (a person confirms the pair for page "
+        f"{_page(finding)})",
     )
 
 
