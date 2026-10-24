@@ -144,6 +144,7 @@ CODE_ROOM_MAKERS: Final = frozenset(
         "run_fit",
         "filler_range",
         "sink_offset",
+        "splash_views",
         "gv_review",
         "code",
     }

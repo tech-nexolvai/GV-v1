@@ -14,8 +14,10 @@ it emptied the small filled-rectangle forms inside that drawing. This module doe
    text) are never touched.
 3. **The drawing's own text in the area** (as `pdftotext -bbox` gives it), read from the copy without
    the reviewers' annotations: text under an opaque box is still in the drawing's text, so it is
-   listed even where nothing could be hidden. Text set in colour is marked: inside a pasted drawing
-   that may be GV's note, not the vendor's.
+   listed even where nothing could be hidden. On GV's combined review sheets text set in colour
+   is marked: inside a pasted drawing that may be GV's note, not the vendor's. On an ordinary
+   upload every colour is the drawing's own ink (the colour rule; the label reader's own test,
+   `verify_value.combined_sheet_at`), so its coloured text is never marked.
 
 It returns two pictures of the area (as the page shows it, and with the markup removed) and plain
 lines saying what was removed and how. Nothing is changed in the upload; the copy lives in memory.
@@ -94,7 +96,8 @@ class UnderMarkup:
     drawings: int = 0
     """Pasted drawings that meet the area."""
     words: list[dict[str, Any]] = field(default_factory=list)
-    """The drawing's text in the area: `{text, box, coloured}`, in reading order."""
+    """The drawing's text in the area: `{text, box, coloured}`, in reading order. `coloured` only
+    on GV's combined sheets: on an ordinary upload every colour is the drawing's own ink."""
 
     def lines(self) -> list[str]:
         x0, y0, x1, y1 = self.box
@@ -347,9 +350,10 @@ def _png(picture: Image.Image) -> bytes:
     return buffer.getvalue()
 
 
-def _words(document: bytes, box: Box) -> list[dict[str, Any]]:
+def _words(document: bytes, box: Box, combined: bool = True) -> list[dict[str, Any]]:
     """The text in `box` (shown points) of the one-page `document`, as pdftotext -bbox would list
-    it, with its colour."""
+    it, with its colour. `combined`: the file is one of GV's combined sheets, the only file where
+    text in colour may be GV's (on an ordinary upload nothing is marked coloured)."""
     found: list[dict[str, Any]] = []
     with pdfplumber.open(io.BytesIO(document)) as opened:
         page = opened.pages[0]
@@ -384,7 +388,7 @@ def _words(document: bytes, box: Box) -> list[dict[str, Any]]:
                 {
                     "text": str(word["text"]),
                     "box": tuple(round(v, 1) for v in spot),
-                    "coloured": _coloured(values),
+                    "coloured": combined and _coloured(values),
                 }
             )
     found.sort(key=lambda w: (round(w["box"][1] / 4), w["box"][0]))
@@ -395,9 +399,12 @@ def read_under_markup(pdf: Path, page_number: int, box: Box, dpi: int | None = N
     """The area `box` (points of the page as shown, origin top-left) of page `page_number` (from 1)
     of `pdf`, as shown and under GV's markup. Raises `ValueError` with a plain reason for a page or
     box not on the file."""
+    from app.review.assistant.verify_value import combined_sheet_at
+
     data = pdf.read_bytes()
     with pikepdf.open(io.BytesIO(data)) as source:
         count = len(source.pages)
+    combined = combined_sheet_at(pdf)  # the colour rule: coloured text may be GV's only here
     if not 1 <= page_number <= count:
         raise ValueError(f"there is no page {page_number} (the file has {count})")
     original = _one_page(data, page_number - 1)
@@ -456,7 +463,7 @@ def read_under_markup(pdf: Path, page_number: int, box: Box, dpi: int | None = N
     first = _render(as_shown, area, scale)
     second = _render(under, area, scale)
     try:
-        words = _words(under, area)
+        words = _words(under, area, combined)
     except Exception as failed:  # noqa: BLE001 - the pictures still answer
         _log.warning("read_under_markup could not read the text: %s", type(failed).__name__)
         words = []
