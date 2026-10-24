@@ -3,7 +3,7 @@
 GV's rule is zero false reds: a red cloud goes to the vendor with nobody checking it. Code proves
 every red (`proof.code_proved`), but a proof is only as good as the check behind it, and some checks
 have been tried on very few real drawings. So each **kind of check** that can turn an item red keeps
-a record, measured on GV's own answer keys (Set 1, 2 and 3, Raj's template and cabinet sheets, the
+a record, measured on GV's own answer keys (Set 1, 2 and 3, the template and cabinet test sheets, the
 four-hotel set, the client-meeting job):
 
 - **keyed cases**: the decisions of that kind the keys can judge: a red the key confirms, a red the
