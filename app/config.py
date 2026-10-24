@@ -199,6 +199,12 @@ class Settings(BaseSettings):
     # advocate check passes); `code_only` = only items code paired by itself (the vendor's own
     # sums, GV's rules) can be red.
     assistant_pairing_proof: Literal["ai_pair_plus_code", "code_only"] = "ai_pair_plus_code"
+    # Each kind of check's track record (fix 6, 2026-10-24; `review/assistant/check_record.py`
+    # reads these two from the environment, as pure code): a kind makes reds only with no false red
+    # on at least this many of GV's keyed cases (orchestrator's default 30, Anant may change it);
+    # its other would-be reds are Likely problems. `off` lets every kind make reds, as before.
+    assistant_check_record: Literal["on", "off"] = "on"
+    assistant_check_record_min_cases: int = Field(default=30, ge=0)
     # The cheap pick for the round-only leftovers (Anant, 2026-10-22: "go with hybrid, with both,
     # but less cost", #1861): a full check's hard cap for the Sonnet picks that name the
     # architect's label of an item compared only with the vendor's earlier round, reserved inside
