@@ -240,6 +240,12 @@ class Settings(BaseSettings):
     # only within their own project, never with a brand prototype. About $0.01-0.02 a page.
     # `off`: no project is known (every architect page is a candidate).
     assistant_set_index_model: Literal["off", "claude-sonnet-5-5"] = "claude-sonnet-5-5"
+    # The splash step's small AI question (`splash_views`, 2026-10-23): when code finds the item's
+    # other views (a section on the same sheet) but cannot tie any printed size there to the
+    # splash, `on` adds the item to the roster's existing look-again with those views to look in
+    # (no new call). `off` (the owner's default until a paid sample is measured): the item stays
+    # Not compared, naming the views code looked at.
+    assistant_splash_question: Literal["off", "on"] = "off"
     # The simple check's compare call: the model and effort for every drawing, the stronger model
     # for drawings the work list marks hard (no code labels, very dense, hand-lettered architect),
     # how many calls run at once, the reply's token room (thinking included) and the retries on a

@@ -234,6 +234,9 @@ def rows(
 _GAP_REASONS: Final[Mapping[str, str]] = {
     "not_comparable": "finish_not_comparable",
     "unreadable": "unreadable",
+    # A page whose architect drawing is in the upload but whose pairing code could not confirm:
+    # not looked at on both drawings (never "no sheet to compare").
+    "pairing_unsure": "not_seen",
     # The simple full check's rows that are not findings (#1665): its reason by name.
     **{
         reason: reason

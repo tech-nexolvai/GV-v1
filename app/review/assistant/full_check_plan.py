@@ -50,7 +50,7 @@ from app.review.assistant.plan_check import (
     with_assumptions,
 )
 from app.review.assistant.product_scope import ProductScope, outside_unit
-from app.review.assistant.simple_check.pairing import UNPAIRED
+from app.review.assistant.simple_check.pairing import PAIRING_UNSURE, UNPAIRED
 
 __all__ = [
     "DRAWN_JOB_CAP_MICROS",
@@ -63,6 +63,8 @@ __all__ = [
     "UNPAIRED_NOTE",
     "UNPAIRED_RETRY_NOTE",
     "UNPAIRED_WARN_SHARE",
+    "UNSURE_NEEDS",
+    "UNSURE_NOTE",
     "CrossPairs",
     "FanOutPlan",
     "HelperJob",
@@ -80,6 +82,8 @@ __all__ = [
     "scoped_plan",
     "unpaired_note_why",
     "unpaired_words",
+    "unsure_note_why",
+    "unsure_words",
     "wait_for_page_map",
     "wait_for_reading",
     "with_lenses",
@@ -174,6 +178,12 @@ class CrossPairs:
     unpaired: Mapping[int, str] = field(default_factory=dict)
     words: Mapping[int, str] = field(default_factory=dict)
     """How each paired page was paired (plain words)."""
+    references: Mapping[int, tuple[tuple[str, int], ...]] = field(default_factory=dict)
+    """Each paired page's brand prototype (file, page)s: reference only, never its shown page
+    (`reference_page`), but a spot on one is on the item's own drawings."""
+    file: str | None = None
+    """The vendor's file the pairs' page numbers are of (the work list's file): an item on another
+    vendor file (an older round uploaded on its own) is not on these pages."""
 
     @classmethod
     def of(cls, work: Any) -> CrossPairs:
@@ -181,6 +191,7 @@ class CrossPairs:
         as not paired (a page with any pair counts as paired)."""
         pairs: dict[int, list[tuple[str, int]]] = {}
         words: dict[int, str] = {}
+        references: dict[int, list[tuple[str, int]]] = {}
         for item in getattr(work, "items", ()):
             if item.paired_by is None:
                 continue
@@ -191,6 +202,11 @@ class CrossPairs:
                 if where not in found:
                     found.append(where)
             words.setdefault(page, item.paired_by)
+            kept = references.setdefault(page, [])
+            for drawing in getattr(item, "reference", ()):
+                where = (drawing.file, drawing.own_page)
+                if where not in kept:
+                    kept.append(where)
         unpaired: dict[int, str] = {}
         main = getattr(work, "file", None)
         for skipped in getattr(work, "skipped", ()):
@@ -201,7 +217,13 @@ class CrossPairs:
                 and skipped.page not in pairs
             ):
                 unpaired.setdefault(skipped.page, skipped.reason)
-        return cls({p: tuple(v) for p, v in pairs.items()}, unpaired, words)
+        return cls(
+            {p: tuple(v) for p, v in pairs.items()},
+            unpaired,
+            words,
+            {p: tuple(v) for p, v in references.items() if v},
+            str(main) if main else None,
+        )
 
 
 @dataclass(slots=True)
@@ -707,6 +729,15 @@ UNPAIRED_RETRY_NOTE: Final = (
     "not compared with the architect: no architect drawing paired with it yet ({why}); Continue "
     "asks again"
 )
+#: A page the AI page matcher paired and code could not confirm (`pairing.PAIRING_UNSURE`): its
+#: coverage note names both candidate pages. Final like `UNPAIRED_NOTE`, but never "drawing needed":
+#: the architect's drawing is in the upload.
+UNSURE_NOTE: Final = "Not compared with the architect: pairing unsure ({why})"
+#: Its line in the Not-compared list: what would settle it.
+UNSURE_NEEDS: Final = (
+    "a person to confirm which architect page shows this item and compare it: the drawing is in "
+    "the upload, but the pairing could not be confirmed"
+)
 #: An unpaired page's line in the Not-compared list (the set's rows): what would settle it.
 UNPAIRED_NEEDS: Final = (
     "the architect's drawing of this item: upload it, or check that the architect's file is for "
@@ -755,9 +786,23 @@ _UNPAIRED_PLAIN: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
 _UNPAIRED_DEFAULT: Final = "the architect's drawing of this item could not be identified for sure"
 
 
+_UNSURE: Final = re.compile(rf"{PAIRING_UNSURE}: ([^?]{{1,2000}}\?)")
+
+
+def unsure_words(reason: str | None) -> str | None:
+    """The two candidate pages of a "pairing unsure" reason, as a person finds them ('architect
+    page 9 ("STANDARD KITCHEN") or architect page 2?'), else `None`."""
+    found = _UNSURE.search(reason or "")
+    return found.group(1) if found else None
+
+
 def unpaired_words(reason: str) -> str:
     """A pairing reason (`pairing.UNPAIRED`: ...) in plain words: "no drawing of the same item was
-    found in the architect's file", never the matcher's or code's working words."""
+    found in the architect's file", never the matcher's or code's working words; a "pairing
+    unsure" one names its two candidate pages (`unsure_words`)."""
+    unsure = unsure_words(reason)
+    if unsure is not None:
+        return f"{PAIRING_UNSURE}: {unsure}"
     for pattern, words in _UNPAIRED_PLAIN:
         if pattern.search(reason or ""):
             return words
@@ -774,6 +819,40 @@ def unpaired_note_why(note: str | None) -> str | None:
         return None
     why = text[len(head) :].split(")", 1)[0].strip()
     return why or _UNPAIRED_DEFAULT
+
+
+def unsure_note_why(note: str | None) -> str | None:
+    """The two candidate pages of a page's "pairing unsure" coverage note (`UNSURE_NOTE`), else
+    `None`. The result screen lists it under Not compared, never under "Drawing needed"."""
+    head = UNSURE_NOTE.split("{", 1)[0]
+    text = " ".join(str(note or "").split())
+    if not text.startswith(head):
+        return None
+    return text[len(head) :].rsplit(")", 1)[0].strip() or None
+
+
+#: One candidate page in a "pairing unsure" reason, as `worklist._human_ids` words it: 'architect
+#: page 14', 'architect page 14 of B.pdf', then its title '("SAMPLE UNIT")' or its view.
+_UNSURE_PAGE: Final = re.compile(
+    r'architect page (\d+)(?: of (.+?\.pdf))?(?: \("([^"]*)"\)|, view "([^"]*)")?',
+    re.IGNORECASE,
+)
+
+
+def unsure_pages(why: str | None) -> list[dict[str, Any]]:
+    """The candidate architect pages a "pairing unsure" reason names, in its order, each once:
+    `{"page", "file", "title"}` (`file` only when the set has several architect files; `title`
+    the set index's title or the view's, when named). The result screen shows each page for a
+    person to pick."""
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str | None, int]] = set()
+    for found in _UNSURE_PAGE.finditer(str(why or "")):
+        page, file = int(found.group(1)), found.group(2)
+        if (file, page) in seen:
+            continue
+        seen.add((file, page))
+        out.append({"page": page, "file": file, "title": found.group(3) or found.group(4)})
+    return out
 
 
 def mostly_unpaired(unpaired: int, pages: int) -> bool:

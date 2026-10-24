@@ -17,7 +17,7 @@ import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState
 import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionChoice, type FindingDecisionExtra, type PagePicture, type RemadeFiles } from '@/lib/chat-api';
 import { coverageCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
 import { fullCheckBubble, fullCheckFiles, withoutCodeNote } from '@/lib/chat-full-check';
-import { commentNumber, drawingNeededItems, drawingNeededPages, resultGroups, type PageTitles } from '@/lib/chat-result';
+import { commentNumber, drawingNeededItems, drawingNeededPages, pairingUnsureItems, resultGroups, type PageTitles } from '@/lib/chat-result';
 import { asShown, proofGroup } from '@/lib/chat-proof';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 import { startingLive } from '@/lib/chat-live';
@@ -425,9 +425,10 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   const shown = architectView ? findings.map((finding) => asShown(finding, decisionOf(finding))) : findings;
   // The viewer's arrows step through the findings in the order the sections show them.
   const neededItems = architectView ? drawingNeededItems(drawingNeededPages(coverage), pageTitles) : [];
+  const unsureItems = architectView ? pairingUnsureItems(coverage, pageTitles) : [];
   const ordered = architectView ? (() => {
     const groups = resultGroups(findings, decisionOf);
-    const all = [...groups.wrong, ...groups.likely, ...groups.ruleNotes, ...neededItems, ...groups.notCompared, ...groups.dismissed, ...groups.right];
+    const all = [...groups.wrong, ...groups.likely, ...groups.ruleNotes, ...neededItems, ...unsureItems, ...groups.notCompared, ...groups.dismissed, ...groups.right];
     if (!steps) return all;
     const byId = new Map(all.map((finding) => [finding.id, finding]));
     const stepped = steps.map((id) => byId.get(id)).filter((finding): finding is ChatFinding => Boolean(finding));
@@ -686,7 +687,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       {!fullCheck && findings.length > 0 && narrow && <ConfidenceLine findings={findings} trust={message.trust} />}
       {!fullCheck && howChecked}
       {!fullCheck && !howChecked && coverageStrip}
-      {(findings.length > 0 || neededItems.length > 0) && (
+      {(findings.length > 0 || neededItems.length > 0 || unsureItems.length > 0) && (
         <EvidenceViewer
           findings={ordered}
           openId={viewing}

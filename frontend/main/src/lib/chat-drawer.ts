@@ -115,6 +115,13 @@ export function vendorOnly(finding: Pick<ChatFinding, 'source' | 'created_by' | 
   return finding.source === 'vendor_arithmetic' || finding.source === 'cross_view' || finding.created_by === 'consistency' || Boolean(finding.parts?.length);
 }
 
+/** The architect page it was compared on, for words: with a reference page (stream V) its spot's, else that page; an older answer: vs_page. */
+function architectPageOf(finding: Pick<ChatFinding, 'vs_page' | 'reference_page' | 'arch_box'>): number | null {
+  if (!finding.reference_page) return finding.vs_page ?? null;
+  if (finding.reference_page.outside) return finding.reference_page.page ?? null;
+  return finding.arch_box?.page ?? finding.reference_page.page ?? null;
+}
+
 /** The architect's spot is on the vendor's own page picture (one sheet holds both drawings). */
 export function architectOnVendorPage(finding: Pick<ChatFinding, 'vendor_box' | 'arch_box'>): boolean {
   const vendor = finding.vendor_box;
@@ -206,7 +213,7 @@ export function howWeKnow(finding: ChatFinding, kind: DrawerKind, options: { noA
     if (parts && sum !== null && finding.printed_total) steps.push(`${parts} = ${inchWords(sum)}″, but the overall says ${marks(finding.printed_total)}.`);
     else if (finding.sum_text) steps.push(sentence(finding.sum_text));
     else if (architect !== null && vendor !== null && !vendorOnly(finding)) {
-      steps.push(`The vendor prints ${inchWords(vendor)}″; the ${finding.source === 'brand_prototype' ? 'brand prototype' : finding.source === 'rules' ? 'GV rule' : 'architect’s drawing'}${finding.vs_page && finding.source !== 'rules' ? ` (page ${finding.vs_page})` : ''} gives ${inchWords(architect)}″.`);
+      steps.push(`The vendor prints ${inchWords(vendor)}″; the ${finding.source === 'brand_prototype' ? 'brand prototype' : finding.source === 'rules' ? 'GV rule' : 'architect’s drawing'}${architectPageOf(finding) && finding.source !== 'rules' ? ` (page ${architectPageOf(finding)})` : ''} gives ${inchWords(architect)}″.`);
     }
     steps.push(sentence(finding.proof?.proof));
     const should = shouldBeValue(finding);

@@ -164,6 +164,68 @@ export function drawingNeededItems(needed: readonly DrawingNeeded[], titles: Pag
   });
 }
 
+/** Id prefix of a pairing-unsure page: listed under Not compared, opened like a finding, never decided on. */
+export const PAIRING_UNSURE_ID = 'pairing-unsure:';
+
+export function isPairingUnsureItem(finding: Pick<ChatFinding, 'id'>): boolean {
+  return finding.id.startsWith(PAIRING_UNSURE_ID);
+}
+
+/** Words a person reads for a "pairing unsure" page: the title (which page?) and why the app does not pick. */
+export function pairingUnsureWords(pages: readonly { page: number; title?: string | null }[]): { title: string; steps: string[] } {
+  const numbers = pages.map((one) => `page ${one.page}`);
+  const choice = numbers.length > 1 ? `${numbers.slice(0, -1).join(', ')} or ${numbers[numbers.length - 1]}` : numbers[0] ?? null;
+  const title = !choice ? 'Which architect page shows this?' : numbers.length > 1 ? `Which architect page shows this? ${choice.charAt(0).toUpperCase()}${choice.slice(1)}` : `Does architect ${choice} show this?`;
+  const titles = new Set(pages.map((one) => (one.title ?? '').trim().toLowerCase()));
+  const sameTitle = pages.length > 1 && !titles.has('') && titles.size === 1;
+  const steps = [
+    sameTitle
+      ? 'Two architect pages carry the same title, so the app won’t pick one for you.'
+      : choice ? `The AI page matcher chose architect ${numbers[0]}, but code could not confirm it, so the app won’t pick it for you.` : 'Code could not confirm which architect page shows this, so the app won’t pick one for you.',
+    'Look at the pages, find the one that shows this item, and compare it by hand.',
+    'Nothing on this vendor page was compared with the architect.',
+  ];
+  return { title, steps };
+}
+
+/** "architect page 14 or page 15" (the candidates' pages, in their order). */
+export function unsurePagesWords(pages: readonly { page: number }[]): string {
+  const numbers = pages.map((one) => `page ${one.page}`);
+  return `architect ${numbers.length > 1 ? `${numbers.slice(0, -1).join(', ')} or ${numbers[numbers.length - 1]}` : numbers[0] ?? 'page'}`;
+}
+
+/**
+ * Each vendor page the AI page matcher paired and code could not confirm (the server's
+ * `pairing_unsure`), as a Not-compared item naming both candidate pages. Its architect drawing is in
+ * the upload: never "no architect drawing", never compared. Never sent to the server.
+ */
+export function pairingUnsureItems(coverage: ChatCoverage | null | undefined, titles: PageTitles | null | undefined): ChatFinding[] {
+  return (coverage?.pages ?? [])
+    .filter((page) => page.pairing_unsure === true)
+    .sort((a, b) => a.page - b.page)
+    .map((page) => {
+      const heading = pageHeading(page.page, titles);
+      const candidates = page.pairing_unsure_pages ?? [];
+      // The row names the pages only (the group's heading says "Pairing unsure" once).
+      // An older answer names the pages only in words: those, its quotes curly (never inch marks).
+      const pages = candidates.length ? `${unsurePagesWords(candidates)}?` : (page.pairing_unsure_why?.trim() || 'which architect page shows it?').replace(/"([^"]*)"/g, '“$1”');
+      return {
+        id: `${PAIRING_UNSURE_ID}${page.page}`,
+        page: page.page,
+        item: heading.title ? `${heading.title}: ${pages}` : `Which architect page: ${pages}`,
+        category: 'other',
+        architect: null,
+        vendor: null,
+        status: 'check',
+        why: 'the architect page could not be confirmed, so nothing on this page was compared with the architect',
+        verified: false,
+        source: 'architect',
+        unsure_pages: candidates,
+        proof: { group: 'not_compared', not_compared: 'pairing_unsure', reason: `the architect page is not confirmed: ${pages}`, settle: 'a person to confirm which architect page shows this item and compare it' },
+      } satisfies ChatFinding;
+    });
+}
+
 /** Items grouped under their vendor page, in page order (the list's "By page"). */
 export function byPage(findings: readonly ChatFinding[]): { page: number; findings: ChatFinding[] }[] {
   const pages = new Map<number, ChatFinding[]>();
@@ -220,7 +282,7 @@ export function missingDrawingsOnly(action: ChatReviewAction | null | undefined,
   if (!action || action.action !== 'not_for_sending' || needed <= 0) return false;
   const reason = action.reason.toLowerCase();
   if (!/no architect drawing/.test(reason)) return false;
-  return !/(?:was|were) not compared|not reached|a step did not finish|no page's comparison|stopped|fixed price|price limit|step limit|restarted|problem/.test(reason.replace(/^the check did not finish:\s*/, ''));
+  return !/(?:was|were) not compared|pairing unsure|not reached|a step did not finish|no page's comparison|stopped|fixed price|price limit|step limit|restarted|problem/.test(reason.replace(/^the check did not finish:\s*/, ''));
 }
 
 // ── The drawings request (draft only: Anant sends it himself) ───
@@ -257,6 +319,7 @@ export function drawingsRequestText(pages: readonly number[], titles: PageTitles
 
 /** The reasons in the Not-compared list's order, as its headings say them (`classification.REASON_WORDS`). */
 const REASONS: readonly [string, string][] = [
+  ['pairing_unsure', 'Pairing unsure: a person confirms the architect page'],
   ['field_verify', 'The drawing says verify in field'],
   ['nothing_to_compare', 'Architect gives no size or information'],
   ['no_overall', 'Architect gives only the parts, no overall'],

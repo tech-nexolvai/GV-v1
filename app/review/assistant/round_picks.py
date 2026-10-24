@@ -15,8 +15,8 @@ tool tells the helpers to give the architect's label, and code links what it can
   same drawings is reused at $0 (`pick_cache`, `blind_picks.json`).
 - **The AI only names a label** (`link`). Code does the rest, exactly as for any pair: the label
   must be on the architect's drawing, the pick's own words must not say the two dimensions end in
-  different places or that the vendor value is in colour, and every advocate code check must pass
-  (GV's markup and notes, the roles, the direction, the newest round, the units, a slip). Then the
+  different places or (on GV's combined sheets) that the vendor value is in colour, and every
+  advocate code check must pass (GV's markup and notes, the roles, the direction, the newest round, the units, a slip). Then the
   item is compared with that label (`round_reference.point_at`): equal values are Right (code read
   both); a different value is a red candidate, judged by the devil's advocate like any other.
 - **A cheap pick never makes a red alone** (`cheap_linked`): for such a candidate the devil's
@@ -344,12 +344,15 @@ def link(
     checks: Checks,
     ends: Ends,
     said: Mapping[str, Any] | None = None,
+    combined_sheet: bool = True,
 ) -> tuple[dict[str, Any], Outcome]:
     """The item with code's answer to the cheap pick (`answer`: the blind pick's reply, its `pick`
     set to a label ref such as `p4.D12`, or `None` when it was not asked within the cap). `said`:
     what to keep about the pick (model, cost, kept or asked). Returns a copy of the finding and
     the outcome: `linked` (compared with the architect's label: same is Right, different is a red
-    candidate for the devil's advocate), or the reason it stays Not compared."""
+    candidate for the devil's advocate), or the reason it stays Not compared. `combined_sheet`:
+    the vendor value is on one of GV's combined sheets; on an ordinary upload every colour is the
+    drawing's own ink (`COLOUR_RULE`), so the pick's "vendor ink is not black" refuses nothing."""
     kept = dict(said or {})
     if answer is None:
         return _record(finding, "not_asked", "not asked within the round-pick cap", kept), (
@@ -364,7 +367,7 @@ def link(
     if label is None:
         why = f"a blind pick named {pick}, which is not a dimension on the architect's drawing"
         return _record(finding, "refused", why, kept), "refused"
-    if answer.get("vendor_ink_black") == "no":
+    if combined_sheet and answer.get("vendor_ink_black") == "no":
         why = f"a blind pick named {pick}, but it sees the vendor value in colour (GV's markup)"
         return _record(finding, "refused", why, kept), "refused"
     vendor_spans, architect_spans = answer.get("vendor_spans"), answer.get("architect_spans")

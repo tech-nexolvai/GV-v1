@@ -238,7 +238,10 @@ def test_a_sure_pick_code_does_not_back_is_still_not_paired(
     found = run.wait_pages([1])
 
     assert found.pairs == {} and found.unpaired[1].startswith(UNPAIRED)
-    assert "the AI page matcher is sure of p1003" in found.unpaired[1]
+    assert "the AI page matcher is sure of architect page 3" in found.unpaired[1]
+    # Never "no drawing": both pages named, as a person finds them (no private ids).
+    assert "pairing unsure: architect page 3 or architect page 2?" in found.unpaired[1]
+    assert "p1003" not in found.unpaired[1]
 
 
 def test_a_failed_matcher_leaves_the_page_to_code_and_never_blocks(

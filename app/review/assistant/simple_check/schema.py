@@ -494,6 +494,10 @@ class AcrossPair(_Frozen):
     views_disagree: ViewsDisagree | None = None
     """The architect's own two views of it print different sizes (`worklist._views_disagree`):
     it is paired with the governing view, and GV asks the architect."""
+    unsure: tuple[str, ...] = ()
+    """Not paired, but the AI page matcher is sure of an architect item code could not confirm
+    (`pairing.PAIRING_UNSURE`): the matcher's pick, then code's own pick or first other item. The
+    drawing is in the upload: never "drawing needed"; a person confirms the page."""
 
 
 class WorkList(_Frozen):

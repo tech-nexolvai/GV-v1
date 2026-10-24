@@ -24,8 +24,9 @@ hold:
    underside of a top (or the carcass top under it, a top's thickness: `face_doubt`, #1837) is
    never proved by picks or the anchor fit, which allows the claimed difference (the band itself):
    only code's own pairing proves it.
-4. **Every code check passes** (`code_checks`): the vendor value is the drawing's black or grey
-   ink, not inside one of GV's text notes; the labels are on a vendor half and an architect half
+4. **Every code check passes** (`code_checks`): the vendor value is not GV's markup (on GV's
+   combined sheets: the drawing's black or grey ink; on an ordinary upload every colour is the
+   drawing's own ink, `COLOUR_RULE`), not inside one of GV's text notes; the labels are on a vendor half and an architect half
    (never a brand prototype); both run the same way; the vendor value is from the newest round;
    its millimetres and inches agree; and the difference is not a unit slip or a one-digit misread.
 
@@ -448,6 +449,7 @@ def code_checks(
     vendor_ink: tuple[int, float] | None = None,
     newer_same: str | None = None,
     prototype_reference: bool = False,
+    combined_sheet: bool = True,
 ) -> list[Check]:
     """The advocate's code checks (7a, $0) on a candidate's two labels (`architect` None: a
     vendor-only item such as the vendor's own string). `vendor_ink`: `ink_colour` of the vendor
@@ -455,15 +457,20 @@ def code_checks(
     round of the area that prints the same value the same way (`p5.D7`), when there is one: the
     difference is still on the vendor's current drawing (#1641). `prototype_reference`: code found
     no architect elevation of the item, so the brand prototype is the reference (R1, Anant
-    2026-10-20) and its drawing's label passes the roles check."""
+    2026-10-20) and its drawing's label passes the roles check. `combined_sheet`: the vendor
+    value's file is one of GV's combined sheets (`verify_value.combined_sheet`), the only file
+    where a value in colour is GV's markup; on an ordinary upload every colour is the drawing's
+    own ink (the colour rule, 2026-10-19), so its colour never fails the ink check."""
     checks: list[Check] = []
     if vendor is None:
         return [Check("labels", "fail", "the vendor's value has no label code read")]
     box = [float(v) for v in vendor.get("box") or (0, 0, 0, 0)]
     page = int(vendor.get("page") or 0)
     file = vendor.get("file")
-    # 1. Ink: the drawing's black or grey, not GV's colour.
-    if vendor_ink is None:
+    # 1. Ink: on GV's combined sheets the drawing's black or grey, not GV's colour.
+    if not combined_sheet:
+        checks.append(Check("ink", "pass", "an ordinary upload: every colour is its own ink"))
+    elif vendor_ink is None:
         checks.append(Check("ink", "unknown", "the vendor value's ink could not be looked at"))
     else:
         share = vendor_ink[1]
@@ -759,6 +766,7 @@ def decide(
     twins: Collection[str] = (),
     first_spans: tuple[object, object] | None = None,
     code_ends: bool = False,
+    combined_sheet: bool = True,
 ) -> Verdict:
     """The verdict on one red candidate under D1 (see the module). `printed`: code read both
     values at their spots. `helper_pick`: the helper's architect label (`p23.D10`). `advocate`: the
@@ -772,7 +780,8 @@ def decide(
     dimensions' ends land (vendor's, architect's), when the first pick was a blind pick too (a
     cheap round pick, #1861): the second pick must say the same. `code_ends`: the pairing may be
     proved only by code's geometry showing the same ends (a pairing a cheap round pick named,
-    option C): agreeing picks alone never prove it."""
+    option C): agreeing picks alone never prove it. `combined_sheet`: as `code_checks`'s; on an
+    ordinary upload the blind pick's "vendor ink is not black" is information only."""
     answers: dict[str, str] = {check.name: str(check.outcome) for check in checks}
     failed = [check for check in checks if check.outcome != "pass"]
     if failed:
@@ -842,7 +851,7 @@ def decide(
         return Verdict("objects", f"Not proved: {extent[1]}.", answers)
     pick = str(advocate.get("pick") or "none")
     answers.update(advocate_pick=pick, helper_pick=helper_pick)
-    if advocate.get("vendor_ink_black") == "no":
+    if combined_sheet and advocate.get("vendor_ink_black") == "no":
         return Verdict(
             "objects", "Not proved: the checker sees the vendor value in colour.", answers
         )

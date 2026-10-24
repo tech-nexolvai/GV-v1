@@ -566,11 +566,27 @@ def _side_value(finding: Mapping[str, Any], side: str) -> str | None:
     return value
 
 
+def _splash_unlike(finding: Mapping[str, Any]) -> bool:
+    """A splash item no rule here may settle on equal values (2026-10-23, like for like): the
+    splash step's own outcome stands, and a splash's size is never settled against an architect
+    size code does not see printed as the same splash's (`splash_views.unlike`)."""
+    splash = import_module("app.review.assistant.splash_views")
+    record = finding.get(splash.FIELD)
+    if isinstance(record, Mapping) and record.get("outcome") in (
+        "likely_problem",
+        "not_like_for_like",
+    ):
+        return True
+    return splash.unlike(finding) is not None
+
+
 def _printed_vs_printed(finding: Mapping[str, Any], ctx: ResolverContext) -> _Settle | None:
     if finding.get("source") in ("brand_prototype", "vendor_arithmetic", "rules"):
         return None
     if finding.get("check_reason"):
         return None  # the lead said why two printed values still need a person (#1545)
+    if _splash_unlike(finding):
+        return None
     if _OTHER_MEASURE.search(_words(finding, "why", "architect", "vendor")):
         return None
     if _LAYOUT.search(str(finding.get("item") or "")) and not _measure(finding):
@@ -1209,6 +1225,8 @@ def _settle_one(
         return tags, None, None
     if tags is not None and reason is None:
         reason = tags
+    if _splash_unlike(finding):
+        return None, reason, None  # no sharper read (paid) can make it like for like
     read = _sharper_read(finding, ctx)
     if isinstance(read, _Settle):
         return read, None, None

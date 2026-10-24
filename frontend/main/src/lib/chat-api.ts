@@ -440,16 +440,42 @@ export interface FindingBox {
   file?: string | null;
 }
 
+/** A finding's one architect page (`reference_page.stamp`): its file and page, or none and why. */
+export interface ReferencePage {
+  file?: string | null;
+  page?: number | null;
+  why?: string | null;
+  /** Its architect spot is not on its pair (such an item is never sent). */
+  outside?: boolean;
+  /** Every architect page its vendor page is paired with. */
+  pair?: { file: string; page: number }[];
+}
+
 /**
  * One difference (or match) the assistant reported with `report_finding`, at its latest version.
  * `architect` and `vendor` are shown exactly as written: the screen never re-types a number.
  */
+/** A candidate architect page of a "pairing unsure" vendor page (its file when the set has several architect files). */
+export interface UnsurePage {
+  page: number;
+  file?: string | null;
+  title?: string | null;
+}
+
 export interface ChatFinding {
+  /** A "pairing unsure" page's candidate architect pages (made on the screen, never sent). */
+  unsure_pages?: UnsurePage[] | null;
   id: string;
   /** The page the finding is on (the vendor's page). */
   page: number;
   /** The page it was compared with (the architect's), when it is a different one. */
   vs_page?: number | null;
+  /**
+   * Two separate uploads: the ONE architect page it is compared on, set from its vendor page's pair
+   * at the check's finish. Every architect picture, caption and "Whole page" reads it; `page: null`
+   * means no architect page (`why` says why), never a guessed one.
+   */
+  reference_page?: ReferencePage | null;
   item: string;
   category: FindingCategory;
   architect: string | null;
@@ -1116,6 +1142,12 @@ export interface CoveragePage {
   drawing_needed_why?: string | null;
   /** One item, one card: items whose only fact is "no architect drawing", folded under this card. */
   folded?: { finding_id: string; item?: string | null; vendor?: string | null }[] | null;
+  /** The AI page matcher was sure of an architect page and code could not confirm it: the drawing is in the upload; a person confirms the page. */
+  pairing_unsure?: boolean | null;
+  /** The two candidate pages, as a person finds them ('architect page 9 ("STANDARD KITCHEN") or architect page 2?'). */
+  pairing_unsure_why?: string | null;
+  /** pairing_unsure: each candidate architect page, for a person to pick. */
+  pairing_unsure_pages?: UnsurePage[] | null;
 }
 
 /** The page-by-page map of a whole-set answer: which pages were compared and how they came out. */

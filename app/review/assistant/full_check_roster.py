@@ -156,6 +156,13 @@ from app.review.assistant.full_check_schedule import (
 from app.review.assistant.full_check_specialists import HELPER_CORE, PACK_SHAPES, knowledge_text
 from app.review.assistant.impact import by_impact
 from app.review.assistant.reply_json import json_of_reply, log_unreadable, object_of_reply
+from app.review.assistant.splash_views import (
+    downgrade_unlike,
+    look_in_line,
+    pack_phrases,
+    splash_item,
+    splash_question_items,
+)
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.untrusted import fence
 from app.review.assistant.work_pool import code_workers, run_ordered
@@ -649,6 +656,11 @@ def prover_items(engine: ChatEngine, findings: Sequence[Mapping[str, Any]]) -> s
                 f"{side} claimed {finding.get(side)}{where}"
                 + (f" (labels near: {'; '.join(near)})" if near else "")
             )
+        # The splash step's views to look in (the small AI question, `assistant_splash_question`
+        # on): code found them, the look-again reads them (no new call).
+        look_in = look_in_line(finding)
+        if look_in:
+            bits.append(look_in)
         lines.append("; ".join(bits))
     # Items and values come from helpers' readings of the drawing: data, never instructions.
     return fence("\n".join(lines), "findings")
@@ -694,6 +706,7 @@ def apply_proofs(engine: ChatEngine, report: str, asked: Sequence[str]) -> dict[
     done: dict[str, str] = {}
     book = engine.book
     sources = {str(f.get("id")): str(f.get("source") or "") for f in book.live()}
+    phrases: Any = None  # the pack's printed phrases, read once when a splash Right needs them
     for proof in proofs:
         if not isinstance(proof, Mapping):
             continue
@@ -738,6 +751,17 @@ def apply_proofs(engine: ChatEngine, report: str, asked: Sequence[str]) -> dict[
                         }
                     )
                     done[finding_id] = "Right: code read the same value on both sides"
+                    if splash_item(updated):
+                        # Like for like (2026-10-23): a splash's Right needs the architect's size
+                        # printed as the same splash's (`splash_views.unlike`).
+                        if phrases is None:
+                            phrases = pack_phrases(
+                                getattr(engine.tools.workspace, "set_pack", None)
+                            )
+                        down = downgrade_unlike(updated, phrases)
+                        if down is not None and book.replace(down):
+                            updated = down
+                            done[finding_id] = "spots found: not like for like"
                 else:
                     done[finding_id] = "spots found: code reads them"
             engine._show_finding(updated)
@@ -1311,10 +1335,11 @@ def carried_done(coverage: Mapping[str, Any] | None) -> frozenset[int]:
 
 
 def unpaired_note(note: str) -> bool:
-    """Whether a coverage note is the final "no architect drawing found" one (#1885)."""
-    from app.review.assistant.full_check_plan import UNPAIRED_NOTE
+    """Whether a coverage note is the final "no architect drawing found" one (#1885), or the final
+    "pairing unsure" one (the matcher's pick code could not confirm)."""
+    from app.review.assistant.full_check_plan import UNPAIRED_NOTE, UNSURE_NOTE
 
-    return note.startswith(UNPAIRED_NOTE.split("{", 1)[0].strip())
+    return any(note.startswith(n.split("{", 1)[0].strip()) for n in (UNPAIRED_NOTE, UNSURE_NOTE))
 
 
 def reopened(
@@ -1736,9 +1761,18 @@ class _Run:
         if not left:
             return None
         lone = self._not_pairable()
-        alone = [page for page in left if page in lone]
+        unsure = self._unsure_pages()
+        picks = [page for page in left if page in unsure]
+        alone = [page for page in left if page in lone and page not in unsure]
         others = [page for page in left if page not in lone]
         parts: list[str] = []
+        if picks:
+            # The architect's drawing is in the upload: a person confirms which page it is.
+            parts.append(
+                f"{len(picks)} vendor {'page was' if len(picks) == 1 else 'pages were'} not "
+                f"compared, pairing unsure: a person confirms which architect page shows "
+                f"{'it' if len(picks) == 1 else 'each'} ({_page_list(picks)})"
+            )
         if alone:
             # #1885: said apart; no more looks would compare them (no architect drawing).
             parts.append(
@@ -1799,6 +1833,13 @@ class _Run:
             engine.book.set_coverage({"pages": pages}, "code")
             engine._show_coverage()
 
+    def _unsure_pages(self) -> frozenset[int]:
+        """The unpaired pages whose AI page matcher pick code could not confirm ("pairing
+        unsure"): their architect drawing is in the upload."""
+        from app.review.assistant.full_check_plan import unsure_words
+
+        return frozenset(p for p, why in self.unpaired.items() if unsure_words(why) is not None)
+
     def _not_pairable(self) -> frozenset[int]:
         """The pages no architect drawing is paired with this time (#1885): never sent to a gap
         closer, the lead review or a look-again to compare with an architect."""
@@ -1809,7 +1850,12 @@ class _Run:
         coverage ("Not compared with the architect: no architect drawing found for it (why)")
         and listed in the Not-compared list with what would settle it. A page whose drawing the
         page matcher had no answer for is not final: Continue asks again."""
-        from app.review.assistant.full_check_plan import UNPAIRED_NEEDS, unpaired_words
+        from app.review.assistant.full_check_plan import (
+            UNPAIRED_NEEDS,
+            UNSURE_NEEDS,
+            unpaired_words,
+            unsure_words,
+        )
 
         engine = self.engine
         across = engine._cross
@@ -1831,7 +1877,27 @@ class _Run:
             len(self.retry),
         )
         for page in sorted(self._not_pairable()):
-            plain = unpaired_words(self.unpaired.get(page) or self.retry.get(page) or "")
+            reason = self.unpaired.get(page) or self.retry.get(page) or ""
+            unsure = unsure_words(reason) if page in self.unpaired else None
+            if unsure is not None:
+                # The architect's drawing is in the upload: a person confirms the page, never
+                # "no architect drawing found".
+                engine.extra_gaps.append(
+                    {
+                        "page": page,
+                        "what": (
+                            f"Vendor page {page}: not compared with the architect, pairing "
+                            f"unsure: {unsure}"
+                        ),
+                        "why": "pairing_unsure",
+                        "needs": UNSURE_NEEDS,
+                        "scope": "set",
+                        "item": f"Page {page}: pairing unsure",
+                        "category": "other",
+                    }
+                )
+                continue
+            plain = unpaired_words(reason)
             engine.extra_gaps.append(
                 {
                     "page": page,
@@ -1858,7 +1924,9 @@ class _Run:
         from app.review.assistant.full_check_plan import (
             UNPAIRED_NOTE,
             UNPAIRED_RETRY_NOTE,
+            UNSURE_NOTE,
             unpaired_words,
+            unsure_words,
         )
 
         engine = self.engine
@@ -1866,7 +1934,11 @@ class _Run:
             {
                 "page": page,
                 "status": "not_comparable",
-                "note": UNPAIRED_NOTE.format(why=unpaired_words(why)),
+                "note": (
+                    UNSURE_NOTE.format(why=unsure)
+                    if (unsure := unsure_words(why)) is not None
+                    else UNPAIRED_NOTE.format(why=unpaired_words(why))
+                ),
             }
             for page, why in sorted(self.unpaired.items())
         ] + [
@@ -1887,7 +1959,8 @@ class _Run:
         from app.review.assistant.full_check_plan import mostly_unpaired
 
         total = len(self.vendor_pages)
-        alone = len(self._not_pairable() & self.vendor_pages)
+        # A "pairing unsure" page has its architect drawing in the upload: not counted here.
+        alone = len((self._not_pairable() - self._unsure_pages()) & self.vendor_pages)
         if not mostly_unpaired(alone, total):
             return None
         return (
@@ -2632,6 +2705,7 @@ class _Run:
                 page_map=page_map,
                 vendor_ink=self._ink(vendor),
                 newer_same=self._newer_same(vendor, page_map),
+                combined_sheet=self._combined(vendor),
             )
             return found
 
@@ -2663,6 +2737,7 @@ class _Run:
                     checks=checks,
                     ends=ends,
                     said=said,
+                    combined_sheet=self._combined(question.vendor),
                 )
                 if first is None:
                     first, outcome = finding_id, outcome_now
@@ -4307,6 +4382,7 @@ class _Run:
                 # need a label; such an item keeps its code witness and the drawing's own rules.
                 return None
             ink = self._ink(vendor) if vendor is not None else None
+            combined = self._combined(vendor) if vendor is not None else True
             checks = code_checks(
                 vendor,
                 None if code_paired else architect,
@@ -4315,6 +4391,7 @@ class _Run:
                 vendor_ink=ink,
                 newer_same=self._newer_same(vendor, page_map) if vendor is not None else None,
                 prototype_reference=classification.prototype_reference(finding),
+                combined_sheet=combined,
             )
             found = witness.witnesses(finding.get("checks") or {}, finding.get("status"))
             printed = "printed" in found or "ocr_ink" in found
@@ -4380,6 +4457,7 @@ class _Run:
                 twins=self._twins(reply, architect, page_map),
                 first_spans=round_picks.first_spans(finding),
                 code_ends=round_picks.cheap_linked(finding),
+                combined_sheet=combined,
             )
             pairing = {
                 "labels": {
@@ -4467,6 +4545,17 @@ class _Run:
             return None if half is None else tuple(float(v) for v in half["box"])
 
         return (pick,) if same_dimension(named, architect, drawing) is not None else ()
+
+    def _combined(self, label: Mapping[str, Any]) -> bool:
+        """Whether the label's file is one of GV's combined sheets (`verify_value.combined_sheet`
+        of the upload itself): only there is a value in colour GV's markup. Unknown (no upload,
+        unreadable): the strict rule, as the label reader's."""
+        try:
+            uploads = self.engine.tools.workspace.uploads
+            return verify_value.combined_sheet_at(uploads / str(label.get("file")))
+        except Exception:  # noqa: BLE001 - unknown kind: the strict rule
+            _log.info("assistant roster file kind unknown for %s", label.get("id"))
+            return True
 
     def _ink(self, label: Mapping[str, Any]) -> tuple[int, float] | None:
         from app.review.assistant import set_pack
@@ -4843,9 +4932,12 @@ class _Run:
         except Exception:  # noqa: BLE001 - the deeper look goes on without the free steps
             _log.exception("assistant roster escalation's free steps failed")
         waiting = self._unproved()
-        if not waiting:
+        # The splash step's small AI question (`assistant_splash_question` on): its open splash
+        # items with the views code found to look in join this one look-again (no new call).
+        asked = splash_question_items(engine.book.live(), self.escalated)
+        if not waiting and not asked:
             return
-        unread = [f for f in waiting if not self._read_by_code(f)]
+        unread = [f for f in waiting if not self._read_by_code(f)] + asked
         if unread and self._left() <= 0:
             self._note(
                 f"the escalation's deeper look: {len(unread)} items not verified within the "

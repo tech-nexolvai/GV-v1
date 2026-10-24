@@ -683,6 +683,40 @@ class ChatCoverageFoldedOut(BaseModel):
     vendor: str | None = None
 
 
+class ChatFindingPageOut(BaseModel):
+    """One upload's page."""
+
+    model_config = ConfigDict(frozen=True)
+
+    file: str
+    page: int
+
+
+class ChatFindingReferenceOut(BaseModel):
+    """The one architect page a finding is compared on (`reference_page.stamp`, stream V): set
+    from its vendor page's pair at the check's finish. Every picture, caption and "Whole page"
+    view of its architect side reads it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    file: str | None = Field(default=None, description="The architect upload's name.")
+    page: int | None = Field(
+        default=None, description="Its page in that file; null: no architect page (see why)."
+    )
+    why: str | None = Field(
+        default=None, description="Why there is no architect page, or why its spot is refused."
+    )
+    outside: bool = Field(
+        default=False,
+        description="The item's architect spot or page is not on its pair (never sent).",
+    )
+    pair: list[ChatFindingPageOut] = Field(
+        default_factory=list,
+        description="Every architect page its vendor page is paired with (then its brand "
+        "prototype pages): where code looks for its architect value.",
+    )
+
+
 class ChatFindingDimOut(BaseModel):
     """A numbered dimension label a finding's side was built from (#1558)."""
 
@@ -915,6 +949,10 @@ class ChatFindingOut(BaseModel):
     id: str
     page: int
     vs_page: int | None = None
+    reference_page: ChatFindingReferenceOut | None = Field(
+        default=None,
+        description="Two separate uploads: the architect page it is compared on, from its pair.",
+    )
     item: str
     category: str = Field(
         description="The product the item belongs to (a product id from `GET /products`), or "
@@ -1151,6 +1189,16 @@ class ChatFindingUpdateBlock(BaseModel):
     update: ChatFindingUpdateOut
 
 
+class ChatUnsurePageOut(BaseModel):
+    """One candidate architect page of a "pairing unsure" vendor page."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page: int
+    file: str | None = None
+    title: str | None = None
+
+
 class ChatCoveragePageOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -1177,13 +1225,49 @@ class ChatCoveragePageOut(BaseModel):
         "that no architect drawing is paired, folded under this card (one item, one card).",
     )
 
+    pairing_unsure: bool = Field(
+        default=False,
+        description="Not compared: the AI page matcher was sure of an architect page and code "
+        "could not confirm it. The architect's drawing is in the upload (never 'Drawing "
+        "needed'): the result screen lists it under Not compared with both candidate pages. "
+        "Worked out on read from the page's note.",
+    )
+    pairing_unsure_why: str | None = Field(
+        default=None,
+        description="pairing_unsure: the two candidate pages, as a person finds them "
+        "('architect page 9 (\"STANDARD KITCHEN\") or architect page 2?').",
+    )
+
+    pairing_unsure_pages: list[ChatUnsurePageOut] = Field(
+        default_factory=list,
+        description="pairing_unsure: each candidate architect page (its page, its file when the "
+        "set has several architect files, its title), for a person to pick.",
+    )
+
     @model_validator(mode="before")
     @classmethod
     def _drawing_needed(cls, raw: object) -> object:
-        if not isinstance(raw, dict) or "drawing_needed" in raw:
+        if not isinstance(raw, dict):
             return raw
-        from app.review.assistant.full_check_plan import unpaired_note_why
+        from app.review.assistant.full_check_plan import (
+            unpaired_note_why,
+            unsure_note_why,
+            unsure_pages,
+        )
 
+        if "pairing_unsure" not in raw:
+            unsure = unsure_note_why(raw.get("note"))
+            if unsure is not None:
+                raw = {
+                    **raw,
+                    "pairing_unsure": True,
+                    "pairing_unsure_why": unsure,
+                    "pairing_unsure_pages": unsure_pages(unsure),
+                }
+        elif raw.get("pairing_unsure") and not raw.get("pairing_unsure_pages"):
+            raw = {**raw, "pairing_unsure_pages": unsure_pages(raw.get("pairing_unsure_why"))}
+        if "drawing_needed" in raw:
+            return raw
         why = unpaired_note_why(raw.get("note"))
         return raw if why is None else {**raw, "drawing_needed": True, "drawing_needed_why": why}
 
