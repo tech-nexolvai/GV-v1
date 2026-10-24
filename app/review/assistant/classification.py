@@ -83,7 +83,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
-from app.review.assistant import job_value_rules
+from app.review.assistant import dim_ends, job_value_rules
 from app.review.assistant.finding_checks import wrong_part
 from app.review.assistant.round_picks import pick_words
 from app.review.assistant.round_reference import (
@@ -1212,6 +1212,15 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
     if reference is not None:
         return reference
     status = finding.get("status")
+    unlike = dim_ends.unlike_reason(finding)
+    if unlike is not None and status in ("same", "different", "check"):
+        # Like for like only (fix 3, 2026-10-25): code read what both dimensions measure from and
+        # to, and they are not the same kind of points; never Right, never Wrong.
+        return _not(
+            "different_reference",
+            unlike,
+            "the architect's dimension between the same two points as {thing}",
+        )
     if finding.get(READER_ERROR) and status in ("different", "same"):
         # One of its numbers could not be read because a code reader raised (#1850): never
         # Wrong or Right on what was not read; the check itself stays complete.

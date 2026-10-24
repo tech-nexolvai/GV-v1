@@ -70,14 +70,23 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from app.review.assistant import classification, job_value_rules, missing_items, proof
+from app.review.assistant import (
+    classification,
+    dim_ends,
+    job_value_rules,
+    missing_items,
+    proof,
+    sink_centre,
+)
 from app.review.assistant.chat_trust import inch_words, judged, round_item_key
 from app.review.assistant.full_check_advocate import code_pairs
 from app.review.assistant.impact import by_impact
+from app.review.assistant.ledger import format_inches
 from app.review.assistant.round_reference import compare_with_architect
 from app.review.assistant.spot_locate import VENDOR_SEARCH, search_area, search_words
 
@@ -106,6 +115,7 @@ type StepName = Literal[
     "vendor_search",
     "gv_sticker",
     "tags",
+    "ends",
 ]
 #: The free code steps, cheapest first.
 FREE_STEPS: Final[tuple[StepName, ...]] = (
@@ -170,6 +180,9 @@ class EscalationContext:
     rules_md: str | None = None
     """The chat's `rules.md` (the job values in force), for the GV rules whose job values are
     missing (`job_value_rules`)."""
+    pages: Callable[[str, int], dim_ends.Page | None] | None = None
+    """Each page's dimensions and what their ends land on (`dim_ends.pages_reader`), for the
+    like-for-like step (`_ends_step`)."""
 
 
 @dataclass(slots=True)
@@ -248,6 +261,8 @@ def undecided(finding: Mapping[str, Any]) -> bool:
         return False  # GV's site-fit rule decided it by its own arithmetic: nothing to climb
     if finding.get("created_by") == "sink_offset":
         return False  # GV's sink front offset: code proved it or said why not (#1807)
+    if finding.get("created_by") == sink_centre.CREATED_BY:
+        return False  # the sink centre against the sink base: code compared it or said why not
     return proof.proof_group(finding) in proof.UNDECIDED and finding.get("status") != "same"
 
 
@@ -1087,6 +1102,210 @@ def _tag_step(item: _Item, ctx: EscalationContext) -> None:
     item.note("tags", decision.outcome, decision.why)
 
 
+#: A claim about a notch (or a stepped end) in the top.
+_NOTCH_CLAIM: Final = re.compile(r"\bnotch\w*|\bstepped\b|\bjogg?\w*", re.IGNORECASE)
+#: Room round a claim's box where the notch's step may be drawn (points).
+_NOTCH_PAD_PT: Final = 12.0
+#: What GV decided (client meeting, 2026-10-23).
+NOTCH_RULE: Final = (
+    "a notch in the top (code found its step on the vendor's drawing): GV cuts unusual notches "
+    "on site, so a notch is never compared (GV, client meeting 2026-10-23)"
+)
+
+
+def _page_of(ctx: EscalationContext, side: object) -> dim_ends.Page | None:
+    if ctx.pages is None or not isinstance(side, Mapping):
+        return None
+    try:
+        page = int(side.get("page") or 0)
+    except (TypeError, ValueError):
+        return None
+    file = str(side.get("file") or ctx.main_file or "")
+    try:
+        return ctx.pages(file, page)
+    except Exception:  # noqa: BLE001 - a page code cannot read: nothing to say about its ends
+        _log.exception("escalation: ends not read (p%s)", page)
+        return None
+
+
+def _notch_claim(item: _Item, ctx: EscalationContext) -> str | None:
+    """A claim about a notch in the top (the whole-drawing look's "stepped end") where code finds a
+    notch's step on the vendor's drawing in the claim's box: GV's decided rule drops it."""
+    finding = item.finding
+    if finding.get("status") not in ("check", "different") or proof.reviewer_decided(finding):
+        return None
+    words = " ".join(str(finding.get(key) or "") for key in ("item", "vendor"))
+    if not _NOTCH_CLAIM.search(words):
+        return None
+    where = _box(finding.get("vendor_box"))
+    if where is None:
+        return None
+    name, page_no, box = where
+    page = _page_of(ctx, {"page": page_no, "file": name or ctx.main_file})
+    if page is None:
+        return None
+    pad = _NOTCH_PAD_PT
+    steps = page.notches_in((box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad))
+    if not steps:
+        item.note("ends", "no_change", "a notch named, but code found no notch's step there")
+        return None
+    return f"Not compared: {NOTCH_RULE}."
+
+
+#: A claim that the top is L-shaped or has a return.
+_RETURN_CLAIM: Final = re.compile(r"\bL[\s-]?shaped?\b|\breturns?\b", re.IGNORECASE)
+_NO_RETURN: Final = re.compile(
+    r"\b(?:no|not|without|never)\b[^.;,]*\b(?:L[\s-]?shaped?|returns?)\b", re.IGNORECASE
+)
+_RIGHT_END: Final = re.compile(r"\bright\b", re.IGNORECASE)
+_LEFT_END: Final = re.compile(r"\bleft\b", re.IGNORECASE)
+#: The least a top's printed length is (inches) for its ends to say where the top stops.
+_TOP_MIN_IN: Final = Fraction(12)
+WALL_RETURN: Final = (
+    "the L drawn on the reference is its wall, not the top: the reference's top sizes stop at the "
+    "wall's face there (code found the wall drawn as a band beyond them)"
+)
+
+
+def _wall_return_claim(item: _Item, ctx: EscalationContext) -> str | None:
+    """A claim that the reference's top is L-shaped (has a return) where code finds that the
+    reference's top sizes in the claim's box stop at a wall drawn beyond them (`dim_ends.wall_band`):
+    the L is the wall's outline, not the top; the claim is dropped."""
+    finding = item.finding
+    if finding.get("status") not in ("check", "different") or proof.reviewer_decided(finding):
+        return None
+    if finding.get("dims"):
+        return None  # an item about printed sizes: the like-for-like step reads it
+    claim = str(finding.get("architect") or "")
+    if not _RETURN_CLAIM.search(claim) or _NO_RETURN.search(claim):
+        return None  # the reference's own side must be said to have the L (not "no return")
+    where = _box(finding.get("arch_box"))
+    if where is None:
+        return None
+    name, page_no, box = where
+    if not name:
+        return None
+    page = _page_of(ctx, {"page": page_no, "file": name})
+    if page is None:
+        return None
+    boxes: dict[str, Sequence[float]] = {
+        str(label.get("id")): label["box"]
+        for label in ctx.labels.get((name, page_no), [])
+        if isinstance(label.get("box"), Sequence) and len(label["box"]) == 4
+    }
+    right, left = bool(_RIGHT_END.search(claim)), bool(_LEFT_END.search(claim))
+    for span in page.spans.values():
+        if span.inches < _TOP_MIN_IN or span.id not in boxes:
+            continue
+        if not _inside(_centre(boxes[span.id]), box, 0.0):
+            continue
+        ends = []
+        if not right or left or span.axis != "h":
+            ends.append((span.a, -1))
+        if not left or right or span.axis != "h":
+            ends.append((span.b, 1))
+        if any(dim_ends.wall_band(page, span, end, outward) for end, outward in ends):
+            return f"Not compared: {WALL_RETURN}."
+    return None
+
+
+def _ends_step(
+    item: _Item,
+    ctx: EscalationContext,
+    live: Sequence[dict[str, Any]],
+    result: Escalation,
+) -> str | None:
+    """Like for like (fix 3, 2026-10-25; `dim_ends`): what each of the item's two code-read labels
+    measures from and to. Unlike ends are never compared: the item goes to the GV rule that relates
+    them (the sink centre, `sink_centre`; the field cut speaks first, `field_cut.vet`), or is Not
+    compared with the plain reason. A notch claim code sees drawn is dropped (GV's rule). Returns
+    the reason when the item is dropped."""
+    finding = item.finding
+    if ctx.pages is None or proof.reviewer_decided(finding):
+        return None
+    if finding.get("created_by") == sink_centre.CREATED_BY:
+        return None
+    dropped = _notch_claim(item, ctx) or _wall_return_claim(item, ctx)
+    if dropped is not None:
+        return dropped
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else None
+    vendor_side = (dims or {}).get("vendor")
+    architect_side = (dims or {}).get("architect")
+    if not isinstance(vendor_side, Mapping) or not isinstance(architect_side, Mapping):
+        return None
+    if finding.get("source") not in ("architect", None):
+        return None
+    vendor_page = _page_of(ctx, vendor_side)
+    architect_page = _page_of(ctx, architect_side)
+    if vendor_page is None or architect_page is None:
+        return None
+    vendor = vendor_page.ends(vendor_side.get("id"))
+    architect = architect_page.ends(architect_side.get("id"))
+    if vendor is None or architect is None:
+        return None
+    if vendor.span.axis != architect.span.axis:
+        return None
+    if ctx.field_cuts is not None:
+        rule = import_module("app.review.assistant.field_cut")
+        try:
+            cuts = ctx.field_cuts(
+                str(vendor_side.get("file") or ctx.main_file or ""),
+                int(vendor_side.get("page") or 0),
+            )
+            vetted = rule.vet(
+                dims,
+                status="different",
+                source=finding.get("source"),
+                architect=finding.get("architect"),
+                cuts=cuts,
+            )
+        except Exception:  # noqa: BLE001 - no field cut known: the ends decide
+            vetted = None
+        if vetted is not None:
+            return None  # GV's field-cut rule relates the two (it speaks in the labels step)
+    verdict, why = dim_ends.alike(vendor, architect)
+    if verdict != "unlike":
+        return None
+    cuts_in = dim_ends.field_cut_relief(vendor, architect)
+    if cuts_in is not None:
+        # GV's field-cut rule relates them (the overall is the run plus one field cut per wall
+        # end): the same once the field cuts are taken off leaves the item as it is.
+        per_end = Fraction(getattr(vendor_page.field_cuts, "per_end", 1) or 1)
+        without = vendor.span.inches - cuts_in * per_end
+        if without == architect.span.inches:
+            return None
+        why = (
+            f"{why}; without its field cut the vendor's top is "
+            f"{format_inches(without)}, the architect's {format_inches(architect.span.inches)}"
+        )
+    if {"sink_centre"} & (vendor.low.kinds | vendor.high.kinds):
+        routed = sink_centre.route(finding, vendor_page, architect_page)
+        if routed is not None:
+            carrier = next(
+                (
+                    other
+                    for other in live
+                    if other is not finding
+                    and str(other.get("id")) not in result.absorbed
+                    and sink_centre.same_sink(routed, other)
+                ),
+                None,
+            )
+            if carrier is not None:
+                return (
+                    f"the same sink centre as {carrier.get('id')} (GV Review's sink-centre check)"
+                )
+            item.finding.clear()
+            item.finding.update(routed)
+            item.changed = True
+            item.note("ends", "read", f"{why}: compared by the sink-centre check instead")
+            return None
+    finding[dim_ends.FIELD] = dim_ends.record(finding, vendor, architect, verdict, why)
+    item.changed = True
+    item.note("ends", "no_change", f"not like for like: {why}")
+    return None
+
+
 def _before_ladder(
     live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
 ) -> set[str]:
@@ -1095,6 +1314,13 @@ def _before_ladder(
     early: set[str] = set()
     for finding in live:
         item = _Item(finding)
+        dropped = _ends_step(item, ctx, live, result)
+        if dropped is not None:
+            result.absorbed[str(finding["id"])] = dropped
+            result.settled["ends"] = result.settled.get("ends", 0) + 1
+            result.tried += 1
+            early.add(str(finding["id"]))
+            continue
         _sticker_step(item, ctx)
         if ctx.stop is None or not ctx.stop():
             # Stop: GV's stickers are still told apart (that only ever takes a red away); the tag
@@ -1453,11 +1679,13 @@ def context_from_pack(
     count: Callable[[int], Callable[[], None]] | None = None,
     field_cuts: Callable[[str, int], Any] | None = None,
     rules_md: str | None = None,
+    segments: Callable[[str, int], Any] | None = None,
 ) -> EscalationContext:
     """The free steps' facts from a set pack (`dims.json`, `pairs.json`, the stickers code hid
     (`<name>_stickers.json`), and for a missing item `page_texts.json`, `health.json`,
     `annotations.json`). `stickers`: GV's stickers when the pack lists none (an older pack);
-    `unopened`: the pages the check never opened."""
+    `unopened`: the pages the check never opened; `segments`: each page's line work
+    (`vendor_consistency.line_work`; default: the pack's kept line work, when it keeps any)."""
     labels: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     phrases: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     texts: dict[tuple[str, int], str] = {}
@@ -1512,6 +1740,13 @@ def context_from_pack(
         count=count,
         field_cuts=field_cuts,
         rules_md=rules_md,
+        pages=dim_ends.pages_reader(
+            labels,
+            phrases,
+            segments if segments is not None else dim_ends.kept_line_work(pack),
+            field_cuts,
+            main_file,
+        ),
     )
 
 
@@ -1569,6 +1804,15 @@ def _rules_md(workspace: Any) -> str | None:
         return None
 
 
+def _line_work(workspace: Any) -> Callable[[str, int], Any] | None:
+    """The uploads' line work, kept in the set pack (`vendor_consistency.line_work`)."""
+    uploads = getattr(workspace, "uploads", None)
+    if uploads is None or workspace.set_pack is None:
+        return None
+    consistency = import_module("app.review.assistant.vendor_consistency")
+    return consistency.line_work(Path(uploads), Path(workspace.set_pack))  # type: ignore[no-any-return]
+
+
 def escalate_answer(engine: Any) -> Escalation | None:
     """The engine's hook (whole-set work, after the resolver, before the trust report): the free
     steps on the answer's undecided items, each change shown, folded copies dropped with their
@@ -1601,6 +1845,7 @@ def escalate_answer(engine: Any) -> Escalation | None:
         count=getattr(engine, "count_items", None),
         field_cuts=getattr(book, "field_cuts", None),
         rules_md=_rules_md(workspace),
+        segments=_line_work(workspace),
     )
     with engine.finding_lock:
         result = escalate(book.live(), ctx)
