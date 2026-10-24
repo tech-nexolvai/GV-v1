@@ -1,10 +1,12 @@
 """The sink's centre against the sink base's centre (fix 3, 2026-10-25), $0, no AI: code decides.
 
-The client-meeting job's missed problem: the reference (the cabinet maker's drawings) puts the sink
-on a 23" sink base between two 12" cabinets and draws it centred, so its centre is 24 1/2" from
-each end of the 49" top; GV's drawing prints the cut-out's centre 23 1/2" / 25 1/2" from the ends,
-1" off. A helper set the 23 1/2" against the 23" sink base's width (a sink centre line against two
-cabinet sides: `dim_ends` now never compares those), and nothing compared the centres.
+A problem missed on a real upload: the reference (the cabinet maker's drawings) draws the sink
+centred on its sink base between two cabinets, and GV's drawing prints the cut-out's centre from
+the top's two ends 1" off that centre. A helper set one of those offsets against the sink base's
+width (a sink centre line against two cabinet sides: `dim_ends` now never compares those), and
+nothing compared the centres. (Made-up example: a 20" sink base between two 12" cabinets, a 45"
+top 1" past the last cabinet: the base's centre is 22" from the wall end and 23" from the free
+end; a vendor printing 22" / 24" from the ends of its 46" top with a 1" field cut is 1" off.)
 
 **What code must prove** (anything unsure is Not compared, never red):
 
@@ -13,7 +15,7 @@ cabinet sides: `dim_ends` now never compares those), and nothing compared the ce
   overall printed with the same two ends, when there is one, must be their sum). An end that is
   GV's field cut (`field_cut_end`) counts its field cut off: the top without it is compared.
 - **The reference's sink base** (`reference_bases`): a cabinet tag that names a sink base (SB:
-  VSB23, SB36) over its width, with the sink drawn centred on it (a cut-out's middle within
+  VSB30, SB36) over its width, with the sink drawn centred on it (a cut-out's middle within
   `CENTRED_IN` of the base's middle); the top printed over the same run (its two ends named by
   `dim_ends`: a cabinet's side at a wall end, the overhang's edge at a free end); and the printed
   sizes from the top's end to the base, one end to the next on one line (code adds them; the

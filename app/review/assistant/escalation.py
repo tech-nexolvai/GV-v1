@@ -38,6 +38,11 @@ inside the full check and its fixed price, it climbs a ladder, the biggest items
    Missed, changed and added finishes (R4) are code's own finish check (`architect_items`, #1623),
    which runs at the finish of every full check; its findings are proved there, never here.
    Before the ladder, on every item whatever its outcome (#1859):
+   - `ends` (like for like, fix 3, 2026-10-25; `dim_ends`): what each of the item's two code-read
+     labels measures from and to; unlike ends are never compared: the item goes to the GV rule
+     that relates them (the sink centre, `sink_centre`; the field cut) or is Not compared with the
+     plain reason. A notch claim whose step code sees is dropped (GV: notches are cut on site), and
+     an "L-shaped top" claim where the reference's top sizes stop at a wall drawn beyond them;
    - `gv_sticker`: a vendor value inside one of GV's stickers (`gv_stickers`: GV's coloured note
      baked into the pasted drawing) that prints the same value is GV's, never the vendor's: Not
      compared, with what code reads of the vendor's own ink under the sticker;

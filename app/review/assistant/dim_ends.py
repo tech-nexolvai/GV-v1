@@ -1,7 +1,7 @@
 """What each dimension measures from and to: code reads where its ends land (fix 3, 2026-10-25).
 
 AI is poor at locating a dimension's end points (2026 benchmarks: the best model 22%), and the
-client-meeting job showed what that costs: a sink centre's offset compared with the sink base's
+client-meeting job (a real upload) showed what that costs: a sink centre's offset compared with the sink base's
 width, a field cut with an overhang, a top's depth with the cabinet and its door. So code works out,
 for each printed dimension, **what each end lands on**, from the drawing's own geometry (its line
 work, `dim_anchors`' spans read from the slash ticks), the words printed near it, and nothing the
@@ -11,7 +11,7 @@ AI said. Two dimensions are compared only when their ends are alike on both side
 
 | Kind | What code needs |
 |---|---|
-| `cabinet_face` | a cabinet tag (VSB23, B24, VDB12-4) printed over the dimension whose width is the dimension's value; the same span drawn again (same value, same stations) or a dimension of the same stack ending at that station |
+| `cabinet_face` | a cabinet tag (VSB30, B24, VDB15-4) printed over the dimension whose width is the dimension's value; the same span drawn again (same value, same stations) or a dimension of the same stack ending at that station |
 | `overhang_end` | an end beyond the outermost cabinet face of its stack by at most `OVERHANG_MAX_IN`, on a dimension whose other end is a cabinet face, its printed value the cabinets' printed sum plus that gap (the top's edge past the cabinets) |
 | `field_cut_end` | the end of a vendor overall that includes GV's field cut (`field_cut.page_field_cuts`), where it passes the end of the top printed without it by one field cut |
 | `wall` | that top's own end there (the field cut is per wall end); or an end on the near face of a band (two parallel lines `WALL_MIN_IN`-`WALL_MAX_IN` apart, both at least `WALL_RUN_IN` long) drawn beyond the dimension |
@@ -29,8 +29,8 @@ dimensions unlike, and never makes them alike. Never on a guess.
 the same point (`_APART`: a sink's centre line is never a cabinet's side; a field cut's end is
 never a wall's face or the overhang's edge). Unlike dimensions are never compared: the item goes to
 the GV rule that relates them (the sink centre, `sink_centre`; the field cut, `field_cut`) or is Not
-compared with the plain reason ("the vendor's 23 1/2" measures from the field-cut end of the top to
-the sink's centre line; the architect's 23" from a cabinet's side to a cabinet's side").
+compared with the plain reason ("the vendor's 22" measures from the field-cut end of the top to
+the sink's centre line; the architect's 20" from a cabinet's side to a cabinet's side").
 
 The finding's record (`FIELD`) keeps the two label ids it was worked out for, so a later step that
 pairs the item with other labels is never judged by a stale record (`unlike_reason`).
@@ -151,9 +151,9 @@ TAG_PT: Final = 25.0
 #: Small dimensions code looks for its own span for (inches): the 1" overhang, the 3/4" panel.
 SMALL_MAX_IN: Final = Fraction(3)
 
-#: A cabinet tag: letters, then its width in inches (VSB23-ADA, B24, VDB12-4-ADA, SB36, W3030).
+#: A cabinet tag: letters, then its width in inches (VSB30, B24, VDB15-4, SB36, W3030).
 _TAG: Final = re.compile(r"^(?P<letters>[A-Z]{1,5})(?P<width>\d{2})(?:\d{2})?(?:[-\s].*)?$")
-#: Letters of a sink base (SB36, VSB23, SBA30).
+#: Letters of a sink base (SB36, VSB30, SBA30).
 _SINK_BASE: Final = re.compile(r"SB")
 #: A sink's words inside a cut-out (a model or the word itself).
 _SINK_WORDS: Final = re.compile(
@@ -554,7 +554,7 @@ def rectangles(segments: Sequence[Segment], ppi: float) -> list[Box]:
 
 
 def _names_a_sink(text: str) -> bool:
-    """A sink's words, or a sink base's tag (VSB23, SB36)."""
+    """A sink's words, or a sink base's tag (VSB30, SB36)."""
     if _SINK_WORDS.search(text):
         return True
     tag = _TAG.match(" ".join(text.split()).upper())
