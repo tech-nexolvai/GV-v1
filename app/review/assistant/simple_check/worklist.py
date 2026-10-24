@@ -864,6 +864,7 @@ def worklist_from(
             spans=_spans_with(raw, scales_page, side) if drawing.role == "vendor" else None,
             rows=(tuple(raw), scales_page, side),
             oriented=oriented,
+            size_rows=pairing_module.size_rows(raw),
             tags=pairing_module.tags_in([*texts, *(drawing.tags or ())]),
             markers=pairing_module.markers_in(texts)[0],
             hand=pairing_module.markers_in(texts)[1],
@@ -1789,6 +1790,7 @@ def _item_facts(
         hand=frozenset(w for m in members for w in m.hand),
         index_title=next((m.index_title for m in members if m.index_title), None),
         place=(item.file, item.page),
+        size_rows=tuple(r for m in members for r in m.size_rows),
     )
     return merged, members
 
@@ -1964,11 +1966,19 @@ def _pair_across(
             ),
             views_disagree=disagree,
         )
+    swap_why: str | None = None
+    swapped: pairing_module.SizeMatch | None = None
+    if asked:
+        ranked, swap_why, swapped = _swap_checked(
+            mine_facts, ranked, code_pick, answer, pool, facts_of
+        )
     if not asked:
         chosen: tuple[str, ...] = ()
         why = f"{pairing_module.UNPAIRED}: every architect item is ruled out by code ({ranked[0].contradicts})"
     else:
         chosen, why = pairing_module.agree(ranked, code_pick, answer)
+        if not chosen and swap_why:
+            why = f"{why}; {swap_why}"
     by_id = {c.id: c for c in pool}
     picked_views: list[str] = []
     whole: set[str] = set()
@@ -2004,6 +2014,10 @@ def _pair_across(
                 whole.add(item_id)
                 shown.append(f"the whole of {item_id}: its page is titled the vendor's item")
                 continue
+            if best is None:
+                # Look-alike views of the paired sheet, none with strong evidence: the one that
+                # prints the vendor's sizes clearly best (the swap check among the sheet's views).
+                best = _view_by_sizes(vendor_facts, item_views)
             if best is None:
                 failed.append(f"{item_id} shows it ({why}), but {problem}")
                 continue
@@ -2062,6 +2076,13 @@ def _pair_across(
         hand = next(
             (h for t in targets if (h := pairing_module.opposite_hand(mine_facts, t))), None
         )
+        if (
+            hand is None
+            and swapped is not None
+            and any(pairing_module.size_match(mine_facts, t).mirrored for t in targets)
+        ):
+            # Code's mirror proof: the vendor's parts read backwards on the paired drawing's line.
+            hand = "the vendor's parts read in reverse order on the architect's: a mirrored unit"
         if hand is not None:
             why = f"{why}; {hand}: sizes are compared, positions from an end are not"
     if not chosen and DRAWING_NEEDED not in why and saved is not None:
@@ -2408,6 +2429,117 @@ def _view_ruled_out(
             continue
         return True
     return False
+
+
+def _swap_checked(
+    vendor: pairing_module.Facts,
+    ranked: tuple[pairing_module.Scored, ...],
+    code_pick: str | None,
+    answer: pairing_module.MatchAnswer | None,
+    pool: Sequence[AcrossCandidate],
+    facts_of: Callable[[Drawing], pairing_module.Facts],
+) -> tuple[tuple[pairing_module.Scored, ...], str | None, pairing_module.SizeMatch | None]:
+    """The swap check (`pairing.swap_check`) for a sure AI page matcher's pick that code has no
+    pick of its own for, when other architect pages carry the pick's title (a kitchen drawn on four
+    sheets; two units drawn alike): the pick's printed sizes must match the vendor's clearly better
+    than every other page of its title. Then the pick holds strong code evidence, enough to agree
+    with the matcher, never to pair without it (`pairing.with_sizes`); `pairing.agree` still
+    decides (never against a contradiction, nor with another item clearly ahead). Otherwise
+    `ranked` as it was, and why the swap check could not tell (`None`: it did not apply). With the
+    pick's size match when it holds (a mirrored match flags the pair opposite-hand)."""
+    if answer is None or not answer.confident or not answer.matches or code_pick is not None:
+        return ranked, None, None
+    pick = answer.matches[0]
+    by = {s.ref: s for s in ranked}
+    item = next((c for c in pool if c.id == pick), None)
+    if item is None or pick not in by or by[pick].contradicts is not None:
+        return ranked, None, None
+    mine = _item_facts(item, facts_of, None)[0]
+    title = pairing_module.unit_title(mine.index_title)[0] if mine.index_title else ""
+    if not title:
+        return ranked, None, None
+    if vendor.index_title and not _shares_a_word(vendor.index_title, mine.index_title):
+        # The vendor's own title names another item ("BENCH" against "KITCHEN"): no look-alikes.
+        return ranked, None, None
+    siblings = [
+        facts
+        for c in pool
+        if c.id != pick
+        and c.id in by
+        and by[c.id].contradicts is None
+        and (facts := _item_facts(c, facts_of, None)[0]).index_title
+        and pairing_module.unit_title(facts.index_title)[0] == title
+    ]
+    if not siblings:
+        return ranked, None, None
+    match, problem = pairing_module.swap_check(vendor, mine, siblings)
+    if match is None:
+        return (
+            ranked,
+            (
+                f'the swap check among the {len(siblings) + 1} pages titled "{mine.index_title}" '
+                f"cannot tell: {problem}"
+            ),
+            None,
+        )
+    return (
+        pairing_module.with_sizes(
+            ranked, pick, match, [s.ref for s in siblings], str(mine.index_title)
+        ),
+        None,
+        match,
+    )
+
+
+#: Words of a title too short to name anything ("AT", "OF", a unit type's letter).
+_TITLE_WORD_LETTERS: Final = 4
+#: Title words that name no item ("TYPE A" and "TYPE B" are two units).
+_NOT_NAMING: Final = frozenset({"type", "unit", "units", "with"})
+
+
+def _naming_words(title: str | None) -> set[str]:
+    return {
+        w
+        for w in pairing_module.unit_title(title)[0].split()
+        if len(w) >= _TITLE_WORD_LETTERS and w not in _NOT_NAMING
+    }
+
+
+def _shares_a_word(one: str, other: str | None) -> bool:
+    """Whether every naming word of the vendor's title (`one`; `unit_title`'s tidy-up, 4 letters
+    or more) starts a word of the page's title (`other`), or the other way round: "STANDARD
+    LOCKOFF KITCHEN" names "STANDARD LOCKOFF KITCHENETTE", "KITCHEN" names "STANDARD KITCHEN";
+    "STANDARD VANITY" never names "STANDARD KITCHEN", nor "BENCH" "KITCHEN"."""
+    mine, theirs = _naming_words(one), _naming_words(other)
+    return bool(mine) and all(any(w.startswith(t) or t.startswith(w) for t in theirs) for w in mine)
+
+
+def _view_by_sizes(
+    vendor: pairing_module.Facts, views: Sequence[pairing_module.Facts]
+) -> pairing_module.Scored | None:
+    """The view of a paired sheet whose printed sizes match the vendor drawing's clearly best (the
+    swap check among the sheet's views, `pairing.swap_check`), or `None`. Only among look-alike
+    views: when a view holds strong evidence (a key plan's callout, its item tag), `narrow`'s
+    refusal stands. The vendor's overall must be printed on the view, not only added up; a view
+    code rules out (another variant) is never picked, and still counts against the others."""
+    if len(views) < 2:
+        return None
+    ranked = pairing_module.rank(vendor, views)
+    if any(s.strong for s in ranked):
+        return None
+    open_ = {s.ref for s in ranked if s.contradicts is None}
+    best = max(views, key=lambda v: pairing_module.size_match(vendor, v).points)
+    if best.ref not in open_:
+        return None
+    others = [v for v in views if v.ref != best.ref]
+    match, _ = pairing_module.swap_check(vendor, best, others)
+    runner = max((pairing_module.size_match(vendor, v).points for v in others), default=0)
+    if match is None or not match.printed or match.points - runner < 2:
+        # Two points ahead: the overall printed on this view only, never one point by a sum.
+        return None
+    return pairing_module.Scored(
+        best.ref, 0.0, (f"its sizes match clearly best: it {match.words()}",)
+    )
 
 
 def _unsure(

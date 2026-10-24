@@ -85,6 +85,7 @@ __all__ = [
     "Decision",
     "Facts",
     "Scored",
+    "SizeMatch",
     "clear_winner",
     "decide",
     "dense",
@@ -98,10 +99,15 @@ __all__ = [
     "reuse",
     "same_item",
     "section_key",
+    "size_match",
+    "size_rows",
+    "size_words",
+    "swap_check",
     "tags_in",
     "title_key",
     "unit_title",
     "views_in",
+    "with_sizes",
     "words_in",
 ]
 
@@ -209,6 +215,9 @@ class Facts:
     place: tuple[str, int] | None = None
     """An architect item's file and page in it: several candidates of one title are one item only
     when they are one run of pages of one file (its sheets, `rank`)."""
+    size_rows: tuple[tuple[str, tuple[Fraction, ...]], ...] = ()
+    """Its dimension rows (`size_rows`): the printed values on one dimension line, in order along
+    it, with the line's direction (`h` / `v`). The swap check (`swap_check`) compares them."""
 
 
 @dataclass(frozen=True)
@@ -810,6 +819,15 @@ class Scored:
     titled: float = 0.0
     """The part of `score` the set index's item title gave it: an AI's read, so never counted
     toward code's own pick (`clear_winner`)."""
+    sized: float = 0.0
+    """The part of `score` the swap check gave it (`with_sizes`): found among the pages of the AI
+    page matcher's pick's title, so it only helps agree with the matcher; like the title, never
+    counted toward code's own pick, nor against another item's own evidence (`agree`)."""
+
+    @property
+    def own(self) -> float:
+        """Its score on code's own evidence: the title's and the swap check's weights left out."""
+        return self.score - self.titled - self.sized
 
 
 def _same_size(a: Fraction, b: Fraction) -> bool:
@@ -1028,11 +1046,11 @@ def clear_winner(ranked: Sequence[Scored]) -> Scored | None:
     if not open_:
         return None
     # The set index's titles are an AI's read: code's own pick stands on code's evidence alone.
-    own = sorted(open_, key=lambda s: -(s.score - s.titled))
+    own = sorted(open_, key=lambda s: -s.own)
     best = own[0]
-    if best.score - best.titled < CODE_BAR or not best.strong or best.agree_only:
+    if best.own < CODE_BAR or not best.strong or best.agree_only:
         return None
-    if len(own) > 1 and (best.score - best.titled) - (own[1].score - own[1].titled) < CODE_MARGIN:
+    if len(own) > 1 and best.own - own[1].own < CODE_MARGIN:
         return None
     return best
 
@@ -1157,15 +1175,15 @@ def agree(
         # The set index's title is an AI's read: on code's own evidence alone, no other item may
         # be clearly ahead of the pick either (review of #1913: a title on one page and a view
         # reference both print on another is a conflict, never a pair).
-        own = max((s for s in others if s.strong), key=lambda s: s.score - s.titled, default=None)
-        if own is not None and (own.score - own.titled) - (scored.score - scored.titled) >= TIER:
+        own = max((s for s in others if s.strong), key=lambda s: s.own, default=None)
+        if own is not None and own.own - scored.own >= TIER:
             return (), (
                 f"{UNPAIRED}: the AI page matcher picked {pick}{reason}, but code's own evidence "
                 f"puts {own.ref} ahead ({evidence_words(own)}; {pick}: {evidence_words(scored)})"
             )
         how = (
             "the set index reads the same item title on both pages"
-            if scored.titled and scored.score - scored.titled < CODE_BAR
+            if scored.titled and not scored.sized and scored.own < CODE_BAR
             else "code holds strong evidence for it"
         )
     else:
@@ -1216,7 +1234,257 @@ def _also(by: Mapping[str, Scored], ref: str, pick: Scored) -> bool:
         and other.contradicts is None
         and other.strong
         and not (other.titled and other.agree_only)
-        and other.score - other.titled >= pick.score - pick.titled - TIER
+        and other.own >= pick.own - TIER
+    )
+
+
+# ---- the swap check: same-titled sheets told apart by their printed sizes ----------------------
+#
+# A run of architect sheets carrying one title (a kitchen's plan and its elevations; two units
+# drawn alike) leaves the title no help: which sheet is the vendor's drawing? Other tools pair the
+# sheets, then re-check look-alikes by their content (a "pair-swap audit"). Code does it with the
+# printed sizes: the vendor's overall sizes printed on the sheet (or one dimension line's parts
+# adding up to one), and the vendor's own parts in the same order on one dimension line (read
+# backwards: a mirrored unit). The matcher's pick wins only when its sizes match clearly better
+# than every other sheet of its title; a tie or nothing found stays "pairing unsure".
+
+#: Two printed sizes are the same within this (a CAD print's rounding to a sixteenth).
+SAME_SIZE: Final = Fraction(1, 32)
+#: The vendor's overall sizes are its largest this many distinct sizes (its length and depth; a
+#: note number among them only adds a size no sheet prints).
+OVERALLS: Final = 2
+#: At most this many parts in a row on one dimension line are added up to a vendor's overall.
+MAX_CHAIN: Final = 6
+#: The vendor's parts found in the same order on one dimension line count when they are at least
+#: two and add up to a foot or more (two 1 1/2" fillers in a row say nothing).
+MIN_RUN_INCHES: Final = 12
+#: Dimension lines this close across (points) are one line, and labels along it whose lines meet
+#: or overlap within this are one string of dimensions (a gap: another string, another view).
+_ROW_PT: Final = 2.0
+#: A vendor's overall is added up from a string's parts only when it is this large (inches):
+#: smaller sizes are made of common parts too easily (12" + 12").
+MIN_ADDED_INCHES: Final = MIN_TELLING_INCHES
+#: The weight the swap check adds to the matcher's pick's score (`Scored.sized`; as much as most of
+#: the vendor's sizes printed on both, `_W_SHARE`). Never counted as code's own evidence.
+W_SWAP: Final = 2.0
+
+
+def size_rows(labels: Iterable[Mapping[str, Any]]) -> tuple[tuple[str, tuple[Fraction, ...]], ...]:
+    """A drawing's strings of dimensions (`dims.json` labels with a dimension line): the values
+    whose lines lie on one line and meet or overlap end to end, in order along it, with its
+    direction (`h` / `v`). A gap along the line starts another string (two views drawn side by
+    side are never one row). Strings of two values or more only."""
+    points: list[tuple[str, float, float, float, Fraction]] = []
+    for label in labels:
+        line = label.get("dim_line")
+        try:
+            value = Fraction(str(label.get("inches")))
+            (x0, y0), (x1, y1) = ((float(a), float(b)) for a, b in line)  # type: ignore[union-attr]
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        if value <= 0:
+            continue
+        across = abs(x1 - x0) >= abs(y1 - y0)
+        axis = "h" if across else "v"
+        level = (y0 + y1) / 2 if across else (x0 + x1) / 2
+        start, end = sorted((x0, x1) if across else (y0, y1))
+        points.append((axis, level, start, end, value))
+    lines: list[tuple[str, float, list[tuple[float, float, Fraction]]]] = []
+    for axis, level, start, end, value in sorted(points, key=lambda p: (p[0], p[1])):
+        if lines and lines[-1][0] == axis and abs(lines[-1][1] - level) <= _ROW_PT:
+            lines[-1][2].append((start, end, value))
+        else:
+            lines.append((axis, level, [(start, end, value)]))
+    rows: list[tuple[str, tuple[Fraction, ...]]] = []
+    for axis, _, found in lines:
+        string: list[Fraction] = []
+        reach = float("-inf")
+        for start, end, value in sorted(found, key=lambda f: (f[0], f[1])):
+            if string and start > reach + _ROW_PT:
+                rows.append((axis, tuple(string)))
+                string = []
+            string.append(value)
+            reach = max(reach, end) if len(string) > 1 else end
+        rows.append((axis, tuple(string)))
+    return tuple(row for row in rows if len(row[1]) >= 2)
+
+
+def _same(a: Fraction, b: Fraction) -> bool:
+    return abs(a - b) <= SAME_SIZE
+
+
+def size_words(value: Fraction) -> str:
+    """`55 1/2"`, `60"`, `3/4"`: a size in inches as a drawing prints it (to a 32nd)."""
+    whole, part = divmod(Fraction(value).limit_denominator(32), 1)
+    if not part:
+        return f'{whole}"'
+    return f'{part}"' if not whole else f'{whole} {part}"'
+
+
+@dataclass(frozen=True)
+class SizeMatch:
+    """How one architect sheet's printed sizes match a vendor drawing's (`swap_check`)."""
+
+    ref: str
+    printed: tuple[Fraction, ...] = ()
+    """The vendor's overall sizes it prints."""
+    added: tuple[tuple[Fraction, tuple[Fraction, ...]], ...] = ()
+    """The vendor's overall sizes one of its dimension lines adds up to, with the parts."""
+    parts: tuple[Fraction, ...] = ()
+    """The longest run of the vendor's parts it prints in the same order on one dimension line."""
+    mirrored: bool = False
+    """That run is found only read backwards: the sheet draws the unit mirrored."""
+
+    @property
+    def points(self) -> int:
+        """An overall printed 2, one added up 1, the vendor's parts in order 1."""
+        return 2 * len(self.printed) + len(self.added) + (1 if self.parts else 0)
+
+    def words(self) -> str:
+        """What matched, in plain words (empty: nothing)."""
+        out = [f"prints the vendor's overall {size_words(v)}" for v in self.printed]
+        out += [
+            f"adds up to the vendor's overall {size_words(v)} ("
+            + " + ".join(size_words(p) for p in parts)
+            + ")"
+            for v, parts in self.added
+        ]
+        if self.parts:
+            run = ", ".join(size_words(p) for p in self.parts)
+            out.append(
+                f"prints the vendor's parts {run} in reverse order (a mirrored unit)"
+                if self.mirrored
+                else f"prints the vendor's parts {run} in the same order"
+            )
+        return "; ".join(out)
+
+
+def _overalls(vendor: Facts) -> tuple[Fraction, ...]:
+    sizes = sorted({v for v in vendor.values if v >= MIN_TELLING_INCHES / 2}, reverse=True)
+    return tuple(sizes[:OVERALLS])
+
+
+def _chain(row: Sequence[Fraction], total: Fraction) -> tuple[Fraction, ...] | None:
+    """The parts in a row on one dimension line that add up to `total`, or `None`."""
+    for start in range(len(row)):
+        added = Fraction(0)
+        for end in range(start, min(len(row), start + MAX_CHAIN)):
+            added += row[end]
+            if end > start and _same(added, total):
+                return tuple(row[start : end + 1])
+            if added > total + SAME_SIZE:
+                break
+    return None
+
+
+def _run(mine: Sequence[Fraction], theirs: Sequence[Fraction]) -> tuple[Fraction, ...]:
+    """The longest run of `mine`'s values `theirs` prints in the same order, side by side."""
+    best: tuple[Fraction, ...] = ()
+    for i in range(len(mine)):
+        for j in range(len(theirs)):
+            k = 0
+            while i + k < len(mine) and j + k < len(theirs) and _same(mine[i + k], theirs[j + k]):
+                k += 1
+            if k > len(best):
+                best = tuple(mine[i : i + k])
+    return best if len(best) >= 2 and sum(best) >= MIN_RUN_INCHES else ()
+
+
+def size_match(vendor: Facts, sheet: Facts) -> SizeMatch:
+    """How `sheet`'s printed sizes match the vendor drawing's (`SizeMatch`): its overall sizes
+    printed or added up on one dimension line, its parts in the same order (or backwards)."""
+    printed: list[Fraction] = []
+    added: list[tuple[Fraction, tuple[Fraction, ...]]] = []
+    for total in _overalls(vendor):
+        if any(_same(total, v) for v in sheet.values):
+            printed.append(total)
+            continue
+        if total < MIN_ADDED_INCHES:
+            continue
+        chain = next(
+            (found for _, row in sheet.size_rows if (found := _chain(row, total)) is not None),
+            None,
+        )
+        if chain is not None:
+            added.append((total, chain))
+    forward: tuple[Fraction, ...] = ()
+    backward: tuple[Fraction, ...] = ()
+    for axis, mine in vendor.size_rows:
+        for their_axis, theirs in sheet.size_rows:
+            if their_axis != axis:
+                continue
+            if len(found := _run(mine, theirs)) > len(forward):
+                forward = found
+            # Only an across string read backwards is a mirror (an up-and-down one is upside down).
+            if axis == "h" and len(found := _run(mine, theirs[::-1])) > len(backward):
+                backward = found
+    mirrored = len(backward) > len(forward)
+    return SizeMatch(
+        sheet.ref,
+        tuple(printed),
+        tuple(added),
+        backward if mirrored else forward,
+        mirrored,
+    )
+
+
+def swap_check(vendor: Facts, pick: Facts, others: Sequence[Facts]) -> tuple[SizeMatch | None, str]:
+    """Whether the matcher's pick is the vendor's drawing among the sheets of its title
+    (`others`), by the printed sizes (`size_match`): it must match the vendor's overall size
+    (printed, or added up on one dimension line), and match clearly better than every other sheet
+    (a point more: an overall printed beats one added up). Its match, or `None` and why."""
+    if not _overalls(vendor):
+        return None, "the vendor drawing prints no overall size"
+    mine = size_match(vendor, pick)
+    if not mine.printed and not mine.added:
+        return None, f"{pick.ref} neither prints nor adds up to the vendor's overall sizes"
+    if not mine.printed:
+        # Won only by a sum of parts: a sibling matching nothing must have been read (its sizes
+        # and a string of them), never a page whose numbers code could not read.
+        unread = [o.ref for o in others if len(o.values) < MIN_LAYOUT_VALUES or not o.size_rows]
+        if unread:
+            return None, (
+                f"{pick.ref} only adds up to the vendor's overall, and code read too few sizes on "
+                f"{', '.join(unread)} to rule {'it' if len(unread) == 1 else 'them'} out"
+            )
+    theirs = [size_match(vendor, other) for other in others]
+    runner = max(theirs, key=lambda m: m.points, default=None)
+    if runner is not None and mine.points <= runner.points:
+        return None, (
+            f"{pick.ref} and {runner.ref} match its sizes alike ({pick.ref}: {mine.words()}; "
+            f"{runner.ref}: {runner.words() or 'none of them'})"
+        )
+    return mine, ""
+
+
+def with_sizes(
+    ranked: Sequence[Scored], pick: str, match: SizeMatch, others: Sequence[str], title: str
+) -> tuple[Scored, ...]:
+    """`ranked` with the swap check's evidence added to the matcher's pick: strong enough to
+    agree with the sure AI page matcher, never to pair without it (`agree_only`), and never
+    against a contradiction (the pick is not changed then)."""
+    out: list[Scored] = []
+    for one in ranked:
+        if one.ref == pick and one.contradicts is None:
+            words = (
+                f'of the {len(others) + 1} pages titled "{title}", its sizes match clearly best: '
+                f"it {match.words()}"
+            )
+            one = Scored(
+                one.ref,
+                round(one.score + W_SWAP, 3),
+                (words, *one.evidence),
+                one.contradicts,
+                True,
+                one.agree_only or not one.strong,
+                one.linked,
+                one.titled,
+                one.sized + W_SWAP,
+            )
+        out.append(one)
+    order = {s.ref: n for n, s in enumerate(out)}
+    return tuple(
+        sorted(out, key=lambda s: (s.contradicts is None, s.score, -order[s.ref]), reverse=True)
     )
 
 
