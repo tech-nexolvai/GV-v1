@@ -538,7 +538,8 @@ def _under_markup_step(item: _Item, ctx: EscalationContext) -> None:
     except Exception as failed:  # noqa: BLE001 - a step that cannot run settles nothing
         item.note("under_markup", "no_change", f"could not read under the markup ({failed})")
         return
-    # The drawing's own ink only (coloured text may be GV's), joined line by line so "33 1/4\""
+    # The drawing's own ink only (on GV's combined sheets coloured text may be GV's; on an
+    # ordinary upload `under_markup` marks nothing coloured), joined line by line so "33 1/4\""
     # is one size, not two.
     lines: dict[int, list[Mapping[str, Any]]] = {}
     for word in words:
@@ -1141,7 +1142,8 @@ def _judge_missing(
 
 def _colour_reader(ctx: EscalationContext) -> missing_items.ColourReader | None:
     """Whether an architect label is set in GV's colour, read from the drawing's own text at its
-    box (`under_markup`'s words carry their colour); None when it cannot be looked at."""
+    box (`under_markup`'s words carry their colour, on GV's combined sheets only: on an ordinary
+    upload every colour is the drawing's own ink); None when it cannot be looked at."""
     under = ctx.under
     if under is None:
         return None

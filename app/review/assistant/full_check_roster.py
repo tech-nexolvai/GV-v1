@@ -2656,6 +2656,7 @@ class _Run:
                 page_map=page_map,
                 vendor_ink=self._ink(vendor),
                 newer_same=self._newer_same(vendor, page_map),
+                combined_sheet=self._combined(vendor),
             )
             return found
 
@@ -2687,6 +2688,7 @@ class _Run:
                     checks=checks,
                     ends=ends,
                     said=said,
+                    combined_sheet=self._combined(question.vendor),
                 )
                 if first is None:
                     first, outcome = finding_id, outcome_now
@@ -4327,6 +4329,7 @@ class _Run:
                 # need a label; such an item keeps its code witness and the drawing's own rules.
                 return None
             ink = self._ink(vendor) if vendor is not None else None
+            combined = self._combined(vendor) if vendor is not None else True
             checks = code_checks(
                 vendor,
                 None if code_paired else architect,
@@ -4335,6 +4338,7 @@ class _Run:
                 vendor_ink=ink,
                 newer_same=self._newer_same(vendor, page_map) if vendor is not None else None,
                 prototype_reference=classification.prototype_reference(finding),
+                combined_sheet=combined,
             )
             found = witness.witnesses(finding.get("checks") or {}, finding.get("status"))
             printed = "printed" in found or "ocr_ink" in found
@@ -4400,6 +4404,7 @@ class _Run:
                 twins=self._twins(reply, architect, page_map),
                 first_spans=round_picks.first_spans(finding),
                 code_ends=round_picks.cheap_linked(finding),
+                combined_sheet=combined,
             )
             pairing = {
                 "labels": {
@@ -4487,6 +4492,17 @@ class _Run:
             return None if half is None else tuple(float(v) for v in half["box"])
 
         return (pick,) if same_dimension(named, architect, drawing) is not None else ()
+
+    def _combined(self, label: Mapping[str, Any]) -> bool:
+        """Whether the label's file is one of GV's combined sheets (`verify_value.combined_sheet`
+        of the upload itself): only there is a value in colour GV's markup. Unknown (no upload,
+        unreadable): the strict rule, as the label reader's."""
+        try:
+            uploads = self.engine.tools.workspace.uploads
+            return verify_value.combined_sheet_at(uploads / str(label.get("file")))
+        except Exception:  # noqa: BLE001 - unknown kind: the strict rule
+            _log.info("assistant roster file kind unknown for %s", label.get("id"))
+            return True
 
     def _ink(self, label: Mapping[str, Any]) -> tuple[int, float] | None:
         from app.review.assistant import set_pack
