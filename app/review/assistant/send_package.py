@@ -53,11 +53,11 @@ from app.review.assistant import not_compared, proof_words
 from app.review.assistant.impact import by_impact
 from app.review.assistant.likely_problems import HEADING as LIKELY_HEADING
 from app.review.assistant.likely_problems import LETTER_LEAD as LIKELY_LEAD
-from app.review.assistant.likely_problems import please_check
 from app.review.assistant.proof import (
     NO_REQUIREMENT_REASON,
     REVIEWER,
     governs,
+    likely_words,
     proof_group,
     proof_of,
     should_be_value,
@@ -617,7 +617,7 @@ def checks_of(findings: Sequence[Mapping[str, Any]]) -> list[PleaseCheck]:
     for finding in findings:
         if proof_group(finding) != "likely_problem":
             continue
-        words = please_check(finding)
+        words = likely_words(finding)
         if words.startswith(LIKELY_LEAD):
             words = words.split(": ", 1)[1] if ": " in words else words
             # The item's name leads the line in the letter already.
@@ -935,7 +935,7 @@ def _proof_words(finding: Mapping[str, Any], status: Status) -> str:
         return "Matches the drawings"
     if status == "likely_problem":
         # 2026-10-23: never an error: the vendor is asked to check and confirm.
-        return please_check(finding)
+        return likely_words(finding)
     if status == "rule_note":
         # #1839: the architect's size breaks a GV rule; GV asks the architect, not the vendor.
         note = proof_of(finding).get("rule_note") or {}

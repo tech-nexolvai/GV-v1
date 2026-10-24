@@ -138,3 +138,15 @@ def _forget_model_limiters() -> Iterator[None]:
     module = sys.modules.get("app.review.assistant.rate_limits")
     if module is not None:
         module.reset_limiters()
+
+
+@pytest.fixture(autouse=True)
+def _check_record_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests of the checks themselves run with each check kind's track record switched off.
+
+    `app.review.assistant.check_record` holds a red back as a Likely problem until its kind of check
+    is clean on enough of GV's keyed cases. The record is data measured on GV's real drawings and
+    grows over time, so a test of a check (does code prove this red?) must not depend on today's
+    counts. `tests/review/assistant/test_check_record.py` switches it on and tests the gate itself.
+    """
+    monkeypatch.setenv("GV_ASSISTANT_CHECK_RECORD", "off")

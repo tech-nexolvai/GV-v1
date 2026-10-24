@@ -1,0 +1,92 @@
+{
+ "about": "Each check kind's track record on GV's answer keys (counts only; measured on the owner's machine by the local test bank and false-red gate, never client values). keyed_cases = decisions a key can judge (right reds, false reds, known traps kept non-red); a kind makes reds only with 0 false reds on at least the minimum.",
+ "measured": "2026-10-25",
+ "bank_run": "20261025-002719",
+ "gate_run": "20261025-004523",
+ "kinds": {
+  "vendor_string": {
+   "keyed_cases": 21,
+   "false_reds": 0,
+   "right_reds": 17,
+   "kept_quiet": 4,
+   "unjudged_reds": 4
+  },
+  "vendor_span": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0
+  },
+  "vendor_pages": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0
+  },
+  "filler": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0
+  },
+  "sink_offset": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0
+  },
+  "run_fit": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0
+  },
+  "splash": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0
+  },
+  "missing_item": {
+   "keyed_cases": 13,
+   "false_reds": 0,
+   "right_reds": 1,
+   "kept_quiet": 12,
+   "unjudged_reds": 0
+  },
+  "finish_code": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0
+  },
+  "tag": {
+   "keyed_cases": 4,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 4,
+   "unjudged_reds": 0
+  },
+  "gv_rule": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0
+  },
+  "size_vs_architect": {
+   "keyed_cases": 52,
+   "false_reds": 0,
+   "right_reds": 16,
+   "kept_quiet": 36,
+   "unjudged_reds": 0
+  }
+ }
+}
