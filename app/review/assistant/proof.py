@@ -49,6 +49,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
 from app.review.assistant import (
+    check_record,
     classification,
     likely_problems,
     missing_items,
@@ -86,6 +87,8 @@ __all__ = [
     "governs",
     "group_words",
     "gv_limits",
+    "held_back",
+    "likely_words",
     "needs_pairing",
     "no_stated_requirement",
     "pairing_proved",
@@ -492,7 +495,11 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
     if decided == "not_a_problem":
         return "dismissed"
     if proved:
-        return "clouded"
+        # Only a kind of check with a clean track record makes reds (`check_record`, 2026-10-24):
+        # another kind's red waits as a Likely problem ("this kind of check is still being proven").
+        return (
+            "clouded" if check_record.cleared(check_record.kind_of(finding)) else "likely_problem"
+        )
     # The architect's size breaks a GV rule and the vendor follows it (#1839): decided, GV asks
     # the architect; never clouded, never on the Not-compared list.
     if classified(finding).outcome == "rule_note":
@@ -501,6 +508,26 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
         return "not_compared"  # its copies disagree on the architect's size (`one_card`)
     # The whole-drawing look found it and code could not prove it (2026-10-23): please check.
     return "likely_problem" if likely_problems.likely(finding) else "not_compared"
+
+
+def held_back(finding: Mapping[str, Any]) -> str | None:
+    """Why a Wrong code proved is a Likely problem, not a red (`check_record`: its kind of check has
+    no clean track record yet), in one plain line; `None` for any other item."""
+    if proof_group(finding) != "likely_problem" or finding.get("status") != "different":
+        return None
+    if not code_proved(finding) or _reader_error(finding) or likely_problems.likely_only(finding):
+        return None
+    return check_record.held_reason(finding)
+
+
+def likely_words(finding: Mapping[str, Any]) -> str:
+    """A Likely problem's "Please check and confirm: ..." line for the letter, the register and the
+    drawing (`likely_problems.please_check`), saying so when the item is held back only because its
+    kind of check is still being proven (`held_back`)."""
+    words = likely_problems.please_check(finding)
+    if held_back(finding) is None:
+        return words
+    return f"{words.rstrip().rstrip('.')} ({check_record.HELD_WORDS})."
 
 
 def _reader_error(finding: Mapping[str, Any]) -> bool:
@@ -845,7 +872,11 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
     elif noted:
         reason = found.why
     elif likely:
-        reason = (likely_problems.payload(finding) or {}).get("reason") or found.why
+        reason = (
+            held_back(finding)
+            or (likely_problems.payload(finding) or {}).get("reason")
+            or found.why
+        )
     elif group == "dismissed":
         reason = "The reviewer marked it Right."
     return {

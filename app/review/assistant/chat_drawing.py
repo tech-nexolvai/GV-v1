@@ -73,7 +73,6 @@ from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.impact import BIGGEST_FIRST, biggest_line
 from app.review.assistant.likely_problems import COUNT_WORDS as LIKELY_COUNT
 from app.review.assistant.likely_problems import HEADING as LIKELY_HEADING
-from app.review.assistant.likely_problems import please_check
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.rule_notes import HEADING as RULE_NOTE_HEADING
 from extraction import gv_marks
@@ -1305,7 +1304,7 @@ def check_report_pdf(
                         f.get("page"),
                         f.get("item"),
                         f.get("vendor"),
-                        please_check(f),
+                        proof.likely_words(f),
                     ]
                     for f in likely
                 ],
