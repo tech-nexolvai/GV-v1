@@ -47,6 +47,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
+from importlib import import_module
 from itertools import pairwise
 from typing import Any, Final, Literal
 
@@ -307,7 +308,7 @@ def _spans_from_ticks(
 ) -> tuple[dict[str, Span], float, Any]:
     """Spans read from each label's own slash ticks (`dim_anchors`), the page's points per inch,
     and its split line work."""
-    from app.review.assistant import dim_anchors
+    dim_anchors = import_module("app.review.assistant.dim_anchors")
 
     box = _page_box(segments)
     for label in labels:
@@ -334,7 +335,7 @@ def _small_spans(
     """Small dimensions (an overhang's 1", a panel's 3/4") whose text sits beside their ticks, not
     between them (`dim_anchors` needs a tick each side of the text): one pair of neighbouring ticks
     on a row by the label, drawn to its value. Two such pairs: none."""
-    from app.review.assistant import dim_anchors
+    dim_anchors = import_module("app.review.assistant.dim_anchors")
 
     out: dict[str, Span] = {}
     if ppi <= 0:
@@ -584,7 +585,7 @@ def _cutouts(
         )
 
     found = [rect for rect in named if not any(holds(rect, other) for other in named)]
-    from app.review.assistant import sink_offset
+    sink_offset = import_module("app.review.assistant.sink_offset")
 
     try:
         plans = sink_offset.plans_on([], segments, _page_box(segments), ppi)
@@ -1134,7 +1135,7 @@ def kept_line_work(pack: Any) -> Callable[[str, int], Sequence[Segment] | None] 
     def read(file: str, page: int) -> Sequence[Segment] | None:
         import numpy as np
 
-        from app.review.assistant import set_pack
+        set_pack = import_module("app.review.assistant.set_pack")
 
         path = folder / f"{set_pack.stem(file)}-p{page:04d}.npz"
         try:
