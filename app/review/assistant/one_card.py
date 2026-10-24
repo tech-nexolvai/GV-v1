@@ -536,6 +536,9 @@ def _unpaired_record(finding: Mapping[str, Any]) -> tuple[Any, ...] | None:
     return (str(record.get("why") or ""), record.get("file"))
 
 
+_NO_BOX: Final[_Box] = (None, None, 0.0, 0.0, 0.0, 0.0)
+
+
 def _area(box: _Box) -> float:
     return max(box[4] - box[2], 0.0) * max(box[5] - box[3], 0.0)
 
@@ -564,7 +567,10 @@ def _fold_unpaired(live: Sequence[Mapping[str, Any]], gone: set[str], out: OneCa
         and _unpaired_record(f) is not None
         and _vendor_box(f) is not None
     ]
-    for outer in sorted(open_items, key=lambda f: _number(str(f["id"]))):
+    # The smallest spots first, so an item folds only into one that stays.
+    for outer in sorted(
+        open_items, key=lambda f: (_area(_vendor_box(f) or _NO_BOX), _number(str(f["id"])))
+    ):
         if str(outer["id"]) in gone:
             continue
         outer_box = _vendor_box(outer)
@@ -617,9 +623,9 @@ def _classes(text: object) -> frozenset[str]:
     return frozenset(c for c in _CLASSES if re.search(rf"\b{c}\b", flat))
 
 
-def _material_key(finding: Mapping[str, Any]) -> tuple[frozenset[str], ...] | None:
-    """The reference's material (its classes, else its finish tags) when the item is a material
-    claim the vendor's side differs on, else None."""
+def _material_key(finding: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    """(the reference's material classes, its finish tags, the round) when the item is a
+    material claim the vendor's side differs on, else None."""
     if not _MATERIAL_ITEM.search(str(finding.get("item") or "")):
         return None
     if any(_inches(finding, side) is not None for side in ("vendor", "architect")):
@@ -630,9 +636,35 @@ def _material_key(finding: Mapping[str, Any]) -> tuple[frozenset[str], ...] | No
     classes, tags = _classes(finding.get("architect")), _codes(finding.get("architect"))
     if (classes & _classes(vendor)) or (tags & _codes(vendor)):
         return None  # the vendor names the reference's material: no difference claimed
-    if classes:
-        return (classes,)
-    return (frozenset(), tags) if tags else None
+    if not (classes or tags):
+        return None
+    return (classes, tags, finding.get("round"))
+
+
+def _material_groups(
+    keyed: Sequence[tuple[tuple[Any, ...], Mapping[str, Any]]],
+) -> list[list[Mapping[str, Any]]]:
+    """The copies of one material claim: the same classes (else the same tags) in the same round;
+    copies naming different finish tags are different claims (laminate PL-1 is not PL-2), and a
+    copy naming no tag joins only when its classes' copies name one tag set at most."""
+    by_class: dict[tuple[Any, ...], list[tuple[frozenset[str], Mapping[str, Any]]]] = {}
+    for (classes, tags, round_), finding in keyed:
+        head = (classes, round_) if classes else (frozenset(), round_, tags)
+        by_class.setdefault(head, []).append((tags, finding))
+    out: list[list[Mapping[str, Any]]] = []
+    for copies in by_class.values():
+        tag_sets = {tags for tags, _ in copies if tags}
+        if len(tag_sets) <= 1:
+            out.append([f for _, f in copies])
+        else:
+            out.extend([f for tags, f in copies if tags == one] for one in tag_sets)
+    return out
+
+
+#: The words a set-wide card adds to its item and its "please check" line (taken off again when
+#: the card is folded once more, so they are never repeated).
+_WHERE: Final = re.compile(r"\s*\(the whole set, vendor pages? [^)]*\)\s*$")
+_WHERE_WORDS: Final = re.compile(r"\s*The same on the whole set, vendor pages? [^.]*\.\s*$")
 
 
 def _pages_words(pages: Sequence[int]) -> str:
@@ -644,7 +676,7 @@ def _pages_words(pages: Sequence[int]) -> str:
 
 def _fold_material(live: Sequence[Mapping[str, Any]], gone: set[str], out: OneCard) -> None:
     """One material difference per set (see the module)."""
-    groups: dict[tuple[frozenset[str], ...], list[Mapping[str, Any]]] = {}
+    keyed: list[tuple[tuple[Any, ...], Mapping[str, Any]]] = []
     for finding in live:
         if str(finding["id"]) in gone or not compares_architect(finding) or _fixed(finding):
             continue
@@ -653,20 +685,26 @@ def _fold_material(live: Sequence[Mapping[str, Any]], gone: set[str], out: OneCa
             continue
         key = _material_key(current)
         if key is not None:
-            groups.setdefault(key, []).append(current)
-    for copies in groups.values():
-        pages = [int(f["page"]) for f in copies if isinstance(f.get("page"), int)]
+            keyed.append((key, current))
+    for copies in _material_groups(keyed):
+        pages = {int(f["page"]) for f in copies if isinstance(f.get("page"), int)}
         likely = [f for f in copies if proof.proof_group(f) == "likely_problem"]
-        if len(copies) < 2 or len(set(pages)) < 2 or not likely:
+        if len(copies) < 2 or len(pages) < 2 or not likely:
             continue
         keep = min(likely, key=_order)
         others = [f for f in copies if f is not keep]
-        where = f"the whole set, vendor {_pages_words(pages)}"
-        item = " ".join(str(keep.get("item") or "Material").split())
+        # The pages of copies folded into it before (a Continue) are the set's too.
+        for copy in _earlier_copies(keep):
+            box = copy.get("vendor_box")
+            if isinstance(box, Mapping) and isinstance(box.get("page"), int):
+                pages.add(int(box["page"]))
+        where = f"the whole set, vendor {_pages_words(sorted(pages))}"
+        item = _WHERE.sub("", " ".join(str(keep.get("item") or "Material").split()))
         changes: dict[str, Any] = {"item": f"{item} ({where})"}
         mark = keep.get("whole_look")
         if isinstance(mark, Mapping) and mark.get("words"):
-            changes["whole_look"] = {**mark, "words": f"{mark['words']} The same on {where}."}
+            words = _WHERE_WORDS.sub("", str(mark["words"]))
+            changes["whole_look"] = {**mark, "words": f"{words} The same on {where}."}
         _keep_card(
             out,
             keep,
@@ -677,3 +715,9 @@ def _fold_material(live: Sequence[Mapping[str, Any]], gone: set[str], out: OneCa
             **changes,
         )
         gone.update(str(o["id"]) for o in others)
+
+
+def _earlier_copies(finding: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    given = finding.get(SAME_ITEM)
+    copies = given.get("copies") if isinstance(given, Mapping) else None
+    return [c for c in copies or [] if isinstance(c, Mapping)]

@@ -326,6 +326,7 @@ def _material(fid: str, page: int, *, likely: bool = True, **more: Any) -> dict[
         "source": "architect",
         "category": "countertop",
         "created_by": "whole_look" if likely else f"helper:{page}",
+        "vendor_box": _box(VENDOR, page, (100, 100, 300, 200)),
     }
     if likely:
         finding["whole_look"] = {
@@ -381,3 +382,57 @@ def test_a_red_copy_stays_its_own_card(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(one_card.proof, "proof_group", group)
     folded = one_card.fold([red, _material("F7", 7), _material("F9", 9)])
     assert [(f.keep, f.drop) for f in folded.folded] == [("F7", "F9")]
+
+
+# ---- from the independent review ------------------------------------------------------------------
+
+
+def test_a_size_beside_a_notch_or_a_count_of_other_things_is_never_taken_away() -> None:
+    size = _claim("F1", "Countertop depth at the column notch", status="different")
+    drawers = _claim("F2", "Drawer count on this run", kind="count")
+    texts = {(REF, 9): _REFERENCE_LIST, (VENDOR, 4): _REGULAR, (VENDOR, 5): _REVERSED}
+    assert _changes([size, drawers], texts) == {}
+
+
+@pytest.mark.parametrize("written", ['1-1/2"', '1.5"', '1 1/2"'])
+def test_the_legends_mitre_size_is_read_however_it_is_written(written: str) -> None:
+    edge = _claim(
+        "F1",
+        f"Countertop: {written} mitered apron pieces at both ends",
+        kind="extra_piece",
+        vendor=f"2 aprons, {written} x 25 in",
+    )
+    assert _changes([edge], {(VENDOR, 4): _LEGEND}) == {}
+
+
+def test_two_materials_with_different_tags_stay_two_cards_and_a_refold_keeps_its_words() -> None:
+    laminate = [
+        _material(
+            "F1", 4, item="Door finish", architect="Plastic laminate PL-1", vendor="Walnut stain"
+        ),
+        _material(
+            "F2", 5, item="Door finish", architect="Plastic laminate PL-1", vendor="Walnut stain"
+        ),
+        _material(
+            "F3", 6, item="Countertop material", architect="Laminate PL-2", vendor="Walnut stain"
+        ),
+        _material(
+            "F4", 7, item="Countertop material", architect="Laminate PL-2", vendor="Walnut stain"
+        ),
+    ]
+    folded = one_card.fold(laminate)
+    assert sorted((f.keep, f.drop) for f in folded.folded) == [("F1", "F2"), ("F3", "F4")]
+    # A Continue folds a new page's copy into the card: one "whole set" ending, every page.
+    card = next(k for k in folded.kept if k["id"] == "F1")
+    again = one_card.fold([card, _material("F9", 9, item="Door finish", architect="PL-1 laminate")])
+    (kept,) = again.kept
+    assert kept["item"] == "Door finish (the whole set, vendor pages 4, 5 and 9)"
+    assert kept["whole_look"]["words"].count("The same on") == 1
+
+
+def test_nested_unpaired_spots_fold_into_the_one_that_stays() -> None:
+    page = _unpaired("F1", (0, 0, 842, 595), item="Kitchen: drawn items", vendor="not read")
+    middle = _unpaired("F2", (100, 50, 600, 400))
+    inner = _unpaired("F3", (300, 60, 500, 250))
+    folded = one_card.fold([page, middle, inner])
+    assert sorted((f.keep, f.drop) for f in folded.folded) == [("F3", "F1"), ("F3", "F2")]

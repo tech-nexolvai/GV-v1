@@ -144,9 +144,18 @@ def _only_shape(finding: Mapping[str, Any]) -> bool:
     return not _OTHER_SUBJECT.search(_flat(finding.get("item")))
 
 
+#: A size of something other than the notch itself ("Countertop depth at the column notch"): the
+#: notch's own size ("notch depth") is part of the notch.
+_OTHER_SIZE: Final = re.compile(
+    r"(?<!notch )\b(?:depth|width|length|height|overhang|size|thickness)\b", re.IGNORECASE
+)
+
+
 def notch_item(finding: Mapping[str, Any]) -> bool:
-    """The item is about a notch (its own name says so) and nothing else."""
-    return bool(_NOTCH.search(_flat(finding.get("item")))) and _only_shape(finding)
+    """The item is about a notch (its own name says so) and nothing else: no other subject, no
+    size of anything but the notch."""
+    item = _flat(finding.get("item"))
+    return bool(_NOTCH.search(item)) and _only_shape(finding) and not _OTHER_SIZE.search(item)
 
 
 # ---- 2. unit counts ----------------------------------------------------------------------------
@@ -456,7 +465,7 @@ def _judge(read: tuple[list[_Path], float, float], box: Box) -> str | None:
 _MITRE_ITEM: Final = re.compile(r"\bmit(?:re|er)(?:ed|d)?\b", re.IGNORECASE)
 _PIECE: Final = re.compile(r"\b(?:pieces?|returns?|ends?|aprons?|strips?)\b", re.IGNORECASE)
 _LEGEND: Final = re.compile(r"\bM(\d+(?:\.\d+)?)\s*=\s*MIT(?:RE|ER)(?:ED|D)?\s+EDGE", re.IGNORECASE)
-_INCH: Final = re.compile(r"(\d+(?:\s+\d+/\d+)?|\d+/\d+)\s*(?:\"|''|”|in\b)")
+_INCH: Final = re.compile(r"(\d+(?:\.\d+)?(?:[\s-]+\d+/\d+)?|\d+/\d+)\s*(?:\"|''|”|in\b)")
 
 
 def mitre_build_up(text: str) -> tuple[str, Fraction] | None:
@@ -469,7 +478,7 @@ def mitre_build_up(text: str) -> tuple[str, Fraction] | None:
 def _inches(text: str) -> set[Fraction]:
     out: set[Fraction] = set()
     for found in _INCH.finditer(text or ""):
-        whole, _, part = found.group(1).partition(" ")
+        whole, _, part = re.sub(r"[\s-]+", " ", found.group(1)).partition(" ")
         try:
             out.add(Fraction(whole) + (Fraction(part) if part else 0))
         except (ValueError, ZeroDivisionError):
@@ -548,7 +557,7 @@ def _change(
     if not isinstance(page, int) or vendor_file is None:
         return None
     item = _flat(finding.get("item"))
-    if _kind(finding) == "count" or _COUNT_ITEM.search(item):
+    if _COUNT_ITEM.search(item) or (_kind(finding) == "count" and re.search(r"\bunits?\b", item)):
         reference = _reference_text(finding, texts, main_file)
         sheets = {p: t for (f, p), t in texts.items() if f == vendor_file}
         found = unit_counts(page, reference, sheets) if reference else None
