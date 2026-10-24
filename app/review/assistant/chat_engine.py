@@ -93,6 +93,7 @@ from app.review.assistant import (
     likely_problems,
     not_compared,
     reading_coverage,
+    reference_page,
     same_item_pages,
     set_proofs,
 )
@@ -282,6 +283,7 @@ from app.review.assistant.send_package import (
 )
 from app.review.assistant.sharpen import helper_lines
 from app.review.assistant.sink_offset import add_to_answer as add_sink_offset
+from app.review.assistant.splash_views import add_to_answer as add_splash_views
 from app.review.assistant.spot_guard import dropped as spot_dropped
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
@@ -527,6 +529,7 @@ CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
     "run_fit": "GV's site-fit rule",
     "filler_range": "GV's filler range",
     "sink_offset": "GV's sink rules",
+    "splash_views": "the splash sizes on the architect's other views",
     "scale_measure": "the measuring by scale where the architect prints no size",
 }
 
@@ -1115,6 +1118,8 @@ class ChatEngine:
         self._plan: FanOutPlan | None = None
         self._cross: CrossPairs | None = None
         """The vendor pages paired across separate uploads (#1798), once worked out."""
+        self._reference_stamped = False
+        """Every finding has its one reference page (`_stamp_reference_pages`)."""
         self._read_share = _Share(limit=settings.message_cap_micros)
         self._markup_base: Future[Any] | None = None
         self._trust_index: int | None = None
@@ -2037,7 +2042,13 @@ class ChatEngine:
         self.emit("finding_update", {"index": index, "update": json.loads(json.dumps(update))})
 
     def _show_finding(self, finding: dict[str, Any]) -> None:
-        """A new or changed finding: its block (replaced in place) and the `finding` event."""
+        """A new or changed finding: its block (replaced in place) and the `finding` event. One
+        made or changed after the reference pages were stamped is stamped again from its pair
+        (`_stamp_reference_pages`), so its reference page never goes stale."""
+        if getattr(self, "_reference_stamped", False):
+            stamped = self._with_reference(finding)
+            if stamped != finding and self.book.replace(stamped):
+                finding = stamped
         with self._lock:
             index = self._positions.get(finding["id"])
             if index is None:
@@ -2953,6 +2964,9 @@ class ChatEngine:
             (CODE_CHECK_NAMES["filler_range"], lambda: add_filler_range(self)),
             # GV's sink rules on the vendor's plans (#1807, #1906), pages with no architect too.
             (CODE_CHECK_NAMES["sink_offset"], lambda: add_sink_offset(self)),
+            # A splash the paired drawing prints no size for: looked for on the item's other
+            # views (its section, its elevation; 2026-10-23), before the measuring by scale.
+            (CODE_CHECK_NAMES["splash_views"], lambda: add_splash_views(self)),
             # Where the architect prints no size: measured by its own scale (2026-10-23), last,
             # on every item the steps above left open.
             (CODE_CHECK_NAMES["scale_measure"], lambda: add_scale_measures(self)),
@@ -3017,9 +3031,11 @@ class ChatEngine:
 
     def _finish_trust(self, skipped: int) -> None:
         self._fold_same_wrongs()
+        self._stamp_reference_pages()
         self._guard_spots()
         self._resolve_decisions()
         self._escalate()
+        self._drop_off_pair()
         book = self.book
         statuses = round_statuses(book.live())
         with self._lock:
@@ -4160,6 +4176,7 @@ class ChatEngine:
             return None
         run.start()
         self._cross = run.finish()
+        self.book.pairs_now = lambda: self._cross
         return self._cross
 
     def page_matching(self, page_map: Mapping[str, Any] | None) -> Any:
@@ -4170,6 +4187,9 @@ class ChatEngine:
         run = import_module("app.review.assistant.page_match").prepare_run(self, page_map)
         if run is not None:
             self._cross = run.cross
+            # A helper's architect spot is checked against its page's pair as it stands then
+            # (the pairs last built: each helper's own pages were decided before it started).
+            self.book.pairs_now = lambda: run.cross
         return run
 
     def finish_page_matching(self, run: Any) -> None:
@@ -4177,6 +4197,63 @@ class ChatEngine:
         closers and the finishing steps read them)."""
         if run is not None:
             self._cross = run.finish()
+            self.book.pairs_now = lambda: self._cross
+
+    def _stamp_reference_pages(self) -> None:
+        """Every finding's one reference page, from its vendor page's final pair
+        (`reference_page.stamp`): every picture, caption and code check after this reads it.
+        Nothing when the set is not two separate uploads paired by the full check."""
+        cross = self._cross
+        if cross is None:
+            return
+        self._reference_stamped = True
+        with self.finding_lock:
+            changed = [
+                stamped
+                for finding in self.book.live()
+                if (stamped := self._with_reference(finding)) != finding
+                and self.book.replace(stamped)
+            ]
+        for stamped in changed:
+            self._show_finding(stamped)
+
+    def _drop_off_pair(self) -> None:
+        """After the resolver and the escalation: any item they left with an architect spot off
+        its pair (stamped again, `_with_reference`) is kept from the vendor, as the spot guard
+        keeps one before them. No known path makes one; this holds if one ever does."""
+        if self._cross is None:
+            return
+        with self.finding_lock:
+            off = [
+                (
+                    str(finding["id"]),
+                    str(record.get("why") or "Its architect page is not its pair's."),
+                )
+                for finding in self.book.live()
+                if isinstance(record := self._with_reference(finding).get(reference_page.KEY), dict)
+                and record.get("outside")
+            ]
+        for finding_id, why in off:
+            reason = f"Internal note, not for the vendor: {why}"[:300]
+            try:
+                with self.finding_lock:
+                    self.book.drop({"finding_id": finding_id, "reason": reason})
+            except Exception:  # noqa: BLE001 - one refused drop never stops the others
+                _log.exception("assistant chat could not drop an item off its pair")
+                continue
+            self._show_dropped(finding_id, reason)
+
+    def _with_reference(self, finding: dict[str, Any]) -> dict[str, Any]:
+        cross = self._cross
+        if cross is None:
+            return finding
+        return reference_page.stamp(
+            finding,
+            cross.pairs,
+            references=cross.references,
+            unpaired=cross.unpaired,
+            vendor_file=cross.file,
+        )
 
     def scoped_jobs(
         self, page_map: Mapping[str, Any] | None, *, pairs: bool = True

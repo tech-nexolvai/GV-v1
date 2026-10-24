@@ -643,7 +643,7 @@ function RowEvidence({ finding, pictureUrl }: { finding: ChatFinding; pictureUrl
         {sum && <span className="num mt-1 block text-[13px] text-foreground">= <span className="font-semibold text-outcome-pass-fg">{sum}″</span></span>}
       </WordsBox>,
     );
-  } else if (finding.arch_picture_id) {
+  } else if (finding.arch_picture_id && !finding.reference_page?.outside) {
     crops.push(<Crop key="a" src={pictureUrl(finding.arch_picture_id)} who={labels.architect} page={finding.arch_box?.page ?? finding.vs_page ?? finding.page} />);
   } else if (finding.source === 'rules' || finding.rule_check_id) {
     const should = shouldBeValue(finding);

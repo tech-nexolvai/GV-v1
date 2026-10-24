@@ -154,13 +154,15 @@ def _same_share(a: frozenset[str], b: frozenset[str]) -> float:
     return len(a & b) / len(a | b) if a and b else 0.0
 
 
-def _vendor_pages(page_map: Mapping[str, Any], file: str) -> dict[int, Mapping[str, Any]]:
+def _vendor_pages(
+    page_map: Mapping[str, Any], file: str, role: str = "vendor"
+) -> dict[int, Mapping[str, Any]]:
     out: dict[int, Mapping[str, Any]] = {}
     for entry in page_map.get("pages") or []:
         if not isinstance(entry, Mapping) or str(entry.get("file")) != file:
             continue
         halves = [h for h in entry.get("halves") or [] if isinstance(h, Mapping)]
-        if not halves or not all(h.get("role") == "vendor" for h in halves):
+        if not halves or not all(h.get("role") == role for h in halves):
             continue
         if entry.get("rounds") or any(h.get("round") for h in halves):
             continue  # GV's rounds: compared as rounds, never left out here
@@ -233,15 +235,17 @@ def older_copies(
     *,
     exact: Mapping[int, int] | None = None,
     index: Any = None,
+    role: str = "vendor",
 ) -> dict[int, Older]:
     """Each vendor page of `file` that is an older copy of another page of the same sheet (see
     the module), with the newest page it gives way to. `exact`: the exact copies already found
     (`preflight.duplicate_pages`), never counted again. `index`: the set index's checked reads
-    (`sections_of`): two pages it puts in different parts of the set are never one sheet."""
+    (`sections_of`): two pages it puts in different parts of the set are never one sheet.
+    `role`: whose pages (the architect's, for the splash step's views: `splash_views`)."""
     if not page_map or not file:
         return {}
     sections = sections_of(index, file)
-    pages = _vendor_pages(page_map, file)
+    pages = _vendor_pages(page_map, file, role)
     exact = exact or {}
     sheets: dict[str, list[int]] = {}
     for page, entry in sorted(pages.items()):

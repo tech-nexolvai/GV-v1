@@ -1790,6 +1790,7 @@ _KEPT_CODE: Final = (
     "extraction.stamp_text",
     "extraction.visible_text",
     "extraction.ocr",
+    "extraction.pdf_strings",
 )
 #: The libraries whose version is part of a kept read's key.
 _KEPT_LIBRARIES: Final = (

@@ -122,6 +122,7 @@ __all__ = [
     "ensure_pack",
     "pack_folder",
     "pack_key",
+    "readme",
     "trim_hires",
     "upload_roles",
     "upload_rounds",
@@ -130,7 +131,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 16
+PACK_VERSION: Final = 17
 #: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
@@ -1063,7 +1064,9 @@ annotations.json      every annotation: file, page, kind, author, text, box (GV'
 *_stickers.json        GV's stickers code hid: page, box, text. A value inside one is GV's,
                        never the vendor's.
 pages/<name>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbers.
-                       <name> is the upload's name without ".pdf" (A.pdf: pages/A/p-003.png);
+                       <name> is the upload's name without ".pdf", with every space or
+                       other sign but letters, digits, "." "_" "-" made "_" (A B.pdf:
+                       pages/A_B/p-003.png); the folders of this set are listed at the end.
                        NNN is the page with three digits.
 contact/*.png          nine pages per picture, page numbers stamped: the whole set at a glance.
 health.json            per page: what kind of page it is and what was or was not read (typed or
@@ -1107,6 +1110,13 @@ Boxes are PDF points of the page as displayed (rotation applied), origin top-lef
 """
 
 
+def readme(names: Sequence[str]) -> str:
+    """The pack's README, ending with each upload's own page folder (`stem`): a folder name
+    guessed from the upload's name (its spaces kept) was refused on a real run, 2026-10-23."""
+    folders = "\n".join(f"  {name}: pages/{stem(name)}/" for name in names)
+    return _README + (f"\nPage folders of this set:\n{folders}\n" if folders else "")
+
+
 def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]) -> None:
     """Build the whole pack into `folder` (status at each step). Raises on a failure, after
     `status.json` says `failed`."""
@@ -1115,7 +1125,7 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
     names = [str(item["name"]) for item in listing]
     done: list[str] = []
     _set_status(folder, "building", done, files=names)
-    _write_bytes(folder / "README.txt", _README.encode("utf-8"))
+    _write_bytes(folder / "README.txt", readme(names).encode("utf-8"))
     _write_json(folder / _LISTING_FILE, [dict(item) for item in listing])
     try:
         copies = {}

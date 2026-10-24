@@ -219,6 +219,23 @@ def test_a_number_in_a_drawing_reference_bubble_is_not_a_dimension(tmp_path: Pat
     assert [(label["text"], label["inches"]) for label in labels] == [("24", "24")]
 
 
+def test_a_fraction_whose_slash_the_pdf_escapes_reads_as_the_fraction(tmp_path: Path) -> None:
+    """Some CAD programs write `15 1/2"` as `(15 1\\/2")` and `[394mm]` as `(\\[394mm\\])`;
+    pdfminer dropped the escaped character, so this read `15 12"` (12 inches) and `532"`
+    (`extraction.pdf_strings`). The label is the printed fraction, its millimetres beside it."""
+    body = _dimension(300, 420, 300) + b'BT /F1 8 Tf 1 0 0 1 330 303 Tm (15 1\\/2") Tj ET '
+    body += b"BT /F1 8 Tf 1 0 0 1 330 292 Tm (\\[394mm\\]) Tj ET "
+    body += _dimension(300, 330, 200) + b'BT /F1 8 Tf 1 0 0 1 305 203 Tm (5\\/32" \\[4mm\\]) Tj ET '
+    path = tmp_path / "escaped.pdf"
+    path.write_bytes(_pdf([body]))
+    found = _by_text(dl.page_labels(path, 1, HALVES).labels)
+    assert {text: label["inches"] for text, label in found.items()} == {
+        '15 1/2"': "15.5",
+        '5/32" [4mm]': "0.15625",
+    }
+    assert found['5/32" [4mm]']["mm"] == "4" and found['5/32" [4mm]']["units"] == "agrees"
+
+
 def test_a_number_in_a_box_tag_is_not_a_dimension_but_a_marked_one_is(tmp_path: Path) -> None:
     box = b"0 0 0 RG 0.5 w 300 290 24 16 re S "  # a boxed tag over a dimension line
     body = _dimension(260, 380, 292) + box + _text(306, 295, "12", size=10)

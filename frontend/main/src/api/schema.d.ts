@@ -5156,6 +5156,8 @@ export interface components {
              * @description The difference GV Review recorded that this finding is.
              */
             record_id?: string | null;
+            /** @description Two separate uploads: the architect page it is compared on, from its pair. */
+            reference_page?: components["schemas"]["ChatFindingReferenceOut"] | null;
             /**
              * Reference Side
              * @description cross_view: whose drawings disagree. `architect` then holds the REFERENCE view's value and `vendor` this view's.
@@ -5212,6 +5214,16 @@ export interface components {
             witnesses?: string[] | null;
             /** @description A vendor string's wrong part named by code's geometry (#1887), with how long its line is drawn; an older finding's drawn length is read from its own words. */
             wrong_part?: components["schemas"]["ChatFindingWrongPartOut"] | null;
+        };
+        /**
+         * ChatFindingPageOut
+         * @description One upload's page.
+         */
+        ChatFindingPageOut: {
+            /** File */
+            file: string;
+            /** Page */
+            page: number;
         };
         /**
          * ChatFindingProofOut
@@ -5294,6 +5306,40 @@ export interface components {
             value_arch?: string | null;
             /** Value Vendor */
             value_vendor?: string | null;
+        };
+        /**
+         * ChatFindingReferenceOut
+         * @description The one architect page a finding is compared on (`reference_page.stamp`, stream V): set
+         *     from its vendor page's pair at the check's finish. Every picture, caption and "Whole page"
+         *     view of its architect side reads it.
+         */
+        ChatFindingReferenceOut: {
+            /**
+             * File
+             * @description The architect upload's name.
+             */
+            file?: string | null;
+            /**
+             * Outside
+             * @description The item's architect spot or page is not on its pair (never sent).
+             * @default false
+             */
+            outside: boolean;
+            /**
+             * Page
+             * @description Its page in that file; null: no architect page (see why).
+             */
+            page?: number | null;
+            /**
+             * Pair
+             * @description Every architect page its vendor page is paired with (then its brand prototype pages): where code looks for its architect value.
+             */
+            pair?: components["schemas"]["ChatFindingPageOut"][];
+            /**
+             * Why
+             * @description Why there is no architect page, or why its spot is refused.
+             */
+            why?: string | null;
         };
         /**
          * ChatFindingRoundMatchOut

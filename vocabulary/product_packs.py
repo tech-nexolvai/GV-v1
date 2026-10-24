@@ -26,6 +26,12 @@ hints, tag_families, run_fit, are in `product_registry`):
   `Ø24"`; `w_x_h`: `24" W x 36" H`).
 - `semantic_types`: the codes this product's GV rules may name (`code`, `meaning`, `unit`).
 - `impact_words`: what makes one of its differences matter more (the "biggest first" order).
+- `look_in_views`: a part whose size the architect often prints only on another view of the
+  item (a splash drawn on the plan, sized on the section): `part`, the `words` that name it,
+  `kinds` (its own kinds, each with its words: a back splash, a side splash), and the `views`
+  to search when the paired drawing prints no size for it, in that order (`plan`, `elevation`,
+  `section`; `section` takes a detail too). The governing view is settled (a section over an
+  elevation over a plan), whatever the search order.
 - `item_words` / `item_codes`: broad words and code shapes that file a reading of the chat ledger
   under this product (default: its `words`).
 
@@ -49,14 +55,17 @@ __all__ = [
     "ATTRIBUTE_FIELDS",
     "END_WORD_FIELDS",
     "EXAMPLE_FILE",
+    "LOOK_IN_VIEWS_FIELDS",
     "PACK_FIELDS",
     "PACK_FILE",
     "PART_KIND_FIELDS",
     "SEMANTIC_UNITS",
     "SIZE_FORMATS",
     "SKILL_FILE",
+    "VIEW_KINDS",
     "Attribute",
     "EndWord",
+    "LookInViews",
     "PackError",
     "PackSemanticType",
     "PartKind",
@@ -64,6 +73,7 @@ __all__ = [
     "end_words",
     "example",
     "line",
+    "look_in_views",
     "part_kinds",
     "patterns",
     "phrases",
@@ -96,6 +106,7 @@ PACK_FIELDS: Final = frozenset(
         "impact_words",
         "item_words",
         "item_codes",
+        "look_in_views",
     }
 )
 END_WORD_FIELDS: Final = frozenset({"name", "aliases", "strict", "centred", "screen_words"})
@@ -109,6 +120,10 @@ PART_KIND_FIELDS: Final = frozenset(
         "countable",
     }
 )
+LOOK_IN_VIEWS_FIELDS: Final = frozenset({"part", "words", "kinds", "views"})
+#: The views a pack may name for `look_in_views`, in the order they govern (settled: a section
+#: or detail over an elevation over a plan).
+VIEW_KINDS: Final = ("section", "elevation", "plan")
 ATTRIBUTE_FIELDS: Final = frozenset({"name", "label_words", "values", "pattern", "synonyms"})
 _SEMANTIC_FIELDS: Final = frozenset({"code", "meaning", "unit"})
 _NAME: Final = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
@@ -168,6 +183,21 @@ class Attribute:
     """A regular expression a value may match instead ("\\d{4}K" for a colour temperature)."""
     synonyms: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     """Other ways each value is printed ("MEDIUM BASE" is E26), upper case."""
+
+
+@dataclass(frozen=True, slots=True)
+class LookInViews:
+    """A part to look for on the item's other views when the paired drawing prints no size for it
+    ("splash": the plan draws it, the section sizes it)."""
+
+    part: str
+    words: tuple[str, ...]
+    """Words that name the part (lower case: "backsplash", "side splash", "splash")."""
+    kinds: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    """The part's own kinds and the words that name each ("back": "backsplash", "back splash";
+    "side": "side splash"): one kind is never compared with another."""
+    views: tuple[str, ...] = VIEW_KINDS
+    """The views to search, in order (`VIEW_KINDS`)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,6 +402,39 @@ def semantic_types(value: object, where: str) -> tuple[PackSemanticType, ...]:
         out.append(
             PackSemanticType(code, line(raw.get("meaning"), f"{where} {code!r} meaning"), unit)
         )
+    return tuple(out)
+
+
+def look_in_views(value: object, where: str) -> tuple[LookInViews, ...]:
+    where = f"{where} look_in_views"
+    out: list[LookInViews] = []
+    for raw in _mappings(value, where, LOOK_IN_VIEWS_FIELDS):
+        part = raw.get("part")
+        if not isinstance(part, str) or not _NAME.match(part):
+            raise PackError(f"{where}: part {part!r} must be lowercase letters, digits and _")
+        if any(p.part == part for p in out):
+            raise PackError(f"{where}: {part!r} is listed twice")
+        words = phrases(raw.get("words"), f"{where} {part!r} words")
+        if not words:
+            raise PackError(f"{where} {part!r}: needs the words that name it")
+        kinds_raw = raw.get("kinds") or {}
+        if not isinstance(kinds_raw, Mapping):
+            raise PackError(f"{where} {part!r}: kinds must map a kind to its words")
+        kinds: dict[str, tuple[str, ...]] = {}
+        for kind, kind_words in kinds_raw.items():
+            if not isinstance(kind, str) or not _NAME.match(kind):
+                raise PackError(f"{where} {part!r}: kind {kind!r} must be lowercase letters and _")
+            found = phrases(kind_words, f"{where} {part!r} kind {kind!r}")
+            if not found:
+                raise PackError(f"{where} {part!r}: kind {kind!r} needs its words")
+            kinds[kind] = found
+        views = phrases(raw.get("views"), f"{where} {part!r} views") or VIEW_KINDS
+        wrong = [v for v in views if v not in VIEW_KINDS]
+        if wrong:
+            raise PackError(
+                f"{where} {part!r} views: {', '.join(wrong)} (known: {', '.join(VIEW_KINDS)})"
+            )
+        out.append(LookInViews(part=part, words=words, kinds=kinds, views=views))
     return tuple(out)
 
 

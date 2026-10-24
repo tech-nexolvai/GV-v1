@@ -5363,6 +5363,17 @@
             "description": "The difference GV Review recorded that this finding is.",
             "title": "Record Id"
           },
+          "reference_page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingReferenceOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Two separate uploads: the architect page it is compared on, from its pair."
+          },
           "reference_side": {
             "anyOf": [
               {
@@ -5617,6 +5628,25 @@
         "title": "ChatFindingOut",
         "type": "object"
       },
+      "ChatFindingPageOut": {
+        "description": "One upload's page.",
+        "properties": {
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file",
+          "page"
+        ],
+        "title": "ChatFindingPageOut",
+        "type": "object"
+      },
       "ChatFindingProofOut": {
         "description": "Where the zero-click cloud drawing puts a finding (#1581), worked out by code on read\n(`proof.proof_of`): only Wrong items code proved are clouded; the reviewer's Agree / Not a\nproblem override.",
         "properties": {
@@ -5859,6 +5889,63 @@
           "model"
         ],
         "title": "ChatFindingReadOut",
+        "type": "object"
+      },
+      "ChatFindingReferenceOut": {
+        "description": "The one architect page a finding is compared on (`reference_page.stamp`, stream V): set\nfrom its vendor page's pair at the check's finish. Every picture, caption and \"Whole page\"\nview of its architect side reads it.",
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The architect upload's name.",
+            "title": "File"
+          },
+          "outside": {
+            "default": false,
+            "description": "The item's architect spot or page is not on its pair (never sent).",
+            "title": "Outside",
+            "type": "boolean"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its page in that file; null: no architect page (see why).",
+            "title": "Page"
+          },
+          "pair": {
+            "description": "Every architect page its vendor page is paired with (then its brand prototype pages): where code looks for its architect value.",
+            "items": {
+              "$ref": "#/components/schemas/ChatFindingPageOut"
+            },
+            "title": "Pair",
+            "type": "array"
+          },
+          "why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why there is no architect page, or why its spot is refused.",
+            "title": "Why"
+          }
+        },
+        "title": "ChatFindingReferenceOut",
         "type": "object"
       },
       "ChatFindingRoundMatchOut": {

@@ -82,6 +82,7 @@ __all__ = [
     "cut_output",
     "folder_bytes",
     "open_sandbox",
+    "page_folder",
     "quiet_pdf_warnings",
     "safe_file_name",
     "view_path",
@@ -389,6 +390,12 @@ class Workspace:
         return _shown(self.mounts, real)
 
 
+def page_folder(name: str) -> str:
+    """An upload's page-picture folder in the set pack, as `set_pack.stem` makes it ("A B.pdf" ->
+    "A_B"); that module loads a renderer, so it is not imported here."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name).stem).strip("._") or "file"
+
+
 @dataclass(frozen=True, slots=True)
 class ChatWorkspace:
     """One chat's folders (#1463), kept for the whole chat like claude.ai's container: the set's
@@ -450,17 +457,17 @@ class ChatWorkspace:
         except OSError:
             names = []
         listed = ", ".join(names[:10]) or "none"
-        # The pack's folder name for the first upload, as `set_pack.stem` makes it (that module
-        # loads a renderer, so it is not imported here).
-        first = (
-            re.sub(r"[^A-Za-z0-9._-]+", "_", Path(names[0]).stem).strip("._") or "file"
+        # Every upload's own page folder: a folder guessed from the upload's name (its spaces
+        # kept) was refused on a real run, 2026-10-23.
+        folders = (
+            "; ".join(f"{SET_PACK}/pages/{page_folder(n)}/p-003.png ({n})" for n in names[:4])
             if names
-            else "<upload name without .pdf>"
+            else f"{SET_PACK}/pages/<upload name without .pdf>/p-003.png"
         )
         return (
             f"The uploads are at {UPLOADS}: {listed}; the set pack (page_map.json, "
             f"drawings-only PDFs, page pictures) is at {SET_PACK}/, a page's picture at "
-            f"{SET_PACK}/pages/{first}/p-003.png; your folder is {SCRATCH}."
+            f"{folders}; your folder is {SCRATCH}."
         )
 
     @classmethod
