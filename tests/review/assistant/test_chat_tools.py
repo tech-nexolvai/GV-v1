@@ -20,6 +20,7 @@ import pytest
 from app.review.assistant.chat_tools import ChatTools, new_step
 from app.review.assistant.sandbox import (
     OUTPUTS,
+    PYTHON_STARTUP,
     SCRATCH,
     SET_PACK,
     SKILLS,
@@ -223,10 +224,14 @@ def test_docker_sees_four_folders_with_the_pdfs_and_skill_read_only(
         f"type=bind,source={workspace.outputs},target={OUTPUTS}",
         f"type=bind,source={workspace.skills},target={SKILLS},readonly",
         f"type=bind,source={workspace.root / 'set-pending'},target={SET_PACK},readonly",
+        f"type=bind,source={workspace.root / 'python'},target={PYTHON_STARTUP},readonly",
     ]
     joined = " ".join(argv)
     assert "--network none" in joined and "--read-only" in joined and "--memory 2g" in joined
-    assert [argv[i + 1] for i, item in enumerate(argv) if item == "--env"] == [f"HOME={SCRATCH}"]
+    assert [argv[i + 1] for i, item in enumerate(argv) if item == "--env"] == [
+        f"HOME={SCRATCH}",
+        f"PYTHONPATH={PYTHON_STARTUP}",
+    ]
 
 
 def test_kill_all_stops_the_running_containers(workspace: ChatWorkspace) -> None:
