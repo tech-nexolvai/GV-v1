@@ -5,8 +5,8 @@
 - Unit counts: the vendor's regular and reversed sheets are added up before comparing with the
   reference's total; the same is withdrawn, a missing other sheet is Not compared (never a Likely
   problem), a real difference stays.
-- A wall outline is not the countertop: an L the reference draws at the wall's weight (or that
-  code cannot find drawn as a top) is no claim; one drawn as a top stays.
+- A wall outline is not the countertop: an L the reference draws at the wall's weight is no
+  claim; one drawn as a top, or one code cannot tell, is left to the like-for-like step.
 - A side splash is not a mitred piece: the vendor's legend decides; no legend, no claim.
 - One card per page for "pairing unsure"; one Likely problem per set for a material difference;
   a red is never folded.
@@ -170,10 +170,8 @@ def _l_claim() -> dict[str, Any]:
     )
 
 
-@pytest.mark.parametrize(
-    ("seen", "outcome"), [("wall", "withdrawn"), (None, "withdrawn"), ("top", None)]
-)
-def test_an_l_shaped_top_stands_only_when_code_sees_it_drawn_as_a_top(
+@pytest.mark.parametrize(("seen", "outcome"), [("wall", "withdrawn"), (None, None), ("top", None)])
+def test_an_l_shaped_top_is_withdrawn_only_when_code_sees_a_wall(
     seen: str | None, outcome: str | None
 ) -> None:
     asked: list[Any] = []
@@ -187,7 +185,7 @@ def test_an_l_shaped_top_stands_only_when_code_sees_it_drawn_as_a_top(
     assert (found.outcome if found else None) == outcome
     if found is not None:
         assert found.rule == "wall_outline"
-        assert ("wall's weight" in found.why) == (seen == "wall")
+        assert "wall's weight" in found.why
 
 
 def _pdf(content: str) -> bytes:

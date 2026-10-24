@@ -17,11 +17,13 @@ anything red or a Likely problem.
    units all belong to the reference's list) and compares per unit type. Every type the same: the
    count claim is **withdrawn** ("2 + 2 = 4"). Code cannot add them up (no other sheet, two
    candidates, a unit code cannot place): **Not compared**. Different after adding up: unchanged.
-3. **A wall outline is not the countertop**: a claim that the reference draws an L-shaped top
-   stands only when code finds that L drawn as a countertop. Code reads the reference's line work
-   in the claim's spot (`OutlineReader`): an L-shaped outline drawn at the wall's weight (the
-   heaviest line on the page) or solid-filled (a wall's poche) is a wall or pony wall, never the
-   top. Anything else code cannot confirm: **withdrawn** (no claim).
+3. **A wall outline is not the countertop**: code reads the reference's line work in the claim's
+   spot (`OutlineReader`): an L-shaped outline drawn at the wall's weight (the heaviest line on
+   the page) or solid-filled (a wall's poche) is a wall or pony wall, never the top: the claim
+   that the reference's top is L-shaped is **withdrawn**. An L drawn lighter (a top), or nothing
+   code can tell: unchanged here; the like-for-like step (`escalation._wall_return_claim`, fix 3)
+   has already dropped it where the reference's top sizes stop at a wall, and keeps it where sizes
+   both ways may be a real L's two legs.
 4. **A side splash is not a mitred piece**: the vendor's legend names its mitred edge ("M1.5 =
    MITERED EDGE": the edge built up to 1 1/2"). A claim about mitred pieces stands only when the
    piece's own size is that build-up; a 4" piece standing at a wall end is a side splash. When the
@@ -596,14 +598,12 @@ def _change(
             if outlines is not None and box is not None and file and isinstance(vs_page, int)
             else None
         )
-        if seen == "top":
-            return None
-        why = (
+        if seen != "wall":
+            return None  # a top, or code cannot tell: the like-for-like step decides
+        return Change(
+            "withdrawn",
+            "wall_outline",
             "the L-shaped outline on the reference's plan is drawn at the wall's weight (the "
-            "heaviest line on the page): it is a wall or pony wall, not the countertop"
-            if seen == "wall"
-            else "code could not find an L-shaped countertop outline on the reference's plan "
-            "(a wall or pony wall outline is not the top): no claim"
+            "heaviest line on the page): it is a wall or pony wall, not the countertop",
         )
-        return Change("withdrawn", "wall_outline", why)
     return None
