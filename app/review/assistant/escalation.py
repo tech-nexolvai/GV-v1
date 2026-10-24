@@ -106,6 +106,7 @@ type StepName = Literal[
     "vendor_search",
     "gv_sticker",
     "tags",
+    "pasted_views",
 ]
 #: The free code steps, cheapest first.
 FREE_STEPS: Final[tuple[StepName, ...]] = (
@@ -170,6 +171,9 @@ class EscalationContext:
     rules_md: str | None = None
     """The chat's `rules.md` (the job values in force), for the GV rules whose job values are
     missing (`job_value_rules`)."""
+    pasted: Callable[[str, int], Sequence[Any]] | None = None
+    """The reference's pasted views by (file, page) (`pasted_views.PastedReader`): the sink
+    model, the splash and the countertop depth its sections show (`pasted_compare`)."""
 
 
 @dataclass(slots=True)
@@ -1114,7 +1118,58 @@ def _before_ladder(
         result.changed.append(item.finding)
         result.tried += 1
         early.add(str(item.finding["id"]))
+    if ctx.stop is None or not ctx.stop():
+        _pasted_step(live, ctx, result, early)
     return early
+
+
+def _pasted_step(
+    live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation, early: set[str]
+) -> None:
+    """Every open item the reference's pasted views settle (`pasted_compare`, 2026-10-25): the
+    sink model they name (Right, or a Likely problem), the splash they draw (the look's "no
+    splash" withdrawn) and the countertop depth they print, like for like. Never red."""
+    if ctx.pasted is None:
+        return
+    compare = import_module("app.review.assistant.pasted_compare")
+    open_items = [f for f in live if str(f["id"]) not in result.absorbed]
+    try:
+        found = compare.changes(open_items, ctx.pasted, ctx.phrases, ctx.page_map, ctx.main_file)
+    except Exception:  # noqa: BLE001 - the items stay as they were
+        _log.warning("escalation: the pasted views step failed", exc_info=True)
+        return
+    by_id = {str(f["id"]): f for f in open_items}
+    for finding_id, change in found:
+        finding = by_id[finding_id]
+        item = _Item(finding)
+        finding[compare.FIELD] = {**change.record, "why": change.why}
+        item.changed = True
+        if change.outcome in ("withdrawn", "folded"):
+            result.absorbed[finding_id] = change.why
+            item.outcome = "folded"
+        else:
+            for key in change.drop:
+                finding.pop(key, None)
+            finding.update(change.updates)
+            if change.outcome == "right":
+                _settle_right(item, "pasted_views", change.why)
+            finding.update(judged(finding))
+            group = proof.proof_group(finding)
+            item.outcome = "right" if group == "right" else item.outcome
+        item.note("pasted_views", change.outcome, change.why)
+        if change.outcome != "noted":
+            result.settled["pasted_views"] = result.settled.get("pasted_views", 0) + 1
+        before = finding.get("escalation")
+        steps = list(before.get("steps") or []) if isinstance(before, Mapping) else []
+        finding["escalation"] = {
+            "outcome": item.outcome or "undecided",
+            "steps": steps + item.steps,
+        }
+        result.log[finding_id] = steps + item.steps
+        result.changed.append(finding)
+        if finding_id not in early:
+            result.tried += 1
+        early.add(finding_id)
 
 
 def _drawing_role(ctx: EscalationContext, label: Mapping[str, Any]) -> tuple[str | None, list[Any]]:
@@ -1453,11 +1508,13 @@ def context_from_pack(
     count: Callable[[int], Callable[[], None]] | None = None,
     field_cuts: Callable[[str, int], Any] | None = None,
     rules_md: str | None = None,
+    pasted: Callable[[str, int], Sequence[Any]] | None = None,
 ) -> EscalationContext:
     """The free steps' facts from a set pack (`dims.json`, `pairs.json`, the stickers code hid
     (`<name>_stickers.json`), and for a missing item `page_texts.json`, `health.json`,
     `annotations.json`). `stickers`: GV's stickers when the pack lists none (an older pack);
-    `unopened`: the pages the check never opened."""
+    `unopened`: the pages the check never opened; `pasted`: the reference's pasted views
+    (`pasted_views.PastedReader`), else that step does nothing."""
     labels: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     phrases: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     texts: dict[tuple[str, int], str] = {}
@@ -1512,7 +1569,21 @@ def context_from_pack(
         count=count,
         field_cuts=field_cuts,
         rules_md=rules_md,
+        pasted=pasted,
     )
+
+
+def _repicture(book: Any, finding: dict[str, Any]) -> None:
+    """An item now compared at another architect spot shows that spot's picture, never the old
+    one's (no picture is never a failed step)."""
+    picture = getattr(book, "_picture", None)
+    if not callable(picture) or not isinstance(finding.get("arch_box"), Mapping):
+        return
+    try:
+        made = picture(finding["arch_box"])
+    except (OSError, ValueError, TypeError):
+        made = (None, None)
+    finding["arch_picture_id"] = made[0] if isinstance(made, tuple) and made else None
 
 
 def stickers_of_uploads(
@@ -1601,8 +1672,12 @@ def escalate_answer(engine: Any) -> Escalation | None:
         count=getattr(engine, "count_items", None),
         field_cuts=getattr(book, "field_cuts", None),
         rules_md=_rules_md(workspace),
+        pasted=import_module("app.review.assistant.pasted_views").PastedReader.for_pack(
+            workspace.set_pack, workspace.uploads, page_map=page_map
+        ),
     )
     with engine.finding_lock:
+        before = {str(f["id"]): f.get("arch_box") for f in book.live()}
         result = escalate(book.live(), ctx)
         for finding_id, reason in result.absorbed.items():
             if book.absorb(finding_id):
@@ -1610,6 +1685,8 @@ def escalate_answer(engine: Any) -> Escalation | None:
         for finding in result.changed:
             if finding["id"] in result.absorbed:
                 continue
+            if finding.get("arch_box") != before.get(str(finding["id"])):
+                _repicture(book, finding)
             if book.replace(finding):
                 engine._show_finding(finding)
     items_counted = getattr(engine, "items_counted", None)

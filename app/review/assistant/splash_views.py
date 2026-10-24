@@ -1259,9 +1259,12 @@ def settle(
     if absence:
         # The look said the architect draws none; code cannot confirm it (a size is printed, or
         # numbers in pen strokes are not read): never a Likely problem on that.
-        out.pop(likely_problems.FIELD, None)
+        mark = out.pop(likely_problems.FIELD, None)
         out["architect"] = "not confirmed by code"
         record["absence_not_confirmed"] = True
+        # The look's claim kind (the vendor adds a piece, or leaves one out), kept for the
+        # pasted views' step (`pasted_compare`): only an added piece can be withdrawn there.
+        record["look_kind"] = mark.get("kind") if isinstance(mark, Mapping) else None
     if part.measure is None:
         record["why"] = (
             f"the architect shows no {part.part} size code can compare: the vendor's value is "
