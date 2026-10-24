@@ -1301,6 +1301,11 @@ def with_drawings(look: Look, drawings: Sequence[Drawing]) -> Look:
 #: Sonnet call with eight pictures and its answer.
 MIN_LOOK_MICROS: Final = 60_000
 _REFERENCE_PRICE: Final = 5_000_000
+#: What one look costs, whatever the price (Opus 5.5 with its two pictures and its answer: $0.06-0.19
+#: a look in the paid runs, about $0.12 on average): a look's cap is never less, so a page's look
+#: is not cut by a share split over pages that have nothing to look at (2026-10-24: $0.108 a look
+#: at a $9 price, split over 20 pages of which 8 had no architect drawing).
+ONE_LOOK_MICROS: Final = 150_000
 #: The tool a look may call: zoom, to read a value it cannot read or to find a label.
 TOOLS: Final = frozenset({"zoom"})
 #: A look's answer that was not readable, said in the run's note (never a red, never a failure of
@@ -1317,6 +1322,10 @@ class WholeLooks:
     waiting: set[str] = field(default_factory=set)
     """The agents that wait for the page matcher (they start after the others)."""
     unread: list[str] = field(default_factory=list)
+    capped: list[str] = field(default_factory=list)
+    """Looks the money stopped before they answered ("pages 9"): not done within the price, never
+    "no readable answer" (the live run of 2026-10-24 said that of three looks that made no
+    call at all)."""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def block(self) -> dict[str, Any]:
@@ -1328,13 +1337,19 @@ class WholeLooks:
             for key in ("recorded", "joined", "likely", "folded"):
                 totals[key] += int(done[key])
             dropped += done["why_dropped"]
-        return {**totals, "dropped": len(dropped), "why_dropped": dropped, "unread": self.unread}
+        return {
+            **totals,
+            "dropped": len(dropped),
+            "why_dropped": dropped,
+            "unread": self.unread,
+            "capped": self.capped,
+        }
 
 
 def _cap(run: Any, pages: int, total: int) -> int:
     plan = run.plan
     budget = int(plan.budgets.get(LENS, 0))
-    floor = MIN_LOOK_MICROS * max(1, int(plan.price)) // _REFERENCE_PRICE
+    floor = max(ONE_LOOK_MICROS, MIN_LOOK_MICROS * max(1, int(plan.price)) // _REFERENCE_PRICE)
     return int(max(floor, budget * max(1, pages) // max(1, total)))
 
 
@@ -1464,6 +1479,12 @@ def apply_roster(
         if look is None or getattr(agent, "skip", False):
             continue
         claims = claims_of(str(entry.get("report") or ""))
+        if claims is None and entry.get("stopped") == "cost_cap":
+            # The money stopped it before it answered: not done within the price, said so.
+            where = "pages " + ", ".join(str(p) for p in look.vendor_pages)
+            state.capped.append(where)
+            _log.warning("assistant whole look %s: stopped for money (%s)", agent.call_id, where)
+            continue
         if claims is None:
             where = "pages " + ", ".join(str(p) for p in look.vendor_pages)
             state.unread.append(where)

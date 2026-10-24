@@ -29,7 +29,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
 
-from app.review.assistant.finding_checks import to_inches
+from app.review.assistant.finding_checks import mm_off, to_inches
 
 __all__ = [
     "DIMS_FILE",
@@ -97,7 +97,7 @@ def label_line(label: Mapping[str, Any]) -> str:
         bits.append("drawn ink, OCR")
     if label.get("units") == "disagrees":
         bits.append("mm and inches disagree")
-    elif label.get("mm_ignored"):
+    elif mm_off(label):
         bits.append("its mm do not match: inches count, mm ignored")
     if label.get("dim_line") is None:
         bits.append("no dimension line found")

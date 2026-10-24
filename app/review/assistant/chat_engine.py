@@ -399,6 +399,12 @@ FINAL_MAX_TOKENS: Final = 16000
 #: The share of what is left of the message cap that the helpers of one delegation may spend
 #: together; the rest is the lead's, to check their reports and write the answer.
 HELPER_SHARE_PERCENT: Final = 70
+#: A call that fits the money spent but not the worst cases of the calls running now waits for
+#: one of them to end (`ChatEngine._wait_for_holds`): it looks again at least this often
+#: (seconds), and gives up only after `_HOLD_WAIT_MOST_S` (a call never runs that long).
+_HOLD_WAIT_S: Final = 2.0
+_HOLD_WAIT_MOST_S: Final = 900.0
+_TOP_UP_LOCK: Final = threading.Lock()
 #: A helper's model when the lead names none, by the lead's: Fable or Opus leads, Sonnet helps.
 HELPER_DEFAULT_MODEL: Final[Mapping[str, str]] = {
     "fable": "sonnet",
@@ -946,6 +952,9 @@ class _Agent:
     cap_micros: int | None = None
     """Its own money cap (a drawn-things helper), besides the helpers' share."""
     spent: int = 0
+    last_call: int = 0
+    """What its last call cost: its record turn and report cost about as much (the same pictures
+    and context), so the roster keeps that much for them (`full_check_roster._Run._spare`)."""
     partner: _Agent | None = None
     """The other lens's helper on the same pages."""
     fold: tuple[_Agent, ...] = ()
@@ -1122,6 +1131,9 @@ class ChatEngine:
         self._reference_stamped = False
         """Every finding has its one reference page (`_stamp_reference_pages`)."""
         self._read_share = _Share(limit=settings.message_cap_micros)
+        #: Woken when a running call's hold is let go (`_release`): a call waiting for room
+        #: (`_wait_for_holds`) looks again.
+        self._holds_changed = threading.Condition()
         self._markup_base: Future[Any] | None = None
         self._trust_index: int | None = None
         #: A code-planned helper's checklist pages still open after its report (#1515).
@@ -1379,26 +1391,52 @@ class ChatEngine:
 
     def _hold(self, share: _Share, estimate: int | None) -> bool:
         """Whether a helper's next call fits the helpers' share; if it does, its estimate is held
-        until the call is charged."""
+        until the call is charged. A call that fits the money really spent but not the calls
+        running now (each held at its worst case) waits for them to end (`_wait_for_holds`):
+        the live run of 2026-10-24 stopped ten specialists at $4.36 of a $9 price because
+        thirty helpers started together and their worst cases filled the share."""
         if estimate is None:
             return True
-        with self._lock:
-            if self._spent + share.held + estimate > share.limit:
-                return False
-            share.held += estimate
-            return True
+        return self._wait_for_holds(share, estimate, hold=True)
 
     def _final_fits(self, share: _Share, estimate: int | None) -> bool:
         """A roster specialist's last call (its report) fits the fixed price and its share: the
-        share is what keeps the later checks' money (`helper_ceiling`)."""
+        share is what keeps the later checks' money (`helper_ceiling`). Like `_hold`, it waits
+        for the calls running now rather than stop for their worst cases."""
         if not self._fits(estimate):
             return False
+        return self._wait_for_holds(share, estimate or 0, hold=False)
+
+    def _record_fits(self, share: _Share, estimate: int | None) -> bool:
+        """A helper's record turn fits its share by the money really spent: never refused for
+        the calls running now (#1654), never past the share's limit (the later steps' money)."""
         with self._lock:
-            return self._spent + share.held + (estimate or 0) <= share.limit
+            return self._spent + (estimate or 0) <= share.limit
+
+    def _wait_for_holds(self, share: _Share, estimate: int, *, hold: bool) -> bool:
+        """`estimate` fits `share` with the calls running now; when only their holds are in the
+        way (it fits the money really spent), it waits for one to end and looks again. False
+        only when it cannot fit even with nothing else running: the share is really used."""
+        deadline = monotonic() + _HOLD_WAIT_MOST_S
+        while True:
+            with self._lock:
+                if self._spent + share.held + estimate <= share.limit:
+                    if hold:
+                        share.held += estimate
+                    return True
+                if share.held <= 0 or self._spent + estimate > share.limit:
+                    return False
+            if self.cancel.is_set() or monotonic() >= deadline:
+                return False
+            with self._holds_changed:
+                self._holds_changed.wait(_HOLD_WAIT_S)
 
     def _release(self, share: _Share, held: int) -> None:
         with self._lock:
             share.held -= held
+        if held:
+            with self._holds_changed:
+                self._holds_changed.notify_all()
 
     def _charge(self, model: ChatModel, usage: Mapping[str, Any]) -> None:
         cost = self._cost(model, usage)
@@ -4493,14 +4531,17 @@ class ChatEngine:
         """A soft-capped specialist at its cap got more of its phase's money (#1805)."""
         if not agent.soft_cap or agent.top_up is None:
             return False
-        try:
-            more = int(agent.top_up(agent))
-        except Exception:  # noqa: BLE001 - no top-up: it wraps up at its cap, as before
-            _log.warning("assistant chat helper top-up failed")
-            return False
-        if more <= 0:
-            return False
-        agent.cap_micros = (agent.cap_micros or 0) + more
+        # One top-up at a time: what one specialist is given counts as promised before the next
+        # asks (the price's spare money is shared by every running specialist, 2026-10-24).
+        with _TOP_UP_LOCK:
+            try:
+                more = int(agent.top_up(agent))
+            except Exception:  # noqa: BLE001 - no top-up: it wraps up at its cap, as before
+                _log.warning("assistant chat helper top-up failed")
+                return False
+            if more <= 0:
+                return False
+            agent.cap_micros = (agent.cap_micros or 0) + more
         return True
 
     def _note_cut_report(
@@ -4621,15 +4662,13 @@ class ChatEngine:
                 max_tokens=max_tokens,
             )
             held = 0
-            if (
-                final
-                and agent.soft_cap
-                and not self._final_fits(share, self._estimate(model, body, cached, previous))
-            ):
+            report_cost = self._estimate(model, body, cached, previous) if final else None
+            if final and agent.soft_cap and not self._final_fits(share, report_cost):
                 # A roster specialist never passes the fixed price, not even to write its report:
-                # code keeps what it recorded, and its report says where it stopped.
+                # code keeps what it recorded, and its report says where it stopped: "the fixed
+                # price was reached" only when it was (2026-10-24: said with $4.64 of $9 left).
                 return (
-                    _report_from_steps(entry["steps"], "the fixed price was reached"),
+                    _report_from_steps(entry["steps"], _final_stop_why(self._fits(report_cost))),
                     False,
                     "cost_cap",
                 )
@@ -4665,13 +4704,17 @@ class ChatEngine:
                     and why != "this message is near its money cap"
                     and turns < self.settings.helper_max_turns
                     and self._fits(record_estimate)
+                    and self._record_fits(share, record_estimate)
                 ):
                     # One turn to record what it read before its report (the paid run of
                     # 2026-10-19: gap closers read the pages, then wrapped up with no tools and
                     # recorded nothing, so their differences were lost).
-                    # The record turn is never refused for the helpers' share (#1654): the paid
-                    # run of 2026-10-19's gap closers hit their shared ceiling, got no record
-                    # turn and recorded nothing. It is one short call within the fixed price.
+                    # The record turn is never refused for the calls running now (#1654): the
+                    # paid run of 2026-10-19's gap closers hit their shared ceiling, got no
+                    # record turn and recorded nothing. It is one short call within the fixed
+                    # price and, by the money really spent, within the share, which keeps the
+                    # later steps' money (#1641); the roster keeps money for it under the ceiling
+                    # when it hands out the price's spare money (`full_check_roster._Run._spare`).
                     record_turn = True
                     wrap = None
                     _append_note(messages, RECORD_NOTE.format(why=why))
@@ -4708,7 +4751,8 @@ class ChatEngine:
                 return _report_from_steps(entry["steps"], str(failure)), False, "error"
             finally:
                 self._release(share, held)
-            agent.spent += self._cost(model, reply.usage)
+            agent.last_call = self._cost(model, reply.usage)
+            agent.spent += agent.last_call
             cached = sum(
                 int(reply.usage.get(key) or 0)
                 for key in (
@@ -5487,6 +5531,18 @@ def _fresh_input(usage: Mapping[str, Any]) -> int:
     """A call's input tokens that count against the provider's minute: prompt cache reads do not
     (`rate_limits`)."""
     return int(usage.get("input_tokens") or 0) + int(usage.get("cache_creation_input_tokens") or 0)
+
+
+#: Why a roster specialist could not write its report: the price itself, or only the money kept
+#: for the checks after it (the price was not reached).
+PRICE_REACHED: Final = "the fixed price was reached"
+KEPT_REACHED: Final = (
+    "it reached the money kept for the later checks; the fixed price was not reached"
+)
+
+
+def _final_stop_why(fits_price: bool) -> str:
+    return KEPT_REACHED if fits_price else PRICE_REACHED
 
 
 def _report_from_steps(steps: Sequence[Mapping[str, Any]], why: str) -> str:
