@@ -301,9 +301,9 @@ class StrokeReader:
                         continue
                     reads = [engine(picture).upper() for engine in engines]
                     lines += reads
-                    keys = [tuple(tag_keys(read)) for read in reads]
-                    if keys[0] and all(k == keys[0] for k in keys):
-                        agreed.add(keys[0])
+                    keys = _agreed_keys(reads)
+                    if keys:
+                        agreed.add(keys)
         if len(agreed) == 1:
             tags = next(iter(agreed))
             return tags, ", ".join(tags), True, ""
@@ -314,6 +314,21 @@ class StrokeReader:
             else "the strokes read as different tags at different sizes"
         )
         return (), "", True, f"{why} (read {seen})"
+
+
+def _agreed_keys(reads: Sequence[str]) -> tuple[str, ...]:
+    """The tags every engine's reading gives, or () when they differ. Two readings of the same
+    characters with a word break in one only agree (`KOLHER K-2214` and `KOLHERK-2214`: the
+    engine that ran the words together reads no tag in them), and the tags are the ones the
+    reading with the break gives; any other difference is no agreement."""
+    keys = [tuple(tag_keys(read)) for read in reads]
+    if keys and keys[0] and all(k == keys[0] for k in keys):
+        return keys[0]
+    squash = import_module("app.review.assistant.pasted_views").squash
+    found = {k for k in keys if k}
+    if len(found) == 1 and len({squash(read) for read in reads}) == 1:
+        return found.pop()
+    return ()
 
 
 def stroke_reader_for_pack(pack: Path | None, uploads: Path | None = None) -> StrokeReader:
