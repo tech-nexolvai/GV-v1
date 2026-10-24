@@ -47,10 +47,14 @@ share and cap is proportional to the price (#1805: a cap made for $5 stopped "lo
 of a $15 price). Money a phase leaves rolls forward: each later step (the gap closers, the verifier,
 the lead review, the devil's advocate, the look-again) may take all that is left under the price
 except the later steps' own shares. A specialist at its cap first takes what its phase's other
-specialists left unspent (`_Pool`); only when that is used up does it get the wrap-up note and stop,
-and code keeps what it recorded. "Stopped at its cap" (and the message's `cost_cap`) is said only
-when the price is really used up; a step that used its share while the later steps' money waits is
-listed as such. Each phase's spend against its share is in the timings line. The price can only
+specialists left unspent (`_Pool`), then (2026-10-24) the price's money above what the later steps
+keep (`_spare`); only when that is used up does it get the wrap-up note and stop, and code keeps
+what it recorded. Calls running together are each held at their worst case; a call that fits the
+money really spent waits for them to end instead of stopping its specialist (`ChatEngine._hold`:
+a live run of 2026-10-24 stopped ten specialists at $4.36 of a $9 price on those worst cases
+alone). "Stopped at its cap" (and the message's `cost_cap`) is said only when the price is really
+used up; a step that used its share while the later steps' money waits is listed as such, with the
+money left. Each phase's spend against its share is in the timings line. The price can only
 come in under the cap. **Nothing is dropped silently:** a phase or item the price
 did not reach is listed under "Not done within the fixed price" in the summary, and each red
 candidate the advocate could not check stays grey with that reason.
@@ -240,6 +244,11 @@ _USED_UP_SHARE: Final = 0.02
 _USED_UP_MICROS: Final = 50_000
 #: A top-up is worth making only above this (millionths of $): about one Sonnet call.
 _MIN_TOP_UP: Final = 20_000
+#: Kept under the first phase's ceiling for each specialist still running when one at its cap
+#: takes the price's spare money (`_Run._spare`): its record turn and its report (never refused
+#: for the share, #1654), at least this (the paid runs spent about $0.02-0.05 each), else twice
+#: what its last call cost.
+WRAP_MICROS: Final = 60_000
 #: A specialist's own cap at most at the $5 `REFERENCE_PRICE`, whatever its phase's share; at another
 #: price it scales with the price (`scaled_cap`). The page-group helpers (numbers, drawn) and the gap
 #: closers have none: their cap is their phase's money in proportion to their pages
@@ -474,6 +483,10 @@ class _Pool:
     limit: int
     agents: list[Any] = field(default_factory=list)
     first: dict[int, int] = field(default_factory=dict)
+    spare: Callable[[Any], int] | None = None
+    """When the phase's own money is used: the price's money no later step keeps (`_Run._spare`,
+    2026-10-24), so a specialist stops at its cap only when the whole price is really near,
+    never while the price's money waits unspent."""
 
     def add(self, agent: Any) -> Any:
         self.agents.append(agent)
@@ -490,7 +503,10 @@ class _Pool:
 
     def top_up(self, agent: Any) -> int:
         free = self.limit - self.committed(agent) - int(agent.cap_micros or 0)
-        more = min(free, max(self.first.get(id(agent), 0), _MIN_TOP_UP))
+        step = max(self.first.get(id(agent), 0), _MIN_TOP_UP)
+        more = min(free, step)
+        if more < _MIN_TOP_UP and self.spare is not None:
+            more = min(self.spare(agent), step)
         return more if more >= _MIN_TOP_UP else 0
 
 
@@ -1512,6 +1528,9 @@ class _Run:
     pick_locks: dict[str, threading.Lock] = field(default_factory=dict)
     #: Steps that broke (a helper's error, a tag table not readable): never a sendable check.
     failed_steps: list[str] = field(default_factory=list)
+    #: Steps the money stopped before they finished (a tag reader with no table, 2026-10-24): not
+    #: broken, and what they recorded stands, but the check is not for sending until they are.
+    unfinished_steps: list[str] = field(default_factory=list)
     #: What the finishing steps need (#1821), by step (`NEED_STEPS`), from the red candidates when
     #: last worked out (`_refresh_needs`): kept before any extra pass spends.
     needs: dict[str, int] = field(default_factory=dict)
@@ -1541,6 +1560,12 @@ class _Run:
     #: A big set's bands (`full_check_schedule.bands_of`, #1874): one chain each; one band (the
     #: whole set) runs the roster as before.
     bands: list[Band] = field(default_factory=list)
+    #: The most the page helpers and whole-drawing looks may have spent (the later steps' money
+    #: kept, #1641/#1821): what a specialist at its cap may still take from (`_spare`).
+    p1_ceiling: int | None = None
+    #: The first phase's specialists (`_p1_pools`): those still running keep their wrap-up money.
+    p1_agents: list[Any] = field(default_factory=list)
+    _spare_lock: threading.Lock = field(default_factory=threading.Lock)
 
     # -- money --
 
@@ -1684,6 +1709,56 @@ class _Run:
         margin = max(_USED_UP_MICROS, int(self.plan.price * _USED_UP_SHARE))
         return self._left() < margin + max(0, kept)
 
+    def _spare(self, agent: Any) -> int:
+        """The price's money a first-phase specialist at its cap may still take, when its pool's
+        own money is used (2026-10-24: ten specialists stopped "at their share" at $4.36 of a $9
+        price): what is left under the first phase's ceiling (`p1_ceiling`: the price less what
+        the later steps keep, #1641/#1821), less what is left of its own cap and a record turn
+        and report for every specialist still running (`WRAP_MICROS`: the record turn is never
+        refused for the share, #1654, so its money is kept here). Each top-up is at
+        most its first cap again (`_Pool.top_up`), its calls and turns stay bounded, and the
+        ceiling itself still holds every call (`ChatEngine._hold`): so specialists stop for
+        money only when the price is really near, and the finishing steps' money is never
+        spent."""
+        ceiling = self.p1_ceiling
+        if ceiling is None:
+            return 0
+        with self._spare_lock:
+            own = max(0, int(agent.cap_micros or 0) - int(agent.spent))
+            # Each running specialist's record turn and report stay under the ceiling: about
+            # two of its calls (the same pictures and context), at least `WRAP_MICROS`.
+            wraps = sum(
+                max(WRAP_MICROS, 2 * int(getattr(other, "last_call", 0) or 0))
+                for other in self.p1_agents
+                if other is agent or not (other.done or getattr(other, "skip", False))
+            )
+            return max(0, int(ceiling) - int(self.engine.spent) - own - wraps)
+
+    def _p1_pools(self, agents: Sequence[Any], ceiling: int) -> tuple[_Pool, ...]:
+        """The first phase's money (#1805, 2026-10-24): the page helpers and the tag readers share
+        one pool (their shares), the whole-drawing looks theirs (their share, or added to the
+        helpers' when no look runs); a specialist at its cap first takes what its pool's others
+        left, then the price's spare money under `ceiling` (`_spare`)."""
+        assert self.plan is not None
+        looks = [agent for agent in agents if agent.lens == whole_look.LENS]
+        pool = _Pool(sum(self.plan.budgets[name] for name in ("numbers", "drawn", "tags")))
+        pools = [pool]
+        if looks:
+            looks_pool = _Pool(self.plan.budgets[whole_look.LENS])
+            for agent in looks:
+                looks_pool.add(agent)
+            pools.append(looks_pool)
+        else:
+            pool.limit += self.plan.budgets[whole_look.LENS]
+        for agent in agents:
+            if agent.lens != whole_look.LENS:
+                pool.add(agent)
+        self.p1_ceiling = ceiling
+        self.p1_agents = list(agents)
+        for each in pools:
+            each.spare = self._spare
+        return tuple(pools)
+
     def _capped(self, description: str, tail: str = "") -> None:
         """A specialist stopped at its cap: a stop for money only when the price is used up;
         otherwise it used its phase's share while the later steps' money is kept (said so)."""
@@ -1750,6 +1825,13 @@ class _Run:
             return (
                 "a step did not finish: "
                 + "; ".join(self.failed_steps[:2])
+                + (f" and {more} more" if more > 0 else "")
+            )
+        if self.unfinished_steps:
+            more = len(self.unfinished_steps) - 2
+            return (
+                "a step was not finished within the price: "
+                + "; ".join(self.unfinished_steps[:2])
                 + (f" and {more} more" if more > 0 else "")
             )
         plan = getattr(self.engine, "_plan", None)
@@ -2206,7 +2288,6 @@ class _Run:
                 _log.warning("assistant roster could not record the divider pages")
         # P1: pickers and readers per group, the tag reader for the set; one pool for their money.
         model = engine._helper_model()
-        pool = _Pool(sum(self.plan.budgets[name] for name in ("numbers", "drawn", "tags")))
         agents = []
         # Fixed when the matcher started: a job whose pages it was asked about always waits (its
         # brief is made from the answers, never from the pairs before them).
@@ -2247,19 +2328,10 @@ class _Run:
         looks = whole_look.roster_agents(
             self, sorted(whole_plan), page_map, matching, self.looked, done=carried
         )
-        if looks:
-            looks_pool = _Pool(self.plan.budgets[whole_look.LENS])
-            for agent in looks:
-                looks_pool.add(agent)
-        else:
-            pool.limit += self.plan.budgets[whole_look.LENS]
         agents += looks
         # The helpers that wait for the page matcher start after those that can start now (the
         # tag readers, the pages code or a saved answer paired): none holds a place idle.
         agents.sort(key=lambda agent: self._waits(agent))
-        for agent in agents:
-            if agent.lens != whole_look.LENS:
-                pool.add(agent)
         self.agents = list(agents)
         # The page helpers and the gap closers never spend the later checks' money (#1641), nor
         # what the finishing steps need for the red candidates already there (#1821).
@@ -2268,6 +2340,9 @@ class _Run:
         # The cheap round picks have no share of the price: what they need is kept too (#1861).
         protected += self.needs.get(ROUND_PHASE, 0)
         ceiling = engine.spent + max(0, price - protected)
+        # One pool for the page helpers and tag readers, one for the looks; at its cap a
+        # specialist takes its pool's leftovers, then the price's spare money (2026-10-24).
+        self._p1_pools(agents, ceiling)
         self.bands = bands_of(plan.jobs)
         if len(self.bands) > 1:
             # A big set (#1874): each band's chain runs on its own, the tag reader beside them;
@@ -2291,11 +2366,13 @@ class _Run:
                 self._settle_unpaired(matching)
             except Exception:  # noqa: BLE001 - the pages stay as their helpers left them
                 _log.exception("assistant roster could not settle the unpaired pages")
-            tag_reports: list[tuple[Any, str]] = []
+            tag_reports: list[tuple[Any, str, str | None]] = []
             looked: list[tuple[Any, Mapping[str, Any]]] = []
             for agent, entry in zip(agents, entries, strict=True):
                 if agent.lens == "tags":
-                    tag_reports.append((agent, str(entry.get("report") or "")))
+                    tag_reports.append(
+                        (agent, str(entry.get("report") or ""), entry.get("stopped"))
+                    )
                     continue
                 if agent.lens == whole_look.LENS:
                     looked.append((agent, entry))
@@ -2314,6 +2391,8 @@ class _Run:
                     _log.exception("assistant roster could not apply the whole-drawing looks")
                 for where in self.looked.unread:
                     self._note_unusable_look(where)
+                for where in self.looked.capped:
+                    self._capped(f"Whole-drawing look of {where}")
             engine._queue_second_reads(engine.book.live())
             if not engine.cancel.is_set():
                 self._read_ahead()
@@ -2415,7 +2494,13 @@ class _Run:
             if not tags and not loose:
                 return
             done = launched([*tags, *loose])
-            self._apply_tags([(a, str(e.get("report") or "")) for a, e in done if a.lens == "tags"])
+            self._apply_tags(
+                [
+                    (a, str(e.get("report") or ""), e.get("stopped"))
+                    for a, e in done
+                    if a.lens == "tags"
+                ]
+            )
             apply_looks([(a, e) for a, e in done if a.lens == whole_look.LENS])
 
         def chain(index: int, band: Band) -> None:
@@ -2476,6 +2561,8 @@ class _Run:
         final_pairs()  # a band that broke before it: the matcher's calls still end first
         for where in self.looked.unread:
             self._note_unusable_look(where)
+        for where in self.looked.capped:
+            self._capped(f"Whole-drawing look of {where}")
 
     def _finish_bands(self, plan: Any, page_map: Mapping[str, Any] | None) -> None:
         """What one chain does after its look-again, once for every band (#1874)."""
@@ -2868,15 +2955,27 @@ class _Run:
             agent.ready = lambda: brief(matching.wait_pages(pages, engine.cancel))
         return agent
 
-    def _apply_tags(self, reports: str | Sequence[tuple[Any, str]]) -> None:
+    def _apply_tags(
+        self, reports: str | Sequence[tuple[Any, str] | tuple[Any, str, str | None]]
+    ) -> None:
         """Every tag reader's rows compared together by code (a piece's two tags may sit in two
-        readers' tables). A table not readable is a failed step (#1811), said with its pages."""
+        readers' tables). A table not readable is a failed step (#1811), said with its pages. A
+        reader the money stopped before its table (its report is code's "stopped before it could
+        write its report") is not a broken step: its pages' tags are listed as not done within
+        the price (`_capped`), and a table it did write is still compared (2026-10-24)."""
         engine = self.engine
         if isinstance(reports, str):
             reports = [(None, reports)]
         rows: list[Any] = []
-        for agent, report in reports:
+        for agent, report, *rest in reports:
+            stopped = rest[0] if rest else None
             found = tag_rows(report) if report.strip() else []
+            if found is None and stopped == "cost_cap":
+                pages = list(getattr(agent, "pages", None) or ())
+                where = page_ranges_words(pages) if pages else "the set"
+                self._capped(f"Tags and models, {where}", "; their tags are not compared yet")
+                self.unfinished_steps.append(f"the tags of {where} are not compared yet")
+                continue
             if found is None:
                 # Its rows were never compared: those tags are not checked (#1811).
                 whole = len(reports) == 1
@@ -5126,11 +5225,7 @@ class _Run:
         price = cap_text(self.plan.price if self.plan is not None else settings.message_cap_micros)
         lines.append(f"Fixed price ${price}: this check used {_dollars(engine.spent)}.")
         if self.not_done:
-            lines.append(
-                "Not done within the fixed price (listed, not dropped): "
-                + "; ".join(self.not_done)
-                + "."
-            )
+            lines.append(self._not_done_line(stopped))
         if self.unusable_looks:
             lines.append(unusable_looks_line(self.unusable_looks))
         pages, items, why = self._unfinished(stopped)
@@ -5149,6 +5244,19 @@ class _Run:
                 "is done."
             )
         return "\n\n".join(lines)
+
+    def _not_done_line(self, stopped: str | None) -> str:
+        """The summary's list of what was not done: "within the fixed price" only when the price
+        was really used up; else each stopped at its own share while money was left, said with
+        how much (2026-10-24: "the fixed price was reached" with $4.64 of $9 left)."""
+        listed = "; ".join(self.not_done)
+        if stopped == "cost_cap" or self.stopped_for_money or self.plan is None:
+            return f"Not done within the fixed price (listed, not dropped): {listed}."
+        left = _dollars(self._left())
+        return (
+            f"Not done (listed, not dropped; each stopped at its own share of the money while "
+            f"{left} of the fixed price was left): {listed}."
+        )
 
     def _compared_pages(self) -> list[int] | None:
         """The pages the coverage counts as compared (same or different), for the summary's

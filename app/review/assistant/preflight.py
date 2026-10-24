@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal
 
+from app.review.assistant.finding_checks import mm_off
 from app.review.assistant.sheet_revisions import Older, exact_copies, older_copies
 
 __all__ = [
@@ -813,7 +814,7 @@ def _units_and_scale(inputs: Inputs) -> list[Line]:
         if name != inputs.main_file:
             continue
         for label in printed:
-            if label.get("mm_ignored") and number not in ignored:
+            if mm_off(label) and number not in ignored:
                 ignored[number] = " ".join(str(label.get("text") or "").split())
     lines: list[Line] = []
     if ignored:

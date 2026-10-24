@@ -197,6 +197,29 @@ def _mm_agrees(millimetres: str, inches: Decimal) -> bool:
     return abs(Decimal(millimetres) - inches * _MM_PER_INCH) <= allowance
 
 
+#: Printed millimetres beside printed inches agree within this (the inches' own 1/16" step, which
+#: covers the whole millimetre a drawing rounds to): 4" [101mm] (101.6) and 3/4" [20mm] (19.05) are
+#: plain rounding, never "millimetres that do not match" (the pre-flight of a live run, 2026-10-24).
+_MM_NEAR: Final = Decimal("25.4") / 16
+
+
+def _mm_near(millimetres: str, inches: Decimal) -> bool:
+    """Whether printed millimetres are the printed inches times 25.4 within a drawing's rounding:
+    their own last digit (`_mm_agrees`) or the 1/16" step (`_MM_NEAR`, about 1.6 mm), whichever is
+    more. Only for the units check of a pair already read as inches first: which number is the
+    inches (`_inch_first`) is still decided by `_mm_agrees` alone."""
+    if _mm_agrees(millimetres, inches):
+        return True
+    return abs(Decimal(millimetres) - inches * _MM_PER_INCH) <= _MM_NEAR
+
+
+def mm_off(label: Mapping[str, Any]) -> bool:
+    """A set pack label whose printed millimetres really do not match its inches: marked
+    `mm_ignored` when the pack was made, and still not within a drawing's rounding by today's
+    check (`_mm_near`), so a pack made before 2026-10-24 never says 4" [101mm] does not match."""
+    return bool(label.get("mm_ignored")) and units_check(label.get("text")) != "agrees"
+
+
 def _inch_first(token: str) -> Decimal | Literal[False] | None:
     """A pair written inches first with the millimetres in brackets (#1778): `31 1/4" [794]` is
     31 1/4", `25 [635]` is 25". A marked value (`31 1/4"`, `2'-0"`) is the inches whatever the
@@ -557,7 +580,7 @@ def units_check(text: object) -> UnitsResult | None:
         value = to_inches(outside if _INCH_MARKS.search(outside) else f'{outside}"')
         if value is None:
             return None
-        return "agrees" if _mm_agrees(first.group("mm"), value) else "disagrees"
+        return "agrees" if _mm_near(first.group("mm"), value) else "disagrees"
     dual = _DUAL_UNITS.match(token)
     if dual is None:
         return None
