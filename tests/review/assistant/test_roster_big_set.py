@@ -347,6 +347,35 @@ def test_a_finished_check_offers_no_continue(
                                        blocks=[]))  # type: ignore[arg-type]  # fmt: skip
 
 
+def test_continue_keeps_a_cards_folded_copies_so_a_conflict_never_turns_red_again(
+    tmp_path: Path,
+) -> None:
+    """One item, one card (review of #1916): a card Not compared because its copies disagree on
+    the architect's size keeps that on Continue (its copies were folded away)."""
+    from app.review.assistant.proof import proof_group
+
+    harness = _roster(tmp_path, _Roster(), price=5 * DOLLARS)
+    folded = {"copies": [{"finding_id": "F9", "group": "right"}], "conflict": ['36"', '40"']}
+    earlier = {**_top(2, item="Area 1: top"), "id": "F1", "created_by": "helper:1"}
+    harness.engine.carry_over([{**earlier, "same_item": folded}], None)
+    kept = harness.engine.book.live()
+    assert len(kept) == 1 and kept[0]["same_item"] == folded
+    assert proof_group(kept[0]) == "not_compared"
+
+
+def test_continue_keeps_the_items_folded_under_a_drawing_needed_page(tmp_path: Path) -> None:
+    """One item, one card (review of #1916): the items an earlier answer folded under a page's
+    Drawing-needed card were dropped from its findings, so a Continue keeps them on that page."""
+    harness = _roster(tmp_path, _Roster(), price=5 * DOLLARS)
+    folded = [{"finding_id": "F4", "item": "Area 2: sink", "vendor": "sink model 1"}]
+    harness.engine.carry_over(
+        [],
+        {"pages": [{"page": 3, "status": "not_comparable", "note": "x", "folded": folded}]},
+    )
+    page = next(p for p in harness.engine.book.coverage_map()["pages"] if p["page"] == 3)
+    assert page["folded"] == folded
+
+
 def test_continue_compares_only_the_pages_left_and_keeps_what_was_done(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

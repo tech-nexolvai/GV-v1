@@ -551,6 +551,8 @@ export interface ChatFinding {
   keep_reason?: KeepReason | null;
   /** #1554: the same item on other pages or rounds, folded into this one. */
   also_on?: FindingAlsoOn[] | null;
+  /** One item, one card (2026-10-23): other copies of this item on this page, folded in by code. */
+  same_item?: FindingSameItem | null;
   /** #1554, `source: vendor_arithmetic`: code's sum of the parts, in inches ("80.125"). */
   parts_sum?: string | null;
   /**
@@ -708,6 +710,27 @@ export interface FindingAlsoOn {
   /** Its spot on that page: the cloud drawing marks it there too. */
   vendor_box?: FindingBox | null;
   arch_box?: FindingBox | null;
+}
+
+/** Another reader's copy of the same item, kept on the card as evidence (`one_card`). */
+export interface FindingCopy {
+  finding_id: string;
+  item?: string | null;
+  /** The card that copy alone would have been. */
+  group?: string | null;
+  vendor?: string | null;
+  architect?: string | null;
+  /** Why that copy could not be proved or compared. */
+  reason?: string | null;
+  /** Who reported it, in plain words. */
+  by?: string | null;
+  vendor_box?: FindingBox | null;
+}
+
+/** The copies folded into a card; `conflict`: the different architect values, and the card is Not compared. */
+export interface FindingSameItem {
+  copies: FindingCopy[];
+  conflict?: string[] | null;
 }
 
 /** #1554: one Your-decision item GV Review settled by itself (the folded group's line). */
@@ -1117,6 +1140,8 @@ export interface CoveragePage {
   drawing_needed?: boolean | null;
   /** Why, in plain words. */
   drawing_needed_why?: string | null;
+  /** One item, one card: items whose only fact is "no architect drawing", folded under this card. */
+  folded?: { finding_id: string; item?: string | null; vendor?: string | null }[] | null;
   /** The AI page matcher was sure of an architect page and code could not confirm it: the drawing is in the upload; a person confirms the page. */
   pairing_unsure?: boolean | null;
   /** The two candidate pages, as a person finds them ('architect page 9 ("STANDARD KITCHEN") or architect page 2?'). */

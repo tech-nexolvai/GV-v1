@@ -99,6 +99,7 @@ __all__ = [
     "READER_ERROR_WORDS",
     "REASONS",
     "REASON_WORDS",
+    "SAME_ITEM",
     "TRADE_WORDS",
     "Classified",
     "architect_conflict",
@@ -108,6 +109,7 @@ __all__ = [
     "prototype_governs",
     "prototype_reference",
     "rule_without_requirement",
+    "same_item_conflict",
 ]
 
 type Outcome = Literal["wrong", "right", "not_compared", "rule_note"]
@@ -426,6 +428,17 @@ READER_ERROR_WORDS: Final = "the number could not be read (reader error)"
 GV_STICKER: Final = "gv_sticker"
 #: What the tag reader read and decided (`tag_reader.TAG_READ`, set by `escalation`).
 _TAG_READ: Final = "tag_read"
+#: The copies of one item folded into this card by the last step (`one_card`): `copies`, and
+#: `conflict` when they pair one vendor number with different architect numbers.
+SAME_ITEM: Final = "same_item"
+
+
+def same_item_conflict(finding: Mapping[str, Any]) -> list[str] | None:
+    """The architect values the copies of this item pair its one vendor number with, when they
+    differ (`one_card`): the card is then Not compared, never Wrong or Right. Else `None`."""
+    folded = finding.get(SAME_ITEM)
+    values = folded.get("conflict") if isinstance(folded, Mapping) else None
+    return [str(v) for v in values] if isinstance(values, list) and values else None
 
 
 def _sticker(finding: Mapping[str, Any]) -> Classified | None:
@@ -1102,6 +1115,17 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
                 "drawing for it; kept for GV's reviewer only"
             )
         return _not("internal", why, "both values read at their spots on the drawings")
+    conflict = same_item_conflict(finding)
+    if conflict is not None:
+        # The same vendor number paired with different architect numbers (`one_card`): which
+        # one it measures is not proved, so it is neither Wrong nor Right.
+        return _not(
+            "not_proved",
+            f"the vendor's {_short(finding.get('vendor'), 30)} was compared with "
+            f"{len(conflict)} different architect sizes ({', '.join(conflict)}); code did not "
+            "prove which one it measures",
+            "the architect's dimension that measures the same thing as {thing}",
+        )
     # GV's sticker is never the vendor's value, whatever it was compared with (#1859).
     sticker = _sticker(finding)
     if sticker is not None:

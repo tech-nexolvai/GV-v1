@@ -3016,7 +3016,7 @@ class _Run:
         each; a page the money cannot reach is said so on its coverage, never dropped. `again`:
         the pass after the lead review (#1817). Returns the pages given to a closer."""
         engine = self.engine
-        from app.review.assistant.full_check_brief import helper_brief
+        from app.review.assistant.full_check_brief import found_on_pages, helper_brief
         from app.review.assistant.full_check_plan import pair_lines
         from app.review.assistant.sandbox import UPLOADS
 
@@ -3045,6 +3045,10 @@ class _Run:
                 labels=engine._dim_labels(engine.book.main_file, list(run), read_now=False),
                 products=engine.settings.products,
             )
+            found = found_on_pages(engine.book.live(), run)
+            if found:
+                # One item, one card: the closer is told what this check already has there.
+                brief = f"{brief}\n\n{found}"
             gaps = "\n".join(f"- p{page}: {line}" for page in run for line in pages[page])
             across = engine._cross
             if across is not None:

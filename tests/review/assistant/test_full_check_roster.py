@@ -1346,6 +1346,61 @@ def test_a_helper_that_stops_short_is_sent_on_then_a_gap_closer_finishes_its_pag
     assert "page not compared yet" in _first_text(gap)
 
 
+def test_a_gap_closer_is_told_what_this_check_already_found_on_its_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One item, one card: a look-again or gap closer's brief lists this check's own findings on
+    its pages, so it does not report them again (it re-reported every Right it compared)."""
+    _clean_ink(monkeypatch)
+    script = _Lazy()
+    harness = _roster(tmp_path, script)
+    for page in range(1, 7):
+        harness.engine.book.report(
+            {
+                "page": page, "item": f"Area 1: top width {page}", "category": "other",
+                "status": "same", "verified": False, "source": "architect",
+                "architect": '36"', "vendor": '36"',
+            },
+            "helper:9",
+        )  # fmt: skip
+    harness.run()
+    gap = _first_text(script.params["gap"][0])
+    assert "ALREADY FOUND IN THIS CHECK on your pages" in gap
+    assert "top width" in gap and ": Right [F" in gap
+
+
+def test_the_finished_check_holds_one_card_per_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One item, one card: two readers' copies of one printed vendor label are one card at the
+    end, the other kept inside it; the stored answer, its counts and its files list it once."""
+    from app.review.assistant.chat_findings import live_findings
+
+    _clean_ink(monkeypatch)
+    script = _Roster()
+    harness = _roster(tmp_path, script)
+    for by in ("helper:8", "helper:9"):
+        harness.engine.book.report(
+            {
+                "page": 6, "item": f"Area 2: top ({by})", "category": "countertop",
+                "status": "same", "verified": False, "source": "architect",
+                "vendor_dim": "D1", "architect_dim": "D2",
+            },
+            by,
+        )  # fmt: skip
+    outcome = harness.run()
+    assert outcome is not None
+    on_label = [
+        f
+        for f in live_findings(outcome.blocks)
+        if f["page"] == 6 and ((f.get("dims") or {}).get("vendor") or {}).get("id") == "D1"
+    ]
+    assert len(on_label) == 1, [f["id"] for f in on_label]
+    assert on_label[0]["same_item"]["copies"]
+    dropped = [b for b in outcome.blocks if b.get("type") == "finding_dropped"]
+    assert any("one card" in str(b.get("reason")) for b in dropped)
+
+
 class _Cut(_Roster):
     """A numbers helper whose first reply is cut at its length limit."""
 

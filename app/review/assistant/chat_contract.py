@@ -639,6 +639,50 @@ class ChatFindingAlsoOnOut(BaseModel):
     arch_box: ChatBoxOut | None = None
 
 
+class ChatFindingCopyOut(BaseModel):
+    """Another copy of the same item, folded into this card by the check's last step (one item,
+    one card, 2026-10-23): what it said, which card it would have been, and why."""
+
+    model_config = ConfigDict(frozen=True)
+
+    finding_id: str
+    item: str | None = None
+    group: str | None = Field(default=None, description="The card the copy alone would be.")
+    vendor: str | None = None
+    architect: str | None = None
+    reason: str | None = Field(
+        default=None, description="Why that copy could not be proved or compared, when it says."
+    )
+    by: str | None = Field(default=None, description="Who reported it, in plain words.")
+    vendor_box: ChatBoxOut | None = Field(
+        default=None, description="Its vendor spot (evidence only: never marked on a drawing)."
+    )
+
+
+class ChatFindingSameItemOut(BaseModel):
+    """The copies of this item code folded into it (`one_card`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    copies: list[ChatFindingCopyOut] = Field(default_factory=list)
+    conflict: list[str] | None = Field(
+        default=None,
+        description="Set when the copies pair one vendor number with different architect numbers "
+        "(or read different values at one vendor label): every value, and the card is Not "
+        "compared.",
+    )
+
+
+class ChatCoverageFoldedOut(BaseModel):
+    """An item folded under its page's Drawing-needed card (`one_card`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    finding_id: str
+    item: str | None = None
+    vendor: str | None = None
+
+
 class ChatFindingPageOut(BaseModel):
     """One upload's page."""
 
@@ -1054,6 +1098,11 @@ class ChatFindingOut(BaseModel):
     also_on: list[ChatFindingAlsoOnOut] | None = Field(
         default=None, description="The same item on other pages or rounds, folded in (#1554)."
     )
+    same_item: ChatFindingSameItemOut | None = Field(
+        default=None,
+        description="Other copies of this same item on this page (two readers reported it), "
+        "folded into this one card by code (one item, one card).",
+    )
     parts_sum: str | None = Field(
         default=None,
         description="Source vendor_arithmetic: code's sum of the parts, in inches (#1554).",
@@ -1169,6 +1218,11 @@ class ChatCoveragePageOut(BaseModel):
         default=None,
         description='drawing_needed: why, in plain words ("no drawing of the same item was '
         "found in the architect's file\").",
+    )
+    folded: list[ChatCoverageFoldedOut] | None = Field(
+        default=None,
+        description="Drawing needed: the items a reader reported on this page whose only fact is "
+        "that no architect drawing is paired, folded under this card (one item, one card).",
     )
 
     pairing_unsure: bool = Field(

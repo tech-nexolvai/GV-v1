@@ -844,6 +844,47 @@ def _existing(context: _Context, label: Mapping[str, Any]) -> dict[str, Any] | N
     return None
 
 
+def _same_helper_item(context: _Context, probe: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A live item a helper recorded that code knows is this claim's item (`one_card.same_item`:
+    the same label, spot or finish tags), still open (Wrong or Not compared); else `None`."""
+    from app.review.assistant.classification import internal
+    from app.review.assistant.one_card import compares_architect, same_item
+
+    for finding in context.book.live():
+        if finding.get("created_by") == CREATED_BY or internal(finding):
+            continue
+        if not compares_architect(finding):
+            continue  # GV's rule or the vendor's own check: another question, never joined
+        if finding.get("status") not in ("different", "check"):
+            continue
+        how = same_item(probe, finding)
+        if how is None:
+            continue
+        if how == "vendor_label" and not _same_architect_side(probe, finding):
+            continue  # one vendor dimension against two architect dimensions: two claims
+        return dict(finding)
+    return None
+
+
+def _same_architect_side(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    """Whether two items name the same architect dimension, or one of them names none (a claim
+    against another architect dimension is never joined to a helper's item)."""
+
+    def key(finding: Mapping[str, Any]) -> tuple[Any, ...] | None:
+        dims = finding.get("dims")
+        label = dims.get("architect") if isinstance(dims, Mapping) else None
+        if not isinstance(label, Mapping) or not label.get("id"):
+            return None
+        return (label.get("page"), str(label["id"]), label.get("file") or None)
+
+    first, second = key(a), key(b)
+    if first is None or second is None:
+        return True
+    if first[:2] != second[:2]:
+        return False
+    return not (first[2] and second[2] and first[2] != second[2])
+
+
 def _side_of(claim: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     side = claim.get(name)
     return side if isinstance(side, Mapping) else {}
@@ -1110,7 +1151,35 @@ def _one(context: _Context, look: Look, claim: Mapping[str, Any], applied: Appli
     if architect.page != vendor.page:
         raw["vs_page"] = architect.page
     same = _same_key(look, kind, item, architect_value)
+    probe = {
+        **raw,
+        "round": vendor.round,
+        "inches": {
+            "vendor": _label_inches(v_label) if v_label else _inches(vendor_side.get("value")),
+            "architect": (
+                _label_inches(a_label) if a_label else _inches(architect_side.get("value"))
+            ),
+        },
+        "dims": {
+            side: {**label, "file": label.get("file") or drawing.file}
+            for side, label, drawing in (
+                ("vendor", v_label, vendor),
+                ("architect", a_label, architect),
+            )
+            if label is not None
+        },
+    }
     with context.lock:
+        helper = _same_helper_item(context, probe)
+        if helper is not None:
+            # A helper already listed this item (the same label, spot or tags: code facts): the
+            # look joins it, so it is one card, never a second one beside it.
+            if likely_problems.FIELD not in helper:
+                updated = mark(helper, proof="joined", **look_mark)
+                if context.book.replace(updated):
+                    context.show(updated)
+            applied.joined.append(str(helper["id"]))
+            return
         kept = context.likely.get(same)
         if kept is not None:
             # The same difference on another vendor round: one item, both rounds named.

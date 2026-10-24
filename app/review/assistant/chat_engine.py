@@ -92,6 +92,7 @@ from uuid import uuid4
 from app.review.assistant import (
     likely_problems,
     not_compared,
+    one_card,
     reading_coverage,
     reference_page,
     same_item_pages,
@@ -229,7 +230,7 @@ from app.review.assistant.chat_trust import (
     with_second_read,
 )
 from app.review.assistant.chat_unknowns import refused_from_diff, unknown_records
-from app.review.assistant.classification import not_compared_line
+from app.review.assistant.classification import SAME_ITEM, not_compared_line
 from app.review.assistant.decision_resolver import recount_words, resolve_answer
 from app.review.assistant.dim_index import labels_for
 from app.review.assistant.escalation import Escalation, escalate_answer
@@ -1215,6 +1216,10 @@ class ChatEngine:
                 "created_by": str(given.get("created_by") or "lead"),
                 "verified": bool(given.get("verified")),
             }
+            if isinstance(given.get(SAME_ITEM), Mapping):
+                # One item, one card: its folded copies were dropped from the earlier answer, so
+                # the card keeps them (a conflict stays Not compared, never red again).
+                finding[SAME_ITEM] = dict(given[SAME_ITEM])
             self.book.replace(finding)
             self._show_finding(finding)
             kept += 1
@@ -1224,6 +1229,14 @@ class ChatEngine:
             if isinstance(entry, Mapping)
             and (entry.get("status") != "not_opened" or entry.get("note"))
         ]
+        for entry in (coverage or {}).get("pages") or []:
+            # One item, one card: the items an earlier answer folded under a page's
+            # Drawing-needed card stay there as evidence (they were dropped from its findings).
+            folds = entry.get("folded") if isinstance(entry, Mapping) else None
+            if isinstance(folds, list) and isinstance(entry.get("page"), int):
+                self.book.fold_into_page(
+                    int(entry["page"]), [c for c in folds if isinstance(c, Mapping)]
+                )
         if pages:
             self.book.set_coverage({"pages": pages}, "earlier")
             self._show_coverage()
@@ -2001,6 +2014,7 @@ class ChatEngine:
             "question",
             "keep_reason",
             "also_on",
+            "same_item",
             "parts_sum",
             "escalation",
             "string_reads",
@@ -3058,6 +3072,7 @@ class ChatEngine:
         for updated in mark_compared(book.live(), coverage, list(self.tools.seen)):
             if book.replace(updated):
                 self._show_finding(updated)
+        self._one_card(coverage)
         scope = self.scope()
         recorded = scoped_recorded(self._recorded_checks(), book.scope_pages)
         self._unknowns = unknown_records(
@@ -3112,6 +3127,39 @@ class ChatEngine:
         except Exception:  # noqa: BLE001 - the answer goes on without it
             _log.exception("reading coverage could not be shown")
             return None
+
+    def _one_card(self, coverage: Mapping[str, Any] | None) -> None:
+        """One item, one card (2026-10-23): a full check's last step, after every other step and
+        before the trust report, the counts and the files (`one_card.fold`). The copies of one
+        item (by code facts only) become one card, the others kept on it as evidence; the items
+        that only say "no architect drawing" on a Drawing-needed page fold under that card."""
+        if self.settings.mode != "full_check":
+            return
+        from app.review.assistant.full_check_plan import unpaired_note_why
+
+        # Only pages the result really lists under Drawing needed (their coverage note says so):
+        # an item folded under a page the screen does not show there would be seen nowhere.
+        needed: set[int] = set()
+        for entry in (coverage or {}).get("pages") or []:
+            if isinstance(entry, Mapping) and unpaired_note_why(entry.get("note")) is not None:
+                needed.add(int(entry["page"]))
+        try:
+            result = one_card.fold(self.book.live(), needed)
+        except Exception:  # noqa: BLE001 - the answer keeps its findings as they were
+            _log.exception("assistant chat one-card fold failed")
+            return
+        for kept in result.kept:
+            if self.book.replace(kept):
+                self._show_finding(kept)
+        for page, copies in result.drawing_needed.items():
+            self.book.fold_into_page(page, copies)
+        for folded in result.folded:
+            with self.finding_lock:
+                if not self.book.absorb(folded.drop):
+                    continue
+            self._show_dropped(folded.drop, folded.reason)
+        if result.drawing_needed and self.book.coverage_used:
+            self._show_coverage()
 
     def _fold_same_wrongs(self) -> None:
         """The same Wrong item reported more than once (two helpers, or a helper and a gap

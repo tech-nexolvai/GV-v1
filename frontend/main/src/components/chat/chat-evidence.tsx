@@ -7,7 +7,7 @@ import { OutcomeGlyph, type DrawingsRequest } from '@/components/chat/chat-resul
 import { RoundChip } from '@/components/chat/chat-trust';
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 import type { ChatFile, ChatFinding, FindingBox, FindingDecision, FindingDecisionExtra, FindingDecisionValue, PagePicture, PageWhere } from '@/lib/chat-api';
-import { architectOnVendorPage, drawerChips, drawerKind, howWeKnow, KIND_WORDS, noArchitectPictureWords, overallSpot, referenceSide, ringInCrop, ringOnCrop, ringOnPage, vendorOnly, vendorSide, type DrawerKind, type Ring } from '@/lib/chat-drawer';
+import { architectOnVendorPage, copyLines, drawerChips, drawerKind, howWeKnow, KIND_WORDS, noArchitectPictureWords, overallSpot, referenceSide, ringInCrop, ringOnCrop, ringOnPage, vendorOnly, vendorSide, type DrawerKind, type Ring } from '@/lib/chat-drawer';
 import { architectPage, decisionHelpRows, pageWords, referenceWhere, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
 import { isInternal, proofGroup, ruleNoteWords, type RuleNoteWords } from '@/lib/chat-proof';
 import { boxOnPicture, decisionsWords, isDrawingNeededItem, isPairingUnsureItem, isRefusedString, itemParts, pageHeading, pairingUnsureWords, shortValue, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultTab } from '@/lib/chat-result';
@@ -524,6 +524,7 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
   const overall = refused ? overallSpot(finding) : null;
   const steps = howWeKnow(finding, kind, { noArchitectDrawing: noDrawing });
   const chips = kind === 'drawing_needed' ? [] : drawerChips(finding, { number, noArchitectDrawing: noDrawing, inRequest });
+  const copies = copyLines(finding);
   const part = kind === 'clouded' ? wrongPartWords(finding) : null;
   const tell = part ? `Change the ${part.part} part to ${part.should}${part.overall ? `: the ${part.overall} overall is right` : ''}.` : kind === 'clouded' ? reviewerWords(finding).tell : null;
   const page = vendorBox?.page ?? finding.page;
@@ -678,6 +679,14 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
       )}
       <SheetDescription className="sr-only">{steps.join(' ')}</SheetDescription>
       {note && <ArchitectQuestion note={note} />}
+      {copies.length > 0 && (
+        <section aria-label="Also reported" data-slot="chat-evidence-copies" className="grid min-w-0 gap-2 rounded-xl border px-4 py-3.5">
+          <h3 className="text-[13px] font-semibold">{kind === 'drawing_needed' ? 'Also on this page' : 'Also reported (the same item)'}</h3>
+          <ul className="grid gap-1 text-[13px] leading-[20px] text-muted-foreground">
+            {copies.map((line, at) => <li key={`${at}-${line}`} className="break-words">{line}</li>)}
+          </ul>
+        </section>
+      )}
 
       {chips.length > 0 && (
         <ul data-slot="chat-evidence-chips" aria-label="Also" className="flex min-w-0 flex-wrap gap-2">

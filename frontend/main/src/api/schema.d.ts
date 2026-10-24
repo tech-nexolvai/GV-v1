@@ -4570,6 +4570,18 @@ export interface components {
             total: number;
         };
         /**
+         * ChatCoverageFoldedOut
+         * @description An item folded under its page's Drawing-needed card (`one_card`).
+         */
+        ChatCoverageFoldedOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Item */
+            item?: string | null;
+            /** Vendor */
+            vendor?: string | null;
+        };
+        /**
          * ChatCoverageOut
          * @description Every page of the vendor's file (a page never recorded is not_opened), and the counts.
          */
@@ -4596,6 +4608,11 @@ export interface components {
              * @description drawing_needed: why, in plain words ("no drawing of the same item was found in the architect's file").
              */
             drawing_needed_why?: string | null;
+            /**
+             * Folded
+             * @description Drawing needed: the items a reader reported on this page whose only fact is that no architect drawing is paired, folded under this card (one item, one card).
+             */
+            folded?: components["schemas"]["ChatCoverageFoldedOut"][] | null;
             /** Note */
             note?: string | null;
             /** Page */
@@ -4779,6 +4796,38 @@ export interface components {
             verify_architect?: components["schemas"]["ChatVerifiedValueOut"] | null;
             /** @description Code's reading of the vendor's value at its box (#1531). */
             verify_vendor?: components["schemas"]["ChatVerifiedValueOut"] | null;
+        };
+        /**
+         * ChatFindingCopyOut
+         * @description Another copy of the same item, folded into this card by the check's last step (one item,
+         *     one card, 2026-10-23): what it said, which card it would have been, and why.
+         */
+        ChatFindingCopyOut: {
+            /** Architect */
+            architect?: string | null;
+            /**
+             * By
+             * @description Who reported it, in plain words.
+             */
+            by?: string | null;
+            /** Finding Id */
+            finding_id: string;
+            /**
+             * Group
+             * @description The card the copy alone would be.
+             */
+            group?: string | null;
+            /** Item */
+            item?: string | null;
+            /**
+             * Reason
+             * @description Why that copy could not be proved or compared, when it says.
+             */
+            reason?: string | null;
+            /** Vendor */
+            vendor?: string | null;
+            /** @description Its vendor spot (evidence only: never marked on a drawing). */
+            vendor_box?: components["schemas"]["ChatBoxOut"] | null;
         };
         /**
          * ChatFindingCriticOut
@@ -5171,6 +5220,8 @@ export interface components {
             round_status?: ("fixed_in_later_round" | "still_wrong" | "new_in_later_round" | "not_in_later_round" | "single_round") | null;
             /** Rule Check Id */
             rule_check_id?: string | null;
+            /** @description Other copies of this same item on this page (two readers reported it), folded into this one card by code (one item, one card). */
+            same_item?: components["schemas"]["ChatFindingSameItemOut"] | null;
             second_read_values?: components["schemas"]["ChatSecondReadValuesOut"] | null;
             /** @description Set when code settled this item, which was not compared, by itself (#1554). */
             settled?: components["schemas"]["ChatFindingSettledOut"] | null;
@@ -5440,6 +5491,19 @@ export interface components {
              * @description "GV's standard is 1"-2"" (or the project's value).
              */
             standard: string;
+        };
+        /**
+         * ChatFindingSameItemOut
+         * @description The copies of this item code folded into it (`one_card`).
+         */
+        ChatFindingSameItemOut: {
+            /**
+             * Conflict
+             * @description Set when the copies pair one vendor number with different architect numbers (or read different values at one vendor label): every value, and the card is Not compared.
+             */
+            conflict?: string[] | null;
+            /** Copies */
+            copies?: components["schemas"]["ChatFindingCopyOut"][];
         };
         /**
          * ChatFindingSettledOut

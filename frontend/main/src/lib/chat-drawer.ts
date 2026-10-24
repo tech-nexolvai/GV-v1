@@ -152,6 +152,10 @@ export function referenceSide(finding: ChatFinding, kind: DrawerKind, decision: 
   const should = kind === 'clouded' ? shouldBeValue(finding, decision) : null;
   if (should) return { label: 'Should be', value: should.main, tone: 'right' };
   const architect = finding.architect?.trim() ? finding.architect.trim().replace(/"/g, '″').replace(/'/g, '′') : '—';
+  // One item whose copies pair it with different architect sizes (one card, Not compared): every
+  // size, never one of them as if it were the architect's.
+  const conflict = finding.same_item?.conflict ?? [];
+  if (conflict.length > 1) return { label: 'Architect: copies disagree', value: conflict.map((size) => size.replace(/"/g, '″')).join(' or '), tone: null };
   if (kind === 'rule_note') return { label: 'Architect shows', value: architect, tone: null };
   if (finding.source === 'rules' || finding.rule_check_id) return { label: 'GV’s rule', value: architect, tone: kind === 'right' ? 'right' : null };
   return { label: vendorOnly(finding) ? 'Vendor’s own drawing' : 'Architect shows', value: architect, tone: kind === 'right' || kind === 'dismissed' ? 'right' : null };
@@ -298,6 +302,46 @@ export function noArchitectPictureWords(finding: Pick<ChatFinding, 'proof' | 'so
   // Words on the architect's side (shown above) mean the architect does say something: only its spot is unknown.
   if (finding.proof?.not_compared === 'nothing_to_compare' && !architectSaysSomething(finding)) return 'The architect’s drawings give no size or note for this item, so there is no spot to show';
   return 'The app did not find this item’s spot on the architect’s drawings, so there is no picture of it';
+}
+
+// ── One item, one card ─────────────────────────────────────
+
+const COPY_GROUP: Record<string, string> = {
+  clouded: 'Wrong',
+  likely_problem: 'Likely problem',
+  rule_note: 'Ask the architect',
+  not_compared: 'Not compared',
+  right: 'Right',
+  dismissed: 'Right (reviewer)',
+};
+
+/**
+ * The other copies of this item code folded into its card (2026-10-23), one line each: who
+ * reported it, its card, its values, and why it could not be proved; first, when they disagree on
+ * the architect's size, why the card is Not compared.
+ */
+export function copyLines(finding: Pick<ChatFinding, 'same_item'> & { id?: string }): string[] {
+  const folded = finding.same_item;
+  if (!folded) return [];
+  const lines: string[] = [];
+  if (folded.conflict?.length) lines.push(`The copies pair the vendor’s number with different architect sizes (${folded.conflict.map(marks).join(', ')}), so it is not compared.`);
+  if (finding.id && isDrawingNeededItem({ id: finding.id })) {
+    // A Drawing-needed page's card: its folded rows are this page's other items (not copies of
+    // one item), each named, none compared yet.
+    for (const copy of folded.copies ?? []) {
+      const item = copy.item?.trim() || 'An item';
+      lines.push(`${item}${copy.vendor ? ` (vendor ${marks(copy.vendor)})` : ''}: not compared, no architect drawing of this page.`);
+    }
+    return lines;
+  }
+  for (const copy of folded.copies ?? []) {
+    const who = copy.by ? `${copy.by.charAt(0).toUpperCase()}${copy.by.slice(1)}` : 'Another reader';
+    const group = copy.group ? COPY_GROUP[copy.group] ?? 'Listed' : 'Listed';
+    const values = [copy.vendor ? `vendor ${marks(copy.vendor)}` : null, copy.architect ? `architect ${marks(copy.architect)}` : null].filter(Boolean).join(', ');
+    const why = copy.reason?.trim();
+    lines.push(`${who}: ${group}${values ? ` (${values})` : ''}${why ? `: ${why.replace(/\.$/, '')}` : ''}.`);
+  }
+  return lines;
 }
 
 // ── Chips ──────────────────────────────────────────────────

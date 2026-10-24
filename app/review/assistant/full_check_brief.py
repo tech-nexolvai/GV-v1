@@ -57,6 +57,7 @@ from app.review.assistant.dim_index import checklist_label_gaps
 from vocabulary.product_registry import Product, registry
 
 __all__ = [
+    "ALREADY_FOUND",
     "CHECKLIST_FIELDS",
     "DRAWN_BRIEF",
     "HELPER_BRIEF",
@@ -66,8 +67,10 @@ __all__ = [
     "LENS_SCOPE",
     "NUMBERS_NOTE",
     "PRINCIPLE",
+    "STILL_OPEN",
     "checklist_gaps",
     "checklist_send_back",
+    "found_on_pages",
     "helper_brief",
     "label_summary",
     "leads_on_pages",
@@ -199,9 +202,9 @@ _NONE: Final = "- none"
 _MAX_ROW: Final = 160
 
 
-def _short(value: object) -> str:
+def _short(value: object, limit: int = _MAX_ROW) -> str:
     text = " ".join(str(value).split())
-    return text if len(text) <= _MAX_ROW else f"{text[: _MAX_ROW - 1]}…"
+    return text if len(text) <= limit else f"{text[: limit - 1]}…"
 
 
 def _pages_of(page_map: Mapping[str, Any] | Sequence[Any] | None) -> dict[int, Mapping[str, Any]]:
@@ -359,6 +362,84 @@ def recorded_on_pages(document: Mapping[str, Any] | None, pages: Iterable[int]) 
         tail = f" ({'; '.join(sides)})" if sides else ""
         lines.append(f"- p{page}: {what}{tail} [{item.get('record_id')}]")
     return lines
+
+
+#: The head of the list of what this check already found on a look-again reader's pages
+#: (one item, one card): it re-reported every item it compared again.
+ALREADY_FOUND: Final = (
+    "ALREADY FOUND IN THIS CHECK on your pages (another reader recorded these: do not report them "
+    "again; compare and report only what is not on this list):"
+)
+#: At most this many lines: a page with more says how many are left out.
+_FOUND_LINES: Final = 80
+_FOUND_STATUS: Final = {
+    "clouded": "Wrong, proved",
+    "right": "Right",
+    "rule_note": "Ask the architect",
+    "dismissed": "Right",
+    "likely_problem": "Likely problem",
+    "not_compared": "Not compared",
+}
+
+
+def _dim_ref(finding: Mapping[str, Any], side: str) -> str | None:
+    dims = finding.get("dims")
+    label = dims.get(side) if isinstance(dims, Mapping) else None
+    if not isinstance(label, Mapping) or not label.get("id"):
+        return None
+    return f"p{label.get('page')}.{label['id']}"
+
+
+#: Its second part: what is still open there, which the closer may settle.
+STILL_OPEN: Final = (
+    "STILL OPEN on your pages (not settled yet: compare each again with both labels, and report it "
+    "again only when you can settle it):"
+)
+
+
+def _found_line(finding: Mapping[str, Any], group: str) -> str:
+    vendor = _dim_ref(finding, "vendor")
+    architect = _dim_ref(finding, "architect")
+    sides = [
+        f"vendor {vendor + ' ' if vendor else ''}{_short(finding.get('vendor'), 40)}",
+        (
+            f"architect {architect + ' ' if architect else ''}"
+            f"{_short(finding.get('architect'), 40)}"
+        ),
+    ]
+    status = _FOUND_STATUS.get(group, "listed")
+    return (
+        f"- p{finding.get('page')}: {_short(finding.get('item'), 80)} ({'; '.join(sides)}): "
+        f"{status} [{finding.get('id')}]"
+    )
+
+
+def found_on_pages(findings: Iterable[Mapping[str, Any]], pages: Iterable[int]) -> str:
+    """What this check already recorded on `pages`, for a look-again reader's brief: the Right and
+    Wrong items not to report again (`ALREADY_FOUND`), then the Not-compared ones still open
+    (`STILL_OPEN`); an item for GV's reviewer only is not listed. Empty when nothing is."""
+    from app.review.assistant.classification import internal
+    from app.review.assistant.proof import proof_group
+
+    wanted = set(pages)
+    done: list[str] = []
+    still: list[str] = []
+    for finding in findings:
+        if finding.get("page") not in wanted or internal(finding):
+            continue
+        # Settled (a proved Wrong, a Right, a GV-rule note) is done; the rest is still open.
+        group = proof_group(finding)
+        settled = group in ("clouded", "right", "rule_note", "dismissed")
+        (done if settled else still).append(_found_line(finding, group))
+    parts: list[str] = []
+    for head, lines in ((ALREADY_FOUND, done), (STILL_OPEN, still)):
+        if not lines:
+            continue
+        shown = lines[:_FOUND_LINES]
+        if len(lines) > len(shown):
+            shown.append(f"- and {len(lines) - len(shown)} more on these pages")
+        parts.append("\n".join([head, *shown]))
+    return "\n\n".join(parts)
 
 
 def leads_on_pages(document: Mapping[str, Any] | None, pages: Iterable[int]) -> list[str]:

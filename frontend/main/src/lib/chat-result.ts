@@ -93,13 +93,15 @@ export interface DrawingNeeded {
   page: number;
   /** Why, in plain words ("no drawing of the same item was found in the architect's file"). */
   why: string | null;
+  /** One item, one card: what readers reported on this page that only says the same, kept as evidence. */
+  folded?: { finding_id: string; item?: string | null; vendor?: string | null }[];
 }
 
 /** The vendor pages the server says have no architect drawing in this upload, in page order. */
 export function drawingNeededPages(coverage: ChatCoverage | null | undefined): DrawingNeeded[] {
   return (coverage?.pages ?? [])
     .filter((page) => page.drawing_needed === true)
-    .map((page) => ({ page: page.page, why: page.drawing_needed_why?.trim() || null }))
+    .map((page) => ({ page: page.page, why: page.drawing_needed_why?.trim() || null, ...(page.folded?.length ? { folded: [...page.folded] } : {}) }))
     .sort((a, b) => a.page - b.page);
 }
 
@@ -143,7 +145,7 @@ export function isDrawingNeededItem(finding: Pick<ChatFinding, 'id'>): boolean {
  * page's title, and why. Never sent to the server (no decision is ever saved on one).
  */
 export function drawingNeededItems(needed: readonly DrawingNeeded[], titles: PageTitles | null | undefined): ChatFinding[] {
-  return needed.map(({ page, why }) => {
+  return needed.map(({ page, why, folded }) => {
     const heading = pageHeading(page, titles);
     return {
       id: `${DRAWING_NEEDED_ID}${page}`,
@@ -157,6 +159,7 @@ export function drawingNeededItems(needed: readonly DrawingNeeded[], titles: Pag
       verified: false,
       source: 'architect',
       proof: { group: 'not_compared', reason: why, settle: 'the architect’s drawing of this item' },
+      ...(folded?.length ? { same_item: { copies: folded.map((copy) => ({ ...copy, group: 'not_compared' })) } } : {}),
     } satisfies ChatFinding;
   });
 }
