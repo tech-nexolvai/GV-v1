@@ -51,6 +51,7 @@ from typing import Any, Final, Literal
 from app.review.assistant import (
     check_record,
     classification,
+    dim_ends,
     likely_problems,
     missing_items,
     rule_notes,
@@ -412,6 +413,8 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
         return False  # an AI-grouped string: only code's geometry proves the parts are one chain
     if classification.architect_conflict(finding) is not None:
         return False  # the architect prints the vendor's value, or not the "should be" (#1802)
+    if dim_ends.unlike_reason(finding) is not None:
+        return False  # the two dimensions measure between different kinds of points (fix 3)
     if not _read_by_code(finding):
         return False
     return not needs_pairing(finding) or pairing_proved(finding)
@@ -507,6 +510,8 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
     if classification.same_item_conflict(finding) is not None:
         return "not_compared"  # its copies disagree on the architect's size (`one_card`)
     # The whole-drawing look found it and code could not prove it (2026-10-23): please check.
+    if dim_ends.unlike_reason(finding) is not None:
+        return "not_compared"  # never a Likely problem on two unlike dimensions (fix 3)
     return "likely_problem" if likely_problems.likely(finding) else "not_compared"
 
 
