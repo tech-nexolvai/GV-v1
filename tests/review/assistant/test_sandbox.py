@@ -14,7 +14,9 @@ backend is missing; the Docker ones need the built `gv-assistant-sandbox` image)
 - `auto` never falls back to macOS `sandbox-exec` (security audit 2026-10-18): without Docker there
   is no shell; `sandbox-exec` runs only when `macos` is named;
 - disk: a 300 MB write fails cleanly at the file-size limit, and a command that fills the writable
-  folders past their limit is stopped with a plain line (the next command still runs).
+  folders past their limit is stopped with a plain line (the next command still runs);
+- PDF text: pdfplumber in the sandbox reads a label a PDF stores as `(15 1\\/2")` as `15 1/2"`,
+  as the app's own readers do (#1921), from a made-up PDF.
 
 All file names and contents here are made up.
 """
@@ -23,10 +25,11 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -34,6 +37,7 @@ from app.review.assistant import sandbox as sandbox_module
 from app.review.assistant.sandbox import (
     MAX_FILE_BYTES,
     MAX_OUTPUT_CHARS,
+    PYTHON_STARTUP,
     SCRATCH,
     UPLOADS,
     DockerSandbox,
@@ -44,8 +48,11 @@ from app.review.assistant.sandbox import (
     docker_image_ready,
     folder_bytes,
     open_sandbox,
+    python_startup,
     safe_file_name,
 )
+from extraction import pdf_strings
+from tests.extraction.test_pdf_strings import _pdf
 
 _MAC = sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists()
 
@@ -176,11 +183,79 @@ def test_docker_command_line_keeps_the_locks(workspace: Workspace) -> None:
         f"--ulimit fsize={MAX_FILE_BYTES}",
         f"source={workspace.work},target={UPLOADS},readonly",
         f"source={workspace.out},target={SCRATCH}",
+        f"source={workspace.root / 'python'},target={PYTHON_STARTUP},readonly",
     ):
         assert lock in joined
     assert argv[-3:] == ["bash", "-c", f"pdfinfo {UPLOADS}/x.pdf"]
-    # No host environment is passed in: only the one HOME for the container's user.
-    assert [argv[i + 1] for i, item in enumerate(argv) if item == "--env"] == [f"HOME={SCRATCH}"]
+    # No host environment is passed in: only HOME for the container's user, and where its Python
+    # finds the start-up file.
+    assert [argv[i + 1] for i, item in enumerate(argv) if item == "--env"] == [
+        f"HOME={SCRATCH}",
+        f"PYTHONPATH={PYTHON_STARTUP}",
+    ]
+
+
+# ---- PDF text with an escaped slash (#1921) ------------------------------------------------------
+
+#: A made-up label as some CAD programs store it: every `/`, `[` and `]` behind a backslash.
+_ESCAPED_LABEL: Final = rb'BT /F1 10 Tf 1 0 0 1 20 100 Tm (15 1\/2" \[394mm\]) Tj ET'
+_READ_WITH_PDFPLUMBER: Final = (
+    "import pdfplumber; print(pdfplumber.open('{path}').pages[0].extract_text())"
+)
+
+
+@pytest.fixture
+def escaped() -> Any:
+    space = Workspace.create([("Made-up escaped.pdf", _pdf(_ESCAPED_LABEL))])
+    yield space
+    space.close()
+
+
+def test_the_sandbox_python_starts_with_the_escaped_text_fix(escaped: Workspace) -> None:
+    folder = python_startup(escaped)
+    startup = folder / "sitecustomize.py"
+    assert startup.read_text() == Path(pdf_strings.__file__).read_text()
+    assert not startup.stat().st_mode & 0o222
+    # A changed fix is written again; an unchanged one is left as it is.
+    startup.chmod(0o644)
+    startup.write_text("# an older copy\n")
+    assert python_startup(escaped) == folder
+    assert startup.read_text() == Path(pdf_strings.__file__).read_text()
+    assert [path.name for path in folder.iterdir()] == ["sitecustomize.py"]
+
+
+def test_python_started_like_the_sandbox_reads_the_escaped_slash(
+    escaped: Workspace, tmp_path: Path
+) -> None:
+    """This test's own Python has the fix (`app` imports it); a fresh one, started from an empty
+    folder with only the sandbox's `PYTHONPATH`, has nothing of the app's but the start-up file."""
+    pdf = escaped.work / "Made-up escaped.pdf"
+    done = subprocess.run(
+        [sys.executable, "-c", _READ_WITH_PDFPLUMBER.format(path=pdf)],
+        cwd=tmp_path,
+        env={
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "PYTHONPATH": str(python_startup(escaped)),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    assert done.stdout.strip() == '15 1/2" [394mm]'
+
+
+def test_a_command_in_the_sandbox_reads_the_escaped_slash(escaped: Workspace) -> None:
+    pdf = f"{UPLOADS}/Made-up escaped.pdf"
+    for sandbox in _backends(escaped):
+        result = sandbox.run(f'python3 -c "{_READ_WITH_PDFPLUMBER.format(path=pdf)}"')
+        assert result.output.strip() == '15 1/2" [394mm]', sandbox.kind
+        result = sandbox.run(
+            f"python3 -c \"import pypdf; print(pypdf.PdfReader('{pdf}').pages[0].extract_text())\""
+        )
+        assert result.output.strip() == '15 1/2" [394mm]', sandbox.kind
+        if sandbox.kind == "docker":
+            assert sandbox.run(f"pdftotext '{pdf}' -").output.strip() == '15 1/2" [394mm]'
 
 
 # ---- no silent fallback (security audit 2026-10-18) ----------------------------------------------
