@@ -1335,10 +1335,11 @@ def carried_done(coverage: Mapping[str, Any] | None) -> frozenset[int]:
 
 
 def unpaired_note(note: str) -> bool:
-    """Whether a coverage note is the final "no architect drawing found" one (#1885)."""
-    from app.review.assistant.full_check_plan import UNPAIRED_NOTE
+    """Whether a coverage note is the final "no architect drawing found" one (#1885), or the final
+    "pairing unsure" one (the matcher's pick code could not confirm)."""
+    from app.review.assistant.full_check_plan import UNPAIRED_NOTE, UNSURE_NOTE
 
-    return note.startswith(UNPAIRED_NOTE.split("{", 1)[0].strip())
+    return any(note.startswith(n.split("{", 1)[0].strip()) for n in (UNPAIRED_NOTE, UNSURE_NOTE))
 
 
 def reopened(
@@ -1760,9 +1761,18 @@ class _Run:
         if not left:
             return None
         lone = self._not_pairable()
-        alone = [page for page in left if page in lone]
+        unsure = self._unsure_pages()
+        picks = [page for page in left if page in unsure]
+        alone = [page for page in left if page in lone and page not in unsure]
         others = [page for page in left if page not in lone]
         parts: list[str] = []
+        if picks:
+            # The architect's drawing is in the upload: a person confirms which page it is.
+            parts.append(
+                f"{len(picks)} vendor {'page was' if len(picks) == 1 else 'pages were'} not "
+                f"compared, pairing unsure: a person confirms which architect page shows "
+                f"{'it' if len(picks) == 1 else 'each'} ({_page_list(picks)})"
+            )
         if alone:
             # #1885: said apart; no more looks would compare them (no architect drawing).
             parts.append(
@@ -1823,6 +1833,13 @@ class _Run:
             engine.book.set_coverage({"pages": pages}, "code")
             engine._show_coverage()
 
+    def _unsure_pages(self) -> frozenset[int]:
+        """The unpaired pages whose AI page matcher pick code could not confirm ("pairing
+        unsure"): their architect drawing is in the upload."""
+        from app.review.assistant.full_check_plan import unsure_words
+
+        return frozenset(p for p, why in self.unpaired.items() if unsure_words(why) is not None)
+
     def _not_pairable(self) -> frozenset[int]:
         """The pages no architect drawing is paired with this time (#1885): never sent to a gap
         closer, the lead review or a look-again to compare with an architect."""
@@ -1833,7 +1850,12 @@ class _Run:
         coverage ("Not compared with the architect: no architect drawing found for it (why)")
         and listed in the Not-compared list with what would settle it. A page whose drawing the
         page matcher had no answer for is not final: Continue asks again."""
-        from app.review.assistant.full_check_plan import UNPAIRED_NEEDS, unpaired_words
+        from app.review.assistant.full_check_plan import (
+            UNPAIRED_NEEDS,
+            UNSURE_NEEDS,
+            unpaired_words,
+            unsure_words,
+        )
 
         engine = self.engine
         across = engine._cross
@@ -1855,7 +1877,27 @@ class _Run:
             len(self.retry),
         )
         for page in sorted(self._not_pairable()):
-            plain = unpaired_words(self.unpaired.get(page) or self.retry.get(page) or "")
+            reason = self.unpaired.get(page) or self.retry.get(page) or ""
+            unsure = unsure_words(reason) if page in self.unpaired else None
+            if unsure is not None:
+                # The architect's drawing is in the upload: a person confirms the page, never
+                # "no architect drawing found".
+                engine.extra_gaps.append(
+                    {
+                        "page": page,
+                        "what": (
+                            f"Vendor page {page}: not compared with the architect, pairing "
+                            f"unsure: {unsure}"
+                        ),
+                        "why": "pairing_unsure",
+                        "needs": UNSURE_NEEDS,
+                        "scope": "set",
+                        "item": f"Page {page}: pairing unsure",
+                        "category": "other",
+                    }
+                )
+                continue
+            plain = unpaired_words(reason)
             engine.extra_gaps.append(
                 {
                     "page": page,
@@ -1882,7 +1924,9 @@ class _Run:
         from app.review.assistant.full_check_plan import (
             UNPAIRED_NOTE,
             UNPAIRED_RETRY_NOTE,
+            UNSURE_NOTE,
             unpaired_words,
+            unsure_words,
         )
 
         engine = self.engine
@@ -1890,7 +1934,11 @@ class _Run:
             {
                 "page": page,
                 "status": "not_comparable",
-                "note": UNPAIRED_NOTE.format(why=unpaired_words(why)),
+                "note": (
+                    UNSURE_NOTE.format(why=unsure)
+                    if (unsure := unsure_words(why)) is not None
+                    else UNPAIRED_NOTE.format(why=unpaired_words(why))
+                ),
             }
             for page, why in sorted(self.unpaired.items())
         ] + [
@@ -1911,7 +1959,8 @@ class _Run:
         from app.review.assistant.full_check_plan import mostly_unpaired
 
         total = len(self.vendor_pages)
-        alone = len(self._not_pairable() & self.vendor_pages)
+        # A "pairing unsure" page has its architect drawing in the upload: not counted here.
+        alone = len((self._not_pairable() - self._unsure_pages()) & self.vendor_pages)
         if not mostly_unpaired(alone, total):
             return None
         return (

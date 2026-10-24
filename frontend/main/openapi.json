@@ -4079,6 +4079,32 @@
             ],
             "title": "Pair Page"
           },
+          "pairing_unsure": {
+            "default": false,
+            "description": "Not compared: the AI page matcher was sure of an architect page and code could not confirm it. The architect's drawing is in the upload (never 'Drawing needed'): the result screen lists it under Not compared with both candidate pages. Worked out on read from the page's note.",
+            "title": "Pairing Unsure",
+            "type": "boolean"
+          },
+          "pairing_unsure_pages": {
+            "description": "pairing_unsure: each candidate architect page (its page, its file when the set has several architect files, its title), for a person to pick.",
+            "items": {
+              "$ref": "#/components/schemas/ChatUnsurePageOut"
+            },
+            "title": "Pairing Unsure Pages",
+            "type": "array"
+          },
+          "pairing_unsure_why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "pairing_unsure: the two candidate pages, as a person finds them ('architect page 9 (\"STANDARD KITCHEN\") or architect page 2?').",
+            "title": "Pairing Unsure Why"
+          },
           "status": {
             "enum": [
               "same",
@@ -11300,6 +11326,42 @@
           "unknowns"
         ],
         "title": "ChatUnknownsBlock",
+        "type": "object"
+      },
+      "ChatUnsurePageOut": {
+        "description": "One candidate architect page of a \"pairing unsure\" vendor page.",
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "title": "ChatUnsurePageOut",
         "type": "object"
       },
       "ChatVendorPageOut": {

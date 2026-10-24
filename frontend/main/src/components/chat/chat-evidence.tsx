@@ -10,7 +10,7 @@ import type { ChatFile, ChatFinding, FindingBox, FindingDecision, FindingDecisio
 import { architectOnVendorPage, drawerChips, drawerKind, howWeKnow, KIND_WORDS, noArchitectPictureWords, overallSpot, referenceSide, ringInCrop, ringOnCrop, ringOnPage, vendorOnly, vendorSide, type DrawerKind, type Ring } from '@/lib/chat-drawer';
 import { architectPage, decisionHelpRows, pageWords, referenceWhere, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
 import { isInternal, proofGroup, ruleNoteWords, type RuleNoteWords } from '@/lib/chat-proof';
-import { boxOnPicture, decisionsWords, isDrawingNeededItem, isRefusedString, itemParts, pageHeading, shortValue, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultTab } from '@/lib/chat-result';
+import { boxOnPicture, decisionsWords, isDrawingNeededItem, isPairingUnsureItem, isRefusedString, itemParts, pageHeading, pairingUnsureWords, shortValue, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultTab } from '@/lib/chat-result';
 import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { cn } from '@/lib/utils';
@@ -322,8 +322,8 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
   const finding = at >= 0 ? findings[at] : null;
   const previous = at > 0 ? findings[at - 1] : null;
   const next = at >= 0 && at < findings.length - 1 ? findings[at + 1] : null;
-  const needed = finding ? isDrawingNeededItem(finding) : false;
-  // A Drawing-needed item is a page, not a finding: nothing is ever decided on it.
+  const needed = finding ? isDrawingNeededItem(finding) || isPairingUnsureItem(finding) : false;
+  // A Drawing-needed or pairing-unsure item is a page, not a finding: nothing is ever decided on it.
   const decision = finding && decisionFor && !needed ? decisionFor(finding) : null;
   const laid = decision ? (decision.saved ?? (decision.decision ? { decision: decision.decision } : null)) : finding?.decision ?? null;
   const group = finding ? proofGroup(finding, laid) : null;
@@ -527,6 +527,7 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
   const part = kind === 'clouded' ? wrongPartWords(finding) : null;
   const tell = part ? `Change the ${part.part} part to ${part.should}${part.overall ? `: the ${part.overall} overall is right` : ''}.` : kind === 'clouded' ? reviewerWords(finding).tell : null;
   const page = vendorBox?.page ?? finding.page;
+  if (isPairingUnsureItem(finding)) return <PairingUnsure finding={finding} heading={heading} pagePicture={pagePicture} />;
   // The vendor's side is its own file's page: a set with two vendor files (rounds) has another.
   const vendorWhere = whereOf(vendorBox, true);
 
@@ -683,6 +684,58 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
           {chips.map((chip) => <li key={chip} className="rounded-full border px-3 py-1 text-[12.5px] text-muted-foreground">{chip}</li>)}
         </ul>
       )}
+    </div>
+  );
+}
+
+/** A "pairing unsure" page: the vendor's whole page beside each candidate architect page, for a person to pick (nothing is decided here). */
+function PairingUnsure({ finding, heading, pagePicture }: { finding: ChatFinding; heading: { title: string | null; project?: string | null }; pagePicture: PagePicture | null }) {
+  const pages = finding.unsure_pages ?? [];
+  const words = pairingUnsureWords(pages);
+  return (
+    <div data-slot="chat-evidence-results" data-unsure="true" className="grid min-h-0 flex-1 content-start gap-5 overflow-y-auto px-6 py-5 max-md:px-4">
+      <div className="grid min-w-0 gap-1">
+        <p aria-hidden="true" className="flex min-w-0 flex-wrap gap-x-2 text-[12.5px] text-muted-foreground">
+          <span className="num">p.{finding.page}</span>
+          {heading.title && <span>· {heading.title}</span>}
+          {heading.project && <span>· {heading.project}</span>}
+        </p>
+        <SheetTitle className="text-[21px] leading-[28px] font-semibold tracking-[-0.01em] break-words max-md:text-[19px] max-md:leading-[26px]">
+          {words.title}
+          <span className="sr-only"> · vendor page {finding.page}</span>
+        </SheetTitle>
+      </div>
+      <section aria-label="How we know" data-slot="chat-evidence-how" className="grid min-w-0 gap-2 rounded-xl bg-muted/60 px-4 py-3.5">
+        <h3 className="text-[13px] font-semibold">Why the app does not pick</h3>
+        <ol className="grid list-decimal gap-1 pl-5 text-[13.5px] leading-[21px] text-muted-foreground marker:text-muted-foreground">
+          {words.steps.map((step) => <li key={step} className="pl-1">{step}</li>)}
+        </ol>
+      </section>
+      <div data-slot="chat-evidence-pair" className="grid min-w-0 gap-3 sm:grid-cols-2">
+        <figure data-slot="chat-evidence-side" data-side="vendor" className="grid min-w-0 content-start self-start overflow-hidden rounded-xl border">
+          <figcaption className="border-b px-3.5 py-2.5 text-[13px] text-muted-foreground">The vendor’s drawing</figcaption>
+          <div className="p-2">
+            {pagePicture ? <ZoomPane src={pagePicture(finding.page)} label={`Vendor page ${finding.page}`} ring={null} inner={null} tone="neutral" focus={false} frameClassName="h-[300px] max-md:h-[220px]" /> : <NoPicture />}
+          </div>
+          <p className="border-t px-3.5 py-2 text-xs text-muted-foreground">Vendor page <span className="num">{finding.page}</span> · whole page</p>
+        </figure>
+        <div data-slot="chat-evidence-candidates" className="grid min-w-0 content-start gap-3">
+          {pages.length === 0 && <div data-slot="chat-evidence-missing" className="grid h-[300px] place-items-center rounded-xl border border-dashed px-6 text-center text-[13px] text-muted-foreground max-md:h-[160px]">{finding.proof?.reason ?? 'Which architect page shows this item is not known.'}</div>}
+          {pages.map((one) => {
+            const name = `Architect page ${one.page}${one.title ? ` — ${one.title}` : ''}`;
+            return (
+              <figure key={`${one.file ?? ''}#${one.page}`} data-slot="chat-evidence-side" data-side="architect" data-page={one.page} className="grid min-w-0 content-start overflow-hidden rounded-xl border">
+                <figcaption className="border-b px-3.5 py-2.5 text-[13px] break-words text-foreground">{name}</figcaption>
+                <div className="p-2">
+                  {pagePicture ? <ZoomPane src={pagePicture(one.page, one.file ? { file: one.file } : { side: 'architect' })} label={name} ring={null} inner={null} tone="neutral" focus={false} frameClassName="h-[220px] max-md:h-[190px]" /> : <NoPicture />}
+                </div>
+                <p className="border-t px-3.5 py-2 text-xs break-words text-muted-foreground">Architect page <span className="num">{one.page}</span>{one.file ? ` of ${one.file.replace(/\.pdf$/i, '')}` : ''} · whole page</p>
+              </figure>
+            );
+          })}
+        </div>
+      </div>
+      <SheetDescription className="sr-only">{words.steps.join(' ')}</SheetDescription>
     </div>
   );
 }

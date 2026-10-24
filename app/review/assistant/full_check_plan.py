@@ -50,7 +50,7 @@ from app.review.assistant.plan_check import (
     with_assumptions,
 )
 from app.review.assistant.product_scope import ProductScope, outside_unit
-from app.review.assistant.simple_check.pairing import UNPAIRED
+from app.review.assistant.simple_check.pairing import PAIRING_UNSURE, UNPAIRED
 
 __all__ = [
     "DRAWN_JOB_CAP_MICROS",
@@ -63,6 +63,8 @@ __all__ = [
     "UNPAIRED_NOTE",
     "UNPAIRED_RETRY_NOTE",
     "UNPAIRED_WARN_SHARE",
+    "UNSURE_NEEDS",
+    "UNSURE_NOTE",
     "CrossPairs",
     "FanOutPlan",
     "HelperJob",
@@ -80,6 +82,8 @@ __all__ = [
     "scoped_plan",
     "unpaired_note_why",
     "unpaired_words",
+    "unsure_note_why",
+    "unsure_words",
     "wait_for_page_map",
     "wait_for_reading",
     "with_lenses",
@@ -725,6 +729,15 @@ UNPAIRED_RETRY_NOTE: Final = (
     "not compared with the architect: no architect drawing paired with it yet ({why}); Continue "
     "asks again"
 )
+#: A page the AI page matcher paired and code could not confirm (`pairing.PAIRING_UNSURE`): its
+#: coverage note names both candidate pages. Final like `UNPAIRED_NOTE`, but never "drawing needed":
+#: the architect's drawing is in the upload.
+UNSURE_NOTE: Final = "Not compared with the architect: pairing unsure ({why})"
+#: Its line in the Not-compared list: what would settle it.
+UNSURE_NEEDS: Final = (
+    "a person to confirm which architect page shows this item and compare it: the drawing is in "
+    "the upload, but the pairing could not be confirmed"
+)
 #: An unpaired page's line in the Not-compared list (the set's rows): what would settle it.
 UNPAIRED_NEEDS: Final = (
     "the architect's drawing of this item: upload it, or check that the architect's file is for "
@@ -773,9 +786,23 @@ _UNPAIRED_PLAIN: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
 _UNPAIRED_DEFAULT: Final = "the architect's drawing of this item could not be identified for sure"
 
 
+_UNSURE: Final = re.compile(rf"{PAIRING_UNSURE}: ([^?]{{1,2000}}\?)")
+
+
+def unsure_words(reason: str | None) -> str | None:
+    """The two candidate pages of a "pairing unsure" reason, as a person finds them ('architect
+    page 9 ("STANDARD KITCHEN") or architect page 2?'), else `None`."""
+    found = _UNSURE.search(reason or "")
+    return found.group(1) if found else None
+
+
 def unpaired_words(reason: str) -> str:
     """A pairing reason (`pairing.UNPAIRED`: ...) in plain words: "no drawing of the same item was
-    found in the architect's file", never the matcher's or code's working words."""
+    found in the architect's file", never the matcher's or code's working words; a "pairing
+    unsure" one names its two candidate pages (`unsure_words`)."""
+    unsure = unsure_words(reason)
+    if unsure is not None:
+        return f"{PAIRING_UNSURE}: {unsure}"
     for pattern, words in _UNPAIRED_PLAIN:
         if pattern.search(reason or ""):
             return words
@@ -792,6 +819,40 @@ def unpaired_note_why(note: str | None) -> str | None:
         return None
     why = text[len(head) :].split(")", 1)[0].strip()
     return why or _UNPAIRED_DEFAULT
+
+
+def unsure_note_why(note: str | None) -> str | None:
+    """The two candidate pages of a page's "pairing unsure" coverage note (`UNSURE_NOTE`), else
+    `None`. The result screen lists it under Not compared, never under "Drawing needed"."""
+    head = UNSURE_NOTE.split("{", 1)[0]
+    text = " ".join(str(note or "").split())
+    if not text.startswith(head):
+        return None
+    return text[len(head) :].rsplit(")", 1)[0].strip() or None
+
+
+#: One candidate page in a "pairing unsure" reason, as `worklist._human_ids` words it: 'architect
+#: page 14', 'architect page 14 of B.pdf', then its title '("SAMPLE UNIT")' or its view.
+_UNSURE_PAGE: Final = re.compile(
+    r'architect page (\d+)(?: of (.+?\.pdf))?(?: \("([^"]*)"\)|, view "([^"]*)")?',
+    re.IGNORECASE,
+)
+
+
+def unsure_pages(why: str | None) -> list[dict[str, Any]]:
+    """The candidate architect pages a "pairing unsure" reason names, in its order, each once:
+    `{"page", "file", "title"}` (`file` only when the set has several architect files; `title`
+    the set index's title or the view's, when named). The result screen shows each page for a
+    person to pick."""
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str | None, int]] = set()
+    for found in _UNSURE_PAGE.finditer(str(why or "")):
+        page, file = int(found.group(1)), found.group(2)
+        if (file, page) in seen:
+            continue
+        seen.add((file, page))
+        out.append({"page": page, "file": file, "title": found.group(3) or found.group(4)})
+    return out
 
 
 def mostly_unpaired(unpaired: int, pages: int) -> bool:

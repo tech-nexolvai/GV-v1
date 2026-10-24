@@ -8,13 +8,14 @@ import type { ChatCoverage, ChatFile, ChatFinding, ChatPackageState, ChatReviewA
 import { chatPaths } from '@/lib/chat-api';
 import { categoriesPresent, categoryWords, sideLabels } from '@/lib/chat-findings';
 import { fileSize, openHref } from '@/lib/chat-messages';
-import {
+import { isPairingUnsureItem,
   byPage,
   commentNumber,
   decisionsWords,
   differenceWords,
   drawingNeededItems,
   drawingNeededPages,
+  pairingUnsureItems,
   drawingsRequestText,
   filesLine,
   headline,
@@ -119,7 +120,9 @@ export function FullCheckResult(props: FullCheckResultProps) {
   const needed = drawingNeededPages(coverage);
   const neededPages = new Set(needed.map((each) => each.page));
   const neededItems = drawingNeededItems(needed, pageTitles);
-  const [tab, setTab] = useState<ResultTab>(groups.wrong.length ? 'wrong' : groups.likely.length ? 'likely_problem' : groups.ruleNotes.length ? 'rule_note' : needed.length ? 'drawing_needed' : groups.notCompared.length ? 'not_compared' : 'right');
+  const unsureItems = pairingUnsureItems(coverage, pageTitles);
+  const notCompared = [...unsureItems, ...groups.notCompared];
+  const [tab, setTab] = useState<ResultTab>(groups.wrong.length ? 'wrong' : groups.likely.length ? 'likely_problem' : groups.ruleNotes.length ? 'rule_note' : needed.length ? 'drawing_needed' : notCompared.length ? 'not_compared' : 'right');
   const [category, setCategory] = useState<FindingCategory | null>(null);
   const [order, setOrder] = useState<ListOrder>('biggest');
   const [asking, setAsking] = useState(false);
@@ -130,7 +133,7 @@ export function FullCheckResult(props: FullCheckResultProps) {
     rule_note: groups.ruleNotes.length,
     drawing_needed: needed.length,
     right: groups.right.length + groups.dismissed.length,
-    not_compared: groups.notCompared.length,
+    not_compared: notCompared.length,
   };
   const listOf: Record<ResultTab, ChatFinding[]> = {
     wrong: groups.wrong,
@@ -138,7 +141,7 @@ export function FullCheckResult(props: FullCheckResultProps) {
     rule_note: groups.ruleNotes,
     drawing_needed: neededItems,
     right: [...groups.dismissed, ...groups.right],
-    not_compared: groups.notCompared,
+    not_compared: notCompared,
   };
   const tabs = resultTabs();
   const inTab = listOf[tab];
@@ -749,7 +752,8 @@ function PageHead({ heading, count, noDrawing }: { heading: ReturnType<typeof pa
 function CompactRow({ kind, finding, onOpen, underPage = false }: { kind: 'right' | 'rule_note' | 'not_compared' | 'dismissed'; finding: ChatFinding; onOpen: (findingId: string) => void; underPage?: boolean }) {
   const { thing } = itemParts(finding.item);
   // A vendor string code did not compare: its numbers are the AI's unproven reading, never shown as values (2026-10-23).
-  const refused = kind === 'not_compared' && isRefusedString(finding, 'not_compared');
+  // A pairing-unsure page has no value to show (its row names the candidate pages).
+  const refused = (kind === 'not_compared' && isRefusedString(finding, 'not_compared')) || isPairingUnsureItem(finding);
   const vendor = vendorValue(finding);
   const architect = finding.architect && !refused ? finding.architect.replace(/"/g, '″').replace(/'/g, '′') : null;
   const note = kind === 'rule_note' ? ruleNoteWords(finding) : null;

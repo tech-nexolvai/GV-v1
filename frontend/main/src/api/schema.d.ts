@@ -4603,6 +4603,22 @@ export interface components {
             /** Pair Page */
             pair_page?: number | null;
             /**
+             * Pairing Unsure
+             * @description Not compared: the AI page matcher was sure of an architect page and code could not confirm it. The architect's drawing is in the upload (never 'Drawing needed'): the result screen lists it under Not compared with both candidate pages. Worked out on read from the page's note.
+             * @default false
+             */
+            pairing_unsure: boolean;
+            /**
+             * Pairing Unsure Pages
+             * @description pairing_unsure: each candidate architect page (its page, its file when the set has several architect files, its title), for a person to pick.
+             */
+            pairing_unsure_pages?: components["schemas"]["ChatUnsurePageOut"][];
+            /**
+             * Pairing Unsure Why
+             * @description pairing_unsure: the two candidate pages, as a person finds them ('architect page 9 ("STANDARD KITCHEN") or architect page 2?').
+             */
+            pairing_unsure_why?: string | null;
+            /**
              * Status
              * @enum {string}
              */
@@ -7728,6 +7744,18 @@ export interface components {
             type: "unknowns";
             /** Unknowns */
             unknowns: components["schemas"]["ChatUnknownOut"][];
+        };
+        /**
+         * ChatUnsurePageOut
+         * @description One candidate architect page of a "pairing unsure" vendor page.
+         */
+        ChatUnsurePageOut: {
+            /** File */
+            file?: string | null;
+            /** Page */
+            page: number;
+            /** Title */
+            title?: string | null;
         };
         /**
          * ChatVendorPageOut
