@@ -1159,6 +1159,8 @@ _NO_RETURN: Final = re.compile(
 )
 _RIGHT_END: Final = re.compile(r"\bright\b", re.IGNORECASE)
 _LEFT_END: Final = re.compile(r"\bleft\b", re.IGNORECASE)
+#: A size longer than this both ways in the box may be a real L-shaped top's two legs (inches).
+_RETURN_LEG_IN: Final = Fraction(30)
 #: The least a top's printed length is (inches) for its ends to say where the top stops.
 _TOP_MIN_IN: Final = Fraction(12)
 WALL_RETURN: Final = (
@@ -1194,7 +1196,16 @@ def _wall_return_claim(item: _Item, ctx: EscalationContext) -> str | None:
         if isinstance(label.get("box"), Sequence) and len(label["box"]) == 4
     }
     right, left = bool(_RIGHT_END.search(claim)), bool(_LEFT_END.search(claim))
-    for span in page.spans.values():
+    in_box = [
+        span
+        for span in page.spans.values()
+        if span.id in boxes and _inside(_centre(boxes[span.id]), box, 0.0)
+    ]
+    if any(span.inches > _RETURN_LEG_IN for span in in_box if span.axis != "h") and any(
+        span.inches > _RETURN_LEG_IN for span in in_box if span.axis == "h"
+    ):
+        return None  # sizes both ways longer than a top's depth: a real return leg may be there
+    for span in in_box:
         if span.inches < _TOP_MIN_IN or span.id not in boxes:
             continue
         if not _inside(_centre(boxes[span.id]), box, 0.0):
@@ -1273,6 +1284,17 @@ def _ends_step(
         per_end = Fraction(getattr(vendor_page.field_cuts, "per_end", 1) or 1)
         without = vendor.span.inches - cuts_in * per_end
         if without == architect.span.inches:
+            if finding.get("status") != "different":
+                return None  # the same once its field cut is off: the item stays as it was
+            # Called a difference, but it is the field cut: never a red (GV's settled rule).
+            why = (
+                f"the vendor's {format_inches(vendor.span.inches)} includes GV's "
+                f"{format_inches(per_end)} field cut at {cuts_in} wall end(s); without it the top "
+                f"is {format_inches(without)}, the same as the architect's"
+            )
+            finding[dim_ends.FIELD] = dim_ends.record(finding, vendor, architect, "unlike", why)
+            item.changed = True
+            item.note("ends", "no_change", why)
             return None
         why = (
             f"{why}; without its field cut the vendor's top is "
@@ -1314,12 +1336,31 @@ def _before_ladder(
     early: set[str] = set()
     for finding in live:
         item = _Item(finding)
-        dropped = _ends_step(item, ctx, live, result)
+        try:
+            dropped = _ends_step(item, ctx, live, result)
+        except Exception:  # noqa: BLE001 - the item stays as it was; the other steps go on
+            _log.exception("escalation: like-for-like step failed on %s", finding.get("id"))
+            dropped = None
         if dropped is not None:
             result.absorbed[str(finding["id"])] = dropped
             result.settled["ends"] = result.settled.get("ends", 0) + 1
             result.tried += 1
             early.add(str(finding["id"]))
+            continue
+        if item.changed and finding.get("created_by") == sink_centre.CREATED_BY:
+            # The sink-centre check compared it (or said why not): nothing else to try on it.
+            item.finding.update(judged(item.finding))
+            group = proof.proof_group(item.finding)
+            item.outcome = "right" if group == "right" else None
+            result.settled["ends"] = result.settled.get("ends", 0) + 1
+            item.finding["escalation"] = {
+                "outcome": item.outcome or "undecided",
+                "steps": item.steps,
+            }
+            result.log[str(item.finding["id"])] = item.steps
+            result.changed.append(item.finding)
+            result.tried += 1
+            early.add(str(item.finding["id"]))
             continue
         _sticker_step(item, ctx)
         if ctx.stop is None or not ctx.stop():

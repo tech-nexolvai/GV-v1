@@ -123,12 +123,12 @@ def reference_plan(*, centred: bool = True) -> Drawing:
     """The reference: 12" + 20" sink base + 12" with their tags, the 45" top 1" past the last
     cabinet, and the sink drawn (centred on the base, or 3" off)."""
     d = Drawing("architect", 3.0)
-    d.dim(0, 12, 300.0, 12)
-    d.dim(12, 32, 300.0, 20)
-    d.dim(32, 44, 300.0, 12)
+    d.dim(0, 45, 310.0, 45)
+    d.dim(0, 12, 350.0, 12)
+    d.dim(12, 32, 350.0, 20)
+    d.dim(32, 44, 350.0, 12)
     for text, middle in (("VDB12-ADA", 6.0), ("VSB20-ADA", 22.0), ("VDB12-ADA", 38.0)):
-        d.phrase(text, d.x(middle), 284.0)
-    d.dim(0, 45, 340.0, 45)
+        d.phrase(text, d.x(middle), 334.0)
     d.rect(d.x(0), 370.0, d.x(45), 440.0)  # the top in plan
     sink = 22.0 if centred else 25.0
     d.rect(d.x(sink - 7), 385.0, d.x(sink + 7), 415.0)
@@ -154,10 +154,10 @@ def test_each_end_is_named_by_what_it_lands_on() -> None:
     assert top is not None and "wall" in top.low.kinds  # the 39" top's wall end
 
     reference = _page(reference_plan(), REFERENCE, 1)
-    base = reference.ends("D2")
+    base = reference.ends("D3")
     assert base is not None and base.low.kinds == {"cabinet_face"} == base.high.kinds
-    assert reference.cabinets["D2"].sink_base and not reference.cabinets["D1"].sink_base
-    ref_top = reference.ends("D4")
+    assert reference.cabinets["D3"].sink_base and not reference.cabinets["D2"].sink_base
+    ref_top = reference.ends("D1")
     assert ref_top is not None and ref_top.low.kinds == {"cabinet_face"}
     assert {"overhang_end", "top_edge"} <= ref_top.high.kinds
 
@@ -176,7 +176,7 @@ def test_an_end_code_cannot_name_proves_nothing() -> None:
 def test_a_sink_centre_is_never_compared_with_a_cabinet_width() -> None:
     vendor = _page(vendor_plan(22, 24)[0], VENDOR, 1, vendor_plan(22, 24)[1])
     reference = _page(reference_plan(), REFERENCE, 1)
-    verdict, why = dim_ends.alike(vendor.ends("D3"), reference.ends("D2"))  # type: ignore[arg-type]
+    verdict, why = dim_ends.alike(vendor.ends("D3"), reference.ends("D3"))  # type: ignore[arg-type]
     assert verdict == "unlike"
     assert why == (
         "the vendor's 22\" measures from the field-cut end of the top to the sink's centre line; "
@@ -188,7 +188,7 @@ def test_the_field_cut_relates_the_overall_to_the_reference_top() -> None:
     vendor, cuts = vendor_plan(23, 23)
     page = _page(vendor, VENDOR, 1, cuts)
     reference = _page(reference_plan(), REFERENCE, 1)
-    overall, top = page.ends("D1"), reference.ends("D4")
+    overall, top = page.ends("D1"), reference.ends("D1")
     assert overall is not None and top is not None
     assert dim_ends.alike(overall, top)[0] == "unlike"  # a field-cut end against a cabinet side
     assert dim_ends.field_cut_relief(overall, top) == 1  # 46" less one field cut = 45"
@@ -198,7 +198,7 @@ def test_the_field_cut_relates_the_overall_to_the_reference_top() -> None:
 
 def test_a_mirrored_pair_is_read_the_other_way_round() -> None:
     reference = _page(reference_plan(), REFERENCE, 1)
-    base = reference.ends("D2")
+    base = reference.ends("D3")
     assert base is not None
     sink = dim_ends.Ends(
         dim_ends.Span("V1", "h", 0, 0, 10, Fraction(20)),
@@ -346,7 +346,7 @@ def _ctx(left: float, right: float, **drawings: Drawing) -> EscalationContext:
 
 
 def test_a_sink_offset_set_against_the_base_width_goes_to_the_sink_centre_check() -> None:
-    result = escalate([_finding("D3", "D2", '22"', '20"')], _ctx(22, 24))
+    result = escalate([_finding("D3", "D3", '22"', '20"')], _ctx(22, 24))
     found = judged(result.changed[0])
     assert found["created_by"] == sink_centre.CREATED_BY
     assert proof.proof_group(found) == "likely_problem"  # never red: no track record yet
@@ -355,7 +355,7 @@ def test_a_sink_offset_set_against_the_base_width_goes_to_the_sink_centre_check(
 
 
 def test_a_sink_offset_set_against_another_cabinet_still_goes_to_the_sink_centre_check() -> None:
-    result = escalate([_finding("D3", "D1", '22"', '12"', status="same")], _ctx(22, 24))
+    result = escalate([_finding("D3", "D2", '22"', '12"', status="same")], _ctx(22, 24))
     found = judged(result.changed[0])
     assert found["created_by"] == sink_centre.CREATED_BY
     assert proof.proof_group(found) == "likely_problem"
@@ -364,7 +364,7 @@ def test_a_sink_offset_set_against_another_cabinet_still_goes_to_the_sink_centre
 def test_an_unlike_record_says_why_and_blocks_right_and_red() -> None:
     reference = reference_plan()
     reference.phrases = [p for p in reference.phrases if p["text"] != "SINK"]  # no sink drawn
-    finding = _finding("D3", "D2", '22"', '22"', status="same")
+    finding = _finding("D3", "D3", '22"', '22"', status="same")
     result = escalate([finding], _ctx(22, 24, reference=reference))
     found = judged(result.changed[0])
     assert proof.proof_group(found) == "not_compared"
@@ -381,7 +381,7 @@ def test_an_unlike_record_says_why_and_blocks_right_and_red() -> None:
 
 
 def test_a_field_cut_overall_equal_to_the_reference_top_stays_as_it_was() -> None:
-    finding = _finding("D1", "D4", '46"', '45"', status="same")
+    finding = _finding("D1", "D1", '46"', '45"', status="same")
     result = escalate([finding], _ctx(23, 23))
     assert all(f["id"] != "F1" or dim_ends.FIELD not in f for f in result.changed)
 
@@ -434,9 +434,107 @@ def test_an_l_shaped_top_that_is_the_wall_is_dropped_but_not_a_no_return_claim()
 
 
 def test_no_pages_reader_leaves_every_item_as_it_was() -> None:
-    finding = _finding("D3", "D2", '22"', '20"')
+    finding = _finding("D3", "D3", '22"', '20"')
     result = escalate([finding], EscalationContext(main_file=VENDOR))
     assert all(
         dim_ends.FIELD not in f and f.get("created_by") != "sink_centre" for f in result.changed
     )
     assert escalation.undecided({**finding, "created_by": sink_centre.CREATED_BY}) is False
+
+
+# ---- guards ------------------------------------------------------------------------------------------
+
+
+def test_a_chain_never_loops_on_a_dimension_shorter_than_a_point() -> None:
+    page = dim_ends.Page("x.pdf", 1, ppi=0.9)
+    page.spans = {
+        "A": dim_ends.Span("A", "h", 100.0, 0.0, 0.5, Fraction(1)),
+        "B": dim_ends.Span("B", "h", 100.0, 0.5, 30.0, Fraction(33)),
+    }
+    assert sink_centre._chain(page, "h", 0.0, 30.0, [100.0]) is None
+    assert sink_centre._chain(page, "h", 0.0, 60.0, [100.0]) is None
+
+
+def _end(*kinds: str) -> dim_ends.End:
+    return dim_ends.End(0.0, frozenset(kinds))
+
+
+def test_both_ways_round_with_different_answers_claims_nothing() -> None:
+    span = dim_ends.Span("V", "h", 0, 0, 10, Fraction(20))
+    vendor = sink_centre.VendorSink(
+        span,
+        dim_ends.Span("W", "h", 0, 10, 20, Fraction(26)),
+        _end("wall"),
+        _end("wall"),
+        0,
+        0,
+        Fraction(1),
+    )
+    base = sink_centre.Base(
+        dim_ends.Span("B", "h", 0, 0, 1, Fraction(20)),
+        "SB20",
+        dim_ends.Span("T", "h", 0, 0, 1, Fraction(46)),
+        _end("wall"),
+        _end("wall"),
+        Fraction(22),
+        (Fraction(12),),
+    )
+    # Read directly the sink is 2" off; read mirrored it is 4" off: both differ, so it may say so.
+    assert sink_centre.compare(vendor, base).outcome == "different"
+    centred_one_way = sink_centre.Base(
+        base.base, base.tag, base.top, _end("wall"), _end("wall"), Fraction(20), (Fraction(10),)
+    )
+    # Read directly the sink is on the centre, read mirrored it is 6" off: nothing is claimed.
+    assert sink_centre.compare(vendor, centred_one_way).outcome == "unsure"
+
+
+def test_a_long_size_both_ways_keeps_an_l_shaped_claim() -> None:
+    reference = Drawing("architect", 3.0)
+    reference.dim(0, 40, 300.0, 40)
+    right = reference.x(40)
+    reference.line((right, 200), (right, 290))
+    reference.line((right + 15, 190), (right + 15, 295))
+    reference.labels.append(
+        {
+            "id": "D9",
+            "text": '48"',
+            "inches": "48",
+            "box": [110, 240, 120, 260],
+            "side": "architect",
+            "orientation": "v",
+            "route": "text",
+            "scale_ok": True,
+            "dim_line": [[105, 160], [105, 304]],
+        }
+    )
+    claim = {
+        "id": "F6",
+        "page": 1,
+        "vs_page": 1,
+        "status": "check",
+        "source": "architect",
+        "item": "top shape",
+        "vendor": "plain rectangle top",
+        "architect": "L-shaped top with return at right end",
+        "created_by": "helper:1",
+        "arch_box": {"page": 1, "x0": 80, "y0": 150, "x1": 260, "y1": 320, "file": REFERENCE},
+    }
+    assert "F6" not in escalate([claim], _ctx(23, 23, reference=reference)).absorbed
+
+
+def test_a_difference_that_is_only_the_field_cut_is_never_red() -> None:
+    finding = _finding("D1", "D1", '46"', '45"', status="different")
+    result = escalate([finding], _ctx(23, 23))
+    found = judged(next(f for f in result.changed if f["id"] == "F1"))
+    assert proof.proof_group(found) == "not_compared"
+    assert "field cut" in str(proof.classified(found).why)
+
+
+def test_a_failing_ends_step_leaves_the_item_as_it_was(monkeypatch: Any) -> None:
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("made up")
+
+    monkeypatch.setattr(dim_ends, "alike", boom)
+    finding = _finding("D3", "D3", '22"', '20"')
+    result = escalate([finding], _ctx(22, 24))
+    assert all(f.get("created_by") != sink_centre.CREATED_BY for f in result.changed)

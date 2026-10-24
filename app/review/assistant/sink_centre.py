@@ -67,7 +67,7 @@ CREATED_BY: Final = "sink_centre"
 #: The finding's record of this check.
 FIELD: Final = "sink_centre"
 #: The reference draws the sink centred on its base: the cut-out's middle this close (inches).
-CENTRED_IN: Final = 0.5
+CENTRED_IN: Final = 0.25
 #: Two printed values this close are the same (a sixteenth).
 TOLERANCE: Final = Fraction(1, 16)
 #: The item's words.
@@ -130,7 +130,9 @@ class Compared:
 
 
 def _way(end: dim_ends.End) -> Way | None:
-    if end.kinds & {"field_cut_end", "wall", "cabinet_face"} and "overhang_end" not in end.kinds:
+    """A wall end (GV's field cut is added there, or a wall's face) or a free end (the top's edge
+    past the cabinets); a cabinet's side alone says neither (a top may stop flush at a free end)."""
+    if end.kinds & {"field_cut_end", "wall"} and "overhang_end" not in end.kinds:
         return "wall"
     if "overhang_end" in end.kinds:
         return "free"
@@ -208,18 +210,26 @@ def _chain(
     for row in sorted({round(s.row, 1) for s in candidates}):
         on_row = [s for s in candidates if abs(s.row - row) <= dim_ends.SAME_PT]
         place, parts = start, []
-        while abs(place - stop) > dim_ends.SAME_PT:
-            nxt = [s for s in on_row if abs(s.a - place) <= dim_ends.SAME_PT and s.b <= stop + 1]
-            if len(nxt) != 1:
+        for _step in range(len(on_row) + 1):
+            if abs(place - stop) <= dim_ends.SAME_PT:
                 break
+            nxt = [s for s in on_row if abs(s.a - place) <= dim_ends.SAME_PT and s.b <= stop + 1]
+            if len(nxt) != 1 or nxt[0].b <= place + dim_ends.SAME_PT:
+                break  # two dimensions start here, or one too short to step past: unsure
             parts.append(nxt[0].inches)
             place = nxt[0].b
-        else:
+        if abs(place - stop) <= dim_ends.SAME_PT:
             found = tuple(parts)
             if best is not None and sum(best) != sum(found):
                 return None  # two rows disagree: unsure
             best = found
     return best
+
+
+def _across(span: dim_ends.Span, box: tuple[float, float, float, float]) -> float:
+    """How far across from the dimension's line a box lies (0: the line runs through it)."""
+    near, far = (box[1], box[3]) if span.axis == "h" else (box[0], box[2])
+    return 0.0 if near <= span.row <= far else min(abs(span.row - near), abs(span.row - far))
 
 
 def reference_bases(page: dim_ends.Page) -> list[Base]:
@@ -233,6 +243,7 @@ def reference_bases(page: dim_ends.Page) -> list[Base]:
         if page.ppi <= 0 or not any(
             abs(((c[0] + c[2]) / 2 if base.axis == "h" else (c[1] + c[3]) / 2) - centre)
             <= CENTRED_IN * page.ppi
+            and _across(base, c) <= dim_ends.REACH_IN * page.ppi
             for c in page.cutouts
         ):
             continue  # the sink is not drawn centred on it (or not drawn): nothing to compare
@@ -251,8 +262,8 @@ def reference_bases(page: dim_ends.Page) -> list[Base]:
             if top.a > base.a + dim_ends.SAME_PT or top.b < base.b - dim_ends.SAME_PT:
                 continue
             ends = page.ends(top.id)
-            if ends is None or _way(ends.low) is None or _way(ends.high) is None:
-                continue
+            if ends is None or not (ends.low.kinds and ends.high.kinds):
+                continue  # the top's two ends must both be named by code
             parts = _chain(page, base.axis, top.a, base.a, rows)
             if parts is None:
                 continue
@@ -330,9 +341,23 @@ def compare(vendor: VendorSink, ref: Base) -> Compared:
             r_words,
             "the tops differ in length",
         )
-    if direct and (direct_told or not mirror or centred):
+    v_from_low = vendor.first.inches - cut * vendor.cuts_low
+
+    def same_way(mirrored: bool) -> bool:
+        return abs(v_from_low - (ref.from_high if mirrored else ref.from_low)) <= TOLERANCE
+
+    if direct and mirror and not centred:
+        # Both ways round fit what code knows of the ends: one is chosen only when the ends tell
+        # it alone, or when both ways give the same answer; else nothing is claimed.
+        if direct_told and not mirror_told:
+            mirror = False
+        elif mirror_told and not direct_told:
+            direct = False
+        elif same_way(False) != same_way(True):
+            direct = mirror = False
+    if direct:
         mirrored = False
-    elif mirror and (mirror_told or centred):
+    elif mirror:
         mirrored = True
     else:
         return Compared(
@@ -343,7 +368,6 @@ def compare(vendor: VendorSink, ref: Base) -> Compared:
             r_words,
             "the ends are not known",
         )
-    v_from_low = vendor.first.inches - cut * vendor.cuts_low
     v_from_high = vendor.second.inches - cut * vendor.cuts_high
     r_for_low = ref.from_high if mirrored else ref.from_low
     r_for_high = ref.from_low if mirrored else ref.from_high

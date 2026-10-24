@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import math
 import re
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -459,14 +460,38 @@ def _sink_named(phrases: Sequence[Mapping[str, Any]], box: Box) -> bool:
     return False
 
 
-def _covered(pieces: Sequence[tuple[float, float, float]], at: float, lo: float, hi: float) -> bool:
-    """Line work at `at` covers lo..hi (pieces joined; a gap of at most 0.6 pt)."""
-    place = lo
-    for p0, p1, where in sorted(p for p in pieces if abs(p[2] - at) <= 0.6):
-        if p0 > place + 0.6:
-            break
-        place = max(place, p1)
-    return place >= hi - 0.6
+class _Rows:
+    """Pieces of line at right angles to a pair of sides, kept by their place (rounded to half a
+    point) and joined into runs once (gaps of 0.6 pt), so a cut-out's edge is looked up, never
+    searched for (speed: a heavy page has 100k+ pieces, `rectangles`)."""
+
+    def __init__(self, pieces: Iterable[tuple[float, float, float]]) -> None:
+        rows: dict[float, list[tuple[float, float]]] = {}
+        for p0, p1, at in pieces:
+            rows.setdefault(round(at * 2) / 2, []).append((p0, p1))
+        self.runs: dict[float, list[tuple[float, float]]] = {}
+        self.starts: dict[float, list[float]] = {}
+        for key, found in rows.items():
+            runs: list[tuple[float, float]] = []
+            for p0, p1 in sorted(found):
+                if runs and p0 <= runs[-1][1] + 0.6:
+                    runs[-1] = (runs[-1][0], max(runs[-1][1], p1))
+                else:
+                    runs.append((p0, p1))
+            self.runs[key] = runs
+            self.starts[key] = [r[0] for r in runs]
+        self.keys = sorted(self.runs)
+
+    def between(self, lo: float, hi: float) -> list[float]:
+        return self.keys[bisect_left(self.keys, lo) : bisect_right(self.keys, hi)]
+
+    def covered(self, at: float, lo: float, hi: float) -> bool:
+        """One run of line work at `at` (within 0.6 pt) covers lo..hi."""
+        for key in self.between(at - 0.6, at + 0.6):
+            index = bisect_right(self.starts[key], lo + 0.6) - 1
+            if index >= 0 and self.runs[key][index][1] >= hi - 0.6:
+                return True
+        return False
 
 
 def rectangles(segments: Sequence[Segment], ppi: float) -> list[Box]:
@@ -476,47 +501,64 @@ def rectangles(segments: Sequence[Segment], ppi: float) -> list[Box]:
     if ppi <= 0:
         return []
     low, high = CUTOUT_MIN_IN * ppi, CUTOUT_MAX_IN * ppi
-    vertical = sorted(
-        (
-            (min(a[1], b[1]), max(a[1], b[1]), (a[0] + b[0]) / 2)
-            for a, b in segments
-            if abs(a[0] - b[0]) < 0.1 and abs(a[1] - b[1]) >= 0.5 * low
-        ),
-        key=lambda piece: piece[2],
-    )
-    horizontal = [
+    by_ends: dict[tuple[int, int], list[tuple[float, float, float]]] = {}
+    for a, b in segments:
+        if abs(a[0] - b[0]) < 0.1 and abs(a[1] - b[1]) >= 0.5 * low:
+            side = (min(a[1], b[1]), max(a[1], b[1]), (a[0] + b[0]) / 2)
+            by_ends.setdefault((round(side[0]), round(side[1])), []).append(side)
+    for found_sides in by_ends.values():
+        found_sides.sort(key=lambda piece: piece[2])
+    rows = _Rows(
         (min(a[0], b[0]), max(a[0], b[0]), (a[1] + b[1]) / 2)
         for a, b in segments
         if abs(a[1] - b[1]) < 0.1 and abs(a[0] - b[0]) >= 0.3
-    ]
+    )
     found: set[Box] = set()
-    for i, (a0, a1, left) in enumerate(vertical):
-        for b0, b1, right in vertical[i + 1 :]:
-            width = right - left
-            if width > high:
-                break
-            if width < low or abs(a0 - b0) > 0.9 or abs(a1 - b1) > 0.9:
-                continue
-            top_end, bottom_end = (a0 + b0) / 2, (a1 + b1) / 2
-            reach = 0.3 * min(width, bottom_end - top_end)
-            edges = []
-            for end, toward in ((top_end, -1), (bottom_end, 1)):
-                best = None
-                for _p0, _p1, at in horizontal:
-                    corner = (at - end) * toward
-                    if not -0.3 <= corner <= reach:
-                        continue
-                    inset = max(corner, 0.0) + 0.3
-                    if _covered(horizontal, at, left + inset, right - inset) and (
-                        best is None or abs(at - end) < abs(best - end)
-                    ):
-                        best = at
-                edges.append(best)
-            top, bottom = edges
-            if top is None or bottom is None or not low <= bottom - top <= high:
-                continue
-            found.add((round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)))
+    for (top_key, bottom_key), sides in by_ends.items():
+        others = sorted(
+            (
+                s
+                for t in (-1, 0, 1)
+                for b in (-1, 0, 1)
+                for s in by_ends.get((top_key + t, bottom_key + b), ())
+            ),
+            key=lambda piece: piece[2],
+        )
+        places = [piece[2] for piece in others]
+        for a0, a1, left in sides:
+            start = bisect_left(places, left + low)
+            stop = bisect_right(places, left + high)
+            for b0, b1, right in others[start:stop]:
+                width = right - left
+                if not low <= width <= high or abs(a0 - b0) > 0.9 or abs(a1 - b1) > 0.9:
+                    continue
+                top_end, bottom_end = (a0 + b0) / 2, (a1 + b1) / 2
+                reach = 0.3 * min(width, bottom_end - top_end)
+                edges: list[float | None] = []
+                for end, toward in ((top_end, -1), (bottom_end, 1)):
+                    lo, hi = (end - reach, end + 0.3) if toward < 0 else (end - 0.3, end + reach)
+                    best = None
+                    for at in rows.between(lo, hi):
+                        corner = (at - end) * toward
+                        inset = max(corner, 0.0) + 0.3
+                        if rows.covered(at, left + inset, right - inset) and (
+                            best is None or abs(at - end) < abs(best - end)
+                        ):
+                            best = at
+                    edges.append(best)
+                top, bottom = edges
+                if top is None or bottom is None or not low <= bottom - top <= high:
+                    continue
+                found.add((round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)))
     return sorted(found)
+
+
+def _names_a_sink(text: str) -> bool:
+    """A sink's words, or a sink base's tag (VSB23, SB36)."""
+    if _SINK_WORDS.search(text):
+        return True
+    tag = _TAG.match(" ".join(text.split()).upper())
+    return bool(tag and _SINK_BASE.search(tag.group("letters")))
 
 
 def _cutouts(
@@ -528,6 +570,8 @@ def _cutouts(
     it)."""
     if ppi <= 0 or not segments:
         return []
+    if not any(_names_a_sink(str(phrase.get("text") or "")) for phrase in phrases):
+        return []  # no sink or sink base named on the page: no cut-out to find (nor time spent)
     named = [rect for rect in rectangles(segments, ppi) if _sink_named(phrases, rect)]
 
     def holds(outer: Box, inner: Box) -> bool:
@@ -582,29 +626,35 @@ def notches(segments: Sequence[Segment], box: Box, ppi: float) -> list[Notch]:
     ]
     side = NOTCH_SIDE_IN * ppi
     out: list[Notch] = []
+    # Long pieces only can be a step's sides; kept by their place (speed: a page has 100k+ pieces).
+    by_place: dict[str, dict[float, list[tuple[float, float]]]] = {"h": {}, "v": {}}
+    for name, pieces in (("h", horizontal), ("v", vertical)):
+        for p0, p1, place in pieces:
+            if p1 - p0 >= side:
+                by_place[name].setdefault(round(place * 2) / 2, []).append((p0, p1))
 
-    def leaves(pieces: Sequence[tuple[float, float, float]], at: float, end: float) -> int:
+    def leaves(name: str, at: float, end: float) -> int:
         """+1: a line at `at` leaves `end` toward larger values; -1 smaller; 0 none (or both)."""
         ways = set()
-        for p0, p1, place in pieces:
-            if abs(place - at) > 0.3:
-                continue
-            if abs(p0 - end) <= 0.6 and p1 - end >= side:
-                ways.add(1)
-            if abs(p1 - end) <= 0.6 and end - p0 >= side:
-                ways.add(-1)
+        key = round(at * 2) / 2
+        for near in (key - 0.5, key, key + 0.5):
+            for p0, p1 in by_place[name].get(near, ()):
+                if abs(p0 - end) <= 0.6 and p1 - end >= side:
+                    ways.add(1)
+                if abs(p1 - end) <= 0.6 and end - p0 >= side:
+                    ways.add(-1)
         return next(iter(ways)) if len(ways) == 1 else 0
 
     for a, b, at in horizontal:
         if not NOTCH_MIN_IN * ppi <= b - a <= NOTCH_MAX_IN * ppi:
             continue
-        one, two = leaves(vertical, a, at), leaves(vertical, b, at)
+        one, two = leaves("v", a, at), leaves("v", b, at)
         if one and two and one != two:
             out.append(Notch("h", at, a, b))
     for a, b, at in vertical:
         if not NOTCH_MIN_IN * ppi <= b - a <= NOTCH_MAX_IN * ppi:
             continue
-        one, two = leaves(horizontal, a, at), leaves(horizontal, b, at)
+        one, two = leaves("h", a, at), leaves("h", b, at)
         if one and two and one != two:
             out.append(Notch("v", at, a, b))
     return out
