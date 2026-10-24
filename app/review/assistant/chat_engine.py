@@ -1394,41 +1394,48 @@ class ChatEngine:
         until the call is charged. A call that fits the money really spent but not the calls
         running now (each held at its worst case) waits for them to end (`_wait_for_holds`):
         the live run of 2026-10-24 stopped ten specialists at $4.36 of a $9 price because
-        thirty helpers started together and their worst cases filled the share."""
+        thirty helpers started together and their worst cases filled the share. Every call of a
+        helper is held so, its record turn and its report too: one ledger, so two helpers that
+        check at once never both take the same money (2026-10-24: CI's slow runners spent $0.03
+        of the later checks' money when a report and a record turn ran together unheld)."""
         if estimate is None:
             return True
-        return self._wait_for_holds(share, estimate, hold=True)
+        return self._wait_for_holds(share, estimate)
 
-    def _final_fits(self, share: _Share, estimate: int | None) -> bool:
-        """A roster specialist's last call (its report) fits the fixed price and its share: the
-        share is what keeps the later checks' money (`helper_ceiling`). Like `_hold`, it waits
-        for the calls running now rather than stop for their worst cases."""
+    def _hold_final(self, share: _Share, estimate: int | None) -> bool:
+        """A roster specialist's last call (its report) fits the fixed price and its share, and
+        is then held like any call until it is charged: the share is what keeps the later
+        checks' money (`helper_ceiling`). Like `_hold`, it waits for the calls running now rather
+        than stop for their worst cases."""
         if not self._fits(estimate):
             return False
-        return self._wait_for_holds(share, estimate or 0, hold=False)
+        return estimate is None or self._wait_for_holds(share, estimate)
 
-    def _record_fits(self, share: _Share, estimate: int | None) -> bool:
+    def _hold_record(self, share: _Share, estimate: int | None) -> bool:
         """A helper's record turn fits its share by the money really spent: never refused for
-        the calls running now (#1654), never past the share's limit (the later steps' money)."""
-        with self._lock:
-            return self._spent + (estimate or 0) <= share.limit
+        the calls running now (#1654), it waits for them to end instead; never past the share's
+        limit (the later steps' money). Then it is held like any call until it is charged."""
+        return estimate is None or self._wait_for_holds(share, estimate)
 
-    def _wait_for_holds(self, share: _Share, estimate: int, *, hold: bool) -> bool:
-        """`estimate` fits `share` with the calls running now; when only their holds are in the
-        way (it fits the money really spent), it waits for one to end and looks again. False
-        only when it cannot fit even with nothing else running: the share is really used."""
+    def _wait_for_holds(self, share: _Share, estimate: int) -> bool:
+        """`estimate` fits `share` with the calls running now, and is held in the same step as
+        the check (under `_lock`), so no other call can take that money in between. When only
+        their holds are in the way (it fits the money really spent), it waits for one to end and
+        looks again. False only when it cannot fit even with nothing else running: the share is
+        really used."""
         deadline = monotonic() + _HOLD_WAIT_MOST_S
         while True:
-            with self._lock:
-                if self._spent + share.held + estimate <= share.limit:
-                    if hold:
-                        share.held += estimate
-                    return True
-                if share.held <= 0 or self._spent + estimate > share.limit:
-                    return False
-            if self.cancel.is_set() or monotonic() >= deadline:
-                return False
+            # Looked at while `_holds_changed` is taken, so a hold let go after this look wakes
+            # the wait below (`_release` notifies under it): no wake-up is missed.
             with self._holds_changed:
+                with self._lock:
+                    if self._spent + share.held + estimate <= share.limit:
+                        share.held += estimate
+                        return True
+                    if share.held <= 0 or self._spent + estimate > share.limit:
+                        return False
+                if self.cancel.is_set() or monotonic() >= deadline:
+                    return False
                 self._holds_changed.wait(_HOLD_WAIT_S)
 
     def _release(self, share: _Share, held: int) -> None:
@@ -4663,15 +4670,21 @@ class ChatEngine:
             )
             held = 0
             report_cost = self._estimate(model, body, cached, previous) if final else None
-            if final and agent.soft_cap and not self._final_fits(share, report_cost):
-                # A roster specialist never passes the fixed price, not even to write its report:
-                # code keeps what it recorded, and its report says where it stopped: "the fixed
-                # price was reached" only when it was (2026-10-24: said with $4.64 of $9 left).
-                return (
-                    _report_from_steps(entry["steps"], _final_stop_why(self._fits(report_cost))),
-                    False,
-                    "cost_cap",
-                )
+            if final and agent.soft_cap:
+                if not self._hold_final(share, report_cost):
+                    # A roster specialist never passes the fixed price, not even to write its
+                    # report: code keeps what it recorded, and its report says where it stopped:
+                    # "the fixed price was reached" only when it was (2026-10-24: said with $4.64
+                    # of $9 left).
+                    return (
+                        _report_from_steps(
+                            entry["steps"], _final_stop_why(self._fits(report_cost))
+                        ),
+                        False,
+                        "cost_cap",
+                    )
+                # Held until it is charged, so the other helpers' calls count it (2026-10-24).
+                held = report_cost or 0
             if not final:
                 why = None
                 estimate = self._estimate(model, body, cached, previous)
@@ -4704,21 +4717,24 @@ class ChatEngine:
                     and why != "this message is near its money cap"
                     and turns < self.settings.helper_max_turns
                     and self._fits(record_estimate)
-                    and self._record_fits(share, record_estimate)
+                    and self._hold_record(share, record_estimate)
                 ):
                     # One turn to record what it read before its report (the paid run of
                     # 2026-10-19: gap closers read the pages, then wrapped up with no tools and
                     # recorded nothing, so their differences were lost).
                     # The record turn is never refused for the calls running now (#1654): the
                     # paid run of 2026-10-19's gap closers hit their shared ceiling, got no
-                    # record turn and recorded nothing. It is one short call within the fixed
-                    # price and, by the money really spent, within the share, which keeps the
-                    # later steps' money (#1641); the roster keeps money for it under the ceiling
-                    # when it hands out the price's spare money (`full_check_roster._Run._spare`).
+                    # record turn and recorded nothing. It waits for them to end instead
+                    # (`_hold_record`) and is held like any call until it is charged: one short
+                    # call within the fixed price and the share, which keeps the later steps'
+                    # money (#1641), counted by every other helper's check (2026-10-24: unheld,
+                    # a record turn and another's report ran together past the share on CI).
+                    # The roster keeps money for it under the ceiling when it hands out the
+                    # price's spare money (`full_check_roster._Run._spare`).
                     record_turn = True
                     wrap = None
                     _append_note(messages, RECORD_NOTE.format(why=why))
-                    held = 0
+                    held = record_estimate or 0
                     max_tokens = RECORD_MAX_TOKENS
                 elif why is not None:
                     note = ROSTER_WRAP_UP_NOTE if roster_pages else WRAP_UP_NOTE

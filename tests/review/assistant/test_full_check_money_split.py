@@ -14,6 +14,7 @@ Synthetic: scripted provider, no paid call, no client data."""
 from __future__ import annotations
 
 import dataclasses
+import json
 import threading
 import time
 from collections.abc import Mapping
@@ -21,11 +22,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from app.review.assistant import full_check_roster, whole_look
 from app.review.assistant.chat_engine import (
     FULL_CHECK_INSTRUCTION,
     KEPT_REACHED,
     PRICE_REACHED,
+    RECORD_MAX_TOKENS,
+    RECORD_NOTE,
+    ROSTER_HELPER_MAX_TOKENS,
+    ROSTER_WRAP_UP_MAX_TOKENS,
     _Agent,
     _final_stop_why,
     _Share,
@@ -59,7 +66,7 @@ def test_a_call_that_cannot_fit_even_alone_stops_at_once(tmp_path: Path) -> None
     engine._spent = 700_000
     started = time.monotonic()
     assert engine._hold(share, 400_000) is False  # 0.7 + 0.4 > 1.0: the share is really used
-    assert engine._final_fits(share, 400_000) is False
+    assert engine._hold_final(share, 400_000) is False
     assert time.monotonic() - started < 1
     assert share.held == 100_000
 
@@ -69,6 +76,113 @@ def test_a_stop_while_waiting_ends_the_wait(tmp_path: Path) -> None:
     share = _Share(limit=1_000_000, held=900_000)
     engine.cancel.set()
     assert engine._hold(share, 500_000) is False
+
+
+class _Watched(threading.Condition):
+    """The engine's "a hold was let go" signal, telling the test when a call waits on it."""
+
+    def __init__(self, waiting: threading.Event) -> None:
+        super().__init__()
+        self.waiting = waiting
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waiting.set()
+        return super().wait(timeout)
+
+
+def test_a_report_and_a_record_turn_at_once_never_pass_the_share_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CI's slow runners (2026-10-24, `test_the_helpers_never_spend_the_protected_money`): one
+    helper's report was running when another helper checked its record turn. Neither call was
+    held, so each check saw only the money already spent, both ran, and together they passed the
+    share by $0.03 (the later checks' money). The interleaving is forced here, step by step:
+
+    - helpers A and B each make one reading call, which brings each to its own cap;
+    - B's reading call is kept running until A's report is running (A has recorded by then);
+    - A's report is kept running until B has decided about its record turn: B either runs it
+      (the old, unheld check) or waits for A's report to end (one ledger).
+
+    Calls cost what they are estimated at (1 token = $0.000001): a reading call $0.10, a record
+    turn $0.05, a report $0.03; the share is $0.31. Alone, B's record turn fits (0.25 + 0.05);
+    beside A's running report it does not (0.25 + 0.03 + 0.05)."""
+    reading, record, report = 100_000, 50_000, 30_000
+    a_reporting, b_decided = threading.Event(), threading.Event()
+    seen: list[tuple[str, str]] = []
+    lock = threading.Lock()
+
+    def answer(params: Mapping[str, Any]) -> list[dict[str, Any]]:
+        who = "A" if "Helper A" in json.dumps(params["messages"][0]) else "B"
+        if params.get("tool_choice") == {"type": "none"}:
+            kind = "report"
+        elif RECORD_NOTE.split("(", 1)[0] in json.dumps(params["messages"][-1]):
+            kind = "record"
+        else:
+            kind = "reading"
+        with lock:
+            seen.append((who, kind))
+        cost = {"reading": reading, "record": record, "report": report}[kind]
+        gates: list[dict[str, Any]] = []
+        if who == "A" and kind == "report":
+            a_reporting.set()
+            gates = [{"type": "__wait__", "until": b_decided}]
+        elif who == "B" and kind == "reading":
+            gates = [{"type": "__wait__", "until": a_reporting}]
+        elif who == "B" and kind == "record":
+            b_decided.set()  # the old check let it run beside A's report
+        if kind == "report":
+            return [*gates, *reply(text("Done."), model=SONNET_ID, usage={"input_tokens": cost})]
+        step = tool(f"t{who}{kind}", "bash_tool", {"command": "true", "description": "Read"})
+        return [
+            *gates,
+            *reply(step, stop="tool_use", model=SONNET_ID, usage={"input_tokens": cost}),
+        ]
+
+    harness = Harness(
+        tmp_path,
+        ScriptedProvider(helper_answer=answer),
+        question=FULL_CHECK_INSTRUCTION,
+        message_cap=9 * DOLLARS,
+    )
+    engine = harness.engine
+    engine.settings = dataclasses.replace(
+        engine.settings, mode="full_check", drawn_helpers=True, roster=True
+    )
+    by_allowance = {
+        ROSTER_HELPER_MAX_TOKENS: reading,
+        RECORD_MAX_TOKENS: record,
+        ROSTER_WRAP_UP_MAX_TOKENS: report,
+    }
+    monkeypatch.setattr(
+        engine, "_estimate", lambda model, body, cached, previous: by_allowance[body["max_tokens"]]
+    )
+    monkeypatch.setattr(engine, "_cost", lambda model, usage: int(usage["input_tokens"]))
+    engine._holds_changed = _Watched(b_decided)  # B waiting for A's report also lets A end
+    engine.helper_share_percent = 100
+    engine.helper_ceiling = 310_000
+    agents = [
+        _Agent(
+            call_id=f"h{who}",
+            description=f"Pages {n} · numbers",
+            prompt=f"Helper {who}",
+            model=BY_SHORT["sonnet"],
+            pages=(n,),
+            lens="numbers",
+            soft_cap=True,
+            cap_micros=reading,  # one reading call brings it to its cap: record, then report
+        )
+        for n, who in ((1, "A"), (2, "B"))
+    ]
+
+    entries = engine._launch(agents)
+
+    assert a_reporting.is_set() and b_decided.is_set()  # the interleaving did happen
+    assert engine.spent <= 310_000  # before: $0.33, the record turn ran beside A's report
+    assert ("A", "record") in seen and ("A", "report") in seen
+    # B waited for A's report, then its record turn no longer fitted: it wrote its report.
+    assert ("B", "record") not in seen and ("B", "report") in seen
+    assert [entry["report"] for entry in entries] == ["Done.", "Done."]
+    assert engine.spent == 2 * reading + record + 2 * report
 
 
 def test_specialists_started_together_all_finish_when_their_worst_cases_fill_the_share(
