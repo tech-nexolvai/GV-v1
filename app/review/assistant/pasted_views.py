@@ -2,10 +2,10 @@
 
 **Why** (the client-meeting job, 2026-10-24): the reference's reviewer pasted the architect's
 lavatory sections onto each casework sheet as snapshots (`/Stamp` annotations). Each snapshot is
-drawn in pen strokes only: its words (`LAVATORY SECTION`, `KOLHER K-2214 UNDER-COUNTER SINK`,
-`2'-1" COUNTERTOP`) have no text layer, so the set index could not confirm their titles and dropped
+drawn in pen strokes only: its words (`VANITY SECTION`, `MAKER Q-1234 UNDER-COUNTER SINK`,
+`2'-0" COUNTERTOP`) have no text layer, so the set index could not confirm their titles and dropped
 them, the splash step (`splash_views`, #1918) never looked in them, and the tag reader's two OCR
-engines did not agree on `KOLHER K-2214` against `KOLHERK-2214`. Every lavatory section draws the
+engines did not agree on `MAKER Q-1234` against `MAKERQ-1234`. Every lavatory section draws the
 solid-surface splash, names the sink model and prints the countertop depth, and code saw none of it.
 
 **What code reads, per pasted drawing** (a `/Stamp` on an architect page, or on an architect half of
@@ -14,7 +14,7 @@ a sheet; never a vendor's, a brand prototype's or one whose side is not known):
 - **its words**: the snapshot drawn alone (`stamp_text.stamps_only`: no page content, no reviewer
   layer), its coloured ink set to white (a drawing is plotted in black or grey; colour is somebody's
   markup), then every line RapidOCR finds is read again, alone, by Tesseract. A line counts only when
-  the two engines read the same characters, spaces aside (`KOLHERK-2214` is `KOLHER K-2214`); the
+  the two engines read the same characters, spaces aside (`MAKERQ-1234` is `MAKER Q-1234`); the
   reading with the word breaks is kept. A line they read differently is kept apart, never used as a
   value (`unagreed`).
 - **its title and kind**: the largest agreed line that names a view kind (`... - SECTION`,
@@ -100,7 +100,7 @@ class View:
     page: int
     box: Box
     title: str = ""
-    """The agreed title line (`LAVATORY SECTION`), or "" when none was agreed."""
+    """The agreed title line (`VANITY SECTION`), or "" when none was agreed."""
     kind: str = "drawing"
     """`section` (a section or detail), `elevation`, `plan`, or `drawing` (no kind read)."""
     number: str = ""
@@ -115,12 +115,12 @@ class View:
 
     @property
     def words(self) -> str:
-        """`the section A3 'LAVATORY SECTION' (page 17)`."""
+        """`the section A3 'VANITY SECTION' (page 7)`."""
         return f"the {self.name} (page {self.page})"
 
     @property
     def name(self) -> str:
-        """`section A3 'LAVATORY SECTION'`."""
+        """`section A3 'VANITY SECTION'`."""
         kind = self.kind if self.kind != "drawing" else "pasted drawing"
         number = f" {self.number}" if self.number else ""
         title = f" '{self.title}'" if self.title else ""
@@ -337,7 +337,7 @@ def splash_words(view: View) -> list[Line]:
 
 
 def model_tags(view: View, near_words: re.Pattern[str]) -> list[tuple[str, Line]]:
-    """The product tags (`K-2214`) the view's agreed lines print beside words `near_words`
+    """The product tags (`Q-1234`) the view's agreed lines print beside words `near_words`
     matches (on the same line, or a line just above or below it, overlapping it across)."""
     tags = import_module("app.review.assistant.tag_reader")
     out: list[tuple[str, Line]] = []
@@ -360,7 +360,7 @@ def model_tags(view: View, near_words: re.Pattern[str]) -> list[tuple[str, Line]
     return out
 
 
-#: `2'-1" COUNTERTOP`: a size printed right before the word for the top (`TOP` alone is not
+#: `2'-0" COUNTERTOP`: a size printed right before the word for the top (`TOP` alone is not
 #: enough: `TOP OF ...` lines are heights).
 _DEPTH_LINE: Final = re.compile(
     r"^(?P<size>[0-9][0-9'\"\- /]*[\"'])\s*(?:COUNTER\s*TOP|C\.?T\.?)\b"
@@ -368,7 +368,7 @@ _DEPTH_LINE: Final = re.compile(
 
 
 def countertop_depths(view: View) -> tuple[list[tuple[Decimal, Line]], list[tuple[str, str, Box]]]:
-    """The countertop depths a section's agreed words print (`2'-1" COUNTERTOP`: 25"), and the
+    """The countertop depths a section's agreed words print (`2'-0" COUNTERTOP`: 24"), and the
     lines naming a countertop with a size that the two engines read differently (never a value)."""
     checks = import_module("app.review.assistant.finding_checks")
     read: list[tuple[Decimal, Line]] = []

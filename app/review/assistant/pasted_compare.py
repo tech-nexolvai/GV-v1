@@ -3,7 +3,7 @@
 The escalation's step (`escalation._pasted_step`) runs this on every open item of a vendor page
 paired with a reference sheet that holds pasted drawings (`pasted_views.View`). Three kinds of item:
 
-- **The sink model** (the item names a sink and the vendor's side one product tag, `K-2214`). The
+- **The sink model** (the item names a sink and the vendor's side one product tag, `Q-1234`). The
   vendor's model is the one tag of that family its page prints in text (every print the same, the
   item's own among them); the reference's is the one tag of that family its sheet prints beside a
   sink word, in text or in a pasted view's agreed words. Both read by code: the same tag is
@@ -22,7 +22,7 @@ paired with a reference sheet that holds pasted drawings (`pasted_views.View`). 
   Sizes are never compared here: a section prints no splash size, and a back splash is never
   compared with a side splash (`splash_views` does sizes, like for like).
 - **The countertop depth** (the item is the top's depth): a pasted section's agreed
-  `2'-1" COUNTERTOP` is the top's depth. The same as the vendor's value read by code is **Right**,
+  `2'-0" COUNTERTOP` is the top's depth. The same as the vendor's value read by code is **Right**,
   compared with that label instead of a plan size (a plan's depth may be the cabinet and its door,
   never the top); a different one is a **Likely problem**. Two sections printing two depths, or a
   depth the engines read differently (a stacked fraction), changes no outcome: the item says so.
@@ -148,7 +148,7 @@ def _family(key: str) -> str:
 
 
 def sink_item(finding: Mapping[str, Any]) -> str | None:
-    """The vendor's claimed sink model (`K-2214`) when the item names a sink and the vendor's side
+    """The vendor's claimed sink model (`Q-1234`) when the item names a sink and the vendor's side
     one product tag, else `None`."""
     if not _SINK.search(_flat(finding.get("item"))):
         return None
@@ -323,19 +323,29 @@ def _splash_part(finding: Mapping[str, Any]) -> Any:
 
 
 def _absence(finding: Mapping[str, Any]) -> str | None:
-    """`look` (the whole-drawing look's claim that the reference draws no splash), `reading` (a
-    reading's reference side says no splash is drawn), or `None`."""
+    """`look` (the whole-drawing look's claim that the vendor adds a splash the reference does
+    not draw), `reading` (a reading's reference side says no splash is drawn), or `None`. A
+    look's claim that the vendor leaves a splash out is never one: a section drawing the splash
+    bears it out. The vendor's side must draw the splash (a size, no words of absence)."""
+    classification = import_module("app.review.assistant.classification")
     record = finding.get("splash_views")
     mark = finding.get(likely_problems.FIELD)
+    vendor = _flat(finding.get("vendor"))
+    vendor_draws = bool(re.search(r"\d", vendor)) and not classification.vendor_absent(vendor)
     by_look = finding.get("created_by") == "whole_look" or (
         isinstance(mark, Mapping) and mark.get("by") in ("whole_drawing_look", "whole_look")
     )
-    if by_look and (
-        (isinstance(record, Mapping) and record.get("absence_not_confirmed"))
-        or (isinstance(mark, Mapping) and mark.get("kind") in ("extra_piece", "missing_piece"))
-    ):
-        return "look"
-    if not by_look and _NO_SPLASH.search(_flat(finding.get("architect"))):
+    if by_look:
+        if isinstance(mark, Mapping):
+            added = mark.get("kind") == "extra_piece"
+        else:
+            added = (
+                isinstance(record, Mapping)
+                and bool(record.get("absence_not_confirmed"))
+                and record.get("look_kind") in (None, "extra_piece")
+            )
+        return "look" if added and vendor_draws else None
+    if vendor_draws and _NO_SPLASH.search(_flat(finding.get("architect"))):
         return "reading"
     return None
 
@@ -518,8 +528,10 @@ def _depth_change(
 def _open(finding: Mapping[str, Any]) -> bool:
     proof = import_module("app.review.assistant.proof")
     classification = import_module("app.review.assistant.classification")
+    proved = finding.get("status") == "different" and proof.code_proved(finding)
     return (
         finding.get("status") in _OPEN
+        and not proved
         and not finding.get(FIELD)
         and not proof.reviewer_decided(finding)
         and not classification.internal(finding)

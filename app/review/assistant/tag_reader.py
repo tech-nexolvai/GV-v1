@@ -318,7 +318,7 @@ class StrokeReader:
 
 def _agreed_keys(reads: Sequence[str]) -> tuple[str, ...]:
     """The tags every engine's reading gives, or () when they differ. Two readings of the same
-    characters with a word break in one only agree (`KOLHER K-2214` and `KOLHERK-2214`: the
+    characters with a word break in one only agree (`MAKER Q-1234` and `MAKERQ-1234`: the
     engine that ran the words together reads no tag in them), and the tags are the ones the
     reading with the break gives; any other difference is no agreement."""
     keys = [tuple(tag_keys(read)) for read in reads]

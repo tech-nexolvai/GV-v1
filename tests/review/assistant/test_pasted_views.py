@@ -37,7 +37,7 @@ _PAGE_MAP = {
 
 def test_two_readings_agree_spaces_and_leader_marks_aside() -> None:
     assert pasted_views.agreed("ZORBAZ-5150", "ZORBA Z-5150") == "ZORBA Z-5150"
-    assert pasted_views.agreed("2'-1\"COUNTERTOP", "2'-1\" COUNTERTOP.") == "2'-1\" COUNTERTOP"
+    assert pasted_views.agreed("2'-3\"COUNTERTOP", "2'-3\" COUNTERTOP.") == "2'-3\" COUNTERTOP"
     assert pasted_views.agreed("FACEOFWALL", "FACE OF WALL-") == "FACE OF WALL"
 
 
@@ -165,7 +165,7 @@ def test_a_view_keeps_only_agreed_lines_and_reads_its_title() -> None:
             ((100, 100, 200, 110), "ZORBAZ-5150", "ZORBA Z-5150"),
             ((100, 112, 260, 122), "UNDER-COUNTERSINK", "UNDER-COUNTER SINK"),
             ((100, 300, 200, 310), "1'-9%2\"COUNTERTOP", '19%" COUNTERTOP'),
-            ((100, 330, 200, 340), "2'-1\"COUNTERTOP", "2'-1\" COUNTERTOP"),
+            ((100, 330, 200, 340), "2'-3\"COUNTERTOP", "2'-3\" COUNTERTOP"),
         ]
     )
     view = pasted_views.read_view(
@@ -178,7 +178,7 @@ def test_a_view_keeps_only_agreed_lines_and_reads_its_title() -> None:
         "VANITY SECTION",
         "ZORBA Z-5150",
         "UNDER-COUNTER SINK",
-        "2'-1\" COUNTERTOP",
+        "2'-3\" COUNTERTOP",
     ]
     assert len(view.unagreed) == 1
     assert view.lines[2].box == pytest.approx(
@@ -186,7 +186,7 @@ def test_a_view_keeps_only_agreed_lines_and_reads_its_title() -> None:
     )
     assert pasted_views.model_tags(view, pasted_compare._SINK_WORD) == [("Z-5150", view.lines[2])]
     depths, garbled = pasted_views.countertop_depths(view)
-    assert [(str(v), line.text) for v, line in depths] == [("25", "2'-1\" COUNTERTOP")]
+    assert [(str(v), line.text) for v, line in depths] == [("27", "2'-3\" COUNTERTOP")]
     assert len(garbled) == 1
 
 
@@ -406,10 +406,10 @@ def _depth(**more: Any) -> dict[str, Any]:
     base = _sink(
         id="F7",
         item="Vanity: top depth",
-        vendor='25"',
-        architect="558 [21 15/16]",
+        vendor='24"',
+        architect="533 [21]",
         status="different",
-        inches={"vendor": "25", "architect": "21.9375"},
+        inches={"vendor": "24", "architect": "21"},
         checks={"printed_vendor": "match", "printed_architect": "match"},
     )
     base.update(more)
@@ -417,11 +417,11 @@ def _depth(**more: Any) -> dict[str, Any]:
 
 
 def test_the_sections_countertop_depth_is_compared_with_the_tops_depth() -> None:
-    depth = _section(lines=(Line("2'-1\" COUNTERTOP", (420.0, 60.0, 470.0, 64.0)),))
+    depth = _section(lines=(Line("2'-0\" COUNTERTOP", (420.0, 60.0, 470.0, 64.0)),))
     _result, changed = _run([_depth()], _ctx(_views(depth)))
     found = changed["F7"]
     assert proof.proof_group(found) == "right"
-    assert found["architect"] == "2'-1\" COUNTERTOP"
+    assert found["architect"] == "2'-0\" COUNTERTOP"
     other = _section(lines=(Line("2'-3\" COUNTERTOP", (420.0, 60.0, 470.0, 64.0)),))
     _result, changed = _run([_depth(id="F8")], _ctx(_views(other)))
     assert proof.proof_group(changed["F8"]) == "likely_problem"
@@ -494,3 +494,22 @@ def test_the_reader_finds_a_splash_drawn_in_a_pasted_section(tmp_path: Path) -> 
     assert view.splashes[0] == pytest.approx((100.0, 127.5, 102.6, 140.0), abs=0.2)
     assert reader(REF, 1) is views  # read once
     assert reader(REF, 3) == ()  # no pasted drawing there
+
+
+def test_a_looks_claim_that_the_vendor_leaves_the_splash_out_is_never_withdrawn() -> None:
+    missing = _look_splash()
+    missing["splash_views"] = {**missing["splash_views"], "look_kind": "missing_piece"}
+    absent = _look_splash()
+    absent["vendor"] = "not shown"
+    for finding in (missing, absent):
+        ctx = _ctx(_views(_section(splashes=((410.0, 120.0, 412.0, 130.0),))))
+        result, changed = _run([finding], ctx)
+        assert "F5" not in result.absorbed
+        assert "pasted_views" not in changed.get("F5", {})
+
+
+def test_an_item_code_proved_wrong_is_never_touched(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(proof, "code_proved", lambda finding: finding.get("id") == "F7")
+    depth = _section(lines=(Line("2'-0\" COUNTERTOP", (420.0, 60.0, 470.0, 64.0)),))
+    assert pasted_compare.changes([_depth()], _views(depth), {}, _PAGE_MAP, VENDOR) == []
+    assert len(pasted_compare.changes([_depth(id="F8")], _views(depth), {}, _PAGE_MAP, VENDOR)) == 1
