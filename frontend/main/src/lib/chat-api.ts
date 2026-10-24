@@ -440,6 +440,17 @@ export interface FindingBox {
   file?: string | null;
 }
 
+/** A finding's one architect page (`reference_page.stamp`): its file and page, or none and why. */
+export interface ReferencePage {
+  file?: string | null;
+  page?: number | null;
+  why?: string | null;
+  /** Its architect spot is not on its pair (such an item is never sent). */
+  outside?: boolean;
+  /** Every architect page its vendor page is paired with. */
+  pair?: { file: string; page: number }[];
+}
+
 /**
  * One difference (or match) the assistant reported with `report_finding`, at its latest version.
  * `architect` and `vendor` are shown exactly as written: the screen never re-types a number.
@@ -450,6 +461,12 @@ export interface ChatFinding {
   page: number;
   /** The page it was compared with (the architect's), when it is a different one. */
   vs_page?: number | null;
+  /**
+   * Two separate uploads: the ONE architect page it is compared on, set from its vendor page's pair
+   * at the check's finish. Every architect picture, caption and "Whole page" reads it; `page: null`
+   * means no architect page (`why` says why), never a guessed one.
+   */
+  reference_page?: ReferencePage | null;
   item: string;
   category: FindingCategory;
   architect: string | null;

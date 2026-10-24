@@ -76,6 +76,7 @@ from app.review.assistant.sandbox import (
     check_command,
     cut_output,
     folder_bytes,
+    page_folder,
     view_path,
 )
 from app.review.assistant.tool_schema import box_schema, point_schema
@@ -556,7 +557,7 @@ _ZOOM: Final[Mapping[str, Any]] = {
                         "box": box_schema("The area to crop."),
                         "file": {
                             "type": "string",
-                            "description": "The upload's file name, when the set has more than one",
+                            "description": "The upload's file name: needed when the set has more than one PDF",
                         },
                         "label": {"type": "string", "description": "What this crop is, short"},
                         "guides": {
@@ -678,7 +679,7 @@ VERIFY_VALUE: Final[Mapping[str, Any]] = {
             },
             "file": {
                 "type": "string",
-                "description": "The upload's file name, when the set has more than one",
+                "description": "The upload's file name: needed when the set has more than one PDF",
             },
         },
     },
@@ -717,7 +718,7 @@ READ_NUMBER: Final[Mapping[str, Any]] = {
             },
             "file": {
                 "type": "string",
-                "description": "The upload's file name, when the set has more than one",
+                "description": "The upload's file name: needed when the set has more than one PDF",
             },
         },
     },
@@ -781,7 +782,7 @@ MEASURE_ON_DRAWING: Final[Mapping[str, Any]] = {
             },
             "file": {
                 "type": "string",
-                "description": "The upload's file name, when the set has more than one",
+                "description": "The upload's file name: needed when the set has more than one PDF",
             },
         },
     },
@@ -810,7 +811,7 @@ READ_UNDER_MARKUP: Final[Mapping[str, Any]] = {
             "box": box_schema("The area to read, round the covered value."),
             "file": {
                 "type": "string",
-                "description": "The upload's file name, when the set has more than one",
+                "description": "The upload's file name: needed when the set has more than one PDF",
             },
             "description": {
                 "type": "string",
@@ -847,7 +848,7 @@ DRAWING_FACTS: Final[Mapping[str, Any]] = {
             },
             "file": {
                 "type": "string",
-                "description": "The upload's file name, when the set has more than one",
+                "description": "The upload's file name: needed when the set has more than one PDF",
             },
         },
     },
@@ -1077,6 +1078,14 @@ class ToolResult:
     content: list[dict[str, Any]]
     step: dict[str, Any]
     is_error: bool = False
+
+
+def _page_folders(listing: Sequence[Mapping[str, Any]]) -> str:
+    """Where each upload's page pictures are (its own folder name, `sandbox.page_folder`)."""
+    names = [str(item.get("name") or "") for item in listing if item.get("name")]
+    if not names:
+        return "pages/<upload name without .pdf>/p-NNN.png"
+    return " and ".join(f"pages/{page_folder(n)}/p-NNN.png ({n})" for n in names[:4])
 
 
 def _shown(text: str) -> str:
@@ -1414,7 +1423,7 @@ class ChatTools:
                 raise SandboxRefused("give the label (D17), a box round the number, or a value")
             spot: dict[str, Any] = {k: given[k] for k in ("page", "file") if k in given}
             spot["box"] = given.get("box") or {"x0": 0, "y0": 0, "x1": 1, "y1": 1}
-            name, page, box, _label = self._crop_request(spot, 0)
+            name, page, box, _label = self._crop_request(spot, 0, side)
         except SandboxRefused as refused:
             return _refused(step, started, str(refused).replace("crops[0].", ""))
         module = import_module("app.review.assistant.read_number")
@@ -1706,8 +1715,40 @@ class ChatTools:
 
     # ---- zoom ------------------------------------------------------------------------------------
 
-    def _crop_request(self, raw: object, number: int) -> tuple[str, int, tuple[float, ...], str]:
-        """One crop's (file name, page, box, label), checked."""
+    def _file_of_side(self, where: str, side: str | None) -> str:
+        """The upload a call without `file` means: the only PDF; else the only PDF of the side
+        asked (`side`); else refused, naming each PDF, so the model names the one it means. A
+        whole-drawing look once zoomed into the vendor's page 20 meaning the reference's
+        (2026-10-23): with two PDFs a page number alone never says which."""
+        if not self.uploads:
+            raise SandboxRefused(f"the set has no PDFs to zoom into. {self.workspace.where_hint()}")
+        if len(self.uploads) == 1:
+            return str(self.uploads[0]["name"])
+        if side is not None:
+            architect = side == "architect"
+            own = [
+                item
+                for item in self.uploads
+                if str(item.get("kind") or "").startswith("the architect") == architect
+            ]
+            if len(own) == 1:
+                return str(own[0]["name"])
+        listed = "; ".join(
+            f"{item['name']!r} ({item.get('kind') or 'a file'}"
+            + (f", {item['pages']} pages" if isinstance(item.get("pages"), int) else "")
+            + ")"
+            for item in self.uploads
+        )
+        raise SandboxRefused(
+            f"{where}.file is needed: the set has {len(self.uploads)} PDFs, and a page number "
+            f"alone does not say which. Name one with file: {listed}."
+        )
+
+    def _crop_request(
+        self, raw: object, number: int, side: str | None = None
+    ) -> tuple[str, int, tuple[float, ...], str]:
+        """One crop's (file name, page, box, label), checked. With no `file`: the only PDF, or
+        the only PDF of `side` (`_file_of_side`); never the vendor's PDF by default."""
         where = f"crops[{number}]"
         if not isinstance(raw, Mapping):
             raise SandboxRefused(f"{where} must be an object")
@@ -1727,12 +1768,7 @@ class ChatTools:
         names = [str(item["name"]) for item in self.uploads]
         file_name = given.get("file")
         if file_name is None:
-            main = main_upload(self.uploads)
-            if main is None:
-                raise SandboxRefused(
-                    f"the set has no PDFs to zoom into. {self.workspace.where_hint()}"
-                )
-            chosen = str(main["name"])
+            chosen = self._file_of_side(where, side)
         elif isinstance(file_name, str):
             chosen = file_name.strip().removeprefix(UPLOADS + "/")
             if chosen not in names:
@@ -2292,7 +2328,7 @@ def helper_footer(
     if state in ("ready", "ready_without_labels"):
         lines.append(
             f"- The set pack is ready at {SET_PACK}/: page_map.json, *_drawings_only.pdf, "
-            "pages/<upload name without .pdf>/p-NNN.png (100 dpi, drawings only), contact/ "
+            f"{_page_folders(read_listing(workspace))} (100 dpi, drawings only), contact/ "
             "(nine pages a picture)."
         )
     else:

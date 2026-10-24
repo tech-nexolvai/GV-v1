@@ -8,7 +8,7 @@ import { RoundChip } from '@/components/chat/chat-trust';
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 import type { ChatFile, ChatFinding, FindingBox, FindingDecision, FindingDecisionExtra, FindingDecisionValue, PagePicture, PageWhere } from '@/lib/chat-api';
 import { architectOnVendorPage, drawerChips, drawerKind, howWeKnow, KIND_WORDS, noArchitectPictureWords, overallSpot, referenceSide, ringInCrop, ringOnCrop, ringOnPage, vendorOnly, vendorSide, type DrawerKind, type Ring } from '@/lib/chat-drawer';
-import { architectPage, decisionHelpRows, pageWords, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
+import { architectPage, decisionHelpRows, pageWords, referenceWhere, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
 import { isInternal, proofGroup, ruleNoteWords, type RuleNoteWords } from '@/lib/chat-proof';
 import { boxOnPicture, decisionsWords, isDrawingNeededItem, isRefusedString, itemParts, pageHeading, shortValue, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultTab } from '@/lib/chat-result';
 import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
@@ -401,10 +401,10 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
 
             <div className="grid min-w-0 grid-cols-2 gap-3 max-md:gap-2">
               <ValueCard side="vendor" finding={finding} label={sideLabels(finding).vendor} value={vendor.main} tone={group === 'clouded' ? 'wrong' : null} note={vendor.note ? `Printed ${finding.vendor}` : null} src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} />
-              <ValueCard side="architect" finding={finding} label={should ? 'Should be' : sideLabels(finding).architect} value={should ? should.main : finding.architect ? finding.architect.replace(/"/g, '″').replace(/'/g, '′') : '—'} tone={should ? 'right' : null} note={should?.note ? `From ${should.note}` : null} src={finding.arch_picture_id ? pictureUrl(finding.arch_picture_id) : null} />
+              <ValueCard side="architect" finding={finding} label={should ? 'Should be' : sideLabels(finding).architect} value={should ? should.main : finding.architect ? finding.architect.replace(/"/g, '″').replace(/'/g, '′') : '—'} tone={should ? 'right' : null} note={should?.note ? `From ${should.note}` : null} src={finding.arch_picture_id && !finding.reference_page?.outside ? pictureUrl(finding.arch_picture_id) : null} />
             </div>
 
-            {pagePicture && (finding.vendor_box || finding.arch_box) && <PageSpot finding={finding} src={pagePicture((finding.vendor_box ?? finding.arch_box)!.page)} />}
+            {pagePicture && (finding.vendor_box || (finding.arch_box && !finding.reference_page?.outside)) && <PageSpot finding={finding} src={finding.vendor_box ? pagePicture(finding.vendor_box.page, whereOf(finding.vendor_box, true)) : pagePicture(finding.arch_box!.page, whereOf(finding.arch_box!, false))} />}
 
             <section aria-label="Why" className="grid min-w-0 gap-2">
               <h3 className="text-xs font-semibold text-muted-foreground">{group === 'clouded' ? 'Why it is Wrong' : group === 'right' ? 'Why it is Right' : group === 'dismissed' ? 'What code found' : group === 'rule_note' ? 'Why GV asks the architect' : 'Why it was not compared'}</h3>
@@ -527,44 +527,62 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
   const part = kind === 'clouded' ? wrongPartWords(finding) : null;
   const tell = part ? `Change the ${part.part} part to ${part.should}${part.overall ? `: the ${part.overall} overall is right` : ''}.` : kind === 'clouded' ? reviewerWords(finding).tell : null;
   const page = vendorBox?.page ?? finding.page;
+  // The vendor's side is its own file's page: a set with two vendor files (rounds) has another.
+  const vendorWhere = whereOf(vendorBox, true);
 
   // The vendor's side: the evidence crop ringed; else (or "Whole page") the vendor's page picture.
   const vendorSpot: PicturePlan | null = finding.vendor_picture_id
     ? { src: pictureUrl(finding.vendor_picture_id), ring: (w, h) => ringOnCrop(vendorBox, w, h), inner: overall ? (w, h) => ringInCrop(vendorBox, overall, w, h) : null, focus: false }
-    : pagePicture && vendorBox ? { src: pagePicture(vendorBox.page), ring: (w, h) => ringOnPage(vendorBox, w, h), inner: overall ? (w, h) => ringOnPage(overall, w, h) : null, focus: true }
+    : pagePicture && vendorBox ? { src: pagePicture(vendorBox.page, vendorWhere), ring: (w, h) => ringOnPage(vendorBox, w, h), inner: overall ? (w, h) => ringOnPage(overall, w, h) : null, focus: true }
       : pagePicture && kind === 'drawing_needed' ? { src: pagePicture(finding.page), ring: null, focus: false }
         : null;
-  const vendorPagePlan: PicturePlan | null = pagePicture ? { src: pagePicture(page), ring: vendorBox ? (w, h) => ringOnPage(vendorBox, w, h) : null, inner: overall ? (w, h) => ringOnPage(overall, w, h) : null, focus: false } : null;
+  const vendorPagePlan: PicturePlan | null = pagePicture ? { src: pagePicture(page, vendorWhere), ring: vendorBox ? (w, h) => ringOnPage(vendorBox, w, h) : null, inner: overall ? (w, h) => ringOnPage(overall, w, h) : null, focus: false } : null;
   const vendorPlan = whole && vendorPagePlan ? vendorPagePlan : vendorSpot;
 
   // The reference: the architect's crop ringed green; the architect's spot on the same sheet; the
   // vendor's own measured spot; else the architect's page itself, ringed when its spot is known
   // (results v2 follow-up: the drawer said "no picture" though the item names an architect page).
-  const archBox = finding.arch_box ?? null;
+  // A spot code found off the item's pair (stream V) is not its page: its picture is never shown
+  // as the architect's; the pair's page is, with a note.
+  const offPair = Boolean(finding.reference_page?.outside);
+  const archBox = offPair ? null : finding.arch_box ?? null;
+  const archPicture = offPair ? null : finding.arch_picture_id ?? null;
   const rules = finding.source === 'rules' || Boolean(finding.rule_check_id);
   const onVendorPage = architectOnVendorPage(finding);
-  const archPageNumber = archBox?.page ?? (own || rules ? null : finding.vs_page ?? null);
+  // One page of truth (stream V): with no spot, the architect page is the item's reference page
+  // from its pair, in ITS file; none when it has none (never page N of the first architect file).
+  const reference = referenceWhere(finding);
+  const stamped = Boolean(finding.reference_page);
+  const archPageNumber = archBox?.page ?? (own || rules ? null : stamped ? reference?.page ?? null : finding.vs_page ?? null);
+  const referenceFile: PageWhere = stamped ? (reference?.file ? { file: reference.file } : {}) : { side: 'architect' };
   const referenceSpot: PicturePlan | null = kind === 'drawing_needed' ? null
-    : finding.arch_picture_id ? { src: pictureUrl(finding.arch_picture_id), ring: (w, h) => ringOnCrop(archBox, w, h), focus: false }
-      : pagePicture && archBox && onVendorPage ? { src: pagePicture(archBox.page), ring: (w, h) => ringOnPage(archBox, w, h), focus: true }
+    : archPicture ? { src: pictureUrl(archPicture), ring: (w, h) => ringOnCrop(archBox, w, h), focus: false }
+      : pagePicture && archBox && onVendorPage ? { src: pagePicture(archBox.page, whereOf(archBox, true)), ring: (w, h) => ringOnPage(archBox, w, h), focus: true }
         : own ? vendorSpot
           : pagePicture && archBox ? { src: pagePicture(archBox.page, whereOf(archBox, false)), ring: (w, h) => ringOnPage(archBox, w, h), focus: true }
-            : pagePicture && archPageNumber !== null ? { src: pagePicture(archPageNumber, { side: 'architect' }), ring: null, focus: false }
+            : pagePicture && archPageNumber !== null && (referenceFile.file || referenceFile.side) ? { src: pagePicture(archPageNumber, referenceFile), ring: null, focus: false }
               : null;
   // "Whole page" on the reference side too: that file's page, the spot ringed when it is known.
-  const ownPage = archBox?.page ?? finding.vs_page ?? page;
+  // A vendor-only card's own page: another vendor page only for a cross-view or the vendor's own
+  // check; a card that is vendor-only because of its parts stays on its vendor page (its vs_page
+  // may be an architect page).
+  const ownOther = finding.source === 'cross_view' || finding.source === 'vendor_arithmetic' || finding.created_by === 'consistency';
+  const ownPage = archBox?.page ?? (ownOther ? finding.vs_page ?? page : page);
   const referencePagePlan: PicturePlan | null = !pagePicture || kind === 'drawing_needed' ? null
     : own ? { src: pagePicture(ownPage, whereOf(archBox, true)), ring: archBox ? (w, h) => ringOnPage(archBox, w, h) : vendorBox && ownPage === page ? (w, h) => ringOnPage(vendorBox, w, h) : null, focus: false }
-      : archBox ? { src: onVendorPage ? pagePicture(archBox.page) : pagePicture(archBox.page, whereOf(archBox, false)), ring: (w, h) => ringOnPage(archBox, w, h), focus: false }
+      : archBox ? { src: pagePicture(archBox.page, whereOf(archBox, onVendorPage)), ring: (w, h) => ringOnPage(archBox, w, h), focus: false }
         : null;
   const referencePlan = wholeReference && referencePagePlan ? referencePagePlan : referenceSpot;
   const referenceTone: RingTone = kind === 'clouded' || kind === 'right' || kind === 'dismissed' || kind === 'likely_problem' ? 'right' : 'neutral';
-  const architectPageWords = archPageNumber !== null ? ` page ${archPageNumber}` : '';
+  const referenceName = stamped && !archBox && reference?.file ? ` (${reference.file.replace(/\.pdf$/i, '')})` : '';
+  const architectPageWords = archPageNumber !== null ? ` page ${archPageNumber}${referenceName}` : '';
+  const noReference = stamped && reference === null && !own && !rules ? finding.reference_page?.why ?? 'no architect page is paired with this page' : null;
   const referenceCaption = kind === 'drawing_needed' ? null
     : own && part?.drawn ? `Measured on the vendor’s own drawing: this line is drawn ${part.drawn} long`
     : own ? `Measured on the vendor’s own drawing${noDrawing ? ' (no architect drawing of this unit)' : ''}`
       : rules && !archBox ? 'GV’s rule'
-        : !finding.arch_picture_id && !archBox && archPageNumber !== null ? `Architect${architectPageWords} · the spot is not marked`
+        : offPair && archPageNumber !== null ? `Architect${architectPageWords} · the item’s spot (page ${finding.arch_box?.page ?? '?'}) is not on its paired page`
+        : !archPicture && !archBox && archPageNumber !== null ? `Architect${architectPageWords} · the spot is not marked`
           : `Architect${architectPageWords}`;
   const referenceToggle = referencePagePlan !== null && referenceSpot !== null;
 
@@ -642,7 +660,7 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
                 {referenceToggle && <WholeButton whole={wholeReference} onToggle={() => setWholeReference(!wholeReference)} />}
               </span>
             ) : null}
-            emptyWords={noArchitectPictureWords(finding, noDrawing)}
+            emptyWords={noReference ? `No architect picture: ${noReference.charAt(0).toLowerCase()}${noReference.slice(1).replace(/\.$/, '')}` : noArchitectPictureWords(finding, noDrawing)}
           />
         )}
       </div>
@@ -894,8 +912,8 @@ function ValueCard({ side, finding, label, value, tone, note, src }: { side: 've
         <span className="text-[12.5px] text-muted-foreground">{label}</span>
         <span className={cn('num truncate text-[20px] leading-[26px] font-semibold max-md:text-[17px]', tone === 'wrong' && 'text-outcome-fail-fg', tone === 'right' && 'text-outcome-pass-fg')}>{value}</span>
       </figcaption>
-      <div className="p-2">{src ? <ZoomPane key={src} src={src} label={`${sideLabels(finding)[side]}, page ${page}`} frameClassName="h-[190px] max-md:h-[140px]" /> : <NoPicture compact />}</div>
-      <p className="border-t px-3 py-1.5 text-xs text-muted-foreground">{note ?? <>Page <span className="num">{page}</span></>}</p>
+      <div className="p-2">{src ? <ZoomPane key={src} src={src} label={page !== null ? `${sideLabels(finding)[side]}, page ${page}` : sideLabels(finding)[side]} frameClassName="h-[190px] max-md:h-[140px]" /> : <NoPicture compact />}</div>
+      <p className="border-t px-3 py-1.5 text-xs text-muted-foreground">{note ?? (page !== null ? <>Page <span className="num">{page}</span></> : 'No architect page')}</p>
     </figure>
   );
 }
@@ -918,8 +936,10 @@ function PageSpot({ finding, src }: { finding: ChatFinding; src: string }) {
     observer?.observe(node);
     return () => observer?.disconnect();
   }, [broken]);
-  const sameFile = finding.vendor_box && finding.arch_box && finding.vendor_box.file === finding.arch_box.file && finding.vendor_box.page === finding.arch_box.page;
-  const boxes = { vendor: boxOnPicture(finding.vendor_box), architect: sameFile || !finding.vendor_box ? boxOnPicture(finding.arch_box) : null };
+  // An architect spot off its pair (stream V) is never ringed as the architect's.
+  const archBox = finding.reference_page?.outside ? null : finding.arch_box ?? null;
+  const sameFile = finding.vendor_box && archBox && finding.vendor_box.file === archBox.file && finding.vendor_box.page === archBox.page;
+  const boxes = { vendor: boxOnPicture(finding.vendor_box), architect: sameFile || !finding.vendor_box ? boxOnPicture(archBox) : null };
   if (broken) return null;
   const height = 280;
   const scale = mode === 'page' && size ? view / size.width : 1;

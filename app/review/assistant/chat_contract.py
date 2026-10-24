@@ -639,6 +639,40 @@ class ChatFindingAlsoOnOut(BaseModel):
     arch_box: ChatBoxOut | None = None
 
 
+class ChatFindingPageOut(BaseModel):
+    """One upload's page."""
+
+    model_config = ConfigDict(frozen=True)
+
+    file: str
+    page: int
+
+
+class ChatFindingReferenceOut(BaseModel):
+    """The one architect page a finding is compared on (`reference_page.stamp`, stream V): set
+    from its vendor page's pair at the check's finish. Every picture, caption and "Whole page"
+    view of its architect side reads it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    file: str | None = Field(default=None, description="The architect upload's name.")
+    page: int | None = Field(
+        default=None, description="Its page in that file; null: no architect page (see why)."
+    )
+    why: str | None = Field(
+        default=None, description="Why there is no architect page, or why its spot is refused."
+    )
+    outside: bool = Field(
+        default=False,
+        description="The item's architect spot or page is not on its pair (never sent).",
+    )
+    pair: list[ChatFindingPageOut] = Field(
+        default_factory=list,
+        description="Every architect page its vendor page is paired with (then its brand "
+        "prototype pages): where code looks for its architect value.",
+    )
+
+
 class ChatFindingDimOut(BaseModel):
     """A numbered dimension label a finding's side was built from (#1558)."""
 
@@ -871,6 +905,10 @@ class ChatFindingOut(BaseModel):
     id: str
     page: int
     vs_page: int | None = None
+    reference_page: ChatFindingReferenceOut | None = Field(
+        default=None,
+        description="Two separate uploads: the architect page it is compared on, from its pair.",
+    )
     item: str
     category: str = Field(
         description="The product the item belongs to (a product id from `GET /products`), or "

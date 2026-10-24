@@ -592,15 +592,17 @@ def plan_page_picture(
     """A page's picture in the set's pack (drawings only, 100 dpi), if made: the vendor's file's
     page; with `file`, that upload's page (its name exactly as the set lists it, as a finding's
     box names it); with `side="architect"`, the architect's file's page (the result screen's
-    drawer, 2026-10-23: the architect's side has its own whole page). An unknown file, or no
-    architect's file, gives none (never the vendor's page in its place)."""
+    drawer, 2026-10-23: the architect's side has its own whole page). An unknown file, no
+    architect's file, or several (which one is not said: page N of the first is another drawing,
+    stream V), gives none (never the vendor's page, nor a guessed file's, in its place)."""
     workspace = ChatWorkspace(_plan_root(chat_root, package_id))
     listing = read_listing(workspace)
     main: Mapping[str, Any] | None
     if file is not None:
         main = next((item for item in listing if str(item.get("name") or "") == file), None)
     elif side == "architect":
-        main = next((item for item in listing if _is_architect_upload(item)), None)
+        architects = [item for item in listing if _is_architect_upload(item)]
+        main = architects[0] if len(architects) == 1 else None
     else:
         main = main_upload(listing)
     if main is None:

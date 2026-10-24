@@ -195,8 +195,8 @@ describe('the drawer fixes on the screen', () => {
     expect(sides[1].querySelector('img')?.getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/arch-w1');
     await user.click(within(sides[1]).getByRole('button', { name: 'Whole page' }));
     expect(sides[1].querySelector('img')?.getAttribute('src')).toBe('/api/v1/packages/p/plan-pages/6?file=Made-up%20architect%20set.pdf');
-    // The vendor side's own Whole page is still the vendor's page.
+    // The vendor side's own Whole page is still the vendor's page, of its own file (stream V).
     await user.click(within(sides[0]).getByRole('button', { name: 'Whole page' }));
-    expect(sides[0].querySelector('img')?.getAttribute('src')).toBe('/api/v1/packages/p/plan-pages/5');
+    expect(sides[0].querySelector('img')?.getAttribute('src')).toBe('/api/v1/packages/p/plan-pages/5?file=vendor.pdf');
   });
 });
