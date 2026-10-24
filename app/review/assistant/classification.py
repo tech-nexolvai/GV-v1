@@ -1224,6 +1224,20 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
     held = _tag_read(finding)
     if held is not None:
         return held
+    rule = finding.get("claim_rule")
+    if (
+        not proved
+        and isinstance(rule, Mapping)
+        and rule.get("outcome") == "not_compared"
+        and rule.get("why")
+    ):
+        # Code's claim rules could not settle it (`claim_rules`: a unit count over the item's
+        # regular and reversed sheets): their reason, never a Likely problem or "not proved".
+        return _not(
+            "not_proved",
+            _short(rule.get("why"), 300),
+            "the unit list of every sheet of {thing} (its regular and reversed sheets)",
+        )
     source = str(finding.get("source") or "")
     parts = finding.get("architect_parts")
     if (
