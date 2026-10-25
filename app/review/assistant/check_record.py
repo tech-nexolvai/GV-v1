@@ -21,6 +21,12 @@ The record is data (`check_record.json`, counts only: never a client value). The
 the local test bank and false-red gate, which hold GV's real drawings and keys and never leave the
 owner's machine; whoever re-measures them updates the file in a PR.
 
+**The accuracy line** (`record_line`, plan change #10): what the answer's accuracy click-through
+says was measured comes from this record, never from a hand-edited constant: each kind that may
+make reds with its clean keyed cases and the most its false-red share can be at 95% confidence
+with none seen in that many cases (exact: 1 - 0.05^(1/n), the "rule of three"; rounded up to a
+whole percent: 51 cases say "at most about 6%", 31 "at most about 10%").
+
 Settings (environment, read on each call so a test can change them):
 `GV_ASSISTANT_CHECK_RECORD` `on` (default) / `off` (every kind may make reds, as before);
 `GV_ASSISTANT_CHECK_RECORD_MIN_CASES` (default 30).
@@ -31,6 +37,7 @@ Pure code: no AI, no network; reads only its own data file.
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -46,12 +53,15 @@ __all__ = [
     "KINDS",
     "MIN_CASES_ENV",
     "RECORD_FILE",
+    "SHORT_NAMES",
     "SWITCH_ENV",
     "Record",
+    "at_most_percent",
     "cleared",
     "held_reason",
     "kind_of",
     "min_cases",
+    "record_line",
     "record_of",
     "records",
 ]
@@ -81,6 +91,25 @@ KINDS: Final[Mapping[str, str]] = {
     "gv_rule": "another GV rule check",
     "size_vs_architect": "a size differs from the architect's",
 }
+
+#: Each kind in a few plain words, for the accuracy line (`record_line`).
+SHORT_NAMES: Final[Mapping[str, str]] = {
+    "vendor_string": "the vendor's own dimension strings",
+    "vendor_span": "one span printed twice by the vendor",
+    "vendor_pages": "one item in two sizes on the vendor's pages",
+    "filler": "fillers against GV's range",
+    "sink_offset": "sink offsets against GV's standard",
+    "sink_centre": "sink centre against the sink base",
+    "run_fit": "cabinet runs against the wall",
+    "splash": "splashes against the architect's",
+    "missing_item": "millwork missing on the vendor's drawing",
+    "finish_code": "finish and material codes",
+    "tag": "tags and model numbers",
+    "gv_rule": "other GV rules",
+    "size_vs_architect": "sizes against the architect's",
+}
+#: The confidence of the bound the accuracy line states (95%).
+_BOUND_RISK: Final = 0.05
 
 #: The finding creators each kind's code check stamps (`created_by`; the modules' `CREATED_BY`).
 _CREATED_BY: Final[Mapping[str, str]] = {
@@ -213,3 +242,52 @@ def held_reason(finding: Mapping[str, Any]) -> str | None:
     else:
         state = f"it is clean on {record.keyed_cases} of the {needed} keyed cases it needs"
     return f"Code found a difference, but {HELD_WORDS} ({KINDS[kind]}: {state})."
+
+
+def at_most_percent(keyed_cases: int) -> int | None:
+    """The most a kind's false-red share can be, in whole percent rounded up, at 95% confidence
+    when it made no false red in `keyed_cases` (exact: 1 - 0.05^(1/n)); `None` with no cases."""
+    if keyed_cases <= 0:
+        return None
+    share = 1.0 - float(_BOUND_RISK ** (1 / keyed_cases))
+    return math.ceil(round(share * 100, 6))
+
+
+def record_line(path: Path | None = None) -> str:
+    """What was measured, in plain words, from the record (the answer's accuracy click-through):
+    each kind that may make reds with its keyed cases and bound, then the rest in one sentence.
+    Counts only; never a client value."""
+    if not _on():
+        return (
+            "Each check's track record is switched off on this server: every kind of check may "
+            "make reds."
+        )
+    needed = min_cases()
+    found = records(path)
+    clean: list[str] = []
+    failed: list[str] = []
+    waiting = 0
+    for kind in KINDS:
+        record = found.get(kind) or Record(kind, 0, 0)
+        name = SHORT_NAMES[kind]
+        if record.false_reds:
+            reds = "false red" if record.false_reds == 1 else "false reds"
+            failed.append(f"{name}: {record.false_reds} {reds} in {record.keyed_cases} keyed cases")
+        elif record.clean_on(needed):
+            bound = at_most_percent(record.keyed_cases)
+            about = f" (at most about {bound}%)" if bound is not None else ""
+            clean.append(f"{name}: 0 false reds in {record.keyed_cases} keyed cases{about}")
+        else:
+            waiting += 1
+    if clean:
+        line = "Measured on GV's answer keys: " + "; ".join(clean) + "."
+    else:
+        line = f"Measured on GV's answer keys: no kind of check has {needed} clean keyed cases yet."
+    if failed:
+        line += " Held back after a false red: " + "; ".join(failed) + "."
+    if waiting:
+        line += (
+            f" {'Every other kind' if clean or failed else 'Every kind'} of check has fewer than "
+            f"{needed} clean keyed cases, so its reds wait as Likely problems."
+        )
+    return line

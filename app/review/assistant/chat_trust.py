@@ -55,7 +55,7 @@ from time import monotonic
 from types import ModuleType
 from typing import Any, Final
 
-from app.review.assistant import round_reference, witness
+from app.review.assistant import check_record, round_reference, witness
 from app.review.assistant.chat_findings import finding_categories, live_findings, page_ranges
 from app.review.assistant.classification import READER_ERROR, READER_ERROR_WORDS
 from app.review.assistant.dim_findings import label_checks
@@ -65,7 +65,6 @@ from app.review.assistant.work_pool import code_workers, run_ordered
 
 __all__ = [
     "ACCURACY_CALIBRATION_LINE",
-    "ACCURACY_MEASURED_LINE",
     "ACCURACY_POINTS",
     "CHECKS_MODULE",
     "CITE_POINTS",
@@ -77,6 +76,7 @@ __all__ = [
     "TRUST_WORDS",
     "Recorded",
     "accuracy",
+    "accuracy_measured_line",
     "apply_checks",
     "cite_evidence_kind",
     "cloud_kind",
@@ -1220,10 +1220,13 @@ def shown_counts(findings: Iterable[Mapping[str, Any]]) -> dict[str, int]:
 
 # ---- the accuracy score (CONTRACT5) -------------------------------------------------------------
 
-#: What the eval kit measured on GV's test sets (the orchestrator updates this line; never invented).
-ACCURACY_MEASURED_LINE: Final = (
-    "Measured on GV's test sets: 53 of 55 checkable findings right in a full check."
-)
+
+def accuracy_measured_line() -> str:
+    """What was measured on GV's answer keys, from each check's track record (`check_record.json`,
+    re-measured by the local test bank and written in a PR): never a hand-edited number (plan
+    change #10). Read on each answer, so a new record shows on the next answer."""
+    return check_record.record_line()
+
 
 #: Points per finding, by trust level and evidence kind: the share of such findings expected to be
 #: right. CALIBRATED from the strict eval on GV's test sets (the orchestrator updates this table
@@ -1344,7 +1347,7 @@ def accuracy(
     # A set gap (#1584: a sheet the set lacks) is not this answer's work: not counted.
     item_unknowns = sum(1 for u in unknowns if u.get("scope") not in ("page", "set"))
     base: dict[str, Any] = {
-        "measured": ACCURACY_MEASURED_LINE,
+        "measured": accuracy_measured_line(),
         "calibration": ACCURACY_CALIBRATION_LINE,
         "not_compared": not_compared,
         "unknowns": len(unknowns),

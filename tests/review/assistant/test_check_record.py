@@ -208,3 +208,74 @@ def test_a_gv_rule_item_code_never_checked_is_never_red(record: Any) -> None:
     record(size_vs_architect=(30, 0))
     assert proof_group(checked) == "likely_problem"  # gv_rule has no record yet: held back
     assert proof_group(claim) == "not_compared"
+
+
+# ---- the accuracy line comes from the record (plan change #10) ------------------------------------
+
+
+def test_the_bound_is_the_exact_rule_of_three_rounded_up() -> None:
+    # 0 false reds in n keyed cases: at most 1 - 0.05^(1/n), in whole percent rounded up.
+    assert check_record.at_most_percent(0) is None
+    assert check_record.at_most_percent(30) == 10
+    assert check_record.at_most_percent(51) == 6
+    assert check_record.at_most_percent(59) == 5
+    assert check_record.at_most_percent(299) == 1
+
+
+def test_the_accuracy_line_says_what_the_record_says(record: Any) -> None:
+    record(size_vs_architect=(51, 0), vendor_string=(31, 0), tag=(4, 0))
+    line = check_record.record_line()
+    assert line == (
+        "Measured on GV's answer keys: the vendor's own dimension strings: 0 false reds in 31 "
+        "keyed cases (at most about 10%); sizes against the architect's: 0 false reds in 51 keyed "
+        "cases (at most about 6%). Every other kind of check has fewer than 30 clean keyed cases, "
+        "so its reds wait as Likely problems."
+    )
+
+
+def test_the_accuracy_line_with_no_cleared_kind_or_a_false_red(record: Any) -> None:
+    record(size_vs_architect=(80, 1))
+    line = check_record.record_line()
+    assert line.startswith(
+        "Measured on GV's answer keys: no kind of check has 30 clean keyed cases"
+    )
+    assert "Held back after a false red: sizes against the architect's: 1 false red in 80" in line
+    assert line.endswith(
+        "Every other kind of check has fewer than 30 clean keyed cases, so its "
+        "reds wait as Likely problems."
+    )
+
+
+def test_the_accuracy_line_follows_the_minimum_and_the_switch(
+    record: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record(size_vs_architect=(20, 0))
+    assert "no kind of check has 30" in check_record.record_line()
+    monkeypatch.setenv(check_record.MIN_CASES_ENV, "20")
+    assert "sizes against the architect's: 0 false reds in 20 keyed cases (at most about 14%)" in (
+        check_record.record_line()
+    )
+    monkeypatch.setenv(check_record.SWITCH_ENV, "off")
+    assert "switched off" in check_record.record_line()
+
+
+def test_every_kind_has_a_short_name() -> None:
+    assert set(check_record.SHORT_NAMES) == set(check_record.KINDS)
+
+
+def test_the_answers_accuracy_says_the_records_line(record: Any) -> None:
+    from app.review.assistant.chat_trust import accuracy
+
+    record(size_vs_architect=(51, 0))
+    assert accuracy([], [], None)["measured"] == check_record.record_line()
+    assert "51 keyed cases" in accuracy([], [], None)["measured"]
+
+
+def test_the_committed_record_gives_a_line_without_a_hand_edited_number(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(check_record.SWITCH_ENV, raising=False)
+    monkeypatch.delenv(check_record.MIN_CASES_ENV, raising=False)
+    line = check_record.record_line(check_record.RECORD_FILE)
+    assert line.startswith("Measured on GV's answer keys: ")
+    assert "53 of 55" not in line
