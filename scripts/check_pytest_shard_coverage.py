@@ -7,6 +7,7 @@ import subprocess
 import sys
 from collections import Counter
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -66,23 +67,24 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     base = [sys.executable, "-m", "pytest", "--collect-only", "-q"]
     duration_args = ["--durations-path", args.durations_path]
-    full = _collect(base + duration_args, cwd=root)
-    shards = [
-        _collect(
-            base
-            + [
-                "--splits",
-                str(args.splits),
-                "--group",
-                str(group),
-                "--splitting-algorithm",
-                "least_duration",
-            ]
-            + duration_args,
-            cwd=root,
-        )
+    commands = [base + duration_args] + [
+        base
+        + [
+            "--splits",
+            str(args.splits),
+            "--group",
+            str(group),
+            "--splitting-algorithm",
+            "least_duration",
+        ]
+        + duration_args
         for group in range(1, args.splits + 1)
     ]
+    # The collections are independent pytest processes, so they run side by side: on CI's four-CPU
+    # runner that took the check from about two minutes (five in a row) to about the time of one.
+    # `map` keeps the order, so the first list is still the full collection.
+    with ThreadPoolExecutor(max_workers=len(commands)) as pool:
+        full, *shards = pool.map(lambda command: _collect(command, cwd=root), commands)
     try:
         validate_partition(full, shards)
     except ValueError as exc:
