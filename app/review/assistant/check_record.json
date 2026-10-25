@@ -1,15 +1,15 @@
 {
  "about": "Each check kind's track record on GV's answer keys (counts only; measured on the owner's machine by the local test bank and false-red gate, never client values). keyed_cases = decisions a key can judge (right reds, false reds, known traps kept non-red); a kind makes reds only with 0 false reds on at least the minimum.",
  "measured": "2026-10-25",
- "bank_run": "20261025-002719",
- "gate_run": "20261025-004523",
+ "bank_run": "20261025-052123",
+ "gate_run": "20261025-045828",
  "kinds": {
   "vendor_string": {
-   "keyed_cases": 21,
+   "keyed_cases": 31,
    "false_reds": 0,
-   "right_reds": 17,
-   "kept_quiet": 4,
-   "unjudged_reds": 4
+   "right_reds": 21,
+   "kept_quiet": 10,
+   "unjudged_reds": 0
   },
   "vendor_span": {
    "keyed_cases": 0,
@@ -89,10 +89,10 @@
    "unjudged_reds": 0
   },
   "size_vs_architect": {
-   "keyed_cases": 52,
+   "keyed_cases": 51,
    "false_reds": 0,
    "right_reds": 16,
-   "kept_quiet": 36,
+   "kept_quiet": 35,
    "unjudged_reds": 0
   }
  }
