@@ -298,3 +298,26 @@ def test_a_span_nearer_another_label_of_the_same_value_is_that_label_s() -> None
     page = _page(d, REFERENCE)
     assert "D2" not in page.spans
     assert (page.spans["D3"].a, page.spans["D3"].b) == (100.0, 103.0)
+
+
+# ---- GV's formula: top width = the chain's sum (final plan #9) -----------------------------------
+
+
+def test_a_right_by_the_chain_shows_the_formula() -> None:
+    found = _escalated(_finding(36), reference(), vendor(36))
+    assert found["formula"]["kind"] == "formula_chain" and found["formula"]["outcome"] == "same"
+    assert found["settled"]["how"].startswith("GV's formula (top width = ")
+
+
+def test_a_different_sum_whose_ends_code_proved_is_the_formula_s_likely_problem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        dim_ends, "same_kinds_run", lambda *_a: ("same_extent", "both end at the walls")
+    )
+    found = _escalated(_finding(37), reference(), vendor(37))
+    assert proof.proof_group(found) == "likely_problem"
+    assert found["formula"]["kind"] == "formula_chain"
+    assert found["formula"]["outcome"] == "different" and found["formula"]["expected"] == '36"'
+    assert "1\" more" in found["formula"]["why"]
+    assert proof.likely_words(found).startswith("Please check and confirm: by GV's formula")

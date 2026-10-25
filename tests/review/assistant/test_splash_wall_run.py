@@ -244,6 +244,9 @@ def test_the_same_length_as_a_wall_to_wall_run_is_right() -> None:
     assert found["settled"]["method"] == "escalation_labels"
     assert found["splash_views"]["by"] == splash_views.WALL_RUN
     assert "from wall to wall" in found["settled"]["how"]
+    # GV's formula is shown, as its own kind of check (final plan #9).
+    assert found["settled"]["how"].startswith("GV's formula (back splash length = ")
+    assert found["formula"]["kind"] == "formula_splash"
     # The like-for-like step that runs on Rights keeps it.
     assert splash_views.downgrade_unlike(found, None) is None
 

@@ -73,6 +73,7 @@ __all__ = [
     "page_of",
     "right_ends",
     "same_kinds",
+    "same_kinds_run",
     "small_span",
     "touched",
     "unlike_reason",
@@ -1601,6 +1602,61 @@ def same_kinds(v_page: Page, vendor: Ends, a_page: Page, architect: Ends) -> tup
     ):
         sides = [(str(pair[index]), pair[2]) for pair in shared]
         rivals = _rivals(page, ends, sides)
+        if rivals:
+            return "cannot_tell", (
+                f"another dimension on the {whose} drawing ({rivals[0]}) runs between the same "
+                "kinds of points"
+            )
+    words = " and ".join(KIND_WORDS[next(k for k in _ORDER if k in pair[2])] for pair in shared)
+    return "same_extent", (
+        f"both run between the same kinds of points on both drawings ({words}), each drawn to its "
+        "value at its own scale, and no other dimension on either drawing does"
+    )
+
+
+def same_kinds_run(v_page: Page, vendor: Ends, a_page: Page, chain: Chain) -> tuple[Extent, str]:
+    """`same_kinds` for the vendor's dimension against the reference's chain run (`chain_of`, GV's
+    formula top width = the chain's sum, final plan #9): the chain's run has no printed value of
+    its own, so each of its parts must agree with its drawn length instead; the rest is the same
+    (both ends of both on the same proving kinds facing the same way, at most `KINDS_MAX_DIFF_IN`
+    apart, no other dimension on either drawing between such points)."""
+    architect = chain.run
+    if vendor.span.axis != architect.span.axis:
+        return "different_extent", "one is a width and the other a height"
+    verdict, why = alike(vendor, architect)
+    if verdict == "unlike":
+        return "different_extent", why
+    top = _top_against_casework(vendor, architect)
+    if top is not None:
+        return "different_extent", top
+    said = drawn_words(v_page, vendor.span.id, "the vendor's")
+    if said is not None:
+        return "cannot_tell", f"{said}: its number does not agree with its drawing"
+    if not _agrees(v_page, vendor.span.id):
+        return "cannot_tell", "code could not check the vendor's value against its drawn length"
+    for part in chain.parts:
+        if not _agrees(a_page, part.id):
+            return "cannot_tell", "code could not check every part of the reference's chain"
+    ways = [
+        found
+        for mirrored in (False, True)
+        if (found := _shared(v_page, vendor, a_page, architect, mirrored)) is not None
+    ]
+    if not ways:
+        return "cannot_tell", "code could not name both ends as the same kinds of points on both"
+    if abs(vendor.span.inches - architect.span.inches) > KINDS_MAX_DIFF_IN:
+        return "cannot_tell", (
+            f'they differ by more than {KINDS_MAX_DIFF_IN}" (two different dimensions between such '
+            "points, more likely)"
+        )
+    shared = ways[0]
+    parts = {part.id for part in chain.parts}
+    for whose, page, ends, index in (
+        ("vendor's", v_page, vendor, 0),
+        ("reference's", a_page, architect, 1),
+    ):
+        sides = [(str(pair[index]), pair[2]) for pair in shared]
+        rivals = [r for r in _rivals(page, ends, sides) if r not in parts]
         if rivals:
             return "cannot_tell", (
                 f"another dimension on the {whose} drawing ({rivals[0]}) runs between the same "

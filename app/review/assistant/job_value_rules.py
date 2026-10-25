@@ -76,8 +76,8 @@ RULES: Final[tuple[JobRule, ...]] = (
     JobRule(
         "CT-DEPTH-001",
         "countertop depth",
-        "countertop depth = cabinet depth + overhang",
-        (("cabinet_depth", "cabinet depth"), ("countertop_overhang", "countertop overhang")),
+        "countertop depth = cabinet depth + front overhang",
+        (("cabinet_depth", "cabinet depth"), ("countertop_overhang", "front overhang")),
         re.compile(r"\b(?:counter\s*-?\s*)?top\s+depth\b", re.IGNORECASE),
         frozenset({"countertop"}),
     ),
@@ -154,7 +154,8 @@ def mark(finding: Mapping[str, Any], rules_md: str | None) -> dict[str, Any] | N
 
 
 def words(record: Mapping[str, Any]) -> tuple[str, str]:
-    """(why, what would settle it) for an item `mark` named, in plain words."""
+    """(why, what would settle it) for an item `mark` (or a formula, `formulas.missing_record`)
+    named, in plain words: the formula, and the job values it waits for."""
     missing = [str(m) for m in record.get("missing") or () if m]
     values = (
         " and ".join(missing)
@@ -162,9 +163,11 @@ def words(record: Mapping[str, Any]) -> tuple[str, str]:
         else ", ".join(missing[:-1]) + f" and {missing[-1]}"
     )
     verb = "is" if len(missing) == 1 else "are"
+    rule = str(record.get("rule") or "")
+    named = f" ({rule})" if rule and rule != record.get("name") else ""
     why = (
-        f"GV's rule for this size: {record.get('formula')} ({record.get('rule')}); the job's "
-        f"{values} {verb} not set, so code could not run it (the architect's size it was set "
-        "against was not shown to measure the same points)"
+        f"GV's formula for this size: {record.get('formula')}{named}. The job's {values} {verb} "
+        "not entered yet, so code could not run it (the reference's size it was set against "
+        "measures something else)"
     )
-    return why, f"the job's {values} (job values), so GV's rule {record.get('rule')} can run"
+    return why, f"the job's {values}, entered once for the job; then GV's formula runs"
