@@ -252,11 +252,15 @@ def test_build_from_a_pack_folder(tmp_path: Path) -> None:
     (tmp_path / "notes.json").write_text(json.dumps(_notes()))
     work = build_worklist(tmp_path, FILE)
     # Read as a full check reads it: code's likely answers to the plan check laid over the map
-    # (page 7 compared with the architect page before it; page 8's unheaded drawing the vendor's).
+    # (page 8's unheaded drawing the vendor's). Never a pair: page 7 is not compared with the
+    # architect page before it (a guess by position, 2026-10-25); it has nothing to compare with.
     by_id = {item.id: item for item in work.items}
-    assert sorted(by_id) == ["p2.v1", "p3.v2", "p5.v1.1", "p5.v1.2", "p7.v1", "p8.v0"]
-    assert [d.ref for d in by_id["p7.v1"].architect] == ["p6.a1"]
+    assert sorted(by_id) == ["p2.v1", "p3.v2", "p5.v1.1", "p5.v1.2", "p8.v0"]
     assert [d.ref for d in by_id["p8.v0"].architect] == ["p8.a1"]
+    assert [item.id for item in work.alone] == ["p7.v1"]
+    assert any(
+        s.page == 7 and "nothing to compare it with" in s.reason for s in work.skipped
+    ), work.skipped
     assert work.uncovered == ()
     with pytest.raises(FileNotFoundError):
         build_worklist(tmp_path / "missing", FILE)

@@ -217,6 +217,11 @@ def test_an_unpaired_page_is_not_compared_from_the_start_and_never_sent_on(
     assert "Not finished" not in outcome.text or "page 5 " not in outcome.text
     # A minority unpaired: no first-line warning.
     assert "vendor pages have an architect drawing in this upload" not in outcome.text
+    # The first line says the one true reason it was not compared (never a list of maybes).
+    first = next(line for line in outcome.text.splitlines() if line.startswith("Checked "))
+    assert first.endswith(
+        "3 pages were not compared (title, divider or skipped pages; no drawing to compare with)."
+    ), first
 
 
 def test_most_pages_unpaired_are_said_first_and_the_check_still_runs(

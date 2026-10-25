@@ -19,11 +19,13 @@ The Run popover shows at most `MAX_DOUBTS` of them as one-click questions; with 
 once, so the one-button path stays. **Nobody has to answer (#1581, owner 2026-10-18: no human
 step)**: a full check lays code's own likely answer (each question's first option) over every
 question left unanswered (`with_assumptions`), runs on, and writes each one on the cloud drawing's
-cover ("Assumed: page 28, the lower drawing is the architect's drawing"). An answer given in the
-popover still wins. Each answer is kept append-only in the pack's
-`plan_answers.jsonl` (the pack is shared by every chat on the same PDFs, so it is never asked
-again) and laid over the page map whenever code reads it (`apply_answers`): the plan, the helpers'
-briefs and their footers all see the answered map. Later, the set notes can carry them.
+cover ("Assumed: page 28, the lower drawing is the architect's drawing"). Never a **pair**: code
+does not guess which architect page a vendor page goes with (2026-10-25); unanswered, the page has
+no architect drawing paired with it. An answer given in the popover still wins. Each answer is
+kept append-only in the pack's `plan_answers.jsonl` (the pack is shared by every chat on the same
+PDFs, so it is never asked again) and laid over the page map whenever code reads it
+(`apply_answers`): the plan, the helpers' briefs and their footers all see the answered map.
+Later, the set notes can carry them.
 
 Pure code on the page map, plus the small answers file: no PDF opened, no AI call.
 """
@@ -519,10 +521,13 @@ def assumptions(
     page_map: Mapping[str, Any] | None, main_file: str | None, answers: Mapping[str, str]
 ) -> list[tuple[Doubt, str, str]]:
     """Every question nobody answered, with code's likely answer (its first option) and the
-    assumption in plain words: (question, answer, words)."""
+    assumption in plain words: (question, answer, words). A "pair" question never gets one: its
+    first option ("compare it with the nearest architect page before it") is a guess by position,
+    and a wrong pair is worse than none (owner, 2026-10-25: "never compare something wrong"). The
+    page then has no architect drawing paired with it; a reviewer's own answer still pairs it."""
     out: list[tuple[Doubt, str, str]] = []
     for doubt in doubts(page_map, main_file, answers, limit=None):
-        if not doubt.options:
+        if not doubt.options or doubt.kind == "pair":
             continue
         value, label = doubt.options[0]
         out.append((doubt, value, _assumed_words(doubt, value, label)))
