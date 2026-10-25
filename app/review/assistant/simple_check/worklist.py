@@ -975,8 +975,11 @@ def worklist_from(
         across_pairs[half.ref] = decided
     if across_pairs:
         marked = _with_marks(facts_of, across_context)
-        _item_sheets(across_pairs, marked, across_context)
+        # The swap audit first (a crossed pair lends nothing to its sheets), then again on the
+        # sheets that took a pair.
         _swap_audit(across_pairs, marked, by_item, across_context)
+        if _item_sheets(across_pairs, marked, across_context):
+            _swap_audit(across_pairs, marked, by_item, across_context)
     for half in vendor_halves:
         decided = across_pairs.get(half.ref)
         if decided is not None and decided.chosen and half.from_upload:
@@ -2192,13 +2195,17 @@ def _item_sheets(
     pairs: dict[str, AcrossPair],
     facts_of: Callable[[Drawing], pairing_module.Facts],
     context: _Across,
-) -> None:
+) -> bool:
     """The vendor's own sheets of one item (plan change 6): vendor drawings side by side in the
     vendor's file whose set index item titles name the same item (`pairing.same_item`, checked
     printed), of one project, a title no other run of pages carries. When one of them is paired
     and the others are not (pairing unsure, never "drawing needed"), the others are paired with
-    the same architect drawing, unless code rules it out for them, the matcher named another
-    page or none, code picked another, or they name another hand or variant. In place."""
+    the same architect drawing, unless code rules it out for them, the matcher's first pick is
+    another page or none, code picked another, or they name another hand or variant. The matcher
+    is still asked about them (code's own pass did not pair them). A mirror code proved on one
+    sheet is not proved on the others: their ends from the left or right are not compared. In
+    place; whether any sheet took a pair."""
+    took = False
     order = sorted(pairs, key=lambda ref: (pairs[ref].vendor.file, pairs[ref].vendor.own_page))
     titles = {ref: facts_of(pairs[ref].vendor).index_title for ref in order}
 
@@ -2239,7 +2246,10 @@ def _item_sheets(
             theirs = facts_of(pair.vendor)
             if (
                 not set(anchor.chosen) <= open_
-                or (pair.answer is not None and not set(anchor.chosen) & set(pair.answer))
+                or (
+                    pair.answer is not None
+                    and (not pair.answer or pair.answer[0] not in anchor.chosen)
+                )
                 or (pair.code_pick is not None and pair.code_pick not in anchor.chosen)
                 or theirs.hand != mine.hand
                 or theirs.markers != mine.markers
@@ -2248,22 +2258,33 @@ def _item_sheets(
             pages = ", ".join(
                 f"architect page {c.page}" for c in pair.candidates if c.id in anchor.chosen
             )
+            hand = anchor.opposite_hand
+            if anchor.mirrored:
+                hand = (
+                    f"its page {anchor.vendor.own_page} of the same item is a mirrored unit "
+                    "(code's mirror proof there)"
+                )
             pairs[ref] = pair.model_copy(
                 update={
                     "chosen": anchor.chosen,
                     "views": anchor.views,
                     "unsure": (),
-                    "opposite_hand": anchor.opposite_hand,
-                    "mirrored": anchor.mirrored,
-                    # Paired on code's evidence alone when its page was: no matcher call either.
-                    "code_paired": anchor.code_paired,
+                    "opposite_hand": hand,
+                    "mirrored": False,
                     "why": (
                         f'paired with {pages}: the vendor\'s sheets of one item ("{title}", '
                         f"its page {anchor.vendor.own_page} and this one) and its page "
                         f"{anchor.vendor.own_page} is paired with it"
+                        + (
+                            f"; {hand}: sizes are compared, positions from an end are not"
+                            if hand
+                            else ""
+                        )
                     ),
                 }
             )
+            took = True
+    return took
 
 
 def _swap_audit(
@@ -2330,6 +2351,9 @@ def _swap_audit(
                 "unsure": either,
                 "mirrored": False,
                 "opposite_hand": None,
+                "views_disagree": None,
+                # Unsure now: the matcher is asked (code's own pass is not a pair any more).
+                "code_paired": False,
                 "why": (
                     f"{pairing_module.UNPAIRED}: {pairing_module.PAIRING_UNSURE}: {named}?; "
                     f"{why}, so the two pairs may be crossed; it was {pair.why}"

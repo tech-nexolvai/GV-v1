@@ -393,11 +393,19 @@ def comparable(labels: DimLabels | None, look: Look) -> bool:
         found = False
         for drawing in (d for d in look.drawings if d.role == role):
             try:
-                listed = labels.in_area(drawing.file, drawing.page, drawing.box, read_now=False)
+                page = labels.on_page(drawing.file, drawing.page, read_now=False)
             except Exception:  # noqa: BLE001 - not known: the look runs
                 return True
-            if any(str(label.get("side") or "unknown") in (role, "unknown") for label in listed):
-                found = True
+            if page is None:
+                return True  # the page's labels are not read yet: not known, the look runs
+            x0, y0, x1, y1 = drawing.box
+            for label in page:
+                lx0, ly0, lx1, ly1 = label["box"]
+                inside = x0 <= (lx0 + lx1) / 2 <= x1 and y0 <= (ly0 + ly1) / 2 <= y1
+                if inside and str(label.get("side") or "unknown") in (role, "unknown"):
+                    found = True
+                    break
+            if found:
                 break
         sides[role] = found
     return all(sides.values())

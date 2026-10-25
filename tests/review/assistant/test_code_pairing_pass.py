@@ -186,6 +186,13 @@ def test_the_code_pass_needs_two_kinds_a_name_and_a_margin() -> None:
     # The next item is named by code too: a conflict, never a pair.
     named = _scored("a2", 1.0, {"pointer"})
     assert code_pass((_scored("a1", 6.0, {"title", "sizes"}), named)) is None
+    # Any other item named by code (not only the next one) is a conflict.
+    third = (
+        _scored("a1", 6.0, {"index_title", "sizes"}),
+        _scored("a3", 2.2, set()),
+        _scored("a2", 2.0, {"pointer"}),
+    )
+    assert code_pass(third) is None
     # A ruled-out item does not count as the next one.
     ruled = Scored("a2", 5.9, ("x",), contradicts="another unit type", kinds=frozenset({"title"}))
     assert code_pass((_scored("a1", 6.0, {"title", "sizes"}), ruled)).ref == "a1"  # type: ignore[union-attr]
@@ -198,6 +205,9 @@ def test_a_matcher_pick_code_names_alone_clearly_first_pairs_even_when_unsure() 
     # Not clearly first: still unsure.
     close = (_scored("a1", 2.0, {"title"}), _scored("a2", 1.0, set()))
     assert agree(close, None, MatchAnswer(("a1",), False))[0] == ()
+    # The set index's title alone (an AI's read) and an unsure matcher: two AI reads, unsure.
+    titled = (_scored("a1", 6.0, {"index_title"}), _scored("a2", 1.0, set()))
+    assert agree(titled, None, MatchAnswer(("a1",), False))[0] == ()
     # Code names nothing: an unsure matcher pick stays unsure.
     weak = (_scored("a1", 4.0, set()), _scored("a2", 1.0, set()))
     assert agree(weak, None, MatchAnswer(("a1",), False))[0] == ()
@@ -261,7 +271,10 @@ def test_the_vendors_sheets_of_one_item_share_its_pair() -> None:
     first, second = _across(work, 1), _across(work, 2)
     assert first.code_paired and _paired_pages(first) == [1]
     assert _paired_pages(second) == [1], second.why
-    assert second.code_paired and "the vendor's sheets of one item" in second.why
+    assert "the vendor's sheets of one item" in second.why
+    # Code's own pass did not pair it: the matcher is still asked, and its first pick must agree.
+    assert not second.code_paired
+    assert page_match.to_ask([first, second], _NoFolder())[0] == [second]
 
 
 # ---- the room's views ------------------------------------------------------------------------------
@@ -275,6 +288,17 @@ def test_a_rooms_views_of_one_title_are_compared_together() -> None:
         Facts("s.view3", view_titles=("WORK STATION ELEVATION",)),
     ]
     assert [s.ref for s in room_views(vendor, views)] == ["s.view1", "s.view2"]
+    # Numbered views may be two rooms or two pieces: never grouped.
+    numbered = [
+        Facts("s.view1", view_titles=("STAFF BREAKROOM 1",)),
+        Facts("s.view2", view_titles=("STAFF BREAKROOM 2",)),
+    ]
+    assert room_views(Facts("v", index_title="Staff Breakroom Casework"), numbered) == ()
+    types = [
+        Facts("s.view1", view_titles=("SAMPLE VANITY ELEVATION",)),
+        Facts("s.view2", view_titles=("SAMPLE VANITY ELEVATION",)),
+    ]
+    assert room_views(Facts("v", index_title="Sample Vanity Type 1"), types) == ()
     # Two rooms named alike (which restroom?): none.
     restroom = Facts("v", index_title="Restroom Vanity Left")
     two_rooms = [
@@ -299,20 +323,24 @@ def _rows(*widths: int) -> tuple[tuple[str, tuple[Fraction, ...]], ...]:
 
 
 def test_a_mirror_is_proved_by_widths_read_backwards_never_forwards() -> None:
-    vendor = Facts("v", values=(F(18), F(30), F(36)), size_rows=_rows(18, 30, 36))
-    mirrored = Facts("a", values=(F(36), F(30), F(18)), size_rows=_rows(36, 30, 18))
-    proof = mirror_proof(vendor, [mirrored])
+    up = frozenset({"elevation"})
+
+    def drawn(ref: str, *widths: int, views: frozenset[str] = up) -> Facts:
+        return Facts(ref, values=tuple(F(w) for w in widths), size_rows=_rows(*widths), views=views)
+
+    vendor = drawn("v", 18, 30, 36)
+    proof = mirror_proof(vendor, [drawn("a", 36, 30, 18)])
     assert proof is not None and proof.parts == (F(18), F(30), F(36))
     # The same order: no mirror.
-    assert mirror_proof(vendor, [Facts("a", size_rows=_rows(18, 30, 36))]) is None
+    assert mirror_proof(vendor, [drawn("a", 18, 30, 36)]) is None
     # A run that reads the same both ways proves nothing.
-    even = Facts("v", size_rows=_rows(30, 18, 30))
-    assert mirror_proof(even, [Facts("a", size_rows=_rows(30, 18, 30))]) is None
+    assert mirror_proof(drawn("v", 30, 18, 30), [drawn("a", 30, 18, 30)]) is None
     # Two parts are too few.
-    assert (
-        mirror_proof(Facts("v", size_rows=_rows(18, 30)), [Facts("a", size_rows=_rows(30, 18))])
-        is None
-    )
+    assert mirror_proof(drawn("v", 18, 30), [drawn("a", 30, 18)]) is None
+    # A plan may be drawn turned on its sheet: only an elevation against an elevation.
+    assert mirror_proof(vendor, [drawn("a", 36, 30, 18, views=frozenset({"plan"}))]) is None
+    # A proof on one of several drawings says nothing of the others.
+    assert mirror_proof(vendor, [drawn("a", 36, 30, 18), drawn("b", 60, 24)]) is None
     # Left and right swap when ends are compared.
     assert mirror_sides("left wall") == "right wall" and mirror_sides("Right end") == "left end"
     assert ends_match(mirror_sides("left wall"), "sink centre", "right wall", "sink centre")[0] == (
@@ -336,8 +364,10 @@ class _Labels:
     def __init__(self, sides: dict[int, list[str]]) -> None:
         self.sides = sides
 
-    def in_area(self, file: str, page: int, box: Any, read_now: bool = False) -> list[dict]:
-        return [{"side": side} for side in self.sides.get(page, [])]
+    def on_page(self, file: str, page: int, read_now: bool = False) -> list[dict] | None:
+        if page == 404:
+            return None
+        return [{"side": side, "box": [1, 1, 2, 2]} for side in self.sides.get(page, [])]
 
 
 def test_the_whole_look_runs_only_where_code_read_a_size_on_both_sides() -> None:
@@ -352,8 +382,17 @@ def test_the_whole_look_runs_only_where_code_read_a_size_on_both_sides() -> None
     assert whole_look.comparable(_Labels({9: ["architect"], 1: ["vendor"]}), look)
     assert not whole_look.comparable(_Labels({1: ["vendor"]}), look)
     assert not whole_look.comparable(_Labels({9: ["architect"]}), look)
-    # Not known (no label list): the look runs.
+    # Not known (no label list, or a page not read yet): the look runs.
     assert whole_look.comparable(None, look)
+    unread = whole_look.Look(
+        2,
+        "piece",
+        (
+            whole_look.Drawing(ARCH, 404, (0, 0, 100, 100), "architect", pasted=False),
+            whole_look.Drawing(SHOP, 1, (0, 0, 100, 100), "vendor", pasted=False),
+        ),
+    )
+    assert whole_look.comparable(_Labels({1: ["vendor"]}), unread)
 
 
 class _NoFolder:
