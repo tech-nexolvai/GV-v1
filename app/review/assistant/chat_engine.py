@@ -136,6 +136,7 @@ from app.review.assistant.chat_findings import (
 from app.review.assistant.chat_findings import _architect_upload as architect_upload
 from app.review.assistant.chat_progress import FullCheckProgress
 from app.review.assistant.chat_provider import (
+    CREDIT_NOT_STARTED,
     RETENTION_WORDS,
     ChatProvider,
     ProviderFailure,
@@ -1832,6 +1833,12 @@ class ChatEngine:
         with self._lock:
             self._discarded.update(self._attempt_blocks)
             self._attempt_blocks = []
+
+    def out_of_credit(self) -> bool:
+        """Whether the AI account ran out of credit during this answer: the provider asked for
+        payment (402, or the account's spending limit) and its breaker stopped new calls."""
+        breaker = getattr(self.provider, "breaker", None)
+        return getattr(breaker, "kind", None) == "payment"
 
     def stored_blocks(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -3931,18 +3938,23 @@ class ChatEngine:
                 if brief is not None:
                     agent.prompt = brief
             pages = list(agent.pages or ())
-            # One place of its model's limiter for the whole specialist (#1874): one waiting for a
-            # place holds no money and makes no call.
-            with self._limiter(agent.model).agent_slot(self.cancel):
-                self.timings.helper_started(agent.number, agent.description, pages)
-                with self.timings.phase(agent.phase, helper=agent.number):
-                    try:
-                        report, ok, stopped = self._helper(agent, index, entry, share)
-                    except Exception as failed:  # noqa: BLE001 - one never stops the others
-                        _log.warning("assistant chat helper failed: %s", type(failed).__name__)
-                        report = _report_from_steps(entry["steps"], "it failed unexpectedly")
-                        ok, stopped = False, "error"
-                self.timings.helper_ended(agent.number, stopped)
+            if self.out_of_credit():
+                # The AI account ran out of credit (a 402, change 11): no new helper is started;
+                # what is done is kept and Continue does the rest after a top-up.
+                report, ok, stopped = CREDIT_NOT_STARTED, False, "error"
+            else:
+                # One place of its model's limiter for the whole specialist (#1874): one waiting
+                # for a place holds no money and makes no call.
+                with self._limiter(agent.model).agent_slot(self.cancel):
+                    self.timings.helper_started(agent.number, agent.description, pages)
+                    with self.timings.phase(agent.phase, helper=agent.number):
+                        try:
+                            report, ok, stopped = self._helper(agent, index, entry, share)
+                        except Exception as failed:  # noqa: BLE001 - one never stops the others
+                            _log.warning("assistant chat helper failed: %s", type(failed).__name__)
+                            report = _report_from_steps(entry["steps"], "it failed unexpectedly")
+                            ok, stopped = False, "error"
+                    self.timings.helper_ended(agent.number, stopped)
             agent.done = True
             with self._lock:
                 entry.update({"ok": ok, "report": report, "stopped": stopped})

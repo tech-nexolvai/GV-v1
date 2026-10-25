@@ -7,7 +7,8 @@
 2. The drawing set's money cap: a set that has used its budget is not asked (`stopped: cost_cap`).
 3. The chat's folder: the set's latest PDFs copied into its uploads (again only when they changed),
    the GV review skill built into its skills folder the first time.
-4. The sandbox: Docker, else macOS `sandbox-exec`; none is a plain error, never a guess.
+4. The sandbox: Docker, else macOS `sandbox-exec`; with none the answer still runs and only the
+   shell tool says it is unavailable (`NoSandbox`, lazy Docker); a full check's pre-flight says so.
 5. The engine (`chat_engine.py`) streams and runs the tools; each model call is recorded where the
    Usage page reads it, labelled by chat (`template_id = chat:<id>`).
 6. The answer is stored (always, whatever stopped it), then `error` (if any) and `message_end` with
@@ -71,7 +72,7 @@ from app.review.assistant.chat_findings import (
 )
 from app.review.assistant.chat_harness import chat_harness, update_note
 from app.review.assistant.chat_memory import add_note, notes_block, set_notes
-from app.review.assistant.chat_provider import ChatProvider
+from app.review.assistant.chat_provider import CREDIT_STOP_WORDS, ChatProvider
 from app.review.assistant.chat_request import ChatModel
 from app.review.assistant.chat_store import (
     add_assistant_message,
@@ -120,7 +121,13 @@ from app.review.assistant.product_scope import (
     no_rules_note,
     scoped_loader,
 )
-from app.review.assistant.sandbox import UPLOADS, ChatWorkspace, Sandbox, safe_file_name
+from app.review.assistant.sandbox import (
+    UPLOADS,
+    ChatWorkspace,
+    NoSandbox,
+    Sandbox,
+    safe_file_name,
+)
 from app.review.assistant.send_package import PackageIdentity
 from app.review.assistant.sharpen import apply_sharpen
 from app.review.assistant.vendor_consistency import page_texts
@@ -1096,10 +1103,6 @@ class MessageJob:
     """Who and what the full check's send-ready package is about (#1622)."""
 
 
-_NO_SANDBOX: Final = (
-    "The secure sandbox (Docker) is not running, so the AI cannot open the drawings. Start Docker "
-    "Desktop (with the gv-assistant-sandbox image built), then ask again."
-)
 _NO_UPLOADS: Final = (
     "The drawing set's PDFs could not be copied into the chat's computer. Please ask again; if it "
     "keeps happening, tell your admin."
@@ -1377,10 +1380,12 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         except Exception:  # noqa: BLE001 - the answers are kept beside the page map anyway
             _log.exception("assistant chat plan answers not added to the set notes")
     prepare_skill(workspace, job.factory, job.revision_id, job.skill_builder, job.products)
-    sandbox = job.open_sandbox(workspace)
-    if sandbox is None:
-        stop_with("", "error", _NO_SANDBOX)
-        return
+    opened = job.open_sandbox(workspace)
+    if opened is None:
+        # Lazy Docker (harness pre-check, change 11): the answer goes on; only the shell tool
+        # says it is unavailable, and a full check's pre-flight says so in one line.
+        _log.warning("assistant chat: no secure sandbox (Docker); the answer runs without a shell")
+    sandbox: Sandbox = NoSandbox(workspace) if opened is None else opened
     run.sandbox = sandbox
     with job.factory() as session:
         replay = history(session, job.chat_id)
@@ -1614,6 +1619,8 @@ def _say_service_stop(provider: object, outcome: MessageOutcome) -> None:
     reason = getattr(breaker, "reason", None)
     if not isinstance(reason, str) or outcome.stopped == "cancelled":
         return
+    if CREDIT_STOP_WORDS in (outcome.text or ""):
+        return  # a full check already says it ran out of credit, and how to go on (change 11)
     if reason == outcome.error:
         return
     if outcome.stopped == "error" and outcome.error is None:

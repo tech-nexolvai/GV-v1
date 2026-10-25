@@ -1144,20 +1144,28 @@ def test_the_real_skill_builder_writes_the_chats_skill(postgres_engine, tmp_path
         assert (skill / "rules.md").is_file()
 
 
-def test_with_no_sandbox_the_message_says_so_and_the_next_one_lists_the_files(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    provider = ScriptedProvider(lead=[reply(text("Now I can look."))])
+def test_with_no_sandbox_the_answer_goes_on_and_only_the_shell_says_so(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Lazy Docker (harness pre-check, change 11): with Docker not running the message is still
+    answered; only the shell tool tells the model it is unavailable."""
+    provider = ScriptedProvider(
+        lead=[
+            reply(
+                tool("a", "bash_tool", {"command": "pdfinfo x.pdf", "description": "Pages"}),
+                stop="tool_use",
+            ),
+            reply(text("The shell is not running here; the set has 6 pages by its listing.")),
+        ]
+    )
     with _world(postgres_engine, tmp_path, provider=provider) as world:
         chat_id = world.chat()
         world.sandbox_ready["on"] = False
-        _, events = world.ask(chat_id, "First try")
+        _, events = world.ask(chat_id, "How many pages?")
         stored = events[-1][1]["message"]
-        assert stored["stopped"] == "error" and "sandbox" in stored["error"]
-        assert provider.calls == []
-
-        world.sandbox_ready["on"] = True
-        world.ask(chat_id, "Second try")
-        first = json.loads(provider.lead_calls[0])["messages"]
-        # The unanswered first message is not in the history; the files are listed now.
-        assert len(first) == 1
-        assert first[0]["content"][0]["text"].startswith("<uploaded_files>")
-        assert first[0]["content"][-1]["text"] == "Second try"
+        assert stored["stopped"] is None and stored["error"] is None
+        assert len(provider.lead_calls) == 2
+        assert world.sandboxes == []  # nothing ran
+        answered = json.loads(provider.lead_calls[1])["messages"][-1]["content"]
+        result = next(part for part in answered if part["type"] == "tool_result")
+        words = json.dumps(result["content"])
+        assert "unavailable: the sandbox is not running" in words
+        assert result.get("is_error") is True

@@ -28,16 +28,20 @@ import socket
 import threading
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Final, Literal, Protocol
 
 from app.review.assistant.chat_request import OPENROUTER_BASE_URL, Provider
 
 __all__ = [
+    "CREDIT_NOT_STARTED",
+    "CREDIT_STOP_WORDS",
     "RETENTION_WORDS",
     "STREAM_IDLE_SECONDS",
     "UNREACHABLE_WORDS",
     "AnthropicSdkProvider",
     "ChatProvider",
+    "Credit",
     "EventStream",
     "ProviderChoice",
     "ProviderFailure",
@@ -143,6 +147,12 @@ def _says_retention(error: BaseException) -> bool:
     return "retention" in words.lower()
 
 
+#: A helper not started because the AI account ran out of credit (its report, change 11).
+CREDIT_NOT_STARTED: Final = "Not started: the AI account ran out of credit."
+#: What a full check that stopped for credit says (its summary, trust problems and Continue).
+CREDIT_STOP_WORDS: Final = "Stopped: the AI account ran out of credit. Top up, then Continue."
+
+
 #: What a failure says about the AI service for this server: `key` (it refused the key, 401/403),
 #: `payment` (402), `account` (the account cannot use the model: data retention), `unreachable`
 #: (no answer: connection refused or lost, timed out). `None`: anything else.
@@ -196,6 +206,12 @@ class ServiceBreaker:
         """The plain reason no call is started any more, or `None`."""
         with self._lock:
             return None if self._open is None else str(self._open)
+
+    @property
+    def kind(self) -> FailureKind | None:
+        """What stopped the calls (`payment`: the account ran out of credit), or `None`."""
+        with self._lock:
+            return None if self._open is None else self._open.kind
 
     def check(self) -> None:
         """Raises the stop's failure when calls are stopped."""
@@ -479,6 +495,16 @@ def _stopped() -> ProviderFailure:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class Credit:
+    """The AI account's credit as its provider reports it (`AnthropicSdkProvider.credit`): `ok`
+    with the dollars left, `unknown` (it could not be read), or `not_offered` (Anthropic's own
+    API has no balance to read)."""
+
+    state: Literal["ok", "unknown", "not_offered"]
+    usd: Decimal | None
+
+
 class AnthropicSdkProvider:
     """The official SDK client for one provider. Holds the key; never shows it."""
 
@@ -499,6 +525,8 @@ class AnthropicSdkProvider:
         self.name: Provider = choice.name
         #: This answer's view of the service: a provider is made for each message.
         self.breaker = ServiceBreaker()
+        # Only for the free credit check before a full check (`credit`), sent only to OpenRouter.
+        self._credit_key: str | None = choice.key if choice.name == "openrouter" else None
         extra: dict[str, Any] = {} if http_client is None else {"http_client": http_client}
         # A host that does not answer at all fails after `CONNECT_SECONDS`, and a stream that
         # sends nothing (no event, no ping) after `idle_seconds`, not after the whole call's time
@@ -524,6 +552,17 @@ class AnthropicSdkProvider:
 
     def __repr__(self) -> str:
         return f"AnthropicSdkProvider(name={self.name!r})"
+
+    def credit(self) -> Credit:
+        """What the AI account can still spend, before a paid full check (harness pre-check,
+        change 11): OpenRouter's free, read-only credit check (`provider_usage.credit_left`).
+        Anthropic's own API offers no balance to read: `not_offered`."""
+        if self._credit_key is None:
+            return Credit("not_offered", None)
+        from app.provider_usage import credit_left
+
+        left = credit_left(self._credit_key)
+        return Credit("unknown", None) if left is None else Credit("ok", left)
 
     def open_stream(self, params: Mapping[str, Any]) -> EventStream:
         self.breaker.check()

@@ -117,10 +117,16 @@ def problems(
     why_left: str = "",
     out_of_money: bool = False,
     price: str | None = None,
+    out_of_credit: bool = False,
 ) -> list[str]:
-    """The run's problems, one plain sentence each, the most important first."""
+    """The run's problems, one plain sentence each, the most important first. `out_of_credit`:
+    the AI account ran out of credit part way (a 402, change 11), said instead of the price."""
+    from app.review.assistant.chat_provider import CREDIT_STOP_WORDS
+
     out: list[str] = []
-    if out_of_money:
+    if out_of_credit:
+        out.append(CREDIT_STOP_WORDS)
+    elif out_of_money:
         out.append(
             f"The fixed price{f' (${price})' if price else ''} ran out before the check finished."
         )
@@ -128,6 +134,7 @@ def problems(
         because = {
             "out of money": "the money ran out",
             "the check was stopped before the end": "the check was stopped",
+            "the AI account ran out of credit": "the AI account ran out of credit",
         }.get(why_left, "they could not be compared in this run")
         out.append(
             f"{_count(len(pages_left), 'page')} not compared ({because}): "
@@ -184,4 +191,5 @@ def for_roster(run: Any, stopped: str | None) -> list[str]:
         why_left=why,
         out_of_money=stopped == "cost_cap" or bool(getattr(run, "stopped_for_money", False)),
         price=price,
+        out_of_credit=bool(getattr(run, "_credit_cut", lambda: False)()),
     )
