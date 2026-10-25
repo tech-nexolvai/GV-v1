@@ -287,7 +287,14 @@ def _seed_with_correction(world: World) -> dict[str, Any]:
             [
                 _block(
                     finding(
-                        "F1", "Countertop overall width", 7, category="countertop", source="rules"
+                        "F1",
+                        "Countertop overall width",
+                        7,
+                        category="countertop",
+                        source="rules",
+                        # GV's own rule check agrees: a rule item is proved only by code's rule.
+                        checks={"rule": "agrees"},
+                        witnesses=["rule"],
                     )
                 )
             ]

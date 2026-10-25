@@ -389,7 +389,14 @@ def test_vendor_scorecard_counts_kinds_fixes_and_open_per_round() -> None:
                 second,
                 [
                     finding(
-                        "F1", "Countertop overall width", 7, category="countertop", source="rules"
+                        "F1",
+                        "Countertop overall width",
+                        7,
+                        category="countertop",
+                        source="rules",
+                        # GV's own rule check agrees: a rule item is proved only by code's rule.
+                        checks={"rule": "agrees"},
+                        witnesses=["rule"],
                     )
                 ],
                 minutes=30,
