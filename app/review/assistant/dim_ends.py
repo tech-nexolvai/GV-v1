@@ -87,6 +87,7 @@ type Kind = Literal[
     "wall",
     "end_panel",
     "outline",
+    "top_outline",
     "cabinet_face",
     "top_edge",
     "door_face",
@@ -104,6 +105,7 @@ KINDS: Final[tuple[Kind, ...]] = (
     "wall",
     "end_panel",
     "outline",
+    "top_outline",
     "cabinet_face",
     "top_edge",
     "door_face",
@@ -118,6 +120,7 @@ KIND_WORDS: Final[Mapping[str, str]] = {
     "wall": "the wall's face",
     "end_panel": "the face of a thin band (a panel, a filler or a top's thickness)",
     "outline": "the outer edge of what is drawn",
+    "top_outline": "an edge of the drawn piece of top",
     "cabinet_face": "a cabinet's side",
     "top_edge": "the top's edge",
     "door_face": "the door's face",
@@ -232,6 +235,7 @@ _ORDER: Final[tuple[str, ...]] = (
     "end_panel",
     "wall",
     "top_edge",
+    "top_outline",
     "outline",
 )
 
@@ -1337,7 +1341,7 @@ def _mark_touched(found: Page, phrases: Sequence[Mapping[str, Any]]) -> None:
                     found._add(
                         span.id,
                         side,
-                        "top_edge",
+                        "top_outline",
                         "the top's outline, where its extension line meets it",
                     )
                 continue
@@ -1453,7 +1457,7 @@ PROVING: Final = frozenset(
 #: dimensions between the same kinds of points are more likely two different ones.
 KINDS_MAX_DIFF_IN: Final = Fraction(3)
 #: Facing kinds that say one dimension measures the countertop and the other the cabinets.
-_TOP_KINDS: Final = frozenset({"top_edge"})
+_TOP_KINDS: Final = frozenset({"top_edge", "top_outline"})
 _CASEWORK_KINDS: Final = frozenset({"cabinet_face", "end_panel"})
 
 type Extent = Literal["same_extent", "different_extent", "cannot_tell"]
@@ -1493,8 +1497,8 @@ def _toward(page: Page, span: Span, side: str, kind: str) -> int | None:
 
 def _proving(page: Page, other: Page, kinds: frozenset[str]) -> frozenset[str]:
     out = kinds & PROVING
-    if "top_edge" in kinds and page.countertop and other.countertop:
-        out |= {"top_edge"}
+    if page.countertop and other.countertop:
+        out |= kinds & {"top_edge", "top_outline"}
     return out
 
 
