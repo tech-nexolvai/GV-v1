@@ -15,6 +15,11 @@ outside the lock; and an answer (or a failure) is kept for five minutes.
 **The key goes only to OpenRouter.** It is sent only in the `Authorization` header of a request to
 `openrouter.ai`; a redirect is refused rather than followed, so the header can never reach another
 host. Any error keeps only that it failed, never the reply's words or the key.
+
+**The credit left, before a paid full check** (harness pre-check, change 11; `credit_left`): the
+account's credits less its usage (`GET /api/v1/credits`), and the key's own limit left when the key
+has one (`GET /api/v1/key`, `limit_remaining`), whichever is smaller. Free and read-only, like the
+usage check; `None` when it cannot be read, and the check then starts as before and says so.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from typing import Final, Literal
 from urllib.error import HTTPError
 
 KEY_URL: Final = "https://openrouter.ai/api/v1/key"
+CREDITS_URL: Final = "https://openrouter.ai/api/v1/credits"
 CACHE_SECONDS: Final = 300.0
 TIMEOUT_SECONDS: Final = 3.0
 
@@ -127,4 +133,51 @@ class OpenRouterUsageCheck:
         return ProviderCheck("ok", used, checked_at)
 
 
-__all__ = ["KEY_URL", "Fetch", "OpenRouterUsageCheck", "ProviderCheck"]
+def _amount(value: object) -> Decimal | None:
+    """A dollar amount as the provider sends it (it may be below zero: an overdrawn account)."""
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
+    try:
+        amount = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return amount if amount.is_finite() else None
+
+
+def _data(fetch: Fetch, url: str, headers: Mapping[str, str]) -> Mapping[str, object] | None:
+    try:
+        status, body = fetch(url, headers, TIMEOUT_SECONDS)
+        payload = json.loads(body) if status == 200 else None
+    except Exception:  # noqa: BLE001 - only that it failed is kept, never its words
+        return None
+    data = payload.get("data") if isinstance(payload, Mapping) else None
+    return data if isinstance(data, Mapping) else None
+
+
+def credit_left(key: str, *, fetch: Fetch = _urlopen_fetch) -> Decimal | None:
+    """The dollars this key can still spend on OpenRouter (see the module), or `None` when the
+    account's credit cannot be read. Never raises; the key goes only to `openrouter.ai`."""
+    headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
+    credits = _data(fetch, CREDITS_URL, headers)
+    if credits is None:
+        return None
+    bought = _amount(credits.get("total_credits"))
+    used = _amount(credits.get("total_usage"))
+    if bought is None or used is None:
+        return None
+    left = bought - used
+    own = _data(fetch, KEY_URL, headers)
+    limit = None if own is None else _amount(own.get("limit_remaining"))
+    if limit is not None:
+        left = min(left, limit)
+    return left
+
+
+__all__ = [
+    "CREDITS_URL",
+    "KEY_URL",
+    "Fetch",
+    "OpenRouterUsageCheck",
+    "ProviderCheck",
+    "credit_left",
+]

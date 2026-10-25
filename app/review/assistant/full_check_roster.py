@@ -113,6 +113,7 @@ from app.review.assistant import (
 from app.review.assistant import proof as proof_rule
 from app.review.assistant.chat_findings import UPDATE_FINDING
 from app.review.assistant.chat_findings import _architect_upload as architect_upload
+from app.review.assistant.chat_provider import CREDIT_STOP_WORDS
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
 from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
 from app.review.assistant.chat_tools import HELPER_TOOLS, new_step
@@ -290,6 +291,8 @@ ROUND_PICK_SHARE: Final = 0.10
 ROUND_PHASE: Final = "round_picks"
 #: Why a page code stopped sending on was left unchecked when the money was really short.
 OUT_OF_MONEY: Final = "out of money (the fixed price left too little for another look)"
+#: Why a check stopped part way when the AI account ran out of credit (a 402, change 11).
+CREDIT_WHY: Final = "the AI account ran out of credit"
 #: The gap closers of one pass (one per run of pages): this many, or as many as the plan's page
 #: groups run at once when that is more (#1874); the money and the agents at once bound it too.
 MAX_GAP_CLOSERS: Final = 10
@@ -1478,6 +1481,9 @@ class _Run:
     unusable_looks: list[str] = field(default_factory=list)
     spent: dict[str, int] = field(default_factory=dict)
     stopped_for_money: bool = False
+    #: The AI account had run out of credit when the finish began (a 402 part way, change 11):
+    #: what the answer then says. A 402 in the finish's own calls (the summary's wording) is not.
+    credit_seen: bool = False
     #: A specialist stopped at its own cap before the price was used up (#1805): judged again at
     #: the finish, when the later steps may have used the rest.
     capped_early: bool = False
@@ -1818,9 +1824,28 @@ class _Run:
             given.pop("ceiling")  # one chain: the engine's own `helper_ceiling`
         entries = self.engine._launch(agents, **given)
         for agent, entry in zip(agents, entries, strict=False):
-            if entry.get("stopped") == "error":
+            if entry.get("stopped") == "error" and not self.out_of_credit():
                 self.failed_steps.append(f"{agent.description} ended with an error")
         return entries
+
+    def out_of_credit(self) -> bool:
+        """The AI account ran out of credit during this check (a 402, change 11): no new paid
+        step starts, what is done is kept, and the answer says to top up, then Continue (never
+        that the fixed price ran out)."""
+        check = getattr(self.engine, "out_of_credit", None)
+        return bool(check()) if callable(check) else False
+
+    def _credit_cut(self) -> bool:
+        """The AI account ran out of credit and left work for Continue (pages not compared, red
+        candidates not proved yet). A 402 after all of that was done is only the service's own
+        line (`chat_service._say_service_stop`): nothing is left to continue."""
+        if not self.credit_seen:
+            return False
+        return bool(self._pages_left(for_continue=True) or self._unproved())
+
+    def _halted(self) -> bool:
+        """Stop pressed, or the AI account out of credit: no new paid step starts."""
+        return self.engine.cancel.is_set() or self.out_of_credit()
 
     def _not_for_sending(self) -> str | None:
         """Why this check is not one to send (plain words), else `None`: a step broke, or vendor
@@ -2063,14 +2088,17 @@ class _Run:
         candidates that never got their proof steps (only when it stopped or ran out of money:
         a check that ran to its end gave each its one look), and why, in plain words."""
         pages = self._pages_left(for_continue=True)
+        credit = self.credit_seen
         short = (
             stopped == "cost_cap"
             or self.stopped_for_money
             or any(OUT_OF_MONEY in line for line in self.not_done)
         )
-        items = self._unproved() if stopped in ("cancelled", "cost_cap") or short else []
+        items = self._unproved() if stopped in ("cancelled", "cost_cap") or short or credit else []
         if stopped == "cancelled":
             why = "the check was stopped before the end"
+        elif credit:
+            why = CREDIT_WHY
         elif short:
             why = "out of money"
         elif any(_MORE_LOOKS in line for line in self.not_done):
@@ -2106,6 +2134,8 @@ class _Run:
                 else "every red candidate"
             ),
         )
+        if self._credit_cut():
+            words = f"{CREDIT_STOP_WORDS} {words}"
         products = engine.settings.products
         return {
             "type": "resume",
@@ -2401,23 +2431,23 @@ class _Run:
                 for where in self.looked.capped:
                     self._capped(f"Whole-drawing look of {where}")
             engine._queue_second_reads(engine.book.live())
-            if not engine.cancel.is_set():
+            if not self._halted():
                 self._read_ahead()
                 self._step("gap_closers")
                 self._gap_closers(page_map, rules, pictures)
         finally:
             engine.helper_ceiling = None
         engine._wait_checks()
-        if not engine.cancel.is_set():
+        if not self._halted():
             self._step("verifier")
             self._provers(plan)
         engine._wait_checks()
-        if not engine.cancel.is_set():
+        if not self._halted():
             self._step("lead_review")
             with engine.timings.phase("lead_review"):
                 self._lead_review(page_map)
         engine._wait_checks()
-        if not engine.cancel.is_set():
+        if not self._halted():
             self._step("look_again")
             self._read_ahead()  # the lead review's items too
             # Code, not the lead's guess about money, sends on what is still not compared (#1817).
@@ -2526,21 +2556,21 @@ class _Run:
             # Each look's claims, by code, before the band's gap closers (as in one chain).
             apply_looks([(a, e) for a, e in done if a.lens == whole_look.LENS])
             engine._queue_second_reads([f for f in engine.book.live() if band.holds(f.get("page"))])
-            if engine.cancel.is_set():
+            if self._halted():
                 return
             self._read_ahead()
             self._gap_closers(page_map, "", False, band=band, ceiling=ceiling)
             engine._wait_checks()
-            if engine.cancel.is_set():
+            if self._halted():
                 return
             self._provers(band, band=band)
             engine._wait_checks()
-            if engine.cancel.is_set():
+            if self._halted():
                 return
             with engine.timings.phase("lead_review"):
                 self._lead_review(page_map, band=band)
             engine._wait_checks()
-            if engine.cancel.is_set():
+            if self._halted():
                 return
             self._read_ahead()  # the lead review's items too
             self._after_lead(page_map, band=band)
@@ -5217,6 +5247,7 @@ class _Run:
         from app.review.assistant.send_package import incomplete_reason
 
         unsendable = incomplete_reason(stopped, None) or engine.incomplete_note
+        credit = self._credit_cut()
         if unsendable:
             text = "\n".join(
                 NOT_SENDABLE_NEXT if line.startswith("Next:") else line
@@ -5230,6 +5261,9 @@ class _Run:
         if unpaired is not None:
             # #1885: most pages could not be compared with the architect at all; said first.
             lines.insert(0, unpaired)
+        if credit:
+            # A 402 part way (change 11): the true reason first, never the fixed price.
+            lines.insert(0, CREDIT_STOP_WORDS)
         if unsendable:
             lines.append(f"**Check incomplete: {unsendable}. Not for sending until it is.**")
         # The price for the content pages in scope (`PriceRule`, #1823), else the message's cap.
@@ -5261,6 +5295,8 @@ class _Run:
         was really used up; else each stopped at its own share while money was left, said with
         how much (2026-10-24: "the fixed price was reached" with $4.64 of $9 left)."""
         listed = "; ".join(self.not_done)
+        if self._credit_cut():
+            return f"Not done ({CREDIT_WHY}; listed, not dropped): {listed}."
         if stopped == "cost_cap" or self.stopped_for_money or self.plan is None:
             return f"Not done within the fixed price (listed, not dropped): {listed}."
         left = _dollars(self._left())
@@ -5353,7 +5389,8 @@ class _Run:
         engine = self.engine
         from app.review.assistant.chat_engine import MessageOutcome
 
-        if stopped is None and self._stopped_for_money():
+        self.credit_seen = self.out_of_credit()
+        if stopped is None and not self._credit_cut() and self._stopped_for_money():
             stopped = "cost_cap"
         cap_hit = "message" if stopped == "cost_cap" else None
         try:
@@ -5380,6 +5417,8 @@ class _Run:
             self._class_unpaired()
         except Exception:  # noqa: BLE001 - the pages keep their helpers' coverage
             _log.exception("assistant roster could not class the pages with no architect pair")
+        if engine.incomplete_note is None and self._credit_cut():
+            engine.incomplete_note = CREDIT_WHY
         if engine.incomplete_note is None:
             try:
                 engine.incomplete_note = self._not_for_sending()

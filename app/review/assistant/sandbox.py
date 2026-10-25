@@ -62,6 +62,7 @@ __all__ = [
     "MAX_FILE_BYTES",
     "MAX_FOLDER_BYTES",
     "MAX_OUTPUT_CHARS",
+    "NO_SANDBOX_WORDS",
     "OUTPUTS",
     "SCRATCH",
     "SET_PACK",
@@ -72,6 +73,7 @@ __all__ = [
     "DockerSandbox",
     "MacSandbox",
     "Mount",
+    "NoSandbox",
     "Sandbox",
     "SandboxRefused",
     "SandboxResult",
@@ -119,6 +121,14 @@ _POPPLER: Final = ("pdfinfo", "pdftotext", "pdftoppm", "pdfimages", "pdftocairo"
 DOCKER_FAILED_WORDS: Final = (
     "the secure sandbox (Docker) is not answering, so no command can run now. Go on with the "
     "other tools, and say that commands could not run"
+)
+
+
+#: What the shell tool answers when Docker was not running as the answer started (lazy Docker,
+#: harness pre-check, change 11): the answer goes on with every other tool.
+NO_SANDBOX_WORDS: Final = (
+    "unavailable: the sandbox is not running, so no command can run in this answer. Go on with "
+    "the other tools, and say that commands could not run"
 )
 
 
@@ -947,6 +957,24 @@ class MacSandbox:
         return SandboxResult(
             output=text + watch.note(), exit_code=process.returncode, truncated=cut
         )
+
+
+@dataclass(slots=True)
+class NoSandbox:
+    """No shell: Docker (or its image) was not there when the answer started. The answer still
+    runs (most of a full check's helpers never use the shell, 2026-10-25); only the shell tool
+    answers `NO_SANDBOX_WORDS` to the agent that calls it. Nothing runs, so nothing is loosened:
+    the real sandboxes keep every limit they have."""
+
+    workspace: _Workspace
+    kind: str = "none"
+
+    def run(self, command: str) -> SandboxResult:
+        del command
+        raise SandboxUnavailable(NO_SANDBOX_WORDS)
+
+    def kill_all(self) -> None:
+        """Nothing runs."""
 
 
 def docker_image_ready(image: str = DOCKER_IMAGE, docker: str = "docker") -> bool:
