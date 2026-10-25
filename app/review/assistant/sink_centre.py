@@ -453,7 +453,9 @@ def apply(finding: Mapping[str, Any], found: Compared, record: dict[str, Any]) -
             "outcome": "right",
             "method": CREATED_BY,
             "how": found.why,
-            "was": finding.get("status"),
+            # The settled note says only check or different (#1619); an item already Right but
+            # set against the wrong cabinet counts as not compared.
+            "was": "different" if finding.get("status") == "different" else "check",
         }
         out["compared"] = True
         out.pop("keep_reason", None)
