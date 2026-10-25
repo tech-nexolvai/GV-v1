@@ -194,11 +194,13 @@ class Settings(BaseSettings):
     assistant_numbers_helper_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
     assistant_numbers_helper_pages: int = Field(default=5, ge=1, le=5)
     # What proves that a vendor number and an architect number measure the same thing, for a red
-    # cloud (orchestrator's decision D1, provisional): `ai_pair_plus_code` = two blind AI picks of
-    # the same label plus code's checks (printed at both spots, the drawn extents agree, every
-    # advocate check passes); `code_only` = only items code paired by itself (the vendor's own
-    # sums, GV's rules) can be red.
-    assistant_pairing_proof: Literal["ai_pair_plus_code", "code_only"] = "ai_pair_plus_code"
+    # cloud (D1): `code_ends` (the default, Anant 2026-10-25, "option C") = the AI may name the
+    # pair (two blind picks of the same label plus code's checks), but only code's geometry
+    # showing both dimensions end at the same places proves it; where code cannot tell, the item
+    # is a Likely problem, never red; `ai_pair_plus_code` = as before, two agreeing strong picks
+    # are enough where code cannot tell; `code_only` = only items code paired by itself (the
+    # vendor's own sums, GV's rules) can be red.
+    assistant_pairing_proof: Literal["ai_pair_plus_code", "code_ends", "code_only"] = "code_ends"
     # Each kind of check's track record (fix 6, 2026-10-24; `review/assistant/check_record.py`
     # reads these two from the environment, as pure code): a kind makes reds only with no false red
     # on at least this many of GV's keyed cases (orchestrator's default 30, Anant may change it);

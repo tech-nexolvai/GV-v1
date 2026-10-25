@@ -3,9 +3,9 @@
 With nobody in the loop, a false red cloud goes straight to the vendor. A red cloud needs code to
 have read both values at their spots (`witness.py`) AND proof that the two values measure the same
 thing. Code can read values but cannot, on its own, tell which architect dimension goes with which
-vendor dimension. So, under the orchestrator's decision D1 (provisional; Anant may switch the
-setting `assistant_pairing_proof` to `code_only`), a pairing counts as proved only when ALL of these
-hold:
+vendor dimension. So, under the decision D1 (setting `assistant_pairing_proof`), a pairing counts
+as proved only when ALL of these hold (under `code_ends`, the default since Anant's option C of
+2026-10-25, the drawn extents must also agree: see 3):
 
 1. **Two blind picks agree on the same label ids**: the helper's pick (its `vendor_dim` /
    `architect_dim`) and the advocate's, made without seeing the claim or the helper's pick: it is
@@ -20,6 +20,8 @@ hold:
    dimension line code cannot find), it never blocks, as in the simple check (`verify.py`'s
    `geometry`): the blind pick is then made by the stronger model at high effort, as the simple
    check's blind look is (`STRONG_PICK`), and must agree on the label and on both ends (#1819).
+   Under `code_ends` (the default) agreeing picks no longer prove a pairing code's geometry
+   cannot tell: the item is held back (`ENDS_NOT_CONFIRMED`) and shown as a Likely problem.
    Geometry that shows different points always blocks. An item whose own words name the
    underside of a top (or the carcass top under it, a top's thickness: `face_doubt`, #1837) is
    never proved by picks or the anchor fit, which allows the claimed difference (the band itself):
@@ -68,6 +70,8 @@ __all__ = [
     "ADVOCATE_SYSTEM",
     "CODE_PAIRED_SOURCES",
     "CODE_PAIRS_FILE",
+    "ENDS_NOT_CONFIRMED",
+    "ENDS_NOT_CONFIRMED_NOTE",
     "INCOMPLETE",
     "NAME_WORDS",
     "NOT_VERIFIED",
@@ -147,6 +151,13 @@ CODE_PAIRED_SOURCES: Final = frozenset({"vendor_arithmetic", "rules"})
 #: An item the fixed price did not reach (#1641): said so on the item, and tried again when money
 #: is left.
 NOT_VERIFIED: Final = "Not verified within the fixed price"
+#: `answers["pairing"]` when every check passed and the blind picks agree, but code's geometry could
+#: not show both dimensions end at the same places (`code_ends`): a Likely problem, never red.
+ENDS_NOT_CONFIRMED: Final = "ends_not_confirmed"
+ENDS_NOT_CONFIRMED_NOTE: Final = (
+    "Not proved: the AI's picks agree, but code could not confirm both dimensions measure the "
+    "same thing"
+)
 
 type Outcome = Literal["pass", "fail", "unknown"]
 type Extent = Literal["same_extent", "different_extent", "cannot_tell"]
@@ -904,6 +915,12 @@ def decide(
             # overall height whose helper wrote "to top of bulkhead" went red here).
             answers["trade"] = "fail"
             return Verdict("objects", f"Not proved: {room_words(thing)} ({why}).", answers)
+    if state != "same_extent" and mode == "code_ends":
+        # Option C (Anant, 2026-10-25): the picks agree, but only code's geometry proves both
+        # dimensions end at the same places. Held back, never hidden: a Likely problem
+        # (`proof.ends_unconfirmed`).
+        answers["pairing"] = ENDS_NOT_CONFIRMED
+        return Verdict("objects", f"{ENDS_NOT_CONFIRMED_NOTE} ({why}).", answers)
     answers["pairing"] = "proved" if state == "same_extent" else "proved_by_two_picks"
     return Verdict("passed", "", answers)
 

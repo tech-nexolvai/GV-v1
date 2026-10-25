@@ -105,11 +105,11 @@ from app.review.assistant.likely_problems import GROUP as LIKELY_GROUP
 from app.review.assistant.likely_problems import HEADING as LIKELY_HEADING
 from app.review.assistant.likely_problems import LETTER_LEAD as LIKELY_LEAD
 from app.review.assistant.likely_problems import SHORT_WORDS as LIKELY_SHORT
-from app.review.assistant.likely_problems import please_check
 from app.review.assistant.proof import (
     RULE_LINE,
     architect_file,
     governs,
+    please_check_words,
     proof_counts,
     proof_group,
     proof_of,
@@ -1687,7 +1687,7 @@ def _rule_note_line(finding: Mapping[str, Any]) -> str:
 
 def _likely_line(finding: Mapping[str, Any]) -> str:
     """A likely problem on the notes pages: what to check, without the letter's lead words."""
-    words = please_check(finding)
+    words = please_check_words(finding)
     return words.split(": ", 1)[1] if words.startswith(LIKELY_LEAD) else words
 
 
