@@ -169,3 +169,42 @@ def test_the_committed_record_is_counts_for_known_kinds_only() -> None:
         }
         assert all(isinstance(v, int) and v >= 0 for v in row.values())
     assert set(data) <= {"about", "measured", "bank_run", "gate_run", "min_cases", "kinds"}
+
+
+def _ai_rule_claim(**more: Any) -> dict[str, Any]:
+    """A helper's GV-rule item (made-up values): it names a GV rule and its value, code read only
+    the vendor's number (its millimetres and inches agree); GV's own rule check did not run."""
+    base: dict[str, Any] = {
+        "item": "Vanity: sink front offset",
+        "vendor": '6 1/2" [165mm]',
+        "architect": '4"',
+        "source": "rules",
+        "rule_check_id": "CT-EXAMPLE-RULE-001",
+        "checks": {"rule": "not_run", "units": "agrees", "printed_vendor": "match"},
+        "witnesses": ["units"],
+        "paired_by": None,
+        "inches": {"architect": "4", "vendor": "6.5", "difference": "2.5"},
+        "why": 'The vendor prints 6 1/2" (the reference section prints 6 1/2" too); GV\'s rule is 4".',
+    }
+    return _proved(**{**base, **more})
+
+
+def test_a_helpers_gv_rule_item_is_a_gv_rule_kind_never_a_size_vs_architect() -> None:
+    assert check_record.kind_of(_ai_rule_claim()) == "gv_rule"
+    assert check_record.kind_of(_proved(source="rules")) == "gv_rule"
+
+
+def test_a_gv_rule_item_code_never_checked_is_never_red(record: Any) -> None:
+    """The paid run of 2026-10-25: a helper clouded a sink's front offset against GV's 4" standard
+    while saying the reference's section prints the vendor's 6 1/2". Code's own rule check never ran,
+    so code proved nothing about the rule: Not compared, whatever the kinds' records say."""
+    record(size_vs_architect=(30, 0), gv_rule=(30, 0))
+    claim = _ai_rule_claim()
+    assert proof_group(claim) == "not_compared"
+    assert held_back(claim) is None
+    # Code's own rule check agreeing is still the rule's proof; its kind's record then decides.
+    checked = _ai_rule_claim(checks={"rule": "agrees"}, witnesses=["rule"])
+    assert proof_group(checked) == "clouded"
+    record(size_vs_architect=(30, 0))
+    assert proof_group(checked) == "likely_problem"  # gv_rule has no record yet: held back
+    assert proof_group(claim) == "not_compared"
