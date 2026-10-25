@@ -546,11 +546,27 @@ def ends_words(finding: Mapping[str, Any]) -> str:
     inches = finding.get("inches") if isinstance(finding.get("inches"), Mapping) else {}
     difference = _decimal((inches or {}).get("difference"))
     by = f"; they differ by {inch_words(difference)}" if difference else "; they differ"
+    drawn = _drawn_note(finding)
     return (
         f"{likely_problems.LETTER_LEAD}: the AI pairs the vendor's {vendor_value(finding)} with "
         f"the reference's {finding.get('architect')} ({item}){by}; code could not confirm both "
-        "dimensions measure the same thing."
+        f"dimensions measure the same thing{drawn}."
     )
+
+
+#: The words code's ends proof gives a value that does not agree with its drawn length
+#: (`ends_proof.drawn_disagreement`, final plan #3).
+_DRAWN = re.compile(
+    r"(the (?:vendor|reference)'s [^;()]*? is drawn [^;()]*? long at its view's own scale)"
+)
+
+
+def _drawn_note(finding: Mapping[str, Any]) -> str:
+    """`; the vendor's 23" is drawn 24" long at its view's own scale` when the advocate held the
+    item back because a value does not agree with its drawn length, else nothing."""
+    verdict = _advocate(finding)
+    found = _DRAWN.search(str((verdict or {}).get("note") or ""))
+    return f"; {found.group(1)}" if found else ""
 
 
 def please_check_words(finding: Mapping[str, Any]) -> str:

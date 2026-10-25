@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from app.review.assistant import dim_ends, ends_proof
+from app.review.assistant import dim_ends, ends_proof, proof
 
 type Point = tuple[float, float]
 type Segment = tuple[Point, Point]
@@ -208,3 +208,36 @@ def test_code_extent_a_drawn_disagreement_overrides_the_anchor_fit(
     pages["v.pdf"] = _page(vendor)
     state, why = ends_proof.code_extent(label(vendor, v_key), label(reference, a_key), **kwargs)
     assert state == "cannot_tell" and "does not agree with its drawing" in why, why
+
+
+def _right(v_key: str, a_key: str) -> dict[str, Any]:
+    return {
+        "id": "F1",
+        "status": "same",
+        "dims": {
+            "vendor": {"id": v_key, "file": "v.pdf", "page": 1},
+            "architect": {"id": a_key, "file": "a.pdf", "page": 1},
+        },
+    }
+
+
+def test_a_right_records_whether_code_proved_its_ends_alike() -> None:
+    vendor, v_key = _plan("vendor", "v.pdf", 5)
+    reference, a_key = _plan("architect", "a.pdf", 5)
+    pages = {"v.pdf": _page(vendor), "a.pdf": _page(reference)}
+    finding = _right(v_key, a_key)
+    record = dim_ends.right_ends(finding, lambda file, page: pages[file])
+    assert record is not None and record["proved"] is True, record
+    finding[dim_ends.LIKE_FOR_LIKE] = record
+    assert not proof.matches_unproved(finding)
+    # the vendor's overall width (its ends named by nothing code can see) against the offset
+    width = next(label["id"] for label in vendor.labels if label["text"] == '54"')
+    finding = _right(width, a_key)
+    record = dim_ends.right_ends(finding, lambda file, page: pages[file])
+    assert record is not None and record["proved"] is False
+    finding[dim_ends.LIKE_FOR_LIKE] = record
+    assert proof.matches_unproved(finding)
+    assert proof.MATCHES_UNPROVED == "Matches (ends not proved)"
+    # a record for other labels says nothing about the item's pair
+    finding["dims"]["architect"]["id"] = "D99"
+    assert not proof.matches_unproved(finding)
