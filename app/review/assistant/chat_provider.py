@@ -248,6 +248,14 @@ def _spend_cap(error: BaseException) -> bool:
     return _SPEND_CAP.search(words) is not None and _RATE_WORDS.search(words) is None
 
 
+def _is_refusal(error: BaseException) -> bool:
+    """Whether a provider error is OpenRouter's policy refusal (`error.error_type: "refusal"`).
+    Only looked at, never shown."""
+    body = getattr(error, "body", None)
+    inner = body.get("error") if isinstance(body, Mapping) else None
+    return isinstance(inner, Mapping) and inner.get("error_type") == "refusal"
+
+
 def failure_from(error: BaseException) -> ProviderFailure:
     """A provider error as a plain sentence: never the provider's words, the request or the key."""
     if isinstance(error, ProviderFailure):
@@ -272,6 +280,14 @@ def failure_from(error: BaseException) -> ProviderFailure:
             status=None,
             retryable=True,
             kind="unreachable",
+        )
+    if isinstance(error, anthropic.PermissionDeniedError) and _is_refusal(error):
+        # OpenRouter answers a prompt a model's provider declined with a 403 marked "refusal"
+        # (its GPT-6 guide, 2026-10-25): the request, not the key; asking again gets the same.
+        return ProviderFailure(
+            "The AI service declined this request, so the AI did not answer it.",
+            status=status,
+            retryable=False,
         )
     if isinstance(error, anthropic.PermissionDeniedError) and _SPEND_LIMIT.search(
         str(getattr(error, "message", "") or error)

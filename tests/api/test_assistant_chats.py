@@ -662,6 +662,26 @@ def test_the_models_offered_and_the_caps(postgres_engine, tmp_path) -> None:  # 
     }
 
 
+@pytest.mark.parametrize("extra", [False, True])
+def test_the_extra_test_models_need_the_setting_and_stay_out_of_the_menu(  # type: ignore[no-untyped-def]
+    postgres_engine, tmp_path, extra
+) -> None:
+    """2026-10-25: GPT-6 and Gemini 4 Argon only with `GV_ASSISTANT_EXTRA_MODELS=1`, never listed."""
+    with _world(
+        postgres_engine, tmp_path, route="openrouter", settings={"assistant_extra_models": extra}
+    ) as world:
+        models = world.client.get("/api/v1/assistant/models").json()
+        assert not [m["id"] for m in models["models"] if not m["id"].startswith("claude-")]
+        chat_id = world.chat()
+        response = world.client.post(
+            f"/api/v1/chats/{chat_id}/messages",
+            json={"text": "hi", "model": "gpt-6-luna", "effort": "high", "thinking": False},
+        )
+        assert response.status_code == 422 and response.json()["error"] == "choice_refused"
+        words = "always on" if extra else "not one of the models"
+        assert words in response.json()["message"]
+
+
 def test_fable_is_not_offered_on_the_openrouter_route(postgres_engine, tmp_path) -> None:  # type: ignore[no-untyped-def]
     with _world(postgres_engine, tmp_path, route="openrouter") as world:
         models = world.client.get("/api/v1/assistant/models").json()

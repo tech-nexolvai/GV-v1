@@ -650,6 +650,13 @@ def pick_prompt() -> str:
     )
 
 
+def _run_model(engine: Any, model: Any) -> Any:
+    """The model a call asked of `model` really runs on (`ChatEngine.run_model`): the lead's under
+    a lead from outside Claude (a comparison test), else `model`."""
+    lead = getattr(getattr(engine, "settings", None), "model", None)
+    return lead if getattr(lead, "extra", False) else model
+
+
 def prover_items(engine: ChatEngine, findings: Sequence[Mapping[str, Any]]) -> str:
     """One line per AI-only Wrong: its id, page, item, both claimed values and boxes, and the
     labels code numbered near each claimed spot."""
@@ -2734,7 +2741,7 @@ class _Run:
             question.vendor,
             question.architect,
             page_map,
-            BY_SHORT[round_picks.CHEAP_MODEL].id,
+            _run_model(self.engine, BY_SHORT[round_picks.CHEAP_MODEL]).id,
             round_picks.CHEAP_EFFORT,
             round_picks.CHEAP_LINK,
         )
@@ -2749,7 +2756,7 @@ class _Run:
         said: dict[str, Any] = {
             "vendor": question.ref,
             "architect_page": question.architect.get("page"),
-            "model": BY_SHORT[round_picks.CHEAP_MODEL].id,
+            "model": _run_model(self.engine, BY_SHORT[round_picks.CHEAP_MODEL]).id,
             "effort": round_picks.CHEAP_EFFORT,
         }
         if answer is None:
@@ -4773,6 +4780,9 @@ class _Run:
         effort = "high" if strong else "medium"
         if kind == round_picks.CHEAP_LINK and not strong:
             model, effort = BY_SHORT[round_picks.CHEAP_MODEL], round_picks.CHEAP_EFFORT
+        # The model the pick really runs on (a comparison test's lead model): kept picks are
+        # reused only for that model, never another model's.
+        model = _run_model(self.engine, model)
         key = self._pick_key(vendor, architect, page_map, model.id, effort, kind)
         if key is None:
             return self._asked_pick(

@@ -42,6 +42,16 @@ history as received). OpenRouter gets every tool loaded and no search tool.
 prompt, and the newest message's last block. Each turn re-sends the whole conversation unchanged,
 so everything before the newest message is read from the cache.
 
+**Models from outside Claude (comparison tests, 2026-10-25).** `EXTRA_MODELS` (GPT-6 Astra,
+GPT-6.1 Sol, GPT-6 Luna on Azure; Gemini 4 Argon on Google Vertex global) run only through
+OpenRouter's keep-no-data route, only when the server allows them (`GV_ASSISTANT_EXTRA_MODELS=1`),
+and never in the model menu. Their requests are the Claude ones with three differences: `thinking`
+is always `{"type": "adaptive"}` (OpenRouter turns it, with `output_config.effort`, into the model's
+own reasoning effort; `display` is Claude's), the effort is the highest the model takes when it
+takes no higher (Argon: low, medium, high), and `provider.only` names the model's own keep-no-data
+hosts. Under such a lead every call of the answer, helpers' included, runs on the lead's model
+(`ChatEngine.run_model`), so a test measures one model.
+
 **Pictures.** The history keeps a picture as a reference (`{"type": "gv_picture", ...}` as its
 `source`), and each request puts the picture's bytes back in, from the chat's folder, the same way
 every time, so the history is byte for byte what was sent before.
@@ -64,6 +74,7 @@ __all__ = [
     "DEFAULT_EFFORT",
     "DEFAULT_MODEL",
     "EFFORTS",
+    "EXTRA_MODELS",
     "FALLBACK_BETA",
     "HELPER_MAX_EFFORT",
     "HELPER_MAX_TOKENS",
@@ -90,6 +101,8 @@ __all__ = [
 
 type Provider = Literal["anthropic", "openrouter"]
 type Effort = Literal["low", "medium", "high", "xhigh", "max"]
+#: Who makes a model: Claude's, or one tested against it through OpenRouter (`EXTRA_MODELS`).
+type Family = Literal["claude", "openai", "google"]
 
 EFFORTS: Final[tuple[str, ...]] = ("low", "medium", "high", "xhigh", "max")
 #: Effort levels at which a model's thinking may be turned off.
@@ -122,7 +135,7 @@ class ChatModel:
     """OpenRouter's name for the same model."""
     rates_key: str
     """The model's key in the price file (`deploy/model_rates.us-east-1.json`)."""
-    short: Literal["fable", "opus", "sonnet", "haiku"]
+    short: Literal["fable", "opus", "sonnet", "haiku", "astra", "sol", "luna", "argon"]
     thinking: Literal["always", "optional"]
     thinking_off: Mapping[str, str] | None
     """What "thinking off" sends (`None`: it cannot be turned off)."""
@@ -134,10 +147,28 @@ class ChatModel:
     helper: bool = True
     """Whether the `Agent` tool may name it for a helper (not Fable 5.1: a helper's work is
     routine reading, and Fable costs 2.5 times Opus 5.5 per token)."""
+    family: Family = "claude"
+    hosts: tuple[str, ...] = ()
+    """The OpenRouter hosts it may run on (`provider.only`), each on OpenRouter's zero-data-retention
+    list; empty: the readers' own (`extraction.slot_reader.openrouter._routing`)."""
+    efforts: tuple[str, ...] = EFFORTS
+    """The efforts it takes, lowest first; a higher one is sent as the highest of these."""
+    long_prompt_tokens: int | None = None
+    """Above this many prompt tokens a call costs twice the input prices and 1.5 times the output
+    price (OpenRouter's price list for GPT-6: over 272,000 tokens)."""
 
     @property
     def thinking_off_max_effort(self) -> str | None:
         return None if self.thinking_off is None else "high"
+
+    @property
+    def extra(self) -> bool:
+        """A model from outside Claude, offered only for comparison tests (`EXTRA_MODELS`)."""
+        return self.family != "claude"
+
+    def effort_for(self, effort: str) -> str:
+        """The effort sent: the one asked, or the highest the model takes when it takes no higher."""
+        return effort if effort in self.efforts else self.efforts[-1]
 
 
 MODELS: Final[Mapping[str, ChatModel]] = {
@@ -190,6 +221,79 @@ MODELS: Final[Mapping[str, ChatModel]] = {
         ),
     )
 }
+#: OpenAI's GPT-6 models on Azure only: OpenRouter's keep-no-data hosts for them (checked on
+#: `GET /api/v1/endpoints/zdr`, 2026-10-25).
+_AZURE: Final = ("azure",)
+_GPT6_LONG_PROMPT: Final = 272_000
+
+#: Models from outside Claude, for comparison tests of the full check (Anant, 2026-10-25): offered
+#: only through OpenRouter's keep-no-data route and only with `GV_ASSISTANT_EXTRA_MODELS=1`; never
+#: in the model menu, never a helper the lead may name (under one, every call runs on it).
+EXTRA_MODELS: Final[Mapping[str, ChatModel]] = {
+    model.id: model
+    for model in (
+        ChatModel(
+            id="gpt-6-astra",
+            label="GPT-6 Astra",
+            openrouter="openai/gpt-6-astra",
+            rates_key="openai.gpt-6-astra",
+            short="astra",
+            thinking="always",
+            thinking_off=None,
+            fallbacks=False,
+            providers=("openrouter",),
+            helper=False,
+            family="openai",
+            hosts=_AZURE,
+            long_prompt_tokens=_GPT6_LONG_PROMPT,
+        ),
+        ChatModel(
+            id="gpt-6.1-sol",
+            label="GPT-6.1 Sol",
+            openrouter="openai/gpt-6.1-sol",
+            rates_key="openai.gpt-6.1-sol",
+            short="sol",
+            thinking="always",
+            thinking_off=None,
+            fallbacks=False,
+            providers=("openrouter",),
+            helper=False,
+            family="openai",
+            hosts=_AZURE,
+            long_prompt_tokens=_GPT6_LONG_PROMPT,
+        ),
+        ChatModel(
+            id="gpt-6-luna",
+            label="GPT-6 Luna",
+            openrouter="openai/gpt-6-luna",
+            rates_key="openai.gpt-6-luna",
+            short="luna",
+            thinking="always",
+            thinking_off=None,
+            fallbacks=False,
+            providers=("openrouter",),
+            helper=False,
+            family="openai",
+            hosts=_AZURE,
+            long_prompt_tokens=_GPT6_LONG_PROMPT,
+        ),
+        ChatModel(
+            id="gemini-4-argon",
+            label="Gemini 4 Argon",
+            openrouter="google/gemini-4-argon",
+            rates_key="google.gemini-4-argon",
+            short="argon",
+            thinking="always",
+            thinking_off=None,
+            fallbacks=False,
+            providers=("openrouter",),
+            helper=False,
+            family="google",
+            hosts=("google-vertex/global",),
+            efforts=("low", "medium", "high"),
+        ),
+    )
+}
 #: A model by its short name (the `Agent` tool takes only those `helper_shorts` lists).
 BY_SHORT: Final[Mapping[str, ChatModel]] = {model.short: model for model in MODELS.values()}
 
@@ -215,13 +319,26 @@ class ChoiceRefused(ValueError):
 
 
 def check_choice(
-    model_id: str, effort: str, thinking: bool, provider: Provider | None = None
+    model_id: str,
+    effort: str,
+    thinking: bool,
+    provider: Provider | None = None,
+    *,
+    extra: bool = False,
 ) -> ChatModel:
     """The model, after checking the combination is one the API takes (else `ChoiceRefused`).
-    With `provider`, also that the route offers the model."""
+    With `provider`, also that the route offers the model. `extra`: the server allows the models
+    from outside Claude (`EXTRA_MODELS`, `GV_ASSISTANT_EXTRA_MODELS`)."""
     model = MODELS.get(model_id)
+    if model is None and extra:
+        model = EXTRA_MODELS.get(model_id)
     if model is None:
         raise ChoiceRefused(f"{model_id!r} is not one of the models offered here")
+    if provider is not None and provider not in model.providers and model.extra:
+        raise ChoiceRefused(
+            f"{model.label} runs only through OpenRouter's keep-no-data route, and this server "
+            "uses Anthropic's own API (set GV_ASSISTANT_PROVIDER=openrouter)."
+        )
     if provider is not None and provider not in model.providers:
         raise ChoiceRefused(
             f"{model.label} is offered only on Anthropic's own API (it needs 30-day data "
@@ -452,5 +569,14 @@ def call_params(
         if betas:
             params["betas"] = betas
     else:
-        params["extra_body"] = {"provider": _openrouter_routing()}
+        if model.extra:
+            # OpenRouter turns adaptive thinking and `output_config.effort` into the model's own
+            # reasoning effort; `display` (and every other thinking form) is Claude's.
+            params["thinking"] = {"type": "adaptive"}
+            params["output_config"]["effort"] = model.effort_for(effort)
+        routing = _openrouter_routing()
+        if model.hosts:
+            # Only the model's own keep-no-data hosts (the rest of the block unchanged).
+            routing["only"] = list(model.hosts)
+        params["extra_body"] = {"provider": routing}
     return params
