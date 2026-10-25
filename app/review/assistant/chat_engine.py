@@ -233,6 +233,7 @@ from app.review.assistant.chat_trust import (
 )
 from app.review.assistant.chat_unknowns import refused_from_diff, unknown_records
 from app.review.assistant.classification import SAME_ITEM, not_compared_line
+from app.review.assistant.code_version import code_version
 from app.review.assistant.decision_resolver import recount_words, resolve_answer
 from app.review.assistant.dim_index import labels_for
 from app.review.assistant.escalation import Escalation, escalate_answer
@@ -3535,6 +3536,8 @@ class ChatEngine:
             "Trust": f"{trust.get('confirmed', 0)} confirmed, {trust.get('likely', 0)} likely, "
             f"{trust.get('to_check', 0)} AI reading only",
         }
+        # The code that made it (change 7): a report from older code can be told apart.
+        summary["Code version"] = code_version() or "unknown"
         reading = (report.get("reading") or {}).get("lines") or []
         if reading:
             summary["Numbers read"] = "; ".join(str(line) for line in reading)

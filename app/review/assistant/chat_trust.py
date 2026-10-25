@@ -1431,8 +1431,10 @@ def rescored(
     except Exception:  # noqa: BLE001 - an old answer the scoring cannot read keeps its score
         _log.exception("assistant chat accuracy could not be scored again")
         return out
-    # Today's words and claims either way; `rescored` only when the number itself moved.
-    return {**fresh, "rescored": fresh["score"] != stored.get("score")}
+    # Today's words and claims either way; `rescored` only when the number itself moved. The
+    # answer's own stamps (the code that made it, what its store check found) are kept.
+    kept = {key: stored[key] for key in ("code_version", "stored_problems") if key in stored}
+    return {**fresh, **kept, "rescored": fresh["score"] != stored.get("score")}
 
 
 #: A drawing value stated in words: inches or feet-and-inches (37", 3'-1", 25 1/2 in).

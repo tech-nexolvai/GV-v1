@@ -120,7 +120,14 @@ def test_findings_stream_are_stored_and_reload_the_same_with_their_pictures(post
         on_read = ("impact", "proof", "wrong_part")
         assert live[0] == {k: v for k, v in finding.items() if k not in on_read}
         assert _named(events, "coverage")[-1]["coverage"] == coverage
-        assert _named(events, "trust")[-1]["trust"] == message["blocks"][5]["trust"]
+        # The stored answer's stamps are added as it is stored (the code that made it, and what
+        # the read-back found): the streamed report is the rest of it.
+        stamps = ("code_version", "stored_problems")
+        stored_trust = message["blocks"][5]["trust"]
+        assert stored_trust["stored_problems"] is None
+        assert _named(events, "trust")[-1]["trust"] == {
+            k: v for k, v in stored_trust.items() if k not in stamps
+        }
         reloaded = world.client.get(f"/api/v1/chats/{chat_id}").json()["messages"][-1]
         assert reloaded == message
         for key in ("arch_picture_id", "vendor_picture_id"):
