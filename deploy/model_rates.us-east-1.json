@@ -1,6 +1,6 @@
 {
-  "source": "AWS Bedrock public price list (pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrock/current/us-east-1/index.json, publication 2026-10-03T00:11:38Z), us-east-1, standard on-demand, per 1,000 tokens; Moonshot Kimi K3 US CRIS Standard rates from the AWS Bedrock model card (2026-10-06); Anthropic Claude model pricing from https://www.anthropic.com/claude-sonnet-5-5 (2026-10-08), per 1,000 tokens; Claude Haiku 5.5 from Anthropic's model price list (2026-10-06, prompts up to 100K tokens), per 1,000 tokens; Claude Fable 5.1 ($10 / $50 per million tokens, 5-minute cache writes $12.50, cache reads $0.25) and the refusal fallbacks' models Claude Opus 5 and Opus 4.8 ($5 / $25) and Claude Sonnet 5 ($2 / $10) from Anthropic's model price list (2026-10-18), per 1,000 tokens; prompt-cache prices from Anthropic's prompt-caching page (2026-10-18): 5-minute cache writes 1.25 times the input price, cache reads 0.1 times except Claude Opus 5.5 (0.05 times, $0.20 per million tokens) and Claude Fable 5.1 (0.025 times, $0.25 per million tokens)",
-  "retrieved": "2026-10-18",
+  "source": "AWS Bedrock public price list (pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrock/current/us-east-1/index.json, publication 2026-10-03T00:11:38Z), us-east-1, standard on-demand, per 1,000 tokens; Moonshot Kimi K3 US CRIS Standard rates from the AWS Bedrock model card (2026-10-06); Anthropic Claude model pricing from https://www.anthropic.com/claude-sonnet-5-5 (2026-10-08), per 1,000 tokens; Claude Haiku 5.5 from Anthropic's model price list (2026-10-06, prompts up to 100K tokens), per 1,000 tokens; Claude Fable 5.1 ($10 / $50 per million tokens, 5-minute cache writes $12.50, cache reads $0.25) and the refusal fallbacks' models Claude Opus 5 and Opus 4.8 ($5 / $25) and Claude Sonnet 5 ($2 / $10) from Anthropic's model price list (2026-10-18), per 1,000 tokens; prompt-cache prices from Anthropic's prompt-caching page (2026-10-18): 5-minute cache writes 1.25 times the input price, cache reads 0.1 times except Claude Opus 5.5 (0.05 times, $0.20 per million tokens) and Claude Fable 5.1 (0.025 times, $0.25 per million tokens); GPT-6 Astra, GPT-6.1 Sol and GPT-6 Luna (Azure) and Gemini 4 Argon (Google Vertex global) from OpenRouter's model price list (GET https://openrouter.ai/api/v1/models and each model's endpoints, 2026-10-25), per 1,000 tokens: GPT-6 cache writes 1.25 times the input price and reads as listed (Astra and Luna 0.1 times, Sol 0.05 times), as a probe's billed cost showed; Gemini 4 Argon's cache reads 0.05 times (its implicit cache bills no writes)",
+  "retrieved": "2026-10-25",
   "currency": "USD",
   "rates": {
     "amazon.nova-pro-v1:0": {
@@ -80,6 +80,29 @@
       "output_per_1k_tokens": "0.01",
       "cache_write_per_1k_tokens": "0.0025",
       "cache_read_per_1k_tokens": "0.0002"
+    },
+    "openai.gpt-6-astra": {
+      "input_per_1k_tokens": "0.01",
+      "output_per_1k_tokens": "0.05",
+      "cache_write_per_1k_tokens": "0.0125",
+      "cache_read_per_1k_tokens": "0.001"
+    },
+    "openai.gpt-6.1-sol": {
+      "input_per_1k_tokens": "0.002",
+      "output_per_1k_tokens": "0.01",
+      "cache_write_per_1k_tokens": "0.0025",
+      "cache_read_per_1k_tokens": "0.0001"
+    },
+    "openai.gpt-6-luna": {
+      "input_per_1k_tokens": "0.0001",
+      "output_per_1k_tokens": "0.0005",
+      "cache_write_per_1k_tokens": "0.000125",
+      "cache_read_per_1k_tokens": "0.00001"
+    },
+    "google.gemini-4-argon": {
+      "input_per_1k_tokens": "0.002",
+      "output_per_1k_tokens": "0.01",
+      "cache_read_per_1k_tokens": "0.0001"
     }
   }
 }

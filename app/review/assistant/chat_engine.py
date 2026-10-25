@@ -151,6 +151,7 @@ from app.review.assistant.chat_read_review import (
 )
 from app.review.assistant.chat_request import (
     BY_SHORT,
+    EXTRA_MODELS,
     HELPER_MAX_TOKENS,
     LEAD_MAX_TOKENS,
     MODELS,
@@ -433,6 +434,12 @@ _MAX_DESCRIPTION: Final = 120
 #: Claude Haiku 5.5's price is five times higher for a prompt over 100K tokens.
 _HAIKU_LONG_PROMPT: Final = 100_000
 _HAIKU_LONG_FACTOR: Final = 5
+#: Prompt tokens above which a call costs more, by price key (`ChatModel.long_prompt_tokens`).
+_LONG_PROMPT_TOKENS: Final[Mapping[str, int]] = {
+    model.rates_key: model.long_prompt_tokens
+    for model in EXTRA_MODELS.values()
+    if model.long_prompt_tokens is not None
+}
 _MICROS: Final = Decimal(1_000_000)
 
 #: Sent once after a reply with no words and no tool call (Anthropic: an empty `end_turn` happens,
@@ -897,6 +904,19 @@ def _sendable(content: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _without_unsigned_thinking(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A reply from a model outside Claude without its unsigned thinking blocks: through
+    OpenRouter, GPT-6 and Gemini 4 send their reasoning's summary as an unsigned `thinking` block
+    (for the screen) and the reasoning itself as a `redacted_thinking` block, which is what goes
+    back to them (probe 2026-10-25). An unsigned thinking block would make the reply one that
+    cannot go back into the history (`_replayable`), so it is left out of the history only."""
+    return [
+        block
+        for block in content
+        if not (block.get("type") == "thinking" and not block.get("signature"))
+    ]
+
+
 def _replayable(content: Sequence[Mapping[str, Any]]) -> bool:
     """Whether a reply can go back into the history: it says something or calls a tool, and every
     thinking block in it is signed. An empty reply, a thinking-only one or one whose thinking was
@@ -1293,8 +1313,16 @@ class ChatEngine:
         with self._lock:
             return self._spent
 
+    def run_model(self, model: ChatModel) -> ChatModel:
+        """The model a call asked of `model` runs on: `model`, except under a lead from outside
+        Claude (`ChatModel.extra`, a comparison test): then every call of the answer, the helpers',
+        the checkers' and the summary's included, runs on the lead's model and is priced at its
+        rates, so the test measures that one model."""
+        lead = self.settings.model
+        return lead if lead.extra else model
+
     def _price(self, model: ChatModel, billed_in: int, out: int) -> int | None:
-        return self._price_key(model.rates_key, billed_in, out)
+        return self._price_key(self.run_model(model).rates_key, billed_in, out)
 
     def _price_key(self, key: str, billed_in: int, out: int) -> int | None:
         return call_cost_micros(self.settings.rates(key), key, billed_in, out)
@@ -1317,6 +1345,10 @@ class ChatEngine:
         )
         if "haiku" in key and prompt > _HAIKU_LONG_PROMPT:
             return billed_in * _HAIKU_LONG_FACTOR, out * _HAIKU_LONG_FACTOR
+        long = _LONG_PROMPT_TOKENS.get(key)
+        if long is not None and prompt > long:
+            # GPT-6 over 272,000 prompt tokens: twice the input prices, 1.5 times the output's.
+            return billed_in * 2, -(-out * 3 // 2)
         return billed_in, out
 
     def _attempts(
@@ -1327,6 +1359,7 @@ class ChatEngine:
         model's price; the top-level usage is only the attempt that answered). Without that list,
         the call is one attempt on the model asked. A fallback model the price file does not list
         is priced as the model asked (never cheaper than it)."""
+        model = self.run_model(model)
         entries = usage.get("iterations")
         if isinstance(entries, list):
             found = [
@@ -1354,6 +1387,7 @@ class ChatEngine:
     def _estimate(
         self, model: ChatModel, body: Mapping[str, Any], cached: int, previous: int
     ) -> int | None:
+        model = self.run_model(model)
         pictures = picture_sizes(body.get("messages") or [])
         estimate = estimate_micros(
             body,
@@ -1369,6 +1403,12 @@ class ChatEngine:
             and prompt_tokens_upper(body, pictures) > _HAIKU_LONG_PROMPT
         ):
             estimate *= _HAIKU_LONG_FACTOR
+        if (
+            estimate is not None
+            and model.long_prompt_tokens is not None
+            and prompt_tokens_upper(body, pictures) > model.long_prompt_tokens
+        ):
+            estimate *= 2
         return estimate
 
     def _fits(self, estimate: int | None) -> bool:
@@ -1498,7 +1538,9 @@ class ChatEngine:
         output_format: Mapping[str, Any] | None = None,
     ) -> _Reply:
         """One call, streamed, asked once more after a provider failure worth retrying. Raises
-        `ProviderFailure` or `_Cancelled`."""
+        `ProviderFailure` or `_Cancelled`. Under a lead from outside Claude it runs on the lead's
+        model (`run_model`)."""
+        model = self.run_model(model)
         attempts = 0
         busy = 0
         while True:
@@ -1597,6 +1639,8 @@ class ChatEngine:
             if failure is not None and failure.status == 404 and model.short == "fable":
                 # An early draft of Anthropic's docs: a 404 on the id when retention is off.
                 failure = ProviderFailure(RETENTION_WORDS, status=404, retryable=False)
+            if reply is not None and model.extra:
+                reply.content = _without_unsigned_thinking(reply.content)
             self._record(model, prompt_id, started, reply, failure)
             if reply is not None:
                 self._charge(model, reply.usage)
@@ -3768,7 +3812,7 @@ class ChatEngine:
             raise SandboxRefused(f"the prompt is longer than {_MAX_PROMPT_CHARS} characters")
         short = given.get("model")
         if short is None:
-            model = BY_SHORT[HELPER_DEFAULT_MODEL[self.settings.model.short]]
+            model = self._helper_model()
         elif isinstance(short, str) and short in helper_shorts():
             model = BY_SHORT[short]
         else:
@@ -3943,7 +3987,8 @@ class ChatEngine:
         self.emit("finding_dropped", {"index": dropped_at, **block})
 
     def _helper_model(self) -> ChatModel:
-        return BY_SHORT[HELPER_DEFAULT_MODEL[self.settings.model.short]]
+        lead = self.settings.model
+        return lead if lead.extra else BY_SHORT[HELPER_DEFAULT_MODEL[lead.short]]
 
     def _kind_system(self, kind: str) -> str:
         """A helper kind's system prompt (`full_check_specialists`), made once per message; the

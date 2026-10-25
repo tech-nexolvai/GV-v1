@@ -217,6 +217,12 @@ class Settings(BaseSettings):
     # verifies, one blind look per red candidate; `app/review/assistant/simple_check/`). The switch
     # to `simple` waits for a paid test that beats today's best.
     assistant_full_check_mode: Literal["roster", "simple"] = "roster"
+    # Models from outside Claude for comparison tests (Anant, 2026-10-25): GPT-6 Astra, GPT-6.1 Sol,
+    # GPT-6 Luna (Azure) and Gemini 4 Argon (Google Vertex global), only through OpenRouter's
+    # keep-no-data route (`chat_request.EXTRA_MODELS`). OFF by default: the API then refuses them.
+    # On, a message may name one in its `model` field (never in the model menu), and every call of
+    # that answer, helpers' included, runs on it. Roster full checks and chats only.
+    assistant_extra_models: bool = False
     # The AI page matcher (#1798): when the vendor's and the architect's drawings come as separate
     # PDFs, one cheap call per vendor drawing says which architect item shows the same piece; a
     # pair is made only where code agrees. Both full-check modes; `off`: code pairs alone.

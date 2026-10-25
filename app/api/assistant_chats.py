@@ -1571,7 +1571,20 @@ def _message(
             detail="The server is restarting. Send your message again in a moment.",
         )
     try:
-        model = check_choice(body.model, body.effort, body.thinking, runtime.choice.name)
+        model = check_choice(
+            body.model,
+            body.effort,
+            body.thinking,
+            runtime.choice.name,
+            extra=bool(getattr(settings, "assistant_extra_models", False)),
+        )
+        if (
+            model.extra
+            and body.mode == "full_check"
+            and settings.assistant_full_check_mode != "roster"
+        ):
+            # The simple full check opens its compare calls on its own models (`simple_check`).
+            raise ChoiceRefused(f"{model.label} runs only the roster full check")
     except ChoiceRefused as refused:
         raise CodedHTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "choice_refused", str(refused)
