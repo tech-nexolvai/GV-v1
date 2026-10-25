@@ -74,6 +74,7 @@ __all__ = [
     "apply_look",
     "brief",
     "claims_of",
+    "comparable",
     "opening",
     "plan_looks",
     "system_prompt",
@@ -379,6 +380,35 @@ def _labels_on(labels: DimLabels | None, drawing: Drawing) -> list[Mapping[str, 
         for label in found
         if expected is None or str(label.get("side") or "unknown") in (*expected, "unknown")
     ]
+
+
+def comparable(labels: DimLabels | None, look: Look) -> bool:
+    """Whether a look across separate uploads has a size to compare (plan change 12: the look's
+    money last): code read at least one size on a vendor drawing and one on an architect drawing
+    of it. When code cannot list the labels at all, the look runs (unknown is not nothing)."""
+    if labels is None:
+        return True
+    sides: dict[str, bool] = {}
+    for role in ("vendor", "architect"):
+        found = False
+        for drawing in (d for d in look.drawings if d.role == role):
+            try:
+                page = labels.on_page(drawing.file, drawing.page, read_now=False)
+            except Exception:  # noqa: BLE001 - not known: the look runs
+                return True
+            if page is None:
+                return True  # the page's labels are not read yet: not known, the look runs
+            x0, y0, x1, y1 = drawing.box
+            for label in page:
+                lx0, ly0, lx1, ly1 = label["box"]
+                inside = x0 <= (lx0 + lx1) / 2 <= x1 and y0 <= (ly0 + ly1) / 2 <= y1
+                if inside and str(label.get("side") or "unknown") in (role, "unknown"):
+                    found = True
+                    break
+            if found:
+                break
+        sides[role] = found
+    return all(sides.values())
 
 
 def _dpi(drawing: Drawing) -> int:
@@ -1464,6 +1494,11 @@ def _paired(
             agent.skip = True  # no architect drawing paired with it: nothing to compare
             return None
         look = replace(looks[0], number=page)
+        if not comparable(engine.book.dim_labels, look):
+            # Plan change 12: the look's money goes to pages with a size to compare.
+            agent.skip = True
+            _log.info("assistant whole look p%s: no size read on one side, not looked at", page)
+            return None
         with state.lock:
             state.looks[agent.call_id] = look
         agent.opening = tuple(opening(engine.tools, engine.book.dim_labels, look))

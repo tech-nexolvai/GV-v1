@@ -875,6 +875,7 @@ def worklist_from(
             ),
             words=pairing_module.words_in(texts),
             views=pairing_module.views_in([*(drawing.titles or ()), *(drawing.heading or "",)]),
+            view_titles=tuple(drawing.titles or ()) if drawing.role != "vendor" else (),
             section=places.get((drawing.file, own)),
             text=(
                 " ; ".join(
@@ -972,7 +973,16 @@ def worklist_from(
         if decided is None:
             continue
         across_pairs[half.ref] = decided
-        if decided.chosen and half.from_upload:
+    if across_pairs:
+        marked = _with_marks(facts_of, across_context)
+        # The swap audit first (a crossed pair lends nothing to its sheets), then again on the
+        # sheets that took a pair.
+        _swap_audit(across_pairs, marked, by_item, across_context)
+        if _item_sheets(across_pairs, marked, across_context):
+            _swap_audit(across_pairs, marked, by_item, across_context)
+    for half in vendor_halves:
+        decided = across_pairs.get(half.ref)
+        if decided is not None and decided.chosen and half.from_upload:
             # The group is named by the governing architect drawing its rounds were paired with.
             governing = _governing_first(_paired_drawings(decided, by_item), half.page)
             groups.setdefault(governing[0].ref, []).append(half)
@@ -1085,6 +1095,7 @@ def worklist_from(
             opposite_hand=(
                 across_pairs[half.ref].opposite_hand if half.ref in across_pairs else None
             ),
+            mirrored=across_pairs[half.ref].mirrored if half.ref in across_pairs else False,
             views_disagree=(
                 across_pairs[half.ref].views_disagree if half.ref in across_pairs else None
             ),
@@ -1791,6 +1802,11 @@ def _item_facts(
         index_title=next((m.index_title for m in members if m.index_title), None),
         place=(item.file, item.page),
         size_rows=tuple(r for m in members for r in m.size_rows),
+        view_titles=(
+            tuple(t for v in item.views for t in v.titles[:1])
+            if item.views
+            else tuple(t for m in members for t in m.view_titles)
+        ),
     )
     return merged, members
 
@@ -1920,6 +1936,13 @@ def _pair_across(
         if memo is not None:
             memo[key] = known
     ranked, code_pick = known
+    # The $0 code pass (plan change 6): two kinds of code evidence, a clear margin, no rival
+    # named by code. Its pick is code's own; the paid matcher is not asked about it
+    # (`page_match.to_ask`), and a saved matcher answer naming another item still refuses it.
+    sure = pairing_module.code_pass(ranked)
+    code_paired = sure is not None and code_pick in (None, sure.ref)
+    if code_paired and sure is not None:
+        code_pick = sure.ref
     asked = tuple(s.ref for s in ranked if s.contradicts is None)
     answer = None
     if saved is not None:
@@ -2019,6 +2042,15 @@ def _pair_across(
                 # prints the vendor's sizes clearly best (the swap check among the sheet's views).
                 best = _view_by_sizes(vendor_facts, item_views)
             if best is None:
+                # The views of the vendor's room, all of one title ("STAFF LOUNGE 1" to
+                # "4"): compared with all of them, as with a plan and an elevation of one piece.
+                room = pairing_module.room_views(vendor_facts, item_views)
+                if room:
+                    kept.append(item_id)
+                    picked_views.extend(v.ref for v in room)
+                    shown.append(f"{pairing_module.evidence_words(room[0])} on {item_id}")
+                    continue
+            if best is None:
                 failed.append(f"{item_id} shows it ({why}), but {problem}")
                 continue
             kept.append(item_id)
@@ -2066,6 +2098,7 @@ def _pair_across(
             )
             chosen, picked_views = (), []
     hand: str | None = None
+    mirrored = False
     if chosen:
         drawings_of = {v.ref: v for c in pool for v in c.views}
         targets = [facts_of(drawings_of[r]) for r in picked_views if r in drawings_of] + [
@@ -2076,14 +2109,25 @@ def _pair_across(
         hand = next(
             (h for t in targets if (h := pairing_module.opposite_hand(mine_facts, t))), None
         )
-        if (
+        proof = pairing_module.mirror_proof(mine_facts, targets)
+        if proof is not None:
+            # Code's mirror proof (plan change 6b): the vendor's run of widths reads backwards on
+            # the paired drawing's line, and never forwards. Left and right swap in later checks.
+            mirrored = True
+            run = ", ".join(pairing_module.size_words(v) for v in proof.parts)
+            hand = (
+                f"code's mirror proof: the vendor's widths {run} read in reverse order on the "
+                "architect's drawing (a mirrored unit)"
+            )
+            why = f"{why}; {hand}: left and right are swapped when ends are compared"
+        elif (
             hand is None
             and swapped is not None
             and any(pairing_module.size_match(mine_facts, t).mirrored for t in targets)
         ):
-            # Code's mirror proof: the vendor's parts read backwards on the paired drawing's line.
+            # The vendor's parts read backwards on the paired drawing's line (too few to prove).
             hand = "the vendor's parts read in reverse order on the architect's: a mirrored unit"
-        if hand is not None:
+        if hand is not None and not mirrored:
             why = f"{why}; {hand}: sizes are compared, positions from an end are not"
     if not chosen and DRAWING_NEEDED not in why and saved is not None:
         # The item, not the project: the AI page matcher looked at every architect page of the
@@ -2106,6 +2150,9 @@ def _pair_across(
         if chosen or DRAWING_NEEDED in why
         else _unsure(ranked, code_pick, answer or (saved[1] if saved is not None else None))
     )
+    if not unsure and not chosen and code_paired and DRAWING_NEEDED not in why:
+        # Code's own pass named the item, and something later (which view) is unsure.
+        unsure = (str(code_pick),)
     if unsure:
         # A page is named (the matcher's, sure or not, or code's own) and the pair is not
         # confirmed: the drawing may be in the upload, so the candidates are named in the
@@ -2139,7 +2186,180 @@ def _pair_across(
         needed=f": {DRAWING_NEEDED}: " in why,
         opposite_hand=hand,
         unsure=unsure,
+        code_paired=code_paired,
+        mirrored=mirrored,
     )
+
+
+def _item_sheets(
+    pairs: dict[str, AcrossPair],
+    facts_of: Callable[[Drawing], pairing_module.Facts],
+    context: _Across,
+) -> bool:
+    """The vendor's own sheets of one item (plan change 6): vendor drawings side by side in the
+    vendor's file whose set index item titles name the same item (`pairing.same_item`, checked
+    printed), of one project, a title no other run of pages carries. When one of them is paired
+    and the others are not (pairing unsure, never "drawing needed"), the others are paired with
+    the same architect drawing, unless code rules it out for them, the matcher's first pick is
+    another page or none, code picked another, or they name another hand or variant. The matcher
+    is still asked about them (code's own pass did not pair them). A mirror code proved on one
+    sheet is not proved on the others: their ends from the left or right are not compared. In
+    place; whether any sheet took a pair."""
+    took = False
+    order = sorted(pairs, key=lambda ref: (pairs[ref].vendor.file, pairs[ref].vendor.own_page))
+    titles = {ref: facts_of(pairs[ref].vendor).index_title for ref in order}
+
+    def project(ref: str) -> str | None:
+        vendor = pairs[ref].vendor
+        return (
+            context.places.get((vendor.file, vendor.own_page)) or projects_module.Place()
+        ).project
+
+    runs: list[list[str]] = []
+    for ref in order:
+        last = runs[-1][-1] if runs else None
+        if (
+            last is not None
+            and pairs[last].vendor.file == pairs[ref].vendor.file
+            and pairs[ref].vendor.own_page - pairs[last].vendor.own_page <= 1
+            and pairing_module.same_item(titles[last], titles[ref])
+            and project(last) == project(ref)
+        ):
+            runs[-1].append(ref)
+        else:
+            runs.append([ref])
+    seen = Counter(pairing_module.unit_title(titles[run[0]])[0] for run in runs if titles[run[0]])
+    for run in runs:
+        title = titles[run[0]]
+        if len(run) < 2 or not title or seen[pairing_module.unit_title(title)[0]] != 1:
+            continue
+        anchors = [pairs[r] for r in run if pairs[r].chosen]
+        if not anchors or len({(a.chosen, a.views) for a in anchors}) != 1:
+            continue
+        anchor = anchors[0]
+        mine = facts_of(anchor.vendor)
+        for ref in run:
+            pair = pairs[ref]
+            if pair.chosen or pair.needed or pair.views_disagree is not None:
+                continue
+            open_ = {c.id for c in pair.candidates if c.contradicts is None}
+            theirs = facts_of(pair.vendor)
+            if (
+                not set(anchor.chosen) <= open_
+                or (
+                    pair.answer is not None
+                    and (not pair.answer or pair.answer[0] not in anchor.chosen)
+                )
+                or (pair.code_pick is not None and pair.code_pick not in anchor.chosen)
+                or theirs.hand != mine.hand
+                or theirs.markers != mine.markers
+            ):
+                continue
+            pages = ", ".join(
+                f"architect page {c.page}" for c in pair.candidates if c.id in anchor.chosen
+            )
+            hand = anchor.opposite_hand
+            if anchor.mirrored:
+                hand = (
+                    f"its page {anchor.vendor.own_page} of the same item is a mirrored unit "
+                    "(code's mirror proof there)"
+                )
+            pairs[ref] = pair.model_copy(
+                update={
+                    "chosen": anchor.chosen,
+                    "views": anchor.views,
+                    "unsure": (),
+                    "opposite_hand": hand,
+                    "mirrored": False,
+                    "why": (
+                        f'paired with {pages}: the vendor\'s sheets of one item ("{title}", '
+                        f"its page {anchor.vendor.own_page} and this one) and its page "
+                        f"{anchor.vendor.own_page} is paired with it"
+                        + (
+                            f"; {hand}: sizes are compared, positions from an end are not"
+                            if hand
+                            else ""
+                        )
+                    ),
+                }
+            )
+            took = True
+    return took
+
+
+def _swap_audit(
+    pairs: dict[str, AcrossPair],
+    facts_of: Callable[[Drawing], pairing_module.Facts],
+    by_item: Mapping[str, AcrossCandidate],
+    context: _Across,
+) -> None:
+    """The pair-swap audit (plan change 6c): two vendor drawings paired with two different
+    architect pages of one title (the set index's item title, or one room's views), whose
+    printed sizes fit each other's pages better (`pairing.swap_audit`), may be crossed: both
+    become "pairing unsure" naming both pages. In place."""
+
+    def title(pair: AcrossPair) -> str | None:
+        found = {
+            pairing_module.unit_title(t)[0]
+            for c in pair.chosen
+            for d in by_item[c].drawings
+            if (t := context.index_titles.get(d.ref))
+        }
+        if found:
+            return f"page:{next(iter(found))}" if len(found) == 1 else None
+        # No page title: one room's views ("CONFERENCE ROOM ELEVATION"), never a bare "PLAN".
+        views = [v for c in pair.chosen for v in by_item[c].views if v.ref in pair.views]
+        keys = {
+            pairing_module.room_key(v.titles[0])
+            for v in views
+            if v.titles and pairing_module.piece_words(v.titles[0])
+        }
+        return f"view:{next(iter(keys))}" if len(keys) == 1 else None
+
+    paired = [
+        (ref, key)
+        for ref, pair in pairs.items()
+        if pair.chosen and (key := title(pair)) is not None
+    ]
+    crossed: dict[str, tuple[str, str]] = {}
+    for n, (one, key) in enumerate(paired):
+        for two, other_key in paired[n + 1 :]:
+            a, b = pairs[one], pairs[two]
+            if key != other_key or set(a.chosen) & set(b.chosen):
+                continue
+            found = pairing_module.swap_audit(
+                (facts_of(a.vendor), [facts_of(d) for d in _paired_drawings(a, by_item)]),
+                (facts_of(b.vendor), [facts_of(d) for d in _paired_drawings(b, by_item)]),
+            )
+            if found is not None:
+                why = (
+                    f"the swap audit: the sizes of vendor pages {a.vendor.own_page} and "
+                    f"{b.vendor.own_page} fit each other's architect pages better ({found[0]} "
+                    f"points against {found[1]})"
+                )
+                crossed.setdefault(one, (two, why))
+                crossed.setdefault(two, (one, why))
+    for ref, (other, why) in crossed.items():
+        pair, theirs = pairs[ref], pairs[other]
+        pages = {c.id: c.page for c in pair.candidates}
+        either = tuple(dict.fromkeys((*pair.chosen, *theirs.chosen)))
+        named = " or ".join(f"architect page {pages[c]}" for c in either if c in pages)
+        pairs[ref] = pair.model_copy(
+            update={
+                "chosen": (),
+                "views": (),
+                "unsure": either,
+                "mirrored": False,
+                "opposite_hand": None,
+                "views_disagree": None,
+                # Unsure now: the matcher is asked (code's own pass is not a pair any more).
+                "code_paired": False,
+                "why": (
+                    f"{pairing_module.UNPAIRED}: {pairing_module.PAIRING_UNSURE}: {named}?; "
+                    f"{why}, so the two pairs may be crossed; it was {pair.why}"
+                ),
+            }
+        )
 
 
 #: A label of one of two drawings' strings lies on the same dimension line as another when their

@@ -21,6 +21,10 @@ prints...) or ranks it first on weak evidence with a clear lead. A sure pick amo
 code cannot tell apart is never paired. Zero wrong pairs matters more than coverage: a wrong pair
 can make false reds.
 
+**Code first (final plan, change 12).** A vendor drawing code's own $0 pass paired
+(`AcrossPair.code_paired`, `pairing.code_pass`) is never asked about: the matcher's money goes only
+to the drawings code could not pair.
+
 **Saved answers.** Every answer is kept in the set pack (`page_match.json`, with the candidates
 it was shown, the model, the usage and the cost), so the work list is built again at $0 (a
 replay, another chat on the same set, the roster's planning after the simple check's); a drawing
@@ -465,7 +469,8 @@ def to_ask(pairs: Sequence[AcrossPair], folder: Path) -> tuple[list[AcrossPair],
     todo: list[AcrossPair] = []
     reused = 0
     for pair in pairs:
-        if not pair.asked:
+        if not pair.asked or pair.code_paired:
+            # Code's own $0 pass named its item (plan change 12: the matcher's money last).
             continue
         if _still_good(saved.get(pair.vendor.ref), pair):
             reused += 1

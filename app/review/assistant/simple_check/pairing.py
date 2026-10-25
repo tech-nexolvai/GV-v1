@@ -60,6 +60,16 @@ needed", never compared. Since 2026-10-25 a pick the matcher is not sure of coun
 does code's own clear pick the matcher did not name: "no drawing to compare with" only when
 neither names a page (owner: it must be very sure).
 
+**The $0 code pass before the matcher (final plan, changes 6 and 12, 2026-10-25).** Code pairs a
+vendor drawing by itself, and the paid matcher is not asked, when its best item holds two kinds of
+code evidence (`Scored.kinds`), one naming the item (its title; the vendor's title naming its
+views alone, `piece_words`; a key plan's callout, a view reference, an item tag only it prints),
+beats the next item by `CODE_MARGIN`, and no rival is also named by code (`code_pass`). A room's
+views of one title are compared together (`room_views`); a matcher pick code names alone, clearly
+first, pairs even when the matcher is not sure (`agree`); ceiling, lighting and life-safety plans
+are ruled out. A mirror is proved from the order of the widths (`mirror_proof`), and two pairs
+whose sizes fit crossed are both unsure (`swap_audit`). Zero wrong pairs still comes first.
+
 Pure: plain values in, a decision out. The work list (`worklist._pair_across`) builds the facts.
 """
 
@@ -68,18 +78,21 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
+from itertools import pairwise
 from typing import Any, Final
 
 __all__ = [
     "CODE_BAR",
     "CODE_MARGIN",
+    "CODE_NAMING_KINDS",
     "DENSE_SHARE",
     "DENSE_VALUES",
     "MIN_LAYOUT_SHARE",
     "MIN_LAYOUT_VALUES",
     "MIN_WEAK_POOL",
+    "NAMING_KINDS",
     "PAIRING_UNSURE",
     "TIER",
     "UNPAIRED",
@@ -89,21 +102,28 @@ __all__ = [
     "Scored",
     "SizeMatch",
     "clear_winner",
+    "code_pass",
     "decide",
     "dense",
     "evidence_words",
     "item_tags_in",
     "markers_in",
+    "mirror_proof",
+    "named_by",
     "narrow",
     "opposite_hand",
+    "piece_words",
     "rank",
     "references_in",
     "reuse",
+    "room_key",
+    "room_views",
     "same_item",
     "section_key",
     "size_match",
     "size_rows",
     "size_words",
+    "swap_audit",
     "swap_check",
     "tags_in",
     "title_key",
@@ -220,6 +240,10 @@ class Facts:
     size_rows: tuple[tuple[str, tuple[Fraction, ...]], ...] = ()
     """Its dimension rows (`size_rows`): the printed values on one dimension line, in order along
     it, with the line's direction (`h` / `v`). The swap check (`swap_check`) compares them."""
+    view_titles: tuple[str, ...] = ()
+    """An architect drawing's view titles as code found them on the sheet (`views.find_views`:
+    "STAFF LOUNGE 1", "TEA COUNTER @ GUEST AREA"); an item's: every view's. Their naming
+    words before an "@" name a piece or a room (`piece_words`), matched with the vendor's title."""
 
 
 @dataclass(frozen=True)
@@ -579,6 +603,16 @@ _W_ONLY_IN_SECTION: Final = 2.0
 _W_NEAR: Final = 0.25
 _MAX_NEAR: Final = 1.0
 _MAX_NAMED: Final = 3.0
+#: A title of a sheet that never draws a piece of millwork: a reflected ceiling plan, a lighting
+#: or life-safety plan, a legend.
+_SYSTEM_TITLE: Final = re.compile(
+    r"\b(?:RCP|REFLECTED\s+CEILING|CEILING\s+PLAN|LIGHTING\s+(?:PLAN|LEGEND)|LIFE\s+SAFETY"
+    r"|LEGEND)\b"
+)
+#: A word of the vendor's item title naming one item's views alone (`piece_words`).
+_W_VIEW_TITLE: Final = 2.0
+#: ... a word naming several items' views (each counts by how few name it), at most this.
+_MAX_VIEW_WORDS: Final = 1.0
 #: Code pairs on its own score only above this, and this far ahead of the next candidate.
 CODE_BAR: Final = 3.0
 CODE_MARGIN: Final = 2.0
@@ -697,6 +731,91 @@ def views_in(texts: Iterable[str]) -> frozenset[str]:
         for kind, pattern in _VIEW_WORDS:
             if pattern.search(upper):
                 found.add(kind)
+    return frozenset(found)
+
+
+#: Title words that name no piece nor room on their own (a title's other words do): "TWO BAY
+#: CONFERENCE ROOM CASEWORK" names a conference room's casework, "TEA COUNTER" a tea counter.
+_GENERIC_TITLE_WORDS: Final = frozenset(
+    {
+        "CASEWORK",
+        "MILLWORK",
+        "COUNTER",
+        "PUBLIC",
+        "SMALL",
+        "LARGE",
+        "THREE",
+        "FOUR",
+        "FIVE",
+        "SEVEN",
+        "EIGHT",
+        "STANDARD",
+        "LEVEL",
+        "FIRST",
+        "SECOND",
+        "THIRD",
+        "FOURTH",
+        "LEGEND",
+        "SYMBOL",
+        "REFLECTED",
+        "SCHEDULE",
+        "ELEV",
+        "PARTIAL",
+        "OPTION",
+        "NEW",
+        "EXISTING",
+        "ADA",
+        "SHAPED",
+    }
+)
+
+
+def named_by(title: object, words: frozenset[str]) -> bool:
+    """Whether every word of a view's `title` that names its piece (`piece_words`, its own words,
+    not their joins) is among `words` (a vendor title's), or part of a join that is: "WORK DESK
+    ELEVATION" is named by "Workdesk Casework"; "EAST WASHROOM ELEVATION" is not named by
+    "Washroom Vanity" (which washroom?); a title naming nothing is named by nothing."""
+    own = piece_words(title)
+    if not own:
+        return False
+    joins = [w for w in own if w in words]
+    singles = {
+        w
+        for w in own
+        if not any(len(j) > len(w) and (j.startswith(w) or j.endswith(w)) for j in own)
+    }
+    return all(w in words or any(len(j) > len(w) and w in j for j in joins) for w in singles)
+
+
+#: Where a title's piece ends and its place begins ("TEA COUNTER @ GUEST AREA").
+_PLACE: Final = re.compile(r"@|\bAT\b")
+#: A letter run of a title (any length: two short words may join into one, "WORK DESK").
+_LETTERS: Final = re.compile(r"[A-Z]+")
+
+
+def piece_words(title: object) -> frozenset[str]:
+    """The words of a view's or an item's title that name its piece or room: the part before
+    its place ("@", "AT"), words of 4 letters or more, a plural's S dropped, drawing words and
+    generic words left out (`_STOP_WORDS`, "CASEWORK", "COUNTER", "SMALL"), two words side by side
+    joined too ("WORK DESK" is also "WORKDESK"). "STAFF LOUNGE 3" is STAFF,
+    LOUNGE; "Juice & Water Station @ Foyer" is JUICE, WATER, STATION; "FOYER
+    ELEVATION" is FOYER; "BLOCKING DETAIL @ WASHROOM" is nothing (its piece is not named)."""
+    head = _PLACE.split(" ".join(str(title or "").upper().split()), maxsplit=1)[0]
+    runs = _LETTERS.findall(head.replace("'S", ""))
+    found: set[str] = set()
+
+    def keep(word: str) -> None:
+        if len(word) >= 5 and word.endswith("S") and not word.endswith("SS"):
+            word = word[:-1]
+        if len(word) >= 4 and word not in _STOP_WORDS and word not in _GENERIC_TITLE_WORDS:
+            found.add(word)
+
+    for word in runs:
+        keep(word)
+    common = _STOP_WORDS | _GENERIC_TITLE_WORDS
+    for one, two in pairwise(runs):
+        if len(one) >= 3 and len(two) >= 3 and one not in common and two not in common:
+            keep(one + two)
     return frozenset(found)
 
 
@@ -825,11 +944,20 @@ class Scored:
     """The part of `score` the swap check gave it (`with_sizes`): found among the pages of the AI
     page matcher's pick's title, so it only helps agree with the matcher; like the title, never
     counted toward code's own pick, nor against another item's own evidence (`agree`)."""
+    kinds: frozenset[str] = frozenset()
+    """The kinds of code evidence it holds, for the $0 code pass (`code_pass`): `title` (the
+    vendor's item title is its title, or names its views alone), `pointer` (a key plan's callout,
+    a view reference, an item tag only it prints), `sizes` (most of the vendor's sizes printed on
+    it, spans lined up, or the vendor's overall printed on it alone), `section` (the only item of
+    the vendor's divider section)."""
+    view_titled: float = 0.0
+    """The part of `score` its view titles gave it (`piece_words`): like the set index's title,
+    never counted toward `clear_winner`'s pick (the code pass weighs it with a second kind)."""
 
     @property
     def own(self) -> float:
-        """Its score on code's own evidence: the title's and the swap check's weights left out."""
-        return self.score - self.titled - self.sized
+        """Its score on code's own evidence: the titles' and the swap check's weights left out."""
+        return self.score - self.titled - self.sized - self.view_titled
 
 
 def _same_size(a: Fraction, b: Fraction) -> bool:
@@ -877,6 +1005,15 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
         1 for one in candidates if vendor.section is not None and one.section == vendor.section
     )
     titled = _one_titled_item(vendor, candidates)
+    mine_piece = piece_words(vendor.index_title) if vendor.index_title else frozenset()
+    their_piece = {
+        one.ref: frozenset(w for t in one.view_titles for w in piece_words(t)) for one in candidates
+    }
+    piece_counts: Counter[str] = Counter(w for words in their_piece.values() for w in words)
+    sized = _size_points(vendor, candidates)
+    widths: Counter[Fraction] = Counter(
+        w for one in candidates if (w := _overall(one.oriented, "h")) is not None
+    )
     out: list[Scored] = []
     for one in candidates:
         score = 0.0
@@ -885,19 +1022,57 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
         strong = False
         small_tag = False
         index_titled = False
+        kinds: set[str] = set()
+        view_titled = 0.0
+        view_strong = False
         linked = vendor.linked.get(one.ref)
         if linked:
             # A plan's callout beside the vendor's item tag points to it: strong enough to agree
             # with the AI page matcher, never to pair without it (`link_only`).
             score += _W_REFERENCE
             evidence.append(linked)
+            kinds.add("pointer")
         if one.title and _title_on(one.title, vendor.text):
             strong = True
             score += _W_TITLE
             evidence.append(f'its title "{one.title}" is printed on the vendor\'s sheet')
+            kinds.add("title")
         elif one.title and (named_in := _named_in(one.title, vendor.phrases)):
             score += _W_NAMED_IN_TITLE
             evidence.append(f'the vendor\'s sheet names "{named_in}", part of its title')
+        shared_piece = sorted(mine_piece & their_piece[one.ref])
+        if shared_piece and total > 1:
+            # The vendor's item title names this item's views ("Staff Lounge Casework"
+            # and "STAFF LOUNGE 3"): a word no other item's views carry is strong when a
+            # view's title names nothing the vendor's does not ("GUEST BATH MIRROR" is
+            # not a "GUEST BATH VANITY"); one several carry counts by how few do.
+            alone = [
+                w
+                for w in shared_piece
+                if piece_counts[w] == 1
+                and any(w in piece_words(t) and named_by(t, mine_piece) for t in one.view_titles)
+            ]
+            if alone:
+                view_strong = True
+                kinds.add("title")
+                view_titled = _W_VIEW_TITLE
+                evidence.append(
+                    "the vendor's title names its view"
+                    f"{'s' if len(one.view_titles) > 1 else ''} alone ("
+                    + ", ".join(alone[:3])
+                    + ")"
+                )
+            else:
+                view_titled = min(
+                    _MAX_VIEW_WORDS, sum(_idf(piece_counts, total, w) for w in shared_piece) / 2
+                )
+                if view_titled > 0:
+                    evidence.append(
+                        "the vendor's title shares words with its view titles ("
+                        + ", ".join(shared_piece[:3])
+                        + ")"
+                    )
+            score += view_titled
         if vendor.index_title and one.index_title:
             my_type = unit_title(vendor.index_title)[1]
             their_type = unit_title(one.index_title)[1]
@@ -912,6 +1087,7 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
                 # with the AI page matcher, never to pair without it (`agree_only`: an AI read the
                 # titles; a second, independent witness must look at the drawings).
                 index_titled = True
+                kinds.add("index_title")
                 score += _W_TITLE
                 evidence.append(
                     f'both pages are titled "{one.index_title}"'
@@ -926,6 +1102,7 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
                     strong = True
                     score += _W_ONLY_IN_SECTION
                     evidence.append("the only architect item in that section")
+                    kinds.add("section")
             else:
                 contradicts = "it is in another section of the set's divider pages"
         # A view reference (`2/A-501`) names one drawing; a bare sheet or tag number (`EQ-310`)
@@ -935,11 +1112,14 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
             strong = True
             score += _W_REFERENCE
             evidence.append(f"printed reference {', '.join(shared)} on both")
+            kinds.add("pointer")
         spans = vendor.spans(one) if vendor.spans is not None else 0
         if spans:
             strong = strong or spans >= MIN_SPANS
             score += _W_SPANS * min(1.0, spans / MIN_SPANS)
             evidence.append(f"{spans} spans lined up by drawn position")
+            if spans >= MIN_SPANS:
+                kinds.add("sizes")
         matched, share = _share(
             [v for v in vendor.values if v >= MIN_TELLING_INCHES / 2],
             [v for v in one.values if v >= MIN_TELLING_INCHES / 2],
@@ -956,6 +1136,8 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
                 strong = strong or share >= MIN_LAYOUT_SHARE
                 score += _W_SHARE * share
                 evidence.append(f"{matched} of its sizes printed on both")
+                if share >= MIN_LAYOUT_SHARE:
+                    kinds.add("sizes")
         named = 0.0
         tags = sorted(t for t in vendor.tags & one.tags if _idf(tag_counts, total, t) > 0)
         for tag in tags:
@@ -970,8 +1152,10 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
             unique = [t for t in tags if t in items and tag_counts[t] == 1]
             if any(_ITEM_TAG.match(t) for t in unique):
                 strong = True
+                kinds.add("pointer")
             elif unique:
                 small_tag = True
+                kinds.add("pointer")
             score += min(_MAX_NAMED, named)
             evidence.append("both print " + ", ".join([*tags, *words][:6]))
         for axis, name in (("h", "width"), ("v", "height")):
@@ -984,6 +1168,20 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
             ):
                 score += _W_SIZE
                 evidence.append(f"overall {name} {_inch_words(mine)} against {_inch_words(theirs)}")
+                if (
+                    axis == "h"
+                    and _same(mine, theirs)
+                    and mine >= MIN_OVERALL_INCHES
+                    and widths[theirs] == 1
+                ):
+                    # The very same overall width (to a 32nd), 24" or more, and no other item's
+                    # overall width: a size witness that points at it.
+                    kinds.add("sizes")
+        if one.ref in sized:
+            # The vendor's overall size printed on it, matching clearly better than every other
+            # item (`size_match`): the swap check over every candidate.
+            kinds.add("sizes")
+            evidence.append(sized[one.ref])
         overall = {_overall(vendor.oriented, "h"), _overall(vendor.oriented, "v")}
         near = {
             (d, v)
@@ -1006,6 +1204,17 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
                 if vendor.markers
                 else f"it is marked {', '.join(sorted(one.markers))} and the vendor's drawing is not"
             )
+        if (
+            contradicts is None
+            and one.view_titles
+            and all(_SYSTEM_TITLE.search(t.upper()) for t in one.view_titles)
+        ):
+            # A reflected ceiling plan, a lighting or life-safety plan, a legend: it places
+            # lights, ceilings and exits, never draws a piece of millwork with its sizes.
+            contradicts = (
+                "its drawings are ceiling, lighting or life-safety plans and legends, never a "
+                "drawing of a piece"
+            )
         if contradicts is None and (
             # A sheet of several titled views (vendor's or architect's) says nothing by its kinds
             # of view: its titles are not read one by one (a real two-file upload lost the right
@@ -1021,23 +1230,102 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
                 f"its title names a {next(iter(one.views))}, the vendor drawing's a "
                 f"{next(iter(vendor.views))}"
             )
-        agree_only = (bool(linked) or small_tag or index_titled) and not strong
+        # Agree-only evidence (an AI's read of the titles, a plan's callout, a small item code,
+        # the view titles) never makes `clear_winner`'s pick; the code pass weighs it with a
+        # second kind (`code_pass`).
+        agree_only = (bool(linked) or small_tag or index_titled or view_strong) and not strong
         out.append(
             Scored(
                 one.ref,
                 round(score, 3),
                 tuple(evidence),
                 contradicts,
-                strong or bool(linked) or small_tag or index_titled,
+                strong or bool(linked) or small_tag or index_titled or view_strong,
                 agree_only,
                 bool(linked),
                 _W_TITLE if index_titled else 0.0,
+                kinds=frozenset(kinds),
+                view_titled=round(view_titled, 3),
             )
         )
+    sizing = [s for s in out if s.contradicts is None and "sizes" in s.kinds]
+    if len(sizing) > 1 or sum(1 for s in out if s.contradicts is None) < 2:
+        # The sizes witness must point at one item among others: several items printing the
+        # vendor's sizes alike say nothing of which one it is (a set of look-alike vanities),
+        # nor does being the only item left (nothing to tell it from).
+        out = [replace(s, kinds=s.kinds - {"sizes"}) if "sizes" in s.kinds else s for s in out]
     order = {s.ref: n for n, s in enumerate(out)}
     return tuple(
         sorted(out, key=lambda s: (s.contradicts is None, s.score, -order[s.ref]), reverse=True)
     )
+
+
+#: The vendor's overall must be at least this (inches) for its being printed to say which item it
+#: is (a 15" depth is printed on most counters).
+MIN_OVERALL_INCHES: Final = MIN_TELLING_INCHES
+
+
+def _size_points(vendor: Facts, candidates: Sequence[Facts]) -> dict[str, str]:
+    """The one candidate whose printed sizes match the vendor drawing's clearly best (the swap
+    check, `size_match`, over every candidate): the vendor's overall (24" or more) printed on it,
+    and a point more than every other candidate. A dense sheet (`DENSE_VALUES`) prints most
+    overalls of any piece: never counted. Its ref and the evidence in words, or nothing."""
+    if not any(v >= MIN_OVERALL_INCHES for v in _overalls(vendor)):
+        return {}
+    matches = [size_match(vendor, one) for one in candidates]
+    usable = [
+        (m, one)
+        for m, one in zip(matches, candidates, strict=True)
+        if len([v for v in one.values if v >= MIN_TELLING_INCHES / 2]) <= DENSE_VALUES
+    ]
+    if not usable:
+        return {}
+    best, _ = max(usable, key=lambda pair: pair[0].points)
+    if not any(v >= MIN_OVERALL_INCHES for v in best.printed):
+        return {}
+    runner = max((m.points for m in matches if m.ref != best.ref), default=0)
+    if best.points <= runner:
+        return {}
+    return {best.ref: f"its sizes match the vendor's clearly best: it {best.words()}"}
+
+
+#: The kinds of evidence that name an item (`Scored.kinds`): the code pass needs one of them.
+#: `index_title` is the set index's read (an AI's, checked printed): it names an item for the code
+#: pass, beside a code witness, never beside the matcher's look alone (`_named_first`).
+NAMING_KINDS: Final = frozenset({"title", "index_title", "pointer"})
+#: The naming kinds code read itself (`_named_first`: the matcher's look is the other witness).
+CODE_NAMING_KINDS: Final = frozenset({"title", "pointer"})
+
+
+def code_pass(ranked: Sequence[Scored]) -> Scored | None:
+    """The $0 code pairing pass (plan change 6): the item code pairs a vendor drawing with by
+    itself, before and instead of the paid AI page matcher, or `None` (unsure: the matcher is
+    asked). Code pairs only when its best item, not ruled out,
+
+    - holds two kinds of code evidence (`Scored.kinds`), one of them naming the item (its title,
+      or a printed pointer: a key plan's callout, a view reference, an item tag only it prints);
+    - beats the next item by `CODE_MARGIN` (the swap check's weight from the matcher's pick left
+      out: it is the matcher's, not code's);
+    - and no other item holds naming evidence of its own (two items each named by code is a
+      conflict, never a pair).
+
+    Never on one kind alone, however strong: one witness can be misread (a title the set index
+    read on the wrong line, a callout beside another piece's tag)."""
+    open_ = sorted(
+        (s for s in ranked if s.contradicts is None), key=lambda s: s.score - s.sized, reverse=True
+    )
+    if not open_:
+        return None
+    best = open_[0]
+    if len(best.kinds) < 2 or not best.kinds & NAMING_KINDS:
+        return None
+    if len(open_) > 1:
+        runner = open_[1]
+        if (best.score - best.sized) - (runner.score - runner.sized) < CODE_MARGIN:
+            return None
+        if any(s.kinds & NAMING_KINDS for s in open_[1:]):
+            return None
+    return best
 
 
 def clear_winner(ranked: Sequence[Scored]) -> Scored | None:
@@ -1160,6 +1448,18 @@ def agree(
             f"{reason} ({evidence_words(scored)})"
         )
     if not answer.confident:
+        named = _named_first(ranked, pick)
+        if named is not None:
+            # Two witnesses: code's own evidence names the item alone, clearly first (its
+            # title, or a printed pointer), and the matcher's look picks it, sure or not.
+            extra = [
+                m for m in dict.fromkeys(answer.matches[1:]) if m != pick and _also(by, m, named)
+            ]
+            chosen = (pick, *extra)
+            return chosen, (
+                f"paired with {', '.join(chosen)}: code's own evidence names it, clearly first, "
+                f"and the AI page matcher picks it{reason} ({evidence_words(named)})"
+            )
         return (), (
             f"{UNPAIRED}: the AI page matcher picked {pick} but is not sure{reason}, and code "
             "has no clear pick of its own"
@@ -1223,6 +1523,24 @@ def agree(
         f"paired with {', '.join(chosen)}: the AI page matcher is sure{reason}, and {how} "
         f"({evidence_words(scored)})"
     )
+
+
+def _named_first(ranked: Sequence[Scored], pick: str) -> Scored | None:
+    """The matcher's pick when code's own evidence names it (`CODE_NAMING_KINDS`: its title, or
+    a printed pointer; never the set index's title alone) and puts it first, `CODE_MARGIN` ahead of every other item not ruled out,
+    none of which code names (`code_pass` with the matcher's look as the second kind)."""
+    open_ = sorted(
+        (s for s in ranked if s.contradicts is None), key=lambda s: s.score - s.sized, reverse=True
+    )
+    if not open_ or open_[0].ref != pick or not open_[0].kinds & CODE_NAMING_KINDS:
+        return None
+    if len(open_) > 1:
+        runner = open_[1]
+        if (open_[0].score - open_[0].sized) - (runner.score - runner.sized) < CODE_MARGIN:
+            return None
+        if any(s.kinds & NAMING_KINDS for s in open_[1:]):
+            return None
+    return open_[0]
 
 
 def _also(by: Mapping[str, Scored], ref: str, pick: Scored) -> bool:
@@ -1430,6 +1748,59 @@ def size_match(vendor: Facts, sheet: Facts) -> SizeMatch:
     )
 
 
+#: A mirror proof needs at least this many of the vendor's parts in a row, read backwards.
+MIRROR_PARTS: Final = 3
+
+
+def mirror_proof(vendor: Facts, targets: Sequence[Facts]) -> SizeMatch | None:
+    """Code's proof that a pair is mirrored (plan change 6b): the vendor's elevation is paired with
+    one architect elevation, the vendor's run of widths along one dimension line (at least
+    `MIRROR_PARTS` parts) is printed on it in reverse order, and no run as long in the same order
+    (a run that reads the same both ways proves nothing). Its match, or `None`."""
+    if len(targets) != 1 or vendor.views != {"elevation"} or targets[0].views != {"elevation"}:
+        # Only one elevation against one elevation: a plan may be drawn turned on its sheet (its
+        # widths then read backwards), and a proof on one of several drawings says nothing of
+        # the others.
+        return None
+    target = targets[0]
+    match = size_match(vendor, target)
+    if _longest_run(vendor, target, backwards=False) >= MIRROR_PARTS:
+        return None
+    return match if match.mirrored and len(match.parts) >= MIRROR_PARTS else None
+
+
+def _longest_run(vendor: Facts, target: Facts, *, backwards: bool) -> int:
+    """The most of the vendor's parts in a row one across line of `target` prints in order
+    (or backwards)."""
+    best = 0
+    for axis, mine in vendor.size_rows:
+        if axis != "h":
+            continue
+        for their_axis, theirs in target.size_rows:
+            if their_axis != axis:
+                continue
+            best = max(best, len(_run(mine, theirs[::-1] if backwards else theirs)))
+    return best
+
+
+def swap_audit(
+    first: tuple[Facts, Sequence[Facts]], second: tuple[Facts, Sequence[Facts]]
+) -> tuple[int, int] | None:
+    """The pair-swap audit (plan change 6c): two vendor drawings paired with two different
+    architect pages of one title (`first`, `second`: each vendor drawing with its paired
+    drawings). When the vendor drawings' printed sizes fit the other's pages better
+    (`size_match` points, summed), the pairs may be crossed: the points crossed and as paired;
+    else `None`."""
+
+    def points(vendor: Facts, targets: Sequence[Facts]) -> int:
+        return max((size_match(vendor, t).points for t in targets), default=0)
+
+    (one, mine), (two, theirs) = first, second
+    kept = points(one, mine) + points(two, theirs)
+    crossed = points(one, theirs) + points(two, mine)
+    return (crossed, kept) if crossed > kept else None
+
+
 def swap_check(vendor: Facts, pick: Facts, others: Sequence[Facts]) -> tuple[SizeMatch | None, str]:
     """Whether the matcher's pick is the vendor's drawing among the sheets of its title
     (`others`), by the printed sizes (`size_match`): it must match the vendor's overall size
@@ -1507,6 +1878,56 @@ def reuse(shown: Sequence[str], answer: MatchAnswer, asked: Sequence[str]) -> Ma
     if not kept:
         return None
     return MatchAnswer(kept, answer.confident, answer.reason)
+
+
+#: A number or a unit type in a title: "TYPE 1", "STATION 2", "UNIT A".
+_NUMBERED: Final = re.compile(r"\d|\bTYPE\b|\bUNIT\s+[A-Z]\b", re.IGNORECASE)
+
+
+def room_key(title: str) -> str:
+    """A view title without its numbers ("STAFF LOUNGE 3" is "staff lounge")."""
+    return " ".join(re.sub(r"\d+", " ", title_key(title)).split())
+
+
+def room_views(vendor: Facts, views: Sequence[Facts]) -> tuple[Scored, ...]:
+    """The views of a paired sheet that draw the vendor's room, when `narrow` cannot pick one:
+    every view whose title the vendor's item title names (`named_by`: "CONFERENCE ROOM ELEVATION"
+    for "Two Bay Conference Room Casework"), all of the very same title with no number or unit type
+    in it nor in the vendor's (the room's walls; "LOUNGE 1" and "LOUNGE 2" may be two
+    rooms), and no view of another title named. Compared with all of
+    them, as with a plan and an elevation of one piece. None of them ruled out (`rank`: an
+    accessible variant against a standard one); else nothing."""
+    mine = piece_words(vendor.index_title) if vendor.index_title else frozenset()
+    if not mine or len(views) < 2 or _NUMBERED.search(str(vendor.index_title)):
+        return ()
+    named = [v for v in views if v.view_titles and named_by(v.view_titles[0], mine)]
+    if len(named) < 2 or len({title_key(v.view_titles[0]) for v in named}) != 1:
+        # Numbered views ("LOUNGE 1", "LOUNGE 2") may be two rooms or two pieces: only
+        # views of the very same title are one room's walls.
+        return ()
+    if _NUMBERED.search(named[0].view_titles[0]):
+        return ()
+    if not any(v.markers for v in views):
+        # No view of the sheet is marked (accessible or not): a marker on the vendor's drawing
+        # cannot tell its views apart (the item was paired with the whole sheet's markers).
+        vendor = replace(vendor, markers=frozenset())
+    ranked = {s.ref: s for s in rank(vendor, views)}
+    if any(ranked[v.ref].contradicts is not None for v in named):
+        return ()
+    title = named[0].view_titles[0]
+    return tuple(
+        Scored(
+            v.ref,
+            0.0,
+            (
+                (
+                    f"the vendor's title names the room of its {len(named)} views titled "
+                    f'"{room_key(title).upper()}"'
+                ),
+            ),
+        )
+        for v in named
+    )
 
 
 def narrow(vendor: Facts, views: Sequence[Facts]) -> tuple[Scored | None, str]:

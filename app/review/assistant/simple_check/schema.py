@@ -382,6 +382,9 @@ class WorkItem(_Frozen):
     """The vendor's unit is drawn opposite-hand to the architect's (`AcrossPair.opposite_hand`):
     sizes are compared, a dimension from a left or right end is Not compared (code does not
     mirror it)."""
+    mirrored: bool = False
+    """Code proved the unit mirrored (`AcrossPair.mirrored`): a dimension from the vendor's left
+    end is compared with one from the architect's right end, and the other way round."""
     views_disagree: ViewsDisagree | None = None
     """The architect's own views of it disagree (`AcrossPair.views_disagree`): compared with the
     governing view, never red on a span they disagree on; GV asks the architect."""
@@ -499,6 +502,14 @@ class AcrossPair(_Frozen):
     confirm, or code's own clear pick the matcher did not name (`pairing.PAIRING_UNSURE`,
     `worklist._unsure`): the candidates in order. The drawing may be in the upload: never
     "drawing needed"; a person confirms the page."""
+    mirrored: bool = False
+    """Code proved the pair mirrored (`pairing.mirror_proof`: the vendor's run of widths reads
+    backwards on the architect's drawing, never forwards): `opposite_hand` says so, and a
+    dimension from a left or right end is compared with the other end (`verify`)."""
+    code_paired: bool = False
+    """Code's own $0 pass named the architect item (`pairing.code_pass`: two kinds of code
+    evidence, a clear margin): the paid AI page matcher is not asked about this drawing
+    (`page_match.to_ask`)."""
 
 
 class WorkList(_Frozen):
