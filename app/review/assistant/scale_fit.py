@@ -356,17 +356,17 @@ class _Views:
         ys = rows[owner, 1] + (rows[owner, 3] - rows[owner, 1]) * t
         # One number per cell (a page is far less than a million cells wide), made unique once.
         keys = np.unique((xs // cell).astype(np.int64) * 1_000_000 + (ys // cell).astype(np.int64))
-        cx, cy = np.divmod(keys, 1_000_000)
-        filled: set[tuple[int, int]] = set(zip(cx.tolist(), cy.tolist(), strict=True))
+        across, down = np.divmod(keys, 1_000_000)
+        filled: set[tuple[int, int]] = set(zip(across.tolist(), down.tolist(), strict=True))
         self.cell = cell
         self.of: dict[tuple[int, int], int] = {}
         label = 0
-        for start in filled:
-            if start in self.of:
+        for seed in filled:
+            if seed in self.of:
                 continue
             label += 1
-            self.of[start] = label
-            todo = [start]
+            self.of[seed] = label
+            todo = [seed]
             while todo:
                 cx, cy = todo.pop()
                 for dx in (-1, 0, 1):
