@@ -337,6 +337,12 @@ _STRING_MAX_TOKENS: Final = 3_000
 _STRING_PAD_PT: Final = 24.0
 #: A string within this of its printed overall adds up (the drawings' rounding).
 _STRING_ROUNDING: Final = Decimal(1) / Decimal(16)
+#: Why an AI-grouped vendor string stays Not compared under `code_only`: code's lines could not
+#: settle it, and that setting asks no second reading.
+CODE_ONLY_STRING: Final = (
+    f"{INCOMPLETE}: code's lines could not settle it, and only code's own proof can cloud it "
+    "(setting code_only)"
+)
 #: The lead review's pages at most (#1641): about $0.10 of Opus 5.5 a page.
 LEAD_MAX_PAGES: Final = 16
 #: An architect drawing with no code labels counts as this many labels still to read (#1654).
@@ -4024,10 +4030,11 @@ class _Run:
         that add up drops it; else it stays Not compared. Code's lines come first ($0, #1802): a
         part left out, or filler notes at the run's ends, settle it without a reading. A page with
         no architect drawing paired with it gets no reading at all: two readings of a sum are not
-        a second check there, so the string is Not compared with no "should be"."""
+        a second check there, so the string is Not compared with no "should be". Under
+        `code_only` only the reading is skipped: code's own steps still run (a string that adds
+        up with its filler notes is dropped; one the architect prints the sum of is red)."""
         engine = self.engine
-        if engine.settings.pairing_proof == "code_only":
-            return
+        code_only = engine.settings.pairing_proof == "code_only"
         if page_map is None:
             page_map = self._stored_page_map()
         candidates = [
@@ -4091,6 +4098,10 @@ class _Run:
                     "code sees other dimensions along the overall's run that the reading leaves "
                     f"out ({', '.join(extras[:4])})",
                 )
+                continue
+            if code_only:
+                # D1's AI path is off: no second reading proves the parts are one chain.
+                self._set_string(finding_id, "gap", CODE_ONLY_STRING)
                 continue
             reply = self._blind_string(finding, line_box)
             if reply is None:
