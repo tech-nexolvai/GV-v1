@@ -112,6 +112,7 @@ def test_the_ladder_is_cheapest_first_and_every_step_tried_is_kept() -> None:
         "same_item",
         "vendor_sums",
         "pairs",
+        "chain_sums",
         "vendor_search",
     )
     result = escalate([_wrong()], _ctx())
