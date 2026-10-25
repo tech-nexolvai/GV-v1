@@ -319,5 +319,5 @@ def test_a_different_sum_whose_ends_code_proved_is_the_formula_s_likely_problem(
     assert proof.proof_group(found) == "likely_problem"
     assert found["formula"]["kind"] == "formula_chain"
     assert found["formula"]["outcome"] == "different" and found["formula"]["expected"] == '36"'
-    assert "1\" more" in found["formula"]["why"]
+    assert '1" more' in found["formula"]["why"]
     assert proof.likely_words(found).startswith("Please check and confirm: by GV's formula")
