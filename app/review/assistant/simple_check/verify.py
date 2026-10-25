@@ -117,6 +117,7 @@ __all__ = [
     "Verified",
     "end_kind",
     "ends_match",
+    "mirror_sides",
     "verify",
     "verify_answer",
     "verify_pair",
@@ -298,6 +299,13 @@ def _end_same(a: End, b: End, a_words: str, b_words: str) -> str:
     if kind_a in _STRICT and kind_b in _STRICT:
         return "different"
     return "unclear"
+
+
+def mirror_sides(text: object) -> str:
+    """One end's words seen in a mirrored unit: "left" is "right" and "right" is "left"."""
+    return _SIDE.sub(
+        lambda m: {"left": "right", "right": "left"}[m.group(1).lower()], str(text or "")
+    )
 
 
 def ends_match(
@@ -624,7 +632,10 @@ class Item:
     prototype, the reference (`schema.WorkItem.prototype_reference`)."""
     opposite_hand: str | None = None
     """The vendor's unit is drawn opposite-hand (`schema.WorkItem.opposite_hand`): a dimension
-    from a left or right end is Not compared."""
+    from a left or right end is Not compared, unless code proved the mirror (`mirrored`)."""
+    mirrored: bool = False
+    """Code proved the unit mirrored (`schema.WorkItem.mirrored`, the order of its widths): the
+    vendor's left end is the architect's right end, and the other way round."""
     views_disagree: tuple[tuple[str, str, str, str, str], ...] = ()
     """The spans the architect's own views print differently (`schema.WorkItem.views_disagree`):
     (the governing view's label ref, its value, the other view's value, the governing view's
@@ -668,6 +679,7 @@ class Item:
             products=tuple(getattr(work, "products", ()) or ()),
             prototype_reference=bool(getattr(work, "prototype_reference", False)),
             opposite_hand=getattr(work, "opposite_hand", None),
+            mirrored=bool(getattr(work, "mirrored", False)),
             views_disagree=_views_disagree_of(getattr(work, "views_disagree", None)),
         )
 
@@ -1427,12 +1439,18 @@ def _verify_pair(
         )
     a_file = str(architect.get("file") or pack.main_file)
     a_page = int(architect.get("page") or 0)
-    matched = ends_match(
-        ends["vendor_from"], ends["vendor_to"], ends["architect_from"], ends["architect_to"]
-    )
-    if item.opposite_hand and any(
-        end_kind(ends[k])[1] is not None
-        for k in ("vendor_from", "vendor_to", "architect_from", "architect_to")
+    vendor_from, vendor_to = ends["vendor_from"], ends["vendor_to"]
+    if item.mirrored:
+        # Code proved the unit mirrored: the vendor's left end is the architect's right end.
+        vendor_from, vendor_to = mirror_sides(vendor_from), mirror_sides(vendor_to)
+    matched = ends_match(vendor_from, vendor_to, ends["architect_from"], ends["architect_to"])
+    if (
+        item.opposite_hand
+        and not item.mirrored
+        and any(
+            end_kind(ends[k])[1] is not None
+            for k in ("vendor_from", "vendor_to", "architect_from", "architect_to")
+        )
     ):
         # Code does not mirror a position: a dimension from a left or right end is not compared.
         return one.grey(
