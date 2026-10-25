@@ -445,6 +445,20 @@ def _factory(settings: Any) -> Factory:
     return sessionmaker(bind=engine_from_settings(settings), expire_on_commit=False)
 
 
+def stop_handler(stopping: threading.Event) -> Callable[[int, Any], None]:
+    """SIGTERM / Ctrl-C: `stopping` is set from a short thread, never from the handler itself.
+
+    The handler runs in the main thread, which may be inside `stopping.wait()` holding the event's
+    own lock (not re-entrant): an `Event.set()` there waits for itself forever, and the worker then
+    ignores every later SIGTERM while a new one starts beside it."""
+
+    def on_signal(signum: int, frame: Any) -> None:
+        del signum, frame
+        threading.Thread(target=stopping.set, name="assistant-worker-stop", daemon=True).start()
+
+    return on_signal
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -459,11 +473,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     settings = _settings()
     factory = _factory(settings)
     stopping = threading.Event()
-
-    def on_signal(signum: int, frame: Any) -> None:
-        del signum, frame
-        stopping.set()
-
+    on_signal = stop_handler(stopping)
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
     if args.run:
