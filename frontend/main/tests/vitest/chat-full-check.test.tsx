@@ -379,7 +379,7 @@ describe('a full-check answer', () => {
   it('lets the reviewer agree with code’s red, and decide a red held back while its kind is proven (plan change #10)', async () => {
     const user = userEvent.setup();
     const decide = vi.fn(async (_message: string, _finding: string, decision: string, extra?: { note?: string | null }) => ({ decision, by: 'anant', at: '2026-10-26T11:00:00Z', note: extra?.note || null }));
-    const held = finding('h1', { item: 'Sink front offset', status: 'different', architect: '4"', vendor: '3"', proof: { group: 'likely_problem', held: true, reason: 'Code found a difference, but this kind of check is still being proven.' } });
+    const held = finding('h1', { item: 'Sink front offset', status: 'different', source: 'rules', architect: '4"', vendor: '3"', proof: { group: 'likely_problem', held: true, reason: 'Code found a difference, but this kind of check is still being proven.' } });
     const look = finding('l1', { item: 'Back splash', status: 'check', proof: { group: 'likely_problem', reason: 'The whole-drawing look found it; code could not prove it.' } });
     render(<AssistantMessage message={answer({ findings: [...findings, held, look], files: [CLOUD, REPORT] })} chatId="c-1" models={[OPUS]} fullCheck decide={decide} remakeCloud={vi.fn(async () => CLOUD)} onReload={vi.fn()} />);
     const node = screen.getByRole('article', { name: 'Answer' });
@@ -396,6 +396,9 @@ describe('a full-check answer', () => {
     await user.keyboard('{Escape}');
     // A Likely problem code proved but held back: both calls are offered.
     await user.click(within(node).getByRole('tab', { name: /^Likely/ }));
+    // A GV-rule item's card names GV's rule, as the drawer does, never "Architect".
+    const values = node.querySelector<HTMLElement>('[data-slot="chat-result-row"][data-id="h1"] [data-slot="chat-result-likely"]');
+    expect(values?.textContent).toBe('Vendor 3″GV rule 4″');
     await user.click(within(node).getByRole('button', { name: /^Sink front offset, page \d+\. Open the evidence$/ }));
     const second = await screen.findByRole('dialog');
     expect(within(second).getByRole('button', { name: 'It’s a mistake: add a red mark' })).toBeTruthy();

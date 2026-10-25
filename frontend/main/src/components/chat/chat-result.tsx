@@ -706,7 +706,7 @@ function LikelyLine({ finding, claim }: { finding: ChatFinding; claim: string | 
       {(vendor || architect) && (
         <span className="flex min-w-0 flex-wrap items-baseline gap-x-3">
           {vendor && <span>Vendor <span className="num font-semibold text-foreground">{vendor}</span></span>}
-          {architect && <span>Architect <span className="num font-semibold text-foreground">{architect}</span></span>}
+          {architect && <span>{finding.source === 'rules' || finding.rule_check_id ? 'GV rule' : 'Architect'} <span className="num font-semibold text-foreground">{architect}</span></span>}
         </span>
       )}
     </span>
