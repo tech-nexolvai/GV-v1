@@ -7,8 +7,8 @@ a paid matcher call, and code never paired on its own evidence. Now:
   evidence, one naming the item (its title, the vendor's title naming its views, a printed
   pointer), a clear margin over the next item, and no rival code also names; the matcher is then
   not asked (`page_match.to_ask`);
-- the vendor's item title names an architect sheet's views ("Employee Breakroom Casework" and
-  "EMPLOYEE BREAKROOM 3"); a room's views of one title are compared together;
+- the vendor's item title names an architect sheet's views ("Staff Lounge Casework" and
+  "STAFF LOUNGE 3"); a room's views of one title are compared together;
 - a matcher pick code names alone, clearly first, pairs even when the matcher is not sure;
 - the vendor's own sheets of one item share its pair;
 - a mirror is proved from the order of the widths (read backwards, never forwards): left and right
@@ -127,31 +127,31 @@ OTHERS = {2: ("BENCH", (100, 40, 36)), 3: ("WARDROBE", (80, 30, 72)), 4: ("DESK"
 
 
 def test_a_titles_piece_words_and_who_names_a_view() -> None:
-    assert piece_words("EMPLOYEE BREAKROOM 3") >= {"EMPLOYEE", "BREAKROOM"}
+    assert piece_words("STAFF LOUNGE 3") >= {"STAFF", "LOUNGE"}
     # The place after "@" is not the piece; generic words name nothing.
-    assert piece_words("Sample Coffee & Hydration Station @ Lobby") >= {"COFFEE", "HYDRATION"}
-    assert "LOBBY" not in piece_words("Sample Coffee & Hydration Station @ Lobby")
-    assert piece_words("BLOCKING DETAIL @ RESTROOM") == frozenset()
-    assert piece_words("PUBLIC AREAS ELEVATION") == frozenset()
-    # Two words side by side are also one: a "WORK STATION" is a "Workstation".
-    mine = piece_words("Large Workstation Casework @ Back Office")
-    assert named_by("WORK STATION ELEVATION", mine)
-    assert named_by("MEETING ROOM ELEVATION", piece_words("Three Bay Meeting Room Casework"))
-    # A view naming more than the vendor's title (which restroom?) is not named by it.
-    assert not named_by("MALE RESTROOM ELEVATION", piece_words("Restroom Vanity Left"))
-    assert not named_by("SAMPLE EN SUITE MAKEUP COUNTER", piece_words("SAMPLE EN SUITE VANITY"))
+    assert piece_words("Sample Juice & Water Station @ Foyer") >= {"JUICE", "WATER"}
+    assert "FOYER" not in piece_words("Sample Juice & Water Station @ Foyer")
+    assert piece_words("BLOCKING DETAIL @ WASHROOM") == frozenset()
+    assert piece_words("TYPICAL ELEVATION") == frozenset()
+    # Two words side by side are also one: a "WORK DESK" is a "Workdesk".
+    mine = piece_words("Large Workdesk Casework @ Back Office")
+    assert named_by("WORK DESK ELEVATION", mine)
+    assert named_by("CONFERENCE ROOM ELEVATION", piece_words("Two Bay Conference Room Casework"))
+    # A view naming more than the vendor's title (which washroom?) is not named by it.
+    assert not named_by("EAST WASHROOM ELEVATION", piece_words("Washroom Vanity Left"))
+    assert not named_by("SAMPLE GUEST BATH MIRROR", piece_words("SAMPLE GUEST BATH VANITY"))
     assert not named_by("PLAN", mine)
 
 
 def test_the_vendors_title_naming_one_items_views_is_title_evidence() -> None:
-    vendor = Facts("v", index_title="Employee Breakroom Casework @ Back Office")
+    vendor = Facts("v", index_title="Staff Lounge Casework @ Back Office")
     ranked = {
         s.ref: s
         for s in rank(
             vendor,
             [
-                Facts("a1", view_titles=("MEETING ROOM ELEVATION", "EMPLOYEE BREAKROOM 1")),
-                Facts("a2", view_titles=("LOBBY ELEVATION",)),
+                Facts("a1", view_titles=("CONFERENCE ROOM ELEVATION", "STAFF LOUNGE 1")),
+                Facts("a2", view_titles=("FOYER ELEVATION",)),
                 Facts("a3", view_titles=("FITNESS ELEVATION",)),
             ],
         )
@@ -200,7 +200,7 @@ def test_the_code_pass_needs_two_kinds_a_name_and_a_margin() -> None:
 
 def test_a_matcher_pick_code_names_alone_clearly_first_pairs_even_when_unsure() -> None:
     ranked = (_scored("a1", 4.0, {"title"}), _scored("a2", 1.0, set()))
-    chosen, why = agree(ranked, None, MatchAnswer(("a1",), False, "the breakroom"))
+    chosen, why = agree(ranked, None, MatchAnswer(("a1",), False, "the lounge"))
     assert chosen == ("a1",) and "code's own evidence names it" in why
     # Not clearly first: still unsure.
     close = (_scored("a1", 2.0, {"title"}), _scored("a2", 1.0, set()))
@@ -281,36 +281,36 @@ def test_the_vendors_sheets_of_one_item_share_its_pair() -> None:
 
 
 def test_a_rooms_views_of_one_title_are_compared_together() -> None:
-    vendor = Facts("v", index_title="Three Bay Meeting Room Casework @ Meeting Room")
+    vendor = Facts("v", index_title="Two Bay Conference Room Casework @ Conference Room")
     views = [
-        Facts("s.view1", view_titles=("MEETING ROOM ELEVATION",)),
-        Facts("s.view2", view_titles=("MEETING ROOM ELEVATION",)),
-        Facts("s.view3", view_titles=("WORK STATION ELEVATION",)),
+        Facts("s.view1", view_titles=("CONFERENCE ROOM ELEVATION",)),
+        Facts("s.view2", view_titles=("CONFERENCE ROOM ELEVATION",)),
+        Facts("s.view3", view_titles=("WORK DESK ELEVATION",)),
     ]
     assert [s.ref for s in room_views(vendor, views)] == ["s.view1", "s.view2"]
     # Numbered views may be two rooms or two pieces: never grouped.
     numbered = [
-        Facts("s.view1", view_titles=("STAFF BREAKROOM 1",)),
-        Facts("s.view2", view_titles=("STAFF BREAKROOM 2",)),
+        Facts("s.view1", view_titles=("STAFF PANTRY 1",)),
+        Facts("s.view2", view_titles=("STAFF PANTRY 2",)),
     ]
-    assert room_views(Facts("v", index_title="Staff Breakroom Casework"), numbered) == ()
+    assert room_views(Facts("v", index_title="Staff Pantry Casework"), numbered) == ()
     types = [
         Facts("s.view1", view_titles=("SAMPLE VANITY ELEVATION",)),
         Facts("s.view2", view_titles=("SAMPLE VANITY ELEVATION",)),
     ]
     assert room_views(Facts("v", index_title="Sample Vanity Type 1"), types) == ()
-    # Two rooms named alike (which restroom?): none.
-    restroom = Facts("v", index_title="Restroom Vanity Left")
+    # Two rooms named alike (which washroom?): none.
+    washroom = Facts("v", index_title="Washroom Vanity Left")
     two_rooms = [
-        Facts("s.view1", view_titles=("MALE RESTROOM ELEVATION",)),
-        Facts("s.view2", view_titles=("FEMALE RESTROOM ELEVATION",)),
+        Facts("s.view1", view_titles=("EAST WASHROOM ELEVATION",)),
+        Facts("s.view2", view_titles=("FEEAST WASHROOM ELEVATION",)),
     ]
-    assert room_views(restroom, two_rooms) == ()
+    assert room_views(washroom, two_rooms) == ()
     # An accessible variant among the views: a marker still tells them apart (ruled out).
-    marked = Facts("v", index_title="Meeting Room Casework", markers=frozenset({"ADA"}))
+    marked = Facts("v", index_title="Conference Room Casework", markers=frozenset({"ADA"}))
     variants = [
-        Facts("s.view1", view_titles=("MEETING ROOM ELEVATION",)),
-        Facts("s.view2", view_titles=("MEETING ROOM ELEVATION",), markers=frozenset({"ADA"})),
+        Facts("s.view1", view_titles=("CONFERENCE ROOM ELEVATION",)),
+        Facts("s.view2", view_titles=("CONFERENCE ROOM ELEVATION",), markers=frozenset({"ADA"})),
     ]
     assert room_views(marked, variants) == ()
 

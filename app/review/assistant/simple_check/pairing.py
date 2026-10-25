@@ -242,7 +242,7 @@ class Facts:
     it, with the line's direction (`h` / `v`). The swap check (`swap_check`) compares them."""
     view_titles: tuple[str, ...] = ()
     """An architect drawing's view titles as code found them on the sheet (`views.find_views`:
-    "EMPLOYEE BREAKROOM 1", "COFFEE COUNTER @ PUBLIC AREA"); an item's: every view's. Their naming
+    "STAFF LOUNGE 1", "TEA COUNTER @ GUEST AREA"); an item's: every view's. Their naming
     words before an "@" name a piece or a room (`piece_words`), matched with the vendor's title."""
 
 
@@ -734,8 +734,8 @@ def views_in(texts: Iterable[str]) -> frozenset[str]:
     return frozenset(found)
 
 
-#: Title words that name no piece nor room on their own (a title's other words do): "THREE BAY
-#: MEETING ROOM CASEWORK" names a meeting room's casework, "COFFEE COUNTER" a coffee counter.
+#: Title words that name no piece nor room on their own (a title's other words do): "TWO BAY
+#: CONFERENCE ROOM CASEWORK" names a conference room's casework, "TEA COUNTER" a tea counter.
 _GENERIC_TITLE_WORDS: Final = frozenset(
     {
         "CASEWORK",
@@ -772,9 +772,9 @@ _GENERIC_TITLE_WORDS: Final = frozenset(
 
 def named_by(title: object, words: frozenset[str]) -> bool:
     """Whether every word of a view's `title` that names its piece (`piece_words`, its own words,
-    not their joins) is among `words` (a vendor title's), or part of a join that is: "WORK STATION
-    ELEVATION" is named by "Workstation Casework"; "MALE RESTROOM ELEVATION" is not named by
-    "Restroom Vanity" (which restroom?); a title naming nothing is named by nothing."""
+    not their joins) is among `words` (a vendor title's), or part of a join that is: "WORK DESK
+    ELEVATION" is named by "Workdesk Casework"; "EAST WASHROOM ELEVATION" is not named by
+    "Washroom Vanity" (which washroom?); a title naming nothing is named by nothing."""
     own = piece_words(title)
     if not own:
         return False
@@ -787,9 +787,9 @@ def named_by(title: object, words: frozenset[str]) -> bool:
     return all(w in words or any(len(j) > len(w) and w in j for j in joins) for w in singles)
 
 
-#: Where a title's piece ends and its place begins ("COFFEE COUNTER @ PUBLIC AREA").
+#: Where a title's piece ends and its place begins ("TEA COUNTER @ GUEST AREA").
 _PLACE: Final = re.compile(r"@|\bAT\b")
-#: A letter run of a title (any length: two short words may join into one, "WORK STATION").
+#: A letter run of a title (any length: two short words may join into one, "WORK DESK").
 _LETTERS: Final = re.compile(r"[A-Z]+")
 
 
@@ -797,9 +797,9 @@ def piece_words(title: object) -> frozenset[str]:
     """The words of a view's or an item's title that name its piece or room: the part before
     its place ("@", "AT"), words of 4 letters or more, a plural's S dropped, drawing words and
     generic words left out (`_STOP_WORDS`, "CASEWORK", "COUNTER", "SMALL"), two words side by side
-    joined too ("WORK STATION" is also "WORKSTATION"). "EMPLOYEE BREAKROOM 3" is EMPLOYEE,
-    BREAKROOM; "Coffee & Hydration Station @ Lobby" is COFFEE, HYDRATION, STATION; "LOBBY
-    ELEVATION" is LOBBY; "BLOCKING DETAIL @ RESTROOM" is nothing (its piece is not named)."""
+    joined too ("WORK DESK" is also "WORKDESK"). "STAFF LOUNGE 3" is STAFF,
+    LOUNGE; "Juice & Water Station @ Foyer" is JUICE, WATER, STATION; "FOYER
+    ELEVATION" is FOYER; "BLOCKING DETAIL @ WASHROOM" is nothing (its piece is not named)."""
     head = _PLACE.split(" ".join(str(title or "").upper().split()), maxsplit=1)[0]
     runs = _LETTERS.findall(head.replace("'S", ""))
     found: set[str] = set()
@@ -1042,10 +1042,10 @@ def rank(vendor: Facts, candidates: Sequence[Facts]) -> tuple[Scored, ...]:
             evidence.append(f'the vendor\'s sheet names "{named_in}", part of its title')
         shared_piece = sorted(mine_piece & their_piece[one.ref])
         if shared_piece and total > 1:
-            # The vendor's item title names this item's views ("Employee Breakroom Casework"
-            # and "EMPLOYEE BREAKROOM 3"): a word no other item's views carry is strong when a
-            # view's title names nothing the vendor's does not ("ADA EN SUITE MAKEUP COUNTER"
-            # is not a "PRIMARY EN SUITE VANITY"); one several carry counts by how few do.
+            # The vendor's item title names this item's views ("Staff Lounge Casework"
+            # and "STAFF LOUNGE 3"): a word no other item's views carry is strong when a
+            # view's title names nothing the vendor's does not ("GUEST BATH MIRROR" is
+            # not a "GUEST BATH VANITY"); one several carry counts by how few do.
             alone = [
                 w
                 for w in shared_piece
@@ -1885,15 +1885,15 @@ _NUMBERED: Final = re.compile(r"\d|\bTYPE\b|\bUNIT\s+[A-Z]\b", re.IGNORECASE)
 
 
 def room_key(title: str) -> str:
-    """A view title without its numbers ("EMPLOYEE BREAKROOM 3" is "employee breakroom")."""
+    """A view title without its numbers ("STAFF LOUNGE 3" is "staff lounge")."""
     return " ".join(re.sub(r"\d+", " ", title_key(title)).split())
 
 
 def room_views(vendor: Facts, views: Sequence[Facts]) -> tuple[Scored, ...]:
     """The views of a paired sheet that draw the vendor's room, when `narrow` cannot pick one:
-    every view whose title the vendor's item title names (`named_by`: "MEETING ROOM ELEVATION"
-    for "Three Bay Meeting Room Casework"), all of the very same title with no number or unit type
-    in it nor in the vendor's (the room's walls; "BREAKROOM 1" and "BREAKROOM 2" may be two
+    every view whose title the vendor's item title names (`named_by`: "CONFERENCE ROOM ELEVATION"
+    for "Two Bay Conference Room Casework"), all of the very same title with no number or unit type
+    in it nor in the vendor's (the room's walls; "LOUNGE 1" and "LOUNGE 2" may be two
     rooms), and no view of another title named. Compared with all of
     them, as with a plan and an elevation of one piece. None of them ruled out (`rank`: an
     accessible variant against a standard one); else nothing."""
@@ -1902,7 +1902,7 @@ def room_views(vendor: Facts, views: Sequence[Facts]) -> tuple[Scored, ...]:
         return ()
     named = [v for v in views if v.view_titles and named_by(v.view_titles[0], mine)]
     if len(named) < 2 or len({title_key(v.view_titles[0]) for v in named}) != 1:
-        # Numbered views ("BREAKROOM 1", "BREAKROOM 2") may be two rooms or two pieces: only
+        # Numbered views ("LOUNGE 1", "LOUNGE 2") may be two rooms or two pieces: only
         # views of the very same title are one room's walls.
         return ()
     if _NUMBERED.search(named[0].view_titles[0]):

@@ -2042,7 +2042,7 @@ def _pair_across(
                 # prints the vendor's sizes clearly best (the swap check among the sheet's views).
                 best = _view_by_sizes(vendor_facts, item_views)
             if best is None:
-                # The views of the vendor's room, all of one title ("EMPLOYEE BREAKROOM 1" to
+                # The views of the vendor's room, all of one title ("STAFF LOUNGE 1" to
                 # "4"): compared with all of them, as with a plan and an elevation of one piece.
                 room = pairing_module.room_views(vendor_facts, item_views)
                 if room:
@@ -2307,7 +2307,7 @@ def _swap_audit(
         }
         if found:
             return f"page:{next(iter(found))}" if len(found) == 1 else None
-        # No page title: one room's views ("MEETING ROOM ELEVATION"), never a bare "PLAN".
+        # No page title: one room's views ("CONFERENCE ROOM ELEVATION"), never a bare "PLAN".
         views = [v for c in pair.chosen for v in by_item[c].views if v.ref in pair.views]
         keys = {
             pairing_module.room_key(v.titles[0])
