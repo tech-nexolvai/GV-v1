@@ -55,7 +55,9 @@ __all__ = [
     "FIELD",
     "KINDS",
     "KIND_WORDS",
+    "LIKE_FOR_LIKE",
     "NOT_WALL",
+    "PROVING",
     "Chain",
     "End",
     "Ends",
@@ -63,10 +65,16 @@ __all__ = [
     "Span",
     "alike",
     "chain_of",
+    "countertop_drawing",
+    "drawn_words",
+    "extension",
     "field_cut_relief",
     "not_a_wall",
     "page_of",
+    "right_ends",
+    "same_kinds",
     "small_span",
+    "touched",
     "unlike_reason",
     "wall_band",
     "wall_to_wall",
@@ -77,6 +85,8 @@ type Segment = tuple[Point, Point]
 type Box = tuple[float, float, float, float]
 type Kind = Literal[
     "wall",
+    "end_panel",
+    "outline",
     "cabinet_face",
     "top_edge",
     "door_face",
@@ -92,6 +102,8 @@ type Verdict = Literal["alike", "unlike", "unknown"]
 FIELD: Final = "dim_ends"
 KINDS: Final[tuple[Kind, ...]] = (
     "wall",
+    "end_panel",
+    "outline",
     "cabinet_face",
     "top_edge",
     "door_face",
@@ -104,6 +116,8 @@ KINDS: Final[tuple[Kind, ...]] = (
 #: Each kind in the reasons' plain words.
 KIND_WORDS: Final[Mapping[str, str]] = {
     "wall": "the wall's face",
+    "end_panel": "the face of a thin band (a panel, a filler or a top's thickness)",
+    "outline": "the outer edge of what is drawn",
     "cabinet_face": "a cabinet's side",
     "top_edge": "the top's edge",
     "door_face": "the door's face",
@@ -215,8 +229,10 @@ _ORDER: Final[tuple[str, ...]] = (
     "overhang_end",
     "door_face",
     "cabinet_face",
+    "end_panel",
     "wall",
     "top_edge",
+    "outline",
 )
 
 
@@ -839,9 +855,17 @@ class Page:
     lines: Any = None
     field_cuts: Any = None
     """A vendor page's field cuts (`field_cut.PageFieldCuts`), when known."""
+    fit: Any = None
+    """The page's scale fit (`scale_fit.PageFit`): its views' scales across and up, and each
+    value checked against its drawn length (final plan #3)."""
     kinds: dict[tuple[str, str], set[str]] = field(default_factory=dict)
     """(label id, "a" | "b") -> its end's kinds."""
     how: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+    countertop: bool = False
+    """A countertop's own shop drawing (`countertop_drawing`)."""
+    toward: dict[tuple[str, str], int] = field(default_factory=dict)
+    """(label id, "a" | "b") -> where the thing its end touches lies: +1 inside the dimension's
+    span, -1 beyond it (a panel's face, a cut-out's edge), when code worked it out."""
     _notches: list[Notch] | None = None
 
     def _add(self, key: str, side: str, kind: str, why: str) -> None:
@@ -900,6 +924,31 @@ def _station_ends(spans: Mapping[str, Span], axis: str, at: float) -> list[tuple
         if abs(span.b - at) <= SAME_PT:
             out.append((span.id, "b"))
     return out
+
+
+def _fitted(found: Page, labels: Sequence[Mapping[str, Any]], segments: Sequence[Segment]) -> Any:
+    """The page's scale fit (`scale_fit.page_fit`), and its lines for the labels code has no span
+    for yet: only a line drawn to its value at its view's fit (`Check.agrees`), so a line the fit
+    cannot vouch for never names an end."""
+    scale_fit = import_module("app.review.assistant.scale_fit")
+    try:
+        fit = scale_fit.page_fit(labels, segments)
+    except Exception:  # noqa: BLE001 - no fit: the spans read before stand alone
+        return None
+    for key, drawn in fit.spans.items():
+        check = fit.check(key)
+        if key in found.spans or check is None or not check.agrees:
+            continue
+        found.spans[key] = Span(
+            key, drawn.axis, drawn.row, drawn.a, drawn.b, drawn.inches, _label_text(labels, key)
+        )
+    return fit
+
+
+def _label_text(labels: Sequence[Mapping[str, Any]], key: str) -> str:
+    return next(
+        (str(label.get("text") or "") for label in labels if str(label.get("id")) == key), ""
+    )
 
 
 def _mark_cabinets(found: Page) -> None:
@@ -1068,6 +1117,249 @@ def _mark_notches(found: Page) -> None:
                     )
 
 
+# ---- what an end's extension line touches (final plan #4, 2026-10-25) ----------------------------
+
+#: A countertop's own shop drawing names its edge profiles (GV's legend: eased, mitred, polished).
+_TOP_WORDS: Final = re.compile(
+    r"\b(?:eased|mit(?:er|re)d?|polished|bullnose|ogee|bevel(?:l?ed)?)\b", re.IGNORECASE
+)
+#: Gaps an extension line may have (dashes) and still be one line (points).
+DASH_PT: Final = 3.0
+#: An extension line ends this close (points) before the edge it touches, or this many inches.
+TOUCH_GAP_PT: Final = 12.0
+TOUCH_GAP_IN: Final = 1.0
+#: An edge in line with the extension line counts up to `REACH_IN` past it when at least this long
+#: (inches): a casework plan draws its dimensions outside the walls, with no extension line.
+IN_LINE_MIN_IN: Final = 2.0
+#: A panel (a cabinet's side, an end panel, a filler) drawn in plan: its two faces this far apart
+#: (inches), each at least `PANEL_RUN_IN` long.
+PANEL_MIN_IN: Final = 0.5
+PANEL_MAX_IN: Final = 1.75
+PANEL_RUN_IN: Final = 6.0
+#: Kinds named from the touched geometry never override these (more telling) kinds.
+_SPECIFIC: Final = frozenset({"sink_centre", "cutout_edge", "notch_edge", "field_cut_end"})
+
+
+def countertop_drawing(found: Page, phrases: Sequence[Mapping[str, Any]]) -> bool:
+    """A countertop's own shop drawing (GV's): it names its edge profiles (eased, mitred, polished)
+    and prints no cabinet tag. Every outline it draws is a piece of top (or of splash)."""
+    if found.cabinets:
+        return False
+    return any(_TOP_WORDS.search(str(phrase.get("text") or "")) for phrase in phrases)
+
+
+def _across_pieces(found: Page, span: Span) -> Sequence[tuple[float, float, float]]:
+    """Pieces at right angles to the span's axis: (from, to, place) with place along the axis."""
+    lines = found.lines
+    pieces: Sequence[tuple[float, float, float]] = (
+        lines.vertical if span.axis == "h" else lines.horizontal
+    )
+    return pieces
+
+
+def _along_pieces(found: Page, span: Span) -> Sequence[tuple[float, float, float]]:
+    """Pieces along the span's axis: (from, to, place) with place across it."""
+    lines = found.lines
+    pieces: Sequence[tuple[float, float, float]] = (
+        lines.horizontal if span.axis == "h" else lines.vertical
+    )
+    return pieces
+
+
+def extension(found: Page, span: Span, end: float) -> tuple[float, int] | None:
+    """The end's extension line: the line at right angles to the dimension at its end that crosses
+    or meets its dimension line (dashes joined), as (its far end, which way it runs from the
+    dimension line: +1 or -1 across). `None` when no such line is drawn."""
+    if found.lines is None:
+        return None
+    pieces = sorted(
+        (lo, hi) for lo, hi, place in _across_pieces(found, span) if abs(place - end) <= 0.8
+    )
+    runs: list[list[float]] = []
+    for lo, hi in pieces:
+        if runs and lo <= runs[-1][1] + DASH_PT:
+            runs[-1][1] = max(runs[-1][1], hi)
+        else:
+            runs.append([lo, hi])
+    for lo, hi in runs:
+        if lo - 1.5 <= span.row <= hi + 1.5:
+            before, after = span.row - lo, hi - span.row
+            if max(before, after) < 2.0:
+                return None  # a tick's stroke, no extension line
+            return (hi, 1) if after >= before else (lo, -1)
+    return None
+
+
+def touched(found: Page, span: Span, end: float) -> tuple[float, float] | None:
+    """The drawn edge the end's extension line meets, as its extent across the axis (from, to), or
+    `None`. Either the edge goes on from the extension line, in line with it (a top's end edge,
+    drawn where the extension line stops short of it by up to `TOUCH_GAP_PT` or `TOUCH_GAP_IN`), or
+    a line along the dimension's axis passes through the end's station there (a corner). Another
+    dimension's line is never that edge."""
+    found_ext = extension(found, span, end)
+    if found_ext is None:
+        return None
+    far, way = found_ext
+    gap = max(TOUCH_GAP_PT, TOUCH_GAP_IN * found.ppi)
+    least = max(2.0, 0.5 * found.ppi)
+    in_line = [
+        (lo, hi)
+        for lo, hi, place in _across_pieces(found, span)
+        if abs(place - end) <= 0.8
+        and hi - lo >= max(least, IN_LINE_MIN_IN * found.ppi)
+        and 0.0 <= ((lo - far) if way > 0 else (far - hi)) <= max(gap, REACH_IN * found.ppi)
+    ]
+    if in_line:
+        nearest = min(in_line, key=lambda piece: abs((piece[0] if way > 0 else piece[1]) - far))
+        return nearest
+    rows = [
+        other.row
+        for other in found.spans.values()
+        if other.axis == span.axis and other.a - 1 <= end <= other.b + 1
+    ]
+    best: float | None = None
+    for lo, hi, place in _along_pieces(found, span):
+        beyond = (place - far) * way
+        if not -1.0 <= beyond <= gap or not lo - 1.0 <= end <= hi + 1.0:
+            continue
+        if hi - lo < least:
+            continue  # a tick or a letter's stroke
+        if any(abs(place - row) <= 0.6 for row in rows):
+            continue  # a dimension line, not a drawn edge
+        if best is None or abs(place - far) < abs(best - far):
+            best = place
+    return None if best is None else (best, best)
+
+
+def _outline(found: Page, span: Span, end: float, outward: int, edge: tuple[float, float]) -> bool:
+    """Nothing is drawn beyond the end (outward, within `REACH_IN`) across from the edge it touches,
+    but other dimensions and their extension lines: the end is on the outer edge of the drawing."""
+    reach = REACH_IN * found.ppi
+    pad = 2.0 * found.ppi if edge[1] - edge[0] < 1.0 else 0.0  # a corner: round it
+    low, high = edge[0] - pad, edge[1] + pad
+    stations = {
+        round(at, 1)
+        for other in found.spans.values()
+        if other.axis == span.axis
+        for at in (other.a, other.b)
+    }
+    rows = [other.row for other in found.spans.values() if other.axis != span.axis]
+    for lo, hi, place in _across_pieces(found, span):
+        beyond = (place - end) * outward
+        if not 1.0 < beyond <= reach or min(hi, high) - max(lo, low) <= 1.0:
+            continue
+        if any(abs(place - at) <= 0.8 for at in stations):
+            continue  # another dimension's extension line
+        if any(abs(place - row) <= 0.6 for row in rows):
+            continue  # a dimension line
+        return False
+    return True
+
+
+def _panel(found: Page, span: Span, end: float) -> int | None:
+    """A panel's face at `end`: a solid line at right angles to the dimension there and a parallel
+    one `PANEL_MIN_IN`-`PANEL_MAX_IN` away, both at least `PANEL_RUN_IN` long and overlapping that
+    much, with no line between (a cabinet's side, an end panel or a filler, in plan). Returns which
+    way the panel lies along the axis (+1 or -1), or `None` (none, or one each way)."""
+    if found.lines is None or found.ppi <= 0:
+        return None
+    run = PANEL_RUN_IN * found.ppi
+    pieces = [
+        piece for piece in _across_pieces(found, span) if not _extension_line(found, span, piece)
+    ]
+    near = [(lo, hi) for lo, hi, place in pieces if abs(place - end) <= 0.6 and hi - lo >= run]
+    if not near:
+        return None
+    ways: set[int] = set()
+    for lo, hi, place in pieces:
+        gap = place - end
+        if not PANEL_MIN_IN * found.ppi <= abs(gap) <= PANEL_MAX_IN * found.ppi or hi - lo < run:
+            continue
+        for n0, n1 in near:
+            low, high = max(lo, n0), min(hi, n1)
+            if high - low < run:
+                continue
+            between = [
+                q
+                for q0, q1, q in pieces
+                if 0.6 < (q - end) * (1 if gap > 0 else -1) < abs(gap) - 0.6
+                and min(q1, high) - max(q0, low) > 0.5 * run
+            ]
+            if not between:
+                ways.add(1 if gap > 0 else -1)
+    return next(iter(ways)) if len(ways) == 1 else None
+
+
+def _extension_line(found: Page, span: Span, piece: tuple[float, float, float]) -> bool:
+    """A piece at right angles to `span`'s axis that is a dimension's extension line, never a drawn
+    face: it stands at another dimension's end (of the same axis) and reaches that dimension's
+    line."""
+    lo, hi, place = piece
+    return any(
+        other.axis == span.axis
+        and (abs(other.a - place) <= 0.8 or abs(other.b - place) <= 0.8)
+        and lo - 3.0 <= other.row <= hi + 3.0
+        for other in found.spans.values()
+    )
+
+
+def _mark_touched(found: Page, phrases: Sequence[Mapping[str, Any]]) -> None:
+    """Each end named by what its extension line touches (final plan #4): a wall's face (a band
+    2"-8" thick drawn beyond the end, its far face no other dimension's end), a panel's face (a
+    strip 1/2"-1 3/4" thick at the end: a cabinet's side, an end panel or a filler), or, on a
+    countertop's own drawing (`countertop_drawing`), the top's edge (the extension line touches the
+    drawn outline). An end already named for a sink, a cut-out, a notch or a field cut keeps that
+    name only. Anything code cannot see stays unknown."""
+    if found.lines is None or found.ppi <= 0:
+        return
+    top = found.countertop = countertop_drawing(found, phrases)
+    for span in list(found.spans.values()):
+        stations = [
+            at
+            for other in found.spans.values()
+            if other.axis == span.axis and other.id != span.id
+            for at in (other.a, other.b)
+        ]
+        for side, end, outward in (("a", span.a, -1), ("b", span.b, 1)):
+            if found.kinds.get((span.id, side), set()) & _SPECIFIC:
+                continue
+            if any(
+                all(abs(face - station) > SAME_PT for station in stations)
+                for face in _wall_far_faces(found, span, end, outward)
+            ):
+                found._add(
+                    span.id, side, "wall", 'a wall or floor drawn beyond it (two lines 2"-8" apart)'
+                )
+            edge = touched(found, span, end)
+            if top:
+                # A countertop's own drawing draws pieces of top: every edge is the top's.
+                if edge is not None:
+                    found._add(
+                        span.id,
+                        side,
+                        "top_edge",
+                        "the top's outline, where its extension line meets it",
+                    )
+                continue
+            way = _panel(found, span, end)
+            if way is not None:
+                found._add(
+                    span.id,
+                    side,
+                    "end_panel",
+                    'a thin band drawn at it (two lines 1/2"-1 3/4" apart: a panel, a filler '
+                    "or a top's thickness)",
+                )
+                found.toward[(span.id, side)] = way * -outward
+            elif edge is not None and _outline(found, span, end, outward, edge):
+                found._add(
+                    span.id,
+                    side,
+                    "outline",
+                    "nothing is drawn beyond the edge its extension line meets",
+                )
+
+
 def page_of(
     file: str,
     page: int,
@@ -1090,6 +1382,9 @@ def page_of(
         found.lines = lines
         found.segments = segments
         found.spans.update(_small_spans(labels, lines, found.ppi, found.spans))
+        found.fit = _fitted(found, labels, segments)
+        if found.ppi <= 0 and found.fit is not None and found.fit.fits:
+            found.ppi = 1 / sorted(f.in_per_pt for f in found.fit.fits)[len(found.fit.fits) // 2]
         found.cutouts = _cutouts(segments, phrases, found.ppi)
     else:
         found.spans = _spans_from_labels(labels)
@@ -1100,6 +1395,7 @@ def page_of(
     _mark_field_cuts(found, field_cuts)
     _mark_cutouts(found, phrases)
     _mark_notches(found)
+    _mark_touched(found, phrases)
     return found
 
 
@@ -1132,6 +1428,211 @@ def alike(vendor: Ends, architect: Ends) -> tuple[Verdict, str]:
         if v1.kinds & a1.kinds and v2.kinds & a2.kinds:
             return "alike", f"both measure {vendor.words()}"
     return "unknown", "code could not name what both ends of each dimension land on"
+
+
+# ---- the same two points, proved by what both ends touch (final plan #4) --------------------------
+
+#: End kinds that name the same thing on both drawings: a wall's face, a panel's face, a tagged
+#: cabinet's side, a sink's centre or its cut-out's edge, GV's field cut, a notch's step, the
+#: overhang's edge. The outer edge of what is drawn (`outline`) never does (an architect's elevation
+#: may draw a bulkhead above the unit), nor a top's edge (`top_edge`) unless both drawings are a
+#: countertop's own.
+PROVING: Final = frozenset(
+    {
+        "wall",
+        "end_panel",
+        "cabinet_face",
+        "sink_centre",
+        "cutout_edge",
+        "field_cut_end",
+        "notch_edge",
+        "overhang_end",
+    }
+)
+#: The most two dimensions proved alike by their ends may differ (inches): further apart, two
+#: dimensions between the same kinds of points are more likely two different ones.
+KINDS_MAX_DIFF_IN: Final = Fraction(3)
+#: Facing kinds that say one dimension measures the countertop and the other the cabinets.
+_TOP_KINDS: Final = frozenset({"top_edge"})
+_CASEWORK_KINDS: Final = frozenset({"cabinet_face", "end_panel"})
+
+type Extent = Literal["same_extent", "different_extent", "cannot_tell"]
+
+
+def drawn_words(page: Page | None, label_id: object, whose: str) -> str | None:
+    """`the vendor's 23" is drawn 24" long at its view's own scale` when the label's value does not
+    agree with its drawn length at its view's fit (`scale_fit`, final plan #3), else `None`."""
+    fit = page.fit if page is not None else None
+    check = fit.disagrees(label_id) if fit is not None else None
+    return None if check is None else check.words(whose)
+
+
+def _agrees(page: Page, label_id: str) -> bool:
+    fit = page.fit
+    check = fit.check(label_id) if fit is not None else None
+    return check is not None and check.agrees
+
+
+def _toward(page: Page, span: Span, side: str, kind: str) -> int | None:
+    """Where the thing an end touches lies: +1 inside the span, -1 beyond it, `None` unknown."""
+    if kind == "wall":
+        return -1
+    if kind == "cutout_edge":
+        end = span.a if side == "a" else span.b
+        inside = span.b if side == "a" else span.a
+        for box in page.cutouts:
+            lo, hi = (box[0], box[2]) if span.axis == "h" else (box[1], box[3])
+            if abs(end - lo) <= SAME_PT or abs(end - hi) <= SAME_PT:
+                middle = (lo + hi) / 2
+                return 1 if (middle - end) * (inside - end) > 0 else -1
+        return None
+    if kind == "end_panel":
+        return page.toward.get((span.id, side))
+    return 0  # a kind with no side (a centre line, a field cut's end)
+
+
+def _proving(page: Page, other: Page, kinds: frozenset[str]) -> frozenset[str]:
+    out = kinds & PROVING
+    if "top_edge" in kinds and page.countertop and other.countertop:
+        out |= {"top_edge"}
+    return out
+
+
+def _shared(
+    v_page: Page, v_ends: Ends, a_page: Page, a_ends: Ends, mirrored: bool
+) -> list[tuple[str, str, frozenset[str]]] | None:
+    """The proving kinds the facing ends share, one way round: [(vendor side, architect side,
+    kinds)] for both ends, or `None` when an end shares none (or its sides disagree)."""
+    pairs = (("a", "b"), ("b", "a")) if mirrored else (("a", "a"), ("b", "b"))
+    out: list[tuple[str, str, frozenset[str]]] = []
+    for v_side, a_side in pairs:
+        v_end = v_ends.low if v_side == "a" else v_ends.high
+        a_end = a_ends.low if a_side == "a" else a_ends.high
+        shared = _proving(v_page, a_page, v_end.kinds) & _proving(a_page, v_page, a_end.kinds)
+        kept = frozenset(
+            kind
+            for kind in shared
+            if (t := _toward(v_page, v_ends.span, v_side, kind)) is not None
+            and t == _toward(a_page, a_ends.span, a_side, kind)
+        )
+        if "cabinet_face" in kept and not _same_cabinet(v_page, v_ends.span, a_page, a_ends.span):
+            kept = kept - {"cabinet_face"}
+        if not kept:
+            return None
+        out.append((v_side, a_side, kept))
+    return out
+
+
+def _same_cabinet(v_page: Page, v_span: Span, a_page: Page, a_span: Span) -> bool:
+    """Both dimensions are a tagged cabinet's width, the same tag on both drawings."""
+    v_cab, a_cab = v_page.cabinets.get(v_span.id), a_page.cabinets.get(a_span.id)
+    return v_cab is not None and a_cab is not None and v_cab.tag == a_cab.tag
+
+
+def _rivals(page: Page, ends: Ends, sides: Sequence[tuple[str, frozenset[str]]]) -> list[str]:
+    """Other dimensions of the same drawing and axis whose ends carry the same kinds (either way
+    round): the proof would fit them as well, so it names nothing."""
+    fit = page.fit
+    mine = fit.sides.get(ends.span.id) if fit is not None else None
+    out: list[str] = []
+    for other in page.spans.values():
+        if other.id == ends.span.id or other.axis != ends.span.axis:
+            continue
+        if abs(other.a - ends.span.a) <= SAME_PT and abs(other.b - ends.span.b) <= SAME_PT:
+            continue  # the same dimension printed again
+        if fit is not None and mine is not None and fit.sides.get(other.id, mine) != mine:
+            continue  # the other drawing of a combined sheet
+        found = page.ends(other.id)
+        if found is None:
+            continue
+        for first, second in ((found.low, found.high), (found.high, found.low)):
+            if sides[0][1] & first.kinds and sides[1][1] & second.kinds:
+                out.append(other.id)
+                break
+    return out
+
+
+def same_kinds(v_page: Page, vendor: Ends, a_page: Page, architect: Ends) -> tuple[Extent, str]:
+    """Whether the vendor's and the architect's dimensions run between the same two points, proved
+    by what their ends touch (final plan #4): both ends of both carry the same proving kinds
+    (`PROVING`, facing the same way, one way round: a reversed unit is drawn mirrored), both values
+    agree with their drawn lengths at their views' fits (`scale_fit`), they differ by at most
+    `KINDS_MAX_DIFF_IN`, and no other dimension on either drawing runs between such points.
+    `different_extent` when their ends are kinds that are never the same point (`alike`), or when
+    one measures the countertop and the other the cabinets. Else `cannot_tell`: an unknown end
+    proves nothing."""
+    if vendor.span.axis != architect.span.axis:
+        return "different_extent", "one is a width and the other a height"
+    verdict, why = alike(vendor, architect)
+    if verdict == "unlike":
+        return "different_extent", why
+    top = _top_against_casework(vendor, architect)
+    if top is not None:
+        return "different_extent", top
+    for whose, page, ends in (
+        ("the vendor's", v_page, vendor),
+        ("the reference's", a_page, architect),
+    ):
+        said = drawn_words(page, ends.span.id, whose)
+        if said is not None:
+            return "cannot_tell", f"{said}: its number does not agree with its drawing"
+        if not _agrees(page, ends.span.id):
+            return "cannot_tell", f"code could not check {whose} value against its drawn length"
+    ways = [
+        found
+        for mirrored in (False, True)
+        if (found := _shared(v_page, vendor, a_page, architect, mirrored)) is not None
+    ]
+    if not ways:
+        return "cannot_tell", "code could not name both ends as the same kinds of points on both"
+    if abs(vendor.span.inches - architect.span.inches) > KINDS_MAX_DIFF_IN:
+        return "cannot_tell", (
+            f'they differ by more than {KINDS_MAX_DIFF_IN}" (two different dimensions between such '
+            "points, more likely)"
+        )
+    shared = ways[0]
+    for whose, page, ends, index in (
+        ("vendor's", v_page, vendor, 0),
+        ("reference's", a_page, architect, 1),
+    ):
+        sides = [(str(pair[index]), pair[2]) for pair in shared]
+        rivals = _rivals(page, ends, sides)
+        if rivals:
+            return "cannot_tell", (
+                f"another dimension on the {whose} drawing ({rivals[0]}) runs between the same "
+                "kinds of points"
+            )
+    words = " and ".join(KIND_WORDS[next(k for k in _ORDER if k in pair[2])] for pair in shared)
+    return "same_extent", (
+        f"both run between the same kinds of points on both drawings ({words}), each drawn to its "
+        "value at its own scale, and no other dimension on either drawing does"
+    )
+
+
+def _top_against_casework(vendor: Ends, architect: Ends) -> str | None:
+    """`Not compared: one measures the countertop, the other the cabinets` when, read either way
+    round, an end of one is the top's edge and the facing end of the other a cabinet's side or a
+    panel's face (the brief of 2026-10-25: a countertop length against a cabinet run is compared
+    only through GV's settled formula, which takes the job's overhang)."""
+    ways = (
+        ((vendor.low, architect.low), (vendor.high, architect.high)),
+        ((vendor.low, architect.high), (vendor.high, architect.low)),
+    )
+
+    def apart(one: End, two: End) -> bool:
+        return bool(
+            (one.kinds & _TOP_KINDS and two.kinds & _CASEWORK_KINDS and not one.kinds & two.kinds)
+            or (
+                two.kinds & _TOP_KINDS and one.kinds & _CASEWORK_KINDS and not one.kinds & two.kinds
+            )
+        )
+
+    if all(any(apart(v, a) for v, a in way) for way in ways):
+        return (
+            "one measures the countertop, the other the cabinets (the top's edge against a "
+            f"cabinet's side or a panel): {vendor.words()} against {architect.words()}"
+        )
+    return None
 
 
 def field_cut_relief(vendor: Ends, architect: Ends) -> int | None:
@@ -1253,6 +1754,52 @@ def unlike_reason(finding: Mapping[str, Any]) -> str | None:
     if _label_key((dims or {}).get("architect")) != held.get("architect"):
         return None
     return str(held.get("why") or "") or None
+
+
+#: A Right's like-for-like record (final plan #4): {"proved": bool, "why": str, "vendor": key,
+#: "architect": key}.
+LIKE_FOR_LIKE: Final = "like_for_like"
+
+
+def right_ends(
+    finding: Mapping[str, Any], pages: Callable[[str, int], Page | None]
+) -> dict[str, Any] | None:
+    """Whether code proved a Right's two dimensions run between the same kinds of points: code
+    paired them itself (`paired_by: code`), or every facing end of the two shares a kind code named
+    from the drawing (`alike`), each value agreeing with its drawn length where code could check
+    it. `None` when the finding pairs no two labels."""
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else None
+    vendor_side = (dims or {}).get("vendor")
+    reference_side = (dims or {}).get("architect")
+    if not isinstance(vendor_side, Mapping) or not isinstance(reference_side, Mapping):
+        return None
+    keys = {"vendor": _label_key(vendor_side), "architect": _label_key(reference_side)}
+    if finding.get("paired_by") == "code":
+        return {"proved": True, "why": "code paired the two dimensions itself", **keys}
+    pages_read = [
+        pages(str(side.get("file") or ""), int(side.get("page") or 0))
+        for side in (vendor_side, reference_side)
+    ]
+    found = [
+        page.ends(side.get("id")) if page is not None else None
+        for page, side in zip(pages_read, (vendor_side, reference_side), strict=True)
+    ]
+    vendor, reference = found
+    if vendor is None or reference is None:
+        return {"proved": False, "why": "code did not find both dimensions' lines", **keys}
+    for page, side, whose in (
+        (pages_read[0], vendor_side, "the vendor's"),
+        (pages_read[1], reference_side, "the reference's"),
+    ):
+        said = drawn_words(page, side.get("id"), whose)
+        if said is not None:
+            return {
+                "proved": False,
+                "why": f"{said}: its number does not agree with its drawing",
+                **keys,
+            }
+    verdict, why = alike(vendor, reference)
+    return {"proved": verdict == "alike", "why": why, **keys}
 
 
 def pages_reader(

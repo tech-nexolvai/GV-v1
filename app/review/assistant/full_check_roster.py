@@ -102,9 +102,10 @@ from uuid import uuid4
 from app.review.assistant import (
     classification,
     dim_anchors,
+    dim_ends,
+    ends_proof,
     pick_cache,
     round_picks,
-    same_ends,
     spot_pool,
     verify_value,
     whole_look,
@@ -147,7 +148,6 @@ from app.review.assistant.full_check_advocate import (
     ink_colour,
     needs_pairing,
     same_dimension,
-    same_extent,
     string_chain,
     string_extent,
     string_extras,
@@ -1518,6 +1518,10 @@ class _Run:
     _line_work: dict[tuple[str, int], Sequence[Any]] = field(default_factory=dict)
     #: The set pack's kept line work (`vendor_consistency.LineWork`), made on first use.
     _kept_lines: Any = None
+    #: Pages read for their dimensions' ends (`dim_ends.page_of`), and the pack's phrases.
+    _ends_pages: dict[tuple[str, int], Any] = field(default_factory=dict)
+    _phrases: dict[tuple[str, int], list[Mapping[str, Any]]] | None = None
+    _ends_lock: threading.Lock = field(default_factory=threading.Lock)
     agents: list[Any] = field(default_factory=list)
     #: The phase whose budget the devil's advocate's blind picks are charged to: its own (P4), or
     #: what is left under the fixed price (the escalation, #1619).
@@ -4729,35 +4733,59 @@ class _Run:
         architect: Mapping[str, Any],
         page_map: Mapping[str, Any] | None = None,
     ) -> tuple[Extent, str]:
-        """Code's geometry for a pair: the anchor fit (`same_extent`); where it cannot tell, the
-        drawn run (`same_ends`: ties on both drawings and nothing else drawn near a moved end).
-        A failure of the second proof leaves the first's answer."""
+        """Code's geometry for a pair (`ends_proof.code_extent`): the anchor fit (`same_extent`);
+        each value against its drawn length at its view's fit (a value that does not agree never
+        feeds a red, final plan #3); where it cannot tell, the drawn run (`same_ends`); then what
+        both ends touch (`dim_ends.same_kinds`, final plan #4). A failure of a later proof leaves
+        the earlier one's answer."""
         labels = self.engine.book.dim_labels
-
-        def side(label: Mapping[str, Any], wanted: str) -> list[dict[str, Any]]:
-            found = labels.on_page(str(label.get("file")), int(label["page"]), read_now=False)
-            return [dict(item) for item in found or [] if item.get("side") == wanted]
-
-        state, why = same_extent(
-            vendor, architect, side(vendor, "vendor"), side(architect, "architect")
+        return ends_proof.code_extent(
+            vendor,
+            architect,
+            labels_of=lambda file, page: labels.on_page(file, page, read_now=False) or [],
+            segments_of=self._segments,
+            page_map=page_map,
+            pages=self._ends_page,
+            cache=self._drawn_sides,
         )
-        if state != "cannot_tell":
-            return state, why
+
+    def _ends_page(self, file: str, page: int) -> Any:
+        """A page read for its dimensions' ends (`dim_ends.page_of`), once per run: its labels,
+        the set pack's phrases (tags, sink words, the countertop's edge words), its line work and,
+        on the vendor's file, its field cuts."""
+        key = (file, page)
+        with self._ends_lock:
+            if key in self._ends_pages:
+                return self._ends_pages[key]
+        engine = self.engine
+        found = None
         try:
-            proved, said = same_ends.prove_labels(
-                vendor,
-                architect,
-                labels_of=lambda file, page: labels.on_page(file, page, read_now=False) or [],
-                segments_of=self._segments,
-                page_map=page_map,
-                cache=self._drawn_sides,
-            )
-        except Exception:  # noqa: BLE001 - the drawn run is extra proof; the anchor fit stands
-            _log.exception("assistant roster same-ends proof failed")
-            return state, why
-        if proved == "cannot_tell":
-            return state, why
-        return proved, f"the drawn run: {said}"
+            labels = engine.book.dim_labels.on_page(file, page, read_now=False) or []
+            if labels:
+                if self._phrases is None:
+                    self._phrases = _pack_phrases(engine.tools.workspace.set_pack)
+                main = engine.book.main_file
+                cuts = None
+                field_cuts = getattr(engine.book, "field_cuts", None)
+                if callable(field_cuts) and file == (main or file):
+                    try:
+                        cuts = field_cuts(file, page)
+                    except Exception:  # noqa: BLE001 - no field cut known
+                        cuts = None
+                found = dim_ends.page_of(
+                    file,
+                    page,
+                    [dict(label) for label in labels],
+                    self._phrases.get(key, ()),
+                    self._segments(file, page),
+                    cuts,
+                )
+        except Exception:  # noqa: BLE001 - no page read: the ends' proof says nothing
+            _log.exception("assistant roster could not read the ends on %s p%s", file, page)
+            found = None
+        with self._ends_lock:
+            self._ends_pages[key] = found
+        return found
 
     def _segments(self, file: str, page: int) -> Sequence[Any]:
         """A page's line work as `dim_labels` reads it, read once per run: from the set pack's
@@ -5574,3 +5602,20 @@ def set_price(engine: ChatEngine, price: int) -> None:
     guard and the second reads' share then hold it, as a chat question's hold the message cap."""
     engine.settings = replace(engine.settings, message_cap_micros=max(0, price))
     engine._read_share.limit = min(engine._read_share.limit, max(0, price))
+
+
+def _pack_phrases(pack: Path | None) -> dict[tuple[str, int], list[Mapping[str, Any]]]:
+    """The set pack's phrases by (file, page) (`dims.json`): tags, sink words, edge words."""
+    out: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
+    if pack is None:
+        return out
+    try:
+        dims = json.loads((Path(pack) / "dims.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return out
+    for entry in (dims or {}).get("pages") or [] if isinstance(dims, Mapping) else []:
+        if isinstance(entry, Mapping) and isinstance(entry.get("page"), int):
+            out[(str(entry.get("file")), int(entry["page"]))] = [
+                p for p in entry.get("phrases") or [] if isinstance(p, Mapping)
+            ]
+    return out
