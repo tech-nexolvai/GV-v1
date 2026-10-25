@@ -18,12 +18,16 @@ module finds such dimensions on the vectors alone; `dim_labels` has the OCR engi
    tick (short and at the top, up to a quarter of a digit above it: straight, or one small path
    of a few points, a filled wedge when a CAD set plots TrueType text as outlines or a bent
    stroke in an SHX stroke font).
-   Two twin ticks at the row's end are an inch mark, a single tick a foot mark.
+   Two twin ticks at the row's end are an inch mark, a single tick a foot mark. A **diagonal
+   fraction** (a numerator raised before a long slash, a denominator lowered after it, as CAD
+   fonts print `1/8`) is one character that knows its parts (`_diagonal`), only when the vectors
+   show it unambiguously; it spells a fraction like an inline one.
 4. **A dimension or nothing.** The roles must spell feet and inches with an optional inline
    fraction (`F'-I N/D"`), inches with an optional fraction (`I N/D"`) or a fraction alone
    (`N/D"`), and end in an inch mark. A space between two digits (more than 0.45 of the letter
    height) parts the whole inches from the numerator. The row reads in exactly one direction.
-5. **A picture for OCR** (`tokens`): the row turned upright, each character at its own place. A
+5. **A picture for OCR** (`tokens`): the row turned upright, each character at its own place (a
+   diagonal fraction moved onto the line: numerator, a drawn `/`, denominator, row-tall). A
    `1` the vectors know is drawn with a short flag (a bare upright stroke is no `1` to Tesseract),
    and a slashed zero without its slash.
 6. **The value** (`value`): an OCR line's digits are laid out as the vectors say (feet, inches,
@@ -39,9 +43,10 @@ module finds such dimensions on the vectors alone; `dim_labels` has the OCR engi
 Nothing here reads a value: `dim_labels` shows the pictures to two OCR engines and keeps a label
 only when both read the same value and every valid reading of either agrees.
 
-Source: issue #1662 (local study of a real architect set); outlined lettering, chains and notes:
-final-plan change #5 (a real upload's reference set, read sideways) · Verification:
-`tests/review/assistant/test_hand_labels.py`, `tests/review/assistant/test_outlined_labels.py`
+Source: issue #1662 (local study of a real architect set); outlined lettering, diagonal fractions,
+chains and notes: final-plan change #5 (a real upload's reference set, read sideways) ·
+Verification: `tests/review/assistant/test_hand_labels.py`,
+`tests/review/assistant/test_outlined_labels.py`
 """
 
 from __future__ import annotations
@@ -82,6 +87,13 @@ _SLANT: Final = 0.2
 _REACH_PT: Final = 12.0
 #: Letters smaller than this (points) are specks or line work, no lettering.
 _MIN_LETTER_PT: Final = 1.0
+#: A diagonal fraction: its slash spans at least this share of the character's height; each part
+#: is a quarter to seven tenths of the slash's height, and keeps to its side of the slash's middle
+#: (within this share of its height).
+_SLASH_SHARE: Final = 0.75
+_PART_MIN: Final = 0.25
+_PART_MAX: Final = 0.7
+_PART_SLACK: Final = 0.15
 #: How far along the row (letter heights) an `=` or `:` beside a dimension is looked for.
 _SIGN_REACH: Final = 2.0
 #: A character of more paths than this is hatching or a detail's line work.
@@ -109,6 +121,9 @@ class _Char:
     paths: tuple[ink_labels.InkPath, ...]
     frame: Box
     """`(along start, top, along end, bottom)` in the reading frame."""
+    fraction: tuple[tuple[_Char, ...], tuple[_Char, ...]] | None = None
+    """A diagonal fraction (`_diagonal`): its numerator's and its denominator's digits; the
+    character's paths hold them and the slash between them."""
 
     @property
     def wide(self) -> float:
@@ -178,6 +193,12 @@ def _straight(path: ink_labels.InkPath) -> tuple[np.ndarray, np.ndarray] | None:
 
 
 def _characters(paths: Sequence[ink_labels.InkPath], turn: Turn) -> list[_Char]:
+    """Strokes overlapping along the row and touching across it, as characters in reading order;
+    a diagonal fraction (`_diagonal`) is one character that knows its parts."""
+    return [_diagonal(char, turn) or char for char in _grouped(paths, turn)]
+
+
+def _grouped(paths: Sequence[ink_labels.InkPath], turn: Turn) -> list[_Char]:
     """Strokes overlapping along the row and touching across it, as characters in reading order."""
     items = sorted(((p, _frame(p.box, turn)) for p in paths), key=lambda item: item[1][0])
     sets = ink_labels._Sets(len(items))
@@ -207,6 +228,57 @@ def _characters(paths: Sequence[ink_labels.InkPath], turn: Turn) -> list[_Char]:
             )
         )
     return sorted(out, key=lambda c: c.frame[0])
+
+
+def _diagonal(char: _Char, turn: Turn) -> _Char | None:
+    """The character as a diagonal fraction (`1/8` printed as a small `1` raised before a slash and
+    a small `8` lowered after it, as CAD lettering fonts print fractions), or `None`. The vectors
+    must show it unambiguously: one straight stroke rising along the row across the character's
+    whole height (the slash), every other stroke wholly above it on its left half (the numerator)
+    or wholly below it on its right half (the denominator), each part at most two digits of a
+    size (a quarter to seven tenths of the slash's height), the numerator starting first."""
+    if len(char.paths) < 3:
+        return None
+    found: _Char | None = None
+    for slash in char.paths:
+        ends = _straight(slash)
+        if ends is None:
+            continue
+        (a0, d0), (a1, d1) = (ink_labels._point(float(x), float(y), turn) for x, y in ends)
+        if a1 < a0:
+            (a0, d0), (a1, d1) = (a1, d1), (a0, d0)
+        tall, wide = d0 - d1, a1 - a0
+        if tall < _SLASH_SHARE * char.tall or wide < _SLANT * tall:
+            continue  # not rising along the row across the whole character
+        middle = (d0 + d1) / 2
+        upper: list[ink_labels.InkPath] = []
+        lower: list[ink_labels.InkPath] = []
+        for path in char.paths:
+            if path is slash:
+                continue
+            f = _frame(path.box, turn)
+            centre = (f[0] + f[2]) / 2
+            at = d0 + (d1 - d0) * (centre - a0) / wide  # the slash's height there
+            (upper if (f[1] + f[3]) / 2 < at else lower).append(path)
+        if not upper or not lower:
+            continue
+        top = ink_labels._union([_frame(p.box, turn) for p in upper])
+        bottom = ink_labels._union([_frame(p.box, turn) for p in lower])
+        if top[3] > middle + _PART_SLACK * tall or bottom[1] < middle - _PART_SLACK * tall:
+            continue  # a part reaches across the slash's middle: no fraction's layout
+        if top[0] >= bottom[0] or top[2] >= bottom[2]:
+            continue  # the numerator must come first along the row
+        if not all(
+            _PART_MIN * tall <= part[3] - part[1] <= _PART_MAX * tall for part in (top, bottom)
+        ):
+            continue
+        numerator, denominator = _grouped(upper, turn), _grouped(lower, turn)
+        if not (1 <= len(numerator) <= 2 and 1 <= len(denominator) <= 2):
+            continue
+        if found is not None:
+            return None  # two ways to read it: ambiguous
+        found = _Char(char.paths, char.frame, (tuple(numerator), tuple(denominator)))
+    return found
 
 
 def _rows(chars: Sequence[_Char]) -> list[list[_Char]]:
@@ -311,16 +383,24 @@ def _zero_slash(char: _Char) -> ink_labels.InkPath | None:
 def _roles(row: Sequence[_Char]) -> tuple[list[str], float]:
     """Each character's role (`D` digit, `1`, `0`, `S` slash, `M` dash, `T` tick, `?` none) and
     the row's letter height."""
-    highest = max(c.tall for c in row)
-    letter = float(np.median([c.tall for c in row if c.tall >= 0.7 * highest]))
+    # A diagonal fraction stands taller than the row's digits (its numerator raised, its
+    # denominator lowered): the letter height is the other characters', unless only marks are.
+    sized = [c for c in row if c.fraction is None]
+    fractions = [c.tall for c in row if c.fraction is not None]
+    if not sized or (fractions and max(c.tall for c in sized) < 0.4 * max(fractions)):
+        sized = list(row)
+    highest = max(c.tall for c in sized)
+    letter = float(np.median([c.tall for c in sized if c.tall >= 0.7 * highest]))
     if letter < _MIN_LETTER_PT:
         return ["?"] * len(row), letter
-    full = [c.frame[1] for c in row if c.tall >= 0.75 * letter]
+    full = [c.frame[1] for c in sized if c.tall >= 0.75 * letter]
     top = float(np.median(full)) if full else min(c.frame[1] for c in row)
     out = []
     for c in row:
         middle = (c.frame[1] + c.frame[3]) / 2
-        if c.tall >= 0.75 * letter:
+        if c.fraction is not None:
+            out.append("/")
+        elif c.tall >= 0.75 * letter:
             ends = _straight(c.paths[0]) if len(c.paths) == 1 else None
             if ends is not None:
                 out.append("S" if c.wide / c.tall >= _SLANT else "1")
@@ -366,6 +446,11 @@ def _spelled(row: Sequence[_Char], roles: Sequence[str], letter: float) -> str |
             ):
                 out.append("_")
             out.append("d")
+        elif role == "/":
+            numerator, denominator = row[index].fraction or ((), ())
+            if out and out[-1] == "d":
+                out.append("_")
+            out.append("d" * len(numerator) + "S" + "d" * len(denominator))
         elif role in "SM":
             out.append(role)
         elif role == "T" and index == len(row) - 2 and roles[-1] == "T":
@@ -422,7 +507,12 @@ def _found(row: Sequence[_Char], turn: Turn) -> Lettered | None:
     inches = len(groups["inch"] or groups["inches"] or "")
     top = len(groups["top"] or groups["top2"] or groups["top3"] or "")
     bottom = len(groups["bottom"] or groups["bottom2"] or groups["bottom3"] or "")
-    digits = [(c, r) for c, r in zip(row, roles, strict=True) if r in "D10"]
+    digits: list[tuple[_Char, str]] = []
+    for c, r in zip(row, roles, strict=True):
+        if r in "D10":
+            digits.append((c, r))
+        elif r == "/" and c.fraction is not None:
+            digits += [(part, "D") for part in (*c.fraction[0], *c.fraction[1])]
     if all(r == "1" for _c, r in digits):
         # Only bare straight strokes: a line's piece with two dashes beside it reads `1"` as
         # well as a lettered one does, so no dimension rests on bare strokes alone.
@@ -556,6 +646,19 @@ def tokens(item: Lettered) -> list[ink_labels.Token]:
             paths = [p for p in paths if p is not slash]
         glyph = ink_labels.Glyph(tuple(paths), ink_labels._union([p.box for p in paths]))
         frame = _frame(glyph.box, item.turn)
+        if role == "/" and char.fraction is not None:
+            # Moved onto the line by `ink_labels.row_picture`: numerator, a drawn `/`, denominator.
+            above, below = (
+                tuple(
+                    ink_labels.Glyph(c.paths, ink_labels._union([p.box for p in c.paths]))
+                    for c in part
+                )
+                for part in char.fraction
+            )
+            out.append(
+                ink_labels.Token("fraction", above, below, frame[0], (frame[1] + frame[3]) / 2)
+            )
+            continue
         kind: ink_labels.TokenKind = "mark" if role in "TM" else "glyph"
         out.append(ink_labels.Token(kind, (glyph,), (), frame[0], (frame[1] + frame[3]) / 2))
     return out

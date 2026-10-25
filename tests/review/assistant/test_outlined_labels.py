@@ -19,6 +19,7 @@ from typing import Any
 
 from app.review.assistant import dim_labels as dl
 from app.review.assistant import hand_labels as hl
+from app.review.assistant import ink_labels
 from tests.review.assistant.test_dim_labels import HALVES, _line, _pdf
 from tests.review.assistant.test_hand_labels import HAND, PAGE_H, _Path
 
@@ -154,12 +155,44 @@ def test_two_dimensions_of_a_chain_on_one_line_are_each_read() -> None:
     assert sorted(item.layout for item in found) == [(0, 1, 0, 0), (1, 1, 0, 0)]
 
 
-def test_a_fraction_printed_askew_is_never_taken_for_a_digit() -> None:
-    # `9 7/8"` with its fraction printed diagonally: the numerator, the slash and the denominator
-    # touch, so they group as one character; with a slash across it between strokes on both
-    # sides, it is no digit, and the row is no dimension (never `97"`).
-    assert _found('9{7/8}"') == []
-    assert _found('{1/8}"') == []
+def test_a_diagonal_fraction_is_read_as_its_parts() -> None:
+    assert _one("1'-10 {1/8}\"").layout == (1, 2, 1, 1)
+    assert _one('9{7/8}"').layout == (0, 1, 1, 1)
+    assert _one('{1/8}"').layout == (0, 0, 1, 1)
+    item = _one("1'-10 {1/8}\"", up=True)
+    assert item.turn == 90
+    assert hl.value(item, "1'-10 1/8\"") == Decimal("22.125")
+    assert hl.value(item, "1-101/8") == Decimal("22.125")  # the digits laid out by the vectors
+    assert hl.value(item, "1'-10 1/3\"") is None  # a fraction no drawing prints
+    assert hl.value(item, "1'-10\"") is None  # the fraction's digits missing: no reading
+    assert hl.text_of(item, Decimal("22.125")) == "1'-10 1/8\""
+
+
+def test_the_picture_moves_a_diagonal_fraction_onto_the_line() -> None:
+    item = _one('9{7/8}"')
+    tokens = hl.tokens(item)
+    assert [t.kind for t in tokens] == ["glyph", "fraction", "mark", "mark"]
+    fraction = tokens[1]
+    assert len(fraction.glyphs) == 1 and len(fraction.below) == 1  # the slash is drawn anew
+    picture = ink_labels.row_picture(tokens, 0, 40)
+    assert picture is not None and picture.min() == 0
+
+
+def test_a_fraction_whose_part_reaches_across_the_slash_is_none() -> None:
+    # The `7` lowered to the baseline: it no longer keeps above the slash's middle, so the
+    # vectors do not show a fraction, and the row is no dimension.
+    moved = []
+    for points, filled in _outlined('9{7/8}"', 100, 300):
+        # the numerator's strokes are the ones starting 3.2 grid units up (2.67 points)
+        if not filled and min(py for _px, py in points) >= 300 + 2.66:
+            points = [(px, py - 2.5) for px, py in points]
+        moved.append((points, filled))
+    assert hl.lettered(_shown(moved)) == []
+
+
+def test_two_fractions_of_a_chain_on_one_line_are_each_read() -> None:
+    found = _found('{1/8}" 1{1/2}"', up=True)
+    assert sorted(item.layout for item in found) == [(0, 0, 1, 1), (0, 1, 1, 1)]
 
 
 # ---- through `dim_labels` ------------------------------------------------------------------------
@@ -253,3 +286,13 @@ def test_hatching_with_two_lines_at_its_edge_is_no_dimension() -> None:
         ([(105.3, 306.0), (105.3, 303.5)], False),
     ]
     assert hl.lettered(_shown(block + ticks)) == []
+
+
+def test_a_reference_fraction_written_up_the_page_becomes_a_label(tmp_path: Path) -> None:
+    path = tmp_path / "up.pdf"
+    lettering = _ops(_outlined("1'-10 {1/8}\"", 100, 295, up=True))
+    path.write_bytes(_pdf([_vertical(102, 280, 340) + lettering]))
+    both = [_Scripted("RapidOCR", "1-10 1/8", marks=False), _Scripted("Tesseract", "1'-10 1/8\"")]
+    (label,) = _labels(path, both)
+    assert label["side"] == "architect"
+    assert (label["text"], label["inches"], label["orientation"]) == ("1'-10 1/8\"", "22.125", "v")
