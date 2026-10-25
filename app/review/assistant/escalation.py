@@ -28,7 +28,10 @@ inside the full check and its fixed price, it climbs a ladder, the biggest items
      (`dim_ends.chain_of`: the reference's `1"` beside its `35"`, end to end on one dimension
      line, no overall printed): its sum is compared like a printed overall, from the same kinds of
      ends only (`dim_ends.alike`, never unlike). The same as the vendor's is Right; a different
-     sum changes nothing (code did not pair the vendor's dimension with the whole run);
+     sum changes nothing (code did not pair the vendor's dimension with the whole run). A
+     splash's size is never settled against the top's run, except a back splash's length against
+     a run code sees go from wall to wall (`_splash_wall_run`, Anant 2026-10-25; the printed
+     compare applies it too);
    - `vendor_search` (accuracy step 1): an item the AI says the vendor's drawing does not show
      (`classification.missing_on_vendor`): code searches every vendor drawing of its area (the
      page map) for the architect's printed value (`spot_locate.search_area`) and records what it
@@ -553,11 +556,17 @@ def _printed_compare(item: _Item, step: StepName, ctx: EscalationContext | None 
         return
     unlike = splash.unlike(finding, ctx.phrases if ctx is not None else None)
     if unlike is not None:
+        run, refused = _splash_wall_run(finding, ctx) if _same(a, v) else (None, None)
+        if run is not None:
+            _settle_wall_run(item, step, run)
+            return
         if not isinstance(finding.get(splash.FIELD), Mapping):
             # The splash step's own reason (the views it looked at) is kept when it has one.
             finding[splash.FIELD] = splash.not_alike(unlike)
             item.changed = True
-        item.note(step, "no_change", f"not like for like: {unlike}")
+        item.note(
+            step, "no_change", f"not like for like: {unlike}" + (f"; {refused}" if refused else "")
+        )
         return
     if _same(a, v):
         _settle_right(
@@ -840,9 +849,18 @@ def _chain_step(item: _Item, ctx: EscalationContext) -> None:
     # A splash's size is never settled against a size code does not see named as the same
     # splash's (`splash_views.unlike`, #1918): the reference's run is the top's.
     splash = import_module("app.review.assistant.splash_views").unlike(finding, ctx.phrases)
+    wall_run = None
     if splash is not None:
-        item.note("chain_sums", "no_change", f"not like for like: {splash}")
-        return
+        # Except a splash's length against the top's run between two walls code sees (Anant,
+        # 2026-10-25): equal is Right, a different sum changes nothing (below).
+        wall_run, refused = _splash_wall_run(finding, ctx, chain.run)
+        if wall_run is None:
+            item.note(
+                "chain_sums",
+                "no_change",
+                f"not like for like: {splash}" + (f"; {refused}" if refused else ""),
+            )
+            return
     verdict, why = dim_ends.alike(vendor, chain.run)
     if verdict == "unlike":
         item.note("chain_sums", "no_change", f"the architect's chain {words}: {why}")
@@ -898,13 +916,105 @@ def _chain_step(item: _Item, ctx: EscalationContext) -> None:
             "ends": chain.run.as_dict(),
         },
     )
-    _settle_right(
-        item,
-        "chain_sums",
+    how = (
         f"the architect prints no overall here, only parts ({words} = {format_inches(total)}, one "
         "chain end to end on one dimension line); their sum is the vendor's "
-        f"{format_inches(value)} ({why})",
+        f"{format_inches(value)} ({why})"
     )
+    if wall_run is not None:
+        _settle_wall_run(item, "chain_sums", f"{how}; {wall_run}")
+        return
+    _settle_right(item, "chain_sums", how)
+
+
+def _splash_wall_run(
+    finding: Mapping[str, Any],
+    ctx: EscalationContext | None,
+    architect: dim_ends.Ends | None = None,
+) -> tuple[str | None, str | None]:
+    """A splash's length compared with the reference's run of the top between two walls (Anant,
+    2026-10-25, relaxing #1918's "never against a size not printed as the splash's" for this one
+    case): `(why it may be compared, None)`, or `(None, why not)`, or `(None, None)` when the item
+    is not such a splash length. #1918 was written after a splash length was matched with a top's
+    WIDTH, so all of this must hold, else nothing is compared:
+
+    - the vendor's words say it is the splash's length, of no kind but the back one
+      (`splash_views.wall_run_part`; never a height, thickness, width of the top or side splash);
+    - both labels have their drawn dimension lines, along the same direction;
+    - the reference's dimension (`architect`: its label's, or the chain's whole run) runs from
+      wall to wall: a wall drawn at both ends and neither end a cabinet's side, the overhang's
+      edge or a field cut (`dim_ends.wall_to_wall`);
+    - neither end of the vendor's dimension is known to be anything but a wall, and the two are
+      never unlike (`dim_ends.alike`, #1930).
+
+    The caller compares only equal values (a Right); a difference changes nothing."""
+    if ctx is None:
+        return None, None
+    splash = import_module("app.review.assistant.splash_views")
+    part = splash.wall_run_part(finding, ctx.phrases)
+    if part is None:
+        return None, None
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    vendor_side, architect_side = (dims or {}).get("vendor"), (dims or {}).get("architect")
+    if not isinstance(vendor_side, Mapping) or not isinstance(architect_side, Mapping):
+        return None, None
+    vendor_page, architect_page = _page_of(ctx, vendor_side), _page_of(ctx, architect_side)
+    if vendor_page is None or architect_page is None:
+        return None, "code could not read the dimension lines of both drawings"
+    vendor = vendor_page.ends(vendor_side.get("id"))
+    chain = architect
+    if architect is None:
+        architect = architect_page.ends(architect_side.get("id"))
+    if vendor is None or architect is None:
+        return None, "code found no drawn dimension line for both sizes"
+    # The dimensions code proves things about must be the ones whose values are compared (a
+    # label kept from an older reading of the item never is).
+    inches = finding.get("inches") if isinstance(finding.get("inches"), Mapping) else {}
+
+    def compared(span: dim_ends.Span, side: str) -> bool:
+        value = _decimal((inches or {}).get(side))
+        drawn = Fraction(span.inches)
+        return value is not None and _same(Decimal(drawn.numerator) / drawn.denominator, value)
+
+    if not compared(vendor.span, "vendor"):
+        return None, "the vendor's dimension line is not the size compared"
+    if chain is None and not compared(architect.span, "architect"):
+        return None, "the architect's dimension line is not the size compared"
+    if vendor.span.axis != architect.span.axis:
+        return None, "the two dimensions do not run the same way"
+    for end in (vendor.low, vendor.high):
+        known = dim_ends.not_a_wall(end)
+        if known:
+            return None, f"the vendor's {part.part} length ends at {known}"
+    verdict, unlike_why = dim_ends.alike(vendor, architect)
+    if verdict == "unlike":
+        return None, unlike_why
+    walls, why = dim_ends.wall_to_wall(architect_page, architect)
+    size = format_inches(architect.span.inches)
+    if not walls:
+        return None, f"the architect's {size} is not a run from wall to wall: {why}"
+    return (
+        f"the architect's {size} is the top's run from wall to wall ({why}), so a back "
+        f"{part.part} along that wall is as long; the vendor's {part.part} length is "
+        f"{format_inches(vendor.span.inches)}"
+    ), None
+
+
+def _settle_wall_run(item: _Item, step: StepName, how: str) -> None:
+    """Right on a splash's length the same as the top's run between two walls (`_splash_wall_run`),
+    marked so the like-for-like step keeps it (`splash_views.downgrade_unlike`)."""
+    splash = import_module("app.review.assistant.splash_views")
+    record = item.finding.get(splash.FIELD)
+    item.finding[splash.FIELD] = {
+        **(dict(record) if isinstance(record, Mapping) else {}),
+        "outcome": "same",
+        "by": splash.WALL_RUN,
+        "why": how,
+        # The two labels it was proved for: a later step that pairs the item with other labels
+        # is never kept by this record (`splash_views.downgrade_unlike`).
+        "labels": splash.label_keys(item.finding),
+    }
+    _settle_right(item, step, how)
 
 
 def _vendor_drawings(

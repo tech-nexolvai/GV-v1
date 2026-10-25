@@ -55,6 +55,7 @@ __all__ = [
     "FIELD",
     "KINDS",
     "KIND_WORDS",
+    "NOT_WALL",
     "Chain",
     "End",
     "Ends",
@@ -63,10 +64,12 @@ __all__ = [
     "alike",
     "chain_of",
     "field_cut_relief",
+    "not_a_wall",
     "page_of",
     "small_span",
     "unlike_reason",
     "wall_band",
+    "wall_to_wall",
 ]
 
 type Point = tuple[float, float]
@@ -770,9 +773,14 @@ def wall_band(page: Page, span: Span, end: float, outward: int) -> bool:
     least `WALL_RUN_IN` long and overlapping that much, reaching the dimension's side of the drawing
     (within `REACH_IN` across); neither face another dimension's line, and no line between them
     (a band, drawn as walls are in plan)."""
+    return bool(_wall_far_faces(page, span, end, outward))
+
+
+def _wall_far_faces(page: Page, span: Span, end: float, outward: int) -> list[float]:
+    """The far faces (stations) of the wall bands `wall_band` finds at `end`."""
     lines, ppi = page.lines, page.ppi
     if lines is None or ppi <= 0:
-        return False
+        return []
     pieces = lines.vertical if span.axis == "h" else lines.horizontal
     rows = [
         other.row for other in page.spans.values() if other.axis != span.axis
@@ -792,7 +800,8 @@ def wall_band(page: Page, span: Span, end: float, outward: int) -> bool:
 
     near = faces(end)
     if not near:
-        return False
+        return []
+    found: list[float] = []
     for _p0, _p1, place in pieces:
         gap = (place - end) * outward
         if not WALL_MIN_IN * ppi <= gap <= WALL_MAX_IN * ppi:
@@ -808,9 +817,9 @@ def wall_band(page: Page, span: Span, end: float, outward: int) -> bool:
                     if 0.6 < (q - end) * outward < gap - 0.6
                     and min(q1, hi) - max(q0, lo) > 0.5 * run
                 ]
-                if not between:
-                    return True
-    return False
+                if not between and place not in found:
+                    found.append(place)
+    return found
 
 
 # ---- one page ------------------------------------------------------------------------------------
@@ -1142,6 +1151,64 @@ def field_cut_relief(vendor: Ends, architect: Ends) -> int | None:
     cut_back = Ends(vendor.span, back(vendor.low), back(vendor.high))
     verdict, _why = alike(cut_back, architect)
     return None if verdict == "unlike" else count
+
+
+#: End kinds a wall-to-wall run never stops at (Anant, 2026-10-25): a cabinet's side, the
+#: overhang's edge, GV's field cut, the sink, a notch or a door.
+NOT_WALL: Final = frozenset(
+    {
+        "cabinet_face",
+        "overhang_end",
+        "field_cut_end",
+        "sink_centre",
+        "cutout_edge",
+        "notch_edge",
+        "door_face",
+    }
+)
+
+
+def not_a_wall(end: End) -> str | None:
+    """What `end` is known to be other than a wall (`NOT_WALL`, or the top's own edge with no wall
+    there: a free end), in words; `None` when nothing else is known."""
+    other = sorted(end.kinds & NOT_WALL)
+    if other:
+        return KIND_WORDS[other[0]]
+    if "top_edge" in end.kinds and "wall" not in end.kinds:
+        return KIND_WORDS["top_edge"]
+    return None
+
+
+def wall_to_wall(page: Page, ends: Ends) -> tuple[bool, str]:
+    """Whether the dimension runs from one wall to another, and why (Anant, 2026-10-25: a
+    splash's length may be compared with the top's run only between the same two walls). Both
+    ends must stand on a wall's near face drawn beyond them (`wall_band`), whose far face is no
+    other dimension's end (two extension lines a filler apart are not a wall), and neither end may
+    be known as anything else (`not_a_wall`: a cabinet's side, the overhang's edge, a field cut,
+    the top's free edge).
+    Anything code cannot see is no wall."""
+    span = ends.span
+    if page.lines is None or page.ppi <= 0:
+        return False, "code has no line work for the architect's page"
+    for name, end in (("one", ends.low), ("the other", ends.high)):
+        why = not_a_wall(end)
+        if why:
+            return False, f"{name} end of it is {why}, not a wall"
+    stations = [
+        at
+        for other in page.spans.values()
+        if other.axis == span.axis and other.id != span.id
+        for at in (other.a, other.b)
+    ]
+    for name, at, outward in (("one", span.a, -1), ("the other", span.b, 1)):
+        faces = [
+            face
+            for face in _wall_far_faces(page, span, at, outward)
+            if all(abs(face - station) > SAME_PT for station in stations)
+        ]
+        if not faces:
+            return False, f"code sees no wall drawn at {name} end of it"
+    return True, "code sees a wall drawn at both ends of it"
 
 
 def _value(ends: Ends) -> str:
