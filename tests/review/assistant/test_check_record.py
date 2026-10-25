@@ -166,9 +166,19 @@ def test_the_committed_record_is_counts_for_known_kinds_only() -> None:
             "right_reds",
             "kept_quiet",
             "unjudged_reds",
+            "planted_mistakes",
+            "planted_traps",
         }
         assert all(isinstance(v, int) and v >= 0 for v in row.values())
-    assert set(data) <= {"about", "measured", "bank_run", "gate_run", "min_cases", "kinds"}
+    assert set(data) <= {
+        "about",
+        "measured",
+        "bank_run",
+        "gate_run",
+        "rules_run",
+        "min_cases",
+        "kinds",
+    }
 
 
 def _ai_rule_claim(**more: Any) -> dict[str, Any]:
