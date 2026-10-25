@@ -54,9 +54,11 @@ variant never pairs with a standard one (`markers_in`); an opposite-hand unit is
 sure on 20 of 20 vendor drawings, and code accepted 4. The item title the set index read on both
 pages (checked printed) now counts as strong evidence when the two match exactly after a fixed
 tidy-up (`unit_title`, `same_item`: "KITCHEN" is never "KITCHENETTE"); two numbered unit types
-that differ ("TYPE 1", "TYPE 3") rule the pair out. A sure matcher pick code still cannot confirm
+that differ ("TYPE 1", "TYPE 3") rule the pair out. A matcher pick code still cannot confirm
 is "pairing unsure" (`PAIRING_UNSURE`): both pages are named to the reviewer, never "drawing
-needed", never compared.
+needed", never compared. Since 2026-10-25 a pick the matcher is not sure of counts too, and so
+does code's own clear pick the matcher did not name: "no drawing to compare with" only when
+neither names a page (owner: it must be very sure).
 
 Pure: plain values in, a decision out. The work list (`worklist._pair_across`) builds the facts.
 """
@@ -113,9 +115,9 @@ __all__ = [
 
 #: The Not-compared words of a vendor drawing code could not pair (the run lists these drawings).
 UNPAIRED: Final = "not paired with an architect drawing"
-#: An unpaired drawing's reason when the AI page matcher is sure of an architect page and code
-#: cannot confirm it: the drawing is in the upload, so it is never "drawing needed"; the reviewer
-#: is told both candidate pages (`worklist._pair_across`).
+#: An unpaired drawing's reason when the AI page matcher names an architect page (sure or not), or
+#: code has a clear pick, and the two cannot confirm it: the drawing may be in the upload, so it is
+#: never "drawing needed"; the reviewer is told the candidate pages (`worklist._unsure`).
 PAIRING_UNSURE: Final = "pairing unsure"
 #: A vendor drawing needs this many printed values to be paired by its layout.
 MIN_LAYOUT_VALUES: Final = 3

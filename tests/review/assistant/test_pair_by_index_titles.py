@@ -324,8 +324,13 @@ def test_the_reviewer_is_shown_the_two_pages_in_the_right_order() -> None:
     both = MatchAnswer(("a1", "a3"), confident=True)
     three = (*ranked, Scored("a3", 0.5, ("z",)))
     assert worklist._unsure(three, None, both) == ("a1", "a3")
-    # A matcher not sure, or no answer: nothing to choose.
-    assert worklist._unsure(ranked, None, MatchAnswer(("a1",), confident=False)) == ()
+    # A matcher not sure of its pick still names a page that may be the drawing: a person
+    # confirms it, never "drawing needed" (owner, 2026-10-25: "no drawing" must be very sure).
+    assert worklist._unsure(ranked, None, MatchAnswer(("a1",), confident=False)) == ("a1", "a2")
+    # The matcher names none, and code has a clear pick of its own: code's pick, to a person.
+    assert worklist._unsure(ranked, "a2", MatchAnswer((), confident=True)) == ("a2",)
+    # Neither names a page, or no answer: nothing to choose (the page is "drawing needed").
+    assert worklist._unsure(ranked, None, MatchAnswer((), confident=True)) == ()
     assert worklist._unsure(ranked, None, None) == ()
 
 

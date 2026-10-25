@@ -2107,8 +2107,9 @@ def _pair_across(
         else _unsure(ranked, code_pick, answer or (saved[1] if saved is not None else None))
     )
     if unsure:
-        # The AI page matcher is sure of an architect page and code cannot confirm it: the drawing
-        # is in the upload, so both pages are named in the reason, never "drawing needed".
+        # A page is named (the matcher's, sure or not, or code's own) and the pair is not
+        # confirmed: the drawing may be in the upload, so the candidates are named in the
+        # reason, never "drawing needed".
         either = " or ".join(unsure)
         why = (
             f"{pairing_module.UNPAIRED}: {pairing_module.PAIRING_UNSURE}: {either}?; "
@@ -2547,13 +2548,19 @@ def _unsure(
     code_pick: str | None,
     answer: pairing_module.MatchAnswer | None,
 ) -> tuple[str, ...]:
-    """The architect items a person confirms between when the AI page matcher is sure of one and
-    code could not confirm it (`pairing.agree` refused it): the matcher's pick, then code's own
-    pick, its own next pick, or code's first other item (code's pick first when code rules the
-    matcher's out). Empty when the matcher was not sure or found none, or when code rules its
-    pick out for another variant or section and has no pick of its own."""
-    if answer is None or not answer.confident or not answer.matches:
+    """The architect items a person confirms between when the AI page matcher names one (sure or
+    not) and code could not confirm it (`pairing.agree` refused it): the matcher's pick, then
+    code's own pick, its own next pick, or code's first other item (code's pick first when code
+    rules the matcher's out). When the matcher names none, code's own clear pick alone. Empty
+    when neither names a page, or when code rules the matcher's pick out for another variant or
+    section and has no pick of its own: only then is the page "drawing needed" (owner,
+    2026-10-25: "no drawing to compare with" must be very sure; on a real four-hotel upload 8
+    pages whose right drawing was in the upload said "drawing needed" because the matcher was
+    not sure of its own, right, pick)."""
+    if answer is None:
         return ()
+    if not answer.matches:
+        return (code_pick,) if code_pick is not None else ()
     by = {s.ref: s for s in ranked}
     pick = answer.matches[0]
     scored = by.get(pick)

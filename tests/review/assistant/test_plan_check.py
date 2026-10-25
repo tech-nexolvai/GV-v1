@@ -173,6 +173,38 @@ def test_a_single_combined_file_still_asks_which_page_to_compare() -> None:
     assert plan_summary(page_map, FILE) == "5 pages · 0 pairs · round 1 · 1 general page"
 
 
+def test_code_never_guesses_a_pair_when_nobody_answers(tmp_path: Path) -> None:
+    """ "Compare with page 3" is only the architect page nearest before: a guess by position. A
+    run with nobody's answer never takes it (one bound architect sheet once paired 55 vendor
+    pages, #1881); the page has no architect drawing paired, and a reviewer's answer still pairs."""
+    page_map = _two_file_map(architect_upload=False)
+
+    assumed = with_assumptions(page_map, FILE, {})
+
+    assert not any("pair_page" in entry for entry in assumed["pages"])
+    # The popover still asks the question (a person may pair it).
+    assert [d.kind for d in doubts(assumed, FILE, limit=None)] == ["pair"] * 3
+    plan = plan_jobs(assumed, FILE, parallel=8)
+    assert plan is not None
+    assert all((FILE, 3) not in job.reference for job in plan.jobs if 4 in job.pages)
+    assert not any("the architect's drawing is on p3" in line for line in page_lines([4], assumed))
+    (tmp_path / "page_map.json").write_text(json.dumps(page_map), encoding="utf-8")
+    (tmp_path / "status.json").write_text(json.dumps({"state": "ready", "done": ["page_map"]}))
+    assert read_page_map(tmp_path, assume=True, main_file=FILE) == assumed
+    # A reviewer's own answer pairs the page, and the helper's brief says the reviewer's word.
+    record_answers(tmp_path, {"pair:f0:p4": "pair:3"}, "reviewer-1")
+    answered = read_page_map(tmp_path, assume=True, main_file=FILE)
+    assert answered is not None
+    by_page = {e["page"]: e for e in answered["pages"]}
+    assert by_page[4]["pair_page"] == 3 and "pair_page" not in by_page[5]
+    assert page_lines([4], answered) == [
+        (
+            "- p4: area not named; vendor round 1; the architect's drawing is on p3 (the "
+            "reviewer said so in the plan check)"
+        )
+    ]
+
+
 def test_answers_are_kept_append_only_and_laid_over_the_page_map(tmp_path: Path) -> None:
     page_map = _map(
         _page(2, [_half("general"), _half("vendor", 320, 1)], "1. Buffet"),

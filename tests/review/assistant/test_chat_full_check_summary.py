@@ -476,3 +476,46 @@ def test_only_compared_pages_count_as_checked(counts: dict[str, int], first: str
         [], coverage=counts, page_count=counts["total"], products=("countertop",), stopped=None
     )
     assert summary.split("\n")[0] == first
+
+
+def test_the_first_line_names_only_the_true_reasons_pages_were_not_compared() -> None:
+    """A check stopped by its price, every page paired: never "pages with no drawing to compare"
+    (a real run, 2026-10-25: 5 pages not reached for money)."""
+    counts = {"total": 20, "same": 10, "different": 5, "not_comparable": 5, "not_opened": 0}
+    money = dict.fromkeys((3, 4, 5, 19, 20), "not finished: out of money")
+    summary = code_summary(
+        [],
+        coverage=counts,
+        page_count=20,
+        products=("countertop",),
+        stopped=None,
+        compared_pages=[p for p in range(1, 21) if p not in money],
+        left_kinds=money,
+    )
+    assert summary.split("\n")[0] == (
+        "Checked 15 of 20 pages (countertops, 1 round); 5 pages were not compared (not "
+        "finished: out of money)."
+    )
+    # Several reasons, each once in page order; a page checked by code's own checks is said
+    # apart, so its reason is not repeated.
+    counts = {"total": 6, "same": 2, "different": 0, "not_comparable": 4, "not_opened": 0}
+    kinds = {
+        1: "title, divider or skipped pages",
+        4: "no drawing to compare with",
+        5: "pairing unsure",
+        6: "not compared",
+    }
+    own = {"page": 6, "status": "same", "source": "vendor_arithmetic", "verdict": "right"}
+    summary = code_summary(
+        [own],
+        coverage=counts,
+        page_count=6,
+        products=("countertop",),
+        stopped=None,
+        compared_pages=[2, 3],
+        left_kinds=kinds,
+    )
+    first = summary.split("\n")[0]
+    assert first.endswith(
+        "(title, divider or skipped pages; no drawing to compare with; pairing unsure)."
+    ), first

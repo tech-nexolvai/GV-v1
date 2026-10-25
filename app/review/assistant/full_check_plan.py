@@ -729,9 +729,9 @@ UNPAIRED_RETRY_NOTE: Final = (
     "not compared with the architect: no architect drawing paired with it yet ({why}); Continue "
     "asks again"
 )
-#: A page the AI page matcher paired and code could not confirm (`pairing.PAIRING_UNSURE`): its
-#: coverage note names both candidate pages. Final like `UNPAIRED_NOTE`, but never "drawing needed":
-#: the architect's drawing is in the upload.
+#: A page with a candidate architect page the pairing could not confirm (`pairing.PAIRING_UNSURE`):
+#: its coverage note names the candidate pages. Final like `UNPAIRED_NOTE`, but never "drawing
+#: needed": the architect's drawing may be in the upload.
 UNSURE_NOTE: Final = "Not compared with the architect: pairing unsure ({why})"
 #: Its line in the Not-compared list: what would settle it.
 UNSURE_NEEDS: Final = (

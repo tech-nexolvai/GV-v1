@@ -5196,6 +5196,7 @@ class _Run:
             # The Not-compared list's own rows (its product scope), when its files were made.
             reasons=[row.reason for row in engine.not_compared] or None,
             compared_pages=self._compared_pages(),
+            left_kinds=self._left_kinds(stopped),
         )
         # Code's summary is the roster's own, not a fallback: its "AI did not finish" note goes.
         text = "\n".join(
@@ -5257,6 +5258,36 @@ class _Run:
             f"Not done (listed, not dropped; each stopped at its own share of the money while "
             f"{left} of the fixed price was left): {listed}."
         )
+
+    def _left_kinds(self, stopped: str | None) -> dict[int, str] | None:
+        """Each vendor page not compared and why, in a few words, for the summary's first line
+        (`chat_summary.code_summary`): code's skipped pages, a pairing that is unsure, no
+        architect drawing to compare with, or not finished and why (`_unfinished`: out of money,
+        stopped, still not compared after more looks). `None` when no coverage was recorded."""
+        engine = self.engine
+        plan = getattr(engine, "_plan", None)
+        if plan is None or not engine.book.coverage_used:
+            return None
+        skipped = {int(page) for page, _why in getattr(plan, "skipped", ())} | set(self.no_vendor)
+        unsure = self._unsure_pages()
+        alone = self._not_pairable() - unsure
+        left, _items, why = self._unfinished(stopped)
+        out: dict[int, str] = {}
+        for entry in engine.book.coverage_map()["pages"]:
+            if entry.get("status") in ("same", "different"):
+                continue
+            page = int(entry["page"])
+            if page in skipped:
+                out[page] = "title, divider or skipped pages"
+            elif page in unsure:
+                out[page] = "pairing unsure"
+            elif page in alone:
+                out[page] = "no drawing to compare with"
+            elif page in left:
+                out[page] = f"not finished: {why}"
+            else:
+                out[page] = "not compared"
+        return out
 
     def _compared_pages(self) -> list[int] | None:
         """The pages the coverage counts as compared (same or different), for the summary's
