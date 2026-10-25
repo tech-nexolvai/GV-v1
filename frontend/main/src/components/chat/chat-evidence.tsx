@@ -794,13 +794,17 @@ function WholeButton({ whole, onToggle }: { whole: boolean; onToggle: () => void
 
 // ── #1803: the reviewer's own call on the item ──────────────
 
-type CallMode = 'choose' | 'wrong' | 'right' | 'remove';
+type CallMode = 'choose' | 'wrong' | 'right' | 'remove' | 'confirm' | 'drop';
+type CallKind = Exclude<CallMode, 'choose'>;
 
 /** The lines under each choice: what happens, in plain words. */
 const CALL_WORDS = {
   wrong: 'You checked this yourself. It goes on the cloud drawing and the letter, marked “(reviewer)”.',
   right: 'You checked this yourself. It leaves the Not-compared list and shows as Right (reviewer).',
   remove: 'The red cloud and its comment come off. It shows as Right (reviewer) in the vendor’s files.',
+  // Plan change #10: a click on what code proved is kept to prove (or disprove) that kind of check.
+  confirm: 'You checked this yourself: code’s red mark is right. Nothing changes on the drawing; your check counts towards this kind of check’s track record.',
+  drop: 'You checked this yourself: it is fine. It leaves the Likely problems and shows as Right (reviewer); your check counts against this kind of check.',
 } as const;
 /** #1839: marking a rule note Right takes it out of the questions for the architect. */
 const RULE_NOTE_RIGHT_WORDS = 'You checked this yourself. It leaves the questions for the architect and shows as Right (reviewer).';
@@ -819,9 +823,15 @@ function ReviewerCall({ finding, group, decision }: { finding: ChatFinding; grou
   if (mode === 'wrong') return <CallForm kind="wrong" finding={finding} busy={decision.busy} onCancel={() => setMode('choose')} onSave={(extra) => decide('agree', extra)} />;
   if (mode === 'right') return <CallForm kind="right" finding={finding} busy={decision.busy} onCancel={() => setMode('choose')} onSave={(extra) => decide('not_a_problem', extra)} />;
   if (mode === 'remove') return <CallForm kind="remove" finding={finding} busy={decision.busy} onCancel={() => setMode('choose')} onSave={(extra) => decide('not_a_problem', extra)} />;
+  if (mode === 'confirm') return <CallForm kind="confirm" finding={finding} busy={decision.busy} onCancel={() => setMode('choose')} onSave={(extra) => decide('agree', extra)} />;
+  if (mode === 'drop') return <CallForm kind="drop" finding={finding} busy={decision.busy} onCancel={() => setMode('choose')} onSave={(extra) => decide('not_a_problem', extra)} />;
+  // Plan change #10: code's own red (before any click), and a Likely problem code proved but held back.
+  const held = Boolean(finding.proof?.held);
+  const codeRed = !held && proofGroup(finding, null) === 'clouded';
+  const confirmed = saved?.decision === 'agree' && group === 'clouded' && codeRed;
   const mine = saved?.decision === 'agree' && group === 'clouded' ? 'wrong' : saved?.decision === 'not_a_problem' && group === 'dismissed' ? 'right' : null;
-  // A group with nothing to decide here (a Likely problem: the vendor confirms it) shows no empty "Your call".
-  const choices = group === 'clouded' || group === 'not_compared' || group === 'rule_note' || group === 'dismissed';
+  // A group with nothing to decide here (a Likely problem from the whole-drawing look: the vendor confirms it) shows no empty "Your call".
+  const choices = group === 'clouded' || group === 'not_compared' || group === 'rule_note' || group === 'dismissed' || (held && group === 'likely_problem');
   if (!choices && !saved) return null;
   return (
     <section aria-label="Your call" data-slot="chat-evidence-call" data-group={group} className="grid min-w-0 gap-2">
@@ -830,8 +840,8 @@ function ReviewerCall({ finding, group, decision }: { finding: ChatFinding; grou
         <p data-slot="chat-evidence-call-saved" className="flex min-w-0 items-start gap-2 text-[13px]">
           <OutcomeGlyph kind={mine} className="mt-px size-4 [&_svg]:size-2.5" />
           <span className="min-w-0 break-words">
-            <span className="font-medium">{mine === 'wrong' ? 'Wrong (reviewer).' : 'Right (reviewer).'}</span>{' '}
-            <span className="text-muted-foreground">{mine === 'wrong' ? 'You added this red mark.' : 'You marked this Right.'}{saved?.note ? <> Note: “{saved.note}”</> : null}</span>
+            <span className="font-medium">{confirmed ? 'Agreed (reviewer).' : mine === 'wrong' ? 'Wrong (reviewer).' : 'Right (reviewer).'}</span>{' '}
+            <span className="text-muted-foreground">{confirmed ? 'You confirmed code’s red mark.' : mine === 'wrong' ? 'You added this red mark.' : 'You marked this Right.'}{saved?.note ? <> Note: “{saved.note}”</> : null}</span>
           </span>
         </p>
       )}
@@ -845,7 +855,10 @@ function ReviewerCall({ finding, group, decision }: { finding: ChatFinding; grou
         </div>
       )}
       <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+        {group === 'clouded' && codeRed && !confirmed && <CallChoice kind="confirm" onClick={() => setMode('confirm')} busy={decision.busy} />}
         {group === 'clouded' && <CallChoice kind="remove" onClick={() => setMode('remove')} busy={decision.busy} />}
+        {held && group === 'likely_problem' && <CallChoice kind="wrong" onClick={() => setMode('wrong')} busy={decision.busy} />}
+        {held && group === 'likely_problem' && <CallChoice kind="drop" onClick={() => setMode('drop')} busy={decision.busy} />}
         {(group === 'not_compared' || group === 'rule_note' || group === 'dismissed') && <CallChoice kind="wrong" onClick={() => setMode('wrong')} busy={decision.busy} />}
         {(group === 'not_compared' || group === 'rule_note') && <CallChoice kind="right" onClick={() => setMode('right')} busy={decision.busy} hintWords={group === 'rule_note' ? RULE_NOTE_RIGHT_WORDS : undefined} />}
       </div>
@@ -874,14 +887,22 @@ const CHOICE_WORDS = {
   wrong: 'It’s a mistake: add a red mark',
   right: 'It’s fine: mark Right',
   remove: 'Not a mistake: remove the red mark',
+  confirm: 'Agree: it is a mistake',
+  drop: 'Not a mistake: take it off',
 } as const;
 
-function CallChoice({ kind, onClick, busy, hintWords }: { kind: 'wrong' | 'right' | 'remove'; onClick: () => void; busy?: boolean; hintWords?: string }) {
+/** The choice's mark: the outcome it leads to (a cross for taking something off). */
+function CallMark({ kind, className }: { kind: CallKind; className: string }) {
+  if (kind === 'remove' || kind === 'drop') return <X className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />;
+  return <OutcomeGlyph kind={kind === 'confirm' ? 'wrong' : kind} className={className} />;
+}
+
+function CallChoice({ kind, onClick, busy, hintWords }: { kind: CallKind; onClick: () => void; busy?: boolean; hintWords?: string }) {
   const hint = useId();
   return (
     <div className="grid min-w-0 content-start gap-1">
       <button type="button" data-slot={`chat-evidence-call-${kind}`} aria-describedby={hint} disabled={busy} onClick={onClick} className={cn(SMALL_BUTTON, 'w-full justify-start text-left')}>
-        {kind === 'remove' ? <X className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" /> : <OutcomeGlyph kind={kind} className="size-4 [&_svg]:size-2.5" />}
+        <CallMark kind={kind} className="size-4 [&_svg]:size-2.5" />
         <span className="min-w-0 truncate">{CHOICE_WORDS[kind]}</span>
       </button>
       <p id={hint} className="text-xs leading-[17px] text-muted-foreground">{hintWords ?? CALL_WORDS[kind]}</p>
@@ -890,7 +911,7 @@ function CallChoice({ kind, onClick, busy, hintWords }: { kind: 'wrong' | 'right
 }
 
 /** The small form behind a choice: what it should be (a red mark only), a note, and its own Save. */
-function CallForm({ kind, finding, busy, onCancel, onSave }: { kind: 'wrong' | 'right' | 'remove'; finding: ChatFinding; busy?: boolean; onCancel: () => void; onSave: (extra: FindingDecisionExtra) => void }) {
+function CallForm({ kind, finding, busy, onCancel, onSave }: { kind: CallKind; finding: ChatFinding; busy?: boolean; onCancel: () => void; onSave: (extra: FindingDecisionExtra) => void }) {
   const suggested = kind === 'wrong' ? suggestedShouldBe(finding) : '';
   const [value, setValue] = useState(suggested);
   const [note, setNote] = useState('');
@@ -898,7 +919,7 @@ function CallForm({ kind, finding, busy, onCancel, onSave }: { kind: 'wrong' | '
   const noteId = useId();
   const hint = useId();
   const missing = kind === 'wrong' && !value.trim();
-  const save = kind === 'wrong' ? 'Add the red mark' : kind === 'right' ? 'Mark Right' : 'Remove the red mark';
+  const save = kind === 'wrong' ? 'Add the red mark' : kind === 'right' ? 'Mark Right' : kind === 'confirm' ? 'Agree' : kind === 'drop' ? 'Take it off' : 'Remove the red mark';
   return (
     <form
       aria-label={CHOICE_WORDS[kind]}
@@ -908,7 +929,7 @@ function CallForm({ kind, finding, busy, onCancel, onSave }: { kind: 'wrong' | '
       onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); event.preventDefault(); onCancel(); } }}
     >
       <p className="flex items-center gap-2 text-[13.5px] font-medium">
-        {kind === 'remove' ? <X className="size-3.5 text-muted-foreground" aria-hidden="true" /> : <OutcomeGlyph kind={kind} className="size-4 [&_svg]:size-2.5" />}
+        <CallMark kind={kind} className="size-4 [&_svg]:size-2.5" />
         {CHOICE_WORDS[kind]}
       </p>
       <div className={cn('grid min-w-0 gap-2.5', kind === 'wrong' && 'sm:grid-cols-[minmax(0,10rem)_minmax(0,1fr)]')}>
@@ -919,7 +940,7 @@ function CallForm({ kind, finding, busy, onCancel, onSave }: { kind: 'wrong' | '
           </label>
         )}
         <label htmlFor={noteId} className="grid min-w-0 gap-1">
-          <span className="text-xs text-muted-foreground">{kind === 'remove' ? 'Reason (optional, the vendor reads it)' : 'Note (optional, the vendor reads it)'}</span>
+          <span className="text-xs text-muted-foreground">{kind === 'remove' || kind === 'drop' ? 'Reason (optional, the vendor reads it)' : 'Note (optional, the vendor reads it)'}</span>
           <input id={noteId} autoFocus={kind !== 'wrong'} value={note} onChange={(event) => setNote(event.target.value)} maxLength={300} className={INPUT} />
         </label>
       </div>

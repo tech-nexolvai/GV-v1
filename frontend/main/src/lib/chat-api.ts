@@ -631,6 +631,8 @@ export interface FindingProof {
   proof?: string | null;
   /** The other groups: why it is not clouded, in one line. */
   reason?: string | null;
+  /** Plan change #10, likely_problem: a Wrong code proved, held back only because its kind of check is still being proven. */
+  held?: boolean | null;
   /** #1619, not_compared: the architect-first rule (R1-R10) it falls under. */
   rule?: string | null;
   /** #1619, not_compared: the reason (the Not-compared list's group). */
@@ -1121,6 +1123,8 @@ export interface ChatAccuracy {
   coverage_factor?: number | null;
   /** How the points per claim were calibrated on GV's test sets. */
   calibration?: string | null;
+  /** Plan change #10: what was measured on GV's answer keys, from each check's track record (by code, never typed in). */
+  measured?: string | null;
   /** "What's right" items not compared: not scored. */
   not_compared?: number | null;
   /** What the answer did not check. */

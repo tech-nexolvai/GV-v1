@@ -984,6 +984,11 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
         # The whole-drawing look's claim (2026-10-23): what to check and confirm, its kind and
         # reason; the spots are the finding's own boxes.
         "likely_problem": likely_problems.payload(finding),
+        # Plan change #10: a Wrong code proved, held back only because its kind of check is still
+        # being proven (`held_back`). The reviewer's Agree / Not a problem on it is evidence for the
+        # kind's track record (plan change #10), so the screen offers both.
+        # Worked out on the item as code left it, so it stays the same under the reviewer's click.
+        "held": held_back({k: v for k, v in finding.items() if k != "decision"}) is not None,
     }
 
 

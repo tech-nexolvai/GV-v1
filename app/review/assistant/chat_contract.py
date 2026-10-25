@@ -896,6 +896,11 @@ class ChatFindingProofOut(BaseModel):
         description="not_compared: the trade's words for the reason (Field verify, RFI to the "
         "architect, Not reviewed: <reason>, Illegible).",
     )
+    held: bool = Field(
+        default=False,
+        description="likely_problem: a Wrong code proved, held back only because its kind of "
+        "check has no clean track record yet (plan change #10); the reviewer may agree or not.",
+    )
     settle: str | None = Field(
         default=None, description="not_compared: what is needed to compare it, in plain words."
     )

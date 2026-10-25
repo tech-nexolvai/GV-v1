@@ -376,6 +376,39 @@ describe('a full-check answer', () => {
     await waitFor(() => expect(remake).toHaveBeenCalledTimes(3), { timeout: 3000 });
   }, 20_000);
 
+  it('lets the reviewer agree with code’s red, and decide a red held back while its kind is proven (plan change #10)', async () => {
+    const user = userEvent.setup();
+    const decide = vi.fn(async (_message: string, _finding: string, decision: string, extra?: { note?: string | null }) => ({ decision, by: 'anant', at: '2026-10-26T11:00:00Z', note: extra?.note || null }));
+    const held = finding('h1', { item: 'Sink front offset', status: 'different', architect: '4"', vendor: '3"', proof: { group: 'likely_problem', held: true, reason: 'Code found a difference, but this kind of check is still being proven.' } });
+    const look = finding('l1', { item: 'Back splash', status: 'check', proof: { group: 'likely_problem', reason: 'The whole-drawing look found it; code could not prove it.' } });
+    render(<AssistantMessage message={answer({ findings: [...findings, held, look], files: [CLOUD, REPORT] })} chatId="c-1" models={[OPUS]} fullCheck decide={decide} remakeCloud={vi.fn(async () => CLOUD)} onReload={vi.fn()} />);
+    const node = screen.getByRole('article', { name: 'Answer' });
+    // Code's own red: "Agree: it is a mistake" beside "Not a mistake"; agreeing keeps the red mark.
+    await user.click(within(node).getByRole('button', { name: /^Sink base width, page \d+\. Open the evidence$/ }));
+    const panel = await screen.findByRole('dialog');
+    expect(within(panel).getByText(/your check counts towards this kind of check’s track record/)).toBeTruthy();
+    await user.click(within(panel).getByRole('button', { name: 'Agree: it is a mistake' }));
+    await user.click(within(panel).getByRole('button', { name: 'Agree' }));
+    expect(decide).toHaveBeenCalledWith('msg-1', 'w1', 'agree', expect.objectContaining({ note: '' }));
+    await waitFor(() => expect(within(screen.getByRole('dialog')).getByText('Agreed (reviewer).')).toBeTruthy());
+    expect(within(screen.getByRole('dialog')).queryByRole('button', { name: 'Agree: it is a mistake' })).toBeNull();
+    expect(tiles(node)[0]).toMatch(/^wrong:Wrong2/);
+    await user.keyboard('{Escape}');
+    // A Likely problem code proved but held back: both calls are offered.
+    await user.click(within(node).getByRole('tab', { name: /^Likely/ }));
+    await user.click(within(node).getByRole('button', { name: /^Sink front offset, page \d+\. Open the evidence$/ }));
+    const second = await screen.findByRole('dialog');
+    expect(within(second).getByRole('button', { name: 'It’s a mistake: add a red mark' })).toBeTruthy();
+    await user.click(within(second).getByRole('button', { name: 'Not a mistake: take it off' }));
+    await user.click(within(second).getByRole('button', { name: 'Take it off' }));
+    expect(decide).toHaveBeenLastCalledWith('msg-1', 'h1', 'not_a_problem', expect.objectContaining({ note: '' }));
+    await user.keyboard('{Escape}');
+    // The whole-drawing look's Likely problem stays as it was: the vendor confirms it, no call here.
+    await user.click(within(node).getByRole('button', { name: /^Back splash, page \d+\. Open the evidence$/ }));
+    const third = await screen.findByRole('dialog');
+    expect(third.querySelector('[data-slot="chat-evidence-call"]')).toBeNull();
+  }, 20_000);
+
   it('never hands out the old package: no download until it is made again with every decision (#1803)', async () => {
     const user = userEvent.setup();
     const PKG: ChatFile = { id: 'f-z', kind: 'package', name: 'set - GV review package.zip', size: 4_000_000, mime: 'application/zip', url: '/api/v1/chats/c-1/files/f-z' };
@@ -500,6 +533,14 @@ describe('accuracy and evidence on every answer', () => {
       'Sink base width 46"Printed at the spot; second read agrees1',
       'Filler 2"To check0.4',
     ]);
+  });
+
+  it('says what was measured on GV’s answer keys, from the track record (plan change #10)', async () => {
+    const user = userEvent.setup();
+    const measured = "Measured on GV's answer keys: sizes against the architect's: 0 false reds in 51 keyed cases (at most about 6%).";
+    render(<AssistantMessage message={answer({ accuracy: { score: 80, level: 'green', claims: 1, breakdown: [], measured } })} chatId="c-1" models={[OPUS]} />);
+    await user.click(screen.getByRole('button', { name: /^Accuracy 80%/ }));
+    expect((await screen.findByText(measured)).getAttribute('data-slot')).toBe('chat-accuracy-test-set');
   });
 
   it('says n/a in grey when there was nothing to check, and older answers show no badge', () => {

@@ -279,3 +279,17 @@ def test_the_committed_record_gives_a_line_without_a_hand_edited_number(
     line = check_record.record_line(check_record.RECORD_FILE)
     assert line.startswith("Measured on GV's answer keys: ")
     assert "53 of 55" not in line
+
+
+def test_the_screen_is_told_which_likely_problems_are_held_back_reds(record: Any) -> None:
+    """Plan change #10: a Wrong code proved that waits only for its kind's track record is marked
+    `held`, also under the reviewer's click, so the screen can offer Agree / Not a problem on it."""
+    record()
+    held = _proved(created_by=sink_offset.CREATED_BY)
+    assert proof_of(held)["group"] == "likely_problem" and proof_of(held)["held"] is True
+    agreed = {**held, "decision": {"decision": "agree"}}
+    assert proof_of(agreed)["group"] == "clouded" and proof_of(agreed)["held"] is True
+    record(size_vs_architect=(30, 0))
+    assert proof_of(_proved())["held"] is False  # a red its kind may make
+    look = _proved(status="check", trust_level="to_check", checks={}, witnesses=[])
+    assert proof_of(look)["held"] is False  # not proved by code
