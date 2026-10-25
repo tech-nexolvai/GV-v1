@@ -32,6 +32,16 @@ older copy of page N: not checked".
 
 The supervisor is behind a setting (`GV_ASSISTANT_PREFLIGHT_SUPERVISOR`, on by default); tests use
 a fake call (`ask`), never a paid one.
+
+**The harness's own lines (harness pre-checks, change 11; `harness_lines`):**
+
+- **The AI account's credit.** With OpenRouter, its free, read-only credit check runs first. When
+  the account has less than the check's fixed price plus `CREDIT_SPARE_MICROS`, the check pauses
+  before any paid step (Run anyway does not pass it: the run would stop part way): "The AI account
+  has $X left; this check needs up to $Y … Top up, then Run." When the credit cannot be read the
+  check starts as before, and a note says so. Anthropic's own API has no balance to read: no line.
+- **The secure sandbox.** When Docker was not running as the answer started, the check still runs
+  (only the shell tool answers that it is unavailable) and one line says so.
 """
 
 from __future__ import annotations
@@ -40,11 +50,19 @@ import json
 import logging
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from decimal import Decimal
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, Final
 
-from app.review.assistant.preflight import STOP_KINDS, PairEstimate, Report, build, gather
+from app.review.assistant.preflight import (
+    STOP_KINDS,
+    Line,
+    PairEstimate,
+    Report,
+    build,
+    gather,
+)
 from app.review.assistant.reply_json import json_of_reply
 
 if TYPE_CHECKING:
@@ -265,6 +283,82 @@ def _pairs_now(engine: ChatEngine, matching: Any) -> PairEstimate | None:
     )
 
 
+#: The money kept spare above a full check's fixed price before it starts (millionths of $): the
+#: provider's balance can trail its spend, and the calls in flight are held at their worst case.
+CREDIT_SPARE_MICROS: Final = 1_000_000
+#: The pre-flight line when Docker was not running as the answer started (lazy Docker).
+SANDBOX_DOWN_WORDS: Final = (
+    "The secure sandbox (Docker) is not running: the check goes on, but the AI cannot run its own "
+    "commands on the drawings (its other tools and code's checks still work). Start Docker "
+    "Desktop to give it back."
+)
+
+
+def _usd(micros: int | Decimal) -> str:
+    return f"${max(Decimal(0), Decimal(micros)):.2f}"
+
+
+def harness_lines(engine: ChatEngine, price_micros: int) -> list[Line]:
+    """The harness's own pre-flight lines (see the module): the AI account's credit against the
+    fixed price, and the secure sandbox. Never raises; a provider with no credit check (a test's
+    fake, Anthropic's own API) adds no credit line."""
+    lines: list[Line] = []
+    check = getattr(engine.provider, "credit", None)
+    if callable(check):
+        try:
+            found = check()
+            state, usd = str(getattr(found, "state", "unknown")), getattr(found, "usd", None)
+        except Exception as failed:  # noqa: BLE001 - the check starts as before, said so
+            _log.warning(
+                "pre-flight: the AI account's credit check failed: %s", type(failed).__name__
+            )
+            state, usd = "unknown", None
+        price = _usd(Decimal(price_micros) / 1_000_000)
+        if state == "ok" and isinstance(usd, Decimal):
+            left_micros = usd * 1_000_000
+            if left_micros < price_micros + CREDIT_SPARE_MICROS:
+                lines.append(
+                    Line(
+                        "credit_low",
+                        "stop",
+                        f"The AI account has {_usd(usd)} left; this check needs up to {price} "
+                        f"(and {_usd(Decimal(CREDIT_SPARE_MICROS) / 1_000_000)} kept spare). "
+                        "Top up, then Run.",
+                        goes_on=False,
+                        who="you",
+                        todo="Top up the AI account, then Run",
+                    )
+                )
+            else:
+                lines.append(
+                    Line(
+                        "credit_ok",
+                        "ok",
+                        f"The AI account has {_usd(usd)} left; this check needs up to {price}.",
+                    )
+                )
+        elif state == "unknown":
+            lines.append(
+                Line(
+                    "credit_unknown",
+                    "note",
+                    "The AI account's credit could not be read, so the check starts as usual.",
+                )
+            )
+    sandbox = getattr(engine.tools, "sandbox", None)
+    if getattr(sandbox, "kind", None) == "none":
+        lines.append(
+            Line(
+                "sandbox_down",
+                "warn",
+                SANDBOX_DOWN_WORDS,
+                who="you",
+                todo="Start Docker Desktop",
+            )
+        )
+    return lines
+
+
 def gate(
     engine: ChatEngine,
     plan: Any,
@@ -274,6 +368,7 @@ def gate(
     run_anyway: bool,
     price_micros: int,
     texts: Mapping[tuple[str, str | int], str] | Callable[[], Mapping[Any, str]] | None = None,
+    credit_price_micros: int | None = None,
 ) -> Gate | None:
     """The pre-flight report, code's stops and the supervisor's look, before any paid step; the
     `preflight` block added to the answer. `None` when the set has no pack (nothing to say)."""
@@ -305,8 +400,16 @@ def gate(
         products=tuple(engine.settings.products or ()),
     )
     report = build(inputs)
+    # The harness's own lines (change 11): the credit's stop first, its other lines last.
+    harness = harness_lines(
+        engine, price_micros if credit_price_micros is None else credit_price_micros
+    )
+    low = [line for line in harness if line.level == "stop"]
+    if harness:
+        rest = tuple(line for line in harness if line.level != "stop")
+        report = replace(report, lines=(*low, *report.lines, *rest))
     supervisor = Look("not_run", None)
-    if model_name:
+    if model_name and not low:
         call, fits = _engine_call(engine, model_name)
         facts = {**report.facts, "price_usd": f"{price_micros / 1_000_000:.2f}"}
         tokens = len(SYSTEM) // 3 + len(json.dumps(facts)) // 3 + 200
@@ -324,7 +427,9 @@ def gate(
         # "same file twice" stops for a swap; the second look's doubt is a warning.
         supervisor = Look("warn", supervisor.why, supervisor.kind, supervisor.cost_micros)
     stops = bool(report.stops) or supervisor.verdict == "stop"
-    found = Gate(report, supervisor, paused=stops and not run_anyway, run_anyway=run_anyway)
+    # Run anyway passes the upload's stops, never too little credit: that run would stop part way.
+    paused = (stops and not run_anyway) or bool(low)
+    found = Gate(report, supervisor, paused=paused, run_anyway=run_anyway)
     block = found.block()
     index = engine._add_block(block)
     engine.emit(
@@ -338,10 +443,17 @@ def paused_outcome(engine: ChatEngine, found: Gate) -> MessageOutcome:
     from app.review.assistant.chat_engine import MessageOutcome
 
     reasons = found.reasons()
+    credit_only = all(line.id == "credit_low" for line in found.report.stops) and (
+        found.supervisor.verdict != "stop"
+    )
     text = (
         "Paused before comparing anything: "
         + " ".join(reasons)
-        + " Nothing was compared. Fix the upload, or choose Run anyway."
+        + (
+            " Nothing was compared."
+            if credit_only
+            else " Nothing was compared. Fix the upload, or choose Run anyway."
+        )
     )
     index = engine._add_block({"type": "text", "text": text, "by": "code"})
     engine.emit("text_delta", {"index": index, "text": text, "by": "code"})
@@ -385,7 +497,8 @@ def for_full_check(engine: ChatEngine, plan: Any, matching: Any) -> Gate | None:
             json.loads((folder / "page_map.json").read_text(encoding="utf-8")) if folder else {}
         )
         files = [str(name) for name in (page_map or {}).get("files") or [] if name]
-        price = settings.price_rule.price(getattr(plan, "pages", 0), price_bound(engine))
+        bound = price_bound(engine)
+        price = settings.price_rule.price(getattr(plan, "pages", 0), bound)
         return gate(
             engine,
             plan,
@@ -394,7 +507,21 @@ def for_full_check(engine: ChatEngine, plan: Any, matching: Any) -> Gate | None:
             run_anyway=bool(getattr(settings, "run_anyway", False)),
             price_micros=price,
             texts=(lambda: page_texts(folder, files)) if folder is not None and files else None,
+            credit_price_micros=_continue_price(engine, plan, bound),
         )
     except Exception:  # noqa: BLE001 - the check goes on as planned, without the report
         _log.exception("plan supervisor: the pre-flight gate failed")
         return None
+
+
+def _continue_price(engine: ChatEngine, plan: Any, bound: int) -> int | None:
+    """A Continue's price for the credit check (#1821): only the pages the earlier answer left
+    (its proof steps' needs are not known yet, so this is the least it costs); `None` for a
+    check that is not a Continue (its fixed price is the whole plan's)."""
+    if not getattr(engine, "continuing", False) or not engine.book.coverage_used:
+        return None
+    from app.review.assistant.full_check_roster import carried_done
+
+    done = carried_done(engine.book.coverage_map())
+    left = {page for job in getattr(plan, "jobs", ()) for page in job.pages} - done
+    return int(engine.settings.price_rule.price(len(left), bound))

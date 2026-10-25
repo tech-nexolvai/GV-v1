@@ -487,7 +487,8 @@ def _depth_change(
         "file": sheet[0],
         "page": sheet[1],
         "side": "architect",
-        "route": "ocr",
+        # The picture route's trust class (dim_labels): route "drawn", origin says OCR.
+        "route": "drawn",
     }
     read_how = (
         f"code read {_inch_words(vendor)} at the vendor's spot and {line.text} in the "
