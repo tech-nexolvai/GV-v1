@@ -16,6 +16,7 @@ from fractions import Fraction
 from typing import Any
 
 from app.review.assistant import dim_ends, escalation, field_cut, proof, sink_centre
+from app.review.assistant.chat_contract import ChatFindingSettledOut
 from app.review.assistant.chat_trust import judged
 from app.review.assistant.escalation import EscalationContext, escalate
 
@@ -359,6 +360,18 @@ def test_a_sink_offset_set_against_another_cabinet_still_goes_to_the_sink_centre
     found = judged(result.changed[0])
     assert found["created_by"] == sink_centre.CREATED_BY
     assert proof.proof_group(found) == "likely_problem"
+
+
+def test_a_right_item_rechecked_on_the_base_centre_still_reads_as_a_chat_finding() -> None:
+    # An item already Right, set against another cabinet, re-judged Right on the base centre.
+    result = escalate([_finding("D3", "D2", '23"', '12"', status="same")], _ctx(23, 23))
+    found = judged(result.changed[0])
+    assert found["created_by"] == sink_centre.CREATED_BY and found["status"] == "same"
+    assert found["settled"]["was"] == "check"
+    ChatFindingSettledOut.model_validate(found["settled"])
+    # An answer saved before the fix still opens.
+    saved = ChatFindingSettledOut.model_validate({**found["settled"], "was": "same"})
+    assert saved.was == "check"
 
 
 def test_an_unlike_record_says_why_and_blocks_right_and_red() -> None:

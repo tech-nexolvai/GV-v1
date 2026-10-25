@@ -620,6 +620,14 @@ class ChatFindingSettledOut(BaseModel):
         "Right by the escalation (#1619).",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _already_right_reads_as_check(cls, data: object) -> object:
+        # Answers saved before the fix name an item already Right "same"; it reads as check.
+        if isinstance(data, dict) and data.get("was") == "same":
+            return {**data, "was": "check"}
+        return data
+
 
 class ChatFindingAlsoOnOut(BaseModel):
     """The same item on another page or round, folded into this finding (#1554)."""
