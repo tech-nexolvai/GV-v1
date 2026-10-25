@@ -382,6 +382,21 @@ def _read_by_code(finding: Mapping[str, Any]) -> bool:
     return bool(found) and _governing_known(finding, found)
 
 
+def ai_rule_claim(finding: Mapping[str, Any]) -> bool:
+    """A GV-rule item (`source: rules`) that only an AI says breaks the rule: code's own rule check
+    did not confirm it (no `rule` witness: the recorded check did not run, or it is not one GV
+    records) and GV's limits did not settle it. Code then read only the vendor's number; which
+    rule applies, its value, and whether the reference prints the vendor's size (the reference
+    wins over GV's standard, settled with GV) are the AI's word, so it is never red (the paid
+    run of 2026-10-25: a sink's front offset the reference's section prints clouded against
+    GV's 4" standard)."""
+    return (
+        finding.get("source") == "rules"
+        and "rule" not in _witnesses(finding)
+        and _gv_limits(finding) is None
+    )
+
+
 def code_proved(finding: Mapping[str, Any]) -> bool:
     """A Wrong item code proved: an independent code witness AND trust Confirmed or Likely (a check
     that disagrees makes it "AI reading only", so it never passes), with neither value measured
@@ -411,6 +426,8 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
         return False
     if finding.get("source") == "vendor_arithmetic" and not string_verified(finding):
         return False  # an AI-grouped string: only code's geometry proves the parts are one chain
+    if ai_rule_claim(finding):
+        return False  # an AI's GV-rule claim that code's own rule check never confirmed
     if classification.architect_conflict(finding) is not None:
         return False  # the architect prints the vendor's value, or not the "should be" (#1802)
     if dim_ends.unlike_reason(finding) is not None:

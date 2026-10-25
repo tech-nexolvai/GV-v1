@@ -135,7 +135,9 @@ def kind_of(finding: Mapping[str, Any]) -> str:
     found = _witnesses(finding)
     if "text" in found:
         return "finish_code"
-    if "rule" in found:
+    if "rule" in found or source == "rules" or finding.get("rule_check_id"):
+        # Any GV-rule item (code's own check, or a helper naming one): never "a size differs from
+        # the architect's", whose record says nothing about GV's rules.
         return "gv_rule"
     return "size_vs_architect"
 
