@@ -343,10 +343,13 @@ def test_a_label_no_engine_reads_is_not_shown_to_the_next_engine(tmp_path: Path)
 def test_only_the_vendors_drawn_numbers_with_an_inch_mark_and_room_round_them(
     tmp_path: Path,
 ) -> None:
-    # The architect's drawn lettering, tags and notes are left to the AI: only the vendor's.
+    # The vendor's route reads only the vendor's drawing; on the architect's, the same drawn
+    # number is the lettering route's (`hand_labels`, final-plan change #5: marks drawn as filled
+    # shapes), so it is the architect's label, never a vendor-route one.
     path = tmp_path / "drawn.pdf"
     path.write_bytes(_pdf([_drawn_page()]))
-    assert not _drawn(path, _agreeing(), halves=[{"box": [0, 0, 600, 400], "role": "architect"}])
+    found = _drawn(path, _agreeing(), halves=[{"box": [0, 0, 600, 400], "role": "architect"}])
+    assert [(label["text"], label["side"]) for label in found] == [('24"', "architect")]
     # A drawn number with no inch mark (a tag `C24`, a count, a symbol read as a digit).
     bare = tmp_path / "bare.pdf"
     bare.write_bytes(_pdf([_drawn_page(_glyphs(300.0, 303.5, inch_mark=False))]))

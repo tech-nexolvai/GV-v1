@@ -220,11 +220,15 @@ def _digits_of(text: str) -> tuple[list[str], list[str], list[str]] | None:
 
 
 def _learn(page: Any, near: _Near, labels: Sequence[Mapping[str, Any]]) -> list[tuple[Shape, str]]:
-    """The digit shapes of the page's drawn labels code read (one row, glyphs matching the value's
-    digits one for one): the set's alphabet."""
+    """The digit shapes of the vendor's drawn labels code read on the page (one row, glyphs
+    matching the value's digits one for one): the set's alphabet. A reference's lettering read
+    on its drawings teaches nothing: its digits are also its room tags' and grid bubbles', so
+    counting by them would count tags as unread numbers."""
     out: list[tuple[Shape, str]] = []
     for label in labels:
         if label.get("route") != "drawn" or label.get("origin") or label.get("mm"):
+            continue
+        if label.get("side") != "vendor":
             continue
         digits = _digits_of(str(label.get("text") or ""))
         box = label.get("box")

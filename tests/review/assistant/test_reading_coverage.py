@@ -50,6 +50,14 @@ def test_a_read_number_is_no_spot_and_teaches_its_digit_shapes(tmp_path: Path) -
     assert _spots(found) == []
 
 
+def test_only_the_vendors_read_numbers_teach_digit_shapes(tmp_path: Path) -> None:
+    path, found = _page(tmp_path, READ)
+    parsed = dl._parse(path, 0)
+    labels = [{**label, "side": "architect"} for label in found.labels]
+    assert ri.page_ink(parsed, HALVES, labels).digits == []
+    assert len(ri.page_ink(parsed, HALVES, found.labels).digits) == 2
+
+
 def test_a_marked_number_with_no_dimension_line_is_counted_unread(tmp_path: Path) -> None:
     _, found = _page(tmp_path, READ + stroke_ops('48"', 450, 150))
     (spot,) = _spots(found)

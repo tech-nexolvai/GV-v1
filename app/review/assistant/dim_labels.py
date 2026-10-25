@@ -58,8 +58,10 @@ found on the vectors by `hand_labels` (characters, rows, each character's role, 
 shape, the digits' layout). Both engines must read the same value from the row's picture, every
 reading laid out by the vectors (a digit the vectors know, a bare-stroke `1` or a slashed zero,
 read otherwise counts for nothing; so does a `1` where the vectors show a hand-lettered `7`). The
-label needs room round it and a dimension line of its own running the way it reads. The vendor's
-drawings keep the route above.
+label needs room round it and a dimension line of its own running the way it reads, and no `=` or
+`:` beside it in its row (a scale note's number). The same reader takes a reference set whose
+lettering was exported as outlines (filled characters, the marks small filled wedges) or plotted
+in an SHX stroke font (the marks short bent strokes), in any of the three directions it is written. The vendor's drawings keep the route above.
 
 **Equal parts** (#1668): an `EQ` mark on a dimension line is a part of a printed overall shared
 equally (`_equal_parts`: 36" wall to wall marked `EQ` / `EQ` is 18" each side). Code derives the
@@ -3130,6 +3132,12 @@ def _lettered_label(
     part = _Part(item.label, turn=item.turn)
     if _crowded(parsed.page, item.label, (), item.turn):
         return None
+    x0, y0, x1, y1 = item.label.box
+    reach = 3 * max(x1 - x0, y1 - y0)
+    if hand_labels.signs_beside(
+        item, vv._ink_paths_near(parsed.page, (x0 - reach, y0 - reach, x1 + reach, y1 + reach))
+    ):
+        return None  # a scale note's number (`SCALE: 1" = 1'-0"`), not a dimension
     line = _line_of(parsed, part)
     if line is None or line[1] != ("h" if item.turn == 0 else "v"):
         return None
