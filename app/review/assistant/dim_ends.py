@@ -55,13 +55,16 @@ __all__ = [
     "FIELD",
     "KINDS",
     "KIND_WORDS",
+    "Chain",
     "End",
     "Ends",
     "Page",
     "Span",
     "alike",
+    "chain_of",
     "field_cut_relief",
     "page_of",
+    "small_span",
     "unlike_reason",
     "wall_band",
 ]
@@ -333,40 +336,140 @@ def _small_spans(
     labels: Sequence[Mapping[str, Any]], lines: Any, ppi: float, known: Mapping[str, Span]
 ) -> dict[str, Span]:
     """Small dimensions (an overhang's 1", a panel's 3/4") whose text sits beside their ticks, not
-    between them (`dim_anchors` needs a tick each side of the text): one pair of neighbouring ticks
-    on a row by the label, drawn to its value. Two such pairs: none."""
-    dim_anchors = import_module("app.review.assistant.dim_anchors")
-
+    between them (`dim_anchors` needs a tick each side of the text): `small_span` for each label
+    code has no span for yet."""
     out: dict[str, Span] = {}
     if ppi <= 0:
         return out
     for label in labels:
         key = str(label.get("id"))
-        value = _fraction(label.get("inches"))
-        box = _box(label.get("box"))
-        axis = label.get("orientation")
-        if key in known or value is None or value > SMALL_MAX_IN or box is None:
+        if key in known:
             continue
-        if axis not in ("h", "v"):
-            continue
-        near, far = (box[1], box[3]) if axis == "h" else (box[0], box[2])
-        lo, hi = (box[0], box[2]) if axis == "h" else (box[1], box[3])
-        drawn = float(value) * ppi
-        rows = {
+        found = small_span(label, lines, ppi, labels)
+        if found is not None:
+            out[key] = found
+    return out
+
+
+def small_span(
+    label: Mapping[str, Any],
+    lines: Any,
+    ppi: float,
+    others: Sequence[Mapping[str, Any]] = (),
+) -> Span | None:
+    """A small dimension's own span (an overhang's 1", a panel's 3/4", at most `SMALL_MAX_IN`),
+    its text printed beside its two ticks, not between them: one pair of neighbouring ticks on a
+    row by the label, drawn to its value at `ppi` (points per inch), the text within a text
+    height of it (`_gap`). When no row by the label has one, a leader drawn from the label
+    (`_leader_ends`) to the middle of such a pair names it (the drafter's `1"` taken out of a
+    crowded chain). Two such pairs, or none: `None`; also when another of `others` (the page's
+    labels) printing the same value sits nearer the pair (it is that label's: one span, one
+    label). `lines` is `dim_anchors`' split line work of the page."""
+    dim_anchors = import_module("app.review.assistant.dim_anchors")
+
+    key = str(label.get("id"))
+    value = _fraction(label.get("inches"))
+    box = _box(label.get("box"))
+    axis = label.get("orientation")
+    if ppi <= 0 or value is None or value > SMALL_MAX_IN or box is None or axis not in ("h", "v"):
+        return None
+    near, far = (box[1], box[3]) if axis == "h" else (box[0], box[2])
+    lo, hi = (box[0], box[2]) if axis == "h" else (box[1], box[3])
+    drawn = float(value) * ppi
+    slack = max(0.15 * drawn, 0.6)
+
+    def ticks_on(row: float, start: float, end: float) -> set[tuple[float, float, float]]:
+        pairs: set[tuple[float, float, float]] = set()
+        for first, second in pairwise(dim_anchors._ticks(lines, axis, row, start, end)):
+            if abs(second - first - drawn) <= slack:
+                pairs.add((round(row, 1), round(first, 1), round(second, 1)))
+        return pairs
+
+    def tick_rows(low: float, high: float) -> set[float]:
+        return {
             round((my if axis == "h" else mx) * 2) / 2
             for mx, my in lines.slanted
-            if near - 8 <= (my if axis == "h" else mx) <= far + 8
+            if low <= (my if axis == "h" else mx) <= high
         }
-        pairs: set[tuple[float, float, float]] = set()
-        for row in rows:
-            ticks = dim_anchors._ticks(lines, axis, row, lo - drawn - 12, hi + drawn + 12)
-            for first, second in pairwise(ticks):
-                gap = second - first
-                if abs(gap - drawn) <= max(0.15 * drawn, 0.6):
-                    pairs.add((round(row, 1), round(first, 1), round(second, 1)))
-        if len(pairs) == 1:
-            row, a, b = next(iter(pairs))
-            out[key] = Span(key, str(axis), row, a, b, value, str(label.get("text") or ""))
+
+    pairs: set[tuple[float, float, float]] = set()
+    for row in tick_rows(near - 8, far + 8):
+        pairs |= ticks_on(row, lo - drawn - 12, hi + drawn + 12)
+    reach = max(far - near, SMALL_REACH_PT)
+    beside = True
+    if not pairs:
+        beside = False
+        # A leader from the label to the middle of its two ticks.
+        for along, across in _leader_ends(lines, box, axis):
+            for row in tick_rows(across - LEADER_ROW_PT, across + LEADER_ROW_PT):
+                if abs(row - across) > LEADER_ROW_PT:
+                    continue
+                pairs |= {
+                    pair
+                    for pair in ticks_on(row, along - drawn - 2, along + drawn + 2)
+                    if pair[1] - 0.6 <= along <= pair[2] + 0.6
+                }
+    if len(pairs) != 1:
+        return None
+    row, a, b = next(iter(pairs))
+    mine = _gap(box, axis, row, a, b)
+    if beside and mine > reach:
+        return None  # the text is not by those ticks: they are another label's
+    for other in others:
+        other_box = _box(other.get("box"))
+        if other is label or other_box is None or _fraction(other.get("inches")) != value:
+            continue
+        theirs = _gap(other_box, axis, row, a, b)
+        if theirs < mine or (not beside and theirs <= reach):
+            return None  # another label of the same value is the pair's
+    return Span(key, str(axis), row, a, b, value, str(label.get("text") or ""))
+
+
+#: A small dimension's text lies at most this far (points) from its ticks, or a text height.
+SMALL_REACH_PT: Final = 2.0
+
+
+def _gap(box: Box, axis: str, row: float, a: float, b: float) -> float:
+    """How far a label's box lies from a span at `row` from `a` to `b` (points)."""
+    near, far = (box[1], box[3]) if axis == "h" else (box[0], box[2])
+    lo, hi = (box[0], box[2]) if axis == "h" else (box[1], box[3])
+    along = max(0.0, a - hi, lo - b)
+    across = max(0.0, near - row, row - far)
+    return math.hypot(along, across)
+
+
+#: A leader's end at its dimension line lies this close across to the line (points).
+LEADER_ROW_PT: Final = 1.5
+#: A leader starts this close to its label's box (points), and runs at least `LEADER_MIN_PT`.
+LEADER_PAD_PT: Final = 1.5
+LEADER_MIN_PT: Final = 3.0
+LEADER_MAX_PT: Final = 60.0
+
+
+def _leader_ends(lines: Any, box: Box, axis: str) -> list[tuple[float, float]]:
+    """The far ends (`(along, across)` in the frame of `axis`) of the slanted strokes that start at
+    the label's box and end away from it: the leaders a drafter draws from a small dimension's
+    text to its line. A stroke along or across the line is never one (a dimension or extension
+    line), nor a stroke with both ends at the box (the label's own ink)."""
+    x0, y0, x1, y1 = box
+
+    def at_box(point: Point) -> bool:
+        return (
+            x0 - LEADER_PAD_PT <= point[0] <= x1 + LEADER_PAD_PT
+            and y0 - LEADER_PAD_PT <= point[1] <= y1 + LEADER_PAD_PT
+        )
+
+    out: list[tuple[float, float]] = []
+    for a, b in lines.all:
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(dx, dy)
+        if not LEADER_MIN_PT <= length <= LEADER_MAX_PT:
+            continue
+        if abs(dx) <= 0.05 * length or abs(dy) <= 0.05 * length:
+            continue
+        for start, end in ((a, b), (b, a)):
+            if at_box(start) and not at_box(end):
+                out.append((end[0], end[1]) if axis == "h" else (end[1], end[0]))
     return out
 
 
@@ -1150,3 +1253,128 @@ def kept_line_work(pack: Any) -> Callable[[str, int], Sequence[Segment] | None] 
 
 def stations(spans: Iterable[Span]) -> list[float]:
     return sorted({round(v, 1) for s in spans for v in (s.a, s.b)})
+
+
+# ---- a reference's chain of dimensions, summed --------------------------------------------------
+
+#: A chain's parts: on one dimension line (across within this, points) and touching (along within
+#: `CHAIN_GAP_PT`), as the vendor-string check proves strings (`vendor_consistency`).
+CHAIN_ROW_PT: Final = 0.6
+CHAIN_GAP_PT: Final = 0.6
+#: Each part drawn to its value at the page's scale within this share (or `CHAIN_FIT_PT`).
+CHAIN_FIT: Final = 0.05
+CHAIN_FIT_PT: Final = 0.6
+#: An extension line at a chain's station: this close along (points), reaching the line within
+#: `CHAIN_REACH_PT`, at least `CHAIN_EXTENSION_PT` long.
+CHAIN_STATION_PT: Final = 0.8
+CHAIN_REACH_PT: Final = 1.5
+CHAIN_EXTENSION_PT: Final = 1.5
+#: A chain's line runs on past its outer end by at most this (points: a tick's overshoot); more
+#: is a part code has no label for (an unread `3/4"`), so the run is not the whole chain.
+CHAIN_RUN_ON_PT: Final = 1.5
+#: The most parts one chain is read with.
+CHAIN_MAX_PARTS: Final = 20
+
+
+@dataclass(frozen=True, slots=True)
+class Chain:
+    """Printed dimensions end to end on one dimension line, and the run they make (`chain_of`)."""
+
+    parts: tuple[Span, ...]
+    run: Ends
+    """The whole run: from the first part's low end to the last part's high end, its value the
+    parts' sum."""
+
+    @property
+    def inches(self) -> Fraction:
+        return self.run.span.inches
+
+
+def _extension_at(page: Page, axis: str, row: float, station: float) -> bool:
+    """An extension line crosses or meets the dimension line at `row` at `station`."""
+    pieces = page.lines.vertical if axis == "h" else page.lines.horizontal
+    return any(
+        abs(at - station) <= CHAIN_STATION_PT
+        and low - CHAIN_REACH_PT <= row <= high + CHAIN_REACH_PT
+        and high - low >= CHAIN_EXTENSION_PT
+        for low, high, at in pieces
+    )
+
+
+def chain_of(page: Page, label_id: object) -> Chain | None:
+    """The chain the label's dimension is one part of, when the drawing proves it is one run with
+    no printed overall (client meeting, 2026-10-24: the reference's `1"` beside its `35"` is one
+    `36"` top): at least two parts on one dimension line, each touching the next (one part only at
+    each joint: two readings there prove nothing), each drawn to its value at the page's scale,
+    an extension line at every end and joint, no other dimension on the line overlapping the run,
+    and no dimension printed over the whole run (a printed overall is compared itself, never the
+    sum), and the line stops at the run's ends (a line running on holds a part code has no label
+    for). The run's ends are what the outer parts' ends land on (`Page.ends`). `None` otherwise,
+    and without the page's line work."""
+    span = page.spans.get(str(label_id))
+    if span is None or page.lines is None or page.ppi <= 0:
+        return None
+    row = [
+        other
+        for other in page.spans.values()
+        if other.axis == span.axis and abs(other.row - span.row) <= CHAIN_ROW_PT
+    ]
+    parts = [span]
+    for forward in (True, False):
+        current = span
+        while len(parts) <= CHAIN_MAX_PARTS:
+            joined = [
+                other
+                for other in row
+                if all(other is not part for part in parts)
+                and abs((other.a - current.b) if forward else (current.a - other.b)) <= CHAIN_GAP_PT
+            ]
+            if not joined:
+                break
+            if len(joined) > 1:
+                return None  # two dimensions start at one joint: not one chain
+            current = joined[0]
+            parts.append(current)
+    if len(parts) < 2 or len(parts) > CHAIN_MAX_PARTS:
+        return None
+    ordered = sorted(parts, key=lambda part: part.a)
+    start, end = ordered[0].a, ordered[-1].b
+    for part in ordered:
+        drawn = float(part.inches) * page.ppi
+        if abs((part.b - part.a) - drawn) > max(CHAIN_FIT * drawn, CHAIN_FIT_PT):
+            return None  # a part not drawn to its value: its ticks are not where it says
+    across = sum(part.row for part in ordered) / len(ordered)
+    for station in [start, *(part.b for part in ordered)]:
+        if not _extension_at(page, span.axis, across, station):
+            return None
+    pieces = page.lines.horizontal if span.axis == "h" else page.lines.vertical
+    for low, high, at in pieces:
+        if abs(at - across) > CHAIN_ROW_PT + 0.2:
+            continue
+        if (low <= end + 0.5 and high - end > CHAIN_RUN_ON_PT) or (
+            high >= start - 0.5 and start - low > CHAIN_RUN_ON_PT
+        ):
+            return None  # the line runs on past the chain: a part code has no label for
+    for other in row:
+        if any(other is part for part in ordered):
+            continue
+        if min(other.b, end) - max(other.a, start) > CHAIN_GAP_PT:
+            return None  # another dimension on the line runs into the chain
+    for other in page.spans.values():
+        if any(other is part for part in ordered) or other.axis != span.axis:
+            continue
+        if abs(other.a - start) <= SAME_PT and abs(other.b - end) <= SAME_PT:
+            return None  # the overall is printed: it is compared itself
+    total = sum((part.inches for part in ordered), Fraction(0))
+    first, last = page.ends(ordered[0].id), page.ends(ordered[-1].id)
+    assert first is not None and last is not None
+    run = Span(
+        "+".join(part.id for part in ordered),
+        span.axis,
+        across,
+        start,
+        end,
+        total,
+        " + ".join(part.text for part in ordered),
+    )
+    return Chain(tuple(ordered), Ends(run, first.low, last.high))

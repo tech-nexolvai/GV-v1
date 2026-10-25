@@ -2759,7 +2759,66 @@ def _text_labels(parsed: _Parsed, halves: Sequence[Mapping[str, Any]]) -> list[d
             continue
         kept.append((reading, line))
     kept.sort(key=lambda item: (round(item[0].box[1] / 4), item[0].box[0]))
-    return [_label(r, line, _side(r.box, halves)) for r, line in kept[:MAX_LABELS]]
+    labels = [_label(r, line, _side(r.box, halves)) for r, line in kept[:MAX_LABELS]]
+    _short_lines(labels, parsed.segments)
+    return labels
+
+
+def _short_lines(labels: Sequence[dict[str, Any]], segments: Sequence[Segment]) -> None:
+    """A small dimension's own line (fix 4, 2026-10-25): a `1"` or `3/4"` (at most
+    `dim_ends.SMALL_MAX_IN`) printed beside its two extension lines, not between them, or tied
+    to them by a leader, sits over its long neighbour's line (`dimension_line` gives a label the
+    span under its middle: the reference's `1"` beside its `35"` took the `35"`'s line, so the
+    chain `1" + 35"` could never be added up). When the label's line is not drawn to its value at
+    its drawing's scale (or it has none), it takes the one pair of neighbouring ticks by it, or at
+    a leader's end, drawn to its value (`dim_ends.small_span`), with an extension line at both
+    ends; otherwise it keeps what it had."""
+    dim_ends = import_module("app.review.assistant.dim_ends")
+    ratios: dict[str, list[float]] = {}
+    for label in labels:
+        inches = float(label["inches"])
+        if label.get("span_pt") and inches >= 2:
+            ratios.setdefault(str(label["side"]), []).append(float(label["span_pt"]) / inches)
+    lines: Any = None
+    for label in labels:
+        value = Fraction(Decimal(str(label["inches"])))
+        found = sorted(ratios.get(str(label["side"]), []))
+        if value <= 0 or value > dim_ends.SMALL_MAX_IN or len(found) < 3:
+            continue
+        ppi = found[len(found) // 2]
+        drawn = float(value) * ppi
+        span = label.get("span_pt")
+        if span and abs(float(span) - drawn) <= max(0.15 * drawn, 0.6):
+            continue  # its line is drawn to its value: its own
+        if lines is None:
+            lines = import_module("app.review.assistant.dim_anchors")._lines(
+                segments, dim_ends._page_box(segments)
+            )
+        short = dim_ends.small_span(label, lines, ppi, labels)
+        if short is None:
+            continue
+        box = label["box"]
+        if short.axis == "h":
+            font = box[3] - box[1]
+            ends = [_extension(x, short.row, segments, font) for x in (short.a, short.b)]
+            line = [(short.a, short.row), (short.b, short.row)]
+        else:
+            font = box[2] - box[0]
+            flipped = [(_flip(a), _flip(b)) for a, b in segments]
+            ends = [
+                None if found_end is None else [_flip(q) for q in found_end]
+                for found_end in (
+                    _extension(y, short.row, flipped, font) for y in (short.a, short.b)
+                )
+            ]
+            line = [(short.row, short.a), (short.row, short.b)]
+        if not all(ends):
+            continue
+        label.update(
+            dim_line=[[round(q[0], 2), round(q[1], 2)] for q in line],
+            extension=[[[round(q[0], 2), round(q[1], 2)] for q in end] for end in ends if end],
+            span_pt=round(short.b - short.a, 2),
+        )
 
 
 type _Taken = tuple[str, float, float, float]

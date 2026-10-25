@@ -24,6 +24,11 @@ inside the full check and its fixed price, it climbs a ladder, the biggest items
      (`vendor_consistency`) carries the item;
    - `pairs`: code's own pairing of the two labels by drawn position (`pairs.json`): a proof that
      both numbers measure the same thing (`paired_by: code`);
+   - `chain_sums` (fix 4, 2026-10-25): the architect's label is one part of a chain code proves
+     (`dim_ends.chain_of`: the reference's `1"` beside its `35"`, end to end on one dimension
+     line, no overall printed): its sum is compared like a printed overall, from the same kinds of
+     ends only (`dim_ends.alike`, never unlike). The same as the vendor's is Right; a different
+     sum changes nothing (code did not pair the vendor's dimension with the whole run);
    - `vendor_search` (accuracy step 1): an item the AI says the vendor's drawing does not show
      (`classification.missing_on_vendor`): code searches every vendor drawing of its area (the
      page map) for the architect's printed value (`spot_locate.search_area`) and records what it
@@ -115,6 +120,7 @@ type StepName = Literal[
     "same_item",
     "vendor_sums",
     "pairs",
+    "chain_sums",
     "equal_parts",
     "read_number",
     "vendor_search",
@@ -131,6 +137,7 @@ FREE_STEPS: Final[tuple[StepName, ...]] = (
     "same_item",
     "vendor_sums",
     "pairs",
+    "chain_sums",
     "vendor_search",
 )
 #: Two printed values this close are the same (the drawings' smallest step, as the resolver).
@@ -780,6 +787,124 @@ def _pairs_step(item: _Item, ctx: EscalationContext) -> None:
     item.note("pairs", "proved", f"code paired {_ref(vendor)} with {paired} by drawn position")
     if proof.proof_group(judged(finding)) == "clouded":
         item.outcome = "wrong"
+
+
+def _chain_step(item: _Item, ctx: EscalationContext) -> None:
+    """The reference's chain summed like a printed overall (fix 4, 2026-10-25; #1909's rule for the
+    chains code proves): the item's architect label is one part of a chain on the reference's
+    drawing (`dim_ends.chain_of`: parts end to end on one dimension line, an extension line at
+    every end and joint, the line stopping at the run's ends, no overall printed), every part
+    printed as text. When the whole run's sum is the vendor's value, and the vendor's dimension
+    and the run measure between ends that are never unlike (`dim_ends.alike`, #1930), the item is
+    Right, its architect side the parts and their sum. A different sum changes nothing: the AI
+    paired the vendor's dimension with one part, never with the run, so it stays as it was."""
+    finding = item.finding
+    if finding.get("status") not in ("different", "check") or finding.get("architect_parts"):
+        return
+    if finding.get("source") not in ("architect", None) or proof.reviewer_decided(finding):
+        return
+    checks = finding.get("checks") or {}
+    if checks.get("printed_vendor") != "match" or checks.get("printed_architect") != "match":
+        return
+    dims = dict(finding["dims"]) if isinstance(finding.get("dims"), Mapping) else {}
+    vendor_side, architect_side = dims.get("vendor"), dims.get("architect")
+    if not isinstance(vendor_side, Mapping) or not isinstance(architect_side, Mapping):
+        return
+    inches = dict(finding.get("inches") or {})
+    for side, label in (("vendor", vendor_side), ("architect", architect_side)):
+        if not _same(_decimal(label.get("inches")), _decimal(inches.get(side))):
+            return  # the labels must print the two values compared
+        if label.get("route") != "text":
+            return  # a chain is summed only from values printed as text
+    vendor_page, architect_page = _page_of(ctx, vendor_side), _page_of(ctx, architect_side)
+    if vendor_page is None or architect_page is None:
+        return
+    vendor = vendor_page.ends(vendor_side.get("id"))
+    chain = dim_ends.chain_of(architect_page, architect_side.get("id"))
+    if chain is None or vendor is None or vendor.span.axis != chain.run.span.axis:
+        return
+    file, page = architect_page.file, architect_page.page
+    labels = {str(label.get("id")): label for label in ctx.labels.get((file, page), [])}
+    parts = [labels.get(part.id) for part in chain.parts]
+    if any(
+        part is None
+        or part.get("route") != "text"
+        or part.get("derived")
+        or part.get("side") != "architect"
+        for part in parts
+    ):
+        item.note("chain_sums", "no_change", "a part of the architect's chain is not printed text")
+        return
+    words = " + ".join(format_inches(part.inches) for part in chain.parts)
+    total, value = chain.inches, Fraction(vendor.span.inches)
+    # A splash's size is never settled against a size code does not see named as the same
+    # splash's (`splash_views.unlike`, #1918): the reference's run is the top's.
+    splash = import_module("app.review.assistant.splash_views").unlike(finding, ctx.phrases)
+    if splash is not None:
+        item.note("chain_sums", "no_change", f"not like for like: {splash}")
+        return
+    verdict, why = dim_ends.alike(vendor, chain.run)
+    if verdict == "unlike":
+        item.note("chain_sums", "no_change", f"the architect's chain {words}: {why}")
+        return
+    if total != value:
+        item.note(
+            "chain_sums",
+            "no_change",
+            f"the architect's chain {words} adds to {format_inches(total)}; the vendor prints "
+            f"{format_inches(value)}: code did not pair the vendor's dimension with the whole run",
+        )
+        return
+    boxes = [[float(v) for v in part.get("box") or (0, 0, 0, 0)] for part in parts if part]
+    box = [
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    ]
+    ids = [part.id for part in chain.parts]
+    texts = [str(part.get("text") or "") for part in parts if part]
+    summed = str(Decimal(total.numerator) / Decimal(total.denominator))
+    dims["architect"] = {
+        "id": "+".join(ids),
+        "page": page,
+        "file": file,
+        "text": " + ".join(texts),
+        "inches": summed,
+        "route": "text",
+        "side": "architect",
+        "orientation": architect_side.get("orientation"),
+        "box": box,
+        "derived": {"sum_of": ids, "parts": texts},
+    }
+    inches.update(architect=summed, difference="0")
+    finding.update(
+        dims=dims,
+        inches=inches,
+        architect=f"{words} = {format_inches(total)}",
+        arch_box={
+            "x0": box[0],
+            "y0": box[1],
+            "x1": box[2],
+            "y1": box[3],
+            "file": file,
+            "page": page,
+        },
+        architect_parts={
+            "parts": [format_inches(part.inches) for part in chain.parts],
+            "total": format_inches(total),
+            "vendor": format_inches(value),
+            "chain_proved": True,
+            "ends": chain.run.as_dict(),
+        },
+    )
+    _settle_right(
+        item,
+        "chain_sums",
+        f"the architect prints no overall here, only parts ({words} = {format_inches(total)}, one "
+        "chain end to end on one dimension line); their sum is the vendor's "
+        f"{format_inches(value)} ({why})",
+    )
 
 
 def _vendor_drawings(
@@ -1750,6 +1875,8 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
                     _fold(item, carrier, step, result)
             elif step == "vendor_search":
                 _vendor_search_step(item, ctx, live)
+            elif step == "chain_sums":
+                _chain_step(item, ctx)
             else:
                 _pairs_step(item, ctx)
             if item.changed:
