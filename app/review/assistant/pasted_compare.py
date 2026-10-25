@@ -352,6 +352,10 @@ def _absence(finding: Mapping[str, Any]) -> str | None:
     return None
 
 
+#: An item that names a side splash (a section never shows one).
+_SIDE_WORDS: Final = re.compile(r"\bside\s*splash|\bend\s*splash", re.IGNORECASE)
+
+
 def _splash_seen(views: Sequence[View]) -> list[tuple[View, str]]:
     """Each pasted section or elevation that draws or names a splash, and how."""
     out: list[tuple[View, str]] = []
@@ -360,7 +364,7 @@ def _splash_seen(views: Sequence[View]) -> list[tuple[View, str]]:
             continue
         named = splash_words(view)
         if view.splashes:
-            out.append((view, "draws a splash standing on the top at the wall"))
+            out.append((view, "draws a splash on the top, against the wall"))
         elif named:
             out.append((view, f"names a splash ({named[0].text})"))
     return out
@@ -374,7 +378,7 @@ def _splash_change(finding: Mapping[str, Any], views: Sequence[View]) -> Change 
     if not seen:
         return None
     view, how = seen[0]
-    shown = f"the reference's {view.name} (page {view.page}) {how} (code read the drawing)"
+    shown = f"the reference's {view.name} (page {view.page}) {how}"
     record = {
         "kind": "splash",
         "seen": [{"view": v.words, "how": h, "box": list(v.box)} for v, h in seen],
@@ -387,10 +391,9 @@ def _splash_change(finding: Mapping[str, Any], views: Sequence[View]) -> Change 
         )
         record["outcome"] = "withdrawn"
         return Change("withdrawn", why, record)
-    why = (
-        f"{shown}, so the reference does show a splash; it prints no splash size, so the sizes "
-        "are not compared (a back splash is never compared with a side splash)"
-    )
+    why = f"{shown}, so the reference does show a splash. It prints no size for it, so no size is compared."
+    if _SIDE_WORDS.search(" ".join(_flat(finding.get(key)) for key in ("item", "vendor"))):
+        why += " A section shows only the back splash, so the vendor's side splashes are not checked there."
     record["outcome"] = "not_compared"
     updates: dict[str, Any] = {
         "architect": f"splash drawn in the reference's {view.name}, page {view.page} (no size)",

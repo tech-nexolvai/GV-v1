@@ -398,8 +398,24 @@ def test_a_readings_no_splash_says_the_section_draws_it_and_compares_no_size() -
     assert "F6" not in result.absorbed
     assert proof.proof_group(found) == "not_compared"
     why = proof.classified(found).why or ""
-    assert "draws a splash" in why and "never compared with a side splash" in why
-    assert "no splash" not in why.replace("no splash size", "")
+    assert "draws a splash on the top, against the wall" in why
+    assert "prints no size for it, so no size is compared" in why
+    assert "the vendor's side splashes are not checked there" in why
+    assert "no splash" not in why
+    assert "code read" not in why  # plain words for the reviewer
+
+
+def test_a_back_splash_reading_says_nothing_about_side_splashes() -> None:
+    reading = _sink(
+        id="F6",
+        item="Vanity: back splash",
+        vendor="4in back splash drawn",
+        architect="no splash drawn on plan",
+    )
+    ctx = _ctx(_views(_section(splashes=((410.0, 120.0, 412.0, 130.0),))))
+    _result, changed = _run([reading], ctx)
+    why = proof.classified(changed["F6"]).why or ""
+    assert "prints no size for it" in why and "side splash" not in why
 
 
 def _depth(**more: Any) -> dict[str, Any]:

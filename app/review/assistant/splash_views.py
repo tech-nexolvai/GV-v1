@@ -38,7 +38,12 @@ printed as the same splash's (`unlike`, `right_unproved`: the meeting set's "bac
 36"" against the plan's top width 36" was a false Right). The steps that make a Right on equal
 values apply it: this step (to the helpers' Rights), the escalation's printed compare, the
 look-again's proofs and the round reference; code's own pairing by geometry and the devil's
-advocate's pass stand. Only words code read count, never the AI's typed words. (The simple
+advocate's pass stand. Only words code read count, never the AI's typed words. One exception
+(Anant, 2026-10-25): a back splash's length (no other kind, never a height or thickness) may be
+compared with the reference's run of the top when code sees that run go from wall to wall (a wall
+drawn at both ends, neither end a cabinet's side, the overhang's edge or a field cut;
+`wall_run_part`, `dim_ends.wall_to_wall`, the escalation's printed compare and chain sums): the
+same is Right, a difference changes nothing. (The simple
 check's compare has its own strict end words: the top of a side splash, the face of a splash.)
 
 **Outcomes** (the item keeps its vendor spot; code never guesses a value):
@@ -91,6 +96,7 @@ __all__ = [
     "CREATED_BY",
     "FIELD",
     "METHOD",
+    "WALL_RUN",
     "Companion",
     "Facts",
     "Part",
@@ -110,6 +116,7 @@ __all__ = [
     "splash_question_items",
     "subject_of",
     "unlike",
+    "wall_run_part",
 ]
 
 _log = logging.getLogger(__name__)
@@ -366,6 +373,19 @@ def unlike(
     vendor = _vendor_part(finding, rules)
     if vendor is None:
         return None
+    architect = _architect_part(finding, phrases, rules)
+    if architect is None:
+        return (
+            f"the architect's size is not shown to be the {vendor.part}'s (it may be another "
+            "part's size, such as the top's own)"
+        )
+    return _clash(vendor, architect)
+
+
+def _architect_part(
+    finding: Mapping[str, Any], phrases: Phrases | None, rules: Sequence[Rule]
+) -> Part | None:
+    """The part the architect's side is printed as sizing (`unlike`), or `None`."""
     value = _architect_value(finding)
     dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
     label = (dims or {}).get("architect")
@@ -389,12 +409,39 @@ def unlike(
             )
             if near:
                 architect = near[0][1]
-    if architect is None:
-        return (
-            f"the architect's size is not shown to be the {vendor.part}'s (it may be another "
-            "part's size, such as the top's own)"
-        )
-    return _clash(vendor, architect)
+    return architect
+
+
+#: How an item settled on the top's run between two walls says so (`FIELD`'s `by`).
+WALL_RUN: Final = "wall_run"
+
+
+def wall_run_part(
+    finding: Mapping[str, Any],
+    phrases: Phrases | None = None,
+    rules: Sequence[Rule] | None = None,
+) -> Part | None:
+    """The vendor's splash whose LENGTH may be compared with the reference's run of the top
+    between two walls (Anant, 2026-10-25, relaxing #1918 for this one case), or `None`. The
+    vendor's words must say it measures the splash's length (never its height or thickness), and
+    no kind but the back one (a side splash runs from the wall to the front edge, never wall to
+    wall; "side and back splashes" is not one length). The architect's size must be printed as no
+    part's: when its own words name a part, `unlike` decides as before. The caller still needs
+    code to see a wall at both ends of the reference's run (`dim_ends.wall_to_wall`)."""
+    rules = _rules() if rules is None else rules
+    vendor = _vendor_part(finding, rules)
+    if vendor is None or vendor.measure != "length":
+        return None
+    rule = _rule_of(vendor, rules)
+    text = " ".join(" ".join(str(finding.get(key) or "").split()) for key in ("item", "vendor"))
+    said = {
+        kind for kind, words in (rule.kinds if rule else {}).items() if _pattern(words).search(text)
+    }
+    if said - {"back"}:
+        return None
+    if _architect_part(finding, phrases, rules) is not None:
+        return None
+    return vendor
 
 
 def splash_item(finding: Mapping[str, Any]) -> bool:
@@ -418,6 +465,9 @@ def downgrade_unlike(finding: Mapping[str, Any], phrases: Phrases | None) -> dic
     settled = finding.get("settled")
     if isinstance(settled, Mapping) and settled.get("method") == METHOD:
         return None
+    record = finding.get(FIELD)
+    if isinstance(record, Mapping) and record.get("by") == WALL_RUN:
+        return None  # compared with the top's run between two walls code sees (2026-10-25)
     why = unlike(finding, phrases)
     if why is None:
         return None
