@@ -235,6 +235,54 @@ def test_the_plain_lines_and_the_headline() -> None:
     assert rc.headline(None) is None and rc.lines(None) == []
 
 
+def test_how_each_page_prints_its_numbers() -> None:
+    coverage = _coverage()
+    # Vendor: 3 typed, 3 drawn, 2 in a picture; architect: 1 typed, 1 drawn (a stray count).
+    assert coverage["pages"][0]["printed_as"] == {
+        "vendor": "typed_and_drawn",
+        "architect": "typed",
+    }
+    assert coverage["printed_as"] == {"vendor": {"typed_and_drawn": 1}, "architect": {"typed": 1}}
+    assert (
+        "How the vendor's drawings print their numbers: typed text and drawn lettering together "
+        "on 1 page"
+    ) in rc.lines(coverage)
+    assert not any(line.startswith("How the architect's") for line in rc.lines(coverage))
+    head = rc.headline(coverage)
+    assert head is not None and head["vendor_printed_as"] == {"typed_and_drawn": 1}
+
+
+@pytest.mark.parametrize(
+    ("typed", "drawn", "pictures", "facts", "kind"),
+    [
+        (10, 0, 0, None, "typed"),
+        (0, 6, 0, None, "drawn"),
+        (10, 4, 0, None, "typed_and_drawn"),
+        (40, 1, 0, None, "typed"),  # one stray spot of ink: still typed
+        (1, 0, 5, None, "picture"),
+        (10, 0, 0, {"no_letter_map": ["F3"]}, "codes"),
+        (10, 0, 0, {"code_share": 0.5}, "codes"),
+        (0, 0, 0, None, None),
+    ],
+)
+def test_the_kind_of_a_page_from_its_counts(
+    typed: int, drawn: int, pictures: int, facts: dict[str, Any] | None, kind: str | None
+) -> None:
+    counts = {
+        "typed": {"read": 0, "printed": typed},
+        "strokes": {"read": 0, "printed": drawn},
+        "pictures": {"read": 0, "printed": pictures},
+    }
+    assert rc.printed_as(counts, facts) == kind
+
+
+def test_a_pages_text_stored_as_codes_comes_from_its_health_check() -> None:
+    health = {("set.pdf", 1): {"no_letter_map": ["T3Font_0"], "code_share": 0.0}}
+    coverage = rc.build(DOCUMENT, STROKES, ANNOTATIONS, health=health)
+    assert coverage["pages"][0]["printed_as"] == {"vendor": "codes", "architect": "codes"}
+    assert any("text with no letter map on 1 page" in line for line in rc.lines(coverage))
+
+
 def test_the_screen_report_groups_each_pages_spots_by_reason() -> None:
     report = rc.report(_coverage())
     assert report is not None
