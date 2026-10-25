@@ -1,8 +1,8 @@
 {
  "about": "Each check kind's track record on GV's answer keys (counts only; measured on the owner's machine by the local test bank and false-red gate, never client values). keyed_cases = decisions a key can judge (right reds, false reds, known traps kept non-red); a kind makes reds only with 0 false reds on at least the minimum.",
  "measured": "2026-10-25",
- "bank_run": "20261025-052123",
- "gate_run": "20261025-045828",
+ "bank_run": "20261025-053207",
+ "gate_run": "20261025-062229",
  "kinds": {
   "vendor_string": {
    "keyed_cases": 31,
