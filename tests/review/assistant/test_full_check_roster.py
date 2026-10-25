@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from app.review.assistant import full_check_roster
+from app.review.assistant import full_check_roster, same_ends
 from app.review.assistant.chat_engine import FULL_CHECK_INSTRUCTION, ROSTER_HELPER_MAX_TOKENS
 from app.review.assistant.full_check_advocate import (
     ADVOCATE_SYSTEM,
@@ -338,20 +338,20 @@ def test_where_the_anchor_fit_cannot_tell_the_drawn_run_decides(
         asked.append(str(v["id"]))
         return "same_extent", "one end is tied on both drawings (the floor)"
 
-    monkeypatch.setattr(full_check_roster.same_ends, "prove_labels", proved)
+    monkeypatch.setattr(same_ends, "prove_labels", proved)
     state, why = run._extent(vendor, architect, {"pages": []})
     assert state == "same_extent" and why.startswith("the drawn run: ") and asked == ["D30"]
 
     def broken(*_a: Any, **_kw: Any) -> tuple[str, str]:
         raise RuntimeError("no line work")
 
-    monkeypatch.setattr(full_check_roster.same_ends, "prove_labels", broken)
+    monkeypatch.setattr(same_ends, "prove_labels", broken)
     state, _why = run._extent(vendor, architect, {"pages": []})
     assert state == "cannot_tell"
 
     # a width against a height: the anchor fit's own answer, the drawn run never asked
     asked.clear()
-    monkeypatch.setattr(full_check_roster.same_ends, "prove_labels", proved)
+    monkeypatch.setattr(same_ends, "prove_labels", proved)
     height = _label("D3", "architect", "29", (400, 458), orientation="v")
     assert run._extent(vendor, height, None)[0] == "different_extent" and asked == []
 

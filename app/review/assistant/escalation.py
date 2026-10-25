@@ -1576,6 +1576,29 @@ def _ends_step(
     return None
 
 
+def _mark_right_ends(
+    live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
+) -> None:
+    """A Right needs like-for-like proof too (final plan #4, 2026-10-25): each Right that pairs a
+    vendor label with a reference label carries `dim_ends.LIKE_FOR_LIKE`, whether code proved both
+    dimensions run between the same kinds of points (`dim_ends.right_ends`). One it could not prove
+    is a "Matches (ends not proved)" (`proof.matches_unproved`), for the cards to fold under a
+    proved sibling. Data only: the outcome is unchanged."""
+    if ctx.pages is None:
+        return
+    for finding in live:
+        if str(finding.get("id")) in result.absorbed or finding.get("status") != "same":
+            continue
+        try:
+            record = dim_ends.right_ends(finding, ctx.pages)
+        except Exception:  # noqa: BLE001 - not read: no record, the Right as before
+            _log.exception("escalation: like-for-like record failed on %s", finding.get("id"))
+            continue
+        if record is not None and finding.get(dim_ends.LIKE_FOR_LIKE) != record:
+            finding[dim_ends.LIKE_FOR_LIKE] = record
+            result.changed.append(finding)
+
+
 def _before_ladder(
     live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
 ) -> set[str]:
@@ -2005,6 +2028,7 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
         result.changed.append(item.finding)
     _fold_missing_copies(live, result)
     _mark_job_rules(live, ctx, result)
+    _mark_right_ends(live, ctx, result)
     # One copy of each changed finding, its last state.
     last = {str(f["id"]): f for f in result.changed}
     result.changed = list(last.values())

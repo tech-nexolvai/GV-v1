@@ -133,3 +133,22 @@ def test_a_held_back_item_that_fails_another_proof_is_not_a_likely_problem() -> 
 def test_a_right_stays_right() -> None:
     right = _finding(_decide(_CANNOT), status="same", architect='23"')
     assert proof.proof_group(right) == "right"
+
+
+def test_a_value_not_drawn_to_its_length_is_held_back_and_says_so() -> None:
+    """Final plan #3: a value whose drawn length disagrees with its view's scale never feeds a red;
+    the please-check line says how long it is drawn."""
+    drawn: tuple[Extent, str] = (
+        "cannot_tell",
+        (
+            "the vendor's 23\" is drawn 24\" long at its view's own scale: its number does not "
+            "agree with its drawing"
+        ),
+    )
+    finding = _finding(_decide(drawn))
+    assert proof.proof_group(finding) == "likely_problem"
+    words = proof.ends_words(finding)
+    assert words.endswith(
+        "code could not confirm both dimensions measure the same thing; the vendor's 23\" is "
+        "drawn 24\" long at its view's own scale."
+    ), words

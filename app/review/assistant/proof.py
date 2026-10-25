@@ -496,6 +496,25 @@ def _governing_known(finding: Mapping[str, Any], found: Sequence[str]) -> bool:
     return _decimal((finding.get("inches") or {}).get("architect")) is not None
 
 
+#: A Right whose ends code could not prove alike (final plan #4): its plain name on a card.
+MATCHES_UNPROVED: Final = "Matches (ends not proved)"
+
+
+def matches_unproved(finding: Mapping[str, Any]) -> bool:
+    """A Right whose two dimensions code could not prove run between the same kinds of points
+    (`dim_ends.LIKE_FOR_LIKE`, for the same two labels the item still pairs): named
+    `MATCHES_UNPROVED`, to be folded under a proved sibling. Data only: still a Right."""
+    held = finding.get(dim_ends.LIKE_FOR_LIKE)
+    if finding.get("status") != "same" or not isinstance(held, Mapping):
+        return False
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    if dim_ends._label_key((dims or {}).get("vendor")) != held.get("vendor"):
+        return False
+    if dim_ends._label_key((dims or {}).get("architect")) != held.get("architect"):
+        return False
+    return held.get("proved") is False
+
+
 def ends_unconfirmed(finding: Mapping[str, Any]) -> bool:
     """A Wrong code would have clouded on the AI's pairing, held back because code's geometry
     could not confirm both dimensions end at the same places (`assistant_pairing_proof` =
@@ -528,11 +547,27 @@ def ends_words(finding: Mapping[str, Any]) -> str:
     inches = finding.get("inches") if isinstance(finding.get("inches"), Mapping) else {}
     difference = _decimal((inches or {}).get("difference"))
     by = f"; they differ by {inch_words(difference)}" if difference else "; they differ"
+    drawn = _drawn_note(finding)
     return (
         f"{likely_problems.LETTER_LEAD}: the AI pairs the vendor's {vendor_value(finding)} with "
         f"the reference's {finding.get('architect')} ({item}){by}; code could not confirm both "
-        "dimensions measure the same thing."
+        f"dimensions measure the same thing{drawn}."
     )
+
+
+#: The words code's ends proof gives a value that does not agree with its drawn length
+#: (`ends_proof.drawn_disagreement`, final plan #3).
+_DRAWN = re.compile(
+    r"(the (?:vendor|reference)'s [^;()]*? is drawn [^;()]*? long at its view's own scale)"
+)
+
+
+def _drawn_note(finding: Mapping[str, Any]) -> str:
+    """`; the vendor's 23" is drawn 24" long at its view's own scale` when the advocate held the
+    item back because a value does not agree with its drawn length, else nothing."""
+    verdict = _advocate(finding)
+    found = _DRAWN.search(str((verdict or {}).get("note") or ""))
+    return f"; {found.group(1)}" if found else ""
 
 
 def please_check_words(finding: Mapping[str, Any]) -> str:
