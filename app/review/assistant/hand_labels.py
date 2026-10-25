@@ -15,8 +15,10 @@ module finds such dimensions on the vectors alone; `dim_labels` has the OCR engi
 3. **Roles,** from each character's own vectors against the row's letter height: a digit; a `1`
    (one straight upright stroke, full height); a slashed zero (an oval and a straight stroke
    across it); a slash (one straight slanted stroke, full height); a dash (flat, mid-height); a
-   tick (short, straight, at the top). Two twin ticks at the row's end are an inch mark, a single
-   tick a foot mark.
+   tick (short and at the top, up to a quarter of a digit above it: straight, or one small path
+   of a few points, a filled wedge when a CAD set plots TrueType text as outlines or a bent
+   stroke in an SHX stroke font).
+   Two twin ticks at the row's end are an inch mark, a single tick a foot mark.
 4. **A dimension or nothing.** The roles must spell feet and inches with an optional inline
    fraction (`F'-I N/D"`), inches with an optional fraction (`I N/D"`) or a fraction alone
    (`N/D"`), and end in an inch mark. A space between two digits (more than 0.45 of the letter
@@ -30,12 +32,16 @@ module finds such dimensions on the vectors alone; `dim_labels` has the OCR engi
    reads a `1` where the vectors show a wide character (a hand-lettered `7`: both engines read
    this font's `7` as `1`). The value needs inches under 12 after feet, no leading zero, a
    fraction a drawing prints (`verify_value._fraction_ok`), and at most 600".
+7. **Chains and notes.** Two dimensions of a chain lettered end to end on one line are each tried
+   alone (cut after an inch mark that more characters follow). A number with an `=` or a `:`
+   beside it in its row (`SCALE: 1" = 1'-0"`) is part of a note (`signs_beside`), never a label.
 
 Nothing here reads a value: `dim_labels` shows the pictures to two OCR engines and keeps a label
 only when both read the same value and every valid reading of either agrees.
 
-Source: issue #1662 (local study of a real architect set) · Verification:
-`tests/review/assistant/test_hand_labels.py`
+Source: issue #1662 (local study of a real architect set); outlined lettering, chains and notes:
+final-plan change #5 (a real upload's reference set, read sideways) · Verification:
+`tests/review/assistant/test_hand_labels.py`, `tests/review/assistant/test_outlined_labels.py`
 """
 
 from __future__ import annotations
@@ -52,7 +58,7 @@ import numpy as np
 from app.review.assistant import ink_labels
 from app.review.assistant import verify_value as vv
 
-__all__ = ["Lettered", "lettered", "text_of", "tokens", "value"]
+__all__ = ["Lettered", "lettered", "signs_beside", "text_of", "tokens", "value"]
 
 type Box = tuple[float, float, float, float]
 type Turn = ink_labels.Turn
@@ -76,6 +82,16 @@ _SLANT: Final = 0.2
 _REACH_PT: Final = 12.0
 #: Letters smaller than this (points) are specks or line work, no lettering.
 _MIN_LETTER_PT: Final = 1.0
+#: How far along the row (letter heights) an `=` or `:` beside a dimension is looked for.
+_SIGN_REACH: Final = 2.0
+#: A character of more paths than this is hatching or a detail's line work.
+_MAX_CHAR_PATHS: Final = 8
+#: A mark may stand this share of its digit's height above it (a CAD font's tick), and still be
+#: part of the row.
+_MARK_ABOVE: Final = 0.25
+#: A tick drawn as one small path (a filled wedge, a short bent stroke) has at most this many
+#: points.
+_WEDGE_POINTS: Final = 10
 #: The largest value read (inches), as `dim_labels`.
 _MAX_IN: Final = Decimal(600)
 
@@ -225,12 +241,52 @@ def _rows(chars: Sequence[_Char]) -> list[list[_Char]]:
             elif low < _MARK_RATIO * tall:
                 big, mark = (a, b) if a.tall > b.tall else (b, a)
                 inside = (
-                    mark.frame[1] >= big.frame[1] - 0.15 * big.tall
+                    # A CAD font's foot and inch marks may stand a little above its digits.
+                    mark.frame[1] >= big.frame[1] - _MARK_ABOVE * big.tall
                     and mark.frame[3] <= big.frame[3] + 0.15 * big.tall
                 )
                 if inside and gap <= _GAP * big.tall:
                     sets.join(i, j)
     return [sorted((chars[i] for i in group), key=lambda c: c.frame[0]) for group in sets.groups()]
+
+
+def _wedge(char: _Char) -> bool:
+    """Whether a character is one small path of a few points: a tick of a lettering font exported
+    as outlines (a small filled wedge: the foot and inch marks of a CAD drawing's TrueType text
+    plotted as shapes) or of a CAD stroke font (a short bent stroke: an SHX font's tick). A ring
+    (a degree sign, a dot drawn round) has many points and is none."""
+    if len(char.paths) != 1:
+        return False
+    path = char.paths[0]
+    return 3 <= sum(len(line) for line in path.polylines) <= _WEDGE_POINTS
+
+
+def _slashed(char: _Char) -> bool:
+    """Whether one straight slanted stroke crosses most of a character of several strokes, with
+    strokes on both sides of it: a diagonal fraction's slash between its parts (`1/8` printed
+    askew), never one digit (a `7`'s stroke has its bar on one side only). A slashed zero is told
+    apart before this (`_zero_slash`)."""
+    if len(char.paths) < 3:
+        return False
+    for path in char.paths:
+        ends = _straight(path)
+        if ends is None:
+            continue
+        x0, y0, x1, y1 = path.box
+        longer, shorter = max(x1 - x0, y1 - y0), min(x1 - x0, y1 - y0)
+        if shorter < _SLANT * longer or longer < 0.75 * max(char.tall, char.wide):
+            continue
+        (ax, ay), (bx, by) = (float(v) for v in ends[0]), (float(v) for v in ends[1])
+        sides = set()
+        for other in char.paths:
+            if other is path:
+                continue
+            cx, cy = (other.box[0] + other.box[2]) / 2, (other.box[1] + other.box[3]) / 2
+            cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+            sides.add(cross > 0)
+        if len(sides) == 2:
+            return True
+    return False
 
 
 def _zero_slash(char: _Char) -> ink_labels.InkPath | None:
@@ -270,6 +326,10 @@ def _roles(row: Sequence[_Char]) -> tuple[list[str], float]:
                 out.append("S" if c.wide / c.tall >= _SLANT else "1")
             elif _zero_slash(c) is not None:
                 out.append("0")
+            elif _slashed(c):
+                out.append("?")  # a slash across other strokes: no digit (a fraction drawn askew)
+            elif len(c.paths) > _MAX_CHAR_PATHS:
+                out.append("?")  # hatching or a detail's line work, not one character
             else:
                 out.append("D")
         elif (
@@ -282,7 +342,7 @@ def _roles(row: Sequence[_Char]) -> tuple[list[str], float]:
             c.tall <= _MARK_RATIO * letter
             and c.wide <= 0.25 * letter
             and c.frame[1] <= top + 0.3 * letter
-            and all(_straight(p) is not None for p in c.paths)
+            and (all(_straight(p) is not None for p in c.paths) or _wedge(c))
         ):
             out.append("T")
         else:
@@ -310,6 +370,8 @@ def _spelled(row: Sequence[_Char], roles: Sequence[str], letter: float) -> str |
             out.append(role)
         elif role == "T" and index == len(row) - 2 and roles[-1] == "T":
             a, b = row[index], row[index + 1]
+            if index and a.frame[0] < row[index - 1].frame[2] - 0.1 * letter:
+                return None  # the "mark" stands inside the character before it: line work
             size = max(a.tall, b.tall)
             twins = (
                 abs(a.tall - b.tall) <= 0.25 * size
@@ -361,6 +423,10 @@ def _found(row: Sequence[_Char], turn: Turn) -> Lettered | None:
     top = len(groups["top"] or groups["top2"] or groups["top3"] or "")
     bottom = len(groups["bottom"] or groups["bottom2"] or groups["bottom3"] or "")
     digits = [(c, r) for c, r in zip(row, roles, strict=True) if r in "D10"]
+    if all(r == "1" for _c, r in digits):
+        # Only bare straight strokes: a line's piece with two dashes beside it reads `1"` as
+        # well as a lettered one does, so no dimension rests on bare strokes alone.
+        return None
     glyphs = tuple(
         ink_labels.Glyph(c.paths, ink_labels._union([p.box for p in c.paths])) for c in row
     )
@@ -375,6 +441,21 @@ def _found(row: Sequence[_Char], turn: Turn) -> Lettered | None:
     )
 
 
+def _chain_parts(row: Sequence[_Char]) -> list[list[_Char]]:
+    """The row cut after each pair of ticks that two more characters follow (an inch mark ending
+    one dimension of a chain), or nothing when there is no such pair."""
+    roles, _letter = _roles(row)
+    cuts = [
+        index + 2
+        for index in range(len(row) - 3)
+        if roles[index] == roles[index + 1] == "T" and roles[index + 2] not in "TM"
+    ]
+    if not cuts:
+        return []
+    bounds = [0, *cuts, len(row)]
+    return [list(row[a:b]) for a, b in pairwise(bounds) if b > a]
+
+
 def lettered(paths: Sequence[ink_labels.InkPath]) -> list[Lettered]:
     """Every hand-lettered dimension among `paths` (character-sized ink), in each reading
     direction. A row that spells a dimension in two directions is dropped (which way it reads is
@@ -385,6 +466,13 @@ def lettered(paths: Sequence[ink_labels.InkPath]) -> list[Lettered]:
             item = _found(row, turn)
             if item is not None:
                 found.append(item)
+                continue
+            # Two dimensions of a chain lettered end to end on one line (`1/8"` then `1 1/2"`):
+            # each part that ends in its own inch mark is tried alone.
+            for part in _chain_parts(row):
+                item = _found(part, turn)
+                if item is not None:
+                    found.append(item)
     out = []
     for item in found:
         twice = any(
@@ -396,6 +484,39 @@ def lettered(paths: Sequence[ink_labels.InkPath]) -> list[Lettered]:
         if not twice:
             out.append(item)
     return out
+
+
+def signs_beside(item: Lettered, paths: Sequence[ink_labels.InkPath]) -> bool:
+    """Whether two small marks stand one above the other in line with the dimension, within two
+    letter heights before or after it: an `=` or a `:` (`SCALE: 1" = 1'-0"`), so the number is part
+    of a note, not a dimension. A dimension's own line runs below or beside the lettering, never
+    as two short marks in its row."""
+    turn = item.turn
+    frame = _frame(item.label.box, turn)
+    heights = [c.tall for c, r in zip(item.chars, item.roles, strict=True) if r in "D10"]
+    letter = float(np.median(heights)) if heights else frame[3] - frame[1]
+    reach = _SIGN_REACH * letter
+    own = {id(path) for c in item.chars for path in c.paths}
+    marks: list[Box] = []
+    for path in paths:
+        if id(path) in own:
+            continue
+        f = _frame(path.box, turn)
+        if f[1] < frame[1] - 0.1 * letter or f[3] > frame[3] + 0.1 * letter:
+            continue  # not in the row
+        if not (frame[0] - reach <= f[2] <= frame[0] or frame[2] <= f[0] <= frame[2] + reach):
+            continue
+        if f[3] - f[1] > 0.35 * letter or f[2] - f[0] > 1.2 * letter:
+            continue  # a letter or a line, not a sign's piece
+        marks.append(f)
+    for index, a in enumerate(marks):
+        for b in marks[index + 1 :]:
+            over = min(a[2], b[2]) - max(a[0], b[0])
+            if over < 0.5 * min(a[2] - a[0], b[2] - b[0]):
+                continue
+            if a[3] <= b[1] or b[3] <= a[1]:  # one above the other, apart
+                return True
+    return False
 
 
 def _overlap(a: Box, b: Box) -> float:
