@@ -93,9 +93,17 @@ def likely_only(finding: Mapping[str, Any]) -> bool:
     return mark is not None and mark.get("proof") == "likely_only"
 
 
+#: The claim rules' record (`claim_rules.FIELD`): "not_compared" holds a claim back.
+_HELD_BY: Final = "claim_rule"
+
+
 def likely(finding: Mapping[str, Any]) -> bool:
     """The whole-drawing look found it and it is still open (a difference, or not compared): a
-    Likely problem unless code proved it (clouded) or found it Right."""
+    Likely problem unless code proved it (clouded) or found it Right, or code's claim rules hold
+    it back as Not compared (a count code could not add up across the item's sheets)."""
+    held = finding.get(_HELD_BY)
+    if isinstance(held, Mapping) and held.get("outcome") == "not_compared":
+        return False
     return _mark(finding) is not None and finding.get("status") in ("different", "check")
 
 

@@ -122,6 +122,7 @@ type StepName = Literal[
     "tags",
     "ends",
     "pasted_views",
+    "claim_rules",
 ]
 #: The free code steps, cheapest first.
 FREE_STEPS: Final[tuple[StepName, ...]] = (
@@ -192,6 +193,9 @@ class EscalationContext:
     pasted: Callable[[str, int], Sequence[Any]] | None = None
     """The reference's pasted views by (file, page) (`pasted_views.PastedReader`): the sink
     model, the splash and the countertop depth its sections show (`pasted_compare`)."""
+    outlines: Callable[[str, int, tuple[float, float, float, float]], str | None] | None = None
+    """The reference's line work at a spot (`claim_rules.OutlineReader`): a wall outline is
+    never the countertop."""
 
 
 @dataclass(slots=True)
@@ -1392,7 +1396,49 @@ def _before_ladder(
         early.add(str(item.finding["id"]))
     if ctx.stop is None or not ctx.stop():
         _pasted_step(live, ctx, result, early)
+    _claims_step(live, ctx, result, early)
     return early
+
+
+def _claims_step(
+    live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation, early: set[str]
+) -> None:
+    """GV's settled rules and code's facts on every open claim (`claim_rules`, 2026-10-25): a
+    notch, a unit count one sheet cannot settle, a wall outline taken for the top, a side splash
+    taken for a mitred piece. Only ever withdraws an item or makes it Not compared; never red."""
+    rules = import_module("app.review.assistant.claim_rules")
+    open_items = [f for f in live if str(f["id"]) not in result.absorbed]
+    try:
+        found = rules.changes(
+            open_items, page_texts=ctx.page_texts, main_file=ctx.main_file, outlines=ctx.outlines
+        )
+    except Exception:  # noqa: BLE001 - the items stay as they were
+        _log.warning("escalation: the claim rules step failed", exc_info=True)
+        return
+    by_id = {str(f["id"]): f for f in open_items}
+    for finding_id, change in found:
+        finding = by_id[finding_id]
+        item = _Item(finding)
+        finding[rules.FIELD] = change.record()
+        item.changed = True
+        if change.outcome == "withdrawn":
+            result.absorbed[finding_id] = change.why
+            item.outcome = "folded"
+        else:
+            finding.update(judged(finding))
+        item.note("claim_rules", change.outcome, change.why)
+        result.settled["claim_rules"] = result.settled.get("claim_rules", 0) + 1
+        before = finding.get("escalation")
+        steps = list(before.get("steps") or []) if isinstance(before, Mapping) else []
+        finding["escalation"] = {
+            "outcome": item.outcome or "undecided",
+            "steps": steps + item.steps,
+        }
+        result.log[finding_id] = steps + item.steps
+        result.changed.append(finding)
+        if finding_id not in early:
+            result.tried += 1
+        early.add(finding_id)
 
 
 def _pasted_step(
@@ -1782,6 +1828,7 @@ def context_from_pack(
     rules_md: str | None = None,
     segments: Callable[[str, int], Any] | None = None,
     pasted: Callable[[str, int], Sequence[Any]] | None = None,
+    outlines: Callable[[str, int, tuple[float, float, float, float]], str | None] | None = None,
 ) -> EscalationContext:
     """The free steps' facts from a set pack (`dims.json`, `pairs.json`, the stickers code hid
     (`<name>_stickers.json`), and for a missing item `page_texts.json`, `health.json`,
@@ -1851,7 +1898,21 @@ def context_from_pack(
             main_file,
         ),
         pasted=pasted,
+        outlines=outlines if outlines is not None else _outlines_of(pasted),
     )
+
+
+def _outlines_of(
+    pasted: object,
+) -> Callable[[str, int, tuple[float, float, float, float]], str | None] | None:
+    """The outline reader on the same PDFs the pasted views read (`claim_rules.OutlineReader`)."""
+    pdf_of = getattr(pasted, "pdf_of", None)
+    if not callable(pdf_of):
+        return None
+    reader: Callable[[str, int, tuple[float, float, float, float]], str | None] = import_module(
+        "app.review.assistant.claim_rules"
+    ).OutlineReader(pdf_of)
+    return reader
 
 
 def _repicture(book: Any, finding: dict[str, Any]) -> None:

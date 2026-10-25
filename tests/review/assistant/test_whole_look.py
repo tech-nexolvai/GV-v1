@@ -612,6 +612,21 @@ def test_a_claim_on_the_vendors_field_cut_is_dropped(tmp_path: Path) -> None:
     assert again.likely and not again.dropped
 
 
+def test_a_claim_about_a_notch_is_dropped_by_gvs_rule(tmp_path: Path) -> None:
+    # GV, client meeting 2026-10-23: unusual notches are cut on site, never compared.
+    assert "notch" in whole_look.system_prompt()
+    book, look = _setup(tmp_path)
+    claim = _claim(
+        "layout",
+        _side(3, None, "a notch at the right end"),
+        _side(1, None, "a straight end"),
+        item="Top: notched right end",
+    )
+    applied, shown = _apply(book, look, [claim])
+    assert not applied.recorded and not applied.likely and not shown
+    assert "notch" in applied.dropped[0][1]
+
+
 def test_a_two_label_claim_code_cannot_confirm_is_dropped_not_shown(tmp_path: Path) -> None:
     book, look = _setup(tmp_path)
     size = _claim("size", _side(3, "D2", '30"'), _side(1, "D1", "3'-6\""))

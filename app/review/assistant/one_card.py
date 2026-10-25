@@ -32,6 +32,19 @@ An item whose only fact is "no architect drawing paired" on a page already in Dr
 what that card says: it is folded under the page's card (`drawing_needed`). The vendor's own checks
 on that page (its sums, GV's rules) ask another question and stay.
 
+Two more folds (2026-10-25, the client-meeting job), by code facts only, never hiding a Wrong:
+
+- **pairing unsure, one page**: two Not-compared items on one vendor page with the same record of
+  no architect page paired (`reference_page`), one's vendor spot holding the other's (a helper's
+  whole-page "drawn items" beside its own item there): the bigger one says nothing more and folds
+  into the other;
+- **one material difference per set**: the same material claim on several pages (the item names
+  the material or finish, no size on either side, the reference names the same material class or
+  finish tag and the vendor's side names neither) is one Likely problem for the whole set, its
+  pages listed, the other pages' copies kept on it as evidence. Only Likely problems and Not
+  compared copies fold; a red stays its own card, and nothing folds without a Likely problem to
+  carry it.
+
 Pure code: no I/O, no AI call.
 """
 
@@ -469,4 +482,242 @@ def fold(findings: Sequence[Mapping[str, Any]], drawing_needed: Collection[int] 
         if conflict:
             merged["conflict"] = conflict
         out.kept.append({**keep, SAME_ITEM: merged})
+    gone.update(f.drop for f in out.folded)
+    _fold_unpaired(live, gone, out)
+    gone.update(f.drop for f in out.folded)
+    _fold_material(live, gone, out)
     return out
+
+
+# ---- pairing unsure on one page -------------------------------------------------------------------
+
+
+def _current(finding: Mapping[str, Any], out: OneCard) -> Mapping[str, Any]:
+    """The finding as this step left it (a card kept with its copies), else as given."""
+    for kept in out.kept:
+        if str(kept.get("id")) == str(finding.get("id")):
+            return kept
+    return finding
+
+
+def _keep_card(
+    out: OneCard,
+    keep: Mapping[str, Any],
+    others: Sequence[Mapping[str, Any]],
+    reason: str,
+    **changes: Any,
+) -> None:
+    """`others` fold into `keep` (as this step left it), each kept on it as evidence."""
+    card = dict(_current(keep, out))
+    given = card.get(SAME_ITEM)
+    before: Mapping[str, Any] = given if isinstance(given, Mapping) else {}
+    copies = list(before.get("copies") or [])
+    for other in others:
+        other = _current(other, out)
+        copies.append(_copy(other))
+        earlier = other.get(SAME_ITEM)
+        if isinstance(earlier, Mapping):
+            copies.extend(earlier.get("copies") or [])
+        out.folded.append(Folded(keep=str(keep["id"]), drop=str(other["id"]), reason=reason))
+    card.update(changes)
+    card[SAME_ITEM] = {**before, "copies": copies}
+    gone = {str(o["id"]) for o in others}
+    out.kept = [k for k in out.kept if str(k.get("id")) not in gone | {str(keep["id"])}]
+    out.kept.append(card)
+
+
+def _unpaired_record(finding: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    """Code's record that no architect page is paired with the item's page, else None."""
+    record = finding.get("reference_page")
+    if not isinstance(record, Mapping) or record.get("page") is not None or record.get("pair"):
+        return None
+    if proof.classified(finding).reason != "no_sheet":
+        return None
+    return (str(record.get("why") or ""), record.get("file"))
+
+
+_NO_BOX: Final[_Box] = (None, None, 0.0, 0.0, 0.0, 0.0)
+
+
+def _area(box: _Box) -> float:
+    return max(box[4] - box[2], 0.0) * max(box[5] - box[3], 0.0)
+
+
+def _holds(outer: _Box, inner: _Box) -> bool:
+    """`outer` holds all of `inner` (same sheet) and is at least twice its size."""
+    return (
+        _same_sheet(outer, inner)
+        and outer[2] <= inner[2] + 0.5
+        and outer[3] <= inner[3] + 0.5
+        and inner[4] <= outer[4] + 0.5
+        and inner[5] <= outer[5] + 0.5
+        and _area(outer) >= 2 * _area(inner)
+    )
+
+
+def _fold_unpaired(live: Sequence[Mapping[str, Any]], gone: set[str], out: OneCard) -> None:
+    """Pairing unsure, one page (see the module): the bigger spot folds into the item it holds."""
+    open_items = [
+        f
+        for f in live
+        if str(f["id"]) not in gone
+        and compares_architect(f)
+        and not _fixed(f)
+        and proof.proof_group(f) == "not_compared"
+        and _unpaired_record(f) is not None
+        and _vendor_box(f) is not None
+    ]
+    # The smallest spots first, so an item folds only into one that stays.
+    for outer in sorted(
+        open_items, key=lambda f: (_area(_vendor_box(f) or _NO_BOX), _number(str(f["id"])))
+    ):
+        if str(outer["id"]) in gone:
+            continue
+        outer_box = _vendor_box(outer)
+        held = [
+            inner
+            for inner in open_items
+            if inner is not outer
+            and str(inner["id"]) not in gone
+            and inner.get("page") == outer.get("page")
+            and _same_round(inner, outer)
+            and _unpaired_record(inner) == _unpaired_record(outer)
+            and outer_box is not None
+            and (inner_box := _vendor_box(inner)) is not None
+            and _holds(outer_box, inner_box)
+        ]
+        if not held:
+            continue
+        keep = min(held, key=lambda f: _number(str(f["id"])))
+        _keep_card(
+            out,
+            keep,
+            [outer],
+            f"The same page with no architect page paired as {keep['id']}, whose item lies inside "
+            "this one's spot: one card, this copy kept on it as evidence.",
+        )
+        gone.add(str(outer["id"]))
+
+
+# ---- one material difference per set ---------------------------------------------------------------
+
+_MATERIAL_ITEM: Final = re.compile(r"\b(?:material|finish)\b", re.IGNORECASE)
+#: The material classes a reference names (the claim is the same when the classes are).
+_CLASSES: Final = (
+    "solid surface",
+    "quartz",
+    "granite",
+    "marble",
+    "laminate",
+    "stainless",
+    "porcelain",
+    "concrete",
+    "terrazzo",
+    "veneer",
+    "glass",
+)
+
+
+def _classes(text: object) -> frozenset[str]:
+    flat = " ".join(str(text or "").lower().split())
+    return frozenset(c for c in _CLASSES if re.search(rf"\b{c}\b", flat))
+
+
+def _material_key(finding: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    """(the reference's material classes, its finish tags, the round) when the item is a
+    material claim the vendor's side differs on, else None."""
+    if not _MATERIAL_ITEM.search(str(finding.get("item") or "")):
+        return None
+    if any(_inches(finding, side) is not None for side in ("vendor", "architect")):
+        return None
+    vendor = finding.get("vendor")
+    if not _words(vendor):
+        return None
+    classes, tags = _classes(finding.get("architect")), _codes(finding.get("architect"))
+    if (classes & _classes(vendor)) or (tags & _codes(vendor)):
+        return None  # the vendor names the reference's material: no difference claimed
+    if not (classes or tags):
+        return None
+    return (classes, tags, finding.get("round"))
+
+
+def _material_groups(
+    keyed: Sequence[tuple[tuple[Any, ...], Mapping[str, Any]]],
+) -> list[list[Mapping[str, Any]]]:
+    """The copies of one material claim: the same classes (else the same tags) in the same round;
+    copies naming different finish tags are different claims (laminate PL-1 is not PL-2), and a
+    copy naming no tag joins only when its classes' copies name one tag set at most."""
+    by_class: dict[tuple[Any, ...], list[tuple[frozenset[str], Mapping[str, Any]]]] = {}
+    for (classes, tags, round_), finding in keyed:
+        head = (classes, round_) if classes else (frozenset(), round_, tags)
+        by_class.setdefault(head, []).append((tags, finding))
+    out: list[list[Mapping[str, Any]]] = []
+    for copies in by_class.values():
+        tag_sets = {tags for tags, _ in copies if tags}
+        if len(tag_sets) <= 1:
+            out.append([f for _, f in copies])
+        else:
+            out.extend([f for tags, f in copies if tags == one] for one in tag_sets)
+    return out
+
+
+#: The words a set-wide card adds to its item and its "please check" line (taken off again when
+#: the card is folded once more, so they are never repeated).
+_WHERE: Final = re.compile(r"\s*\(the whole set, vendor pages? [^)]*\)\s*$")
+_WHERE_WORDS: Final = re.compile(r"\s*The same on the whole set, vendor pages? [^.]*\.\s*$")
+
+
+def _pages_words(pages: Sequence[int]) -> str:
+    listed = [str(p) for p in sorted(set(pages))]
+    if len(listed) == 1:
+        return f"page {listed[0]}"
+    return f"pages {', '.join(listed[:-1])} and {listed[-1]}"
+
+
+def _fold_material(live: Sequence[Mapping[str, Any]], gone: set[str], out: OneCard) -> None:
+    """One material difference per set (see the module)."""
+    keyed: list[tuple[tuple[Any, ...], Mapping[str, Any]]] = []
+    for finding in live:
+        if str(finding["id"]) in gone or not compares_architect(finding) or _fixed(finding):
+            continue
+        current = _current(finding, out)
+        if proof.proof_group(current) not in ("likely_problem", "not_compared"):
+            continue
+        key = _material_key(current)
+        if key is not None:
+            keyed.append((key, current))
+    for copies in _material_groups(keyed):
+        pages = {int(f["page"]) for f in copies if isinstance(f.get("page"), int)}
+        likely = [f for f in copies if proof.proof_group(f) == "likely_problem"]
+        if len(copies) < 2 or len(pages) < 2 or not likely:
+            continue
+        keep = min(likely, key=_order)
+        others = [f for f in copies if f is not keep]
+        # The pages of copies folded into it before (a Continue) are the set's too.
+        for copy in _earlier_copies(keep):
+            box = copy.get("vendor_box")
+            if isinstance(box, Mapping) and isinstance(box.get("page"), int):
+                pages.add(int(box["page"]))
+        where = f"the whole set, vendor {_pages_words(sorted(pages))}"
+        item = _WHERE.sub("", " ".join(str(keep.get("item") or "Material").split()))
+        changes: dict[str, Any] = {"item": f"{item} ({where})"}
+        mark = keep.get("whole_look")
+        if isinstance(mark, Mapping) and mark.get("words"):
+            words = _WHERE_WORDS.sub("", str(mark["words"]))
+            changes["whole_look"] = {**mark, "words": f"{words} The same on {where}."}
+        _keep_card(
+            out,
+            keep,
+            others,
+            f"The same material difference as {keep['id']} (the reference names the same "
+            "material, the vendor another): one card for the whole set, this page's copy kept on "
+            "it as evidence.",
+            **changes,
+        )
+        gone.update(str(o["id"]) for o in others)
+
+
+def _earlier_copies(finding: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    given = finding.get(SAME_ITEM)
+    copies = given.get("copies") if isinstance(given, Mapping) else None
+    return [c for c in copies or [] if isinstance(c, Mapping)]

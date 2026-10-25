@@ -39,8 +39,9 @@ run beside the page helpers in the roster's first phase, within its share of the
 - a count, a missing or extra piece, a layout, or a size with one label is a **Likely problem**
   (`likely_problems`), never clouded, with the AI's reason and its spot;
 - a claim naming a label code cannot find where the AI says, or taking the brand prototype, GV's
-  note or the vendor's own drawing as the architect, or a size with no label at all, is dropped:
-  the run's log says why; nobody sees it.
+  note or the vendor's own drawing as the architect, or a size with no label at all, or a claim
+  about a notch (GV cuts unusual notches on site, DECIDED 2026-10-23), is dropped: the run's log
+  says why; nobody sees it. Code's claim rules (`claim_rules`) look again at every claim later.
 
 Verification: `tests/review/assistant/test_whole_look.py` (made-up drawings and values, a fake AI).
 """
@@ -54,6 +55,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
+from importlib import import_module
 from typing import TYPE_CHECKING, Any, Final
 
 from app.review.assistant import likely_problems
@@ -557,7 +559,7 @@ architect, never one round with another. GV's review markup is hidden in the pic
 baked into a pasted drawing may remain: {colour_rule} A number in GV's note, a cloud, a tick or a \
 sticker is never the architect's or the vendor's value.
 
-Not differences: a room dimension on the architect's elevation (to the ceiling, a bulkhead or soffit, wall to wall, centre lines of lights or art) is not the millwork's size; a height to the top of a splash is not a height to the top of the counter; the architect may dimension a different extent than the vendor (with or without fillers, field cut). Claim a size difference only when you can see both dimensions run between the same two ends of the same piece; otherwise leave it out. Brand items and equipment the vendor does not supply (lights, mirrors, appliances, lockers by others) are not the vendor's millwork: leave them out. Small single numbers (a reveal, one outlet spacing, a string of parts) are checked by other helpers: do not list them.
+Not differences: a room dimension on the architect's elevation (to the ceiling, a bulkhead or soffit, wall to wall, centre lines of lights or art) is not the millwork's size; a height to the top of a splash is not a height to the top of the counter; the architect may dimension a different extent than the vendor (with or without fillers, field cut); GV cuts unusual notches in a countertop on site, so a notch is never a difference. Claim a size difference only when you can see both dimensions run between the same two ends of the same piece; otherwise leave it out. Brand items and equipment the vendor does not supply (lights, mirrors, appliances, lockers by others) are not the vendor's millwork: leave them out. Small single numbers (a reveal, one outlet spacing, a string of parts) are checked by other helpers: do not list them.
 
 Labels: each picture lists the printed dimensions code read on it (id, value, width or height, \
 where in the picture in percent across and down). For each side of a size, name the label whose \
@@ -1047,6 +1049,9 @@ def _one(context: _Context, look: Look, claim: Mapping[str, Any], applied: Appli
     a_label = _label(context.labels, "architect", architect_side, architect, size=size)
     if _colour(context, a_label, architect) or _colour(context, v_label, vendor):
         raise _Drop("a value it names is in GV's colour on GV's sheet (GV's markup)")
+    if import_module("app.review.assistant.claim_rules").notch_item({"item": item}):
+        # GV's rule (client meeting, 2026-10-23): unusual notches are cut on site, never compared.
+        raise _Drop("it is about a notch, which GV cuts on site (never compared)")
     if _field_cut(context, v_label):
         # Settled with GV: the field cut is extra stone added at the factory for a wall end and
         # trimmed on site; it is never a design difference (client meeting, 2026-10-23).
