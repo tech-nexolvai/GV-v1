@@ -100,6 +100,7 @@ __all__ = [
     "proof_group",
     "proof_line",
     "proof_of",
+    "proved_wrong",
     "reviewer_decided",
     "reviewer_should_be",
     "reviewer_value_refusal",
@@ -543,19 +544,25 @@ def please_check_words(finding: Mapping[str, Any]) -> str:
     return likely_problems.please_check(finding)
 
 
+def proved_wrong(finding: Mapping[str, Any]) -> bool:
+    """A Wrong code proved by itself, before any reviewer's decision and before its kind's track
+    record (`check_record`): red when its kind of check may make reds, else a Likely problem held
+    back. The reviewer's clicks on such an item are evidence about its kind (`click_cases`)."""
+    return (
+        finding.get("status") == "different"
+        and code_proved(finding)
+        and not _reader_error(finding)
+        and not likely_problems.likely_only(finding)
+    )
+
+
 def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
     """Where the finding goes on the zero-click drawing (see the module's rule). The reviewer's
     decision, when there is one, overrides: agreed = clouded, not a problem = dismissed."""
     if classification.internal(finding):
         return "not_compared"  # GV's reviewer only (#1652): never clouded, whoever clicks
-    status = finding.get("status")
     decided = _decided(finding)
-    proved = (
-        status == "different"
-        and code_proved(finding)
-        and not _reader_error(finding)
-        and not likely_problems.likely_only(finding)
-    )
+    proved = proved_wrong(finding)
     if not proved and classified(finding).outcome == "right":
         return "right"  # compared and Right: nothing to override
     # The reviewer's decision on any other item (#1803: a Not-compared item whose two values look
