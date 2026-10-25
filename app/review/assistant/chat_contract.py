@@ -742,6 +742,15 @@ class ChatFindingDimOut(BaseModel):
     side: str | None = Field(default=None, description="architect, vendor, brand or unknown.")
     box: list[float] = Field(description="x0, y0, x1, y1: PDF points, origin top-left.")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _ocr_reads_as_drawn(cls, data: object) -> object:
+        # Answers saved before the fix name a pasted view's OCR label route "ocr"; it is the
+        # drawn-ink route (dim_labels: route "drawn", origin "ocr").
+        if isinstance(data, dict) and data.get("route") == "ocr":
+            return {**data, "route": "drawn"}
+        return data
+
 
 class ChatFindingImpactOut(BaseModel):
     """How much a Wrong item matters (#1569), by code: ordering only, never a status or colour."""

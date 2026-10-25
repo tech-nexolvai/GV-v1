@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from app.review.assistant import escalation, pasted_compare, pasted_views, proof, tag_reader
+from app.review.assistant.chat_contract import ChatFindingDimOut
 from app.review.assistant.pasted_views import Line, Shape, View
 
 VENDOR = "VENDOR.pdf"
@@ -438,6 +439,13 @@ def test_the_sections_countertop_depth_is_compared_with_the_tops_depth() -> None
     found = changed["F7"]
     assert proof.proof_group(found) == "right"
     assert found["architect"] == "2'-0\" COUNTERTOP"
+    # The section's label reads as a chat finding (a real run's answer failed to open on "ocr").
+    label = ChatFindingDimOut.model_validate(found["dims"]["architect"])
+    assert label.route == "drawn"
+    assert (
+        ChatFindingDimOut.model_validate({**found["dims"]["architect"], "route": "ocr"}).route
+        == "drawn"
+    )
     other = _section(lines=(Line("2'-3\" COUNTERTOP", (420.0, 60.0, 470.0, 64.0)),))
     _result, changed = _run([_depth(id="F8")], _ctx(_views(other)))
     assert proof.proof_group(changed["F8"]) == "likely_problem"
