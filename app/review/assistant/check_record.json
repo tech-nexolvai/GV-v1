@@ -1,85 +1,107 @@
 {
- "about": "Each check kind's track record on GV's answer keys (counts only; measured on the owner's machine by the local test bank and false-red gate, never client values). keyed_cases = decisions a key can judge (right reds, false reds, known traps kept non-red); a kind makes reds only with 0 false reds on at least the minimum.",
- "measured": "2026-10-25",
- "bank_run": "20261025-053207",
- "gate_run": "20261025-062229",
+ "about": "Each check kind's track record on GV's answer keys (counts only; measured on the owner's machine by the local test bank and false-red gate, never client values). keyed_cases = decisions a key can judge (right reds, false reds, known traps kept non-red); a kind makes reds only with 0 false reds on at least the minimum. planted_mistakes / planted_traps: made-up drawings each check is tested on in CI (tests/review/assistant/test_planted_kinds.py); they never count towards keyed_cases. Since plan change #10 the keyed cases also come from the GV-rule checks run on the real uploads and from accepted reviewer clicks, under a frozen split: a case whose job taught a rule never certifies that kind.",
+ "measured": "2026-10-26",
+ "bank_run": "20261025-230711",
+ "gate_run": "20261026-004943",
  "kinds": {
   "vendor_string": {
-   "keyed_cases": 31,
+   "keyed_cases": 34,
    "false_reds": 0,
-   "right_reds": 21,
-   "kept_quiet": 10,
-   "unjudged_reds": 0
+   "right_reds": 22,
+   "kept_quiet": 12,
+   "unjudged_reds": 0,
+   "planted_mistakes": 0,
+   "planted_traps": 0
   },
   "vendor_span": {
    "keyed_cases": 0,
    "false_reds": 0,
    "right_reds": 0,
    "kept_quiet": 0,
-   "unjudged_reds": 0
+   "unjudged_reds": 0,
+   "planted_mistakes": 1,
+   "planted_traps": 1
   },
   "vendor_pages": {
    "keyed_cases": 0,
    "false_reds": 0,
    "right_reds": 0,
    "kept_quiet": 0,
-   "unjudged_reds": 0
+   "unjudged_reds": 0,
+   "planted_mistakes": 1,
+   "planted_traps": 2
   },
   "filler": {
    "keyed_cases": 0,
    "false_reds": 0,
    "right_reds": 0,
    "kept_quiet": 0,
-   "unjudged_reds": 0
+   "unjudged_reds": 0,
+   "planted_mistakes": 2,
+   "planted_traps": 2
   },
   "sink_offset": {
-   "keyed_cases": 0,
+   "keyed_cases": 1,
    "false_reds": 0,
-   "right_reds": 0,
+   "right_reds": 1,
    "kept_quiet": 0,
-   "unjudged_reds": 0
+   "unjudged_reds": 0,
+   "planted_mistakes": 1,
+   "planted_traps": 4
   },
   "sink_centre": {
    "keyed_cases": 0,
    "false_reds": 0,
    "right_reds": 0,
    "kept_quiet": 0,
-   "unjudged_reds": 0
+   "unjudged_reds": 0,
+   "planted_mistakes": 1,
+   "planted_traps": 2
   },
   "run_fit": {
    "keyed_cases": 0,
    "false_reds": 0,
    "right_reds": 0,
    "kept_quiet": 0,
-   "unjudged_reds": 0
+   "unjudged_reds": 0,
+   "planted_mistakes": 2,
+   "planted_traps": 2
   },
   "splash": {
    "keyed_cases": 0,
    "false_reds": 0,
    "right_reds": 0,
    "kept_quiet": 0,
-   "unjudged_reds": 0
+   "unjudged_reds": 0,
+   "planted_mistakes": 1,
+   "planted_traps": 2
   },
   "missing_item": {
    "keyed_cases": 13,
    "false_reds": 0,
    "right_reds": 1,
    "kept_quiet": 12,
-   "unjudged_reds": 0
+   "unjudged_reds": 0,
+   "planted_mistakes": 0,
+   "planted_traps": 0
   },
   "finish_code": {
    "keyed_cases": 0,
    "false_reds": 0,
    "right_reds": 0,
    "kept_quiet": 0,
-   "unjudged_reds": 0
+   "unjudged_reds": 1,
+   "planted_mistakes": 2,
+   "planted_traps": 2
   },
   "tag": {
    "keyed_cases": 4,
    "false_reds": 0,
    "right_reds": 0,
    "kept_quiet": 4,
-   "unjudged_reds": 0
+   "unjudged_reds": 0,
+   "planted_mistakes": 0,
+   "planted_traps": 0
   },
   "formula_depth": {
    "keyed_cases": 0,
@@ -114,14 +136,19 @@
    "false_reds": 0,
    "right_reds": 0,
    "kept_quiet": 0,
-   "unjudged_reds": 0
+   "unjudged_reds": 0,
+   "planted_mistakes": 0,
+   "planted_traps": 0
   },
   "size_vs_architect": {
-   "keyed_cases": 51,
+   "keyed_cases": 38,
    "false_reds": 0,
    "right_reds": 16,
-   "kept_quiet": 35,
-   "unjudged_reds": 0
+   "kept_quiet": 22,
+   "unjudged_reds": 0,
+   "planted_mistakes": 0,
+   "planted_traps": 0
   }
- }
+ },
+ "rules_run": "20261026-013315"
 }

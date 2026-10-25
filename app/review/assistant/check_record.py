@@ -19,7 +19,15 @@ still clouds any item (the reviewer is the witness).
 
 The record is data (`check_record.json`, counts only: never a client value). The counts come from
 the local test bank and false-red gate, which hold GV's real drawings and keys and never leave the
-owner's machine; whoever re-measures them updates the file in a PR.
+owner's machine; whoever re-measures them updates the file in a PR. Since plan change #10 they also
+come from the GV-rule checks run on the real uploads (judged only by keys checked by eye) and from
+the reviewer's Agree / Not a problem clicks a person accepted (`click_cases`), under a frozen
+split: a case whose job taught a rule never certifies that rule's kind (the leakage guard). A false
+red counts wherever it is.
+
+**Planted cases** (`planted_mistakes`, `planted_traps`) are made-up drawings with a planted mistake
+or look-alike, each a test the CI runs (`tests/review/assistant/test_planted_kinds.py`). They show
+each check works; they **never** count towards `keyed_cases` or the licence.
 
 **The accuracy line** (`record_line`, plan change #10): what the answer's accuracy click-through
 says was measured comes from this record, never from a hand-edited constant: each kind that may
