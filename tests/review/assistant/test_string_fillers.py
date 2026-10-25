@@ -244,6 +244,46 @@ def test_a_wrong_overall_is_red_only_with_the_architects_own_value(tmp_path: Pat
     assert INCOMPLETE in proof.classified(found).why
 
 
+def test_code_only_still_runs_codes_own_string_steps(tmp_path: Path) -> None:
+    """`code_only` turns off only the AI's second reading: code's own lines still drop a string
+    that adds up with its filler notes, and still make the red the architect's printed sum
+    proves (the setting's early return once skipped both)."""
+    script = _Strings(_chains((_parts(), '56"')))
+    harness = _roster(tmp_path / "right", script, mode="code_only")
+    _pack(harness, vendor=_run("vendor", "56"))
+    finding_id = _ledger_string(harness, _parts(), '56"')
+    _strings(harness)
+    assert "string" not in script.calls
+    assert _live(harness, finding_id) is None
+
+    script = _Strings(_chains((_parts(), '57"')))
+    harness = _roster(tmp_path / "wrong", script, mode="code_only")
+    _pack(harness, vendor=_run("vendor", "57"))
+    finding_id = _ledger_string(harness, _parts(), '57"')
+    _strings(harness)
+    assert "string" not in script.calls
+    found = _live(harness, finding_id)
+    assert found is not None and proof.proof_group(found) == "clouded"
+    assert proof.should_be_value(found) == '56"'
+
+
+def test_code_only_leaves_a_string_codes_lines_cannot_settle_not_compared(
+    tmp_path: Path,
+) -> None:
+    """No filler notes, no gap code can see: the string would get the AI's second reading; under
+    `code_only` none is asked and it stays Not compared, saying why."""
+    script = _Strings(_chains((_parts(), '56"')))
+    harness = _roster(tmp_path, script, mode="code_only")
+    _pack(harness, vendor=_run("vendor", "56", lines=False, notes=False))
+    finding_id = _ledger_string(harness, _parts(), '56"')
+    _strings(harness)
+    assert "string" not in script.calls
+    found = _live(harness, finding_id)
+    assert found is not None and proof.proof_group(found) == "not_compared"
+    assert found["string_reads"]["why"] == full_check_roster.CODE_ONLY_STRING
+    assert found.get("string_geometry") is None
+
+
 def test_a_wrong_part_never_makes_the_right_overall_red(tmp_path: Path) -> None:
     """The middle part printed 15 1/2" (drawn 15"), the overall right at 56" as the architect
     prints it: the sum is off, but the overall is never red, nor given another "should be"."""
