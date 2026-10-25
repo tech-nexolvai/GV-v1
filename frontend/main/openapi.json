@@ -3611,6 +3611,18 @@
             "title": "Claims",
             "type": "integer"
           },
+          "code_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The git commit of the code that made this answer (8 characters), stamped when it was stored; null on older answers or when unknown.",
+            "title": "Code Version"
+          },
           "coverage_factor": {
             "anyOf": [
               {
@@ -3670,6 +3682,21 @@
               }
             ],
             "title": "Score"
+          },
+          "stored_problems": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fields of this answer the read model refused when it was stored (logged; shown without them); null when it read cleanly.",
+            "title": "Stored Problems"
           },
           "unknowns": {
             "anyOf": [
@@ -11022,6 +11049,18 @@
           "checks": {
             "$ref": "#/components/schemas/ChatTrustChecksOut"
           },
+          "code_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The git commit of the code that made this answer (8 characters), stamped when it was stored; null on older answers or when unknown.",
+            "title": "Code Version"
+          },
           "counts": {
             "additionalProperties": {
               "type": "integer"
@@ -11171,6 +11210,21 @@
               }
             ],
             "description": "What the counts above cover (null on older answers)."
+          },
+          "stored_problems": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fields of this answer the read model refused when it was stored (logged; shown without them); null when it read cleanly or the accuracy block holds them.",
+            "title": "Stored Problems"
           },
           "timings": {
             "anyOf": [

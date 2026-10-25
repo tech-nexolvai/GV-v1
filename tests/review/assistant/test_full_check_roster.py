@@ -1023,7 +1023,8 @@ def _five_wrongs(harness: Harness) -> None:
         )  # fmt: skip
         assert engine.book.replace(
             {**finding, "checks": {"printed_architect": "not_found",
-             "printed_vendor": "not_found"}, "trust_level": "to_check", "witnesses": []}
+             "printed_vendor": "not_found", "second_read": "not_run", "lead_checked": False},
+             "trust_level": "to_check", "witnesses": []}
         )  # fmt: skip
 
 

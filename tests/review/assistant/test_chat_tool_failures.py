@@ -122,7 +122,9 @@ def test_an_answer_that_fails_leaves_no_step_running(
 ) -> None:
     harness = Harness(tmp_path, ScriptedProvider(lead=[]))
     engine = harness.engine
-    engine._add_block({"type": "step", "step": {"id": "a", "label": "Reading", "ok": None}})
+    engine._add_block(
+        {"type": "step", "step": {"id": "a", "tool": "bash_tool", "label": "Reading", "ok": None}}
+    )
     monkeypatch.setattr(engine, "_run", _boom)
 
     outcome = harness.run()

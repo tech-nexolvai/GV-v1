@@ -4,10 +4,21 @@ Nothing here updates or deletes a row. A chat's title is its first message's ope
 from that row. A message's `seq` is the next number in its chat; the unique `(chat_id, seq)` keeps
 two writers from taking the same place. The history a turn replays is every earlier answer's
 `api_content`, in order, exactly as stored (`json`, so the keys keep their order).
+
+**Stored answers are checked against the read model (harness pre-check, change 11).** Before an
+answer is stored (`add_assistant_message`, `add_interrupted_message`), its blocks are read back
+through the same model that serves them (`message_out` → `ChatMessageOut`). A block the reader would
+refuse (#1934: `settled.was = "same"`; #1940: a label's `route = "ocr"`) is logged by its field and
+the answer is still stored (a paid answer is never lost), marked with `stored_problems` in its
+accuracy (else trust) block. Reading is tolerant too: a stored field the model refuses is left out
+of what is shown (logged), never a 500 for the whole chat. Each stored answer is also stamped with
+the running code's commit (`code_version`, change 7) in its trust and accuracy blocks.
 """
 
 from __future__ import annotations
 
+import copy
+import logging
 import re
 import threading
 from collections.abc import Iterable, Mapping, Sequence
@@ -16,6 +27,7 @@ from decimal import Decimal
 from typing import Any, Final
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
@@ -42,6 +54,7 @@ from app.review.assistant.chat_decisions import (
     with_decisions,
 )
 from app.review.assistant.chat_trust import rescored
+from app.review.assistant.code_version import code_version
 from app.review.assistant.impact import blocks_with_impacts
 from app.review.assistant.proof import proof_counts
 from app.review.assistant.review_action import CheckState, review_action
@@ -65,13 +78,23 @@ __all__ = [
     "recorded_worker_spend",
     "review_results",
     "stored_chat_spend",
+    "stored_problems",
     "unanswered_questions",
 ]
+
+_log = logging.getLogger(__name__)
 
 TITLE_CHARS: Final = 60
 _MICROS: Final = Decimal(1_000_000)
 #: The prompt ids of every chat call (lead and helpers, both providers) on the Usage page.
 CHAT_PROMPT_PREFIX: Final = "review-assistant-chat-"
+#: The blocks that carry an answer's stamps: `code_version` on both; `stored_problems` on the first.
+_STAMPED: Final = ("accuracy", "trust")
+#: Rounds of leaving a refused field out before a stored answer is given up as unreadable.
+_MAX_REPAIRS: Final = 500
+
+# The commit is read once, as the process starts (`code_version`).
+code_version()
 
 
 def chat_title(text: str) -> str:
@@ -158,7 +181,7 @@ def add_assistant_message(
         effort=effort,
         thinking=thinking,
         text=text,
-        blocks=blocks,
+        blocks=_stamped(blocks),
         api_content=api_content,
         cost_micros=cost_micros,
         stopped=stopped,
@@ -169,6 +192,7 @@ def add_assistant_message(
         mode=mode,
         products=None if products is None else list(products),
     )
+    _check_on_write(message)
     session.add(message)
     session.flush()
     return message
@@ -203,16 +227,85 @@ def add_interrupted_message(
         effort=effort,
         thinking=thinking,
         text="",
-        blocks=blocks,
+        blocks=_stamped(blocks),
         api_content=[],
         cost_micros=cost_micros,
         stopped="interrupted",
         mode=mode,
         products=None if products is None else list(products),
     )
+    _check_on_write(message)
     session.add(message)
     session.flush()
     return message
+
+
+def _stamped(blocks: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+    """`blocks` with the running code's commit in each trust and accuracy block (change 7)."""
+    version = code_version()
+    if version is None or not blocks:
+        return blocks
+    out: list[dict[str, Any]] = []
+    for block in blocks:
+        kind = block.get("type") if isinstance(block, dict) else None
+        if kind in _STAMPED and isinstance(block.get(kind), Mapping):
+            block = {**block, kind: {**block[kind], "code_version": version}}
+        out.append(block)
+    return out
+
+
+def stored_problems(message: AssistantChatMessage) -> list[str]:
+    """The fields of a message the read model (`ChatMessageOut`, as `message_out` builds it)
+    refuses, as `blocks.3.finding.settled.was: literal_error`; empty when it reads cleanly."""
+    if message.role == "user":
+        return []
+    try:
+        ChatMessageOut.model_validate(_assistant_payload(message, ()))
+    except ValidationError as failed:
+        return [_error_words(error) for error in failed.errors()]
+    return []
+
+
+def _error_words(error: Any) -> str:
+    """Where and what, never the value (it may be a drawing's words)."""
+    return f"{'.'.join(str(part) for part in error.get('loc', ()))}: {error.get('type')}"
+
+
+def _check_on_write(message: AssistantChatMessage) -> None:
+    """Reads a new answer back through the read model before it is stored: a refused field is
+    logged and the answer marked (`stored_problems` in its accuracy, else trust, block); it is
+    stored anyway, so a paid answer is never lost. Never raises."""
+    try:
+        found = stored_problems(message)
+    except Exception:  # noqa: BLE001 - the check never stops an answer being stored
+        _log.exception(
+            "assistant answer %s could not be checked against the read model", message.id
+        )
+        return
+    if not found:
+        return
+    _log.error(
+        "assistant answer %s: stored with fields the read model refuses (shown without them): %s",
+        message.id,
+        "; ".join(found[:20]),
+    )
+    blocks = list(message.blocks or [])
+    for kind in _STAMPED:
+        at = next(
+            (
+                n
+                for n, block in enumerate(blocks)
+                if isinstance(block, dict)
+                and block.get("type") == kind
+                and isinstance(block.get(kind), Mapping)
+            ),
+            None,
+        )
+        if at is not None:
+            block = blocks[at]
+            blocks[at] = {**block, kind: {**block[kind], "stored_problems": found[:50]}}
+            message.blocks = blocks
+            return
 
 
 def unanswered_questions(
@@ -405,61 +498,160 @@ def message_out(
                 "products": message.products,
             }
         )
+    payload = _assistant_payload(message, files, decisions, corrections, decisions_count)
+    try:
+        return ChatMessageOut.model_validate(payload)
+    except ValidationError as failed:
+        return _read_tolerantly(message, payload, failed)
+
+
+def _assistant_payload(
+    message: AssistantChatMessage,
+    files: Iterable[AssistantChatFile],
+    decisions: Mapping[str, Mapping[str, Any]] | None = None,
+    corrections: Mapping[str, Mapping[str, Any]] | None = None,
+    decisions_count: int | None = None,
+) -> dict[str, Any]:
+    """What `message_out` validates for an answer."""
     blocks = blocks_with_impacts(
         with_decisions(with_corrections(message.blocks, corrections), decisions) or []
     )
-    return ChatMessageOut.model_validate(
-        {
-            "id": message.id,
-            "role": "assistant",
-            "created_at": message.created_at,
-            "text": message.text,
-            "model": message.model,
-            "effort": message.effort,
-            "thinking": message.thinking,
-            "blocks": blocks,
-            "files": [file_out(row) for row in files if row.message_id == message.id],
-            "package_outdated": package_outdated(message, files, decisions_count),
-            "cost_usd": _usd(message.cost_micros),
-            "stopped": message.stopped,
-            "error": message.error,
-            "message_cap_usd": _usd(message.message_cap_micros),
-            "package_cap_usd": _usd(message.package_cap_micros),
-            "cap_hit": message.cap_hit,
-            "accuracy": rescored(
-                next(
-                    (
-                        block.get("accuracy")
-                        for block in reversed(message.blocks or [])
-                        if isinstance(block, dict) and block.get("type") == "accuracy"
-                    ),
-                    None,
-                ),
-                message.blocks,
-            ),
-            "resume": next(
+    return {
+        "id": message.id,
+        "role": "assistant",
+        "created_at": message.created_at,
+        "text": message.text,
+        "model": message.model,
+        "effort": message.effort,
+        "thinking": message.thinking,
+        "blocks": blocks,
+        "files": [file_out(row) for row in files if row.message_id == message.id],
+        "package_outdated": package_outdated(message, files, decisions_count),
+        "cost_usd": _usd(message.cost_micros),
+        "stopped": message.stopped,
+        "error": message.error,
+        "message_cap_usd": _usd(message.message_cap_micros),
+        "package_cap_usd": _usd(message.package_cap_micros),
+        "cap_hit": message.cap_hit,
+        "accuracy": rescored(
+            next(
                 (
-                    block.get("resume")
+                    block.get("accuracy")
                     for block in reversed(message.blocks or [])
-                    if isinstance(block, dict) and block.get("type") == "resume"
+                    if isinstance(block, dict) and block.get("type") == "accuracy"
                 ),
                 None,
             ),
-            "mode": message.mode,
-            "products": message.products,
-            "scope": _scope_of(message.blocks or []),
-            "understood": next(
-                (
-                    block.get("understood")
-                    for block in message.blocks or []
-                    if isinstance(block, dict) and block.get("type") == "understood"
-                ),
-                None,
+            message.blocks,
+        ),
+        "resume": next(
+            (
+                block.get("resume")
+                for block in reversed(message.blocks or [])
+                if isinstance(block, dict) and block.get("type") == "resume"
             ),
-            # #1622: the full check's review action, from the same findings as the screen.
-            "review_action": _review_action(message, blocks),
-        }
-    )
+            None,
+        ),
+        "mode": message.mode,
+        "products": message.products,
+        "scope": _scope_of(message.blocks or []),
+        "understood": next(
+            (
+                block.get("understood")
+                for block in message.blocks or []
+                if isinstance(block, dict) and block.get("type") == "understood"
+            ),
+            None,
+        ),
+        # #1622: the full check's review action, from the same findings as the screen.
+        "review_action": _review_action(message, blocks),
+    }
+
+
+def _read_tolerantly(
+    message: AssistantChatMessage, payload: Mapping[str, Any], failed: ValidationError
+) -> ChatMessageOut:
+    """A stored answer the read model refuses, shown without the refused fields (each one left
+    out, then its parent when it was required, then the whole block), logged; never a 500 for
+    the whole chat (#1934, #1940). Raises the first failure when nothing can be left out."""
+    shown: dict[str, Any] = {**payload, "blocks": copy.deepcopy(payload.get("blocks"))}
+    left_out: list[str] = []
+    error: ValidationError = failed
+    for _round in range(_MAX_REPAIRS):
+        if not _leave_out(shown, error.errors(), left_out):
+            break
+        try:
+            out = ChatMessageOut.model_validate(shown)
+        except ValidationError as again:
+            error = again
+            continue
+        _log.error(
+            "assistant answer %s: the read model refuses stored fields; shown without: %s",
+            message.id,
+            "; ".join(dict.fromkeys(left_out[:20])),
+        )
+        return out
+    raise failed
+
+
+def _leave_out(shown: dict[str, Any], errors: Sequence[Any], left_out: list[str]) -> bool:
+    """Leaves out one refused field per block (and each refused top-level field) in `shown`;
+    whether anything was left out."""
+    blocks = shown.get("blocks")
+    done: set[int] = set()
+    dropped: set[int] = set()
+    changed = False
+    for error in errors:
+        loc = tuple(error.get("loc", ()))
+        if not loc:
+            continue
+        if loc[0] != "blocks":
+            if loc[0] in shown and shown[loc[0]] is not None:
+                shown[loc[0]] = None  # an optional top-level field (accuracy, resume, scope …)
+                left_out.append(_error_words(error))
+                changed = True
+            continue
+        if not isinstance(blocks, list) or len(loc) < 2 or not isinstance(loc[1], int):
+            continue
+        index = loc[1]
+        if index in done or not 0 <= index < len(blocks):
+            continue
+        done.add(index)
+        left_out.append(_error_words(error))
+        block = blocks[index]
+        tag = block.get("type") if isinstance(block, dict) else None
+        # The union's tag (`finding`) follows the index in `loc`: it is not a key.
+        path = loc[3:] if len(loc) > 2 and loc[2] == tag else loc[2:]
+        if not path or not isinstance(block, dict) or not _cut(block, path):
+            dropped.add(index)
+        changed = True
+    if dropped and isinstance(blocks, list):
+        shown["blocks"] = [block for n, block in enumerate(blocks) if n not in dropped]
+    return changed
+
+
+def _cut(node: dict[str, Any], path: Sequence[Any]) -> bool:
+    """Removes the value at `path` inside `node` (a nested union's tags, and a key that is
+    missing, are skipped, so a missing required field removes its parent); `False` when the path
+    names nothing below `node`."""
+    trail: list[tuple[Any, Any]] = []
+    current: Any = node
+    for segment in path:
+        keyed = isinstance(current, dict) and isinstance(segment, str) and segment in current
+        listed = (
+            isinstance(current, list) and isinstance(segment, int) and 0 <= segment < len(current)
+        )
+        if keyed or listed:
+            trail.append((current, segment))
+            current = current[segment]
+    if not trail:
+        return False
+    container, key = trail[-1]
+    if isinstance(container, list):
+        container.pop(key)
+    else:
+        del container[key]
+    return True
 
 
 def _review_action(

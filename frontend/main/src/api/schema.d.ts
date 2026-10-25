@@ -4431,6 +4431,11 @@ export interface components {
             calibration?: string | null;
             /** Claims */
             claims: number;
+            /**
+             * Code Version
+             * @description The git commit of the code that made this answer (8 characters), stamped when it was stored; null on older answers or when unknown.
+             */
+            code_version?: string | null;
             /** Coverage Factor */
             coverage_factor?: number | null;
             /**
@@ -4452,6 +4457,11 @@ export interface components {
             rescored?: boolean | null;
             /** Score */
             score: number | null;
+            /**
+             * Stored Problems
+             * @description Fields of this answer the read model refused when it was stored (logged; shown without them); null when it read cleanly.
+             */
+            stored_problems?: string[] | null;
             /**
              * Unknowns
              * @description What the answer did not check.
@@ -7637,6 +7647,11 @@ export interface components {
             };
             checks: components["schemas"]["ChatTrustChecksOut"];
             /**
+             * Code Version
+             * @description The git commit of the code that made this answer (8 characters), stamped when it was stored; null on older answers or when unknown.
+             */
+            code_version?: string | null;
+            /**
              * Counts
              * @description confirmed, likely, to_check, total.
              */
@@ -7674,6 +7689,11 @@ export interface components {
             rounds?: components["schemas"]["ChatRoundsOut"] | null;
             /** @description What the counts above cover (null on older answers). */
             scope?: components["schemas"]["ChatScopeOut"] | null;
+            /**
+             * Stored Problems
+             * @description Fields of this answer the read model refused when it was stored (logged; shown without them); null when it read cleanly or the accuracy block holds them.
+             */
+            stored_problems?: string[] | null;
             timings?: components["schemas"]["ChatTimingsOut"] | null;
             unknowns?: components["schemas"]["ChatTrustUnknownsOut"] | null;
         };

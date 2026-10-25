@@ -1734,6 +1734,16 @@ class ChatTrustOut(BaseModel):
         "pages with no architect drawing and why, steps skipped, money that ran out); empty when "
         "nothing did.",
     )
+    code_version: str | None = Field(
+        default=None,
+        description="The git commit of the code that made this answer (8 characters), stamped "
+        "when it was stored; null on older answers or when unknown.",
+    )
+    stored_problems: list[str] | None = Field(
+        default=None,
+        description="Fields of this answer the read model refused when it was stored (logged; "
+        "shown without them); null when it read cleanly or the accuracy block holds them.",
+    )
 
 
 class ChatTrustBlock(BaseModel):
@@ -1799,6 +1809,16 @@ class ChatAccuracyOut(BaseModel):
         default=None,
         description="True when this score was worked out again from the stored findings with "
         "today's calibration and differs from the score stored with the answer (#1513).",
+    )
+    code_version: str | None = Field(
+        default=None,
+        description="The git commit of the code that made this answer (8 characters), stamped "
+        "when it was stored; null on older answers or when unknown.",
+    )
+    stored_problems: list[str] | None = Field(
+        default=None,
+        description="Fields of this answer the read model refused when it was stored (logged; "
+        "shown without them); null when it read cleanly.",
     )
 
 
