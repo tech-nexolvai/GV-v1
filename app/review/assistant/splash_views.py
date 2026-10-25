@@ -106,6 +106,7 @@ __all__ = [
     "candidates",
     "companion_views",
     "downgrade_unlike",
+    "label_keys",
     "look_in_line",
     "not_alike",
     "note_readings",
@@ -414,6 +415,21 @@ def _architect_part(
 
 #: How an item settled on the top's run between two walls says so (`FIELD`'s `by`).
 WALL_RUN: Final = "wall_run"
+#: Words that name a splash at a top's end in other words than the pack's side kind.
+_END_SPLASH: Final = re.compile(r"\breturn|\bend\b", re.IGNORECASE)
+
+
+def label_keys(finding: Mapping[str, Any]) -> list[str | None]:
+    """The vendor's and the architect's label of the item (file, page, id), as compared."""
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    out: list[str | None] = []
+    for side in ("vendor", "architect"):
+        label = (dims or {}).get(side)
+        if isinstance(label, Mapping) and label.get("id"):
+            out.append(f"{label.get('file') or ''}|{label.get('page')}|{label.get('id')}")
+        else:
+            out.append(None)
+    return out
 
 
 def wall_run_part(
@@ -437,8 +453,8 @@ def wall_run_part(
     said = {
         kind for kind, words in (rule.kinds if rule else {}).items() if _pattern(words).search(text)
     }
-    if said - {"back"}:
-        return None
+    if said - {"back"} or _END_SPLASH.search(text):
+        return None  # a side (or end, or return) splash, or more than one kind
     if _architect_part(finding, phrases, rules) is not None:
         return None
     return vendor
@@ -466,7 +482,12 @@ def downgrade_unlike(finding: Mapping[str, Any], phrases: Phrases | None) -> dic
     if isinstance(settled, Mapping) and settled.get("method") == METHOD:
         return None
     record = finding.get(FIELD)
-    if isinstance(record, Mapping) and record.get("by") == WALL_RUN:
+    if (
+        isinstance(record, Mapping)
+        and record.get("by") == WALL_RUN
+        and str((settled or {}).get("method") or "").startswith("escalation_")
+        and record.get("labels") == label_keys(finding)
+    ):
         return None  # compared with the top's run between two walls code sees (2026-10-25)
     why = unlike(finding, phrases)
     if why is None:

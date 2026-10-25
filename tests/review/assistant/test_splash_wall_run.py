@@ -303,3 +303,39 @@ def test_a_vendor_end_known_as_a_field_cut_is_never_compared(
     found = _escalated(_finding(60), reference(), vendor(60))
     assert found["status"] == "check"
     assert "field-cut end" in _how(found)
+
+
+# ---- review fixes ------------------------------------------------------------------------------------
+
+
+def test_the_top_s_free_edge_is_no_wall() -> None:
+    free = dim_ends.End(0.0, frozenset({"top_edge"}))
+    at_wall = dim_ends.End(0.0, frozenset({"top_edge", "wall"}))
+    assert dim_ends.not_a_wall(free) == dim_ends.KIND_WORDS["top_edge"]
+    assert dim_ends.not_a_wall(at_wall) is None
+
+
+@pytest.mark.parametrize("item", ["Vanity: return splash length", "Vanity: end splash length"])
+def test_a_splash_at_the_top_s_end_in_other_words_is_never_compared(item: str) -> None:
+    assert splash_views.wall_run_part(_finding(item=item)) is None
+
+
+def test_a_label_kept_from_an_older_reading_is_never_proved_on() -> None:
+    ref = reference()
+    ref.dimension([0, 30], ROW + 120.0)
+    ref.label("762 [30]", 30, 0, 30, ROW + 120.0)  # D2, outside the AI's spot
+    finding = _finding(60)
+    finding["dims"]["architect"]["id"] = "D2"  # an older reading's label, not the 60" compared
+    found = _escalated(finding, ref, vendor(60))
+    assert found["status"] == "check"
+    assert "not the size compared" in _how(found)
+
+
+def test_a_wall_run_right_paired_again_with_other_labels_is_not_kept() -> None:
+    found = _escalated(_finding(60), reference(), vendor(60))
+    assert splash_views.downgrade_unlike(found, None) is None
+    moved = dict(
+        found, dims=dict(found["dims"], architect=dict(found["dims"]["architect"], id="D9"))
+    )
+    down = splash_views.downgrade_unlike(moved, None)
+    assert down is not None and down["status"] == "check"

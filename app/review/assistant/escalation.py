@@ -962,15 +962,30 @@ def _splash_wall_run(
     if vendor_page is None or architect_page is None:
         return None, "code could not read the dimension lines of both drawings"
     vendor = vendor_page.ends(vendor_side.get("id"))
+    chain = architect
     if architect is None:
         architect = architect_page.ends(architect_side.get("id"))
     if vendor is None or architect is None:
         return None, "code found no drawn dimension line for both sizes"
+    # The dimensions code proves things about must be the ones whose values are compared (a
+    # label kept from an older reading of the item never is).
+    inches = finding.get("inches") if isinstance(finding.get("inches"), Mapping) else {}
+
+    def compared(span: dim_ends.Span, side: str) -> bool:
+        value = _decimal((inches or {}).get(side))
+        drawn = Fraction(span.inches)
+        return value is not None and _same(Decimal(drawn.numerator) / drawn.denominator, value)
+
+    if not compared(vendor.span, "vendor"):
+        return None, "the vendor's dimension line is not the size compared"
+    if chain is None and not compared(architect.span, "architect"):
+        return None, "the architect's dimension line is not the size compared"
     if vendor.span.axis != architect.span.axis:
         return None, "the two dimensions do not run the same way"
-    known = sorted((vendor.low.kinds | vendor.high.kinds) & dim_ends.NOT_WALL)
-    if known:
-        return None, f"the vendor's {part.part} length ends at {dim_ends.KIND_WORDS[known[0]]}"
+    for end in (vendor.low, vendor.high):
+        known = dim_ends.not_a_wall(end)
+        if known:
+            return None, f"the vendor's {part.part} length ends at {known}"
     verdict, unlike_why = dim_ends.alike(vendor, architect)
     if verdict == "unlike":
         return None, unlike_why
@@ -995,6 +1010,9 @@ def _settle_wall_run(item: _Item, step: StepName, how: str) -> None:
         "outcome": "same",
         "by": splash.WALL_RUN,
         "why": how,
+        # The two labels it was proved for: a later step that pairs the item with other labels
+        # is never kept by this record (`splash_views.downgrade_unlike`).
+        "labels": splash.label_keys(item.finding),
     }
     _settle_right(item, step, how)
 

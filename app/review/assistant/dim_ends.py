@@ -64,6 +64,7 @@ __all__ = [
     "alike",
     "chain_of",
     "field_cut_relief",
+    "not_a_wall",
     "page_of",
     "small_span",
     "unlike_reason",
@@ -1167,20 +1168,32 @@ NOT_WALL: Final = frozenset(
 )
 
 
+def not_a_wall(end: End) -> str | None:
+    """What `end` is known to be other than a wall (`NOT_WALL`, or the top's own edge with no wall
+    there: a free end), in words; `None` when nothing else is known."""
+    other = sorted(end.kinds & NOT_WALL)
+    if other:
+        return KIND_WORDS[other[0]]
+    if "top_edge" in end.kinds and "wall" not in end.kinds:
+        return KIND_WORDS["top_edge"]
+    return None
+
+
 def wall_to_wall(page: Page, ends: Ends) -> tuple[bool, str]:
     """Whether the dimension runs from one wall to another, and why (Anant, 2026-10-25: a
     splash's length may be compared with the top's run only between the same two walls). Both
     ends must stand on a wall's near face drawn beyond them (`wall_band`), whose far face is no
     other dimension's end (two extension lines a filler apart are not a wall), and neither end may
-    be known as anything else (`NOT_WALL`: a cabinet's side, the overhang's edge, a field cut).
+    be known as anything else (`not_a_wall`: a cabinet's side, the overhang's edge, a field cut,
+    the top's free edge).
     Anything code cannot see is no wall."""
     span = ends.span
     if page.lines is None or page.ppi <= 0:
         return False, "code has no line work for the architect's page"
     for name, end in (("one", ends.low), ("the other", ends.high)):
-        other = sorted(end.kinds & NOT_WALL)
-        if other:
-            return False, f"{name} end of it is {KIND_WORDS[other[0]]}, not a wall"
+        why = not_a_wall(end)
+        if why:
+            return False, f"{name} end of it is {why}, not a wall"
     stations = [
         at
         for other in page.spans.values()
