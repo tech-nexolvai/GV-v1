@@ -1053,7 +1053,7 @@ class MessageJob:
     """The roster's numbers page helpers' effort (`GV_ASSISTANT_NUMBERS_HELPER_EFFORT`)."""
     numbers_pages: int = MAX_JOB_PAGES
     """The roster's numbers page helpers' most pages each (`GV_ASSISTANT_NUMBERS_HELPER_PAGES`)."""
-    pairing_proof: str = "ai_pair_plus_code"
+    pairing_proof: str = "code_ends"
     """What proves a pairing for a red cloud (`full_check_roster`)."""
     round_pick_cap_micros: int = 0
     """The roster's hard cap for the cheap picks on the round-only leftovers (#1861); 0: off (the

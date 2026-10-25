@@ -85,6 +85,8 @@ __all__ = [
     "classified",
     "code_proved",
     "could_not_compare_reason",
+    "ends_unconfirmed",
+    "ends_words",
     "governs",
     "group_words",
     "gv_limits",
@@ -93,6 +95,7 @@ __all__ = [
     "needs_pairing",
     "no_stated_requirement",
     "pairing_proved",
+    "please_check_words",
     "proof_counts",
     "proof_group",
     "proof_line",
@@ -492,6 +495,54 @@ def _governing_known(finding: Mapping[str, Any], found: Sequence[str]) -> bool:
     return _decimal((finding.get("inches") or {}).get("architect")) is not None
 
 
+def ends_unconfirmed(finding: Mapping[str, Any]) -> bool:
+    """A Wrong code would have clouded on the AI's pairing, held back because code's geometry
+    could not confirm both dimensions end at the same places (`assistant_pairing_proof` =
+    `code_ends`, Anant's option C of 2026-10-25): every other check passed and the blind picks
+    agree (`full_check_advocate.ENDS_NOT_CONFIRMED`), and the item is code-proved in every other
+    way. Shown as a Likely problem ("please check"), never hidden on the Not-compared list."""
+    if finding.get("status") != "different":
+        return False
+    verdict = _advocate(finding)
+    if verdict is None or verdict.get("result") != "objects":
+        return False
+    answers = verdict.get("answers")
+    if not isinstance(answers, Mapping) or answers.get("pairing") != advocate.ENDS_NOT_CONFIRMED:
+        return False
+    # Code-proved in every other way: the same item with the picks' pairing accepted, as before.
+    passed = dict(finding)
+    checks = {**(finding.get("checks") or {}), "critic": "passed"}
+    passed["checks"] = checks
+    passed["critic"] = {**verdict, "result": "passed", "answers": {**answers, "pairing": "picks"}}
+    passed["trust_level"] = witness.trust_level(checks, "different")
+    passed["witnesses"] = witness.witnesses(checks, "different")
+    return code_proved(passed) and not _reader_error(passed)
+
+
+def ends_words(finding: Mapping[str, Any]) -> str:
+    """The please-check line of an item held back by `ends_unconfirmed`: "Please check and
+    confirm: the AI pairs the vendor's 23" with the reference's 24" (Run: depth); they differ by 1";
+    code could not confirm both dimensions measure the same thing." """
+    item = " ".join(str(finding.get("item") or "this item").split())
+    inches = finding.get("inches") if isinstance(finding.get("inches"), Mapping) else {}
+    difference = _decimal((inches or {}).get("difference"))
+    by = f"; they differ by {inch_words(difference)}" if difference else "; they differ"
+    return (
+        f"{likely_problems.LETTER_LEAD}: the AI pairs the vendor's {vendor_value(finding)} with "
+        f"the reference's {finding.get('architect')} ({item}){by}; code could not confirm both "
+        "dimensions measure the same thing."
+    )
+
+
+def please_check_words(finding: Mapping[str, Any]) -> str:
+    """A Likely problem's please-check line, before any held-back note: the ends' words for an item
+    `ends_unconfirmed` holds back, else the whole-drawing look's (`likely_problems.please_check`).
+    """
+    if ends_unconfirmed(finding):
+        return ends_words(finding)
+    return likely_problems.please_check(finding)
+
+
 def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
     """Where the finding goes on the zero-click drawing (see the module's rule). The reviewer's
     decision, when there is one, overrides: agreed = clouded, not a problem = dismissed."""
@@ -529,6 +580,8 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
     # The whole-drawing look found it and code could not prove it (2026-10-23): please check.
     if dim_ends.unlike_reason(finding) is not None:
         return "not_compared"  # never a Likely problem on two unlike dimensions (fix 3)
+    if ends_unconfirmed(finding):
+        return "likely_problem"  # the AI's pairing, ends not confirmed by code (option C)
     return "likely_problem" if likely_problems.likely(finding) else "not_compared"
 
 
@@ -546,7 +599,7 @@ def likely_words(finding: Mapping[str, Any]) -> str:
     """A Likely problem's "Please check and confirm: ..." line for the letter, the register and the
     drawing (`likely_problems.please_check`), saying so when the item is held back only because its
     kind of check is still being proven (`held_back`)."""
-    words = likely_problems.please_check(finding)
+    words = please_check_words(finding)
     if held_back(finding) is None:
         return words
     return f"{words.rstrip().rstrip('.')} ({check_record.HELD_WORDS})."
@@ -897,6 +950,7 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
         reason = (
             held_back(finding)
             or (likely_problems.payload(finding) or {}).get("reason")
+            or (ends_words(finding) if ends_unconfirmed(finding) else None)
             or found.why
         )
     elif group == "dismissed":

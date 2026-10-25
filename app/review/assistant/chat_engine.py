@@ -631,9 +631,9 @@ class EngineSettings:
     numbers_pages: int = MAX_JOB_PAGES
     """The roster's numbers page helpers' most pages each (`GV_ASSISTANT_NUMBERS_HELPER_PAGES`);
     the drawn-things helpers keep the plan's groups (`full_check_plan.with_lenses`)."""
-    pairing_proof: str = "ai_pair_plus_code"
+    pairing_proof: str = "code_ends"
     """What proves that two numbers measure the same thing (`GV_ASSISTANT_PAIRING_PROOF`):
-    `ai_pair_plus_code` or `code_only` (`full_check_roster`)."""
+    `code_ends` (the default), `ai_pair_plus_code` or `code_only` (`full_check_roster`)."""
     round_pick_cap_micros: int = 0
     """The roster's hard cap for the cheap picks that compare the round-only leftovers with the
     architect (`GV_ASSISTANT_ROUND_PICK_CAP_USD`, #1861; `round_picks`); 0: off (the default,
