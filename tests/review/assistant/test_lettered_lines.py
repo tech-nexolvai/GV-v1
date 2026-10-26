@@ -78,7 +78,7 @@ def test_a_line_too_far_from_the_text_is_not_its_own(tmp_path: Path) -> None:
     assert _labels(_page(tmp_path, _upright(115, 280, 340) + _up()), _BOTH) == []
 
 
-def test_two_lines_one_each_side_of_the_text_link_neither(tmp_path: Path) -> None:
+def test_two_lines_one_each_side_of_the_text_link_neither_with_no_scale(tmp_path: Path) -> None:
     body = _upright(106.5, 280, 340) + _upright(88, 280, 340) + _up()
     assert _labels(_page(tmp_path, body), _BOTH) == []
 
@@ -189,3 +189,43 @@ def test_a_line_beside_drawn_to_another_length_at_its_views_scale_is_dropped() -
 def test_with_no_scale_to_tell_a_line_beside_is_kept() -> None:
     lonely = _level("24", 0, 40, 90, route="drawn", _beside=True)
     assert dl._beside_on_scale([lonely], [], [((0.0, 90.0), (40.0, 90.0))]) == [lonely]
+
+
+def test_of_several_lines_beside_the_one_drawn_to_the_value_at_the_views_scale_is_taken() -> None:
+    # A 24" lettered between its chain's line (drawn 24 long) and the overall's (drawn 60 long),
+    # in a view at 1 point per inch.
+    others = [_level("20", 0, 20, 10), _level("30", 0, 30, 30), _level("40", 0, 40, 50)]
+    chain = {"dim_line": [[0.0, 70.0], [24.0, 70.0]], "extension": [None, None], "span_pt": 24.0}
+    overall = {"dim_line": [[0.0, 80.0], [60.0, 80.0]], "extension": [None, None], "span_pt": 60.0}
+    label = _level("24", 0, 24, 75, route="drawn", dim_line=None, span_pt=None)
+    label["_beside_options"] = [chain, overall]
+    frame = [((0.0, 0.0), (0.0, 100.0)), ((0.0, 100.0), (60.0, 100.0))]
+    lines = [((0.0, y), (float(x), y)) for x, y in ((20, 10.0), (30, 30.0), (40, 50.0))]
+    lines += [((0.0, 70.0), (24.0, 70.0)), ((0.0, 80.0), (60.0, 80.0))]
+    (kept,) = dl._beside_on_scale([label], others, frame + lines)
+    assert kept["dim_line"] == chain["dim_line"] and kept["span_pt"] == 24.0
+    assert "_beside_options" not in kept
+
+
+def test_of_several_lines_beside_none_is_taken_when_two_fit_or_none_does() -> None:
+    others = [_level("20", 0, 20, 10), _level("30", 0, 30, 30), _level("40", 0, 40, 50)]
+    a = {"dim_line": [[0.0, 70.0], [24.0, 70.0]], "extension": [None, None], "span_pt": 24.0}
+    b = {"dim_line": [[0.0, 80.0], [24.0, 80.0]], "extension": [None, None], "span_pt": 24.0}
+    c = {"dim_line": [[0.0, 90.0], [50.0, 90.0]], "extension": [None, None], "span_pt": 50.0}
+    frame = [((0.0, 0.0), (0.0, 100.0)), ((0.0, 100.0), (60.0, 100.0))]
+    lines = [((0.0, y), (float(x), y)) for x, y in ((20, 10.0), (30, 30.0), (40, 50.0))]
+    lines += [((0.0, 70.0), (24.0, 70.0)), ((0.0, 80.0), (24.0, 80.0)), ((0.0, 90.0), (50.0, 90.0))]
+    two = _level("24", 0, 24, 75, route="drawn", dim_line=None, span_pt=None)
+    two["_beside_options"] = [a, b]
+    none = _level("24", 0, 24, 85, route="drawn", dim_line=None, span_pt=None)
+    none["_beside_options"] = [c]
+    assert dl._beside_on_scale([two, none], others, frame + lines) == []
+
+
+def test_of_several_lines_beside_none_is_taken_with_no_scale() -> None:
+    a = {"dim_line": [[0.0, 70.0], [24.0, 70.0]], "extension": [None, None], "span_pt": 24.0}
+    b = {"dim_line": [[0.0, 80.0], [60.0, 80.0]], "extension": [None, None], "span_pt": 60.0}
+    label = _level("24", 0, 24, 75, route="drawn", dim_line=None, span_pt=None)
+    label["_beside_options"] = [a, b]
+    segments = [((0.0, 70.0), (24.0, 70.0)), ((0.0, 80.0), (60.0, 80.0))]
+    assert dl._beside_on_scale([label], [], segments) == []

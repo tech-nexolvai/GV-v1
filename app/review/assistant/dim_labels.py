@@ -65,9 +65,11 @@ in an SHX stroke font (the marks short bent strokes), in any of the three direct
 Such a set often letters a size a letter height or more off its line (above a level line, beside
 an upright one it reads up): when no line runs through the text or right by it, the one line
 beside it within 1.6 letter heights, running the way it reads, with no other line between, a
-slash tick or an arrowhead at both ends and the text over its middle, is its line (`_ticked_line`;
-two such lines, one each side: none), and kept only when its length agrees with the value at its
-view's fitted scale, where the view has one (`_beside_on_scale`). The end of a fraction the vectors
+slash tick or an arrowhead at both ends and the text over its middle, is its line (`_ticked_line`),
+kept only when its length agrees with the value at its view's fitted scale, where the view has one
+(`_beside_on_scale`). With two or more such lines (one each side of the text, or a chain's line
+and its overall's) the one drawn to the value at the view's fitted scale is its line, only when
+exactly one is, the view has a fit and no other label has that line; otherwise none. The end of a fraction the vectors
 did not join to the rest (the `1"` over the `4` of a stacked `1/4"`, the `4"` after the slash of
 `3/4"`) is never a label (`hand_labels.in_fraction`). The vendor's drawings keep the route above.
 
@@ -899,6 +901,8 @@ _BESIDE_LETTERS: Final = 1.6
 #: Its ends are marks within this (points) of the line: a slash tick crossing it, or an arrowhead's
 #: two strokes meeting at its tip on the line.
 _MARK_ON_LINE_PT: Final = 1.0
+#: Crossings of the line closer than this (points) are one tick's (its outline's two sides).
+_TICK_WIDTH_PT: Final = 2.0
 
 
 def _end_marks(
@@ -925,7 +929,15 @@ def _end_marks(
                 key = (round(tip[0], 1), round(tip[1], 1))
                 tips.setdefault(key, set()).add(1 if tail[1] > row else -1)
     ticks += [x for (x, _y), sides in tips.items() if sides == {1, -1}]
-    return sorted(ticks)
+    # A tick drawn as a thin outline (an SHX set's thick slash) crosses the line twice, a sliver's
+    # width apart: one mark, at its middle.
+    marks: list[list[float]] = []
+    for x in sorted(ticks):
+        if marks and x - marks[-1][-1] <= _TICK_WIDTH_PT:
+            marks[-1].append(x)
+        else:
+            marks.append([x])
+    return [sum(group) / len(group) for group in marks]
 
 
 def _ticked_line(
@@ -941,8 +953,10 @@ def _ticked_line(
     line running the way the text reads, beside it within `_BESIDE_LETTERS` letter heights, with
     no other line between them, unbroken from a tick or arrowhead before the text's middle to one
     after it, under at least half of the text (or the text over at least half of it), and not
-    another label's (`taken`). Two or more such lines (one above and one below the text): `None`,
-    which is the text's is not known. Same shape as `dimension_line`'s answer."""
+    another label's (`taken`). Same shape as `dimension_line`'s answer. Two or more such lines
+    (one each side of the text, or a chain's line and its overall's beside it): no line, only
+    `options` (each one such answer), for the view's scale to pick from once the value is read
+    (`_beside_on_scale`); `None` when there is none."""
     if orientation not in ("h", "v"):
         return None
     flip = orientation == "v"
@@ -997,22 +1011,29 @@ def _ticked_line(
             ):
                 continue  # another line lies between the text and this one
             found.append((y, left, right))
-    if len(found) != 1:
+    if not found:
         return None
-    y, left, right = found[0]
-    ends = [_extension(x, y, segments, font) for x in (left, right)]
-    line: list[Point] = [(left, y), (right, y)]
-    if flip:
-        line = [_flip(p) for p in line]
-        ends = [None if e is None else [_flip(p) for p in e] for e in ends]
-    return {
-        "dim_line": [[round(p[0], 2), round(p[1], 2)] for p in line],
-        "extension": [
-            None if e is None else [[round(p[0], 2), round(p[1], 2)] for p in e] for e in ends
-        ],
-        "span_pt": round(right - left, 2),
-        "beside": True,
-    }
+
+    def shown(y: float, left: float, right: float) -> dict[str, Any]:
+        ends = [_extension(x, y, segments, font) for x in (left, right)]
+        line: list[Point] = [(left, y), (right, y)]
+        if flip:
+            line = [_flip(p) for p in line]
+            ends = [None if e is None else [_flip(p) for p in e] for e in ends]
+        return {
+            "dim_line": [[round(p[0], 2), round(p[1], 2)] for p in line],
+            "extension": [
+                None if e is None else [[round(p[0], 2), round(p[1], 2)] for p in e] for e in ends
+            ],
+            "span_pt": round(right - left, 2),
+            "beside": True,
+        }
+
+    if len(found) == 1:
+        return shown(*found[0])
+    # Several (one each side of the text, or a chain's line and its overall's): which is the
+    # text's is not known here; the view's scale may tell, once the value is read.
+    return {"dim_line": None, "options": [shown(*f) for f in found], "beside": True}
 
 
 # ---- the drawn route -----------------------------------------------------------------------------
@@ -3099,7 +3120,7 @@ def _settle_lines(
             taken += [(s[0], s[1], s[2], s[3]) for s, _ in rivals]
             again = _line_of(parsed, part, taken)
             moved = True
-            if again is None:
+            if again is None or again[0].get("dim_line") is None:
                 continue
             line, orientation = again
             label.update(
@@ -3120,6 +3141,8 @@ def _settle_lines(
 
 #: A label's own mark (removed before it is listed) that its line stands off it (`_ticked_line`).
 _BESIDE: Final = "_beside"
+#: ... and, with several such lines, the lines it may be (`_ticked_line`'s `options`).
+_OPTIONS: Final = "_beside_options"
 
 
 def _beside_on_scale(
@@ -3130,8 +3153,10 @@ def _beside_on_scale(
     (`scale_fit`, from every label of the page with a line), the line's length at that scale must
     agree with the value (`scale_fit.AGREE_IN` / `AGREE_SHARE`), else the line is not the label's
     and the label is dropped. With no fit there is nothing to disagree with, and the label keeps
-    its line. Every other label is kept as it is."""
-    if not any(label.get(_BESIDE) for label in found):
+    its line. A label with several such lines (`_OPTIONS`) takes the one drawn to its value at its
+    view's fitted scale, when exactly one is and no other label has that line; with none, or no
+    fit to tell, it is dropped. Every other label is kept as it is."""
+    if not any(label.get(_BESIDE) or label.get(_OPTIONS) for label in found):
         return found
     scale_fit = import_module("app.review.assistant.scale_fit")
     every = [
@@ -3141,8 +3166,22 @@ def _beside_on_scale(
     ]
     keys = {id(label): f"L{n}" for n, label in enumerate([*others, *found])}
     fit = scale_fit.page_fit(every, segments)
+    views: Any = None
     kept: list[dict[str, Any]] = []
     for label in found:
+        options = label.pop(_OPTIONS, None)
+        if options is not None:
+            if views is None:
+                views = scale_fit._Views(segments)
+            chosen = _scaled_option(label, options, fit, views, every)
+            if chosen is not None:
+                label.update(
+                    dim_line=chosen["dim_line"],
+                    extension=chosen["extension"],
+                    span_pt=chosen["span_pt"],
+                )
+                kept.append(label)
+            continue
         if not label.pop(_BESIDE, False):
             kept.append(label)
             continue
@@ -3154,6 +3193,44 @@ def _beside_on_scale(
             continue  # drawn to another length at its view's scale: not its line
         kept.append(label)
     return kept
+
+
+def _scaled_option(
+    label: Mapping[str, Any],
+    options: Sequence[Mapping[str, Any]],
+    fit: Any,
+    views: Any,
+    lined: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    """The one of a label's lines beside it drawn to its value at its view's fitted scale, or
+    `None`: none or several are, a line's view has no fit, or another label has that line."""
+    scale_fit = import_module("app.review.assistant.scale_fit")
+    inches = Fraction(Decimal(str(label["inches"])))
+    fitting = []
+    for option in options:
+        (x0, y0), (x1, y1) = option["dim_line"]
+        if abs(y0 - y1) <= 0.5:
+            span = scale_fit.Drawn("", "h", (y0 + y1) / 2, min(x0, x1), max(x0, x1), inches, "")
+        else:
+            span = scale_fit.Drawn("", "v", (x0 + x1) / 2, min(y0, y1), max(y0, y1), inches, "")
+        view = views.of_span(span)
+        at = None if view is None else fit.fit_at(str(label["side"]), view, span.axis)
+        if at is None:
+            return None  # no scale to tell this line by: which is the label's is not known
+        if scale_fit._agrees(span, at[0].in_per_pt)[1]:
+            fitting.append(option)
+    if len(fitting) != 1:
+        return None
+    line = fitting[0]["dim_line"]
+    for other in lined:
+        theirs = other.get("dim_line")
+        if theirs and all(
+            abs(float(a) - float(b)) <= 0.6
+            for p, q in zip(line, theirs, strict=True)
+            for a, b in zip(p, q, strict=True)
+        ):
+            return None  # another label's line
+    return fitting[0]
 
 
 def _drawn_label(
@@ -3279,7 +3356,11 @@ def _add_drawn(
             break
     if result.drawn != "partial":
         _add_lettered(result, parsed, halves, engines, budget_s - (clock() - started), clock, drawn)
-    settled = _beside_on_scale(_settle_lines(parsed, drawn, labels), labels, parsed.segments)
+    optioned = [label for label, _part in drawn if label.get(_OPTIONS)]
+    lined = [(label, part) for label, part in drawn if not label.get(_OPTIONS)]
+    settled = _beside_on_scale(
+        [*_settle_lines(parsed, lined, labels), *optioned], labels, parsed.segments
+    )
     settled.sort(key=lambda label: (round(label["box"][1] / 4), label["box"][0]))
     labels += settled
 
@@ -3358,6 +3439,10 @@ def _lettered_label(
         bare=False,
         route="drawn",
     )
+    if found.get("options"):
+        label = _label(reading, None, "architect")
+        label[_OPTIONS] = found["options"]
+        return label, part
     label = _label(reading, found, "architect")
     if found.get("beside"):
         label[_BESIDE] = True
