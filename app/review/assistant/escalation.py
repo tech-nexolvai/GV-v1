@@ -91,6 +91,7 @@ from typing import Any, Final, Literal
 from app.review.assistant import (
     classification,
     dim_ends,
+    drafting_notes,
     formulas,
     job_value_rules,
     likely_problems,
@@ -1745,6 +1746,43 @@ def _mark_right_ends(
             result.changed.append(finding)
 
 
+def _mark_drafting_notes(
+    live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
+) -> None:
+    """The drafting note next to each item's reference size (final plan #9, `drafting_notes`):
+    HOLD (a hard requirement), V.I.F. / +/- / field verify (never red, never a Likely problem: a
+    field-verify note), or a difference of 1/2" or less to a wall's face (the drafting
+    convention). Only what code reads next to the label; the outcome is the proof's."""
+
+    def labels(file: str, page: int) -> Sequence[Mapping[str, Any]]:
+        return ctx.labels.get((file, page), ())
+
+    def phrases(file: str, page: int) -> Sequence[Mapping[str, Any]]:
+        return ctx.phrases.get((file, page), ())
+
+    def ends(file: str, page: int, label_id: str) -> dim_ends.Ends | None:
+        if ctx.pages is None:
+            return None
+        found = ctx.pages(file, page)
+        return found.ends(label_id) if found is not None else None
+
+    for finding in live:
+        if str(finding.get("id")) in result.absorbed:
+            continue
+        try:
+            record = drafting_notes.mark(finding, labels, phrases, ends)
+        except Exception:  # noqa: BLE001 - no note read: the item as it was
+            _log.exception("escalation: drafting note not read on %s", finding.get("id"))
+            continue
+        if finding.get(drafting_notes.FIELD) == record:
+            continue
+        if record is None:
+            finding.pop(drafting_notes.FIELD, None)
+        else:
+            finding[drafting_notes.FIELD] = record
+        result.changed.append(finding)
+
+
 def _before_ladder(
     live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
 ) -> set[str]:
@@ -2175,6 +2213,7 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     _fold_missing_copies(live, result)
     _mark_job_rules(live, ctx, result)
     _mark_right_ends(live, ctx, result)
+    _mark_drafting_notes(live, ctx, result)
     # One copy of each changed finding, its last state.
     last = {str(f["id"]): f for f in result.changed}
     result.changed = list(last.values())

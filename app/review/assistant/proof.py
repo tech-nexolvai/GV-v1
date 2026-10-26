@@ -52,6 +52,7 @@ from app.review.assistant import (
     check_record,
     classification,
     dim_ends,
+    drafting_notes,
     likely_problems,
     missing_items,
     rule_notes,
@@ -436,6 +437,8 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
         return False  # the architect prints the vendor's value, or not the "should be" (#1802)
     if dim_ends.unlike_reason(finding) is not None:
         return False  # the two dimensions measure between different kinds of points (fix 3)
+    if drafting_notes.softened(finding) is not None:
+        return False  # the reference marks its size V.I.F. / +/-, or the 1/2" convention (#9)
     if not _read_by_code(finding):
         return False
     return not needs_pairing(finding) or pairing_proved(finding)
@@ -607,6 +610,10 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
         return "clouded"
     if decided == "not_a_problem":
         return "dismissed"
+    if drafting_notes.softened(finding) is not None:
+        # The reference marks its size V.I.F. or +/-, or the difference is the half-inch drafting
+        # convention to a wall's face (final plan #9): a field-verify note, never red or Likely.
+        return "not_compared"
     if proved:
         # Only a kind of check with a clean track record makes reds (`check_record`, 2026-10-24):
         # another kind's red waits as a Likely problem ("this kind of check is still being proven").
@@ -642,6 +649,12 @@ def likely_words(finding: Mapping[str, Any]) -> str:
     drawing (`likely_problems.please_check`), saying so when the item is held back only because its
     kind of check is still being proven (`held_back`)."""
     words = please_check_words(finding)
+    if drafting_notes.hold(finding):
+        # The reference marks the size HOLD (final plan #9): a hard requirement, said so.
+        words = (
+            f"{words.rstrip().rstrip('.')}. The reference marks this size HOLD: a size that must "
+            "be kept."
+        )
     if held_back(finding) is None:
         return words
     return f"{words.rstrip().rstrip('.')} ({check_record.HELD_WORDS})."

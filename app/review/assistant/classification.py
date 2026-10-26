@@ -83,7 +83,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
-from app.review.assistant import dim_ends, job_value_rules
+from app.review.assistant import dim_ends, drafting_notes, job_value_rules
 from app.review.assistant.finding_checks import wrong_part
 from app.review.assistant.round_picks import pick_words
 from app.review.assistant.round_reference import (
@@ -1220,6 +1220,15 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
             "different_reference",
             unlike,
             "the architect's dimension between the same two points as {thing}",
+        )
+    soft = drafting_notes.softened(finding)
+    if soft is not None:
+        # The reference marks its size V.I.F. or +/-, or the difference is within the half-inch
+        # drafting convention to a wall's face (final plan #9): never red, never a Likely problem.
+        return _not(
+            "field_verify",
+            soft,
+            "the vendor's field-measured value for {thing}, shown on the drawing",
         )
     if finding.get(READER_ERROR) and status in ("different", "same"):
         # One of its numbers could not be read because a code reader raised (#1850): never
