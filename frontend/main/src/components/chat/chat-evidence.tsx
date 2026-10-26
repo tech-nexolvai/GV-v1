@@ -255,6 +255,10 @@ export interface EvidenceViewerProps {
   notice?: string | null;
   /** #1803: the draft made again after each decision: its state, and the updated package to download. */
   draft?: DraftState | null;
+  /** Plan change #8: the card (its lead's id) of an item not in `findings` (a folded copy): it stands at its card's place. */
+  cardOf?: ((findingId: string) => string | null) | null;
+  /** Plan change #8: any item of the answer by id (a folded copy is opened from its card, not stepped to). */
+  lookup?: ((findingId: string) => ChatFinding | null) | null;
   /**
    * Results v2 (2026-10-23): a finished full check's drawer: wider, two big pictures side by side,
    * "How we know", chips; which pages have no architect drawing and the drawings request to GV.
@@ -319,9 +323,13 @@ function ArchitectQuestion({ note }: { note: RuleNoteWords }) {
  * plain words), the comment for the vendor, and the optional override. J / K or ← / → step through
  * the result's items, Esc closes and focus goes back to the row.
  */
-export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageHref, pagePicture = null, cloudAt = null, decisionFor = null, numberOf = null, notice = null, draft = null, results = null }: EvidenceViewerProps) {
-  const at = openId === null ? -1 : findings.findIndex((finding) => finding.id === openId);
-  const finding = at >= 0 ? findings[at] : null;
+export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageHref, pagePicture = null, cloudAt = null, decisionFor = null, numberOf = null, notice = null, draft = null, results = null, cardOf = null, lookup = null }: EvidenceViewerProps) {
+  // Plan change #8: the arrows step card by card. A copy of a folded card (opened from its card's
+  // "same question" box) stands at its card's place: the count and J / K never step through copies.
+  const own = openId === null ? -1 : findings.findIndex((finding) => finding.id === openId);
+  const cardId = own < 0 && openId !== null ? cardOf?.(openId) ?? null : null;
+  const at = own >= 0 || cardId === null ? own : findings.findIndex((finding) => finding.id === cardId);
+  const finding = own >= 0 ? findings[own] : at >= 0 && openId !== null ? lookup?.(openId) ?? null : null;
   const previous = at > 0 ? findings[at - 1] : null;
   const next = at >= 0 && at < findings.length - 1 ? findings[at + 1] : null;
   const needed = finding ? isDrawingNeededItem(finding) || isPairingUnsureItem(finding) : false;

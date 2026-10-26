@@ -436,11 +436,11 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
     const byId = new Map([...findings, ...neededItems, ...unsureItems].map((finding) => [finding.id, finding]));
     const stepped = steps ? steps.map((id) => byId.get(id)).filter((finding): finding is ChatFinding => Boolean(finding)) : [];
     const list = stepped.length ? stepped : all;
-    // A copy opened from its card's drawer is stepped to right after its card.
+    // Plan change #8: the drawer steps card by card; a folded copy stands at its card's place (the
+    // viewer's `cardOf`). An item whose card is not in the steps (the folded list closed) is added last.
     const open = viewing ? byId.get(viewing) : undefined;
-    if (!open || list.some((finding) => finding.id === open.id)) return list;
-    const at = list.findIndex((finding) => finding.id === cardOf.get(open.id)?.id);
-    return at >= 0 ? [...list.slice(0, at + 1), open, ...list.slice(at + 1)] : [...list, open];
+    if (!open || list.some((finding) => finding.id === open.id || finding.id === cardOf.get(open.id)?.id)) return list;
+    return [...list, open];
   })() : sectionOrder(shown, filter);
   // #1803: after each saved decision of a full check, the draft (cloud drawing, letter, register,
   // Not-compared list, package) is made again by itself, a moment later so quick decisions share one
@@ -718,6 +718,8 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           decisionFor={resultShown ? decisionFor : null}
           numberOf={resultShown ? (finding) => commentNumber(finding, message.package_state) : null}
           notice={decideFailed}
+          cardOf={resultShown ? (id) => cardOf.get(id)?.id ?? null : null}
+          lookup={resultShown ? (id) => findings.find((finding) => finding.id === id) ?? null : null}
           results={resultShown ? { neededPages: new Set(neededItems.map((item) => item.page)), request, pageTitles, cardOf: (id) => cardOf.get(id) ?? null } : null}
           draft={resultShown && review ? { updating: review.updating, failed: review.failed, updatedAt: review.updatedAt, stale: review.stale ?? false, refusal: review.refusal ?? null, decided: review.decided, pkg: made.pkg, href: made.pkg ? made.pkg.url || chatPaths.file(chatId, made.pkg.id) : null, onRetry: review.onUpdate } : null}
         />

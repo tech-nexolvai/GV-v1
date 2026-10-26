@@ -167,10 +167,11 @@ export function FullCheckResult(props: FullCheckResultProps) {
   const aside = tab === 'not_compared' ? (category ? groups.aside.filter((finding) => (finding.category ?? 'other') === category) : groups.aside) : [];
   const asideSections = notComparedGroups(aside).map((group) => ({ key: `aside-${group.reason}`, slot: 'chat-result-reason', reason: group.reason, words: group.words, findings: group.findings }) satisfies ListSection);
 
-  // The rows in the order shown: the drawer's ‹ › follow them (audit gap 10), with the copies of an
-  // opened card after its row and the collapsed list's rows once it is open.
+  // The rows in the order shown: the drawer's ‹ › follow them (audit gap 10), card by card (plan
+  // change #8: a card's copies are opened from it, never stepped through), and the collapsed
+  // list's rows once it is open.
   const sections = listSections(tab, shown, order, groups, rounds, category);
-  const shownIds = (list: readonly ListSection[]) => list.flatMap((section) => section.findings.flatMap((finding) => [finding.id, ...(expanded.has(finding.id) ? (groups.cards.get(finding.id)?.copies ?? []).map((copy) => copy.id) : [])]));
+  const shownIds = (list: readonly ListSection[]) => list.flatMap((section) => section.findings.map((finding) => finding.id));
   const steps = [...shownIds(sections), ...(asideOpen ? shownIds(asideSections) : [])];
   const open = (findingId: string) => onOpen(findingId, steps);
 

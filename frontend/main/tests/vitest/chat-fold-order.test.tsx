@@ -152,13 +152,39 @@ describe('the folded cards on the screen', () => {
     await user.click(node.querySelector<HTMLElement>('[data-slot="chat-result-copies-toggle"]')!);
     await user.click(node.querySelector<HTMLElement>('[data-slot="chat-result-copy"][data-id="w2"]')!);
     const panel = await screen.findByRole('dialog');
-    expect(panel.querySelector('[data-slot="chat-evidence-position"]')?.textContent).toMatch(/^2 of /);
+    // A copy stands at its card's place: the count goes card by card.
+    expect(panel.querySelector('[data-slot="chat-evidence-position"]')?.textContent).toBe('1 of 1 item');
     const copies = panel.querySelector<HTMLElement>('[data-slot="chat-evidence-card-copies"]')!;
     expect(copies.querySelector('h3')?.textContent).toBe('The same question on 1 more page');
     // The same sizes Not compared on the reversed sheet: named, with its outcome, one click away.
     expect(panel.querySelector('[data-slot="chat-evidence-card-related"]')?.textContent).toContain('p.4Long piece · Not compared');
     await user.click(copies.querySelector<HTMLElement>('[data-slot="chat-evidence-card-copy"][data-id="w1"]')!);
     await waitFor(() => expect(screen.getByRole('dialog').querySelector('[data-slot="chat-evidence-card-copy"]')?.getAttribute('data-id')).toBe('w2'));
+  });
+
+  it('counts and steps card by card: the drawer says what the list says; copies come from their card', async () => {
+    const user = userEvent.setup();
+    const other = finding('w9', { ...RED, page: 7, item: 'Sample bar: top length' });
+    render(<AssistantMessage message={answer({ findings: [...FINDINGS, other] })} chatId="c-1" models={[OPUS]} fullCheck />);
+    const node = screen.getByRole('article', { name: 'Answer' });
+    expect(node.textContent).toContain('Wrong · 2 items');
+    // Its copy shown under the card does not become a step.
+    await user.click(node.querySelector<HTMLElement>('[data-slot="chat-result-copies-toggle"]')!);
+    await user.click(node.querySelector<HTMLElement>('[data-slot="chat-result-row"][data-id="w1"]')!);
+    const panel = await screen.findByRole('dialog');
+    expect(panel.querySelector('[data-slot="chat-evidence-position"]')?.textContent).toBe('1 of 2 items');
+    // J goes to the next card, never to the folded copy.
+    await user.keyboard('j');
+    await waitFor(() => expect(screen.getByRole('dialog').querySelector('[data-slot="chat-evidence-position"]')?.textContent).toBe('2 of 2 items'));
+    expect(screen.getByRole('dialog').querySelector('[data-slot="chat-evidence-card-copies"]')).toBeNull();
+    // The copy is reached from its card's box, and stands at its card's place.
+    await user.keyboard('k');
+    await waitFor(() => expect(screen.getByRole('dialog').querySelector('[data-slot="chat-evidence-position"]')?.textContent).toBe('1 of 2 items'));
+    await user.click(screen.getByRole('dialog').querySelector<HTMLElement>('[data-slot="chat-evidence-card-copies"] [data-slot="chat-evidence-card-copy"][data-id="w2"]')!);
+    await waitFor(() => expect(screen.getByRole('dialog').querySelector('[data-slot="chat-evidence-card-copy"]')?.getAttribute('data-id')).toBe('w1'));
+    expect(screen.getByRole('dialog').querySelector('[data-slot="chat-evidence-position"]')?.textContent).toBe('1 of 2 items');
+    await user.keyboard('j');
+    await waitFor(() => expect(screen.getByRole('dialog').querySelector('[data-slot="chat-evidence-position"]')?.textContent).toBe('2 of 2 items'));
   });
 
   it('saves one Agree on every copy of the same proven difference, and says so first', async () => {
