@@ -38,7 +38,9 @@ module finds such dimensions on the vectors alone; `dim_labels` has the OCR engi
    fraction a drawing prints (`verify_value._fraction_ok`), and at most 600".
 7. **Chains and notes.** Two dimensions of a chain lettered end to end on one line are each tried
    alone (cut after an inch mark that more characters follow). A number with an `=` or a `:`
-   beside it in its row (`SCALE: 1" = 1'-0"`) is part of a note (`signs_beside`), never a label.
+   beside it in its row (`SCALE: 1" = 1'-0"`) is part of a note (`signs_beside`), never a label;
+   nor is the end of a fraction the vectors left apart (`in_fraction`: a digit's ink stacked a
+   hair above or below its first digit, or a slash just before it).
 
 Nothing here reads a value: `dim_labels` shows the pictures to two OCR engines and keeps a label
 only when both read the same value and every valid reading of either agrees.
@@ -63,7 +65,7 @@ import numpy as np
 from app.review.assistant import ink_labels
 from app.review.assistant import verify_value as vv
 
-__all__ = ["Lettered", "lettered", "signs_beside", "text_of", "tokens", "value"]
+__all__ = ["Lettered", "in_fraction", "lettered", "signs_beside", "text_of", "tokens", "value"]
 
 type Box = tuple[float, float, float, float]
 type Turn = ink_labels.Turn
@@ -104,6 +106,9 @@ _MARK_ABOVE: Final = 0.25
 #: A tick drawn as one small path (a filled wedge, a short bent stroke) has at most this many
 #: points.
 _WEDGE_POINTS: Final = 10
+#: A stacked fraction's other part stands at most this share of a letter above or below its digit
+#: (`in_fraction`).
+_STACK_GAP: Final = 0.35
 #: The largest value read (inches), as `dim_labels`.
 _MAX_IN: Final = Decimal(600)
 
@@ -607,6 +612,89 @@ def signs_beside(item: Lettered, paths: Sequence[ink_labels.InkPath]) -> bool:
             if a[3] <= b[1] or b[3] <= a[1]:  # one above the other, apart
                 return True
     return False
+
+
+def in_fraction(
+    item: Lettered,
+    paths: Sequence[ink_labels.InkPath],
+    strokes: Sequence[tuple[tuple[float, float], tuple[float, float]]] = (),
+) -> bool:
+    """Whether the dimension found is only the end of a fraction the vectors did not join to it,
+    so its value is not the printed one: a straight slanted stroke as tall as its letters just
+    before its first character (the `4"` after the slash of `5'-3 3/4"`), or a digit's ink stacked
+    right above or below its first digit (the `1"` over the `4` of a stacked `4'-4 1/4"`).
+    A dimension's own tick (one straight stroke) or line (longer than a letter) is neither.
+    `strokes`: the page's straight line pieces near it (a slash plotted as a plain line is no
+    character-sized path)."""
+    turn = item.turn
+    frame = _frame(item.label.box, turn)
+    heights = [c.tall for c, r in zip(item.chars, item.roles, strict=True) if r in "D10"]
+    letter = float(np.median(heights)) if heights else frame[3] - frame[1]
+    if letter <= 0:
+        return False
+    first = next(
+        (c for c, r in zip(item.chars, item.roles, strict=True) if r in "D10"), item.chars[0]
+    )
+    own = {id(path) for c in item.chars for path in c.paths}
+
+    def slash(f: Box) -> bool:
+        wide, tall = f[2] - f[0], f[3] - f[1]
+        return (
+            0.6 * letter <= tall <= 2.5 * letter
+            and _SLANT * tall <= wide <= 1.5 * letter
+            and frame[1] <= (f[1] + f[3]) / 2 <= frame[3]
+            and -0.2 * letter <= first.frame[0] - f[2] <= 0.8 * letter
+        )
+
+    for (ax, ay), (bx, by) in strokes:
+        if slash(_frame((min(ax, bx), min(ay, by), max(ax, bx), max(ay, by)), turn)):
+            return True  # a fraction's slash just before it, in the row
+    stacked: list[ink_labels.InkPath] = []
+    nearest = float("inf")
+    for path in paths:
+        if id(path) in own:
+            continue
+        f = _frame(path.box, turn)
+        wide, tall = f[2] - f[0], f[3] - f[1]
+        if slash(f) and _thin(path):
+            return True  # a fraction's slash just before it, in the row
+        if wide > 1.5 * letter or tall > 1.5 * letter:
+            continue  # line work, not a character
+        along = min(f[2], first.frame[2]) - max(f[0], first.frame[0])
+        if along < 0.5 * min(wide, first.wide) or tall < 0.15 * letter:
+            continue
+        # A stacked fraction's other part stands a hair away (CAD fonts: about a sixth of a
+        # letter), as tall as the digit; a tag or a symbol near the number stands further off.
+        gap = max(f[1] - first.frame[3], first.frame[1] - f[3])
+        if 0 <= gap <= 0.6 * letter:
+            stacked.append(path)
+            nearest = min(nearest, gap)
+    if not stacked or nearest > _STACK_GAP * letter:
+        return False
+    box = ink_labels._union([_frame(p.box, turn) for p in stacked])
+    if box[3] - box[1] < 0.8 * letter:
+        return False
+    # A digit has a bent stroke; a dimension's tick (a short slash, or a thin sliver drawn as a
+    # few points, often twice over) and a line's piece are straight.
+    return any(not _thin(path) for path in stacked)
+
+
+def _thin(path: ink_labels.InkPath) -> bool:
+    """Whether all of a path lies within a sliver along one straight line: no more than a quarter
+    of its length from it (a stroke drawn there and back, a thick tick outlined)."""
+    points = [np.array(point, float) for line in path.polylines for point in line]
+    if len(points) < 2:
+        return True
+    stack = np.array(points)
+    distances = np.sqrt(((stack[:, None, :] - stack[None, :, :]) ** 2).sum(axis=2))
+    i, j = np.unravel_index(int(distances.argmax()), distances.shape)
+    length = float(distances[i, j])
+    if length < 1e-6:
+        return True
+    start, end = stack[i], stack[j]
+    unit = (end - start) / length
+    off = np.abs(unit[0] * (stack[:, 1] - start[1]) - unit[1] * (stack[:, 0] - start[0]))
+    return float(off.max()) <= 0.25 * length
 
 
 def _overlap(a: Box, b: Box) -> float:
