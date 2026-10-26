@@ -123,10 +123,14 @@ def test_counts_over_the_regular_and_reversed_sheets_that_add_up_withdraw_the_cl
 def test_counts_that_still_differ_after_adding_up_stay_a_likely_problem() -> None:
     reversed_short = _REVERSED.replace("AB-CD-R - 2 UNITS", "AB-CD-R - 1 UNIT")
     texts = {(REF, 9): _REFERENCE_LIST, (VENDOR, 4): _REGULAR, (VENDOR, 5): reversed_short}
-    assert _changes([_count_claim()], texts) == {}
+    kept = _changes([_count_claim()], texts)["F1"]
+    assert kept.outcome == "kept" and kept.rule == "unit_counts"
+    assert "AB-CD // AB-CD-Reverse has 4 units, the vendor's list 3 units" in kept.why
+    assert "totals differ (5 on the vendor's list, 6 on the reference's)" in kept.why
     # One sheet with no regular / reversed heading is compared on its own, as before.
     single = "DRAWING # 4\nAB-CD - 3 UNITS\nEF-CD-R - 1 UNIT\nGH2-PH - 1 UNIT\n"
-    assert _changes([_count_claim()], {(REF, 9): _REFERENCE_LIST, (VENDOR, 4): single}) == {}
+    found = _changes([_count_claim()], {(REF, 9): _REFERENCE_LIST, (VENDOR, 4): single})
+    assert found["F1"].outcome == "kept"
 
 
 def test_a_count_code_cannot_add_up_is_not_compared_never_a_likely_problem() -> None:
@@ -438,46 +442,52 @@ def test_nested_unpaired_spots_fold_into_the_one_that_stays() -> None:
 
 # ---- regular and reversed units in the whole-drawing look (2026-10-26) ------------------------------
 
-#: One drawing's list where the vendor names one reversed unit type the reference splits in two:
-#: the same total and the same hands, other names.
+#: One drawing's list where the vendor puts one reversed unit type's units under another: the
+#: same total, but a reference unit type is missing from the vendor's list.
 _ONE_SHEET = "DRAWING # 4\nVANITY\nAB-CD - 3 UNITS\nAB-CD-R - 2 UNITS\nJK-PH-R - 2 UNITS\n"
 _SPLIT_LIST = (
     "Unit Type Quantity\nAB-CD // AB-CD-Reverse, 5 units;\nJK-PH-Reverse, 1 units;\n"
-    "LM-PH-Reverse, 1 units;\n"
+    "LM-PH-Reverse (ADA), 1 units;\n"
 )
 
 
 def _names_claim() -> dict[str, Any]:
-    return _claim(
+    claim = _claim(
         "F1",
         "Unit-type quantities: JK-PH-R and LM-PH-Reverse",
         kind="count",
         vendor="JK-PH-R 2 units; no LM-PH-Reverse",
         architect="JK-PH-Reverse 1 unit; LM-PH-Reverse 1 unit",
     )
+    claim["whole_look"]["why"] = "The totals match, but one unit type seems counted under another."
+    return claim
 
 
-def test_counts_with_the_same_total_and_hands_under_other_names_withdraw_the_claim() -> None:
-    found = _changes([_names_claim()], {(REF, 9): _SPLIT_LIST, (VENDOR, 4): _ONE_SHEET})["F1"]
-    assert found.outcome == "withdrawn" and found.rule == "unit_counts"
-    assert "7 units, the same total" in found.why
-    assert "3 regular, 4 reversed" in found.why
+def test_a_unit_type_missing_from_the_vendors_list_is_kept_even_when_totals_match() -> None:
+    texts = {(REF, 9): _SPLIT_LIST, (VENDOR, 4): _ONE_SHEET}
+    found = _changes([_names_claim()], texts)["F1"]
+    assert found.outcome == "kept" and found.rule == "unit_counts"
+    assert "the reference's LM-PH-Reverse (1 unit) is not on the vendor's list" in found.why
+    assert "the reference's JK-PH-Reverse has 1 unit, the vendor's list 2 units" in found.why
+    assert found.why.endswith("totals match (7 units)")
+    # Through the escalation: still a Likely problem, its reason naming the missing type first.
+    result = escalate([_names_claim()], EscalationContext(main_file=VENDOR, page_texts=texts))
+    assert not result.absorbed
+    (card,) = result.changed
+    assert proof_group(card) == "likely_problem"
+    reason = card["whole_look"]["why"]
+    assert reason.startswith("Code reads both unit lists (page 4): the reference's JK-PH-Reverse")
+    assert reason.endswith("one unit type seems counted under another.")
 
 
-@pytest.mark.parametrize(
-    "vendor_list",
-    [
-        # Another total: a real difference stays.
-        "DRAWING # 4\nAB-CD - 3 UNITS\nAB-CD-R - 2 UNITS\nJK-PH-R - 3 UNITS\n",
-        # The same total, but more regular tops than the reference's list allows.
-        "DRAWING # 4\nAB-CD - 5 UNITS\nJK-PH - 2 UNITS\n",
-        # A unit the reference's list does not hold.
-        "DRAWING # 4\nAB-CD - 3 UNITS\nAB-CD-R - 2 UNITS\nZZ-PH-R - 2 UNITS\n",
-    ],
-)
-def test_counts_whose_total_or_hands_differ_stay(vendor_list: str) -> None:
-    texts = {(REF, 9): _SPLIT_LIST, (VENDOR, 4): vendor_list}
-    assert _changes([_names_claim()], texts) == {}
+def test_counts_reconcile_per_type_with_r_and_reverse_as_one_name() -> None:
+    # "-R" on the vendor's list is the reference's "-Reverse": the same per type: withdrawn.
+    same = "DRAWING # 4\nAB-CD - 3 UNITS\nAB-CD-R - 2 UNITS\nJK-PH-R - 1 UNIT\nLM-PH-R - 1 UNIT\n"
+    found = _changes([_names_claim()], {(REF, 9): _SPLIT_LIST, (VENDOR, 4): same})["F1"]
+    assert found.outcome == "withdrawn" and "7 units in all" in found.why
+    # A unit the reference's list does not hold: unchanged, as before.
+    extra = "DRAWING # 4\nAB-CD - 3 UNITS\nAB-CD-R - 2 UNITS\nZZ-PH-R - 2 UNITS\n"
+    assert _changes([_names_claim()], {(REF, 9): _SPLIT_LIST, (VENDOR, 4): extra}) == {}
 
 
 def _label(text: str, x: float, y: float) -> dict[str, Any]:
