@@ -161,10 +161,16 @@ def _page(drawing: Elevation) -> dim_ends.Page:
     return dim_ends.page_of(drawing.file, 1, drawing.labels, [], drawing.segments)
 
 
+def _ends(page: dim_ends.Page, key: str) -> dim_ends.Ends:
+    found = page.ends(key)
+    assert found is not None
+    return found
+
+
 def test_an_outlet_height_runs_from_the_floor_to_the_outlets_centre() -> None:
     drawing, key = _elevation("vendor", 73.5)
     page = _page(drawing)
-    ends = page.ends(key)
+    ends = _ends(page, key)
     assert ends is not None
     assert "symbol_centre" in ends.low.kinds  # the top end (smaller y on the page)
     assert "floor" in ends.high.kinds
@@ -177,7 +183,7 @@ def test_the_same_kinds_prove_the_vendors_outlet_height_against_the_references()
     vendor, v_key = _elevation("vendor", 73.5)
     reference, a_key = _elevation("architect", 72)
     v_page, a_page = _page(vendor), _page(reference)
-    state, why = dim_ends.same_kinds(v_page, v_page.ends(v_key), a_page, a_page.ends(a_key))
+    state, why = dim_ends.same_kinds(v_page, _ends(v_page, v_key), a_page, _ends(a_page, a_key))
     assert state == "same_extent", why
     assert "a symbol's centre" in why and "the floor" in why
 
@@ -190,14 +196,14 @@ def test_another_outlets_height_is_a_rival_only_near_the_other_value() -> None:
     vendor.outlet(20, 45)
     vendor.height(110, 0, 45, to_in=20)
     v_page = _page(vendor)
-    state, why = dim_ends.same_kinds(v_page, v_page.ends(v_key), a_page, a_page.ends(a_key))
+    state, why = dim_ends.same_kinds(v_page, _ends(v_page, v_key), a_page, _ends(a_page, a_key))
     assert state == "same_extent", why
     # a second upper outlet at 70": it could be the reference's 72" as well
     vendor, v_key = _elevation("vendor", 73.5)
     vendor.outlet(20, 70)
     vendor.height(110, 0, 70, to_in=20)
     v_page = _page(vendor)
-    state, why = dim_ends.same_kinds(v_page, v_page.ends(v_key), a_page, a_page.ends(a_key))
+    state, why = dim_ends.same_kinds(v_page, _ends(v_page, v_key), a_page, _ends(a_page, a_key))
     assert state == "cannot_tell" and "another dimension" in why, why
 
 
@@ -210,22 +216,22 @@ def test_an_empty_box_or_an_end_off_its_centre_is_no_symbol() -> None:
     empty = drawing.height(114, 0, 60, to_in=40)
     off = drawing.height(110, 0, 51.5, to_in=60)  # ends 1 1/2" above the outlet's centre
     page = _page(drawing)
-    assert "symbol_centre" not in page.ends(empty).low.kinds
-    assert "symbol_centre" not in page.ends(off).low.kinds
-    assert "floor" in page.ends(empty).high.kinds
+    assert "symbol_centre" not in _ends(page, empty).low.kinds
+    assert "symbol_centre" not in _ends(page, off).low.kinds
+    assert "floor" in _ends(page, empty).high.kinds
 
 
 def test_a_line_drawn_below_is_no_floor_but_the_sheets_frame_is_ignored() -> None:
     drawing, key = _elevation("vendor", 73.5)
     drawing.line((_x(-20), FLOOR + 30), (_x(130), FLOOR + 30))  # another drawing's line below
-    assert "floor" not in _page(drawing).ends(key).high.kinds
+    assert "floor" not in _ends(_page(drawing), key).high.kinds
     drawing, key = _elevation("vendor", 73.5)
     drawing.line((_x(-200), FLOOR + 30), (_x(320), FLOOR + 30))  # the frame, far wider
-    assert "floor" in _page(drawing).ends(key).high.kinds
+    assert "floor" in _ends(_page(drawing), key).high.kinds
     # nothing tall stands on the line (a piece of top drawn alone): no floor
     drawing, key = _elevation("vendor", 73.5)
     drawing.segments.remove(((_x(-12), _y(96)), (_x(-12), FLOOR)))
-    assert "floor" not in _page(drawing).ends(key).high.kinds
+    assert "floor" not in _ends(_page(drawing), key).high.kinds
 
 
 def test_a_counter_height_runs_from_the_floor_to_the_counters_top() -> None:
@@ -240,10 +246,10 @@ def test_a_counter_height_runs_from_the_floor_to_the_counters_top() -> None:
     reference.widths()
     a_key = reference.height(70, 0, 36, to_in=61)
     v_page, a_page = _page(vendor), _page(reference)
-    ends = a_page.ends(a_key)
+    ends = _ends(a_page, a_key)
     assert ends is not None
     assert "counter_top" in ends.low.kinds and "floor" in ends.high.kinds
-    state, why = dim_ends.same_kinds(v_page, v_page.ends(v_key), a_page, ends)
+    state, why = dim_ends.same_kinds(v_page, _ends(v_page, v_key), a_page, ends)
     assert state == "cannot_tell" and "drawn 36" in why, why  # a typed-over value never proves
     vendor = Elevation("vendor", "vendor.pdf")
     vendor.floor()
@@ -251,7 +257,7 @@ def test_a_counter_height_runs_from_the_floor_to_the_counters_top() -> None:
     vendor.widths()
     v_key = vendor.height(70, 0, 35, to_in=61)
     v_page = _page(vendor)
-    state, why = dim_ends.same_kinds(v_page, v_page.ends(v_key), a_page, ends)
+    state, why = dim_ends.same_kinds(v_page, _ends(v_page, v_key), a_page, ends)
     assert state == "same_extent", why
     assert "the top of a counter" in why and "the floor" in why
 
@@ -269,7 +275,7 @@ def test_the_same_size_printed_twice_is_no_rival() -> None:
     v_key = vendor.height(70, 0, 35, to_in=61)
     vendor.height(-6, 0, 35, to_in=-1)  # the same 35" printed again at the other end
     v_page, a_page = _page(vendor), _page(reference)
-    state, why = dim_ends.same_kinds(v_page, v_page.ends(v_key), a_page, a_page.ends(a_key))
+    state, why = dim_ends.same_kinds(v_page, _ends(v_page, v_key), a_page, _ends(a_page, a_key))
     assert state == "same_extent", why
 
 
