@@ -84,7 +84,7 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Any, Final, Literal
 
-from app.review.assistant import dim_ends, drafting_notes, job_value_rules
+from app.review.assistant import dim_ends, drafting_notes, job_value_rules, row_places
 from app.review.assistant.finding_checks import to_inches, wrong_part
 from app.review.assistant.ledger import format_inches
 from app.review.assistant.round_picks import pick_words
@@ -1362,6 +1362,15 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
                 "not_proved",
                 f"the two values differ ({differ[0]} vs {differ[1]}); not the same thing",
                 "the architect's dimension that measures the same thing as {thing}",
+            )
+        elsewhere = row_places.elsewhere_reason(finding)
+        if elsewhere is not None:
+            # A piece of a row of sizes is Right only against the reference piece that starts
+            # where it does (2026-10-27): the same value further along the row is another piece.
+            return _not(
+                "not_proved",
+                _short(elsewhere, 300),
+                "the reference's size that starts where the vendor's does along {thing}",
             )
         if finding.get("compared") is False:
             return _not(
