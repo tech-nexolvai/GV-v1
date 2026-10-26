@@ -10,7 +10,7 @@ import type { ChatFile, ChatFinding, FindingBox, FindingDecision, FindingDecisio
 import { architectOnVendorPage, copyLines, drawerChips, drawerKind, howWeKnow, KIND_WORDS, noArchitectPictureWords, overallSpot, referenceSide, ringInCrop, ringOnCrop, ringOnPage, vendorOnly, vendorSide, type DrawerKind, type Ring } from '@/lib/chat-drawer';
 import { architectPage, decisionHelpRows, pageWords, referenceWhere, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
 import { isInternal, proofGroup, ruleNoteWords, type RuleNoteWords } from '@/lib/chat-proof';
-import { boxOnPicture, decisionsWords, isDrawingNeededItem, isPairingUnsureItem, isRefusedString, itemParts, pageHeading, pairingUnsureWords, shortValue, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultTab } from '@/lib/chat-result';
+import { boxOnPicture, decisionsWords, ENDS_NOT_PROVED_WORDS, endsNotProved, isDrawingNeededItem, isPairingUnsureItem, isRefusedString, itemParts, pageHeading, pagesWords, pairingUnsureWords, shortValue, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultCard, type ResultTab } from '@/lib/chat-result';
 import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { cn } from '@/lib/utils';
@@ -268,6 +268,8 @@ export interface ResultsDrawer {
   neededPages: ReadonlySet<number>;
   request: DrawingsRequest | null;
   pageTitles: PageTitles | null;
+  /** Plan change #8: the card a finding is on (a lead's or a copy's), to list and open the other copies. */
+  cardOf?: ((findingId: string) => ResultCard | null) | null;
 }
 
 /** #1803: the draft (cloud drawing, letter, register, Not-compared list, package) after the reviewer's decisions. */
@@ -388,6 +390,7 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
               pagePicture={pagePicture}
               note={note}
               decision={laid}
+              onOpen={onOpen}
             />
           ) : (
           <div className="grid min-h-0 flex-1 content-start gap-5 overflow-y-auto px-5 py-5 max-md:px-4">
@@ -509,7 +512,7 @@ function whereOf(box: FindingBox | null, own: boolean): PageWhere {
  * (the client meeting, 2026-10-23) shows ONE picture of its row instead: its numbers are the AI's
  * unproven reading, never "vendor vs …" values.
  */
-function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, note, decision }: { finding: ChatFinding; kind: DrawerKind; results: ResultsDrawer; number: string | null; pictureUrl: (pictureId: string) => string; pagePicture: PagePicture | null; note: RuleNoteWords | null; decision: FindingDecision | null }) {
+function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, note, decision, onOpen }: { finding: ChatFinding; kind: DrawerKind; results: ResultsDrawer; number: string | null; pictureUrl: (pictureId: string) => string; pagePicture: PagePicture | null; note: RuleNoteWords | null; decision: FindingDecision | null; onOpen: (findingId: string) => void }) {
   const [whole, setWhole] = useState(false);
   const [wholeReference, setWholeReference] = useState(false);
   const parts = itemParts(finding.item);
@@ -688,12 +691,77 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
         </section>
       )}
 
+      <CardCopies finding={finding} card={results.cardOf?.(finding.id) ?? null} onOpen={onOpen} />
+
       {chips.length > 0 && (
         <ul data-slot="chat-evidence-chips" aria-label="Also" className="flex min-w-0 flex-wrap gap-2">
           {chips.map((chip) => <li key={chip} className="rounded-full border px-3 py-1 text-[12.5px] text-muted-foreground">{chip}</li>)}
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * Plan change #8: the other copies of this card's question (the regular and reversed sheet, the plan
+ * and the elevation), each with its page and values, each opening its own drawer.
+ */
+function CardCopies({ finding, card, onOpen }: { finding: ChatFinding; card: ResultCard | null; onOpen: (findingId: string) => void }) {
+  if (!card) return null;
+  return (
+    <>
+      {card.copies.length > 0 && <SameQuestion finding={finding} card={card} onOpen={onOpen} />}
+      {card.related.length > 0 && <OtherOutcomes related={card.related} onOpen={onOpen} />}
+    </>
+  );
+}
+
+const GROUP_WORDS: Record<string, string> = { clouded: 'Wrong', likely_problem: 'Likely problem', right: 'Right', rule_note: 'Ask the architect', not_compared: 'Not compared', dismissed: 'Right (reviewer)' };
+
+/** The same two sizes elsewhere with another outcome or reason: never one card, named so none is missed. */
+function OtherOutcomes({ related, onOpen }: { related: readonly ChatFinding[]; onOpen: (findingId: string) => void }) {
+  return (
+    <section aria-label="The same sizes elsewhere" data-slot="chat-evidence-card-related" className="grid min-w-0 gap-2 rounded-xl border border-dashed px-4 py-3.5">
+      <h3 className="text-[13px] font-semibold">The same sizes elsewhere, with another outcome</h3>
+      <p className="text-[12.5px] leading-[18px] text-muted-foreground">Not joined to this card: code reached another outcome or reason there. Worth a look.</p>
+      <ul className="grid gap-px">
+        {related.map((other) => (
+          <li key={other.id} className="min-w-0">
+            <button type="button" data-slot="chat-evidence-card-copy" data-id={other.id} onClick={() => onOpen(other.id)} className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+              <span className="num text-xs text-muted-foreground">p.{other.page}</span>
+              <span className="min-w-0 truncate" title={other.item}>{itemParts(other.item).thing} <span className="text-muted-foreground">· {GROUP_WORDS[other.proof?.group ?? ''] ?? 'Not compared'}</span></span>
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-foreground">Open<ChevronRight className="size-3.5" aria-hidden="true" /></span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function SameQuestion({ finding, card, onOpen }: { finding: ChatFinding; card: ResultCard; onOpen: (findingId: string) => void }) {
+  const others = [card.lead, ...card.copies].filter((each) => each.id !== finding.id);
+  const pages = new Set(others.map((each) => each.page));
+  const where = pages.size === 1 && pages.has(finding.page) ? 'on this page' : `on ${others.length === 1 ? '1 more page' : `${pages.size} more ${pages.size === 1 ? 'page' : 'pages'}`}`;
+  return (
+    <section aria-label="The same question elsewhere" data-slot="chat-evidence-card-copies" className="grid min-w-0 gap-2 rounded-xl border px-4 py-3.5">
+      <h3 className="text-[13px] font-semibold">The same question {where}</h3>
+      <p className="text-[12.5px] leading-[18px] text-muted-foreground">Code joined these: the same reference dimension, the same vendor value and the same outcome. Each keeps its own picture.</p>
+      <ul className="grid gap-px">
+        {others.map((other) => {
+          const { thing } = itemParts(other.item);
+          return (
+            <li key={other.id} className="min-w-0">
+              <button type="button" data-slot="chat-evidence-card-copy" data-id={other.id} onClick={() => onOpen(other.id)} className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+                <span className="num text-xs text-muted-foreground">p.{other.page}</span>
+                <span className="flex min-w-0 flex-wrap items-baseline gap-x-2"><span className="min-w-0 truncate" title={other.item}>{thing}</span>{endsNotProved(other) && <span className="rounded-[5px] border border-dashed px-1.5 text-xs leading-[18px] whitespace-nowrap text-muted-foreground">{ENDS_NOT_PROVED_WORDS}</span>}</span>
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-foreground">Open<ChevronRight className="size-3.5" aria-hidden="true" /></span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -836,6 +904,14 @@ function ReviewerCall({ finding, group, decision }: { finding: ChatFinding; grou
   return (
     <section aria-label="Your call" data-slot="chat-evidence-call" data-group={group} className="grid min-w-0 gap-2">
       <p className="text-xs font-medium text-muted-foreground">{mine ? 'Your call' : 'Your call · optional'}</p>
+      {decision.card && (
+        // Plan change #8: what one call changes on a card of several copies, said before the click.
+        <p data-slot="chat-evidence-call-scope" data-all={decision.card.all ? 'true' : undefined} className="text-[12.5px] leading-[18px] text-muted-foreground">
+          {decision.card.all
+            ? <>Your call applies to {decision.card.count === 2 ? 'both' : <>all <span className="num font-medium text-foreground">{decision.card.count}</span></>} copies of this difference: {pagesWords(decision.card.pages)}.</>
+            : <>Your call applies to this copy only. Open the other copies above to decide them.</>}
+        </p>
+      )}
       {mine && (
         <p data-slot="chat-evidence-call-saved" className="flex min-w-0 items-start gap-2 text-[13px]">
           <OutcomeGlyph kind={mine} className="mt-px size-4 [&_svg]:size-2.5" />

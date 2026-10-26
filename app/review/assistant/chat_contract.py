@@ -681,6 +681,77 @@ class ChatFindingSameItemOut(BaseModel):
     )
 
 
+class ChatFindingCardCopyOut(BaseModel):
+    """Another copy of the same question on a card (`card_fold`): open it by its id."""
+
+    model_config = ConfigDict(frozen=True)
+
+    finding_id: str
+    page: int | None = None
+    ends: Literal["proved", "not_proved"] | None = Field(
+        default=None,
+        description="not_proved: a Right whose ends code did not prove alike ('Matches (ends not "
+        "proved)').",
+    )
+
+
+class ChatFindingCardRelatedOut(BaseModel):
+    """The same two sizes elsewhere with another outcome (`card_fold`): listed, never joined."""
+
+    model_config = ConfigDict(frozen=True)
+
+    finding_id: str
+    page: int | None = None
+    group: str
+
+
+class ChatFindingCardQuestionOut(BaseModel):
+    """The question a card asks, for grouping identical reasons on the screen (`card_fold`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    key: str
+    words: str
+
+
+class ChatFindingCardOut(BaseModel):
+    """Final plan change #8 (`card_fold`, worked out on read): the card this item is shown on.
+    The copies of one question across the sibling pages of a unit (the same reference dimension,
+    vendor value, outcome and reason) are one card; the lead carries the others."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(description="The card's id: its lead item's id.")
+    lead: bool = Field(description="This item is the card's lead (shown as the card).")
+    pages: list[int] = Field(default_factory=list, description="Every vendor page of the card.")
+    copies: list[ChatFindingCardCopyOut] = Field(
+        default_factory=list, description="On the lead only: the card's other items."
+    )
+    how: Literal["same_reference_dimension", "same_page", "same_values"] | None = Field(
+        default=None, description="How code knows the copies ask one question."
+    )
+    agree_all: bool = Field(
+        default=False,
+        description="One Agree (or Not a problem) applies to every copy: the same proven "
+        "difference at the same reference dimension.",
+    )
+    question: ChatFindingCardQuestionOut | None = Field(
+        default=None, description="Likely problem and Not compared: the question, for grouping."
+    )
+    aside: bool = Field(
+        default=False,
+        description="Leaves the work list for the collapsed 'Nothing to compare here' list.",
+    )
+    ends: Literal["proved", "not_proved"] | None = Field(
+        default=None, description="A Right: whether code proved both ends alike (#1953)."
+    )
+    related: list[ChatFindingCardRelatedOut] = Field(
+        default_factory=list,
+        description="On the lead only: the same two sizes elsewhere with another outcome or "
+        "reason (never joined into the card).",
+    )
+
+
 class ChatCoverageFoldedOut(BaseModel):
     """An item folded under its page's Drawing-needed card (`one_card`)."""
 
@@ -1124,6 +1195,11 @@ class ChatFindingOut(BaseModel):
         default=None,
         description="Other copies of this same item on this page (two readers reported it), "
         "folded into this one card by code (one item, one card).",
+    )
+    card: ChatFindingCardOut | None = Field(
+        default=None,
+        description="Final plan change #8: the card this item is shown on (`card_fold`, worked "
+        "out on read; nothing stored).",
     )
     parts_sum: str | None = Field(
         default=None,

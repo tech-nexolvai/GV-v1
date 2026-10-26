@@ -4451,6 +4451,197 @@
         "title": "ChatFindingBlock",
         "type": "object"
       },
+      "ChatFindingCardCopyOut": {
+        "description": "Another copy of the same question on a card (`card_fold`): open it by its id.",
+        "properties": {
+          "ends": {
+            "anyOf": [
+              {
+                "enum": [
+                  "proved",
+                  "not_proved"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "not_proved: a Right whose ends code did not prove alike ('Matches (ends not proved)').",
+            "title": "Ends"
+          },
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          }
+        },
+        "required": [
+          "finding_id"
+        ],
+        "title": "ChatFindingCardCopyOut",
+        "type": "object"
+      },
+      "ChatFindingCardOut": {
+        "description": "Final plan change #8 (`card_fold`, worked out on read): the card this item is shown on.\nThe copies of one question across the sibling pages of a unit (the same reference dimension,\nvendor value, outcome and reason) are one card; the lead carries the others.",
+        "properties": {
+          "agree_all": {
+            "default": false,
+            "description": "One Agree (or Not a problem) applies to every copy: the same proven difference at the same reference dimension.",
+            "title": "Agree All",
+            "type": "boolean"
+          },
+          "aside": {
+            "default": false,
+            "description": "Leaves the work list for the collapsed 'Nothing to compare here' list.",
+            "title": "Aside",
+            "type": "boolean"
+          },
+          "copies": {
+            "description": "On the lead only: the card's other items.",
+            "items": {
+              "$ref": "#/components/schemas/ChatFindingCardCopyOut"
+            },
+            "title": "Copies",
+            "type": "array"
+          },
+          "ends": {
+            "anyOf": [
+              {
+                "enum": [
+                  "proved",
+                  "not_proved"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A Right: whether code proved both ends alike (#1953).",
+            "title": "Ends"
+          },
+          "how": {
+            "anyOf": [
+              {
+                "enum": [
+                  "same_reference_dimension",
+                  "same_page",
+                  "same_values"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How code knows the copies ask one question.",
+            "title": "How"
+          },
+          "id": {
+            "description": "The card's id: its lead item's id.",
+            "title": "Id",
+            "type": "string"
+          },
+          "lead": {
+            "description": "This item is the card's lead (shown as the card).",
+            "title": "Lead",
+            "type": "boolean"
+          },
+          "pages": {
+            "description": "Every vendor page of the card.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingCardQuestionOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Likely problem and Not compared: the question, for grouping."
+          },
+          "related": {
+            "description": "On the lead only: the same two sizes elsewhere with another outcome or reason (never joined into the card).",
+            "items": {
+              "$ref": "#/components/schemas/ChatFindingCardRelatedOut"
+            },
+            "title": "Related",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "lead"
+        ],
+        "title": "ChatFindingCardOut",
+        "type": "object"
+      },
+      "ChatFindingCardQuestionOut": {
+        "description": "The question a card asks, for grouping identical reasons on the screen (`card_fold`).",
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "words": {
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "words"
+        ],
+        "title": "ChatFindingCardQuestionOut",
+        "type": "object"
+      },
+      "ChatFindingCardRelatedOut": {
+        "description": "The same two sizes elsewhere with another outcome (`card_fold`): listed, never joined.",
+        "properties": {
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "group": {
+            "title": "Group",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          }
+        },
+        "required": [
+          "finding_id",
+          "group"
+        ],
+        "title": "ChatFindingCardRelatedOut",
+        "type": "object"
+      },
       "ChatFindingChecksOut": {
         "description": "The checks run on a finding, by code (and one cheap independent AI read).",
         "properties": {
@@ -5247,6 +5438,17 @@
           "architect": {
             "title": "Architect",
             "type": "string"
+          },
+          "card": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingCardOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Final plan change #8: the card this item is shown on (`card_fold`, worked out on read; nothing stored)."
           },
           "category": {
             "description": "The product the item belongs to (a product id from `GET /products`), or `other`.",

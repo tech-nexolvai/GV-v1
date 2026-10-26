@@ -41,8 +41,10 @@ describe('the result’s groups (#1717)', () => {
     ]);
     expect(groups.wrong.map((each) => each.id)).toEqual(['b', 'a', 'f']);
     expect(groups.right.map((each) => each.id)).toEqual(['c']);
-    // The Not-compared list's own order: verify in field before unreadable.
-    expect(groups.notCompared.map((each) => each.id)).toEqual(['e', 'd']);
+    // Plan change #8: "could not read" stays a question; a field-verify note has nothing to compare
+    // and leaves the work list for the collapsed list at the bottom.
+    expect(groups.notCompared.map((each) => each.id)).toEqual(['d']);
+    expect(groups.aside.map((each) => each.id)).toEqual(['e']);
   });
 
   it('lays the reviewer’s Not a problem over the server’s group: listed apart, not counted as Wrong', () => {

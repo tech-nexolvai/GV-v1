@@ -17,7 +17,7 @@ import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState
 import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionChoice, type FindingDecisionExtra, type PagePicture, type RemadeFiles } from '@/lib/chat-api';
 import { coverageCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
 import { fullCheckBubble, fullCheckFiles, withoutCodeNote } from '@/lib/chat-full-check';
-import { commentNumber, drawingNeededItems, drawingNeededPages, pairingUnsureItems, resultGroups, type PageTitles } from '@/lib/chat-result';
+import { commentNumber, drawingNeededItems, drawingNeededPages, pairingUnsureItems, resultGroups, type PageTitles, type ResultCard } from '@/lib/chat-result';
 import { asShown, proofGroup } from '@/lib/chat-proof';
 import { EFFORT_WORDS } from '@/lib/chat-settings';
 import { startingLive } from '@/lib/chat-live';
@@ -426,13 +426,21 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   // The viewer's arrows step through the findings in the order the sections show them.
   const neededItems = architectView ? drawingNeededItems(drawingNeededPages(coverage), pageTitles) : [];
   const unsureItems = architectView ? pairingUnsureItems(coverage, pageTitles) : [];
-  const ordered = architectView ? (() => {
-    const groups = resultGroups(findings, decisionOf);
-    const all = [...groups.wrong, ...groups.likely, ...groups.ruleNotes, ...neededItems, ...unsureItems, ...groups.notCompared, ...groups.dismissed, ...groups.right];
-    if (!steps) return all;
-    const byId = new Map(all.map((finding) => [finding.id, finding]));
-    const stepped = steps.map((id) => byId.get(id)).filter((finding): finding is ChatFinding => Boolean(finding));
-    return stepped.length ? stepped : all;
+  // Plan change #8: one card per question; each finding's card (a lead's or a copy's).
+  const resultCardGroups = architectView ? resultGroups(findings, decisionOf) : null;
+  const cardOf = new Map<string, ResultCard>();
+  for (const card of resultCardGroups?.cards.values() ?? []) for (const member of [card.lead, ...card.copies]) cardOf.set(member.id, card);
+  const ordered = resultCardGroups ? (() => {
+    const groups = resultCardGroups;
+    const all = [...groups.wrong, ...groups.likely, ...groups.ruleNotes, ...neededItems, ...unsureItems, ...groups.notCompared, ...groups.aside, ...groups.dismissed, ...groups.right];
+    const byId = new Map([...findings, ...neededItems, ...unsureItems].map((finding) => [finding.id, finding]));
+    const stepped = steps ? steps.map((id) => byId.get(id)).filter((finding): finding is ChatFinding => Boolean(finding)) : [];
+    const list = stepped.length ? stepped : all;
+    // A copy opened from its card's drawer is stepped to right after its card.
+    const open = viewing ? byId.get(viewing) : undefined;
+    if (!open || list.some((finding) => finding.id === open.id)) return list;
+    const at = list.findIndex((finding) => finding.id === cardOf.get(open.id)?.id);
+    return at >= 0 ? [...list.slice(0, at + 1), open, ...list.slice(at + 1)] : [...list, open];
   })() : sectionOrder(shown, filter);
   // #1803: after each saved decision of a full check, the draft (cloud drawing, letter, register,
   // Not-compared list, package) is made again by itself, a moment later so quick decisions share one
@@ -493,37 +501,48 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
   // #1803: stale from the click on (a decision still being saved), not only once it is saved.
   const [saving, setSaving] = useState(0);
   const packageStale = cloudState !== 'idle' || outdated || saving > 0;
-  const decisionFor = finished && !decisionsOff && decide && messageId ? (finding: ChatFinding): DecisionProps => ({
-    decision: decisionOf(finding)?.decision ?? null,
-    saved: decisionOf(finding),
-    onDecide: (decision, extra) => {
-      const had = finding.id in decisions;
-      const before = decisions[finding.id];
-      setDecideFailed(null);
-      const laid: FindingDecision | null = decision === 'undo' ? null : { ...(decisionOf(finding) ?? {}), decision, note: extra?.note?.trim() || null, should_be: decision === 'agree' ? extra?.should_be?.trim() || null : null };
-      setDecisions((now) => ({ ...now, [finding.id]: laid }));
-      setSaving((count) => count + 1);
-      (extra ? decide(messageId, finding.id, decision, extra) : decide(messageId, finding.id, decision)).then(
-        (saved) => {
-          setDecisions((now) => ({ ...now, [finding.id]: decision !== 'undo' && isDecision(saved) ? saved : laid }));
-          if (fullCheck && remakeCloud) askRemake();
-        },
-        (error: unknown) => {
-          const status = error instanceof ApiError ? error.status : null;
-          if (status === 404 || status === 405) setDecisionsOff(true);
-          setDecideFailed(status === 404 || status === 405 ? 'Answers cannot be saved on this server yet.'
-            : status === 409 ? 'Wait until the answer has finished, then try again.'
-            : 'Your answer was not saved. Try again.');
-          setDecisions((now) => {
-            const next = { ...now };
-            if (had) next[finding.id] = before;
-            else delete next[finding.id];
-            return next;
-          });
-        },
-      ).finally(() => setSaving((count) => count - 1));
-    },
-  }) : null;
+  // One call on one finding: laid on the screen at once, saved, taken back when the save fails.
+  const decideOne = (finding: ChatFinding, decision: FindingDecisionChoice, extra?: FindingDecisionExtra) => {
+    if (!decide || !messageId) return;
+    const had = finding.id in decisions;
+    const before = decisions[finding.id];
+    setDecideFailed(null);
+    const laid: FindingDecision | null = decision === 'undo' ? null : { ...(decisionOf(finding) ?? {}), decision, note: extra?.note?.trim() || null, should_be: decision === 'agree' ? extra?.should_be?.trim() || null : null };
+    setDecisions((now) => ({ ...now, [finding.id]: laid }));
+    setSaving((count) => count + 1);
+    (extra ? decide(messageId, finding.id, decision, extra) : decide(messageId, finding.id, decision)).then(
+      (saved) => {
+        setDecisions((now) => ({ ...now, [finding.id]: decision !== 'undo' && isDecision(saved) ? saved : laid }));
+        if (fullCheck && remakeCloud) askRemake();
+      },
+      (error: unknown) => {
+        const status = error instanceof ApiError ? error.status : null;
+        if (status === 404 || status === 405) setDecisionsOff(true);
+        setDecideFailed(status === 404 || status === 405 ? 'Answers cannot be saved on this server yet.'
+          : status === 409 ? 'Wait until the answer has finished, then try again.'
+          : 'Your answer was not saved. Try again.');
+        setDecisions((now) => {
+          const next = { ...now };
+          if (had) next[finding.id] = before;
+          else delete next[finding.id];
+          return next;
+        });
+      },
+    ).finally(() => setSaving((count) => count - 1));
+  };
+  const decisionFor = finished && !decisionsOff && decide && messageId ? (finding: ChatFinding): DecisionProps => {
+    // Plan change #8: on a card of the same proven difference one call is saved on every copy
+    // (each its own decision row, so the letter and the cloud drawing stay per page); else on this one.
+    const card = fullCheck ? cardOf.get(finding.id) ?? null : null;
+    const members = card ? [card.lead, ...card.copies] : [finding];
+    const targets = card?.agreeAll ? members : [finding];
+    return {
+      decision: decisionOf(finding)?.decision ?? null,
+      saved: decisionOf(finding),
+      card: card && members.length > 1 ? { all: card.agreeAll, count: members.length, pages: card.pages } : null,
+      onDecide: (decision, extra) => { for (const target of targets) decideOne(target, decision, extra); },
+    };
+  } : null;
   // #1525: "12 of 43 decided", and the cloud drawing made again from the answers.
   const decidedCount = actionable.filter((finding) => decisionOf(finding)).length;
   const deciders = [...new Set(actionable.map((finding) => decisionOf(finding)?.by).filter((by): by is string => Boolean(by)))];
@@ -699,7 +718,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           decisionFor={resultShown ? decisionFor : null}
           numberOf={resultShown ? (finding) => commentNumber(finding, message.package_state) : null}
           notice={decideFailed}
-          results={resultShown ? { neededPages: new Set(neededItems.map((item) => item.page)), request, pageTitles } : null}
+          results={resultShown ? { neededPages: new Set(neededItems.map((item) => item.page)), request, pageTitles, cardOf: (id) => cardOf.get(id) ?? null } : null}
           draft={resultShown && review ? { updating: review.updating, failed: review.failed, updatedAt: review.updatedAt, stale: review.stale ?? false, refusal: review.refusal ?? null, decided: review.decided, pkg: made.pkg, href: made.pkg ? made.pkg.url || chatPaths.file(chatId, made.pkg.id) : null, onRetry: review.onUpdate } : null}
         />
       )}

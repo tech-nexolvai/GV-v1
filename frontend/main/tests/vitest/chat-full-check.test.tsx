@@ -139,7 +139,8 @@ describe('a full-check answer', () => {
       'rule_note:?Ask the architect0The architect’s own size needs a yes',
       'drawing_needed:Drawing needed00 pages not in the upload. Ask GV',
       'right:Right2Match the architect or GV’s rules',
-      'not_compared:Not compared11 item, with its reason',
+      // Plan change #8: the tile counts questions; the island overhang has nothing to compare (folded below).
+      'not_compared:Not compared0None to check; nothing-to-compare folded below',
     ]);
     expect(node.querySelector('[data-slot="chat-summary-headline"], [data-slot="chat-kpis"], [data-slot="chat-cloud-drawing"], [data-slot="chat-package"]')).toBeNull();
     // The accuracy once, in the footer.
@@ -176,6 +177,13 @@ describe('a full-check answer', () => {
     await user.click(within(node).getByRole('tab', { name: /^Right/ }));
     expect(rows(node)).toEqual(['r1', 'r2']);
     await user.click(within(node).getByRole('tab', { name: /^Not compared/ }));
+    // Plan change #8: nothing to compare, so out of the work list: one collapsed row with its count.
+    expect(rows(node)).toEqual([]);
+    expect(node.querySelector('[data-slot="chat-result-list"]')?.textContent).toMatch(/^No questions left/);
+    const aside = node.querySelector<HTMLElement>('[data-slot="chat-result-aside-toggle"]')!;
+    expect(aside.textContent).toMatch(/^Nothing to compare here.*1$/);
+    expect(aside.getAttribute('aria-expanded')).toBe('false');
+    await user.click(aside);
     expect(rows(node)).toEqual(['k1']);
     expect(node.querySelector('[data-slot="chat-result-reason"]')?.textContent).toContain('Architect gives no size or information');
     expect(node.querySelector('[data-id="k1"]')?.textContent).toContain('Needs the architect’s size or note for the island overhang');
@@ -205,7 +213,9 @@ describe('a full-check answer', () => {
     ];
     render(<AssistantMessage message={answer({ findings: proved, files: [CLOUD, REPORT] })} chatId="c-1" models={[OPUS]} fullCheck decide={vi.fn()} />);
     const node = screen.getByRole('article', { name: 'Answer' });
-    expect(counted(node)).toEqual(['wrong:Wrong1', 'likely_problem:!Likely problem0', 'rule_note:?Ask the architect0', 'drawing_needed:Drawing needed0', 'right:Right1', 'not_compared:Not compared2']);
+    expect(counted(node)).toEqual(['wrong:Wrong1', 'likely_problem:!Likely problem0', 'rule_note:?Ask the architect0', 'drawing_needed:Drawing needed0', 'right:Right1', 'not_compared:Not compared1']);
+    // Plan change #8: the island overhang (nothing to compare) is folded below the Not-compared list.
+    expect(node.querySelector('[data-tab="not_compared"]')?.textContent).toContain('1 to check; nothing-to-compare folded below');
     const head = within(node).getByRole('region', { name: 'Review result' });
     expect(head.textContent).not.toMatch(/draft|signed review/i);
     expect(head.querySelector('a')?.getAttribute('aria-label')).toBe('Open the cloud drawing');
@@ -251,7 +261,7 @@ describe('a full-check answer', () => {
     const mixed = [...findings, finding('r3', { item: 'Toe kick height', status: 'same', compared: false, proof: { group: 'not_compared', not_compared: 'not_seen', label: 'Not reviewed: not looked at on both drawings', reason: 'only the vendor’s side was read' } })];
     render(<AssistantMessage message={answer({ findings: mixed, files: [CLOUD] })} chatId="c-1" models={[OPUS]} fullCheck decide={vi.fn()} />);
     const node = screen.getByRole('article', { name: 'Answer' });
-    expect(counted(node)).toEqual(['wrong:Wrong2', 'likely_problem:!Likely problem0', 'rule_note:?Ask the architect0', 'drawing_needed:Drawing needed0', 'right:Right2', 'not_compared:Not compared2']);
+    expect(counted(node)).toEqual(['wrong:Wrong2', 'likely_problem:!Likely problem0', 'rule_note:?Ask the architect0', 'drawing_needed:Drawing needed0', 'right:Right2', 'not_compared:Not compared1']);
   });
 
   it('is still a full check after a reload, when the saved question has no mode (#1508)', () => {
@@ -350,6 +360,8 @@ describe('a full-check answer', () => {
 
     // A Not-compared item: "It's a mistake: add a red mark" asks what it should be, filled in with the architect's value.
     await user.click(within(node).getByRole('tab', { name: /^Not compared/ }));
+    // Plan change #8: it has nothing to compare, so it is in the collapsed list at the bottom.
+    await user.click(node.querySelector<HTMLElement>('[data-slot="chat-result-aside-toggle"]')!);
     await user.click(within(node).getByRole('button', { name: /^Island overhang, page \d+\. Open the evidence$/ }));
     const second = await screen.findByRole('dialog');
     expect(within(second).queryByRole('button', { name: /remove the red mark/ })).toBeNull();

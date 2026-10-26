@@ -10,6 +10,11 @@ import { categoriesPresent, categoryWords, sideLabels } from '@/lib/chat-finding
 import { fileSize, openHref } from '@/lib/chat-messages';
 import { isPairingUnsureItem,
   byPage,
+  cardPillWords,
+  copiesWords,
+  ENDS_NOT_PROVED_WORDS,
+  endsNotProved,
+  likelyGroups,
   commentNumber,
   decisionsWords,
   differenceWords,
@@ -40,6 +45,7 @@ import { isPairingUnsureItem,
   workLine,
   workSteps,
   type PageTitles,
+  type ResultCard,
   type ResultTab,
   type WorkLineInput,
 } from '@/lib/chat-result';
@@ -122,7 +128,11 @@ export function FullCheckResult(props: FullCheckResultProps) {
   const neededItems = drawingNeededItems(needed, pageTitles);
   const unsureItems = pairingUnsureItems(coverage, pageTitles);
   const notCompared = [...unsureItems, ...groups.notCompared];
-  const [tab, setTab] = useState<ResultTab>(groups.wrong.length ? 'wrong' : groups.likely.length ? 'likely_problem' : groups.ruleNotes.length ? 'rule_note' : needed.length ? 'drawing_needed' : notCompared.length ? 'not_compared' : 'right');
+  const [tab, setTab] = useState<ResultTab>(groups.wrong.length ? 'wrong' : groups.likely.length ? 'likely_problem' : groups.ruleNotes.length ? 'rule_note' : needed.length ? 'drawing_needed' : notCompared.length || groups.aside.length ? 'not_compared' : 'right');
+  // Plan change #8: which cards show their other copies, and whether "Nothing to compare here" is open.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const [asideOpen, setAsideOpen] = useState(false);
+  const toggle = (id: string) => setExpanded((now) => { const next = new Set(now); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const [category, setCategory] = useState<FindingCategory | null>(null);
   const [order, setOrder] = useState<ListOrder>('biggest');
   const [asking, setAsking] = useState(false);
@@ -153,9 +163,15 @@ export function FullCheckResult(props: FullCheckResultProps) {
   const requested = needed.map((each) => each.page).filter((page) => !request?.leftOut.has(page));
   const requestText = drawingsRequestText(requested, pageTitles, findings);
 
-  // The rows in the order shown: the drawer's ‹ › follow them (audit gap 10).
+  // Plan change #8: "Nothing to compare here", the Not-compared tab's collapsed list (by reason).
+  const aside = tab === 'not_compared' ? (category ? groups.aside.filter((finding) => (finding.category ?? 'other') === category) : groups.aside) : [];
+  const asideSections = notComparedGroups(aside).map((group) => ({ key: `aside-${group.reason}`, slot: 'chat-result-reason', reason: group.reason, words: group.words, findings: group.findings }) satisfies ListSection);
+
+  // The rows in the order shown: the drawer's ‹ › follow them (audit gap 10), with the copies of an
+  // opened card after its row and the collapsed list's rows once it is open.
   const sections = listSections(tab, shown, order, groups, rounds, category);
-  const steps = sections.flatMap((section) => section.findings.map((finding) => finding.id));
+  const shownIds = (list: readonly ListSection[]) => list.flatMap((section) => section.findings.flatMap((finding) => [finding.id, ...(expanded.has(finding.id) ? (groups.cards.get(finding.id)?.copies ?? []).map((copy) => copy.id) : [])]));
+  const steps = [...shownIds(sections), ...(asideOpen ? shownIds(asideSections) : [])];
   const open = (findingId: string) => onOpen(findingId, steps);
 
   return (
@@ -196,7 +212,7 @@ export function FullCheckResult(props: FullCheckResultProps) {
           >
             <span className="flex min-h-9 min-w-0 items-start gap-1.5 text-[13px] leading-[18px] font-semibold max-md:min-h-8 max-md:text-xs max-md:leading-4"><OutcomeGlyph kind={each} className="max-md:size-4" /><span className="min-w-0 break-words">{TAB_WORDS[each].word}</span></span>
             <span data-slot="chat-result-count" className={cn('num text-[26px] leading-9 font-medium tracking-[-0.02em] max-md:text-2xl max-md:leading-8', counts[each] === 0 ? 'text-muted-foreground/60' : COUNT_TONE[each])}>{counts[each]}</span>
-            <span className="text-xs leading-[17px] text-muted-foreground max-md:hidden">{tileHint(each, counts[each])}</span>
+            <span className="text-xs leading-[17px] text-muted-foreground max-md:hidden">{tileHint(each, counts[each], each === 'not_compared' ? groups.aside.length : 0)}</span>
           </button>
         ))}
       </div>
@@ -234,17 +250,33 @@ export function FullCheckResult(props: FullCheckResultProps) {
       </div>
 
       <div id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${tab}`} data-slot="chat-result-list" data-tab={tab} data-order={order} key={`${tab}-${order}`} className="chat-fade-in min-w-0 overflow-hidden rounded-[14px] border bg-card">
-        {shown.length === 0 && <p className="px-4 py-6 text-center text-sm text-muted-foreground">{inTab.length ? 'Nothing for this product.' : EMPTY_WORDS[tab]}</p>}
+        {shown.length === 0 && <p className="px-4 py-6 text-center text-sm text-muted-foreground">{inTab.length ? 'Nothing for this product.' : aside.length ? 'No questions left: everything else has nothing to compare.' : EMPTY_WORDS[tab]}</p>}
         {sections.map((section) => (
           <div key={section.key} data-slot={section.slot} data-reason={section.reason} data-round={section.round} data-page={section.page}>
             {section.page !== undefined
               ? <PageHead heading={pageHeading(section.page, pageTitles, section.findings)} count={section.findings.length} noDrawing={neededPages.has(section.page)} />
               : section.words && <GroupHead words={section.words} note={section.note} count={section.findings.length} kind={section.kind} />}
             {section.findings.map((finding) => (
-              <Row key={finding.id} tab={tab} finding={finding} dismissed={groups.dismissed.includes(finding)} closed={section.round === 'closed'} number={commentNumber(finding, packageState)} pictureUrl={pictureUrl} onOpen={open} noDrawing={neededPages.has(finding.page)} inRequest={!request?.leftOut.has(finding.page)} underPage={section.page !== undefined} />
+              <CardBlock key={finding.id} card={groups.cards.get(finding.id) ?? null} open={expanded.has(finding.id)} onToggle={() => toggle(finding.id)} onOpen={open} wide={(tab === 'wrong' && section.round !== 'closed') || tab === 'likely_problem'}>
+                <Row tab={tab} finding={finding} card={groups.cards.get(finding.id) ?? null} dismissed={groups.dismissed.includes(finding)} closed={section.round === 'closed'} number={commentNumber(finding, packageState)} pictureUrl={pictureUrl} onOpen={open} noDrawing={neededPages.has(finding.page)} inRequest={!request?.leftOut.has(finding.page)} underPage={section.page !== undefined} />
+              </CardBlock>
             ))}
           </div>
         ))}
+        {aside.length > 0 && (
+          <AsideList count={aside.length} open={asideOpen} onToggle={() => setAsideOpen(!asideOpen)}>
+            {asideSections.map((section) => (
+              <div key={section.key} data-slot={section.slot} data-reason={section.reason}>
+                <GroupHead words={section.words} count={section.findings.length} quiet />
+                {section.findings.map((finding) => (
+                  <CardBlock key={finding.id} card={groups.cards.get(finding.id) ?? null} open={expanded.has(finding.id)} onToggle={() => toggle(finding.id)} onOpen={open}>
+                    <Row tab="not_compared" finding={finding} card={groups.cards.get(finding.id) ?? null} dismissed={false} closed={false} number={null} pictureUrl={pictureUrl} onOpen={open} noDrawing={neededPages.has(finding.page)} inRequest={!request?.leftOut.has(finding.page)} underPage={false} />
+                  </CardBlock>
+                ))}
+              </div>
+            ))}
+          </AsideList>
+        )}
       </div>
 
       {summary && <SummaryFold>{summary}</SummaryFold>}
@@ -304,18 +336,128 @@ function listSections(tab: ResultTab, shown: readonly ChatFinding[], order: List
     ];
   }
   if (tab === 'rule_note') return shown.length ? [{ key: 'rule', slot: 'chat-result-rule-notes', words: PROOF_WORDS.rule_note, note: 'nothing is asked of the vendor', kind: 'rule_note', findings: [...shown] }] : [];
+  // Plan change #8: please-check questions grouped by an identical reason, each group headed by it.
+  if (tab === 'likely_problem') return likelyGroups(shown, groups.cards).map((group) => ({ key: `q-${group.key}`, slot: 'chat-result-question', reason: group.key, words: group.words, findings: group.findings }));
   if (tab === 'not_compared') return notComparedGroups(shown).map((group) => ({ key: group.reason, slot: 'chat-result-reason', reason: group.reason, words: group.words, findings: group.findings }));
   return shown.length ? [{ key: tab, slot: 'chat-result-section', findings: [...shown] }] : [];
 }
 
-function Row({ tab, finding, dismissed, closed, number, pictureUrl, onOpen, noDrawing, inRequest, underPage }: { tab: ResultTab; finding: ChatFinding; dismissed: boolean; closed: boolean; number: string | null; pictureUrl: (pictureId: string) => string; onOpen: (findingId: string) => void; noDrawing: boolean; inRequest: boolean; underPage: boolean }) {
+function Row({ tab, finding, card = null, dismissed, closed, number, pictureUrl, onOpen, noDrawing, inRequest, underPage }: { tab: ResultTab; finding: ChatFinding; card?: ResultCard | null; dismissed: boolean; closed: boolean; number: string | null; pictureUrl: (pictureId: string) => string; onOpen: (findingId: string) => void; noDrawing: boolean; inRequest: boolean; underPage: boolean }) {
   if (isDrawingNeededItem(finding)) return <DrawingNeededRow finding={finding} onOpen={onOpen} inRequest={inRequest} />;
   // Under its page's heading a row does not say its page, area or "no architect drawing" again.
   const where = underPage ? false : noDrawing;
-  if (tab === 'wrong' && !closed) return <WrongRow finding={finding} number={number} pictureUrl={pictureUrl} onOpen={onOpen} noDrawing={where} underPage={underPage} />;
-  if (tab === 'likely_problem') return <WrongRow finding={finding} number={null} pictureUrl={pictureUrl} onOpen={onOpen} noDrawing={where} underPage={underPage} likely />;
+  const pill = cardPillWords(card);
+  if (tab === 'wrong' && !closed) return <WrongRow finding={finding} number={number} pictureUrl={pictureUrl} onOpen={onOpen} noDrawing={where} underPage={underPage} pill={pill} />;
+  if (tab === 'likely_problem') return <WrongRow finding={finding} number={null} pictureUrl={pictureUrl} onOpen={onOpen} noDrawing={where} underPage={underPage} likely pill={pill} />;
   const kind = tab === 'right' || closed ? (dismissed ? 'dismissed' : 'right') : tab === 'rule_note' ? 'rule_note' : 'not_compared';
-  return <CompactRow kind={kind} finding={finding} onOpen={onOpen} underPage={underPage} />;
+  return <CompactRow kind={kind} finding={finding} onOpen={onOpen} underPage={underPage} pill={pill} />;
+}
+
+/**
+ * Plan change #8: a card, its row first; when the same question is on other pages (or twice on this
+ * one), a quiet line under the row names them and opens the copies as small rows, each to its own
+ * drawer (its own crop and decision). Nothing is hidden: every copy is one click away.
+ */
+function CardBlock({ card, open, onToggle, onOpen, wide = false, children }: { card: ResultCard | null; open: boolean; onToggle: () => void; onOpen: (findingId: string) => void; wide?: boolean; children: React.ReactNode }) {
+  const id = useId();
+  const copies = card?.copies ?? [];
+  // The line starts where the row's words start: after the glyph on a compact row, at the edge on a big one.
+  const indent = wide ? 'pl-[18px] max-md:pl-3.5' : 'pl-[46px] max-md:pl-[42px]';
+  const many = copies.length === 1 ? 'the copy' : `the ${copies.length} copies`;
+  return (
+    <div data-slot="chat-result-card" data-copies={copies.length || undefined} className="min-w-0 border-t first:border-t-0 [&>[data-slot=chat-result-row]]:border-t-0">
+      {children}
+      {card && copies.length > 0 && (
+        <>
+          <button
+            type="button"
+            data-slot="chat-result-copies-toggle"
+            aria-expanded={open}
+            aria-controls={id}
+            onClick={onToggle}
+            className={cn('group/copies -mt-1.5 flex w-fit max-w-full min-w-0 items-center gap-1 py-1.5 pr-[18px] pb-3 text-left text-[12.5px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset', indent)}
+          >
+            <ChevronRight aria-hidden="true" className={cn('-ml-0.5 size-3.5 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none', open && 'rotate-90')} />
+            <span className="min-w-0 underline decoration-foreground/20 underline-offset-[3px] group-hover/copies:decoration-foreground/60">{open ? `Hide ${many}` : <>Show {many} on <span className="num">{copiesWords(card)}</span></>}</span>
+          </button>
+          <Collapse open={open} id={id}>
+            <ul data-slot="chat-result-copies" aria-label="The other copies of this question" className={cn('grid min-w-0 gap-px pr-[18px] pb-3 max-md:pr-3.5', wide ? 'pl-2.5 max-md:pl-1.5' : 'pl-[34px] max-md:pl-[30px]')}>
+              {copies.map((copy) => <CopyRow key={copy.id} finding={copy} group={card.group} onOpen={onOpen} />)}
+            </ul>
+          </Collapse>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** One other copy of a card's question: its page, what it measures, its values; opens its own drawer. */
+function CopyRow({ finding, group, onOpen }: { finding: ChatFinding; group: string; onOpen: (findingId: string) => void }) {
+  const { area, thing } = itemParts(finding.item);
+  const vendor = vendorValue(finding).main;
+  const architect = finding.architect?.trim() ? shortValue(finding.architect.replace(/"/g, '″').replace(/'/g, '′'), 22).short : null;
+  const kind: 'wrong' | 'likely_problem' | 'right' | 'rule_note' | 'not_compared' = group === 'clouded' ? 'wrong' : group === 'likely_problem' ? 'likely_problem' : group === 'right' || group === 'dismissed' ? 'right' : group === 'rule_note' ? 'rule_note' : 'not_compared';
+  return (
+    <li className="min-w-0">
+      <button
+        type="button"
+        data-slot="chat-result-copy"
+        data-id={finding.id}
+        aria-label={`${thing}, page ${finding.page}. Open this copy`}
+        onClick={() => onOpen(finding.id)}
+        className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-2.5 gap-y-0.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none max-md:grid-cols-[auto_minmax(0,1fr)]"
+      >
+        <OutcomeGlyph kind={kind} className="mt-0.5 size-4 [&_svg]:size-2.5" />
+        <span className="min-w-0 text-[13px] leading-5 break-words text-foreground">
+          <span className="num mr-2 text-xs text-muted-foreground">p.{finding.page}</span>
+          {area ? `${area}: ` : ''}{thing}
+          {endsNotProved(finding) && <> <EndsNote /></>}
+        </span>
+        <span className="num text-right text-[13px] leading-5 whitespace-nowrap text-foreground max-md:col-start-2 max-md:text-left">
+          {shortValue(vendor, 16).short}
+          {architect && <span className="text-xs text-muted-foreground"> · {architect}</span>}
+        </span>
+      </button>
+    </li>
+  );
+}
+
+/** #1953: a Right whose two dimensions code could not prove end at the same kinds of points. */
+function EndsNote() {
+  return <span data-slot="chat-result-ends" className="rounded-[5px] border border-dashed px-1.5 text-xs leading-[18px] whitespace-nowrap text-muted-foreground">{ENDS_NOT_PROVED_WORDS}</span>;
+}
+
+/**
+ * Plan change #8: the Not-compared tab's last row, collapsed: "Nothing to compare here", its count,
+ * and why these are not questions. Open, it lists them by reason. They are out of the work list,
+ * never out of sight.
+ */
+function AsideList({ count, open, onToggle, children }: { count: number; open: boolean; onToggle: () => void; children: React.ReactNode }) {
+  const id = useId();
+  return (
+    <div data-slot="chat-result-aside" className="border-t">
+      <button
+        type="button"
+        data-slot="chat-result-aside-toggle"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={onToggle}
+        className="flex w-full min-w-0 items-center justify-between gap-3 bg-muted/40 px-4 py-3 text-left text-[13px] transition-colors hover:bg-muted/70 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
+      >
+        <span className="flex min-w-0 items-start gap-2">
+          <ChevronRight aria-hidden="true" className={cn('mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ease-out motion-reduce:transition-none', open && 'rotate-90')} />
+          <span className="min-w-0">
+            <span className="font-semibold">Nothing to compare here</span>
+            <span className="block text-[12.5px] text-muted-foreground">The reference gives no size, measures a different extent, or says verify in field: nothing to decide. Open to look at them.</span>
+          </span>
+        </span>
+        <span className="num shrink-0 font-medium text-muted-foreground">{count}</span>
+      </button>
+      <Collapse open={open} id={id}>
+        <div className="border-t">{children}</div>
+      </Collapse>
+    </div>
+  );
 }
 
 // ── The outcome glyph: colour never alone ─────────────────────
@@ -551,9 +693,9 @@ function FileRow({ icon: Icon, name, file, href, note }: { icon: typeof FileText
 
 // ── Rows ──────────────────────────────────────────────────
 
-function GroupHead({ words, count, kind, note }: { words: string; count: number; kind?: ResultTab; note?: string }) {
+function GroupHead({ words, count, kind, note, quiet = false }: { words: string; count: number; kind?: ResultTab; note?: string; quiet?: boolean }) {
   return (
-    <p data-slot="chat-result-group" data-kind={kind} className="flex items-center justify-between gap-3 border-t bg-muted/40 px-4 py-2.5 text-[13px] font-semibold first:border-t-0">
+    <p data-slot="chat-result-group" data-kind={kind} className={cn('flex items-center justify-between gap-3 border-t px-4 py-2.5 text-[13px] first:border-t-0', quiet ? 'pl-[46px] font-medium text-muted-foreground max-md:pl-[42px]' : 'bg-muted/40 font-semibold')}>
       <span className="flex min-w-0 items-center gap-2">
         {kind && <OutcomeGlyph kind={kind} className="size-4 [&_svg]:size-2.5" />}
         <span className="min-w-0">{words}{note && <span className="font-normal text-muted-foreground"> · {note}</span>}</span>
@@ -563,9 +705,10 @@ function GroupHead({ words, count, kind, note }: { words: string; count: number;
   );
 }
 
-function Where({ finding, number, likely = false, noDrawing = false, underPage = false }: { finding: ChatFinding; number?: string | null; likely?: boolean; noDrawing?: boolean; underPage?: boolean }) {
+function Where({ finding, number, likely = false, noDrawing = false, underPage = false, pill = null }: { finding: ChatFinding; number?: string | null; likely?: boolean; noDrawing?: boolean; underPage?: boolean; pill?: string | null }) {
   const { area } = itemParts(finding.item);
-  if (underPage && !number && !likely && !finding.round_match?.words) return null;
+  const ends = endsNotProved(finding);
+  if (underPage && !number && !likely && !finding.round_match?.words && !pill && !ends) return null;
   return (
     <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
       {number && (
@@ -580,6 +723,8 @@ function Where({ finding, number, likely = false, noDrawing = false, underPage =
       )}
       {area && !underPage && <span className="min-w-0">{area}</span>}
       {!underPage && <span className="num text-xs">p.{finding.page}</span>}
+      {pill && <span data-slot="chat-result-pill" className="rounded-full border px-2 text-xs leading-[18px] whitespace-nowrap text-foreground/80">{pill.split(/(\d+)/).map((part, at) => (at % 2 ? <span key={at} className="num">{part}</span> : part))}</span>}
+      {ends && <EndsNote />}
       {noDrawing && <span data-slot="chat-result-no-drawing" className="rounded-[5px] border px-1.5 text-xs leading-[18px]">no architect drawing</span>}
       {finding.round_match?.words && (
         // Information only (2026-10-22): the vendor's own earlier round is never counted as right.
@@ -673,7 +818,7 @@ function WordsBox({ who, children }: { who: string; children: React.ReactNode })
   );
 }
 
-function WrongRow({ finding, number, pictureUrl, onOpen, noDrawing = false, likely = false, underPage = false }: { finding: ChatFinding; number: string | null; pictureUrl: (pictureId: string) => string; onOpen: (findingId: string) => void; noDrawing?: boolean; likely?: boolean; underPage?: boolean }) {
+function WrongRow({ finding, number, pictureUrl, onOpen, noDrawing = false, likely = false, underPage = false, pill = null }: { finding: ChatFinding; number: string | null; pictureUrl: (pictureId: string) => string; onOpen: (findingId: string) => void; noDrawing?: boolean; likely?: boolean; underPage?: boolean; pill?: string | null }) {
   const { thing } = itemParts(finding.item);
   const claim = likely ? finding.proof?.likely_problem?.words?.replace(/^please check and confirm:\s*/i, '').trim() : null;
   return (
@@ -687,7 +832,7 @@ function WrongRow({ finding, number, pictureUrl, onOpen, noDrawing = false, like
       className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-5 border-t px-[18px] py-4 text-left transition-colors first:border-t-0 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset max-md:grid-cols-1 max-md:gap-3 max-md:px-3.5"
     >
       <span className="grid min-w-0 gap-1.5">
-        <Where finding={finding} number={number} likely={likely} noDrawing={noDrawing} underPage={underPage} />
+        <Where finding={finding} number={number} likely={likely} noDrawing={noDrawing} underPage={underPage} pill={pill} />
         <span className="text-[15px] leading-[22px] font-medium tracking-[-0.005em] text-foreground">{thing}</span>
         {likely ? <LikelyLine finding={finding} claim={claim ?? null} /> : <ValuesLine finding={finding} />}
       </span>
@@ -749,7 +894,7 @@ function PageHead({ heading, count, noDrawing }: { heading: ReturnType<typeof pa
   );
 }
 
-function CompactRow({ kind, finding, onOpen, underPage = false }: { kind: 'right' | 'rule_note' | 'not_compared' | 'dismissed'; finding: ChatFinding; onOpen: (findingId: string) => void; underPage?: boolean }) {
+function CompactRow({ kind, finding, onOpen, underPage = false, pill = null }: { kind: 'right' | 'rule_note' | 'not_compared' | 'dismissed'; finding: ChatFinding; onOpen: (findingId: string) => void; underPage?: boolean; pill?: string | null }) {
   const { thing } = itemParts(finding.item);
   // A vendor string code did not compare: its numbers are the AI's unproven reading, never shown as values (2026-10-23).
   // A pairing-unsure page has no value to show (its row names the candidate pages).
@@ -770,7 +915,7 @@ function CompactRow({ kind, finding, onOpen, underPage = false }: { kind: 'right
       <OutcomeGlyph kind={kind === 'dismissed' ? 'right' : kind} className="mt-0.5" />
       <span className="grid min-w-0 gap-0.5">
         <span className="text-sm leading-5 font-medium text-foreground">{thing}</span>
-        <Where finding={finding} underPage={underPage} />
+        <Where finding={finding} underPage={underPage} pill={pill} />
         {kind === 'not_compared' && <span className="text-[13px] text-muted-foreground">Needs <span className="font-medium text-foreground/80">{neededWords(finding).replace(/"/g, '″')}</span></span>}
         {note && <span data-slot="chat-result-rule" className="text-[13px] text-muted-foreground">{note.standard.replace(/"/g, '″')} · <span className="font-medium text-outcome-ask-fg">ask the architect</span></span>}
         {kind === 'dismissed' && <span className="text-[13px] text-muted-foreground">Right (reviewer){finding.decision?.by ? ` · marked by ${finding.decision.by}` : ''}{finding.decision?.note ? ` · “${finding.decision.note}”` : ''}</span>}
