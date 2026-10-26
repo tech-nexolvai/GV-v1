@@ -2165,8 +2165,9 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     relinked = {str(f["id"]): judged(f) for f in linked.changed}
     live = [relinked.get(str(f["id"]), f) for f in live if str(f["id"]) not in linked.absorbed]
     result.changed.extend(relinked.values())
-    # How each Wrong's numbers were read, before any step groups them (final plan #2).
-    _mark_reading(live, ctx, result)
+    # How each Wrong's numbers were read, before any step groups them (final plan #2): kept with
+    # the items the ladder tries and recorded on every item at the end (a Stop leaves the rest).
+    _mark_reading(live, ctx, None)
     early = _before_ladder(live, ctx, result)
     by_id = {str(f["id"]): f for f in live}
     areas = _areas(ctx)
@@ -2204,7 +2205,7 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
                 _pairs_step(item, ctx)
             if item.changed:
                 item.finding.update(judged(item.finding))
-                _mark_reading([item.finding], ctx, None)
+                _mark_reading([item.finding], ctx, None, stops=False)
             after = proof.proof_group(item.finding)
             if item.outcome is None and before != after and after in ("clouded", "right"):
                 item.outcome = "wrong" if after == "clouded" else "right"
@@ -2229,7 +2230,11 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
 
 
 def _mark_reading(
-    live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation | None
+    live: Sequence[dict[str, Any]],
+    ctx: EscalationContext,
+    result: Escalation | None,
+    *,
+    stops: bool = True,
 ) -> None:
     """Each Wrong's record of how the numbers it rests on were read (`reading_routes.mark`, final
     plan #2): each label's reading route, its millimetres, and its drawn length at its view's fit
@@ -2253,8 +2258,12 @@ def _mark_reading(
             return label_routes(ctx.reread, label)
 
     for finding in live:
+        if stops and ctx.stop is not None and ctx.stop():
+            return  # Stop: the items stay as they are (Continue records them)
         if result is not None and str(finding.get("id")) in result.absorbed:
             continue
+        if isinstance(finding.get("decision"), Mapping) and finding["decision"].get("decision"):
+            continue  # the reviewer decided it: the reviewer is its witness
         try:
             changed = reading_routes.mark(finding, labels_of, fit_of, ctx.typed, numbers)
         except Exception:  # noqa: BLE001 - no record: the item is judged on its labels alone

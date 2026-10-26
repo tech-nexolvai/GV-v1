@@ -50,6 +50,8 @@ from app.review.assistant.proof_drawing import (
 )
 
 WIDTH, HEIGHT = 1000.0, 700.0
+from tests.review.assistant.reading_fixture import two_routes
+
 #: The full check's devil's advocate passing an item (#1611): the pairing is proved.
 ADVOCATE_PASSED: dict[str, Any] = {
     "result": "passed",
@@ -125,7 +127,7 @@ def _proved(**changes: Any) -> dict[str, Any]:
         "critic": ADVOCATE_PASSED,
     }
     finding.update(changes)
-    return finding
+    return two_routes(finding)
 
 
 def _ai_only(**changes: Any) -> dict[str, Any]:

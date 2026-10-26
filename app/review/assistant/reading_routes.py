@@ -518,8 +518,9 @@ def verdict(finding: Mapping[str, Any]) -> Verdict:
             if label is None:
                 inches = finding.get("inches") if isinstance(finding.get("inches"), Mapping) else {}
                 if side == "vendor" or (inches or {}).get(side) is not None:
-                    # A number with no label: only the checks at its spot read it.
-                    values.append(Value(side, "", str(finding.get(side) or "")))
+                    # A number with no label: its record, else only the checks at its spot.
+                    kept = next((v for v in stored or () if v.side == side and not v.label), None)
+                    values.append(kept or Value(side, "", str(finding.get(side) or "")))
                 continue
             kept = by_key.get(_key(label))
             values.append(kept if kept is not None else _label_value(label, side, None))

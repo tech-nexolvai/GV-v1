@@ -22,6 +22,7 @@ from app.review.assistant.chat_summary import (
     top_issues,
 )
 from tests.review.assistant.chat_fakes import ScriptedProvider, events_named, reply, text, tool
+from tests.review.assistant.reading_fixture import two_routes
 from tests.review.assistant.test_chat_engine import DOLLARS, Harness
 from tests.review.assistant.test_chat_engine_findings import _full_check, _modules
 from tests.review.assistant.test_chat_findings import finding_input, workspace_with_pdf
@@ -59,14 +60,16 @@ def _finding(
 
 def _code_proved(item: str, **more: Any) -> dict[str, Any]:
     """A Wrong code proved: both values printed at their spots, paired by code."""
-    return {
-        **_finding(item, **more),
-        "trust_level": "confirmed",
-        "witnesses": ["printed"],
-        "paired_by": "code",
-        "checks": {"printed_architect": "match", "printed_vendor": "match"},
-        "inches": {"architect": "37", "vendor": "46", "difference": "9"},
-    }
+    return two_routes(
+        {
+            **_finding(item, **more),
+            "trust_level": "confirmed",
+            "witnesses": ["printed"],
+            "paired_by": "code",
+            "checks": {"printed_architect": "match", "printed_vendor": "match"},
+            "inches": {"architect": "37", "vendor": "46", "difference": "9"},
+        }
+    )
 
 
 # ---- the instruction --------------------------------------------------------------------------
@@ -127,13 +130,15 @@ def test_code_writes_the_summary_only_when_the_ai_did_not() -> None:
 
 def _proved(finding: dict[str, Any]) -> dict[str, Any]:
     """A Wrong item code proved by itself (GV's rule check fails it): clouded."""
-    return {
-        **finding,
-        "source": "rules",
-        "rule_check_id": "C1",
-        "witnesses": ["rule"],
-        "checks": {"rule": "agrees"},
-    }
+    return two_routes(
+        {
+            **finding,
+            "source": "rules",
+            "rule_check_id": "C1",
+            "witnesses": ["rule"],
+            "checks": {"rule": "agrees"},
+        }
+    )
 
 
 def _summary(stopped: str | None, cap_hit: str | None = None) -> str:
@@ -240,6 +245,7 @@ def _ends_with_code_summary(outcome: Any, harness: Harness) -> dict[str, Any]:
     return summary[0]
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_full_check_stopped_at_the_cap_writes_the_summary_and_makes_both_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -334,6 +340,7 @@ def test_a_full_check_that_ends_with_no_words_gets_the_summary(
     assert "Stopped" not in summary and outcome.text == summary
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_ai_s_own_summary_is_kept_and_code_writes_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

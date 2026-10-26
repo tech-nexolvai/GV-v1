@@ -234,6 +234,7 @@ def _stored(finding: Mapping[str, Any]) -> dict[str, Any]:
 # ---- the red path -----------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_verified_pair_the_blind_look_agrees_with_is_red_and_clouded() -> None:
     found = _one(_pair("p2.D1", "p1.D1"))
     assert found.outcome == "candidate" and found.needs_blind and found.verdict == "wrong"

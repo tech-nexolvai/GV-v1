@@ -71,6 +71,7 @@ def _phase(name: str, step: str | None = None) -> Any:
     )
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_drawings_phases_and_proved_findings_arrive_in_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

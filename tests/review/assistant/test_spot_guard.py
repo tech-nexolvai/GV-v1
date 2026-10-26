@@ -8,6 +8,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import pytest
+
 from app.review.assistant.spot_guard import dropped, unbacked
 
 BOX = {"page": 3, "x0": 10.0, "y0": 10.0, "x1": 40.0, "y1": 20.0, "file": "set.pdf"}
@@ -105,6 +107,7 @@ def test_a_found_difference_is_kept_when_only_the_vendors_number_has_no_spot() -
     assert unbacked(finding(vendor='49 1/4"'), labels) is not None
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_found_difference_kept_without_the_vendors_spot_is_never_code_proved() -> None:
     """The kept item above is listed, never red (#1808 review): with every other proof in place,
     a difference between two drawings with no vendor spot (no box, no label) is not code-proved,

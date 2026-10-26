@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from app.review.assistant.chat_unknowns import unknown_records
 from app.review.assistant.proof import proof_group
 
@@ -24,6 +26,7 @@ def _drawn(fid: str, **more: Any) -> dict[str, Any]:
     }
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_proved_item_drawn_in_pen_strokes_is_not_unknown() -> None:
     proved = _drawn(
         "F12",

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from app.review.assistant import proof
 from app.review.assistant.escalation import (
     FREE_STEPS,
@@ -129,6 +131,7 @@ def test_the_ladder_is_cheapest_first_and_every_step_tried_is_kept() -> None:
     assert result.tried == 1 and result.settled == {}
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_code_s_own_pairing_makes_a_code_read_difference_red() -> None:
     result = escalate([_wrong()], _ctx(pairs={"p3.D1": "p3.D2"}))
     finding = _by_id(result)["F1"]
@@ -179,6 +182,7 @@ def test_one_size_under_gvs_markup_is_the_vendors_value() -> None:
     assert proof.proof_group(finding) == "not_compared"  # the architect's side is not read
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_same_item_on_another_round_or_a_proven_copy_carries_it() -> None:
     older = _wrong(id="F1", page=3, round=1)
     newer = _wrong(id="F5", page=4, round=2, vendor_box=_box((300, 300), page=4))
@@ -205,6 +209,7 @@ def test_the_same_item_on_another_round_or_a_proven_copy_carries_it() -> None:
     assert elsewhere.absorbed == {}
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_vendor_string_code_proved_carries_the_question_about_it() -> None:
     string = {
         **_wrong(id="C1", created_by="consistency", source="vendor_arithmetic"),
@@ -239,6 +244,7 @@ def test_a_tag_item_is_never_made_red_here() -> None:
     assert proof.proof_group(finding) == "not_compared" and "missing_tags" not in finding
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_items_already_settled_or_decided_are_left_alone() -> None:
     right = _wrong(id="R1", status="same", compared=True)
     agreed = _wrong(id="A1", decision={"decision": "agree", "by": "Ann"})
@@ -320,6 +326,7 @@ class _Reading:
         }
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_vendor_value_with_no_spot_is_sent_to_the_read_number_tool() -> None:
     asked: list[Any] = []
 
@@ -330,7 +337,9 @@ def test_a_vendor_value_with_no_spot_is_sent_to_the_read_number_tool() -> None:
     finding = _wrong(vendor_box=None, dims={"architect": {"id": "D3", "page": 3, "file": FILE}})
     result = escalate([finding], EscalationContext(main_file=FILE, reread=unread))
     found = result.changed[0]
-    assert [(r.file, r.page, r.side, r.claim) for r in asked] == [(FILE, 3, "vendor", '46"')]
+    # The vendor value is asked for by its claim; the reading record asks for labels by id only.
+    claims = [(r.file, r.page, r.side, r.claim) for r in asked if r.claim is not None]
+    assert claims == [(FILE, 3, "vendor", '46"')]
     assert found["checks"]["verify_vendor"]["result"] == "cannot_read"
     assert found["status"] == "different" and found.get("vendor_box") is None
     assert proof.proof_group(found) == "not_compared"  # listed, never red
@@ -351,6 +360,7 @@ def test_a_value_that_has_its_spot_is_never_re_read() -> None:
     escalate([_wrong()], EscalationContext(main_file=FILE, reread=never))
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_stop_ends_the_ladder_and_counts_each_item_tried() -> None:
     """2026-10-23: Stop pressed during the free steps: no further item is tried (each one tried
     keeps what code found; a Continue tries the rest), and the live line counts the items."""

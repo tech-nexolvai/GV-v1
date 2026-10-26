@@ -47,3 +47,15 @@ def blocks_read_back(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     monkeypatch.setattr(chat_engine.ChatEngine, "stored_blocks", read_back)
     yield refused
     assert not refused, f"blocks the read model refuses: {sorted(set(refused))[:10]}"
+
+
+@pytest.fixture
+def read_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every number a red rests on counts as read by two different routes (`reading_routes.held`
+    passes it): for tests of other steps whose made-up pages have no line work and no drawings-only
+    copy, so code has only the text to read their numbers by. The reading rule itself is tested in
+    `test_reading_routes.py`; a made-up finding can carry its record instead
+    (`reading_fixture.two_routes`)."""
+    from app.review.assistant import reading_routes
+
+    monkeypatch.setattr(reading_routes, "held", lambda finding: None)

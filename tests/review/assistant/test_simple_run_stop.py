@@ -263,6 +263,7 @@ def test_a_stop_mid_compare_keeps_and_verifies_every_paid_answer(
     assert len(check.ledger.rows) == 2 and outcome.cost_micros > 0
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_saved_answers_and_blind_looks_replay_to_the_same_items_at_no_cost(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

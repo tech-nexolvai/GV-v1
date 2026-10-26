@@ -285,6 +285,7 @@ def _string(page: int, printed: str = "18", summed: str = "20 3/8") -> dict[str,
     }
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_biggest_issues_call_a_strings_sum_the_vendors_parts() -> None:
     text = code_summary(
         [_string(27), _string(44)],
@@ -298,6 +299,7 @@ def test_the_biggest_issues_call_a_strings_sum_the_vendors_parts() -> None:
     assert "architect" not in issues
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_first_line_never_contradicts_the_wrong_count() -> None:
     """Was: "Checked 0 of 109 pages ... 8 wrong"."""
     text = code_summary(

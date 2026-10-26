@@ -354,6 +354,7 @@ def test_a_vendor_that_breaks_the_rule_is_wrong_with_the_rules_value(
         assert red["run_fit"]["proof"] in red["why"]
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_greens_and_the_proofs_of_the_wrong_parts() -> None:
     """The vendor narrowed the fillers instead of the doors: 1 1/2" + 24" + 3 x 16" + 1 1/2" = 75"."""
     design = cabinet_run(F(3), F(24), [F(16)] * 3)

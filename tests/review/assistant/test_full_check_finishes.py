@@ -153,6 +153,7 @@ class _CutWithCalls(_Roster):
         return super().helper(params, brief)
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_reply_cut_with_tool_calls_runs_them_and_is_sent_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

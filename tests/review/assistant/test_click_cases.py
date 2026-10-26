@@ -11,25 +11,28 @@ from typing import Any
 import pytest
 
 from app.review.assistant import check_record, click_cases, proof
+from tests.review.assistant.reading_fixture import two_routes
 
 
 def _proved(**more: Any) -> dict[str, Any]:
     """A size the vendor prints against the architect's, proved by code (made-up values)."""
-    return {
-        "id": "F1",
-        "page": 3,
-        "item": "Vanity: top width",
-        "status": "different",
-        "vendor": '50"',
-        "architect": '48"',
-        "source": "architect",
-        "checks": {"printed_architect": "match", "printed_vendor": "match"},
-        "trust_level": "confirmed",
-        "witnesses": ["printed"],
-        "paired_by": "code",
-        "inches": {"architect": "48", "vendor": "50", "difference": "2"},
-        **more,
-    }
+    return two_routes(
+        {
+            "id": "F1",
+            "page": 3,
+            "item": "Vanity: top width",
+            "status": "different",
+            "vendor": '50"',
+            "architect": '48"',
+            "source": "architect",
+            "checks": {"printed_architect": "match", "printed_vendor": "match"},
+            "trust_level": "confirmed",
+            "witnesses": ["printed"],
+            "paired_by": "code",
+            "inches": {"architect": "48", "vendor": "50", "difference": "2"},
+            **more,
+        }
+    )
 
 
 def _ai_only(**more: Any) -> dict[str, Any]:

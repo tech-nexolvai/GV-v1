@@ -17,6 +17,7 @@ from typing import Any
 
 import numpy as np
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
+import pytest
 from pypdf import PdfReader
 from reportlab.pdfgen import canvas  # type: ignore[import-untyped]
 
@@ -141,6 +142,7 @@ def test_the_fit_lines_the_rounds_up_and_refuses_another_view() -> None:
     assert none is None and why is not None and "too few" in why
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_fixed_still_wrong_and_new_are_decided_by_the_printed_values() -> None:
     findings = [
         _finding("F1", '46"', '37"'),  # round 2 prints 37": fixed
@@ -216,6 +218,7 @@ def test_what_round_one_could_not_compare_is_rechecked_on_round_two() -> None:
     assert item.status == "still_not_compared"
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_change_that_is_still_not_right_is_still_wrong() -> None:
     second = {ROUND_TWO_VALUES.get(t, t): _moved(at) for t, at in ROUND_ONE.items()}
     second['36"'] = second.pop('37"')
@@ -278,6 +281,7 @@ def _colour_near(pdf: Path, index: int, at: tuple[float, float], colour: Any) ->
     return int((np.abs(area - target).max(axis=2) < 40).sum())
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_drawing_marks_round_two_and_summarises_it(tmp_path: Path) -> None:
     sheet = _sheet(tmp_path / "sheet.pdf")
     findings = [
@@ -328,6 +332,7 @@ def test_the_grey_list_names_what_round_two_could_not_compare(tmp_path: Path) ->
     assert "code would not guess" in notes
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_full_check_reads_the_set_pack_for_round_two(tmp_path: Path) -> None:
     """`make_proof_file`'s round-2 step: the pack's labels and page map, the ink check run on the
     real pages, the same answer."""
@@ -402,6 +407,7 @@ def test_a_finding_recorded_as_round_two_is_never_followed_as_a_round_one_commen
     assert "F9" not in report.by_finding()
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_one_item_has_one_round_verdict_and_s3_counts_the_letters_list() -> None:
     """The pipeline audit: round 1's comment could not be followed (its ink changed) while the
     round-2 item at the same place said "also in round 1: previous comment not addressed"; the

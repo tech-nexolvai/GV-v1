@@ -476,6 +476,7 @@ def _strings_run(harness: Any) -> Any:
     return run
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_string_two_blind_readings_agree_on_is_red(tmp_path: Path) -> None:
     script = _Strings(_chains((FIVE, '38 1/2"')))
     harness = _roster(tmp_path, script)

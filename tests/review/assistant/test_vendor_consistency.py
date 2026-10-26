@@ -808,6 +808,7 @@ def test_a_grouped_string_code_could_not_measure_is_never_red() -> None:
     assert found.why.startswith('parts 7 1/2" + 31 1/2" + 4 1/4" = 43 1/4"; printed 58 1/4"')
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_grouped_string_that_is_codes_own_chain_is_verified(tmp_path: Path) -> None:
     from app.review.assistant import proof
 
@@ -919,6 +920,7 @@ def test_the_line_work_is_read_once_per_set_and_kept_in_its_pack(
     assert vc.line_work(uploads)("set.pdf", 6) == segments and calls == [2, 3, 5]
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_two_readings_of_a_string_an_eighth_off_make_it_red() -> None:
     """Two readings agreeing on a five-part string 1/8" off its overall: code's sum proves it does
     not add up, and GV counts that as a vendor mistake (GV's rule: exact match, flag everything), so it

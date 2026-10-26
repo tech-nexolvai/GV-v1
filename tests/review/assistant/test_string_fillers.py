@@ -32,6 +32,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from app.review.assistant import classification, full_check_roster, proof
 from app.review.assistant.full_check_advocate import (
     INCOMPLETE,
@@ -214,6 +216,7 @@ def test_a_right_overall_with_filler_notes_at_its_ends_is_never_red(tmp_path: Pa
     assert any(b["finding_id"] == finding_id and "filler" in b["reason"] for b in dropped)
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_wrong_overall_is_red_only_with_the_architects_own_value(tmp_path: Path) -> None:
     """The paid run's second: the overall printed 57" over a run whose parts and fillers make
     56", the architect printing 56" over the same parts: red, and "should be" 56" (never 55")."""
@@ -244,6 +247,7 @@ def test_a_wrong_overall_is_red_only_with_the_architects_own_value(tmp_path: Pat
     assert INCOMPLETE in proof.classified(found).why
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_code_only_still_runs_codes_own_string_steps(tmp_path: Path) -> None:
     """`code_only` turns off only the AI's second reading: code's own lines still drop a string
     that adds up with its filler notes, and still make the red the architect's printed sum
@@ -316,6 +320,7 @@ def test_a_filler_note_by_the_run_stops_the_blind_reading_when_code_finds_no_row
     assert proof.proof_group(found) == "not_compared"
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_guard_stamps_a_code_string_whose_overall_the_architect_prints(
     tmp_path: Path,
 ) -> None:
@@ -358,6 +363,7 @@ def _architect_wrong(vendor: str, architect: str) -> dict[str, Any]:
     }  # fmt: skip
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_vendor_value_equal_to_the_architects_is_never_red() -> None:
     assert proof.proof_group(_architect_wrong("21", "18")) == "clouded"
     same = _architect_wrong("18", "18")
@@ -380,6 +386,7 @@ def _string_wrong(printed: str, summed: str, architect: list[str] | None) -> dic
     return finding
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_should_be_the_architects_printed_value_contradicts_is_never_proposed() -> None:
     assert proof.proof_group(_string_wrong("57", "56", None)) == "clouded"  # no architect run
     assert proof.proof_group(_string_wrong("57", "56", ["56"])) == "clouded"  # they agree
