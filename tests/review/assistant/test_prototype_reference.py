@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
+import pytest
+
 from app.review.assistant import classification, full_check_roster, proof
 from app.review.assistant.chat_trust import apply_checks
 from app.review.assistant.full_check_advocate import code_checks
@@ -58,6 +60,7 @@ def _finding(**changes: Any) -> dict[str, Any]:
     return finding
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_no_architect_elevation_makes_the_prototype_the_reference() -> None:
     marked = _finding(reference=classification.PROTOTYPE_REFERENCE)
     assert classification.prototype_governs(marked)
@@ -78,6 +81,7 @@ def test_no_architect_elevation_makes_the_prototype_the_reference() -> None:
     assert proof.proof_group(same) == "right"
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_architect_and_prototype_disagree_the_architect_wins() -> None:
     # Without code's mark the architect gives the item: the prototype is reference only, never
     # red, however well it is read.
@@ -260,6 +264,7 @@ def _stored(finding: Mapping[str, Any]) -> dict[str, Any]:
     return apply_checks({"id": "F1", "created_by": v.CREATED_BY, **finding}, {}, None)
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_simple_verify_proves_a_difference_from_the_reference_prototype() -> None:
     bar = Item(
         "p3.v1",
@@ -324,6 +329,7 @@ class _Engine:
         self.book.findings[finding_id] = change(dict(self.book.findings[finding_id]))
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_full_check_marks_prototype_findings_from_the_page_map() -> None:
     no_architect = _finding(id="F1", page=3, vendor_box={"file": FILE, "page": 3})
     beside_architect = _finding(

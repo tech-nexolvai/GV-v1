@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from app.review.assistant import classification, proof
 from app.review.assistant.chat_trust import judged, round_statuses, trust_report
 from app.review.assistant.escalation import EscalationContext, escalate
@@ -189,6 +191,7 @@ def test_an_item_comparing_the_same_vendor_label_with_the_architect_carries_it()
     assert carrier[ROUND_MATCH]["compared"] == "carrier"
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_architect_printing_another_size_on_both_rounds_is_red_and_still_wrong() -> None:
     # Code paired the round-2 label with the architect's by drawn position.
     result = _link([_round_match()], pairs={"p8.D4": "p7.D2"})
@@ -245,6 +248,7 @@ def test_an_earlier_round_comparison_code_did_not_prove_gives_no_second_chance()
     )
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_proved_earlier_round_links_it_but_a_red_still_needs_the_advocate() -> None:
     proved = _earlier(paired_by="code")
     assert proof.proof_group(proved) == "clouded"

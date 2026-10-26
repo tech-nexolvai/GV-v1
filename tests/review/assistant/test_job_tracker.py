@@ -17,6 +17,7 @@ from app.review.assistant.job_tracker import (
     item_words,
     vendor_key,
 )
+from tests.review.assistant.reading_fixture import two_routes
 
 T0 = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
 
@@ -65,6 +66,7 @@ def finding(
                 "difference": str((to_inches(vendor) or 0) - (to_inches(architect) or 0)),
             },
         }
+        two_routes(out)  # each number read by two routes (`reading_routes`)
     return {**out, **extra}
 
 

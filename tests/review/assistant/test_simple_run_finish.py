@@ -32,6 +32,7 @@ def _state(outcome: Any) -> dict[str, Any]:
     return dict(block["package"]["state"])
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_whole_check_still_says_send_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     check = _Run(tmp_path)
     _fake_compare(monkeypatch, stop_after=None, cancel=check.cancel)

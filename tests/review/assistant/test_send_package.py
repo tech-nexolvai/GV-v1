@@ -303,6 +303,7 @@ def test_comment_numbers_stay_with_the_item_across_checks() -> None:
     assert comment_numbers([first, second]) == found
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_comment_number_names_one_item_across_checks() -> None:
     """The pipeline audit (2026-10-19): a layout finding of an early check, drawn round the whole
     elevation, joined every item on it, so one number named the fridge outlet in one check and

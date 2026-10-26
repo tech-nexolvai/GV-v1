@@ -10,6 +10,8 @@ from __future__ import annotations
 from fractions import Fraction
 from typing import Any
 
+import pytest
+
 from app.review.assistant import dim_ends, drafting_notes, proof
 from app.review.assistant.chat_trust import judged
 from app.review.assistant.escalation import EscalationContext, escalate
@@ -196,6 +198,7 @@ def test_a_note_read_for_another_label_is_stale() -> None:
     assert drafting_notes.softened(moved) is None
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_without_a_note_the_same_difference_is_code_proved() -> None:
     # The softening is what keeps it from red: the same item with no note is code-proved.
     found = _escalated(_finding(), _label())

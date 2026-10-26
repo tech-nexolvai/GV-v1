@@ -12,6 +12,8 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from app.review.assistant import set_pack
 from app.review.assistant.round_check import round_two
 from app.review.assistant.simple_check.verify import Pack
@@ -102,6 +104,7 @@ def test_both_rounds_are_compared_with_the_same_architect_drawing(tmp_path: Path
     assert plain.area_key(EARLIER, 2001) is None
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_round_two_check_follows_round_one_across_the_files() -> None:
     """The round-2 check's own synthetic sheet (round 1 on page 1, round 2 on page 2), with the
     two rounds in two files and no GV area: the work list's round groups line them up."""

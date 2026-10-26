@@ -96,6 +96,7 @@ def _overall(check: _Run, outcome: Any) -> dict[str, Any]:
     return next(f for f in check.findings(outcome) if f["vendor"] == '45 1/4"')
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_with_the_loop_on_an_unsure_pair_code_then_verifies_is_red_saved_and_replayed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

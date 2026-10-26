@@ -97,6 +97,7 @@ from app.review.assistant import (
     likely_problems,
     missing_items,
     proof,
+    reading_routes,
     sink_centre,
 )
 from app.review.assistant.chat_trust import inch_words, judged, round_item_key
@@ -209,6 +210,9 @@ class EscalationContext:
     outlines: Callable[[str, int, tuple[float, float, float, float]], str | None] | None = None
     """The reference's line work at a spot (`claim_rules.OutlineReader`): a wall outline is
     never the countertop."""
+    typed: reading_routes.TypedOf | None = None
+    """Both OCR engines on a typed number's own spot (`typed_ocr`): a typed number's second,
+    independent reading before a red (final plan #2)."""
 
 
 @dataclass(slots=True)
@@ -2161,6 +2165,9 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     relinked = {str(f["id"]): judged(f) for f in linked.changed}
     live = [relinked.get(str(f["id"]), f) for f in live if str(f["id"]) not in linked.absorbed]
     result.changed.extend(relinked.values())
+    # How each Wrong's numbers were read, before any step groups them (final plan #2): kept with
+    # the items the ladder tries and recorded on every item at the end (a Stop leaves the rest).
+    _mark_reading(live, ctx, None)
     early = _before_ladder(live, ctx, result)
     by_id = {str(f["id"]): f for f in live}
     areas = _areas(ctx)
@@ -2198,6 +2205,7 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
                 _pairs_step(item, ctx)
             if item.changed:
                 item.finding.update(judged(item.finding))
+                _mark_reading([item.finding], ctx, None, stops=False)
             after = proof.proof_group(item.finding)
             if item.outcome is None and before != after and after in ("clouded", "right"):
                 item.outcome = "wrong" if after == "clouded" else "right"
@@ -2214,10 +2222,55 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     _mark_job_rules(live, ctx, result)
     _mark_right_ends(live, ctx, result)
     _mark_drafting_notes(live, ctx, result)
+    _mark_reading(live, ctx, result)
     # One copy of each changed finding, its last state.
     last = {str(f["id"]): f for f in result.changed}
     result.changed = list(last.values())
     return result
+
+
+def _mark_reading(
+    live: Sequence[dict[str, Any]],
+    ctx: EscalationContext,
+    result: Escalation | None,
+    *,
+    stops: bool = True,
+) -> None:
+    """Each Wrong's record of how the numbers it rests on were read (`reading_routes.mark`, final
+    plan #2): each label's reading route, its millimetres, and its drawn length at its view's fit
+    (`dim_ends.Page.fit`), both OCR engines on a typed number's spot (`ctx.typed`) and, for a
+    number still short of two routes, the number reader (`ctx.reread`: its stroke shapes and its
+    ruler). A red needs two different routes that agree on every number. Data only here: `proof`
+    groups by it."""
+
+    def labels_of(file: str, page: int) -> Sequence[Mapping[str, Any]]:
+        return ctx.labels.get((file, page)) or ()
+
+    def fit_of(file: str, page: int) -> Any:
+        found = ctx.pages(file, page) if ctx.pages is not None else None
+        return found.fit if found is not None else None
+
+    numbers = None
+    if ctx.reread is not None:
+        label_routes = import_module("app.review.assistant.read_number").label_routes
+
+        def numbers(label: Mapping[str, Any]) -> Any:
+            return label_routes(ctx.reread, label)
+
+    for finding in live:
+        if stops and ctx.stop is not None and ctx.stop():
+            return  # Stop: the items stay as they are (Continue records them)
+        if result is not None and str(finding.get("id")) in result.absorbed:
+            continue
+        if isinstance(finding.get("decision"), Mapping) and finding["decision"].get("decision"):
+            continue  # the reviewer decided it: the reviewer is its witness
+        try:
+            changed = reading_routes.mark(finding, labels_of, fit_of, ctx.typed, numbers)
+        except Exception:  # noqa: BLE001 - no record: the item is judged on its labels alone
+            _log.exception("escalation: reading record failed on %s", finding.get("id"))
+            continue
+        if changed and result is not None:
+            result.changed.append(finding)
 
 
 def _mark_job_rules(
@@ -2348,6 +2401,7 @@ def context_from_pack(
         ),
         pasted=pasted,
         outlines=outlines if outlines is not None else _outlines_of(pasted),
+        typed=import_module("app.review.assistant.typed_ocr").reader_for_pack(pack),
     )
 
 

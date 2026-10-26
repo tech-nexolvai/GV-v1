@@ -21,6 +21,7 @@ from typing import Any
 from app.review.assistant import card_fold, dim_ends
 from app.review.assistant.chat_contract import ChatFindingCardOut
 from app.review.assistant.proof import proof_group
+from tests.review.assistant.reading_fixture import two_routes
 
 VENDOR_FILE = "vendor.pdf"
 ARCH_FILE = "architect.pdf"
@@ -79,6 +80,7 @@ def _item(
         finding.update(
             status="different", trust_level="confirmed", witnesses=["printed"], paired_by="code"
         )
+        two_routes(finding)
     elif kind == "not_compared":
         finding.update(status="different", trust_level="to_check", witnesses=[])
     elif kind == "likely_problem":

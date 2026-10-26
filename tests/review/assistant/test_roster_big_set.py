@@ -261,6 +261,7 @@ class _Batching(_Roster):
         return reply(text(f"Done.\n{lines}"), model=SONNET)
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_helper_records_its_pages_in_one_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -376,6 +377,7 @@ def test_continue_keeps_the_items_folded_under_a_drawing_needed_page(tmp_path: P
     assert page["folded"] == folded
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_continue_compares_only_the_pages_left_and_keeps_what_was_done(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

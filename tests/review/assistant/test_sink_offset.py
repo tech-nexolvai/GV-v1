@@ -325,6 +325,7 @@ def test_the_resolver_and_the_escalation_leave_its_items_alone() -> None:
         assert not escalation.undecided(item)
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_every_output_names_the_standard_and_a_not_compared_item_its_reason() -> None:
     (red,) = _findings("3", (None, False), vendor_offset=3.0)
     shown = proof.proof_of(judged({**red, "id": "S1"}))

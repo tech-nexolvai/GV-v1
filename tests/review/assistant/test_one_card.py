@@ -113,6 +113,7 @@ def _apply(findings: list[dict[str, Any]], needed: tuple[int, ...] = ()) -> list
     return [kept.get(str(f["id"]), f) for f in findings if str(f["id"]) not in gone]
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_fixtures_are_the_cards_they_say() -> None:
     for kind in ("right", "clouded", "not_compared", "likely_problem"):
         assert proof_group(_item("F1", kind, a_in="36" if kind == "right" else "40")) == kind
@@ -128,6 +129,7 @@ def test_two_rights_on_one_vendor_label_are_one_right_keeping_the_better_proved(
     assert proof_counts(final)["right"] == 1
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_one_vendor_number_with_two_architect_numbers_is_not_compared_with_both() -> None:
     right = _item("F1", "right")
     other = _item("F2", "not_compared", architect="D9", a_in="21")
@@ -153,6 +155,7 @@ def test_one_vendor_number_with_two_architect_numbers_is_not_compared_with_both(
     assert sorted(proof_group(f) for f in final) == ["likely_problem", "not_compared"]
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_carried_conflict_never_turns_a_card_red_by_folding() -> None:
     """Continue: a card folded before (Not compared, its copies disagreed) and a new code-proved
     copy at the same label. The new copy is never folded into the grey card, and the grey card
@@ -198,6 +201,7 @@ def test_a_chain_of_spots_never_joins_two_vendor_numbers() -> None:
     assert len(_apply([a, b, c])) == 3
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_proved_wrong_stays_wrong_and_keeps_the_likely_copy_as_evidence() -> None:
     proved = _item("F5", "clouded", a_in="40")
     likely = _item("F6", "likely_problem", a_in="40")

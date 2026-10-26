@@ -1123,6 +1123,7 @@ def test_stop_ends_the_proving_reads_on_the_pool(
     assert 1 <= len(kept) <= 2
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_escalation_reads_the_labels_then_gives_one_deeper_look_within_the_price(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1511,6 +1512,7 @@ def test_a_vendor_page_not_compared_is_never_send_it(
     assert not state or state.get("incomplete") == "1 vendor page was not compared (p3)"
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_whole_roster_check_with_wrongs_still_says_send_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

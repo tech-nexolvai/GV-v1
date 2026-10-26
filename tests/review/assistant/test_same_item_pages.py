@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from app.review.assistant import likely_problems, proof, proof_words, send_package
 from app.review.assistant import same_item_pages as sip
 from app.review.assistant.chat_trust import judged
@@ -93,6 +95,7 @@ def test_code_reading_both_labels_makes_a_red_with_no_should_be_picked() -> None
     )
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_both_labels_read_and_printed_where_code_looked_is_clouded() -> None:
     made = sip.settle(_ledger_item(), _dims(), _page_map(None, None), FILE)
     checked = judged(

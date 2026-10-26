@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from app.config import Settings
 from app.review.assistant import proof
 from app.review.assistant.chat_trust import judged
@@ -82,6 +84,7 @@ def test_code_ends_is_the_default() -> None:
     assert Settings.model_fields["assistant_pairing_proof"].default == "code_ends"
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_code_confirming_the_ends_still_allows_red() -> None:
     verdict = _decide(_SAME)
     assert verdict.result == "passed" and verdict.answers["pairing"] == "proved"
@@ -91,6 +94,7 @@ def test_code_confirming_the_ends_still_allows_red() -> None:
     assert not proof.ends_unconfirmed(finding)
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_ends_code_cannot_tell_are_a_likely_problem_with_the_please_check_words() -> None:
     verdict = _decide(_CANNOT)
     assert verdict.result == "objects"

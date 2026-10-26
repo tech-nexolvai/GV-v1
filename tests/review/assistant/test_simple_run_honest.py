@@ -74,6 +74,7 @@ def test_a_code_check_that_crashes_makes_the_check_not_for_sending(
     assert run.engine.code_checks_failed == [name]
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_whole_check_has_no_broken_step(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     run = _Run(tmp_path)
     _fake_compare(monkeypatch, stop_after=None, cancel=run.cancel)

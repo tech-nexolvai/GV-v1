@@ -69,6 +69,7 @@ __all__ = [
     "Request",
     "Route",
     "decide",
+    "label_routes",
     "read_number",
     "reader_for_pack",
     "seed_page",
@@ -955,3 +956,35 @@ def reader_for_pack(
         return None
 
     return NumberReader(pack, pdf_of, engines)
+
+
+def label_routes(
+    reader: Callable[[Request], Reading], label: Mapping[str, Any]
+) -> tuple[tuple[str, ...], str | None] | None:
+    """A label read again by this tool, for a red's second reading (`reading_routes`, final plan
+    #2): `(the routes that agree, None)` when it reads the label's own value, `((), what it reads)`
+    when it reads another, `None` when it reads nothing. The label is one of the pack's (its file,
+    page, side and id)."""
+    try:
+        page = int(label.get("file_page") or label.get("page") or 0)
+    except (TypeError, ValueError):
+        return None
+    if page < 1 or not label.get("id") or not label.get("file"):
+        return None
+    found = reader(
+        Request(
+            file=str(label["file"]),
+            page=page,
+            side=str(label.get("side") or "vendor"),
+            label=str(label["id"]),
+        )
+    )
+    if found.outcome != "read" or found.inches is None:
+        return None
+    try:
+        want = Decimal(str(label.get("inches")))
+    except (InvalidOperation, ValueError):
+        return None
+    if found.inches == want:
+        return (tuple(found.agreed), None)
+    return ((), found.text or str(found.inches))

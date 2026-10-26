@@ -35,6 +35,7 @@ def _statuses(outcome: Any) -> dict[str, str]:
     return {row["id"]: row["status"] for row in work["work_items"]}
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_only_the_drawings_left_are_compared_and_the_result_is_whole(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

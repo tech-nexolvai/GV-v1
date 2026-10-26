@@ -519,6 +519,7 @@ def _full_check(harness: Harness, products: tuple[str, ...] = ("countertop",)) -
     harness.engine.tools.results = lambda page: RECORDS
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_full_check_seeds_recorded_results_and_makes_the_cloud_drawing_and_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from pypdf import PdfReader
 
 from app.review.assistant.chat_drawing import IMPACT_NOTE, check_report_pdf
@@ -113,6 +114,7 @@ PROVED: dict[str, Any] = {
 }
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_the_check_report_lists_whats_wrong_biggest_first(tmp_path: Path) -> None:
     findings = by_impact(
         [

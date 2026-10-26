@@ -918,6 +918,7 @@ def test_the_ai_s_counts_are_set_to_the_final_list() -> None:
     )
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_every_count_shown_comes_from_the_final_list(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

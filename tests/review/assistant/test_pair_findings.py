@@ -294,6 +294,7 @@ def test_code_wins_on_proof_over_the_answers_own_item() -> None:
 # ---- proof, scope and the hook ---------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_code_pair_read_by_code_is_clouded_and_without_the_pair_it_is_not() -> None:
     checks = {"printed_architect": "match", "printed_vendor": "match", "units": "agrees"}
     made = judged(
@@ -456,6 +457,7 @@ def _chain_dims(*architect: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@pytest.mark.usefixtures("read_twice")
 def test_a_proved_chain_is_compared_like_a_printed_overall() -> None:
     # The architect prints 1'-0" + 8" (20") on one dimension line, end to end, no overall; the
     # vendor prints 30" between the same two anchors.
