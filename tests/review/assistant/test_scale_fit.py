@@ -166,3 +166,42 @@ def test_no_line_work_keeps_only_the_readers_lines() -> None:
     fit = scale_fit.page_fit(sheet.labels, None)
     assert set(fit.spans) == {ids["a"], ids["b"], ids["c"]}
     assert fit.check(ids["depth"]) is None
+
+
+def _cut_reader_line(sheet: Sheet, crossing_at: float) -> str:
+    """A 20" width below the plan, drawn to the plan's scale, whose dimension line another line
+    crosses at `crossing_at`: the label reader stopped its own line there."""
+    x0, x1, row = 100.0, 100.0 + 20 * PPI, 200.0
+    sheet.line((x0, row), (x1, row))
+    for at in (x0, x1):
+        sheet.ticks(at, row)
+        sheet.line((at, row + 3), (at, 186))  # extension lines up to the plan's front edge
+    sheet.line((crossing_at, row - 6), (crossing_at, row + 6))  # another line crossing it
+    return sheet.label(
+        '20"',
+        20,
+        (110, row - 10, 126, row - 2),
+        dim_line=[[x0, row], [crossing_at, row]],
+        span_pt=crossing_at - x0,
+        scale_ok=True,
+    )
+
+
+def test_a_reader_line_cut_short_by_a_crossing_line_is_drawn_on_to_its_own_end() -> None:
+    sheet, _ids = _plan()
+    key = _cut_reader_line(sheet, 165.0)
+    fit = scale_fit.page_fit(sheet.labels, sheet.segments)
+    span = fit.spans[key]
+    assert (span.how, span.a, span.b) == ("scale", 100.0, 180.0)
+    check = fit.check(key)
+    assert check is not None and check.agrees  # never "20" is drawn 16 1/4" long"
+
+
+def test_a_cut_reader_line_with_two_runs_on_that_agree_gets_no_check() -> None:
+    sheet, _ids = _plan()
+    key = _cut_reader_line(sheet, 165.0)
+    # one more mark a hair past the end: two runs on (80 and 81.5 points) both agree with 20"
+    sheet.line((180, 200), (182, 200))
+    sheet.line((181.5, 197), (181.5, 203))
+    fit = scale_fit.page_fit(sheet.labels, sheet.segments)
+    assert fit.check(key) is None

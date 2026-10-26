@@ -240,3 +240,52 @@ def test_the_record_follows_the_labels_the_item_pairs_now() -> None:
     values = {v.side: v for v in reading_routes.verdict(finding).values}
     assert values["architect"].label == "p2.D8"
     assert values["architect"].routes == (TEXT,)
+
+
+def test_a_typed_number_read_again_by_two_ocr_engines_is_a_second_route() -> None:
+    finding = _wrong(_label("D1", '23"', "23", "vendor"), _label("D9", '24"', "24", "architect"))
+    labels = {(la["file"], la["page"]): [la] for la in finding["dims"].values()}
+    reading_routes.mark(
+        finding, lambda f, p: labels.get((f, p)), lambda f, p: None, lambda label: ("agrees", None)
+    )
+    assert [v.routes for v in reading_routes.verdict(finding).values] == [(TEXT, OCR), (TEXT, OCR)]
+    assert proof.proof_group(finding) == "clouded"
+    reading_routes.mark(
+        finding,
+        lambda f, p: labels.get((f, p)),
+        lambda f, p: None,
+        lambda label: ("disagrees", '28"'),
+    )
+    assert reading_routes.held(finding) == (
+        "the vendor's 23\" is read from the PDF's text, but two OCR engines read 28\" at its spot"
+    )
+
+
+def test_the_number_readers_ruler_and_stroke_shapes_are_other_routes() -> None:
+    finding = _wrong(
+        _label("D1", '3/4"', "0.75", "vendor", route="drawn"),
+        _label("D9", '24"', "24", "architect"),
+    )
+    labels = {(la["file"], la["page"]): [la] for la in finding["dims"].values()}
+    finding["checks"] = {**finding["checks"], "printed_vendor": "no_text"}
+    fit = _Fit({"D9": _Check(True, 24.0)})
+    reading_routes.mark(
+        finding,
+        lambda f, p: labels.get((f, p)),
+        lambda f, p: fit,
+        None,
+        lambda label: (("ocr", "ruler"), None) if label["id"] == "D1" else None,
+    )
+    values = {v.side: v for v in reading_routes.verdict(finding).values}
+    assert values["vendor"].routes == (OCR, DRAWN)
+    reading_routes.mark(
+        finding,
+        lambda f, p: labels.get((f, p)),
+        lambda f, p: fit,
+        None,
+        lambda label: ((), '1/4"') if label["id"] == "D1" else None,
+    )
+    assert reading_routes.held(finding) == (
+        "the vendor's 3/4\" is read from two OCR engines on the drawn ink, but code's number "
+        'reader reads 1/4" at its spot'
+    )

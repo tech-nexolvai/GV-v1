@@ -7,7 +7,9 @@ Code reads a printed number in several ways that do not share their mistakes. Th
 - `text`: the PDF's own text layer prints it at its spot (exact, when the file has text);
 - `ocr`: two OCR engines read the drawn ink and agree (`dim_labels`' drawn route, a pasted
   picture's or a vector page's OCR label, the architect's hand lettering, `verify_value`'s ink
-  route, `read_number`'s OCR pair). The two engines are one kind: they read the same pixels;
+  route, `read_number`'s OCR pair), or, for a typed number, read its own spot drawn as a picture
+  and agree with the text (`typed_ocr`, option B of 2026-10-26). The two engines are one kind:
+  they read the same pixels;
 - `drawn_length`: the value agrees with its own dimension line's length at its view's fitted
   scale (`scale_fit`, final plan #3; `read_number`'s ruler);
 - `units`: the millimetres printed with the inches agree with them (`units_check`);
@@ -22,7 +24,8 @@ it, and no route and no reader names a doubt:
 - millimetres and inches that disagree;
 - a value that does not agree with its drawn length (`the vendor's 23" is drawn 24 3/16" long`,
   the owner's rule of 2026-10-26: such a number never makes a red);
-- the drawing printing another value at the spot (`verify_value` mismatch);
+- the drawing printing another value at the spot (`verify_value` mismatch, or both OCR engines
+  reading another whole number of the same shape at a typed number's spot, `typed_ocr`);
 - a second or third AI reading that is unsure (the AI is never a route, but its doubt counts).
 
 A would-be red that fails it is a Likely problem with the reason in plain words (`held`): "the
@@ -114,6 +117,12 @@ type FitOf = Callable[[str, int], Any]
 """A page's scale fit (`scale_fit.PageFit`) by (file, page), `None` when code has none."""
 type LabelsOf = Callable[[str, int], Sequence[Mapping[str, Any]] | None]
 """A page's labels as `dims.json` holds them, by (file, page)."""
+type NumberOf = Callable[[Mapping[str, Any]], tuple[tuple[str, ...], str | None] | None]
+"""The number reader on a label (`read_number.label_routes`): `(the routes that agree, None)`,
+`((), the other value it reads)` or `None`."""
+type TypedOf = Callable[[Mapping[str, Any]], tuple[str, str | None] | None]
+"""Both OCR engines on a typed label's own spot (`typed_ocr.TypedReader`): `("agrees", None)`,
+`("disagrees", the value they read)` or `None`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,10 +247,17 @@ def _key(label: Mapping[str, Any]) -> tuple[str, str]:
 
 
 def _label_value(
-    label: Mapping[str, Any], side: str, fit: Any, *, full: Mapping[str, Any] | None = None
+    label: Mapping[str, Any],
+    side: str,
+    fit: Any,
+    *,
+    full: Mapping[str, Any] | None = None,
+    typed: TypedOf | None = None,
+    numbers: NumberOf | None = None,
 ) -> Value:
-    """A label's routes and doubts from what code read for it: its reading route, its millimetres
-    and its drawn length at its view's fit (`fit`, a `scale_fit.PageFit` or `None`)."""
+    """A label's routes and doubts from what code read for it: its reading route, its millimetres,
+    its drawn length at its view's fit (`fit`, a `scale_fit.PageFit` or `None`) and, for a typed
+    number, both OCR engines reading its own spot (`typed`, `typed_ocr`)."""
     data = {**dict(label), **dict(full or {})}
     text = str(data.get("text") or "")
     routes: list[str] = []
@@ -269,6 +285,26 @@ def _label_value(
             doubts.append(f"its drawn length at its view's own scale is {_inches(check.drawn_in)}")
     if lost_slash(text):
         doubts.append("it reads like a fraction that lost its slash")
+    if typed is not None and TEXT in routes:
+        try:
+            answer = typed(data)
+        except Exception:  # noqa: BLE001 - an unread spot is no route and no doubt
+            answer = None
+        if answer is not None and answer[0] == "agrees":
+            routes.append(OCR)
+        elif answer is not None and answer[0] == "disagrees":
+            doubts.append(f"two OCR engines read {answer[1]} at its spot")
+    if numbers is not None and not doubts and len(set(routes)) < NEEDED:
+        # Code's number reader (`read_number`): its stroke shapes and its ruler (the line's length
+        # at the drawing's scale) are other kinds of route than the label's own.
+        try:
+            read = numbers(data)
+        except Exception:  # noqa: BLE001 - not read: no route and no doubt
+            read = None
+        if read is not None and read[1] is not None:
+            doubts.append(f"code's number reader reads {read[1]} at its spot")
+        elif read is not None:
+            routes += [_READ_NUMBER[name] for name in read[0] if name in _READ_NUMBER]
     return Value(
         side,
         _ref(data),
@@ -347,7 +383,13 @@ def _sides_needed(finding: Mapping[str, Any]) -> tuple[str, ...]:
     return ("vendor", "architect")
 
 
-def mark(finding: dict[str, Any], labels_of: LabelsOf | None, fit_of: FitOf | None) -> bool:
+def mark(
+    finding: dict[str, Any],
+    labels_of: LabelsOf | None,
+    fit_of: FitOf | None,
+    typed: TypedOf | None = None,
+    numbers: NumberOf | None = None,
+) -> bool:
     """Record on the finding (`FIELD`) how each number it rests on was read: its label's route, its
     millimetres and its drawn length at its view's fit. True when the record changed. Only an item
     code says is Wrong is recorded (a Right or an open item needs no proof of its reading)."""
@@ -391,7 +433,11 @@ def mark(finding: dict[str, Any], labels_of: LabelsOf | None, fit_of: FitOf | No
                 fits[(file, page)] = None
         base = dict(own or {})
         base.update({"id": key, "page": page, "file": file})
-        values.append(_label_value(base, side, fits[(file, page)], full=full).as_dict())
+        values.append(
+            _label_value(
+                base, side, fits[(file, page)], full=full, typed=typed, numbers=numbers
+            ).as_dict()
+        )
     before = finding.get(FIELD)
     finding[FIELD] = {"values": values}
     # With what the finding's own checks read at its spots, so the record is the whole proof.

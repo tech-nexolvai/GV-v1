@@ -702,6 +702,31 @@ def _agrees(span: Drawn, in_per_pt: float) -> tuple[float, bool]:
     return drawn, abs(drawn - float(span.inches)) <= allowed
 
 
+def _reader_line_drawn_on(
+    lines: _Lines, label: Mapping[str, Any], box: Box, own: Drawn, in_per_pt: float
+) -> list[Drawn]:
+    """The reader's line drawn on past where the reader stopped: each run of the line work along
+    the same axis, through the reader's line (it holds it within `MARK_PT` at each end) from one
+    mark to another, that agrees with the view's fit."""
+    runs: set[tuple[float, float, float]] = set()
+    for _distance, found in _candidates(lines, label, box):
+        if found.axis != own.axis or abs(found.row - own.row) > ROW_REACH_PT:
+            continue
+        for low, high in ((found.a, found.b), *found.wider):
+            if low > own.a + MARK_PT or high < own.b - MARK_PT:
+                continue
+            run = Drawn(own.id, own.axis, own.row, low, high, own.inches, "scale")
+            if _agrees(run, in_per_pt)[1]:
+                runs.add((round(low, 1), round(high, 1), own.row))
+    kept: dict[tuple[float, float], float] = {}
+    for low, high, row in sorted(runs):
+        kept.setdefault((low, high), row)
+    return [
+        Drawn(own.id, own.axis, row, low, high, own.inches, "scale")
+        for (low, high), row in kept.items()
+    ]
+
+
 # ---- one page ------------------------------------------------------------------------------------
 
 
@@ -712,6 +737,7 @@ def page_fit(labels: Sequence[Mapping[str, Any]], segments: Sequence[Segment] | 
     out = PageFit()
     boxes: dict[str, Box] = {}
     candidates: dict[str, list[Drawn]] = {}
+    by_key: dict[str, Mapping[str, Any]] = {}
     lines = _Lines(segments) if segments else None
     for label in labels:
         if not isinstance(label, Mapping) or not label.get("id"):
@@ -721,6 +747,7 @@ def page_fit(labels: Sequence[Mapping[str, Any]], segments: Sequence[Segment] | 
         if box is None or _inches(label) is None or ocr_read(label):
             continue  # a picture's pixels have no line (#1835)
         boxes[key] = box
+        by_key[key] = label
         out.sides[key] = str(label.get("side") or "unknown")
         own = _reader_line(label)
         if own is not None:
@@ -790,6 +817,17 @@ def page_fit(labels: Sequence[Mapping[str, Any]], segments: Sequence[Segment] | 
             fitting = [s for s in longer if _agrees(s, fit[0].in_per_pt)[1]]
             if len(fitting) == 1:
                 span = out.spans[key] = fitting[0]
+                drawn, agrees = _agrees(span, fit[0].in_per_pt)
+        if not agrees and span.how == "reader" and lines is not None:
+            # The label reader stops its line at the first mark it meets, which may be another
+            # line crossing it (a 16" line read as 13 3/8" long): the same line drawn on to a
+            # further mark, the only such run that agrees, is the label's. With several, the
+            # label's own line is not known: no check, so a cut line never doubts a true value.
+            runs = _reader_line_drawn_on(lines, by_key[key], boxes[key], span, fit[0].in_per_pt)
+            if len(runs) > 1:
+                continue  # several runs on agree: which is the label's is not known, no check
+            if runs:
+                span = out.spans[key] = runs[0]
                 drawn, agrees = _agrees(span, fit[0].in_per_pt)
         if abs(drawn / float(span.inches) - 1) > REJECT_SHARE:
             if span.how != "reader":

@@ -1252,11 +1252,15 @@ def check_set(
     segments: Segments | None = None,
     clock: Callable[[], float] = monotonic,
     index: Any = None,
+    typed: reading_routes.TypedOf | None = None,
+    numbers: reading_routes.NumberOf | None = None,
 ) -> ConsistencyResult:
     """The vendor consistency check over one set's labels and page map (see the module).
     `segments` reads a page's line work (for the end marks); without it nothing is reported.
     `index`: the set index (`set_index.json`), for telling an older copy of a sheet from the
-    same sheet number reused in another part of the set (`sheet_revisions`)."""
+    same sheet number reused in another part of the set (`sheet_revisions`). `typed`: both OCR
+    engines on a typed number's spot (`typed_ocr`), its second reading before a red; `numbers`: the
+    number reader on a label (`read_number.label_routes`), for a number still short of two."""
     started = clock()
     entries = {(str(e.get("file")), int(e["page"])): e for e in _entries(page_map)}
     labels: list[_Label] = []
@@ -1320,7 +1324,7 @@ def check_set(
     for found in contradictions:
         result.findings.append(_contradiction_finding(found, area_of(found.odd), entries))
     result.findings = result.findings[:MAX_FINDINGS]
-    _mark_reading(result.findings, dims, segments)
+    _mark_reading(result.findings, dims, segments, typed, numbers)
     unknowns = completeness(page_map) + unreadable_pages(page_map)
     if texts:
         missing, result.sheet_index = sheet_index(texts, page_map)
@@ -1332,7 +1336,11 @@ def check_set(
 
 
 def _mark_reading(
-    findings: Sequence[dict[str, Any]], dims: Mapping[str, Any] | None, segments: Segments | None
+    findings: Sequence[dict[str, Any]],
+    dims: Mapping[str, Any] | None,
+    segments: Segments | None,
+    typed: reading_routes.TypedOf | None = None,
+    numbers: reading_routes.NumberOf | None = None,
 ) -> None:
     """Each finding's record of how its numbers were read (`reading_routes.mark`, final plan #2):
     every part and the overall of a string, both prints of a span, each with its reading route,
@@ -1358,7 +1366,7 @@ def _mark_reading(
 
     for finding in findings:
         try:
-            reading_routes.mark(finding, labels_of, fit_of)
+            reading_routes.mark(finding, labels_of, fit_of, typed, numbers)
         except Exception:  # noqa: BLE001 - no record: the item is judged on its label alone
             _log.exception("vendor consistency: reading record failed")
 
@@ -1558,7 +1566,23 @@ def check_pack(
         texts=texts,
         segments=line_work(uploads, folder) if uploads is not None else None,
         index=_read_json(folder / "set_index.json"),
+        typed=import_module("app.review.assistant.typed_ocr").reader_for_pack(folder, files),
+        numbers=_numbers(folder, uploads),
     )
+
+
+def _numbers(folder: Path, uploads: Path | None) -> reading_routes.NumberOf:
+    """The number reader on a label (`read_number.label_routes`) over the set pack, made when first
+    asked (it loads the OCR engines)."""
+    made: list[Any] = []
+
+    def read(label: Mapping[str, Any]) -> Any:
+        numbers = import_module("app.review.assistant.read_number")
+        if not made:
+            made.append(numbers.reader_for_pack(folder, uploads))
+        return numbers.label_routes(made[0], label)
+
+    return read
 
 
 # ---- for other code checks (`run_fit`) -----------------------------------------------------------
