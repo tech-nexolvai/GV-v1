@@ -250,7 +250,7 @@ export function FullCheckResult(props: FullCheckResultProps) {
       </div>
 
       <div id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${tab}`} data-slot="chat-result-list" data-tab={tab} data-order={order} key={`${tab}-${order}`} className="chat-fade-in min-w-0 overflow-hidden rounded-[14px] border bg-card">
-        {shown.length === 0 && <p className="px-4 py-6 text-center text-sm text-muted-foreground">{inTab.length ? 'Nothing for this product.' : aside.length ? 'No questions left: everything else has nothing to compare.' : EMPTY_WORDS[tab]}</p>}
+        {shown.length === 0 && <p className="px-4 py-6 text-center text-sm text-muted-foreground">{inTab.length ? 'Nothing for this product.' : aside.length ? 'No questions left: the rest are folded below.' : EMPTY_WORDS[tab]}</p>}
         {sections.map((section) => (
           <div key={section.key} data-slot={section.slot} data-reason={section.reason} data-round={section.round} data-page={section.page}>
             {section.page !== undefined
