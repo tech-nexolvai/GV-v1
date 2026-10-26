@@ -354,7 +354,10 @@ def test_spec_book_and_job_values_lines() -> None:
     spec = _line(report, "no_spec")
     assert spec.words.startswith("Not checked: materials, grade and hardware") and spec.who == "GV"
     values = _line(report, "values_needed")
-    assert values.words.startswith("2 job values not entered yet: Sink inside width, Countertop")
+    assert values.words.startswith("2 job values not entered yet: Countertop overhang, Sink inside")
+    # GV's formulas that wait for them are named (final plan #9), and where to enter them.
+    assert "countertop depth = cabinet depth + front overhang" in values.words
+    assert "Company settings, Projects" in str(values.todo)
     assert values.who == "you" and values.goes_on and "Ask GV" not in values.words
 
 

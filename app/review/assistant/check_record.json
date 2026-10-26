@@ -103,6 +103,34 @@
    "planted_mistakes": 0,
    "planted_traps": 0
   },
+  "formula_depth": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0
+  },
+  "formula_length": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0
+  },
+  "formula_splash": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0
+  },
+  "formula_chain": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0
+  },
   "gv_rule": {
    "keyed_cases": 0,
    "false_reds": 0,

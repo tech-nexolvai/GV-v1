@@ -96,6 +96,11 @@ KINDS: Final[Mapping[str, str]] = {
     "missing_item": "a millwork item the architect shows is missing on the vendor's drawing",
     "finish_code": "a finish or material code differs from the architect's",
     "tag": "a tag or model number differs from the architect's",
+    "formula_depth": "GV's formula: countertop depth = cabinet depth + front overhang",
+    "formula_length": "GV's formula: countertop length = the cabinet run + field cuts and end "
+    "overhangs",
+    "formula_splash": "GV's formula: back splash length = the top's run from wall to wall",
+    "formula_chain": "GV's formula: top width = the sum of the reference's chain of sizes",
     "gv_rule": "another GV rule check",
     "size_vs_architect": "a size differs from the architect's",
 }
@@ -113,6 +118,10 @@ SHORT_NAMES: Final[Mapping[str, str]] = {
     "missing_item": "millwork missing on the vendor's drawing",
     "finish_code": "finish and material codes",
     "tag": "tags and model numbers",
+    "formula_depth": "countertop depth by GV's formula",
+    "formula_length": "countertop length by GV's formula",
+    "formula_splash": "back splash length by GV's formula",
+    "formula_chain": "top width by the reference's chain",
     "gv_rule": "other GV rules",
     "size_vs_architect": "sizes against the architect's",
 }
@@ -132,6 +141,10 @@ _CREATED_BY: Final[Mapping[str, str]] = {
 _MISSING_KIND: Final = "missing_item"
 #: `same_item_pages.FIELD`.
 _SAME_ITEM_FIELD: Final = "same_item_pages"
+#: `formulas.FIELD`: the settled formula that compared the item, with its kind.
+_FORMULA_FIELD: Final = "formula"
+#: GV's countertop depth rule (`sink_offset.TOP`): the depth formula's kind.
+_DEPTH_RULE: Final = "CT-DEPTH-001"
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +163,16 @@ def kind_of(finding: Mapping[str, Any]) -> str:
     """The kind of check that would make this finding red (one of `KINDS`)."""
     source = finding.get("source")
     created_by = str(finding.get("created_by") or "")
+    formula = finding.get(_FORMULA_FIELD)
+    if isinstance(formula, Mapping) and formula.get("kind") in KINDS:
+        return str(formula["kind"])  # GV's settled formula that compared it (`formulas`)
+    standard = finding.get("gv_standard")
+    if (
+        created_by == "sink_offset"
+        and isinstance(standard, Mapping)
+        and standard.get("rule") == _DEPTH_RULE
+    ):
+        return "formula_depth"  # GV's depth formula on the vendor's plan (`sink_offset`)
     if source == "vendor_arithmetic":
         return "vendor_string"
     if source == "cross_view" and finding.get("reference_side") == "vendor":

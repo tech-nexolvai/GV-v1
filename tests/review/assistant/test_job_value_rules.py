@@ -118,7 +118,7 @@ def test_only_values_rules_md_lists_as_not_set_are_missing() -> None:
     assert depth is not None and width is not None
     assert job_value_rules.missing_values(RULES_MISSING, depth) == [
         "cabinet depth",
-        "countertop overhang",
+        "front overhang",
     ]
     assert job_value_rules.missing_values(RULES_MISSING, width) == ["sink inside width"]
     assert job_value_rules.missing_values(RULES_SET, depth) == []
@@ -138,8 +138,9 @@ def test_a_top_depth_whose_job_values_are_missing_says_so_never_red_or_right() -
     assert proof.proof_group(finding) == "not_compared"
     found = proof.classified(finding)
     assert found.reason == "missing_setting"
-    assert "cabinet depth + overhang" in str(found.why) and "CT-DEPTH-001" in str(found.why)
-    assert "countertop overhang" in str(found.settle)
+    assert "cabinet depth + front overhang" in str(found.why) and "CT-DEPTH-001" in str(found.why)
+    assert "not entered yet" in str(found.why)
+    assert "front overhang" in str(found.settle) and "once for the job" in str(found.settle)
     # With the job values entered, the rule is GV's sink plan check's: nothing changes here.
     kept = escalate([_item()], _ctx(rules_md=RULES_SET))
     finding = {str(f["id"]): f for f in kept.changed}["F1"]

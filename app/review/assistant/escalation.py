@@ -91,7 +91,9 @@ from typing import Any, Final, Literal
 from app.review.assistant import (
     classification,
     dim_ends,
+    formulas,
     job_value_rules,
+    likely_problems,
     missing_items,
     proof,
     sink_centre,
@@ -866,6 +868,17 @@ def _chain_step(item: _Item, ctx: EscalationContext) -> None:
         item.note("chain_sums", "no_change", f"the architect's chain {words}: {why}")
         return
     if total != value:
+        extent, proved_why = (
+            dim_ends.same_kinds_run(vendor_page, vendor, architect_page, chain)
+            if wall_run is None
+            else ("cannot_tell", "a splash's length that differs from the run changes nothing")
+        )
+        if extent == "same_extent":
+            # GV's formula (top width = the chain's sum, final plan #9): code proved the vendor's
+            # dimension and the whole run end at the same points, so the difference is the
+            # formula's. A new kind of check: a Likely problem, never red.
+            _chain_difference(item, chain, value, words, proved_why)
+            return
         item.note(
             "chain_sums",
             "no_change",
@@ -924,7 +937,49 @@ def _chain_step(item: _Item, ctx: EscalationContext) -> None:
     if wall_run is not None:
         _settle_wall_run(item, "chain_sums", f"{how}; {wall_run}")
         return
-    _settle_right(item, "chain_sums", how)
+    finding[formulas.FIELD] = formulas.record(
+        formulas.CHAIN, "same", how, expected=total, labels={"vendor": vendor.span.id, "parts": ids}
+    )
+    _settle_right(item, "chain_sums", formulas.right_how(formulas.CHAIN, how))
+
+
+def _chain_difference(
+    item: _Item,
+    chain: dim_ends.Chain,
+    value: Fraction,
+    words: str,
+    proved_why: str,
+) -> None:
+    """A vendor top width that differs from the reference chain's sum, where code proved both end
+    at the same points (`dim_ends.same_kinds_run`): GV's formula's Likely problem ("please check
+    and confirm"), never red (`formulas`, kind `formula_chain`, no keyed cases yet)."""
+    finding = item.finding
+    total = chain.inches
+    difference = abs(total - value)
+    how = (
+        f"the reference's chain {words} = {format_inches(total)}; the vendor prints "
+        f"{format_inches(value)}, {format_inches(difference)} "
+        f"{'more' if value > total else 'less'} ({proved_why})"
+    )
+    finding[formulas.FIELD] = formulas.record(
+        formulas.CHAIN,
+        "different",
+        how,
+        expected=total,
+        labels={"vendor": chain.run.span.id, "parts": [part.id for part in chain.parts]},
+    )
+    finding.update(status="check", architect=f"{words} = {format_inches(total)}")
+    finding[likely_problems.FIELD] = {
+        "by": formulas.CHAIN.kind,
+        "kind": "size",
+        "proof": "likely_only",
+        "sure": "likely",
+        "why": how,
+        "words": formulas.please_check(formulas.CHAIN, how),
+    }
+    finding.pop("settled", None)
+    item.changed = True
+    item.note("chain_sums", "read", f"GV's formula: {how}")
 
 
 def _splash_wall_run(
@@ -1014,7 +1069,8 @@ def _settle_wall_run(item: _Item, step: StepName, how: str) -> None:
         # is never kept by this record (`splash_views.downgrade_unlike`).
         "labels": splash.label_keys(item.finding),
     }
-    _settle_right(item, step, how)
+    item.finding[formulas.FIELD] = formulas.record(formulas.SPLASH, "same", how)
+    _settle_right(item, step, formulas.right_how(formulas.SPLASH, how))
 
 
 def _vendor_drawings(
@@ -1522,6 +1578,8 @@ def _ends_step(
             vetted = None
         if vetted is not None:
             return None  # GV's field-cut rule relates the two (it speaks in the labels step)
+    if _length_formula(item, ctx, vendor_page, vendor, architect_page, architect):
+        return None
     verdict, why = dim_ends.alike(vendor, architect)
     if verdict != "unlike":
         return None
@@ -1574,6 +1632,94 @@ def _ends_step(
     item.changed = True
     item.note("ends", "no_change", f"not like for like: {why}")
     return None
+
+
+def _length_formula(
+    item: _Item,
+    ctx: EscalationContext,
+    vendor_page: dim_ends.Page,
+    vendor: dim_ends.Ends,
+    architect_page: dim_ends.Page,
+    architect: dim_ends.Ends,
+) -> bool:
+    """GV's countertop length formula (final plan #9, `formulas.top_length`) on an item whose two
+    dimensions code proved measure the top and the cabinets (`formulas.measures_top_against_run`): the
+    vendor's top = the reference's cabinet run + a field cut at each wall end + the end overhang at
+    each finished end. Runs only when both labels are the values compared and both agree with their
+    drawn lengths. The same is Right with the formula; a difference is a Likely problem (a new kind
+    of check, never red); a job value nobody entered makes it Not compared, saying which. True
+    when the formula spoke."""
+    finding = item.finding
+    if not formulas.measures_top_against_run(vendor, architect):
+        return False
+    inches = finding.get("inches") if isinstance(finding.get("inches"), Mapping) else {}
+    for side, ends in (("vendor", vendor), ("architect", architect)):
+        drawn = Fraction(ends.span.inches)
+        if not _same(
+            Decimal(drawn.numerator) / drawn.denominator, _decimal((inches or {}).get(side))
+        ):
+            return False  # the labels code read are not the two values compared
+    for page, ends, whose in (
+        (vendor_page, vendor, "the vendor's"),
+        (architect_page, architect, "the reference's"),
+    ):
+        fit = page.fit
+        check = fit.check(ends.span.id) if fit is not None else None
+        if check is None or not check.agrees:
+            return False  # a value not checked against its drawn length never feeds a formula
+    per_end = getattr(vendor_page.field_cuts, "per_end", None)
+    cut = Fraction(per_end) if per_end else formulas.setting(ctx.rules_md, "field_cut")
+    if cut is None:
+        cut = import_module("app.review.assistant.field_cut").DEFAULT_PER_END
+    found = formulas.top_length(
+        vendor,
+        architect,
+        field_cut=cut,
+        end_overhang=formulas.setting(ctx.rules_md, formulas.END_OVERHANG),
+    )
+    if found is None:
+        return False
+    vendor_words = format_inches(vendor.span.inches)
+    labels = {"vendor": vendor.span.id, "architect": architect.span.id}
+    if found.outcome == "missing":
+        why = f"the vendor's top is {vendor_words}; GV's formula needs {found.words}"
+        finding[formulas.FIELD] = formulas.record(formulas.LENGTH, "missing", why, labels=labels)
+        finding[job_value_rules.FIELD] = formulas.missing_record(formulas.LENGTH, found.missing)
+        if finding.get("status") == "different":
+            finding["status"] = "check"  # one measures the top, the other the cabinets: never red
+        item.changed = True
+        item.note("ends", "no_change", f"GV's formula: {why}")
+        return True
+    if found.outcome == "same":
+        how = f"the vendor's top {vendor_words} = {found.words}"
+        finding[formulas.FIELD] = formulas.record(
+            formulas.LENGTH, "same", how, expected=found.expected, labels=labels
+        )
+        finding.pop(likely_problems.FIELD, None)
+        _settle_right(item, "ends", formulas.right_how(formulas.LENGTH, how))
+        return True
+    expected = found.expected if found.expected is not None else architect.span.inches
+    off = abs(vendor.span.inches - expected)
+    how = (
+        f"the vendor's top is {vendor_words}, {format_inches(off)} "
+        f"{'more' if vendor.span.inches > expected else 'less'} than {found.words}"
+    )
+    finding[formulas.FIELD] = formulas.record(
+        formulas.LENGTH, "different", how, expected=expected, labels=labels
+    )
+    finding[likely_problems.FIELD] = {
+        "by": formulas.LENGTH.kind,
+        "kind": "size",
+        "proof": "likely_only",
+        "sure": "likely",
+        "why": how,
+        "words": formulas.please_check(formulas.LENGTH, how),
+    }
+    finding.update(status="check")
+    finding.pop("settled", None)
+    item.changed = True
+    item.note("ends", "read", f"GV's formula: {how}")
+    return True
 
 
 def _mark_right_ends(
@@ -2047,6 +2193,9 @@ def _mark_job_rules(
     for finding in live:
         if str(finding.get("id")) in result.absorbed or not undecided(finding):
             continue
+        held = finding.get(formulas.FIELD)
+        if isinstance(held, Mapping) and held.get("outcome") == "missing":
+            continue  # a formula named the job value it waits for (`_length_formula`)
         record = job_value_rules.mark(finding, ctx.rules_md)
         if finding.get(job_value_rules.FIELD) == record:
             continue

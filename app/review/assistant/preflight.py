@@ -932,6 +932,14 @@ def _upload_lines(
 
 #: How many job values the line names before "and N more".
 JOB_VALUES_SHOWN: Final = 4
+#: The job values GV's settled formulas read (`formulas.JOB_SETTINGS`), by their plain names, named
+#: first, each with the formula that waits for it (final plan #9).
+FORMULA_VALUES: Final[Mapping[str, str]] = {
+    "Countertop overhang": "countertop depth = cabinet depth + front overhang",
+    "Cabinet depth": "countertop depth = cabinet depth + front overhang",
+    "Sink inside width": "the sink cut-out from the sink's inside size",
+    "Sink inside depth": "the sink cut-out from the sink's inside size",
+}
 
 
 def _inputs_lines(inputs: Inputs) -> list[Line]:
@@ -947,18 +955,26 @@ def _inputs_lines(inputs: Inputs) -> list[Line]:
     if inputs.missing_values:
         # GV settled these as values the reviewer enters per job (no company value), so they are
         # the reviewer's to enter, never a question for GV; the list stays short.
-        names = list(inputs.missing_values)
+        order = list(FORMULA_VALUES)
+        names = sorted(
+            inputs.missing_values,
+            key=lambda name: order.index(name) if name in order else len(order),
+        )
         shown = ", ".join(names[:JOB_VALUES_SHOWN])
         if len(names) > JOB_VALUES_SHOWN:
             shown += f" and {len(names) - JOB_VALUES_SHOWN} more"
+        waiting = list(
+            dict.fromkeys(FORMULA_VALUES[name] for name in names if name in FORMULA_VALUES)
+        )
+        formulas = f" GV's formulas that need them wait: {'; '.join(waiting)}." if waiting else ""
         lines.append(
             Line(
                 "values_needed",
                 "note",
-                f"{_count(len(names), 'job value')} not entered yet: {shown}. They are set per "
-                "job; the checks that use them are skipped until they are entered.",
+                f"{_count(len(names), 'job value')} not entered yet: {shown}. They are set once "
+                f"per job; the checks that use them are skipped until they are entered.{formulas}",
                 who="you",
-                todo="Enter them in the set's settings.",
+                todo="Enter them once for this job (Company settings, Projects).",
             )
         )
     return lines
