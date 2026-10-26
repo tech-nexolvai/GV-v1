@@ -187,7 +187,7 @@ def test_the_sizes_only_agree_with_a_sure_matcher_never_against_a_contradiction(
 
 
 def test_the_vendors_own_title_must_share_a_word_with_the_picks() -> None:
-    assert worklist._shares_a_word("STANDARD LOCKOFF KITCHEN", "STANDARD LOCKOFF KITCHENETTE")
+    assert worklist._shares_a_word("STANDARD STUDIO KITCHEN", "STANDARD STUDIO KITCHENETTE")
     assert worklist._shares_a_word("KITCHEN", "STANDARD KITCHEN")
     assert not worklist._shares_a_word("BENCH", "STANDARD KITCHEN")
     # A shared generic word is not enough: every naming word of the vendor's must be there.

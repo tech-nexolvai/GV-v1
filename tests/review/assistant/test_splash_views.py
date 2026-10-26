@@ -238,7 +238,7 @@ def test_a_thickness_no_view_prints_takes_the_job_value() -> None:
 
 def test_only_splash_sizes_are_looked_for() -> None:
     rules = splash_views._rules()
-    material = _splash(item="Counter: top/splash material", vendor="Calacatta stone, 2cm")
+    material = _splash(item="Counter: top/splash material", vendor="Quartz, 2cm")
     material.pop("inches")
     sized_by_architect = _splash(architect='4"')
     decided = _splash(decision={"decision": "agree"})
