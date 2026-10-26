@@ -165,6 +165,14 @@ def test_more_than_half_an_inch_or_no_wall_is_no_convention() -> None:
     assert drafting_notes.FIELD not in no_wall
 
 
+def test_a_reference_size_finer_than_half_an_inch_is_no_rounding() -> None:
+    label = dict(_label('24 3/16"'), inches="24.1875")
+    found = _escalated(
+        _finding("24.5", architect="24.1875"), label, ends=({"wall"}, {"cabinet_face"})
+    )
+    assert drafting_notes.FIELD not in found
+
+
 def test_a_hold_size_is_never_softened_and_says_so() -> None:
     beside = _phrase("HOLD", [123.0, 50.0, 140.0, 60.0])
     found = _escalated(

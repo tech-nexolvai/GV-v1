@@ -11,9 +11,10 @@ specs ask for field measurement before fabrication):
   compared, "the drawing says verify in field", with a plain field-verify note.
 - **The half-inch convention**: an architect dimensions to the wall's face (or a stud's), rounded
   to the nearest 1/2", while the cabinet maker builds to finished faces with far finer precision.
-  So a difference of 1/2" or less, where code proved the architect's dimension ends at a wall's
-  face (`dim_ends`: a wall drawn beyond it), is "convention difference, field verify", not a
-  Likely problem.
+  So a difference of 1/2" or less from a reference size on the half-inch grid, where code proved
+  the reference's dimension ends at a wall's face (`dim_ends`: a wall drawn beyond it), is
+  "convention difference, field verify", not a Likely problem. A reference size drawn to a finer
+  step (25 3/16") is no rounding, so the convention never applies to it.
 
 **Only where code reads the note next to the dimension**: the label reader's own flags for the
 words written with the value (`dim_labels`: `VIF 24"`, `24" +/-`), the label's own text, or a
@@ -275,7 +276,11 @@ def mark(
         and ends is not None
         and difference is not None
         and 0 < difference <= Decimal(CONVENTION_MAX_IN.numerator) / CONVENTION_MAX_IN.denominator
+        and architect is not None
+        and (architect * 2) % 1 == 0
     ):
+        # Only a size on the half-inch grid is the architect's rounding (a 25 3/16" is drawn to
+        # the sixteenth: no convention explains a difference from it).
         found = ends(file, page, label_id)
         if found is not None and "wall" in (found.low.kinds | found.high.kinds):
             kinds = ["convention"]
