@@ -10,9 +10,13 @@ tags and words are untouched. Made-up values only.
 
 from __future__ import annotations
 
+from fractions import Fraction
 from typing import Any
 
 from app.review.assistant import classification, proof
+from app.review.assistant.chat_trust import judged
+from app.review.assistant.escalation import EscalationContext, escalate
+from app.review.assistant.field_cut import PageFieldCuts
 
 
 def _same(vendor: str, architect: str, v_in: str | None, a_in: str | None, **extra: Any) -> dict:
@@ -100,3 +104,43 @@ def test_gv_limits_and_the_vendors_own_sum_are_untouched() -> None:
 def test_a_sixteenth_is_the_same_size() -> None:
     assert classification.differing_values(_same("", "", "33.0625", "33")) is None
     assert classification.differing_values(_same("", "", "33.125", "33")) == ('33 1/8"', '33"')
+
+
+def _called_same_with_a_field_cut() -> dict:
+    """The AI's own "43 = 42 + 1" on a top whose vendor overall includes the field cut."""
+    vendor = {"id": "D3", "page": 4, "file": "vendor.pdf", "inches": "43", "text": '43"'}
+    architect = {
+        "id": "D9",
+        "page": 2,
+        "file": "reference.pdf",
+        "inches": "42",
+        "text": "1067 [42]",
+    }
+    return _same(
+        '43"',
+        "1067 [42]",
+        "43",
+        "42",
+        id="F1",
+        dims={"vendor": vendor, "architect": architect},
+    )
+
+
+def _escalated(finding: dict, overalls: dict[str, int]) -> dict:
+    ctx = EscalationContext(
+        main_file="vendor.pdf",
+        field_cuts=lambda _file, _page: PageFieldCuts(Fraction(1), frozenset(), overalls),
+    )
+    result = escalate([finding], ctx)
+    return judged({str(f["id"]): f for f in result.changed}.get("F1", finding))
+
+
+def test_the_escalation_vets_a_field_cut_on_an_item_called_the_same() -> None:
+    """Code's field-cut rule (settled with GV) proves the AI's arithmetic: Right with code's
+    record. With no field cut on the vendor's overall it stays Not compared."""
+    found = _escalated(_called_same_with_a_field_cut(), {"D3": 1})
+    assert found["field_cut"]["outcome"] == "allowed"
+    assert proof.proof_group(found) == "right"
+    kept = _escalated(_called_same_with_a_field_cut(), {"D7": 1})
+    assert "field_cut" not in kept
+    assert proof.proof_group(kept) == "not_compared"
