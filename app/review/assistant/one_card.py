@@ -43,7 +43,9 @@ Two more folds (2026-10-25, the client-meeting job), by code facts only, never h
   finish tag and the vendor's side names neither) is one Likely problem for the whole set, its
   pages listed, the other pages' copies kept on it as evidence. Only Likely problems and Not
   compared copies fold; a red stays its own card, and nothing folds without a Likely problem to
-  carry it.
+  carry it. A vendor side that says it lacks the reference's tag ("no SS 01 tag") does not name
+  it (2026-10-26: such a copy had stayed a second card). The card lists every other page in
+  `also_on`, so the drawing marks each page's spot and the card names the pages.
 
 Pure code: no I/O, no AI call.
 """
@@ -334,8 +336,12 @@ def _order(finding: Mapping[str, Any]) -> tuple[Any, ...]:
 
 def _fixed(finding: Mapping[str, Any]) -> bool:
     """A copy never folded away: a recorded difference, one the reviewer decided, or one that
-    carries the same item on other pages (its marks there belong to its own verdict)."""
-    return bool(finding.get("record_id") or finding.get("decision") or finding.get("also_on"))
+    carries the same item on other pages (its marks there belong to its own verdict; the pages
+    this step's own set-wide material card lists do not count: a Continue folds it again)."""
+    carried = [
+        e for e in finding.get("also_on") or [] if not (isinstance(e, Mapping) and e.get("fold"))
+    ]
+    return bool(finding.get("record_id") or finding.get("decision") or carried)
 
 
 def _conflict(group: Sequence[Mapping[str, Any]]) -> list[str] | None:
@@ -623,6 +629,19 @@ def _classes(text: object) -> frozenset[str]:
     return frozenset(c for c in _CLASSES if re.search(rf"\b{c}\b", flat))
 
 
+#: A material or tag the vendor's side says is NOT there ("no SS 01 tag", "without solid
+#: surface"): up to the next comma, semicolon, full stop or bracket.
+_NEGATED: Final = re.compile(
+    r"\b(?:no|not|without|instead of|missing|lacks?|lacking)\b[^,;.()]*", re.IGNORECASE
+)
+
+
+def _named(text: object) -> str:
+    """The words a side names as present: its "no SS 01 tag" and "without solid surface" parts
+    taken out (a vendor side that says it lacks the reference's tag does not name it)."""
+    return _NEGATED.sub(" ", str(text or ""))
+
+
 def _material_key(finding: Mapping[str, Any]) -> tuple[Any, ...] | None:
     """(the reference's material classes, its finish tags, the round) when the item is a
     material claim the vendor's side differs on, else None."""
@@ -634,7 +653,8 @@ def _material_key(finding: Mapping[str, Any]) -> tuple[Any, ...] | None:
     if not _words(vendor):
         return None
     classes, tags = _classes(finding.get("architect")), _codes(finding.get("architect"))
-    if (classes & _classes(vendor)) or (tags & _codes(vendor)):
+    named = _named(vendor)
+    if (classes & _classes(named)) or (tags & _codes(named)):
         return None  # the vendor names the reference's material: no difference claimed
     if not (classes or tags):
         return None
@@ -693,14 +713,14 @@ def _fold_material(live: Sequence[Mapping[str, Any]], gone: set[str], out: OneCa
             continue
         keep = min(likely, key=_order)
         others = [f for f in copies if f is not keep]
-        # The pages of copies folded into it before (a Continue) are the set's too.
-        for copy in _earlier_copies(keep):
+        # The pages of copies folded into any of them before (a Continue) are the set's too.
+        for copy in (c for f in copies for c in _earlier_copies(f)):
             box = copy.get("vendor_box")
             if isinstance(box, Mapping) and isinstance(box.get("page"), int):
                 pages.add(int(box["page"]))
         where = f"the whole set, vendor {_pages_words(sorted(pages))}"
         item = _WHERE.sub("", " ".join(str(keep.get("item") or "Material").split()))
-        changes: dict[str, Any] = {"item": f"{item} ({where})"}
+        changes: dict[str, Any] = {"item": f"{item} ({where})", "also_on": _also_on(keep, others)}
         mark = keep.get("whole_look")
         if isinstance(mark, Mapping) and mark.get("words"):
             words = _WHERE_WORDS.sub("", str(mark["words"]))
@@ -715,6 +735,45 @@ def _fold_material(live: Sequence[Mapping[str, Any]], gone: set[str], out: OneCa
             **changes,
         )
         gone.update(str(o["id"]) for o in others)
+
+
+#: An `also_on` entry this step's material fold wrote (never a reason to keep the card fixed).
+_MATERIAL_FOLD: Final = "set_card"
+#: What a page's entry on the set-wide card keeps (`also_on`, as the resolver's): the cloud
+#: drawing marks that page's spot too, and the card lists the page.
+_ALSO_KEYS: Final = (
+    "page",
+    "vs_page",
+    "round",
+    "item",
+    "vendor",
+    "architect",
+    "vendor_box",
+    "arch_box",
+)
+
+
+def _also_on(keep: Mapping[str, Any], others: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The set-wide card's other pages: each folded copy's page, spot and the pages it carried."""
+    out = [dict(e) for e in keep.get("also_on") or [] if isinstance(e, Mapping)]
+    entries: list[dict[str, Any]] = []
+    for other in others:
+        entries.append(
+            {"finding_id": str(other.get("id")), **{k: other.get(k) for k in _ALSO_KEYS}}
+        )
+        entries += [dict(e) for e in other.get("also_on") or [] if isinstance(e, Mapping)]
+    for copy in (c for f in (keep, *others) for c in _earlier_copies(f)):  # folded before
+        box = copy.get("vendor_box")
+        page = box.get("page") if isinstance(box, Mapping) else None
+        if isinstance(page, int) and page != keep.get("page"):
+            entries.append(
+                {"finding_id": str(copy.get("finding_id")), "page": page}
+                | {k: copy.get(k) for k in ("item", "vendor", "architect", "vendor_box")}
+            )
+    for entry in entries:
+        if not any(e.get("finding_id") == entry.get("finding_id") for e in out):
+            out.append({**entry, "fold": _MATERIAL_FOLD})
+    return out
 
 
 def _earlier_copies(finding: Mapping[str, Any]) -> list[Mapping[str, Any]]:

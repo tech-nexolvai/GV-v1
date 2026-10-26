@@ -16,7 +16,11 @@ anything red or a Likely problem.
    pages' text, adds the vendor's two sheets (the neighbouring sheet with the other heading whose
    units all belong to the reference's list) and compares per unit type. Every type the same: the
    count claim is **withdrawn** ("2 + 2 = 4"). Code cannot add them up (no other sheet, two
-   candidates, a unit code cannot place): **Not compared**. Different after adding up: unchanged.
+   candidates, a unit code cannot place): **Not compared**. Different per type after adding up,
+   but the same total, every vendor unit on the reference's list and the regular and reversed
+   counts fitting it (2026-10-26: the vendor names "X-R 3" where the reference splits "X-Reverse
+   2, Y-Reverse 1"): every unit on the list uses this one top, so the claim is **withdrawn**.
+   Else unchanged.
 3. **A wall outline is not the countertop**: code reads the reference's line work in the claim's
    spot (`OutlineReader`): an L-shaped outline drawn at the wall's weight (the heaviest line on
    the page) or solid-filled (a wall's poche) is a wall or pony wall, never the top: the claim
@@ -28,6 +32,17 @@ anything red or a Likely problem.
    MITERED EDGE": the edge built up to 1 1/2"). A claim about mitred pieces stands only when the
    piece's own size is that build-up; a 4" piece standing at a wall end is a side splash. When the
    legend gives no mitre code, code cannot tell them apart: **withdrawn** (no claim).
+5. **Which end, on a unit drawn both ways round** (2026-10-26): a whole-drawing look's claim that
+   something sits at the other end or side (its own words, not a size code paired) is
+   **withdrawn** when code knows the unit is drawn both ways round and the claim is the same once
+   the vendor's side is flipped left to right (its left / right named the other way, a size from
+   an end the same size from the flipped end; a size claim's numbers all the same). Code knows a
+   unit is reversed from (a) the vendor's neighbouring sheet with the other REGULAR / REVERSED
+   UNITS heading drawn as its mirror image (`mirrored`: the sizes at mirrored places; when the
+   vendor has such a sheet, only this proof counts: two sheets drawn alike may hold a real
+   mistake), or (b) for a vendor sheet with no such neighbour, a title or unit list naming a
+   reversed unit ("X-R", "X-Reverse", REVERSED, OPP. HAND) on the vendor's page or the
+   reference's. Nothing tells code: the claim stays; never a guess.
 
 Pure code except the outline reader (pdfium, under the one lock; its pages kept per process).
 Verification: `tests/review/assistant/test_claim_rules.py` (made-up drawings and values).
@@ -57,8 +72,10 @@ __all__ = [
     "OutlineReader",
     "changes",
     "held",
+    "mirrored",
     "mitre_build_up",
     "notch_item",
+    "reversed_unit",
     "unit_counts",
 ]
 
@@ -68,7 +85,7 @@ _log = logging.getLogger(__name__)
 FIELD: Final = "claim_rule"
 
 type Outcome = Literal["withdrawn", "not_compared"]
-type Rule = Literal["notch", "unit_counts", "wall_outline", "side_splash"]
+type Rule = Literal["notch", "unit_counts", "wall_outline", "side_splash", "reversed_unit"]
 type Box = tuple[float, float, float, float]
 #: (file, page, box) -> "wall", "top", or None when code cannot tell.
 type Outlines = Callable[[str, int, Box], str | None]
@@ -229,6 +246,40 @@ def _place(
     return sums
 
 
+def _hand(name: str) -> str:
+    """A unit code's hand: "reversed" for an "-R" code (`_norm` writes "-Reverse" so), else
+    "regular"."""
+    return "reversed" if name.endswith("-R") else "regular"
+
+
+def _hands_fit(hands: Mapping[str, int], entries: Sequence[tuple[frozenset[str], int]]) -> bool:
+    """The vendor's regular and reversed counts fit the reference's list: each hand at least the
+    reference's entries of that hand only, and at most those plus the entries that hold both
+    ("X // X-Reverse")."""
+    for hand in ("regular", "reversed"):
+        only = sum(c for codes, c in entries if {_hand(n) for n in codes} == {hand})
+        both = sum(c for codes, c in entries if len({_hand(n) for n in codes}) == 2)
+        if not only <= hands.get(hand, 0) <= only + both:
+            return False
+    return True
+
+
+def _sibling_sheet(page: int, texts: Mapping[int, str]) -> tuple[str, list[int]] | None:
+    """The vendor page's heading ("regular" / "reversed") and its neighbouring sheets with the
+    other heading (the same item drawn the other way round), or None when the page has no
+    REGULAR / REVERSED UNITS heading."""
+    _, heading = _vendor_units(texts.get(page, ""))
+    if heading is None:
+        return None
+    other = "reversed" if heading == "regular" else "regular"
+    near = [
+        p
+        for p in (page - 1, page + 1)
+        if (found := _vendor_units(texts.get(p, "")))[1] == other and found[0]
+    ]
+    return heading, near
+
+
 def unit_counts(
     page: int,
     reference: str,
@@ -236,13 +287,22 @@ def unit_counts(
 ) -> tuple[str, str] | None:
     """The unit-count rule on vendor `page` (`texts`: the vendor file's page texts) against the
     reference page's `reference` text: ("same" | "unsure", why), or None when it does not apply
-    or the counts still differ after adding up."""
+    or the counts still differ after adding up.
+
+    Per unit type first (#1931); then, when only the unit names differ, the totals: the same
+    total, every vendor unit in the reference's list and the regular and reversed counts fitting
+    it are the same tops under other unit names ("same")."""
     entries = _reference_units(reference)
     units, heading = _vendor_units(texts.get(page, ""))
     if not entries or not units:
         return None
     sheets = [page]
-    if heading is not None:
+    hands: Counter[str] = Counter()
+    if heading is None:
+        for name, count in units.items():
+            hands[_hand(name)] += count
+    else:
+        hands[heading] += sum(units.values())
         other = "reversed" if heading == "regular" else "regular"
         found = []
         for near in (page - 1, page + 1):
@@ -261,6 +321,7 @@ def unit_counts(
         near, near_units = found[0]
         sheets = sorted([page, near])
         units = dict(Counter(units) + Counter(near_units))
+        hands[other] += sum(near_units.values())
     placed = _place(units, entries)
     if placed is None:
         return (
@@ -268,10 +329,20 @@ def unit_counts(
             if heading is not None
             else None
         )
-    if any(placed.get(i, 0) != count for i, (_, count) in enumerate(entries)):
-        return None
     total = sum(count for _, count in entries)
     pages = " + ".join(f"page {p}" for p in sheets)
+    if any(placed.get(i, 0) != count for i, (_, count) in enumerate(entries)):
+        if sum(units.values()) != total or not _hands_fit(hands, entries):
+            return None
+        return (
+            "same",
+            (
+                f"code adds up the vendor's unit lists ({pages}): {total} units, the same total "
+                f"as the reference's list, and the regular and reversed units fit that list "
+                f"({hands['regular']} regular, {hands['reversed']} reversed). Every unit on the "
+                "list uses this one top, so only the unit names differ, not the number of tops"
+            ),
+        )
     return (
         "same",
         (
@@ -493,6 +564,219 @@ def _inch_words(value: Fraction) -> str:
     return f'{whole} {rest}"' if whole and rest else f'{rest or whole}"'
 
 
+# ---- 5. which end, on a unit drawn both ways round ----------------------------------------------
+
+#: A claim about which end or side something is at.
+_END_CLAIM: Final = re.compile(
+    r"\b(?:left|right|opposite|other|wrong) (?:end|side|hand)\b|\b(?:on|at) the (?:left|right)\b|"
+    r"\bwhich (?:end|side)\b|\bmirror(?:ed|s)?\b|\brevers(?:ed|e)\b|\bflipped\b|\bswapped\b",
+    re.IGNORECASE,
+)
+#: The claim's own words say only the end differs (no left / right named on either side).
+_ONLY_THE_HAND: Final = re.compile(
+    r"\b(?:opposite|other|wrong) (?:end|side|hand)\b|\bmirror(?:ed|s)?\b|\brevers(?:ed|e)\b|"
+    r"\bflipped\b|\bswapped\b",
+    re.IGNORECASE,
+)
+_SIDE_WORD: Final = re.compile(r"\b(left|right)\b", re.IGNORECASE)
+#: A size measured from one end ("14 1/4" from the right end").
+_FROM_END: Final = re.compile(
+    r"(\d+(?:[\s-]+\d+/\d+)?|\d+/\d+)\s*(?:\"|''|”)?\s*(?:from|off) the (left|right)\b",
+    re.IGNORECASE,
+)
+_ANY_NUMBER: Final = re.compile(r"\d+(?:[\s-]+\d+/\d+)?|\d+/\d+")
+#: A sheet or unit title that marks a unit drawn the other way round.
+_HAND_TITLE: Final = re.compile(
+    r"\bOPP(?:OSITE|\.)?\s*HAND(?:ED)?\b|\bMIRROR(?:ED)?\s+IMAGE\b|\bREVERSED?\b", re.IGNORECASE
+)
+#: A title is a short line (a note that mentions "reverse" in passing is not one).
+_TITLE_CHARS: Final = 48
+#: Two labels sit at mirrored places within this (points).
+_MIRROR_PT: Final = 2.0
+#: The labels that must sit at mirrored places before code calls a sheet the other's mirror.
+_MIRROR_MIN: Final = 3
+
+
+def _flip(side: str) -> str:
+    return "left" if side.lower() == "right" else "right"
+
+
+def _centre(label: Mapping[str, Any]) -> tuple[float, float] | None:
+    box = label.get("box")
+    try:
+        x0, y0, x1, y1 = (float(v) for v in box)  # type: ignore[union-attr]
+    except (TypeError, ValueError):
+        return None
+    return (x0 + x1) / 2, (y0 + y1) / 2
+
+
+def mirrored(first: Sequence[Mapping[str, Any]], second: Sequence[Mapping[str, Any]]) -> bool:
+    """Code's proof that `second` (a sheet's labels) is `first` drawn as a mirror image: the
+    labels that move between the two sheets (a label at the same place on both is the sheet's
+    title block or legend) sit at mirrored places, left to right about one line, at least
+    `_MIRROR_MIN` of them and nearly all, and more of them than a plain shift would place."""
+
+    def spots(labels: Sequence[Mapping[str, Any]]) -> dict[str, list[tuple[float, float]]]:
+        out: dict[str, list[tuple[float, float]]] = {}
+        for label in labels:
+            centre = _centre(label)
+            text = _flat(label.get("text"))
+            if centre is not None and text:
+                out.setdefault(f"{text}|{label.get('orientation') or ''}", []).append(centre)
+        return out
+
+    mine, theirs = spots(first), spots(second)
+    moving = [
+        (key, (x, y))
+        for key, places in mine.items()
+        for x, y in places
+        if not any(
+            abs(x - bx) <= _MIRROR_PT and abs(y - by) <= _MIRROR_PT
+            for bx, by in theirs.get(key, [])
+        )
+    ]
+    if len(moving) < _MIRROR_MIN:
+        return False
+
+    def fit(mirror: bool) -> int:
+        best = 0
+        for key, (x, y) in moving:
+            for bx, by in theirs.get(key, []):
+                line, dy = (x + bx if mirror else bx - x), by - y
+                placed = sum(
+                    1
+                    for k2, (x2, y2) in moving
+                    if any(
+                        abs((line - x2 if mirror else x2 + line) - bx2) <= _MIRROR_PT
+                        and abs(by2 - y2 - dy) <= _MIRROR_PT
+                        for bx2, by2 in theirs.get(k2, [])
+                    )
+                )
+                best = max(best, placed)
+        return best
+
+    flipped = fit(True)
+    return flipped >= _MIRROR_MIN and flipped >= 0.8 * len(moving) and flipped > fit(False)
+
+
+def _hand_title(text: str) -> str | None:
+    """A reversed unit named in a sheet's title or unit list: the REVERSED UNITS heading, a unit
+    code drawn reversed ("QR-ST-R", "MN-OP-Reverse"), or a short title line saying REVERSE /
+    OPP. HAND / MIRROR IMAGE."""
+    units, heading = _vendor_units(text)
+    if heading == "reversed":
+        return "REVERSED UNITS"
+    named = [n for n in units if _hand(n) == "reversed"]
+    named += [
+        n for codes, _ in _reference_units(text) for n in sorted(codes) if _hand(n) == "reversed"
+    ]
+    if named:
+        return named[0]
+    for line in _lines(text):
+        found = _HAND_TITLE.search(line)
+        if found and len(line.strip()) <= _TITLE_CHARS:
+            return found.group(0)
+    return None
+
+
+def _reversal(
+    finding: Mapping[str, Any],
+    texts: Mapping[tuple[str, int], str],
+    labels: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]],
+    vendor_file: str,
+    main_file: str | None,
+) -> str | None:
+    """How code knows the item's unit is drawn both ways round (its words), else None: never a
+    guess."""
+    page = int(finding["page"])
+    sheets = {p: t for (f, p), t in texts.items() if f == vendor_file}
+    sibling = _sibling_sheet(page, sheets)
+    if sibling is not None and sibling[1]:
+        # The vendor draws the unit on a regular and a reversed sheet: only code's mirror proof
+        # between them explains which end (two sheets drawn alike may hold a real mistake).
+        heading, near = sibling
+        mine = labels.get((vendor_file, page), [])
+        flipped = [p for p in near if mirrored(mine, labels.get((vendor_file, p), []))]
+        if len(flipped) != 1:
+            return None
+        other = "reversed" if heading == "regular" else "regular"
+        return (
+            f"the vendor draws this unit both ways round: its page {flipped[0]} ({other} "
+            f"units) is page {page} drawn as a mirror image (code finds its sizes at "
+            "mirrored places)"
+        )
+    found = _hand_title(sheets.get(page, ""))
+    if found is not None:
+        return f"the vendor's page {page} names a reversed unit ({found})"
+    reference = _reference_text(finding, texts, main_file)
+    found = _hand_title(reference) if reference else None
+    if found is not None:
+        return (
+            f"the reference's page {finding.get('vs_page')} names a reversed unit ({found}): "
+            "its drawing stands for both hands"
+        )
+    return None
+
+
+def _same_flipped(finding: Mapping[str, Any]) -> str | None:
+    """The end the claim's two sides agree on once the vendor's side is flipped left to right
+    ("left" / "right"; "" when neither side names one and the claim itself says only the end
+    differs), else None: the claim says more than which end."""
+    vendor, architect = _flat(finding.get("vendor")), _flat(finding.get("architect"))
+    words = f"{_flat(finding.get('item'))} {_flat(finding.get('why'))}"
+    if not _END_CLAIM.search(f"{words} {vendor} {architect}"):
+        return None
+    v_sides: set[str] = {str(s).lower() for s in _SIDE_WORD.findall(vendor)}
+    a_sides: set[str] = {str(s).lower() for s in _SIDE_WORD.findall(architect)}
+    if v_sides or a_sides:
+        if len(v_sides) != 1 or len(a_sides) != 1 or v_sides == a_sides:
+            return None
+        end = next(iter(a_sides))
+    elif _ONLY_THE_HAND.search(words):
+        end = ""
+    else:
+        return None
+    # A size measured from an end must be the same size from the same end once flipped.
+    v_from = {(" ".join(n.split()), _flip(e)) for n, e in _FROM_END.findall(vendor)}
+    a_from = {(" ".join(n.split()), e.lower()) for n, e in _FROM_END.findall(architect)}
+    if v_from and a_from and v_from != a_from:
+        return None
+    if _kind(finding) == "size" and sorted(_ANY_NUMBER.findall(vendor)) != sorted(
+        _ANY_NUMBER.findall(architect)
+    ):
+        return None  # a size claim: other numbers may be a size difference, never explained
+    return end
+
+
+def reversed_unit(
+    finding: Mapping[str, Any],
+    texts: Mapping[tuple[str, int], str],
+    labels: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]],
+    vendor_file: str,
+    main_file: str | None,
+) -> Change | None:
+    """A whole-drawing look's claim about which end or side something is on, on a unit code knows
+    is drawn both ways round, that is the same once flipped: withdrawn (see the module)."""
+    mark = finding.get(likely_problems.FIELD)
+    if not isinstance(mark, Mapping) or mark.get("kind") not in ("layout", "size"):
+        return None
+    if mark.get("proof") not in (None, "likely_only"):
+        return None  # code paired printed labels (or a helper's item): not this rule's
+    end = _same_flipped(finding)
+    if end is None:
+        return None
+    how = _reversal(finding, texts, labels, vendor_file, main_file)
+    if how is None:
+        return None  # code cannot tell the unit is reversed: the claim stays
+    where = f" ({end})" if end else ""
+    return Change(
+        "withdrawn",
+        "reversed_unit",
+        f"{how[0].upper()}{how[1:]}. Flipped left to right, the vendor's drawing puts it at the "
+        f"same end as the reference{where}: this is the reversed unit, not a difference",
+    )
+
+
 # ---- the step ---------------------------------------------------------------------------------
 
 
@@ -532,13 +816,15 @@ def changes(
     page_texts: Mapping[tuple[str, int], str],
     main_file: str | None,
     outlines: Outlines | None = None,
+    labels: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None = None,
 ) -> list[tuple[str, Change]]:
-    """What the rules do, item by item (see the module): withdrawn, or Not compared."""
+    """What the rules do, item by item (see the module): withdrawn, or Not compared. `labels`:
+    each page's printed labels (`dims.json`), for the mirror proof between a unit's sheets."""
     out: list[tuple[str, Change]] = []
     for finding in live:
         if not _open(finding):
             continue
-        change = _change(finding, page_texts, main_file, outlines)
+        change = _change(finding, page_texts, main_file, outlines, labels or {})
         if change is not None:
             out.append((str(finding["id"]), change))
     return out
@@ -549,6 +835,7 @@ def _change(
     texts: Mapping[tuple[str, int], str],
     main_file: str | None,
     outlines: Outlines | None,
+    labels: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]],
 ) -> Change | None:
     if notch_item(finding):
         return Change("withdrawn", "notch", NOTCH_WHY)
@@ -567,6 +854,9 @@ def _change(
             outcome, why = found
             return Change("withdrawn" if outcome == "same" else "not_compared", "unit_counts", why)
         return None
+    flipped = reversed_unit(finding, texts, labels, vendor_file, main_file)
+    if flipped is not None:
+        return flipped
     if (
         _kind(finding) in ("extra_piece", "missing_piece", "layout")
         and _MITRE_ITEM.search(item)
