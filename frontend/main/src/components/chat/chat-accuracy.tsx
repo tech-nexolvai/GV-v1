@@ -75,7 +75,7 @@ export function AccuracyBadge({ accuracy, bare = false }: { accuracy: ChatAccura
         {excludedWords(accuracy) && <p data-slot="chat-accuracy-excluded" className="text-xs text-muted-foreground tabular-nums">{excludedWords(accuracy)}</p>}
         <p className="text-xs text-muted-foreground">{ACCURACY_MEANING}</p>
         {accuracy.calibration && <p data-slot="chat-accuracy-calibration" className="text-xs text-muted-foreground">{accuracy.calibration}</p>}
-        {TEST_SET_LINE && <p data-slot="chat-accuracy-test-set" className="text-xs font-medium tabular-nums">{TEST_SET_LINE}</p>}
+        {(accuracy.measured || TEST_SET_LINE) && <p data-slot="chat-accuracy-test-set" className="text-xs font-medium tabular-nums">{accuracy.measured || TEST_SET_LINE}</p>}
       </PopoverContent>
     </Popover>
   );

@@ -191,7 +191,10 @@ export function howWeKnow(finding: ChatFinding, kind: DrawerKind, options: { noA
     const likely = finding.proof?.likely_problem;
     steps.push(sentence(likely?.words?.replace(/^please check and confirm:\s*/i, '')));
     steps.push(sentence(likely?.reason ?? finding.proof?.reason));
-    steps.push('Code could not prove it on the drawings, so it is not a red mark: the vendor is asked to check and confirm.');
+    // Plan change #10: a red code proved, held back only while its kind of check is being proven.
+    steps.push(finding.proof?.held
+      ? 'It is not a red mark until this kind of check has a clean track record: the vendor is asked to check and confirm. Your Agree or Not a mistake helps prove it.'
+      : 'Code could not prove it on the drawings, so it is not a red mark: the vendor is asked to check and confirm.');
   } else if (kind === 'rule_note') {
     const note = ruleNoteWords(finding);
     steps.push(sentence(note?.why ?? finding.proof?.reason));

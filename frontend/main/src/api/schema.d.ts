@@ -5300,6 +5300,12 @@ export interface components {
              */
             group: "clouded" | "right" | "rule_note" | "likely_problem" | "not_compared" | "dismissed";
             /**
+             * Held
+             * @description likely_problem: a Wrong code proved, held back only because its kind of check has no clean track record yet (plan change #10); the reviewer may agree or not.
+             * @default false
+             */
+            held: boolean;
+            /**
              * Label
              * @description not_compared: the trade's words for the reason (Field verify, RFI to the architect, Not reviewed: <reason>, Illegible).
              */
