@@ -66,6 +66,11 @@ inside the full check and its fixed price, it climbs a ladder, the biggest items
    open item GV's own rule sets (the countertop's depth, the sink cut-out's size) whose job values
    nobody entered is named with the rule and the values to enter (`job_value_rules`).
 
+After the ladder, on every Right (`row_places`, 2026-10-27): a piece of a row of sizes is Right only
+against the reference piece that starts at the same place along its row (the vendor's range gap is
+not the reference's other piece of that size further up the counter): code points the item at that
+piece, or, with none, the item is Not compared. Rows code cannot measure leave the item as it was.
+
 Code decides every outcome, with the same witness rules as the red clouds: a step only adds code's
 readings (a label, the text under the markup, code's pairing) or folds a copy into
 the item that already carries it; a Right needs both values read by code and equal; a red cloud
@@ -98,6 +103,7 @@ from app.review.assistant import (
     missing_items,
     proof,
     reading_routes,
+    row_places,
     sink_centre,
 )
 from app.review.assistant.chat_trust import inch_words, judged, round_item_key
@@ -1753,6 +1759,52 @@ def _same_field_cuts(
             result.changed.append(finding)
 
 
+def _mark_row_places(
+    live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
+) -> None:
+    """A Right on a piece of a row of sizes needs both pieces to start at the same place along their
+    rows (2026-10-27, `row_places`): the AI paired the vendor's range gap with the reference's
+    other piece of that size, further up the same counter. Code records where each starts; a pick that starts
+    elsewhere is pointed at the reference piece that starts where the vendor's does, or, with none,
+    the item is Not compared (`classification`). Rows code cannot measure: the item as before."""
+    if ctx.pages is None:
+        return
+    for finding in live:
+        if str(finding.get("id")) in result.absorbed or finding.get("status") != "same":
+            continue
+        if finding.get("source") not in ("architect", "brand_prototype", "gv_review"):
+            continue
+        if finding.get("formula") or finding.get("field_cut") or finding.get("paired_by") == "code":
+            continue  # GV's formula, the field cut or code's own pair compared it
+        if isinstance(finding.get("decision"), Mapping) and finding["decision"].get("decision"):
+            continue  # the reviewer decided it on the pair it shows
+        held = finding.get(row_places.FIELD)
+        if (
+            isinstance(held, Mapping)
+            and held.get("outcome") == "repointed"
+            and held.get("architect") == row_places.side_key(finding, "architect")
+        ):
+            continue  # code's own pick, recorded when it was made
+        try:
+            record = row_places.judge(finding, ctx.pages)
+        except Exception:  # noqa: BLE001 - not measured: the item as it is
+            _log.exception("escalation: row places failed on %s", finding.get("id"))
+            continue
+        if record is None or held == record:
+            continue
+        if record["outcome"] == "repointed":
+            reference = (finding.get("dims") or {}).get("architect") or {}
+            key = (str(reference.get("file")), int(reference.get("page") or 0))
+            pick = str(record["architect"]).rsplit("|", 1)[-1]
+            label = next((x for x in ctx.labels.get(key, ()) if str(x.get("id")) == pick), None)
+            if label is None:
+                continue  # code's pick is not among the page's labels: the item as it is
+            row_places.repoint(finding, label)
+        finding[row_places.FIELD] = record
+        finding.update(judged(finding))
+        result.changed.append(finding)
+
+
 def _mark_right_ends(
     live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
 ) -> None:
@@ -2263,6 +2315,7 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     _fold_missing_copies(live, result)
     _mark_job_rules(live, ctx, result)
     _same_field_cuts(live, ctx, result)
+    _mark_row_places(live, ctx, result)
     _mark_right_ends(live, ctx, result)
     _mark_drafting_notes(live, ctx, result)
     _mark_reading(live, ctx, result)
