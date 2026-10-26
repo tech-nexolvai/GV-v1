@@ -155,7 +155,19 @@ def test_nothing_counts_before_the_run_decides_it_and_only_proved_wrongs_are_wro
     # Raw `finding` events (code's findings before their code checks): not decided yet.
     live.observe("finding", {"index": 1, "finding": _proved(page=2)})
     assert screen.named("check_finding") == [] and live.snapshot()["tally"]["wrong"] == 0
-    live.decide([_proved(page=2), _ai_only(page=3), _proved(id="F3", page=4, status="same")])
+    live.decide(
+        [
+            _proved(page=2),
+            _ai_only(page=3),
+            _proved(
+                id="F3",
+                page=4,
+                status="same",
+                vendor='37"',
+                inches={"architect": "37", "vendor": "37", "difference": "0"},
+            ),
+        ]
+    )
     rows = {d["finding"]["key"]: d["finding"] for d in screen.named("check_finding")}
     assert rows["F1"]["outcome"] == "wrong" and rows["F1"]["proved_by"] == "code"
     assert rows["F1"]["should_be"].startswith('37"') and rows["F1"]["area"] == "Area A"
