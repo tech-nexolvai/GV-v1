@@ -148,12 +148,13 @@ describe('results v2 on the screen', () => {
     const user = userEvent.setup();
     render(<AssistantMessage message={answer({ findings: FINDINGS, coverage: COVERAGE })} chatId="c-1" models={[OPUS]} fullCheck pageTitles={TITLES} />);
     const node = screen.getByRole('article', { name: 'Answer' });
-    expect(tiles(node)).toEqual(['wrong:2', 'likely_problem:1', 'rule_note:0', 'drawing_needed:2', 'right:1', 'not_compared:1']);
+    // Plan change #8: the toe kick has nothing to compare: out of the Not-compared count, folded below its list.
+    expect(tiles(node)).toEqual(['wrong:2', 'likely_problem:1', 'rule_note:0', 'drawing_needed:2', 'right:1', 'not_compared:0']);
     expect(node.querySelector('[data-slot="chat-result-headline"]')?.textContent).toBe('2 proven mistakes for the vendor to fix, and 1 likely problem for the vendor to confirm. 2 of 6 pages checked against the architect; 2 pages have no architect drawing in this upload; 2 pages not compared.');
     // Each count says its unit: pages on the card, items or pages on the tiles.
     const hints = [...node.querySelectorAll<HTMLElement>('[data-slot="chat-result-tiles"] [role="tab"]')].map((tile) => tile.lastElementChild?.textContent);
     expect(hints[3]).toBe('2 pages not in the upload. Ask GV');
-    expect(hints[5]).toBe('1 item, with its reason');
+    expect(hints[5]).toBe('None to check; nothing-to-compare folded below');
     // The wrong part, not the right overall: "Vendor 14″ → Should be 11 5/8″ · the 18″ overall is right".
     expect(node.querySelector('[data-id="w1"] [data-slot="chat-result-values"]')?.textContent).toBe('Vendor 14″Should be 11 5/8″the 18″ overall is right');
     // The work line never says "checked": the top line does.

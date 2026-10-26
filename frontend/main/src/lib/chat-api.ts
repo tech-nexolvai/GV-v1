@@ -553,6 +553,8 @@ export interface ChatFinding {
   also_on?: FindingAlsoOn[] | null;
   /** One item, one card (2026-10-23): other copies of this item on this page, folded in by code. */
   same_item?: FindingSameItem | null;
+  /** Final plan change #8 (`card_fold`, on read): the card this item is shown on, with its copies on sibling pages. */
+  card?: FindingCard | null;
   /** #1554, `source: vendor_arithmetic`: code's sum of the parts, in inches ("80.125"). */
   parts_sum?: string | null;
   /**
@@ -733,6 +735,29 @@ export interface FindingCopy {
 export interface FindingSameItem {
   copies: FindingCopy[];
   conflict?: string[] | null;
+}
+
+/**
+ * Final plan change #8: the card an item is shown on. The copies of one question (the regular and
+ * reversed sheet of a unit, the plan and the elevation) are one card; the lead carries the others.
+ */
+export interface FindingCard {
+  /** The card's id: its lead's finding id. */
+  id: string;
+  lead: boolean;
+  pages?: number[];
+  /** On the lead only: the other items of the card. */
+  copies?: { finding_id: string; page?: number | null; ends?: 'proved' | 'not_proved' | null }[];
+  how?: 'same_reference_dimension' | 'same_page' | 'same_values' | null;
+  /** One Agree applies to every copy: the same proven difference at the same reference dimension. */
+  agree_all?: boolean;
+  /** Likely problem and Not compared: the question, for grouping identical reasons. */
+  question?: { key: string; words: string } | null;
+  aside?: boolean;
+  /** A Right: whether code proved both ends alike (#1953): "not_proved" is "Matches (ends not proved)". */
+  ends?: 'proved' | 'not_proved' | null;
+  /** On the lead only: the same two sizes elsewhere with another outcome (never joined, named). */
+  related?: { finding_id: string; page?: number | null; group: string }[];
 }
 
 /** #1554: one Your-decision item GV Review settled by itself (the folded group's line). */

@@ -4749,6 +4749,100 @@ export interface components {
             type: "finding";
         };
         /**
+         * ChatFindingCardCopyOut
+         * @description Another copy of the same question on a card (`card_fold`): open it by its id.
+         */
+        ChatFindingCardCopyOut: {
+            /**
+             * Ends
+             * @description not_proved: a Right whose ends code did not prove alike ('Matches (ends not proved)').
+             */
+            ends?: ("proved" | "not_proved") | null;
+            /** Finding Id */
+            finding_id: string;
+            /** Page */
+            page?: number | null;
+        };
+        /**
+         * ChatFindingCardOut
+         * @description Final plan change #8 (`card_fold`, worked out on read): the card this item is shown on.
+         *     The copies of one question across the sibling pages of a unit (the same reference dimension,
+         *     vendor value, outcome and reason) are one card; the lead carries the others.
+         */
+        ChatFindingCardOut: {
+            /**
+             * Agree All
+             * @description One Agree (or Not a problem) applies to every copy: the same proven difference at the same reference dimension.
+             * @default false
+             */
+            agree_all: boolean;
+            /**
+             * Aside
+             * @description Leaves the work list for the collapsed 'Nothing to compare here' list.
+             * @default false
+             */
+            aside: boolean;
+            /**
+             * Copies
+             * @description On the lead only: the card's other items.
+             */
+            copies?: components["schemas"]["ChatFindingCardCopyOut"][];
+            /**
+             * Ends
+             * @description A Right: whether code proved both ends alike (#1953).
+             */
+            ends?: ("proved" | "not_proved") | null;
+            /**
+             * How
+             * @description How code knows the copies ask one question.
+             */
+            how?: ("same_reference_dimension" | "same_page" | "same_values") | null;
+            /**
+             * Id
+             * @description The card's id: its lead item's id.
+             */
+            id: string;
+            /**
+             * Lead
+             * @description This item is the card's lead (shown as the card).
+             */
+            lead: boolean;
+            /**
+             * Pages
+             * @description Every vendor page of the card.
+             */
+            pages?: number[];
+            /** @description Likely problem and Not compared: the question, for grouping. */
+            question?: components["schemas"]["ChatFindingCardQuestionOut"] | null;
+            /**
+             * Related
+             * @description On the lead only: the same two sizes elsewhere with another outcome or reason (never joined into the card).
+             */
+            related?: components["schemas"]["ChatFindingCardRelatedOut"][];
+        };
+        /**
+         * ChatFindingCardQuestionOut
+         * @description The question a card asks, for grouping identical reasons on the screen (`card_fold`).
+         */
+        ChatFindingCardQuestionOut: {
+            /** Key */
+            key: string;
+            /** Words */
+            words: string;
+        };
+        /**
+         * ChatFindingCardRelatedOut
+         * @description The same two sizes elsewhere with another outcome (`card_fold`): listed, never joined.
+         */
+        ChatFindingCardRelatedOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Group */
+            group: string;
+            /** Page */
+            page?: number | null;
+        };
+        /**
          * ChatFindingChecksOut
          * @description The checks run on a finding, by code (and one cheap independent AI read).
          */
@@ -5131,6 +5225,8 @@ export interface components {
             arch_picture_id?: string | null;
             /** Architect */
             architect: string;
+            /** @description Final plan change #8: the card this item is shown on (`card_fold`, worked out on read; nothing stored). */
+            card?: components["schemas"]["ChatFindingCardOut"] | null;
             /**
              * Category
              * @description The product the item belongs to (a product id from `GET /products`), or `other`.

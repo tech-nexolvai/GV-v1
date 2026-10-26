@@ -266,6 +266,11 @@ export interface DecisionProps {
   /** #1803: `undo` takes the reviewer's call back. */
   onDecide: (decision: FindingDecisionChoice, extra?: FindingDecisionExtra) => void;
   busy?: boolean;
+  /**
+   * Plan change #8: the item is one copy of a card's question. `all`: one call is saved on every copy
+   * (the same proven difference); else the call is this copy's only.
+   */
+  card?: { all: boolean; count: number; pages: readonly number[] } | null;
 }
 
 /**

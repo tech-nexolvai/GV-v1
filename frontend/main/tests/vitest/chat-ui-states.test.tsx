@@ -66,6 +66,8 @@ describe('a later round', () => {
     const strip = document.querySelector('[data-slot="chat-result-rounds"]') as HTMLElement;
     expect(within(strip).getAllByText(/^1$/)).toHaveLength(3); // the three cells, unchanged by it
     fireEvent.click(document.querySelector('[role="tab"][data-tab="not_compared"]') as HTMLElement);
+    // Plan change #8: compared only with the earlier round: in the folded "Nothing to compare here" list.
+    fireEvent.click(document.querySelector('[data-slot="chat-result-aside-toggle"]') as HTMLElement);
     expect(document.querySelector('[data-slot="chat-result-round-match"]')?.textContent).toBe('Unchanged since round 1');
     expect(roundWords({ fixed: 1, still_wrong: 1, new: 1, unchanged: 1 })).toBe(
       'Closed 1 of 2 round-1 items · 1 previous comment not addressed · 1 new · 1 unchanged since an earlier round (information only)',

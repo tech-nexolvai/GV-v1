@@ -38,9 +38,13 @@ export const TAB_WORDS: Record<ResultTab, { word: string; hint: string }> = {
  * A tile's caption with its unit where two counts could be read against each other (2026-10-23):
  * Drawing needed counts pages, Not compared counts items, as the top line says pages.
  */
-export function tileHint(tab: ResultTab, count: number): string {
+export function tileHint(tab: ResultTab, count: number, aside = 0): string {
   if (tab === 'drawing_needed') return count === 1 ? '1 page not in the upload. Ask GV' : `${count} pages not in the upload. Ask GV`;
-  if (tab === 'not_compared') return count === 1 ? '1 item, with its reason' : `${count} items, each with its reason`;
+  if (tab === 'not_compared') {
+    // Plan change #8: the tile counts questions; what has nothing to compare is folded below the list.
+    if (aside > 0) return `${count === 0 ? 'None' : count} to check; nothing-to-compare folded below`;
+    return count === 1 ? '1 item, with its reason' : `${count} items, each with its reason`;
+  }
   return TAB_WORDS[tab].hint;
 }
 
@@ -61,30 +65,170 @@ export interface ResultGroups {
   notCompared: ChatFinding[];
   /** The reviewer's "Not a problem" (an optional override): listed under Wrong, apart, not counted. */
   dismissed: ChatFinding[];
+  /** Plan change #8: Not compared with nothing to compare (the collapsed list at the bottom), by reason. */
+  aside: ChatFinding[];
+  /** Plan change #8: each listed item is a card's lead; its card, by the lead's id. */
+  cards: ReadonlyMap<string, ResultCard>;
 }
 
 const impactOf = (finding: ChatFinding) => finding.impact?.rank ?? Number.MAX_SAFE_INTEGER;
 const biggestFirst = (a: ChatFinding, b: ChatFinding) => impactOf(a) - impactOf(b) || (b.impact?.score ?? 0) - (a.impact?.score ?? 0) || a.page - b.page;
 
-/** The findings by where the cloud drawing puts them, with the reviewer's newest click laid over. */
+/**
+ * The findings by where the cloud drawing puts them, with the reviewer's newest click laid over, one
+ * card per question (plan change #8): each list holds the cards' leads; a card's copies are in `cards`.
+ */
 export function resultGroups(findings: readonly ChatFinding[], decisionOf: (finding: ChatFinding) => FindingDecision | null = (finding) => finding.decision ?? null): ResultGroups {
-  const groups: ResultGroups = { wrong: [], likely: [], right: [], ruleNotes: [], notCompared: [], dismissed: [] };
-  for (const finding of findings) {
-    const group = proofGroup(finding, decisionOf(finding));
+  const cards = resultCards(findings, decisionOf);
+  const groups: ResultGroups = { wrong: [], likely: [], right: [], ruleNotes: [], notCompared: [], dismissed: [], aside: [], cards: new Map(cards.map((card) => [card.id, card])) };
+  for (const card of cards) {
+    const finding = card.lead;
+    const group = card.group;
     if (group === 'clouded') groups.wrong.push(finding);
     else if (group === 'likely_problem') groups.likely.push(finding);
     else if (group === 'right') groups.right.push(finding);
     else if (group === 'dismissed') groups.dismissed.push(finding);
     else if (group === 'rule_note') groups.ruleNotes.push(finding);
+    else if (card.aside) groups.aside.push(finding);
     else groups.notCompared.push(finding);
   }
   groups.wrong.sort(biggestFirst);
-  groups.likely.sort(biggestFirst);
+  groups.likely = likelyGroups(groups.likely, groups.cards).flatMap((group) => group.findings);
   groups.right.sort((a, b) => a.page - b.page);
   groups.ruleNotes.sort((a, b) => a.page - b.page);
   groups.notCompared = notComparedGroups(groups.notCompared).flatMap((group) => group.findings);
+  groups.aside = notComparedGroups(groups.aside).flatMap((group) => group.findings);
   return groups;
 }
+
+// ── One card per question (final plan change #8) ─────────────
+
+/**
+ * Not-compared reasons that leave the work list for the collapsed "Nothing to compare here" list
+ * (the server's `card_fold.ASIDE_REASONS`): the reference gives no size, an honest different extent,
+ * a field-verify note, a reference that is not the architect's, an AI reading never found at its
+ * spot. "Could not read" and the rest stay questions.
+ */
+export const ASIDE_REASONS: ReadonlySet<string> = new Set(['nothing_to_compare', 'no_overall', 'different_reference', 'field_verify', 'finish_not_comparable', 'prototype', 'prototype_only', 'round_only', 'internal']);
+
+/** One card: its lead (the row), the other copies of the same question, and how the list places it. */
+export interface ResultCard {
+  /** The lead's id. */
+  id: string;
+  lead: ChatFinding;
+  copies: ChatFinding[];
+  /** Every vendor page of the card, in order. */
+  pages: number[];
+  group: ProofGroup;
+  /** One Agree (or Not a problem) is saved on every copy: the same proven difference (the server's word). */
+  agreeAll: boolean;
+  /** The question, for grouping identical reasons (Likely problem, Not compared). */
+  question: { key: string; words: string } | null;
+  /** Leaves the work list: the collapsed "Nothing to compare here" list. */
+  aside: boolean;
+  /** The same two sizes elsewhere with another outcome (the server's `related`): named, never joined. */
+  related: ChatFinding[];
+}
+
+/**
+ * The findings as cards: the server's card (`card_fold`) split by the reviewer's newest clicks, so a
+ * copy decided apart from the others is a card of its own (the screen never shows two outcomes as
+ * one card). Findings with no card from the server are a card each.
+ */
+export function resultCards(findings: readonly ChatFinding[], decisionOf: (finding: ChatFinding) => FindingDecision | null = (finding) => finding.decision ?? null): ResultCard[] {
+  const byId = new Map(findings.map((finding) => [finding.id, finding]));
+  const buckets = new Map<string, { group: ProofGroup; members: ChatFinding[] }>();
+  for (const finding of findings) {
+    const group = proofGroup(finding, decisionOf(finding));
+    const key = `${finding.card?.id ?? finding.id}\u0000${group}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.members.push(finding);
+    else buckets.set(key, { group, members: [finding] });
+  }
+  return [...buckets.values()].map(({ group, members }) => {
+    const lead = members.find((finding) => finding.card?.lead) ?? members[0];
+    const rank = new Map((lead.card?.copies ?? []).map((copy, at) => [copy.finding_id, at]));
+    const copies = members.filter((finding) => finding !== lead).sort((a, b) => (rank.get(a.id) ?? 99) - (rank.get(b.id) ?? 99) || a.page - b.page);
+    const pages = [...new Set(members.map((finding) => finding.page))].sort((a, b) => a - b);
+    const asks = group === 'likely_problem' || group === 'not_compared';
+    return {
+      id: lead.id,
+      lead,
+      copies,
+      pages,
+      group,
+      agreeAll: copies.length > 0 && Boolean(lead.card?.agree_all) && (group === 'clouded' || group === 'likely_problem'),
+      question: asks ? questionOf(lead, group) : null,
+      aside: group === 'not_compared' && ASIDE_REASONS.has(notComparedReason(lead)),
+      related: (lead.card?.related ?? []).map((other) => byId.get(other.finding_id)).filter((other): other is ChatFinding => Boolean(other) && !members.includes(other!)),
+    };
+  });
+}
+
+const LOOK_WORDS: Record<string, string> = {
+  missing_piece: 'The reference shows a piece the vendor’s drawing does not',
+  extra_piece: 'The vendor’s drawing shows a piece the reference does not',
+  count: 'The counts differ',
+  size: 'A size differs, found by the whole-drawing look',
+  layout: 'The layout differs',
+};
+
+/** The question a card asks: the server's, else worked out from its reason. */
+export function questionOf(finding: ChatFinding, group: ProofGroup = proofGroup(finding)): { key: string; words: string } {
+  const given = finding.card?.question;
+  if (given?.key) return { key: given.key, words: quoteMarks(given.words.replace(/'/g, '’')) };
+  if (group === 'likely_problem') {
+    if (finding.proof?.held) return { key: 'held', words: 'Code found a difference; this kind of check is still being proven' };
+    const kind = finding.proof?.likely_problem?.kind ?? 'size';
+    return { key: `look:${kind}`, words: LOOK_WORDS[kind] ?? LOOK_WORDS.size };
+  }
+  const reason = notComparedReason(finding);
+  return { key: reason, words: REASON_WORDS.get(reason) ?? 'Not compared' };
+}
+
+export interface QuestionGroup {
+  key: string;
+  words: string;
+  findings: ChatFinding[];
+}
+
+/** Likely problems grouped by an identical question; the group with the biggest item first, biggest first inside. */
+export function likelyGroups(leads: readonly ChatFinding[], cards?: ReadonlyMap<string, ResultCard>): QuestionGroup[] {
+  const groups = new Map<string, QuestionGroup>();
+  for (const finding of [...leads].sort(biggestFirst)) {
+    const question = cards?.get(finding.id)?.question ?? questionOf(finding, 'likely_problem');
+    const group = groups.get(question.key);
+    if (group) group.findings.push(finding);
+    else groups.set(question.key, { key: question.key, words: question.words, findings: [finding] });
+  }
+  return [...groups.values()];
+}
+
+/** "on 3 pages" / "2 copies": what a card's pill says; null for a card of one. */
+export function cardPillWords(card: Pick<ResultCard, 'copies' | 'pages'> | null | undefined): string | null {
+  if (!card || card.copies.length === 0) return null;
+  return card.pages.length > 1 ? `on ${card.pages.length} pages` : `${card.copies.length + 1} copies`;
+}
+
+/** "p.4 and p.12" (the copies' pages, each once; a copy on the lead's own page says "this page"). */
+export function copiesWords(card: Pick<ResultCard, 'lead' | 'copies'>): string {
+  const pages = [...new Set(card.copies.map((copy) => copy.page))].sort((a, b) => a - b);
+  const words = pages.map((page) => (page === card.lead.page ? 'this page' : `p.${page}`));
+  return words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}` : words[0] ?? '';
+}
+
+/** "pages 3, 4 and 12" (a card's pages for the Agree line). */
+export function pagesWords(pages: readonly number[]): string {
+  if (pages.length === 1) return `page ${pages[0]}`;
+  return `pages ${pages.slice(0, -1).join(', ')} and ${pages[pages.length - 1]}`;
+}
+
+/** A Right whose ends code did not prove alike (#1953): "Matches (ends not proved)". */
+export function endsNotProved(finding: Pick<ChatFinding, 'card'>): boolean {
+  return finding.card?.ends === 'not_proved';
+}
+
+export const ENDS_NOT_PROVED_WORDS = 'Matches (ends not proved)';
 
 // ── Drawing needed (#1885) and the pages ───────────────────
 
@@ -361,15 +505,26 @@ export interface NotComparedGroup {
   findings: ChatFinding[];
 }
 
+/**
+ * Not-compared items by their question (plan change #8: a missing job value says which, "Job value
+ * missing: front overhang"), in the reasons' order, each by page.
+ */
 export function notComparedGroups(findings: readonly ChatFinding[]): NotComparedGroup[] {
-  const byReason = new Map<string, ChatFinding[]>();
+  const byQuestion = new Map<string, { words: string; list: ChatFinding[] }>();
   for (const finding of findings) {
     const reason = notComparedReason(finding);
-    byReason.set(reason, [...(byReason.get(reason) ?? []), finding]);
+    const given = finding.card?.question;
+    // The server's question splits a reason further (which job value is missing); else the reason.
+    const key = given?.key && given.key.split(':')[0] === reason ? given.key : reason;
+    const words = key === reason ? REASON_WORDS.get(reason) ?? 'Not compared' : quoteMarks((given?.words ?? '').replace(/'/g, '’'));
+    const entry = byQuestion.get(key);
+    if (entry) entry.list.push(finding);
+    else byQuestion.set(key, { words, list: [finding] });
   }
-  return [...byReason.entries()]
-    .sort(([a], [b]) => (REASON_ORDER.get(a) ?? 99) - (REASON_ORDER.get(b) ?? 99))
-    .map(([reason, list]) => ({ reason, words: REASON_WORDS.get(reason) ?? 'Not compared', findings: list.sort((x, y) => x.page - y.page) }));
+  const order = (key: string) => REASON_ORDER.get(key.split(':')[0]) ?? 99;
+  return [...byQuestion.entries()]
+    .sort(([a], [b]) => order(a) - order(b) || a.localeCompare(b))
+    .map(([reason, { words, list }]) => ({ reason, words, findings: list.sort((x, y) => x.page - y.page) }));
 }
 
 /** What is needed to compare it: the server's words, never empty. */
