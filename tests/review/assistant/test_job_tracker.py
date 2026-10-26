@@ -8,8 +8,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-import pytest
-
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.job_tracker import (
     TrackerAnswer,
@@ -19,6 +17,7 @@ from app.review.assistant.job_tracker import (
     item_words,
     vendor_key,
 )
+from tests.review.assistant.reading_fixture import two_routes
 
 T0 = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
 
@@ -67,6 +66,7 @@ def finding(
                 "difference": str((to_inches(vendor) or 0) - (to_inches(architect) or 0)),
             },
         }
+        two_routes(out)  # each number read by two routes (`reading_routes`)
     return {**out, **extra}
 
 
@@ -98,7 +98,6 @@ def by_item(built: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {item["item"]: item for item in built["items"]}
 
 
-@pytest.mark.usefixtures("read_twice")
 def test_two_rounds_in_one_check_fixed_still_wrong_new_and_right_only() -> None:
     package, sets = one_set()
     built = build_tracker(
@@ -325,7 +324,6 @@ def test_a_right_that_was_not_compared_proves_nothing() -> None:
     assert item["state"] == "open" and item["round_now"] == 1
 
 
-@pytest.mark.usefixtures("read_twice")
 def test_a_wrong_code_did_not_prove_is_not_compared_and_unnumbered() -> None:
     """The pipeline audit (2026-10-19): the tracker counted a finding's raw `different` as Wrong
     (a check row said 17 wrong where the files said 10), and numbered it. The files count Wrong
@@ -370,7 +368,6 @@ def test_a_finding_with_no_round_takes_its_pages_round() -> None:
     assert [c["kind"] for c in built["sets"][0]["checks"]] == ["question", "full_check"]
 
 
-@pytest.mark.usefixtures("read_twice")
 def test_vendor_scorecard_counts_kinds_fixes_and_open_per_round() -> None:
     first, second = uuid4(), uuid4()
     sets = [
