@@ -2729,7 +2729,7 @@ def _naming_words(title: str | None) -> set[str]:
 def _shares_a_word(one: str, other: str | None) -> bool:
     """Whether every naming word of the vendor's title (`one`; `unit_title`'s tidy-up, 4 letters
     or more) starts a word of the page's title (`other`), or the other way round: "STANDARD
-    LOCKOFF KITCHEN" names "STANDARD LOCKOFF KITCHENETTE", "KITCHEN" names "STANDARD KITCHEN";
+    STUDIO KITCHEN" names "STANDARD STUDIO KITCHENETTE", "KITCHEN" names "STANDARD KITCHEN";
     "STANDARD VANITY" never names "STANDARD KITCHEN", nor "BENCH" "KITCHEN"."""
     mine, theirs = _naming_words(one), _naming_words(other)
     return bool(mine) and all(any(w.startswith(t) or t.startswith(w) for t in theirs) for w in mine)

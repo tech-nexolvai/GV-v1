@@ -671,7 +671,7 @@ def test_a_left_right_claim_the_references_reverse_variant_explains_is_dropped(
         item="Top: the sink sits at the other end",
         why="The sink centre looks mirrored on the reversed unit.",
     )
-    reverse = [{"text": "ST-BV // ST-BV-Reverse", "box": [400, 300, 480, 310], "side": "architect"}]
+    reverse = [{"text": "VT-A // VT-A-Reverse", "box": [400, 300, 480, 310], "side": "architect"}]
     book, look = _setup(tmp_path, phrases=reverse)
     applied, shown = _apply(book, look, [claim])
     assert not applied.likely and not shown
