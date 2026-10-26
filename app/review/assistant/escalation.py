@@ -1852,7 +1852,8 @@ def _claims_step(
     """GV's settled rules and code's facts on every open claim (`claim_rules`, 2026-10-25): a
     notch, a unit count one sheet cannot settle, a wall outline taken for the top, a side splash
     taken for a mitred piece, which end on a unit drawn both ways round. Only ever withdraws an
-    item or makes it Not compared; never red."""
+    item or makes it Not compared (a unit count that differs per type is kept, its reason naming
+    the type); never red."""
     rules = import_module("app.review.assistant.claim_rules")
     open_items = [f for f in live if str(f["id"]) not in result.absorbed]
     try:
@@ -1875,6 +1876,16 @@ def _claims_step(
         if change.outcome == "withdrawn":
             result.absorbed[finding_id] = change.why
             item.outcome = "folded"
+        elif change.outcome == "kept":
+            # The claim stands; its card's reason says what code found (a unit type missing).
+            mark = finding.get(likely_problems.FIELD)
+            if isinstance(mark, Mapping):
+                before_why = " ".join(str(mark.get("why") or "").split())
+                code_why = f"{change.why[0].upper()}{change.why[1:]}."
+                finding[likely_problems.FIELD] = {
+                    **mark,
+                    "why": f"{code_why} {before_why}".strip(),
+                }
         else:
             finding.update(judged(finding))
         item.note("claim_rules", change.outcome, change.why)

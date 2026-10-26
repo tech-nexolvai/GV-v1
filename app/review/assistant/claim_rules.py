@@ -5,7 +5,7 @@ what the drawings themselves print, whoever raised them (the whole-drawing look 
 This step runs in the escalation before the ladder (`escalation._before_ladder`), on every item
 that compares the vendor with the reference and is still open (never on one the reviewer decided
 or one already recorded). It only ever takes a claim away or makes it Not compared: it never makes
-anything red or a Likely problem.
+anything red or a Likely problem (a claim it keeps only gains code's reason).
 
 1. **Notches** (DECIDED by GV in the client meeting, 2026-10-23): unusual notches in a countertop
    are cut on site and ignored in the comparison: never red, never a Likely problem. An item about
@@ -16,11 +16,11 @@ anything red or a Likely problem.
    pages' text, adds the vendor's two sheets (the neighbouring sheet with the other heading whose
    units all belong to the reference's list) and compares per unit type. Every type the same: the
    count claim is **withdrawn** ("2 + 2 = 4"). Code cannot add them up (no other sheet, two
-   candidates, a unit code cannot place): **Not compared**. Different per type after adding up,
-   but the same total, every vendor unit on the reference's list and the regular and reversed
-   counts fitting it (2026-10-26: the vendor names "X-R 3" where the reference splits "X-Reverse
-   2, Y-Reverse 1"): every unit on the list uses this one top, so the claim is **withdrawn**.
-   Else unchanged.
+   candidates, a unit code cannot place): **Not compared**. Counts reconcile only per unit type
+   ("-R" is "-Reverse"; another type's name never is): a type missing from the vendor's list or
+   a count that differs is still a difference even when the totals match, so the claim is
+   **kept**, its reason naming the type ("the reference's Y-Reverse (1 unit) is not on the
+   vendor's list; totals match").
 3. **A wall outline is not the countertop**: code reads the reference's line work in the claim's
    spot (`OutlineReader`): an L-shaped outline drawn at the wall's weight (the heaviest line on
    the page) or solid-filled (a wall's poche) is a wall or pony wall, never the top: the claim
@@ -84,7 +84,7 @@ _log = logging.getLogger(__name__)
 #: The finding's field this step writes: {"rule", "outcome", "why"}.
 FIELD: Final = "claim_rule"
 
-type Outcome = Literal["withdrawn", "not_compared"]
+type Outcome = Literal["withdrawn", "not_compared", "kept"]
 type Rule = Literal["notch", "unit_counts", "wall_outline", "side_splash", "reversed_unit"]
 type Box = tuple[float, float, float, float]
 #: (file, page, box) -> "wall", "top", or None when code cannot tell.
@@ -219,9 +219,10 @@ def _vendor_units(text: str) -> tuple[dict[str, int], str | None]:
     return units, heading
 
 
-def _reference_units(text: str) -> list[tuple[frozenset[str], int]]:
-    """The reference's unit list: each entry's unit codes and its count."""
-    out: list[tuple[frozenset[str], int]] = []
+def _reference_named(text: str) -> list[tuple[str, frozenset[str], int]]:
+    """The reference's unit list: each entry as written ("AB-CD // AB-CD-Reverse"), its unit
+    codes and its count."""
+    out: list[tuple[str, frozenset[str], int]] = []
     for line in _lines(text):
         found = _REF_LINE.match(line)
         if not found:
@@ -229,8 +230,18 @@ def _reference_units(text: str) -> list[tuple[frozenset[str], int]]:
         names = [part.strip() for part in found.group(1).split("//")]
         codes = [_norm(n) for n in names if re.fullmatch(rf"{_CODE}(?:\s*\(.*\))?", n.strip())]
         if codes and len(codes) == len(names):
-            out.append((frozenset(codes), int(found.group(2))))
+            written = " // ".join(re.sub(r"\s*\(.*?\)", "", n).strip() for n in names)
+            out.append((written, frozenset(codes), int(found.group(2))))
     return out
+
+
+def _reference_units(text: str) -> list[tuple[frozenset[str], int]]:
+    """The reference's unit list: each entry's unit codes and its count."""
+    return [(codes, count) for _, codes, count in _reference_named(text)]
+
+
+def _units_words(count: int) -> str:
+    return f"{count} unit" if count == 1 else f"{count} units"
 
 
 def _place(
@@ -250,18 +261,6 @@ def _hand(name: str) -> str:
     """A unit code's hand: "reversed" for an "-R" code (`_norm` writes "-Reverse" so), else
     "regular"."""
     return "reversed" if name.endswith("-R") else "regular"
-
-
-def _hands_fit(hands: Mapping[str, int], entries: Sequence[tuple[frozenset[str], int]]) -> bool:
-    """The vendor's regular and reversed counts fit the reference's list: each hand at least the
-    reference's entries of that hand only, and at most those plus the entries that hold both
-    ("X // X-Reverse")."""
-    for hand in ("regular", "reversed"):
-        only = sum(c for codes, c in entries if {_hand(n) for n in codes} == {hand})
-        both = sum(c for codes, c in entries if len({_hand(n) for n in codes}) == 2)
-        if not only <= hands.get(hand, 0) <= only + both:
-            return False
-    return True
 
 
 def _sibling_sheet(page: int, texts: Mapping[int, str]) -> tuple[str, list[int]] | None:
@@ -287,22 +286,18 @@ def unit_counts(
 ) -> tuple[str, str] | None:
     """The unit-count rule on vendor `page` (`texts`: the vendor file's page texts) against the
     reference page's `reference` text: ("same" | "unsure", why), or None when it does not apply
-    or the counts still differ after adding up.
+    or the vendor lists a unit the reference's list does not hold.
 
-    Per unit type first (#1931); then, when only the unit names differ, the totals: the same
-    total, every vendor unit in the reference's list and the regular and reversed counts fitting
-    it are the same tops under other unit names ("same")."""
-    entries = _reference_units(reference)
+    Counts reconcile only PER UNIT TYPE ("-R" is the same as "-Reverse"; another type's name never
+    is): the same total with a type missing is still a difference. When a type differs, code says
+    which ("missing", why) so the kept card names it."""
+    named = _reference_named(reference)
+    entries = [(codes, count) for _, codes, count in named]
     units, heading = _vendor_units(texts.get(page, ""))
     if not entries or not units:
         return None
     sheets = [page]
-    hands: Counter[str] = Counter()
-    if heading is None:
-        for name, count in units.items():
-            hands[_hand(name)] += count
-    else:
-        hands[heading] += sum(units.values())
+    if heading is not None:
         other = "reversed" if heading == "regular" else "regular"
         found = []
         for near in (page - 1, page + 1):
@@ -321,7 +316,6 @@ def unit_counts(
         near, near_units = found[0]
         sheets = sorted([page, near])
         units = dict(Counter(units) + Counter(near_units))
-        hands[other] += sum(near_units.values())
     placed = _place(units, entries)
     if placed is None:
         return (
@@ -331,18 +325,28 @@ def unit_counts(
         )
     total = sum(count for _, count in entries)
     pages = " + ".join(f"page {p}" for p in sheets)
-    if any(placed.get(i, 0) != count for i, (_, count) in enumerate(entries)):
-        if sum(units.values()) != total or not _hands_fit(hands, entries):
-            return None
-        return (
-            "same",
-            (
-                f"code adds up the vendor's unit lists ({pages}): {total} units, the same total "
-                f"as the reference's list, and the regular and reversed units fit that list "
-                f"({hands['regular']} regular, {hands['reversed']} reversed). Every unit on the "
-                "list uses this one top, so only the unit names differ, not the number of tops"
-            ),
+    differs = []
+    for at, (written, _, count) in enumerate(named):
+        have = placed.get(at, 0)
+        if have == count:
+            continue
+        if have == 0:
+            differs.append(
+                f"the reference's {written} ({_units_words(count)}) is not on the vendor's list"
+            )
+        else:
+            differs.append(
+                f"the reference's {written} has {_units_words(count)}, the vendor's list "
+                f"{_units_words(have)}"
+            )
+    if differs:
+        vendor_total = sum(units.values())
+        totals = (
+            f"totals match ({_units_words(total)})"
+            if vendor_total == total
+            else f"totals differ ({vendor_total} on the vendor's list, {total} on the reference's)"
         )
+        return ("missing", f"code reads both unit lists ({pages}): {'; '.join(differs)}; {totals}")
     return (
         "same",
         (
@@ -830,6 +834,15 @@ def changes(
     return out
 
 
+#: What the count rule's answer does to the claim: the same per type: withdrawn; cannot add up:
+#: Not compared; a type missing or differing: kept, its reason naming the type.
+_COUNT_OUTCOME: Final[Mapping[str, Outcome]] = {
+    "same": "withdrawn",
+    "unsure": "not_compared",
+    "missing": "kept",
+}
+
+
 def _change(
     finding: Mapping[str, Any],
     texts: Mapping[tuple[str, int], str],
@@ -852,7 +865,7 @@ def _change(
         found = unit_counts(page, reference, sheets) if reference else None
         if found is not None:
             outcome, why = found
-            return Change("withdrawn" if outcome == "same" else "not_compared", "unit_counts", why)
+            return Change(_COUNT_OUTCOME[outcome], "unit_counts", why)
         return None
     flipped = reversed_unit(finding, texts, labels, vendor_file, main_file)
     if flipped is not None:
