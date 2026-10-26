@@ -1851,12 +1851,17 @@ def _claims_step(
 ) -> None:
     """GV's settled rules and code's facts on every open claim (`claim_rules`, 2026-10-25): a
     notch, a unit count one sheet cannot settle, a wall outline taken for the top, a side splash
-    taken for a mitred piece. Only ever withdraws an item or makes it Not compared; never red."""
+    taken for a mitred piece, which end on a unit drawn both ways round. Only ever withdraws an
+    item or makes it Not compared; never red."""
     rules = import_module("app.review.assistant.claim_rules")
     open_items = [f for f in live if str(f["id"]) not in result.absorbed]
     try:
         found = rules.changes(
-            open_items, page_texts=ctx.page_texts, main_file=ctx.main_file, outlines=ctx.outlines
+            open_items,
+            page_texts=ctx.page_texts,
+            main_file=ctx.main_file,
+            outlines=ctx.outlines,
+            labels=ctx.labels,
         )
     except Exception:  # noqa: BLE001 - the items stay as they were
         _log.warning("escalation: the claim rules step failed", exc_info=True)

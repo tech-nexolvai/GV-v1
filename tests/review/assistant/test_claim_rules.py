@@ -434,3 +434,196 @@ def test_nested_unpaired_spots_fold_into_the_one_that_stays() -> None:
     inner = _unpaired("F3", (300, 60, 500, 250))
     folded = one_card.fold([page, middle, inner])
     assert sorted((f.keep, f.drop) for f in folded.folded) == [("F3", "F1"), ("F3", "F2")]
+
+
+# ---- regular and reversed units in the whole-drawing look (2026-10-26) ------------------------------
+
+#: One drawing's list where the vendor names one reversed unit type the reference splits in two:
+#: the same total and the same hands, other names.
+_ONE_SHEET = "DRAWING # 4\nVANITY\nAB-CD - 3 UNITS\nAB-CD-R - 2 UNITS\nJK-PH-R - 2 UNITS\n"
+_SPLIT_LIST = (
+    "Unit Type Quantity\nAB-CD // AB-CD-Reverse, 5 units;\nJK-PH-Reverse, 1 units;\n"
+    "LM-PH-Reverse, 1 units;\n"
+)
+
+
+def _names_claim() -> dict[str, Any]:
+    return _claim(
+        "F1",
+        "Unit-type quantities: JK-PH-R and LM-PH-Reverse",
+        kind="count",
+        vendor="JK-PH-R 2 units; no LM-PH-Reverse",
+        architect="JK-PH-Reverse 1 unit; LM-PH-Reverse 1 unit",
+    )
+
+
+def test_counts_with_the_same_total_and_hands_under_other_names_withdraw_the_claim() -> None:
+    found = _changes([_names_claim()], {(REF, 9): _SPLIT_LIST, (VENDOR, 4): _ONE_SHEET})["F1"]
+    assert found.outcome == "withdrawn" and found.rule == "unit_counts"
+    assert "7 units, the same total" in found.why
+    assert "3 regular, 4 reversed" in found.why
+
+
+@pytest.mark.parametrize(
+    "vendor_list",
+    [
+        # Another total: a real difference stays.
+        "DRAWING # 4\nAB-CD - 3 UNITS\nAB-CD-R - 2 UNITS\nJK-PH-R - 3 UNITS\n",
+        # The same total, but more regular tops than the reference's list allows.
+        "DRAWING # 4\nAB-CD - 5 UNITS\nJK-PH - 2 UNITS\n",
+        # A unit the reference's list does not hold.
+        "DRAWING # 4\nAB-CD - 3 UNITS\nAB-CD-R - 2 UNITS\nZZ-PH-R - 2 UNITS\n",
+    ],
+)
+def test_counts_whose_total_or_hands_differ_stay(vendor_list: str) -> None:
+    texts = {(REF, 9): _SPLIT_LIST, (VENDOR, 4): vendor_list}
+    assert _changes([_names_claim()], texts) == {}
+
+
+def _label(text: str, x: float, y: float) -> dict[str, Any]:
+    return {"text": text, "box": [x - 15, y - 5, x + 15, y + 5], "orientation": "h"}
+
+
+#: A top's sizes on the regular sheet, the sink near the right end, and the title block.
+_SHEET = [
+    _label('55 1/2"', 444, 58),
+    _label('25 1/2"', 558, 226),
+    _label('14 1/4"', 502, 289),
+    _label('4"', 380, 300),
+    _label('3/4"', 700, 520),
+    _label("2cm", 760, 540),
+]
+
+
+def _flipped(labels: list[dict[str, Any]], line: float, dy: float = 6.5) -> list[dict[str, Any]]:
+    """The labels drawn as a mirror image about x = `line` (the title block stays put)."""
+    out = []
+    for label in labels:
+        x0, y0, x1, y1 = label["box"]
+        if x0 > 650:
+            out.append(label)
+            continue
+        cx = line * 2 - (x0 + x1) / 2
+        out.append(_label(label["text"], cx, (y0 + y1) / 2 + dy))
+    return out
+
+
+def test_code_proves_a_mirror_image_only_from_sizes_at_mirrored_places() -> None:
+    assert claim_rules.mirrored(_SHEET, _flipped(_SHEET, 451.5))
+    shifted = [
+        (
+            _label(
+                la["text"],
+                (la["box"][0] + la["box"][2]) / 2 + 40,
+                (la["box"][1] + la["box"][3]) / 2,
+            )
+            if la["box"][0] < 650
+            else la
+        )
+        for la in _SHEET
+    ]
+    assert not claim_rules.mirrored(_SHEET, shifted)  # moved, not flipped
+    assert not claim_rules.mirrored(_SHEET, _SHEET)  # the same drawing
+    assert not claim_rules.mirrored(_SHEET, [])
+
+
+_REGULAR_SHEET = "DRAWING # 4\nSTAFF PANTRY\nREGULAR UNITS\nAB-CD - 3 UNITS\n"
+_REVERSED_SHEET = "DRAWING # 5\nSTAFF PANTRY\nREVERSED UNITS\nAB-CD-R - 2 UNITS\n"
+_PLAIN_REFERENCE = "Unit Type Quantity\nAB-CD, 5 units;\n"
+
+
+def _end_claim(**more: Any) -> dict[str, Any]:
+    given = {
+        "vendor": 'sink cut-out at the right end, centre line 14 1/4" from the right end',
+        "architect": 'sink over the left 27" sink base, at the left end of the top',
+        "why": "The vendor's sink sits at the opposite end from the reference's sink base.",
+        **more,
+    }
+    return _claim("F1", "Countertop sink cut-out: which end it is on", **given)
+
+
+def test_a_which_end_claim_on_a_unit_the_vendor_draws_both_ways_round_is_withdrawn() -> None:
+    texts = {
+        (REF, 9): _PLAIN_REFERENCE,
+        (VENDOR, 4): _REGULAR_SHEET,
+        (VENDOR, 5): _REVERSED_SHEET,
+    }
+    labels = {(VENDOR, 4): _SHEET, (VENDOR, 5): _flipped(_SHEET, 451.5)}
+    found = dict(
+        claim_rules.changes([_end_claim()], page_texts=texts, main_file=VENDOR, labels=labels)
+    )["F1"]
+    assert found.outcome == "withdrawn" and found.rule == "reversed_unit"
+    assert "page 5 (reversed units) is page 4 drawn as a mirror image" in found.why
+    assert "same end as the reference (left)" in found.why
+    # Through the escalation, with the pages' labels.
+    result = escalate(
+        [_end_claim()], EscalationContext(main_file=VENDOR, page_texts=texts, labels=labels)
+    )
+    assert "F1" in result.absorbed
+
+
+def test_a_reversed_unit_named_in_a_title_explains_which_end() -> None:
+    reference = "Unit Type Quantity\nAB-CD // AB-CD-Reverse, 5 units;\n"
+    found = _changes([_end_claim()], {(REF, 9): reference, (VENDOR, 4): "DRAWING # 4\n"})["F1"]
+    assert found.rule == "reversed_unit" and "(AB-CD-R)" in found.why
+    opp = "DRAWING # 4\nVANITY - OPP. HAND\n"
+    assert _changes([_end_claim()], {(REF, 9): _PLAIN_REFERENCE, (VENDOR, 4): opp})
+
+
+def test_which_end_stays_when_code_cannot_tell_or_it_differs_after_flipping() -> None:
+    plain = {(REF, 9): _PLAIN_REFERENCE, (VENDOR, 4): "DRAWING # 4\nVANITY\n"}
+    # Nothing tells code the unit is reversed: never a guessed reversal.
+    assert _changes([_end_claim()], plain) == {}
+    # The vendor's sheet with the other heading drawn alike (not its mirror image) may hold a
+    # real mistake: the claim stays, even when the reference names a reversed unit.
+    texts = {
+        (REF, 9): "Unit Type Quantity\nAB-CD // AB-CD-Reverse, 5 units;\n",
+        (VENDOR, 4): _REGULAR_SHEET,
+        (VENDOR, 5): _REVERSED_SHEET,
+    }
+    same = dict(
+        claim_rules.changes(
+            [_end_claim()],
+            page_texts=texts,
+            main_file=VENDOR,
+            labels={(VENDOR, 4): _SHEET, (VENDOR, 5): _SHEET},
+        )
+    )
+    assert same == {}
+    reverse = {**plain, (REF, 9): "Unit Type Quantity\nAB-CD // AB-CD-Reverse, 5 units;\n"}
+    # Once flipped, a size from the end differs: more than which end.
+    other_size = _end_claim(architect='sink centre line 16" from the left end')
+    # Both sides on the same end: not a which-end difference.
+    same_end = _end_claim(architect="sink at the right end")
+    # A size claim with other numbers may be a size difference.
+    size = _end_claim(whole_look={**_end_claim()["whole_look"], "kind": "size"})
+    # A count or a claim code paired by its labels is not this rule's.
+    paired = _end_claim(whole_look={**_end_claim()["whole_look"], "proof": "labels"})
+    assert _changes([other_size, same_end, size, paired], reverse) == {}
+    # A size claim whose numbers are the same and only the end differs is withdrawn.
+    only_end = _end_claim(
+        vendor='14 1/4" from the right end',
+        architect='14 1/4" from the left end',
+        whole_look={**_end_claim()["whole_look"], "kind": "size"},
+    )
+    assert _changes([only_end], reverse)["F1"].rule == "reversed_unit"
+
+
+def test_a_vendor_side_that_says_it_lacks_the_tag_still_folds_into_the_set_card() -> None:
+    lacks = _material(
+        "F5",
+        5,
+        vendor='2cm Example Bianco stone, mitred to 1 1/2" thick, no SS 01 tag',
+        architect="Solid surface countertop, tag SS 01 (sections A3 and A4)",
+        item="Countertop material and tag",
+    )
+    folded = one_card.fold([lacks, _material("F6", 6), _material("F7", 7)])
+    (card,) = folded.kept
+    assert card["id"] == "F5" and sorted(f.drop for f in folded.folded) == ["F6", "F7"]
+    assert "(the whole set, vendor pages 5, 6 and 7)" in card["item"]
+    # Every page stays reachable: listed on the card and marked on its drawing.
+    assert [(e["finding_id"], e["page"]) for e in card["also_on"]] == [("F6", 6), ("F7", 7)]
+    assert card["also_on"][0]["vendor_box"]["page"] == 6
+    # The vendor naming the tag itself is still no difference.
+    named = _material("F8", 8, vendor="Solid surface SS 01, not stone")
+    assert one_card.fold([_material("F7", 7), named]).folded == []
