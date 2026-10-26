@@ -61,7 +61,15 @@ read otherwise counts for nothing; so does a `1` where the vectors show a hand-l
 label needs room round it and a dimension line of its own running the way it reads, and no `=` or
 `:` beside it in its row (a scale note's number). The same reader takes a reference set whose
 lettering was exported as outlines (filled characters, the marks small filled wedges) or plotted
-in an SHX stroke font (the marks short bent strokes), in any of the three directions it is written. The vendor's drawings keep the route above.
+in an SHX stroke font (the marks short bent strokes), in any of the three directions it is written.
+Such a set often letters a size a letter height or more off its line (above a level line, beside
+an upright one it reads up): when no line runs through the text or right by it, the one line
+beside it within 1.6 letter heights, running the way it reads, with no other line between, a
+slash tick or an arrowhead at both ends and the text over its middle, is its line (`_ticked_line`;
+two such lines, one each side: none), and kept only when its length agrees with the value at its
+view's fitted scale, where the view has one (`_beside_on_scale`). The end of a fraction the vectors
+did not join to the rest (the `1"` over the `4` of a stacked `1/4"`, the `4"` after the slash of
+`3/4"`) is never a label (`hand_labels.in_fraction`). The vendor's drawings keep the route above.
 
 **Equal parts** (#1668): an `EQ` mark on a dimension line is a part of a printed overall shared
 equally (`_equal_parts`: 36" wall to wall marked `EQ` / `EQ` is 18" each side). Code derives the
@@ -885,6 +893,128 @@ def dimension_line(
     return None
 
 
+#: A hand-lettered dimension's line standing off its text (`_ticked_line`): it lies within this
+#: many letter heights of the text, beside it (never through it).
+_BESIDE_LETTERS: Final = 1.6
+#: Its ends are marks within this (points) of the line: a slash tick crossing it, or an arrowhead's
+#: two strokes meeting at its tip on the line.
+_MARK_ON_LINE_PT: Final = 1.0
+
+
+def _end_marks(
+    row: float, lo: float, hi: float, segments: Sequence[Segment], font: float
+) -> list[float]:
+    """Where the line at `row` (from `lo` to `hi`) is marked as a dimension's end: a short slanted
+    stroke crossing it (a slash tick, `_crosses`), or two short slanted strokes, one rising and one
+    falling, meeting on it at one point (an arrowhead's tip)."""
+    ticks: list[float] = []
+    tips: dict[tuple[float, float], set[int]] = {}
+    for a, b in segments:
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(dx, dy)
+        if length < 0.8 or length > 3 * font or dx == 0 or not 0.2 <= abs(dy / dx) <= 5.0:
+            continue
+        if not lo - 1.5 <= (a[0] + b[0]) / 2 <= hi + 1.5:
+            continue
+        if _crosses(a[1], b[1], row) and abs((a[1] + b[1]) / 2 - row) <= _MARK_ON_LINE_PT:
+            # The stroke's own place on the line: where it crosses it.
+            ticks.append(a[0] + (row - a[1]) * dx / dy)
+            continue
+        for tip, tail in ((a, b), (b, a)):
+            if abs(tip[1] - row) <= 0.3 and abs(tail[1] - row) >= 0.3 * length:
+                key = (round(tip[0], 1), round(tip[1], 1))
+                tips.setdefault(key, set()).add(1 if tail[1] > row else -1)
+    ticks += [x for (x, _y), sides in tips.items() if sides == {1, -1}]
+    return sorted(ticks)
+
+
+def _ticked_line(
+    box: Box,
+    orientation: str,
+    segments: Sequence[Segment],
+    font: float,
+    *,
+    taken: Sequence[tuple[float, float, float]] = (),
+) -> dict[str, Any] | None:
+    """A hand-lettered dimension's line when it stands off its text (an SHX set letters a size a
+    letter height or more above its line, or beside an upright line it reads up): the one straight
+    line running the way the text reads, beside it within `_BESIDE_LETTERS` letter heights, with
+    no other line between them, unbroken from a tick or arrowhead before the text's middle to one
+    after it, under at least half of the text (or the text over at least half of it), and not
+    another label's (`taken`). Two or more such lines (one above and one below the text): `None`,
+    which is the text's is not known. Same shape as `dimension_line`'s answer."""
+    if orientation not in ("h", "v"):
+        return None
+    flip = orientation == "v"
+    if flip:
+        box = (box[1], box[0], box[3], box[2])
+        segments = [(_flip(a), _flip(b)) for a, b in segments]
+    x0, y0, x1, y1 = box
+    cx = (x0 + x1) / 2
+    reach = _BESIDE_LETTERS * font
+    rows: dict[float, list[tuple[float, float]]] = {}
+    between: list[tuple[float, float, float]] = []
+    for a, b in segments:
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(dx, dy)
+        if length < 0.8 or abs(dy) > 0.02 * length:
+            continue
+        y = (a[1] + b[1]) / 2
+        if not (y0 - reach <= y < y0 or y1 < y <= y1 + reach):
+            continue
+        lo, hi = min(a[0], b[0]), max(a[0], b[0])
+        between.append((y, lo, hi))
+        if length >= 2.0:
+            rows.setdefault(round(y * 2) / 2, []).append((lo, hi))
+    found: list[tuple[float, float, float]] = []
+    for y, pieces in rows.items():
+        merged: list[list[float]] = []
+        for lo, hi in sorted(pieces):
+            if merged and lo - merged[-1][1] <= 1.5:
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi])
+        for lo, hi in merged:
+            if not lo <= cx <= hi:
+                continue
+            marks = _end_marks(y, lo, hi, segments, font)
+            left = max((m for m in marks if m < cx), default=None)
+            right = min((m for m in marks if m > cx), default=None)
+            if left is None or right is None:
+                continue
+            under = min(right, x1) - max(left, x0)
+            if under < 0.5 * min(right - left, x1 - x0):
+                continue
+            if any(
+                abs(y - t[0]) <= 0.6 and abs(left - t[1]) <= 0.6 and abs(right - t[2]) <= 0.6
+                for t in taken
+            ):
+                continue
+            near = y0 if y < y0 else y1
+            if any(
+                min(near, y) + 0.3 < other < max(near, y) - 0.3 and min(hi2, x1) - max(lo2, x0) > 0
+                for other, lo2, hi2 in between
+            ):
+                continue  # another line lies between the text and this one
+            found.append((y, left, right))
+    if len(found) != 1:
+        return None
+    y, left, right = found[0]
+    ends = [_extension(x, y, segments, font) for x in (left, right)]
+    line: list[Point] = [(left, y), (right, y)]
+    if flip:
+        line = [_flip(p) for p in line]
+        ends = [None if e is None else [_flip(p) for p in e] for e in ends]
+    return {
+        "dim_line": [[round(p[0], 2), round(p[1], 2)] for p in line],
+        "extension": [
+            None if e is None else [[round(p[0], 2), round(p[1], 2)] for p in e] for e in ends
+        ],
+        "span_pt": round(right - left, 2),
+        "beside": True,
+    }
+
+
 # ---- the drawn route -----------------------------------------------------------------------------
 
 
@@ -1406,6 +1536,9 @@ class _Part:
     spot: Box | None = None
     """Where the dimension line is looked for (`None`: round the part): the value with its note
     (a note in brackets reaches lower than its value, nearer its line)."""
+    lettered: bool = False
+    """An architect's hand-lettered dimension (`hand_labels`): when no line runs through or right
+    by it, its line may stand off it, beside it (`_ticked_line`)."""
 
 
 def _row_label(
@@ -2902,6 +3035,16 @@ def _line_of(
         )
         if found is not None:
             return found, orientation
+        if part.lettered and orientation == ways[0][0]:
+            beside = _ticked_line(
+                spot,
+                orientation,
+                _without_own(segments, own, orientation) if own else segments,
+                font,
+                taken=[(t[1], t[2], t[3]) for t in taken if t[0] == orientation],
+            )
+            if beside is not None:
+                return beside, orientation
     return None
 
 
@@ -2965,11 +3108,52 @@ def _settle_lines(
                 span_pt=line["span_pt"],
                 orientation=orientation,
             )
+            label.pop(_BESIDE, None)
+            if line.get("beside"):
+                label[_BESIDE] = True
             kept.append((label, part))
         found = kept
         if not moved:
             break
     return [label for label, _part in found]
+
+
+#: A label's own mark (removed before it is listed) that its line stands off it (`_ticked_line`).
+_BESIDE: Final = "_beside"
+
+
+def _beside_on_scale(
+    found: list[dict[str, Any]], others: Sequence[Mapping[str, Any]], segments: Sequence[Segment]
+) -> list[dict[str, Any]]:
+    """The labels whose line stands off their text (`_ticked_line`) kept only when their line is
+    drawn to their value wherever code can tell: where the view the line lies in has a fitted scale
+    (`scale_fit`, from every label of the page with a line), the line's length at that scale must
+    agree with the value (`scale_fit.AGREE_IN` / `AGREE_SHARE`), else the line is not the label's
+    and the label is dropped. With no fit there is nothing to disagree with, and the label keeps
+    its line. Every other label is kept as it is."""
+    if not any(label.get(_BESIDE) for label in found):
+        return found
+    scale_fit = import_module("app.review.assistant.scale_fit")
+    every = [
+        {**label, "id": f"L{n}", "scale_ok": True}
+        for n, label in enumerate([*others, *found])
+        if label.get("dim_line")
+    ]
+    keys = {id(label): f"L{n}" for n, label in enumerate([*others, *found])}
+    fit = scale_fit.page_fit(every, segments)
+    kept: list[dict[str, Any]] = []
+    for label in found:
+        if not label.pop(_BESIDE, False):
+            kept.append(label)
+            continue
+        key = keys[id(label)]
+        span = fit.spans.get(key)
+        view = fit.views.get(key)
+        at = None if span is None or view is None else fit.fit_at(fit.sides[key], view, span.axis)
+        if at is not None and not scale_fit._agrees(span, at[0].in_per_pt)[1]:
+            continue  # drawn to another length at its view's scale: not its line
+        kept.append(label)
+    return kept
 
 
 def _drawn_label(
@@ -3095,7 +3279,7 @@ def _add_drawn(
             break
     if result.drawn != "partial":
         _add_lettered(result, parsed, halves, engines, budget_s - (clock() - started), clock, drawn)
-    settled = _settle_lines(parsed, drawn, labels)
+    settled = _beside_on_scale(_settle_lines(parsed, drawn, labels), labels, parsed.segments)
     settled.sort(key=lambda label: (round(label["box"][1] / 4), label["box"][0]))
     labels += settled
 
@@ -3124,20 +3308,35 @@ def _lettered_value(item: hand_labels.Lettered, engines: Sequence[Any]) -> Decim
 
 
 def _lettered_label(
-    parsed: _Parsed, item: hand_labels.Lettered, engines: Sequence[Any]
+    parsed: _Parsed,
+    item: hand_labels.Lettered,
+    engines: Sequence[Any],
+    lines: np.ndarray | None = None,
 ) -> tuple[dict[str, Any], _Part] | None:
-    """One hand-lettered dimension as a label, or `None`: room round it (`_crowded`), a dimension
-    line of its own running the way it reads (`_line_of`), and one value two engines read
-    (`_lettered_value`)."""
-    part = _Part(item.label, turn=item.turn)
+    """One hand-lettered dimension as a label, or `None`: room round it (`_crowded`), no `=` or
+    `:` beside it (`hand_labels.signs_beside`), not the end of a fraction the vectors did not join
+    to it (`hand_labels.in_fraction`), a dimension line of its own running the way it reads
+    (`_line_of`, standing off it when it must: `_ticked_line`), and one value two engines read
+    (`_lettered_value`). `lines`: the page's line work (`_line_ends`), made once a page."""
+    part = _Part(item.label, turn=item.turn, lettered=True)
     if _crowded(parsed.page, item.label, (), item.turn):
         return None
     x0, y0, x1, y1 = item.label.box
     reach = 3 * max(x1 - x0, y1 - y0)
-    if hand_labels.signs_beside(
-        item, vv._ink_paths_near(parsed.page, (x0 - reach, y0 - reach, x1 + reach, y1 + reach))
-    ):
+    around = vv._ink_paths_near(parsed.page, (x0 - reach, y0 - reach, x1 + reach, y1 + reach))
+    if hand_labels.signs_beside(item, around):
         return None  # a scale note's number (`SCALE: 1" = 1'-0"`), not a dimension
+    if lines is None:
+        lines = _line_ends(parsed.segments)
+    inside = (
+        (np.minimum(lines[:, 0], lines[:, 2]) >= x0 - reach)
+        & (np.maximum(lines[:, 0], lines[:, 2]) <= x1 + reach)
+        & (np.minimum(lines[:, 1], lines[:, 3]) >= y0 - reach)
+        & (np.maximum(lines[:, 1], lines[:, 3]) <= y1 + reach)
+    )
+    near = [((float(r[0]), float(r[1])), (float(r[2]), float(r[3]))) for r in lines[inside]]
+    if hand_labels.in_fraction(item, around, near):
+        return None  # the end of a fraction (`4"` of `3 3/4"`): its value is not the printed one
     line = _line_of(parsed, part)
     if line is None or line[1] != ("h" if item.turn == 0 else "v"):
         return None
@@ -3159,7 +3358,10 @@ def _lettered_label(
         bare=False,
         route="drawn",
     )
-    return _label(reading, found, "architect"), part
+    label = _label(reading, found, "architect")
+    if found.get("beside"):
+        label[_BESIDE] = True
+    return label, part
 
 
 def _add_lettered(
@@ -3183,6 +3385,7 @@ def _add_lettered(
     ]
     if not paths:
         return
+    lines = _line_ends(parsed.segments)
     try:
         found_items = hand_labels.lettered(paths)
     except Exception as failed:  # noqa: BLE001 - the page keeps every other label
@@ -3196,7 +3399,7 @@ def _add_lettered(
             break
         if _side(item.label.box, halves) != "architect":
             continue
-        found = _lettered_label(parsed, item, engines)
+        found = _lettered_label(parsed, item, engines, lines)
         if found is not None:
             drawn.append(found)
 
