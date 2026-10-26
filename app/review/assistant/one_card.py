@@ -738,7 +738,7 @@ def _fold_material(live: Sequence[Mapping[str, Any]], gone: set[str], out: OneCa
 
 
 #: An `also_on` entry this step's material fold wrote (never a reason to keep the card fixed).
-_MATERIAL_FOLD: Final = "material"
+_MATERIAL_FOLD: Final = "set_card"
 #: What a page's entry on the set-wide card keeps (`also_on`, as the resolver's): the cloud
 #: drawing marks that page's spot too, and the card lists the page.
 _ALSO_KEYS: Final = (
