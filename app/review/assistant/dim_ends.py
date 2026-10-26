@@ -20,6 +20,12 @@ AI said. Two dimensions are compared only when their ends are alike on both side
 | `notch_edge` | the step of a notch in the top's outline (`notches`) |
 | `top_edge` | an overhang end or a field cut's top: the top's own edge |
 | `door_face` | not read yet: never claimed |
+| `symbol_centre` | an outlet, a data or J-box or a light drawn as a small closed box (`SYMBOL_MIN_IN`-`SYMBOL_MAX_IN` each way, something drawn inside) centred on the end, the dimension line through it or the end's extension line drawn to it |
+| `floor` | the lower end of an upright dimension on a long line (`FLOOR_RUN_IN`) that something tall stands on (`FLOOR_STANDING_IN`: a wall, a tall side), at the bottom of its view: nothing drawn below it but dimensions (a floor band's far face counts as that line); never on a countertop's own drawing |
+| `counter_top` | an end of an upright dimension on the top face of a long level band `COUNTER_MIN_IN`-`COUNTER_MAX_IN` thick drawn below it (a counter's top, in elevation) |
+
+A ceiling is not named (2026-10-26): its line looks like a soffit's or a bulkhead's, and room
+context never pairs by AI picks (2026-10-21).
 
 Anything code cannot prove is **unknown** and proves nothing: an unknown end never makes two
 dimensions unlike, and never makes them alike. Never on a guess.
@@ -97,6 +103,9 @@ type Kind = Literal[
     "field_cut_end",
     "overhang_end",
     "notch_edge",
+    "symbol_centre",
+    "floor",
+    "counter_top",
 ]
 type Verdict = Literal["alike", "unlike", "unknown"]
 
@@ -115,6 +124,9 @@ KINDS: Final[tuple[Kind, ...]] = (
     "field_cut_end",
     "overhang_end",
     "notch_edge",
+    "symbol_centre",
+    "floor",
+    "counter_top",
 )
 #: Each kind in the reasons' plain words.
 KIND_WORDS: Final[Mapping[str, str]] = {
@@ -130,16 +142,26 @@ KIND_WORDS: Final[Mapping[str, str]] = {
     "field_cut_end": "the field-cut end of the top",
     "overhang_end": "the top's edge past the cabinets (the overhang)",
     "notch_edge": "a notch's step",
+    "symbol_centre": "a symbol's centre (an outlet, a data or J-box, a light)",
+    "floor": "the floor",
+    "counter_top": "the top of a counter",
 }
+#: The kinds read in plan and from the casework (#1953). The heights' kinds (a symbol's centre, the
+#: floor, a counter's top, 2026-10-26) are never apart from anything: they only ever prove alike.
+_PLAN_KINDS: Final = KINDS[: KINDS.index("symbol_centre")]
 #: Kinds that are never the same point (either way round).
 _APART: Final[frozenset[frozenset[str]]] = frozenset(
     frozenset(pair)
     for pair in (
-        *(("sink_centre", other) for other in KINDS if other != "sink_centre"),
-        *(("cutout_edge", other) for other in KINDS if other not in ("cutout_edge", "sink_centre")),
+        *(("sink_centre", other) for other in _PLAN_KINDS if other != "sink_centre"),
+        *(
+            ("cutout_edge", other)
+            for other in _PLAN_KINDS
+            if other not in ("cutout_edge", "sink_centre")
+        ),
         *(
             ("notch_edge", other)
-            for other in KINDS
+            for other in _PLAN_KINDS
             if other not in ("notch_edge", "sink_centre", "cutout_edge")
         ),
         ("field_cut_end", "wall"),
@@ -227,6 +249,9 @@ class End:
 #: The kind an end is named by when it carries several (the most telling first).
 _ORDER: Final[tuple[str, ...]] = (
     "sink_centre",
+    "symbol_centre",
+    "floor",
+    "counter_top",
     "cutout_edge",
     "notch_edge",
     "field_cut_end",
@@ -872,6 +897,14 @@ class Page:
     """(label id, "a" | "b") -> where the thing its end touches lies: +1 inside the dimension's
     span, -1 beyond it (a panel's face, a cut-out's edge), when code worked it out."""
     _notches: list[Notch] | None = None
+    texts: list[Box] = field(default_factory=list)
+    """The boxes of the page's printed values and words (a box drawn round a value is no edge)."""
+    _by_place: dict[str, tuple[list[float], list[tuple[float, float, float]]]] = field(
+        default_factory=dict
+    )
+    """Line pieces sorted by their place (`_placed`), built once."""
+    _grid: dict[tuple[int, int], list[Segment]] | None = None
+    """The line work by grid cell of its first point (`_strokes_in`), built once."""
 
     def _add(self, key: str, side: str, kind: str, why: str) -> None:
         self.kinds.setdefault((key, side), set()).add(kind)
@@ -948,6 +981,33 @@ def _fitted(found: Page, labels: Sequence[Mapping[str, Any]], segments: Sequence
             key, drawn.axis, drawn.row, drawn.a, drawn.b, drawn.inches, _label_text(labels, key)
         )
     return fit
+
+
+def _trust_fit(found: Page) -> None:
+    """A span read from ticks (`dim_anchors`) that is not drawn to its value at its view's fit,
+    where the fit found the label's own line drawn to it, gives way to that line (2026-10-26: a
+    73 1/2" read from a neighbour's ticks 33" long named the ends of the wrong line)."""
+    fit = found.fit
+    if fit is None:
+        return
+    scale_fit = import_module("app.review.assistant.scale_fit")
+    for key, drawn in fit.spans.items():
+        span = found.spans.get(key)
+        check = fit.check(key)
+        if span is None or check is None or not check.agrees or span.axis != drawn.axis:
+            continue
+        if abs(span.a - drawn.a) <= SAME_PT and abs(span.b - drawn.b) <= SAME_PT:
+            continue
+        view, side = fit.views.get(key), fit.sides.get(key)
+        at = None if view is None or side is None else fit.fit_at(side, view, drawn.axis)
+        if at is None:
+            continue
+        mine = scale_fit.Drawn(key, span.axis, span.row, span.a, span.b, span.inches, "ticks")
+        if scale_fit._agrees(mine, at[0].in_per_pt)[1]:
+            continue  # both drawn to the value: the ticks' line stays
+        found.spans[key] = Span(
+            key, drawn.axis, drawn.row, drawn.a, drawn.b, span.inches, span.text
+        )
 
 
 def _label_text(labels: Sequence[Mapping[str, Any]], key: str) -> str:
@@ -1365,6 +1425,347 @@ def _mark_touched(found: Page, phrases: Sequence[Mapping[str, Any]]) -> None:
                 )
 
 
+# ---- heights: a symbol's centre, the floor, a counter's top (2026-10-26) ----------------------------
+
+#: A symbol (an outlet, a data or J-box, a light) drawn as a small closed box: its size each way
+#: (inches, at its view's scale), how far from square, and the strokes drawn inside it at least.
+SYMBOL_MIN_IN: Final = 1.5
+SYMBOL_MAX_IN: Final = 6.0
+SYMBOL_ASPECT_MAX: Final = 2.2
+SYMBOL_STROKES_MIN: Final = 4
+#: The box's two edges facing each other along the dimension may lie off the end by this (points):
+#: the end is at the box's centre.
+SYMBOL_CENTRE_PT: Final = 0.6
+#: An edge of the box may be drawn with gaps (a centre line through it) up to this share of its
+#: height, and its sides must cover this share of it.
+SYMBOL_GAP_SHARE: Final = 0.4
+SYMBOL_SIDE_SHARE: Final = 0.6
+#: How far along the extension line the symbol may lie (inches), and how much of the way there the
+#: extension line must be drawn (dashes) with no gap longer than `EXTENSION_GAP_PT`.
+SYMBOL_REACH_IN: Final = 120.0
+EXTENSION_SHARE: Final = 0.35
+EXTENSION_GAP_PT: Final = 16.0
+#: The floor: a line at least this long (inches), with nothing drawn below it within
+#: `FLOOR_CLEAR_IN` but dimensions.
+FLOOR_RUN_IN: Final = 36.0
+FLOOR_CLEAR_IN: Final = 24.0
+#: Something stands on the floor: a solid upright line at least this tall (inches) ends on it (a
+#: wall, a tall cabinet's or a panel's side), never a dimension's line.
+FLOOR_STANDING_IN: Final = 30.0
+#: A height from the floor is at least this (inches): a smaller one measures a detail's part.
+FLOOR_MIN_SPAN_IN: Final = Fraction(2)
+#: A counter's top in elevation: a level band this thick (inches), both faces at least
+#: `COUNTER_RUN_IN` long.
+COUNTER_MIN_IN: Final = 0.75
+COUNTER_MAX_IN: Final = 3.0
+COUNTER_RUN_IN: Final = 18.0
+#: Pieces of one line closer than this (points) are one solid line.
+SOLID_GAP_PT: Final = 1.0
+
+_SYMBOL_WHY: Final = (
+    "a symbol's centre: a small closed box drawn centred on it, reached by its line"
+)
+_FLOOR_WHY: Final = "the floor: a long line at the bottom of its view, nothing drawn below it"
+_COUNTER_WHY: Final = "a counter's top: the top face of a long level band drawn below it"
+
+
+def _span_ppi(found: Page, span: Span) -> float:
+    """Points per inch of the span's own view (`scale_fit`), else the page's."""
+    fit = found.fit
+    if fit is not None:
+        view, side = fit.views.get(span.id), fit.sides.get(span.id)
+        if view is not None and side is not None:
+            at = fit.fit_at(side, view, span.axis)
+            if at is not None and at[0].in_per_pt > 0:
+                return 1 / float(at[0].in_per_pt)
+    return found.ppi
+
+
+def _placed(found: Page, which: str) -> tuple[list[float], list[tuple[float, float, float]]]:
+    """The page's horizontal (`h`) or vertical (`v`) pieces, (from, to, place), sorted by place."""
+    if which not in found._by_place:
+        pieces = sorted(
+            (found.lines.horizontal if which == "h" else found.lines.vertical),
+            key=lambda piece: piece[2],
+        )
+        found._by_place[which] = ([piece[2] for piece in pieces], pieces)
+    return found._by_place[which]
+
+
+def _near(found: Page, which: str, low: float, high: float) -> Sequence[tuple[float, float, float]]:
+    places, pieces = _placed(found, which)
+    return pieces[bisect_left(places, low) : bisect_right(places, high)]
+
+
+def _covered(
+    found: Page, which: str, place: float, lo: float, hi: float, tol: float = 0.6
+) -> tuple[float, float]:
+    """How much of `lo`..`hi` line pieces at `place` cover (a share), and the longest gap."""
+    if hi - lo <= 0:
+        return 1.0, 0.0
+    parts = sorted(
+        (max(p0, lo), min(p1, hi))
+        for p0, p1, _at in _near(found, which, place - tol, place + tol)
+        if p1 > lo and p0 < hi
+    )
+    covered, gap, at = 0.0, 0.0, lo
+    for a, b in parts:
+        gap = max(gap, a - at)
+        if b > at:
+            covered += b - max(a, at)
+            at = b
+    return covered / (hi - lo), max(gap, hi - at)
+
+
+def _runs(
+    found: Page, which: str, place: float, gap: float, longest: float | None = None
+) -> list[tuple[float, float]]:
+    """The pieces at `place` (within 0.6 pt) joined over gaps up to `gap`; a piece longer than
+    `longest` is left out."""
+    pieces = sorted(
+        (p0, p1)
+        for p0, p1, _at in _near(found, which, place - 0.6, place + 0.6)
+        if longest is None or p1 - p0 <= longest
+    )
+    runs: list[list[float]] = []
+    for p0, p1 in pieces:
+        if runs and p0 <= runs[-1][1] + gap:
+            runs[-1][1] = max(runs[-1][1], p1)
+        else:
+            runs.append([p0, p1])
+    return [(a, b) for a, b in runs]
+
+
+def _reaches(found: Page, span: Span, end: float, low: float, high: float) -> bool:
+    """The thing from `low` to `high` across (at the end's station) is the end's: the dimension
+    line runs through it, or the end's extension line is drawn to it (dashes count)."""
+    which = "h" if span.axis == "v" else "v"  # the extension line's pieces
+    if low - 1.0 <= span.row <= high + 1.0:
+        return True
+    lo, hi = (span.row, low) if span.row < low else (high, span.row)
+    share, gap = _covered(found, which, end, lo, hi)
+    return share >= EXTENSION_SHARE and gap <= EXTENSION_GAP_PT
+
+
+def _strokes_in(found: Page, box: Box) -> int:
+    """The strokes drawn wholly inside `box` (both ends)."""
+    cell = 8.0
+    if found._grid is None:
+        grid: dict[tuple[int, int], list[Segment]] = {}
+        for seg in found.lines.all:
+            key = (int(seg[0][0] // cell), int(seg[0][1] // cell))
+            grid.setdefault(key, []).append(seg)
+        found._grid = grid
+    x0, y0, x1, y1 = box
+    count = 0
+    for gx in range(int(x0 // cell), int(x1 // cell) + 1):
+        for gy in range(int(y0 // cell), int(y1 // cell) + 1):
+            for a, b in found._grid.get((gx, gy), ()):
+                if all(x0 <= p[0] <= x1 and y0 <= p[1] <= y1 for p in (a, b)):
+                    count += 1
+    return count
+
+
+def symbol_at(found: Page, span: Span, end: float) -> Box | None:
+    """The symbol whose centre the end lands on (`symbol_centre`), as its box on the page, or
+    `None`: a small closed box (`SYMBOL_MIN_IN`-`SYMBOL_MAX_IN` each way at the span's view's
+    scale, at most `SYMBOL_ASPECT_MAX` from square, `SYMBOL_STROKES_MIN` strokes inside: an
+    outlet's plugs, a J-box's letter, a light's cross) whose two edges facing each other along the
+    dimension lie the same distance either side of the end, its sides drawn, all four stopping
+    at its corners, and the dimension line through it or the end's extension line drawn to it
+    (`_reaches`)."""
+    if found.lines is None:
+        return None
+    ppi = _span_ppi(found, span)
+    if ppi <= 0:
+        return None
+    least, most = SYMBOL_MIN_IN * ppi, SYMBOL_MAX_IN * ppi
+    edges = "h" if span.axis == "v" else "v"  # the box's edges facing each other along the axis
+    sides = "v" if span.axis == "v" else "h"
+    reach = SYMBOL_REACH_IN * ppi
+    found_boxes: list[tuple[float, Box]] = []
+    tried: set[tuple[float, float, float]] = set()
+    for p0, p1, place in _near(found, edges, end - most / 2, end - least / 2):
+        height = 2 * (end - place)
+        if p1 - p0 > most or p1 < span.row - reach or p0 > span.row + reach:
+            continue
+        gap = SYMBOL_GAP_SHARE * height
+        first = next(
+            (r for r in _runs(found, edges, place, gap, most) if r[0] <= p0 and p1 <= r[1]), None
+        )
+        if first is None:
+            continue
+        second = next(
+            (
+                r
+                for r in _runs(found, edges, end + height / 2, gap, most)
+                if abs(r[0] - first[0]) <= 0.9 and abs(r[1] - first[1]) <= 0.9
+            ),
+            None,
+        )
+        if second is None:
+            continue
+        low, high = min(first[0], second[0]), max(first[1], second[1])
+        key = (round(low, 1), round(high, 1), round(place, 1))
+        if key in tried:
+            continue
+        tried.add(key)
+        width = high - low
+        if not least <= width <= most or not least <= height <= most:
+            continue
+        if max(width, height) / min(width, height) > SYMBOL_ASPECT_MAX:
+            continue
+        top, bottom = place, end + height / 2
+        if abs((top + bottom) / 2 - end) > SYMBOL_CENTRE_PT:
+            continue
+        if any(
+            run[0] < low - SOLID_GAP_PT or run[1] > high + SOLID_GAP_PT
+            for at in (top, bottom)
+            for run in _runs(found, edges, at, SOLID_GAP_PT)
+            if run[1] > low and run[0] < high
+        ):
+            continue  # an edge runs on past the box: a longer line (a cabinet's underside)
+        if any(
+            _covered(found, sides, at, top, bottom)[0] < SYMBOL_SIDE_SHARE for at in (low, high)
+        ):
+            continue
+        if any(
+            run[0] < top - SOLID_GAP_PT or run[1] > bottom + SOLID_GAP_PT
+            for at in (low, high)
+            for run in _runs(found, sides, at, SOLID_GAP_PT)
+            if run[1] > top and run[0] < bottom
+        ):
+            continue  # a side runs on past the box: two longer lines with things between
+        box = (low, top, high, bottom) if span.axis == "v" else (top, low, bottom, high)
+        inner = (box[0] + 0.3, box[1] + 0.3, box[2] - 0.3, box[3] - 0.3)
+        if _strokes_in(found, inner) < SYMBOL_STROKES_MIN:
+            continue
+        if not _reaches(found, span, end, low, high):
+            continue
+        found_boxes.append((min(abs(low - span.row), abs(high - span.row)), box))
+    if not found_boxes:
+        return None
+    return min(found_boxes)[1]
+
+
+def _level_run(found: Page, span: Span, end: float, least: float) -> tuple[float, float] | None:
+    """The longest solid level line at the end's station, at least `least` long, that the end is
+    on (the dimension line reaches it or its extension line is drawn to it)."""
+    fitting = [
+        run
+        for run in _runs(found, "h", end, SOLID_GAP_PT)
+        if run[1] - run[0] >= least and _reaches(found, span, end, run[0], run[1])
+    ]
+    return max(fitting, key=lambda run: run[1] - run[0]) if fitting else None
+
+
+def floor_at(found: Page, span: Span, end: float) -> bool:
+    """The upright dimension's lower end is on the floor (`floor`): on a level line at least
+    `FLOOR_RUN_IN` long (`_level_run`) that something at least `FLOOR_STANDING_IN` tall stands on
+    (`_standing`), at the bottom of its view: nothing drawn below that line (or below the far face
+    of a floor band drawn under it, `_wall_far_faces`) within `FLOOR_CLEAR_IN` but other
+    dimensions' lines. Never on a countertop's own drawing, nor for a height under
+    `FLOOR_MIN_SPAN_IN`."""
+    if found.lines is None or span.axis != "v" or abs(end - span.b) > SAME_PT:
+        return False
+    if found.countertop or span.inches < FLOOR_MIN_SPAN_IN:
+        return False  # a countertop's own drawing draws pieces of top, no floor
+    ppi = _span_ppi(found, span)
+    if ppi <= 0:
+        return False
+    run = _level_run(found, span, end, FLOOR_RUN_IN * ppi)
+    if run is None or not _standing(found, run, end, ppi):
+        return False
+    bottom = max([end, *_wall_far_faces(found, span, end, 1)])
+    rows = [other.row for other in found.spans.values() if other.axis == "h"]
+    least = max(3.0, 2.0 * ppi)
+    clear = FLOOR_CLEAR_IN * ppi
+    for p0, p1, place in _near(found, "h", bottom + 1.0, bottom + clear):
+        if p1 - p0 < least or min(p1, run[1]) - max(p0, run[0]) <= 1.0:
+            continue
+        if any(abs(place - row) <= 0.6 for row in rows):
+            continue  # a dimension's line below the floor
+        if p0 < run[0] - clear and p1 > run[1] + clear:
+            continue  # the sheet's frame or a title band, far wider than what is drawn
+        if any(
+            x0 - 1.5 <= p0 and p1 <= x1 + 1.5 and y0 - 1.5 <= place <= y1 + 1.5
+            for x0, y0, x1, y1 in found.texts
+        ):
+            continue  # a box drawn round a printed value or a word
+        return False
+    return True
+
+
+def _standing(found: Page, run: tuple[float, float], end: float, ppi: float) -> bool:
+    """A solid upright line at least `FLOOR_STANDING_IN` tall ends on the level line `run` at
+    `end` from above (a wall, a tall cabinet's or a panel's side), not a dimension's line."""
+    rows = [other.row for other in found.spans.values() if other.axis == "v"]
+    tall = FLOOR_STANDING_IN * ppi
+    places = {
+        round(place, 1)
+        for p0, p1, place in _near(found, "v", run[0] - 1.0, run[1] + 1.0)
+        if abs(p1 - end) <= 1.0 and not any(abs(place - row) <= 0.6 for row in rows)
+    }
+    for place in places:
+        for low, high in _runs(found, "v", place, SOLID_GAP_PT):
+            if abs(high - end) <= 1.0 and high - low >= tall:
+                return True
+    return False
+
+
+def counter_top_at(found: Page, span: Span, end: float) -> bool:
+    """An end of an upright dimension is on a counter's top (`counter_top`): a solid level line at
+    least `COUNTER_RUN_IN` long that the end is on, and a parallel one `COUNTER_MIN_IN`-
+    `COUNTER_MAX_IN` below it overlapping it that long, nothing level drawn between them (a stone
+    top's hatch is not a line)."""
+    if found.lines is None or span.axis != "v":
+        return False
+    ppi = _span_ppi(found, span)
+    if ppi <= 0:
+        return False
+    run_least = COUNTER_RUN_IN * ppi
+    top = _level_run(found, span, end, run_least)
+    if top is None:
+        return False
+    nearest: float | None = None
+    for p0, p1, place in _near(found, "h", end + 0.6, end + COUNTER_MAX_IN * ppi):
+        if min(p1, top[1]) - max(p0, top[0]) > 0.5 * run_least:
+            nearest = place
+            break  # the first line below that overlaps it
+    if nearest is None or nearest - end < COUNTER_MIN_IN * ppi:
+        return False
+    return any(
+        min(r1, top[1]) - max(r0, top[0]) >= run_least
+        for r0, r1 in _runs(found, "h", nearest, SOLID_GAP_PT)
+    )
+
+
+def _mark_heights(found: Page) -> None:
+    """Each end named by the symbol, floor or counter top it lands on (2026-10-26): never by the
+    words near it, never by a guess. A counter's top is named only on a height, whose other end is
+    the floor or a symbol's centre (a band's face in a plan is no counter's top). Anything else
+    stays as it was."""
+    if found.lines is None or found.ppi <= 0:
+        return
+    for span in list(found.spans.values()):
+        open_ends: list[tuple[str, float]] = []
+        for side, end in (("a", span.a), ("b", span.b)):
+            if found.kinds.get((span.id, side), set()) & _SPECIFIC:
+                continue
+            open_ends.append((side, end))
+            if symbol_at(found, span, end) is not None:
+                found._add(span.id, side, "symbol_centre", _SYMBOL_WHY)
+            if side == "b" and floor_at(found, span, end):
+                found._add(span.id, side, "floor", _FLOOR_WHY)
+        for side, end in open_ends:
+            other = found.kinds.get((span.id, "b" if side == "a" else "a"), set())
+            mine = found.kinds.get((span.id, side), set())
+            if "floor" in mine or not other & {"floor", "symbol_centre"}:
+                continue
+            if counter_top_at(found, span, end):
+                found._add(span.id, side, "counter_top", _COUNTER_WHY)
+
+
 def page_of(
     file: str,
     page: int,
@@ -1378,6 +1779,11 @@ def page_of(
     `field_cuts` a vendor page's `field_cut.PageFieldCuts`."""
     labels = [label for label in labels if isinstance(label, Mapping) and label.get("id")]
     found = Page(file, page, field_cuts=field_cuts)
+    found.texts = [
+        box
+        for item in (*labels, *phrases)
+        if isinstance(item, Mapping) and (box := _box(item.get("box"))) is not None
+    ]
     if segments:
         spans, ppi, lines = _spans_from_ticks(labels, segments)
         for key, span in _spans_from_labels(labels).items():
@@ -1388,6 +1794,7 @@ def page_of(
         found.segments = segments
         found.spans.update(_small_spans(labels, lines, found.ppi, found.spans))
         found.fit = _fitted(found, labels, segments)
+        _trust_fit(found)
         if found.ppi <= 0 and found.fit is not None and found.fit.fits:
             found.ppi = 1 / sorted(f.in_per_pt for f in found.fit.fits)[len(found.fit.fits) // 2]
         found.cutouts = _cutouts(segments, phrases, found.ppi)
@@ -1401,6 +1808,7 @@ def page_of(
     _mark_cutouts(found, phrases)
     _mark_notches(found)
     _mark_touched(found, phrases)
+    _mark_heights(found)
     return found
 
 
@@ -1439,7 +1847,7 @@ def alike(vendor: Ends, architect: Ends) -> tuple[Verdict, str]:
 
 #: End kinds that name the same thing on both drawings: a wall's face, a panel's face, a tagged
 #: cabinet's side, a sink's centre or its cut-out's edge, GV's field cut, a notch's step, the
-#: overhang's edge. The outer edge of what is drawn (`outline`) never does (an architect's elevation
+#: overhang's edge, a symbol's centre, the floor, a counter's top. The outer edge of what is drawn (`outline`) never does (an architect's elevation
 #: may draw a bulkhead above the unit), nor a top's edge (`top_edge`) unless both drawings are a
 #: countertop's own.
 PROVING: Final = frozenset(
@@ -1452,6 +1860,9 @@ PROVING: Final = frozenset(
         "field_cut_end",
         "notch_edge",
         "overhang_end",
+        "symbol_centre",
+        "floor",
+        "counter_top",
     }
 )
 #: The most two dimensions proved alike by their ends may differ (inches): further apart, two
@@ -1534,17 +1945,30 @@ def _same_cabinet(v_page: Page, v_span: Span, a_page: Page, a_span: Span) -> boo
     return v_cab is not None and a_cab is not None and v_cab.tag == a_cab.tag
 
 
-def _rivals(page: Page, ends: Ends, sides: Sequence[tuple[str, frozenset[str]]]) -> list[str]:
+def _rivals(
+    page: Page,
+    ends: Ends,
+    sides: Sequence[tuple[str, frozenset[str]]],
+    theirs: Fraction | None = None,
+) -> list[str]:
     """Other dimensions of the same drawing and axis whose ends carry the same kinds (either way
-    round): the proof would fit them as well, so it names nothing."""
+    round): the proof would fit them as well, so it names nothing. Not a rival: the same size
+    printed again (either pairing compares the same two values); and, where an end is a symbol's
+    centre (a drawing shows many outlets), a height or a spacing more than `KINDS_MAX_DIFF_IN` from
+    the other drawing's value `theirs` (the proof never pairs those)."""
     fit = page.fit
     mine = fit.sides.get(ends.span.id) if fit is not None else None
+    symbols = any("symbol_centre" in kinds for _side, kinds in sides)
     out: list[str] = []
     for other in page.spans.values():
         if other.id == ends.span.id or other.axis != ends.span.axis:
             continue
         if abs(other.a - ends.span.a) <= SAME_PT and abs(other.b - ends.span.b) <= SAME_PT:
             continue  # the same dimension printed again
+        if other.inches == ends.span.inches:
+            continue  # the same size printed again elsewhere
+        if symbols and theirs is not None and abs(other.inches - theirs) > KINDS_MAX_DIFF_IN:
+            continue  # another symbol's height, never this value's pair
         if fit is not None and mine is not None and fit.sides.get(other.id, mine) != mine:
             continue  # the other drawing of a combined sheet
         found = page.ends(other.id)
@@ -1596,12 +2020,12 @@ def same_kinds(v_page: Page, vendor: Ends, a_page: Page, architect: Ends) -> tup
             "points, more likely)"
         )
     shared = ways[0]
-    for whose, page, ends, index in (
-        ("vendor's", v_page, vendor, 0),
-        ("reference's", a_page, architect, 1),
+    for whose, page, ends, index, theirs in (
+        ("vendor's", v_page, vendor, 0, architect.span.inches),
+        ("reference's", a_page, architect, 1, vendor.span.inches),
     ):
         sides = [(str(pair[index]), pair[2]) for pair in shared]
-        rivals = _rivals(page, ends, sides)
+        rivals = _rivals(page, ends, sides, theirs)
         if rivals:
             return "cannot_tell", (
                 f"another dimension on the {whose} drawing ({rivals[0]}) runs between the same "
@@ -1651,12 +2075,12 @@ def same_kinds_run(v_page: Page, vendor: Ends, a_page: Page, chain: Chain) -> tu
         )
     shared = ways[0]
     parts = {part.id for part in chain.parts}
-    for whose, page, ends, index in (
-        ("vendor's", v_page, vendor, 0),
-        ("reference's", a_page, architect, 1),
+    for whose, page, ends, index, theirs in (
+        ("vendor's", v_page, vendor, 0, architect.span.inches),
+        ("reference's", a_page, architect, 1, vendor.span.inches),
     ):
         sides = [(str(pair[index]), pair[2]) for pair in shared]
-        rivals = [r for r in _rivals(page, ends, sides) if r not in parts]
+        rivals = [r for r in _rivals(page, ends, sides, theirs) if r not in parts]
         if rivals:
             return "cannot_tell", (
                 f"another dimension on the {whose} drawing ({rivals[0]}) runs between the same "
@@ -1715,7 +2139,8 @@ def field_cut_relief(vendor: Ends, architect: Ends) -> int | None:
 
 
 #: End kinds a wall-to-wall run never stops at (Anant, 2026-10-25): a cabinet's side, the
-#: overhang's edge, GV's field cut, the sink, a notch or a door.
+#: overhang's edge, GV's field cut, the sink, a notch or a door; nor a symbol's centre, the floor or a
+#: counter's top (2026-10-26).
 NOT_WALL: Final = frozenset(
     {
         "cabinet_face",
@@ -1725,6 +2150,9 @@ NOT_WALL: Final = frozenset(
         "cutout_edge",
         "notch_edge",
         "door_face",
+        "symbol_centre",
+        "floor",
+        "counter_top",
     }
 )
 
