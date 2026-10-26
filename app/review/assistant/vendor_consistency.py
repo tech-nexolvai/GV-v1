@@ -72,6 +72,7 @@ from time import monotonic
 from typing import Any, Final, Literal
 from uuid import uuid4
 
+from app.review.assistant import reading_routes, scale_fit
 from app.review.assistant.finding_checks import WRONG_PART
 from app.review.assistant.ledger import add_up, format_inches
 
@@ -1319,6 +1320,7 @@ def check_set(
     for found in contradictions:
         result.findings.append(_contradiction_finding(found, area_of(found.odd), entries))
     result.findings = result.findings[:MAX_FINDINGS]
+    _mark_reading(result.findings, dims, segments)
     unknowns = completeness(page_map) + unreadable_pages(page_map)
     if texts:
         missing, result.sheet_index = sheet_index(texts, page_map)
@@ -1327,6 +1329,38 @@ def check_set(
     result.unknowns = unknowns[:MAX_UNKNOWNS]
     result.seconds = round(clock() - started, 3)
     return result
+
+
+def _mark_reading(
+    findings: Sequence[dict[str, Any]], dims: Mapping[str, Any] | None, segments: Segments | None
+) -> None:
+    """Each finding's record of how its numbers were read (`reading_routes.mark`, final plan #2):
+    every part and the overall of a string, both prints of a span, each with its reading route,
+    millimetres and drawn length at its view's fit (`scale_fit.page_fit`). Never raises."""
+    if not findings:
+        return
+    by_page: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
+    for entry in (dims or {}).get("pages") or []:
+        if isinstance(entry, Mapping) and isinstance(entry.get("labels"), list):
+            key = (str(entry.get("file")), int(entry.get("page") or 0))
+            by_page[key] = [la for la in entry["labels"] if isinstance(la, Mapping)]
+    fits: dict[tuple[str, int], Any] = {}
+
+    def labels_of(file: str, page: int) -> Sequence[Mapping[str, Any]]:
+        return by_page.get((file, page)) or ()
+
+    def fit_of(file: str, page: int) -> Any:
+        key = (file, page)
+        if key not in fits:
+            lines = segments(file, page) if segments is not None else None
+            fits[key] = scale_fit.page_fit(by_page.get(key) or (), lines)
+        return fits[key]
+
+    for finding in findings:
+        try:
+            reading_routes.mark(finding, labels_of, fit_of)
+        except Exception:  # noqa: BLE001 - no record: the item is judged on its label alone
+            _log.exception("vendor consistency: reading record failed")
 
 
 def _older_pages(

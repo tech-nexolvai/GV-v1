@@ -55,6 +55,7 @@ from app.review.assistant import (
     drafting_notes,
     likely_problems,
     missing_items,
+    reading_routes,
     rule_notes,
     same_item_pages,
     spot_guard,
@@ -75,6 +76,7 @@ __all__ = [
     "NO_REQUIREMENT_REASON",
     "PAIRING_REASON",
     "PROTOTYPE_PROOF",
+    "READING_LEAD",
     "REVIEWER",
     "REVIEWER_WRONG",
     "RULE_LINE",
@@ -102,6 +104,8 @@ __all__ = [
     "proof_line",
     "proof_of",
     "proved_wrong",
+    "reading_held",
+    "reading_words",
     "reviewer_decided",
     "reviewer_should_be",
     "reviewer_value_refusal",
@@ -408,7 +412,24 @@ def code_proved(finding: Mapping[str, Any]) -> bool:
     off the drawing or read from a scale note (`scaled`), and, for a comparison of two drawn
     dimensions, a pairing proof (`needs_pairing`, `pairing_proved`): reading the vendor's number
     right (its millimetres and inches agreeing) does not prove the architect's number measures the
-    same thing."""
+    same thing. And every number it rests on was read by two different kinds of route that agree,
+    none naming a doubt (`reading_routes`, final plan #2)."""
+    return _proved_but_reading(finding) and reading_routes.held(finding) is None
+
+
+def reading_held(finding: Mapping[str, Any]) -> str | None:
+    """Why a Wrong code proved in every other way is held back for its reading (final plan #2): a
+    number it rests on has one route only, or a route or reader names a doubt. A Likely problem
+    with these words, never red. `None` for any other item."""
+    if finding.get("status") != "different" or _reader_error(finding):
+        return None
+    if likely_problems.likely_only(finding) or not _proved_but_reading(finding):
+        return None
+    return reading_routes.held(finding)
+
+
+def _proved_but_reading(finding: Mapping[str, Any]) -> bool:
+    """`code_proved` before the reading rule (`reading_routes`)."""
     if classification.internal(finding):
         return False  # read by the AI only, never at its spot (#1652)
     if classification.same_item_conflict(finding) is not None:
@@ -539,7 +560,7 @@ def ends_unconfirmed(finding: Mapping[str, Any]) -> bool:
     passed["critic"] = {**verdict, "result": "passed", "answers": {**answers, "pairing": "picks"}}
     passed["trust_level"] = witness.trust_level(checks, "different")
     passed["witnesses"] = witness.witnesses(checks, "different")
-    return code_proved(passed) and not _reader_error(passed)
+    return _proved_but_reading(passed) and not _reader_error(passed)
 
 
 def ends_words(finding: Mapping[str, Any]) -> str:
@@ -551,11 +572,32 @@ def ends_words(finding: Mapping[str, Any]) -> str:
     difference = _decimal((inches or {}).get("difference"))
     by = f"; they differ by {inch_words(difference)}" if difference else "; they differ"
     drawn = _drawn_note(finding)
+    reading = reading_routes.held(finding)
+    if reading is not None and not drawn:
+        drawn = f"; and {reading}"
     return (
         f"{likely_problems.LETTER_LEAD}: the AI pairs the vendor's {vendor_value(finding)} with "
         f"the reference's {finding.get('architect')} ({item}){by}; code could not confirm both "
         f"dimensions measure the same thing{drawn}."
     )
+
+
+def reading_words(finding: Mapping[str, Any]) -> str:
+    """The please-check line of a Wrong held back for its reading (`reading_held`): "Please check
+    and confirm: the vendor's 23" against the reference's 24" (Run: depth); before a red, two
+    different readings of each number must agree: the vendor's 23" is read from the PDF's text,
+    but its drawn length at its view's own scale is 24 3/16"." """
+    item = " ".join(str(finding.get("item") or "this item").split())
+    should = finding.get("architect")
+    against = f" against {should}" if should else ""
+    return (
+        f"{likely_problems.LETTER_LEAD}: the vendor's {vendor_value(finding)}{against} ({item}); "
+        f"{READING_LEAD}: {reading_held(finding)}."
+    )
+
+
+#: Why a red waits for its reading, before the reason (`reading_words`).
+READING_LEAD: Final = "before a red, two different readings of each number must agree"
 
 
 #: The words code's ends proof gives a value that does not agree with its drawn length
@@ -579,6 +621,8 @@ def please_check_words(finding: Mapping[str, Any]) -> str:
     """
     if ends_unconfirmed(finding):
         return ends_words(finding)
+    if reading_held(finding) is not None:
+        return reading_words(finding)
     return likely_problems.please_check(finding)
 
 
@@ -620,6 +664,10 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
         return (
             "clouded" if check_record.cleared(check_record.kind_of(finding)) else "likely_problem"
         )
+    if reading_held(finding) is not None:
+        # Code proved it in every other way, but a number it rests on was not read by two
+        # different routes that agree (final plan #2): please check, never red.
+        return "likely_problem"
     # The architect's size breaks a GV rule and the vendor follows it (#1839): decided, GV asks
     # the architect; never clouded, never on the Not-compared list.
     if classified(finding).outcome == "rule_note":
@@ -1006,6 +1054,7 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
             held_back(finding)
             or (likely_problems.payload(finding) or {}).get("reason")
             or (ends_words(finding) if ends_unconfirmed(finding) else None)
+            or (reading_words(finding) if reading_held(finding) is not None else None)
             or found.why
         )
     elif group == "dismissed":

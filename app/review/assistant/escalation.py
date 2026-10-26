@@ -97,6 +97,7 @@ from app.review.assistant import (
     likely_problems,
     missing_items,
     proof,
+    reading_routes,
     sink_centre,
 )
 from app.review.assistant.chat_trust import inch_words, judged, round_item_key
@@ -2161,6 +2162,8 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     relinked = {str(f["id"]): judged(f) for f in linked.changed}
     live = [relinked.get(str(f["id"]), f) for f in live if str(f["id"]) not in linked.absorbed]
     result.changed.extend(relinked.values())
+    # How each Wrong's numbers were read, before any step groups them (final plan #2).
+    _mark_reading(live, ctx, result)
     early = _before_ladder(live, ctx, result)
     by_id = {str(f["id"]): f for f in live}
     areas = _areas(ctx)
@@ -2198,6 +2201,7 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
                 _pairs_step(item, ctx)
             if item.changed:
                 item.finding.update(judged(item.finding))
+                _mark_reading([item.finding], ctx, None)
             after = proof.proof_group(item.finding)
             if item.outcome is None and before != after and after in ("clouded", "right"):
                 item.outcome = "wrong" if after == "clouded" else "right"
@@ -2214,10 +2218,38 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     _mark_job_rules(live, ctx, result)
     _mark_right_ends(live, ctx, result)
     _mark_drafting_notes(live, ctx, result)
+    _mark_reading(live, ctx, result)
     # One copy of each changed finding, its last state.
     last = {str(f["id"]): f for f in result.changed}
     result.changed = list(last.values())
     return result
+
+
+def _mark_reading(
+    live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation | None
+) -> None:
+    """Each Wrong's record of how the numbers it rests on were read (`reading_routes.mark`, final
+    plan #2): each label's reading route, its millimetres, and its drawn length at its view's fit
+    (`dim_ends.Page.fit`). A red needs two different routes that agree on every number. Data
+    only here: `proof` groups by it."""
+
+    def labels_of(file: str, page: int) -> Sequence[Mapping[str, Any]]:
+        return ctx.labels.get((file, page)) or ()
+
+    def fit_of(file: str, page: int) -> Any:
+        found = ctx.pages(file, page) if ctx.pages is not None else None
+        return found.fit if found is not None else None
+
+    for finding in live:
+        if result is not None and str(finding.get("id")) in result.absorbed:
+            continue
+        try:
+            changed = reading_routes.mark(finding, labels_of, fit_of)
+        except Exception:  # noqa: BLE001 - no record: the item is judged on its labels alone
+            _log.exception("escalation: reading record failed on %s", finding.get("id"))
+            continue
+        if changed and result is not None:
+            result.changed.append(finding)
 
 
 def _mark_job_rules(
