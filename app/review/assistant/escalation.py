@@ -1727,6 +1727,32 @@ def _length_formula(
     return True
 
 
+def _same_field_cuts(
+    live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
+) -> None:
+    """An item called the same whose two numbers differ is never Right on the AI's word
+    (`classification.differing_values`, 2026-10-27): its difference may be GV's field cut, so the
+    field-cut rule vets it as the difference it is (`_field_cut`, settled with GV). Allowed: Right
+    with code's record; else it stays Not compared."""
+    for finding in live:
+        if (
+            str(finding.get("id")) in result.absorbed
+            or finding.get("status") != "same"
+            or finding.get("field_cut") is not None
+            or classification.differing_values(finding) is None
+        ):
+            continue
+        item = _Item(finding)
+        try:
+            _field_cut(item, "labels", ctx, status="different")
+        except Exception:  # noqa: BLE001 - not vetted: the item stays Not compared
+            _log.exception("escalation: field cut not vetted on %s", finding.get("id"))
+            continue
+        if item.changed:
+            finding.update(judged(finding))
+            result.changed.append(finding)
+
+
 def _mark_right_ends(
     live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
 ) -> None:
@@ -2236,6 +2262,7 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
         result.changed.append(item.finding)
     _fold_missing_copies(live, result)
     _mark_job_rules(live, ctx, result)
+    _same_field_cuts(live, ctx, result)
     _mark_right_ends(live, ctx, result)
     _mark_drafting_notes(live, ctx, result)
     _mark_reading(live, ctx, result)

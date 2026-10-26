@@ -135,7 +135,12 @@ def test_a_held_back_item_that_fails_another_proof_is_not_a_likely_problem() -> 
 
 
 def test_a_right_stays_right() -> None:
-    right = _finding(_decide(_CANNOT), status="same", architect='23"')
+    right = _finding(
+        _decide(_CANNOT),
+        status="same",
+        architect='23"',
+        inches={"architect": "23", "vendor": "23", "difference": "0"},
+    )
     assert proof.proof_group(right) == "right"
 
 
