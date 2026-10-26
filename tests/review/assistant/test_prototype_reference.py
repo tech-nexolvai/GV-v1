@@ -77,7 +77,12 @@ def test_no_architect_elevation_makes_the_prototype_the_reference() -> None:
     assert listed["group"] == "not_compared" and listed["not_compared"] != "prototype"
     assert WORDS in listed["reason"]
     # Called the same: Right, compared with the prototype.
-    same = _finding(reference=classification.PROTOTYPE_REFERENCE, status="same", vendor='36"')
+    same = _finding(
+        reference=classification.PROTOTYPE_REFERENCE,
+        status="same",
+        vendor='36"',
+        inches={"architect": "36", "vendor": "36", "difference": "0"},
+    )
     assert proof.proof_group(same) == "right"
 
 
