@@ -1591,6 +1591,12 @@ def _write_coverage(
         }
         spots = reading_ink.unread_spots(pages)
         annotations = _read_json(folder / "annotations.json")
+        checked = _read_json(folder / "health.json") or {}
+        health = {
+            (str(page.get("file")), int(page.get("page") or 0)): page.get("facts") or {}
+            for page in (checked.get("pages") if isinstance(checked, dict) else None) or []
+            if isinstance(page, dict)
+        }
         seconds = sum(float(getattr(page, "seconds", 0.0)) for page in ink.values())
         seconds += time.process_time() - started
         coverage.write(
@@ -1600,6 +1606,7 @@ def _write_coverage(
                 spots,
                 annotations if isinstance(annotations, list) else [],
                 seconds=seconds,
+                health=health,
             ),
         )
     except Exception:  # noqa: BLE001 - the pack works without its reading coverage

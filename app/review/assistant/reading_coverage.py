@@ -19,6 +19,13 @@ look at it. It only COUNTS: it never makes, changes or drops a label, a finding 
 
 **Read** (X): those that became labels. EQ parts code worked out are not printed, so not counted.
 
+**How each page prints its numbers** (`printed_as`, per side, final-plan change #5): `typed` (a
+text layer), `codes` (text whose font has no letter map: Type3 or a broken map, from the page's
+health check), `drawn` (lettering drawn as lines or shapes, SHX pen strokes or outlined text),
+`typed_and_drawn` (both on one page), `picture` (pasted pictures or a scan). Each kind has its own
+reader (the text route, the picture route, the drawn and lettering routes); the coverage line
+says which kinds a side's pages use, so a low count names its cause.
+
 This module is light (no PDF, no numpy): the set pack writes the file, the check and the screens
 read it (`load`, `lines`, `headline`, `sheet_rows`).
 """
@@ -33,6 +40,7 @@ from typing import Any, Final
 
 __all__ = [
     "FILE",
+    "PRINTED_AS",
     "REASONS",
     "SCHEMA",
     "build",
@@ -40,6 +48,8 @@ __all__ = [
     "lines",
     "load",
     "page_rows",
+    "printed_as",
+    "printed_as_line",
     "report",
     "sheet_rows",
     "summary_line",
@@ -62,6 +72,21 @@ REASONS: Final[dict[str, str]] = {
     "in_note": "inside a note",
     "other": "no agreed reading or no dimension line",
 }
+
+#: How a page prints its numbers (`printed_as`), in plain words (the order is the order shown).
+PRINTED_AS: Final[dict[str, str]] = {
+    "typed": "typed text",
+    "codes": "text with no letter map",
+    "drawn": "drawn as lines or shapes",
+    "typed_and_drawn": "typed text and drawn lettering together",
+    "picture": "pasted pictures",
+}
+#: A page whose text is more than this share of letter codes (`health.json`'s `code_share`).
+_CODES_SHARE: Final = 0.2
+#: A page prints typed and drawn numbers together when each kind is at least this many numbers
+#: and this share of the page's.
+_MIXED_MIN: Final = 2
+_MIXED_SHARE: Final = 0.1
 
 #: The sides counted, and how a sentence names their drawings.
 SIDES: Final[dict[str, str]] = {
@@ -144,22 +169,45 @@ def _stickers(annotations: Iterable[Mapping[str, Any]]) -> dict[tuple[str, int],
     return out
 
 
+def printed_as(counts: Mapping[str, Any], facts: Mapping[str, Any] | None = None) -> str | None:
+    """How one side of a page prints its numbers (`PRINTED_AS`), from its counts (`_empty`) and
+    the page's health facts (`health.json`); `None` when it prints none."""
+    typed = int(counts["typed"]["printed"])
+    drawn = int(counts["strokes"]["printed"])
+    pictures = int(counts["pictures"]["printed"])
+    if not typed + drawn + pictures:
+        return None
+    health = facts or {}
+    if health.get("no_letter_map") or float(health.get("code_share") or 0) > _CODES_SHARE:
+        return "codes"
+    if pictures > typed + drawn:
+        return "picture"
+    # Both kinds only when each is more than a stray count (a spot of ink taken for a number).
+    least = max(_MIXED_MIN, _MIXED_SHARE * (typed + drawn + pictures))
+    if typed >= least and drawn >= least:
+        return "typed_and_drawn"
+    return "drawn" if drawn > typed else "typed"
+
+
 def build(
     document: Mapping[str, Any],
     strokes: Mapping[tuple[str, int], Sequence[Mapping[str, Any]] | None],
     annotations: Iterable[Mapping[str, Any]] = (),
     *,
     seconds: float | None = None,
+    health: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The reading coverage of a set from its `dims.json` (`document`) and the pen-stroke spots
     the drawn pass found unread on each page (`strokes`: `{box, side, reasons}` each; a page
     missing, or `None`, was not counted for pen strokes). `annotations`: the pack's GV markup (a
-    small one over a spot makes it "GV's sticker or markup over it")."""
+    small one over a spot makes it "GV's sticker or markup over it"). `health`: each page's
+    health facts (`(file, page)`: `facts`), for text stored as codes."""
     stickers = _stickers(annotations)
     totals: dict[str, dict[str, Any]] = {}
     reasons: dict[str, dict[str, int]] = {}
     pages: list[dict[str, Any]] = []
     not_counted: list[dict[str, Any]] = []
+    kinds: dict[str, dict[str, int]] = {}
     for entry in document.get("pages") or []:
         if not isinstance(entry, Mapping):
             continue
@@ -249,12 +297,20 @@ def build(
         spots.sort(
             key=lambda s: (list(SIDES).index(s["side"]), round(s["box"][1] / 4), s["box"][0])
         )
+        facts = (health or {}).get((name, number))
+        page_kinds = {
+            side: kind for side, counts in sides.items() if (kind := printed_as(counts, facts))
+        }
+        for side, kind in page_kinds.items():
+            by_kind = kinds.setdefault(side, {})
+            by_kind[kind] = by_kind.get(kind, 0) + 1
         pages.append(
             {
                 "file": name,
                 "page": number,
                 "strokes_counted": counted,
                 "sides": sides,
+                "printed_as": page_kinds,
                 "not_read": spots,
             }
         )
@@ -265,6 +321,11 @@ def build(
             side: {r: reasons[side][r] for r in REASONS if r in reasons[side]}
             for side in SIDES
             if side in reasons
+        },
+        "printed_as": {
+            side: {k: kinds[side][k] for k in PRINTED_AS if k in kinds[side]}
+            for side in SIDES
+            if side in kinds
         },
         "pages": pages,
         "pages_not_counted": not_counted,
@@ -313,12 +374,27 @@ def summary_line(coverage: Mapping[str, Any] | None, side: str) -> str | None:
     )
 
 
+def printed_as_line(coverage: Mapping[str, Any] | None, side: str) -> str | None:
+    """`How the architect's drawings print their numbers: typed text on 20 pages, drawn as lines
+    or shapes on 4, ...`, or `None` when every page of the side prints typed text (or none)."""
+    kinds = ((coverage or {}).get("printed_as") or {}).get(side) or {}
+    if side == "unknown" or not kinds or set(kinds) == {"typed"}:
+        return None
+    parts = []
+    for kind, words in PRINTED_AS.items():
+        if count := int(kinds.get(kind) or 0):
+            parts.append(f"{words} on {count} page{'s' if count != 1 else ''}")
+    return f"How {SIDES[side]} print their numbers: " + ", ".join(parts)
+
+
 def lines(coverage: Mapping[str, Any] | None) -> list[str]:
-    """The coverage in plain sentences: one per side that prints numbers, the biggest reasons
-    for the vendor's unread ones, and the pages not counted for pen strokes."""
+    """The coverage in plain sentences: one per side that prints numbers, how each side's pages
+    print them (unless all typed), the biggest reasons for the vendor's unread ones, and the
+    pages not counted for pen strokes."""
     if not coverage:
         return []
     out = [line for side in SIDES if (line := summary_line(coverage, side))]
+    out += [line for side in SIDES if (line := printed_as_line(coverage, side))]
     vendor = (coverage.get("not_read_by_reason") or {}).get("vendor") or {}
     if vendor:
         top = sorted(vendor.items(), key=lambda kv: -kv[1])[:4]
@@ -349,6 +425,8 @@ def headline(coverage: Mapping[str, Any] | None) -> dict[str, Any] | None:
         out[f"{side}_percent"] = _percent(int(counts["read"]), int(counts["printed"]))
         out[f"{side}_strokes_read"] = int(counts["strokes"]["read"])
         out[f"{side}_strokes_printed"] = int(counts["strokes"]["printed"])
+    for side in ("vendor", "architect"):
+        out[f"{side}_printed_as"] = dict((coverage.get("printed_as") or {}).get(side) or {})
     out["vendor_not_read_by_reason"] = dict(
         (coverage.get("not_read_by_reason") or {}).get("vendor") or {}
     )
