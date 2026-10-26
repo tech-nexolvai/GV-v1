@@ -81,10 +81,12 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from typing import Any, Final, Literal
 
 from app.review.assistant import dim_ends, drafting_notes, job_value_rules
-from app.review.assistant.finding_checks import wrong_part
+from app.review.assistant.finding_checks import to_inches, wrong_part
+from app.review.assistant.ledger import format_inches
 from app.review.assistant.round_picks import pick_words
 from app.review.assistant.round_reference import (
     ROUND_MATCH,
@@ -108,6 +110,7 @@ __all__ = [
     "Classified",
     "architect_conflict",
     "classify",
+    "differing_values",
     "not_compared_line",
     "points_to_prototype",
     "prototype_governs",
@@ -629,6 +632,64 @@ def architect_conflict(finding: Mapping[str, Any]) -> str | None:
         shown = ", ".join(f'{_trim(v)}"' for v in sorted(printed))
         return f"the architect prints {shown} for the same run, not the value it should be"
     return None
+
+
+#: Two compared values this close are the same printed size (a sixteenth, the drawings' step).
+SAME_SIZE: Final = Decimal(1) / Decimal(16)
+#: A bare millimetre number paired with inches is the same size within a millimetre.
+_MM_PER_INCH: Final = Decimal("25.4")
+
+
+def _compared_inches(finding: Mapping[str, Any]) -> tuple[Decimal, Decimal] | None:
+    """The two numbers a "same" item compared (vendor, reference), in inches, as the rule that
+    compared them took them; `None` when they are not both plain numbers. GV's formulas compare the
+    vendor's value with their own expected value (a chain's sum, the run plus its allowances), and
+    a field cut code allowed is taken off the vendor's value first."""
+    held = finding.get("inches")
+    inches: Mapping[str, Any] = held if isinstance(held, Mapping) else {}
+    vendor, reference = _number(inches.get("vendor")), _number(inches.get("architect"))
+    if vendor is None or reference is None:
+        return None
+    formula = finding.get("formula")
+    if isinstance(formula, Mapping) and formula.get("outcome") == "same":
+        expected = formula.get("expected")
+        value = to_inches(str(expected)) if isinstance(expected, str) and expected.strip() else None
+        return None if value is None else (vendor, value)
+    cut = finding.get("field_cut")
+    if isinstance(cut, Mapping) and cut.get("outcome") == "allowed":
+        per_end = to_inches(str(cut.get("per_end") or ""))
+        count = cut.get("field_cuts")
+        if per_end is None or isinstance(count, bool) or not isinstance(count, int):
+            return None
+        return (vendor - per_end * count, reference)
+    return (vendor, reference)
+
+
+def differing_values(finding: Mapping[str, Any]) -> tuple[str, str] | None:
+    """A Right's two compared values when they are plain numbers that differ (2026-10-27: the AI
+    paired a top depth with a cabinet width and called them the same), as a drawing writes
+    them; `None` when they are the same within a sixteenth, when either is not a number (a tag, a
+    model, words), or when the item is not a comparison of two drawings' sizes (GV's limits are a
+    range, a vendor's own sum compares its parts). The value compared is the one the rule took
+    (`_compared_inches`); a bare millimetre number against inches is the same size within 1 mm."""
+    if finding.get("source") not in _ARCHITECT_SOURCES | {"cross_view"}:
+        return None
+    settled = finding.get("settled")
+    if isinstance(settled, Mapping) and settled.get("method") == "gv_limits":
+        return None
+    found = _compared_inches(finding)
+    if found is None:
+        return None
+    vendor, reference = found
+    if abs(vendor - reference) <= SAME_SIZE:
+        return None
+    if any(abs(a * _MM_PER_INCH - b) <= 1 for a, b in ((vendor, reference), (reference, vendor))):
+        return None  # one side is the same size printed in millimetres only
+    return (_inch_text(vendor), _inch_text(reference))
+
+
+def _inch_text(value: Decimal) -> str:
+    return format_inches(Fraction(value).limit_denominator(16))
 
 
 def _trim(value: Decimal) -> str:
@@ -1292,6 +1353,15 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
                 "not_proved",
                 f"called the same, but {against}",
                 "both values read at their spots, and code's check agreeing",
+            )
+        differ = differing_values(finding)
+        if differ is not None:
+            # Right needs the two numbers to be the same (2026-10-27): an AI that pairs a top
+            # depth with a cabinet width and calls them the same is never a green tick.
+            return _not(
+                "not_proved",
+                f"the two values differ ({differ[0]} vs {differ[1]}); not the same thing",
+                "the architect's dimension that measures the same thing as {thing}",
             )
         if finding.get("compared") is False:
             return _not(

@@ -176,6 +176,7 @@ def _right(**changes: Any) -> dict[str, Any]:
             vendor='4"',
             status="same",
             compared=True,
+            inches={"architect": "4", "vendor": "4", "difference": "0"},
             vendor_box=None,
             arch_box=None,
         )
