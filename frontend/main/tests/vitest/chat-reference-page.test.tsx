@@ -65,6 +65,8 @@ async function openRow(id: string, findings: ChatFinding[]) {
   render(<AssistantMessage message={answer(findings)} chatId="c-1" models={[OPUS]} fullCheck pagePicture={pagePicture} />);
   const node = screen.getByRole('article', { name: 'Answer' });
   await user.click(within(node).getByRole('tab', { name: /Not compared/ }));
+  // Plan change #8: an item with nothing to compare is in the folded list at the bottom: open it first.
+  if (!node.querySelector(`[data-slot="chat-result-row"][data-id="${id}"]`)) await user.click(node.querySelector<HTMLElement>('[data-slot="chat-result-aside-toggle"]')!);
   await user.click(node.querySelector<HTMLElement>(`[data-slot="chat-result-row"][data-id="${id}"]`)!);
   const panel = await screen.findByRole('dialog');
   return { panel, architect: panel.querySelector<HTMLElement>('[data-slot="chat-evidence-side"][data-side="architect"]') };

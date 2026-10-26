@@ -44,7 +44,9 @@ export function roundTagWords(tag: string): string | null {
 
 /** Words a reviewer screen must never show, each with what to say instead. */
 export const BANNED_WORDS: readonly { pattern: RegExp; instead: string }[] = [
-  { pattern: /nothing to compare/i, instead: 'say "Not compared"' },
+  // Plan change #8 (owner-approved, 2026-10-26): "Nothing to compare here" names only the folded
+  // list at the bottom of Not compared; the outcome itself is still "Not compared".
+  { pattern: /nothing to compare(?! here)/i, instead: 'say "Not compared" (only the folded list is "Nothing to compare here")' },
   { pattern: /reply to claude/i, instead: `say "${COMPOSER_PLACEHOLDER}"` },
   { pattern: /claude can make mistakes/i, instead: `say "${COMPOSER_NOTE}"` },
   { pattern: /how can i help you today/i, instead: `say "${COMPOSER_PLACEHOLDER}"` },

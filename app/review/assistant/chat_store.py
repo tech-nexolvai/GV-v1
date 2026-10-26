@@ -41,6 +41,7 @@ from app.models import (
     PackageRevision,
 )
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
+from app.review.assistant.card_fold import blocks_with_cards, card_counts
 from app.review.assistant.chat_contract import (
     ChatFileOut,
     ChatMessageOut,
@@ -56,7 +57,6 @@ from app.review.assistant.chat_decisions import (
 from app.review.assistant.chat_trust import rescored
 from app.review.assistant.code_version import code_version
 from app.review.assistant.impact import blocks_with_impacts
-from app.review.assistant.proof import proof_counts
 from app.review.assistant.review_action import CheckState, review_action
 
 __all__ = [
@@ -516,6 +516,9 @@ def _assistant_payload(
     blocks = blocks_with_impacts(
         with_decisions(with_corrections(message.blocks, corrections), decisions) or []
     )
+    if message.mode == "full_check":
+        # Final plan change #8: the copies of one question are one card (worked out on read).
+        blocks = blocks_with_cards(blocks)
     return {
         "id": message.id,
         "role": "assistant",
@@ -938,7 +941,9 @@ def _work_out_full_checks(session: Session, heads: Sequence[Any]) -> dict[UUID, 
             with_corrections(message.blocks, corrections), decided.get(message.id)
         )
         shown = blocks or []
-        counts = proof_counts(
+        # As the result screen's tiles count them (final plan change #8): a card once, whatever
+        # its copies; the "Nothing to compare here" cards are not in Not compared.
+        counts = card_counts(
             block["finding"]
             for block in shown
             if block.get("type") == "finding" and isinstance(block.get("finding"), Mapping)
