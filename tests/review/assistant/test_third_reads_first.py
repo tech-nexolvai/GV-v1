@@ -166,10 +166,12 @@ def test_one_third_read_per_reading_and_at_most_one_per_second_read(
 def _book_engine(finding: dict[str, Any]) -> Any:
     shown: list[dict[str, Any]] = []
     live = {finding["id"]: dict(finding)}
-    book = types.SimpleNamespace(
-        live=lambda: list(live.values()),
-        replace=lambda f: live.__setitem__(f["id"], f) or True,
-    )
+
+    def replace(updated: dict[str, Any]) -> bool:
+        live[updated["id"]] = updated
+        return True
+
+    book = types.SimpleNamespace(live=lambda: list(live.values()), replace=replace)
     engine = types.SimpleNamespace(
         finding_lock=threading.RLock(),
         book=book,
@@ -207,7 +209,7 @@ def test_a_third_read_is_kept_only_while_the_finding_shows_what_was_read() -> No
 def test_the_next_version_of_the_finding_keeps_its_third_read() -> None:
     red = _red("F1")
     key = chat_engine._read_key(red)
-    engine = types.SimpleNamespace(
+    engine: Any = types.SimpleNamespace(
         _recorded_checks=lambda: None,
         _reads={"F1": (key, "unsure", {"architect": '30"', "vendor": None})},
         _thirds={"F1": (key, "agrees_after_adjudication", [{"role": "third"}])},
@@ -263,14 +265,14 @@ def _png(width: int, height: int) -> str:
 
 
 def test_a_read_is_held_at_what_it_really_sends() -> None:
-    small = {"type": "image", "source": {"type": "base64", "media_type": "image/png"}}
-    content = [
-        {**small, "source": {**small["source"], "data": _png(240, 250)}},
+    source = {"type": "base64", "media_type": "image/png", "data": _png(240, 250)}
+    content: list[dict[str, Any]] = [
+        {"type": "image", "source": source},
         {"type": "text", "text": "What value is printed?"},
     ]
     tokens = content_tokens(content, "system", ADJUDICATION_PROMPT_TOKENS)
     assert 500 < tokens < 1_000  # 240 x 250 / 750 = 80, plus the text and the overhead
-    unknown = [{"type": "image", "source": {"type": "url", "url": "x"}}]
+    unknown: list[dict[str, Any]] = [{"type": "image", "source": {"type": "url", "url": "x"}}]
     assert content_tokens(unknown, "", ADJUDICATION_PROMPT_TOKENS) == ADJUDICATION_PROMPT_TOKENS
 
 
