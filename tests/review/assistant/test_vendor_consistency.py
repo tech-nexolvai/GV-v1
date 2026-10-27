@@ -1046,6 +1046,39 @@ def test_the_readings_string_stays_when_codes_item_cannot_be_added(
     assert dropped == [] and [f["id"] for f in engine.book.live()] == ["F7"]
 
 
+def test_only_codes_please_check_of_that_overall_looks_past_the_readings_string(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another code finding the reading's string hid before (the same page and the same two
+    values) is still hidden: only the please-check of that overall replaces the string (the
+    review of 27 Oct)."""
+    result, string = _unsized_and_string(tmp_path, ['20"', '12"', '12"'])
+    other = {
+        "page": 1,
+        "source": "cross_view",
+        "status": "different",
+        "item": "same span printed twice",
+        "architect": string["architect"],
+        "vendor": string["vendor"],
+    }
+    assert vc._already(other, [string])
+    result.findings.insert(0, other)
+    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads, **_: result)
+    engine = _Engine("full_check", [])
+    engine.book = _FullBook([string])
+    engine._show_dropped = lambda finding_id, reason: None  # type: ignore[attr-defined]
+    vc.add_to_answer(engine)
+    assert [given.get(vc.UNSIZED_ENDS) is not None for given, _by in engine.book.added] == [True]
+
+
+def test_a_string_on_another_vendor_file_is_not_replaced(tmp_path: Path) -> None:
+    result, string = _unsized_and_string(tmp_path, ['20"', '12"', '12"'])
+    elsewhere = {**string, "vendor_box": {**string["vendor_box"], "file": "other vendor.pdf"}}
+    assert vc.judge_unsized([elsewhere], result.unsized) == {}
+    same_file = {**string, "vendor_box": {**string["vendor_box"], "file": FILE}}
+    assert list(vc.judge_unsized([same_file], result.unsized)) == ["F7"]
+
+
 @pytest.mark.parametrize(
     ("parts", "more"),
     [
