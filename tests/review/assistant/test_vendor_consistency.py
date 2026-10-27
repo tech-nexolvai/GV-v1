@@ -985,6 +985,93 @@ def test_the_hook_drops_a_grouped_string_codes_geometry_refutes(
     assert dropped == ["F7"] and engine.book.live() == []
 
 
+# ---- code's please-check of unsized ends replaces the reading's string (2026-10-27) -------------
+
+
+def _unsized_and_string(
+    tmp_path: Path, parts: list[str], **more: Any
+) -> tuple[vc.ConsistencyResult, dict[str, Any]]:
+    """Code's result for an overall 49" past its sized pieces 20" + 12" + 12" (made-up values),
+    and a reading's string of the same overall at its spot (`more` changes it)."""
+    result = _check(tmp_path, _sheet_unsized())
+    (found,) = result.unsized
+    x0, y0, x1, y1 = found.overall.box
+    spot = {"x0": x0, "y0": y0, "x1": x1, "y1": y1, "page": 1}
+    return result, _ledger_string(parts, '49"', **{"vendor_box": spot, **more})
+
+
+def test_codes_unsized_ends_please_check_replaces_the_readings_string_of_that_overall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real upload: the reading recorded the overall as a string that does not add up (never
+    verified: Not compared), and that hid code's own please-check as a duplicate. Code's item now
+    replaces it, a Likely problem, never red."""
+    from app.review.assistant import proof
+    from app.review.assistant.chat_trust import judged
+
+    result, string = _unsized_and_string(tmp_path, ['20"', '12"', '12"'])
+    assert proof.proof_group(judged(string)) == "not_compared"
+    assert vc._already(result.findings[0], [string])  # what hid it before
+    replaced = vc.judge_unsized([string], result.unsized)
+    assert list(replaced) == ["F7"] and "its own please-check replaces" in replaced["F7"]
+
+    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads, **_: result)
+    engine = _Engine("full_check", [])
+    engine.book = _FullBook([string])
+    dropped: list[str] = []
+    engine._show_dropped = lambda finding_id, reason: dropped.append(finding_id)  # type: ignore[attr-defined]
+    vc.add_to_answer(engine)
+    assert dropped == ["F7"]
+    ((added, by),) = engine.book.added
+    assert by == vc.CREATED_BY and added[vc.UNSIZED_ENDS]
+    item = judged({**added, "id": "F8"})
+    assert proof.proof_group(item) == "likely_problem" and not proof.proved_wrong(item)
+
+
+class _RefusingBook(_FullBook):
+    def add_code_finding(self, given: dict[str, Any], *, created_by: str) -> None:  # type: ignore[override]
+        return None  # out of scope, or the book is full
+
+
+def test_the_readings_string_stays_when_codes_item_cannot_be_added(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, string = _unsized_and_string(tmp_path, ['20"', '12"', '12"'])
+    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads, **_: result)
+    engine = _Engine("full_check", [])
+    engine.book = _RefusingBook([string])
+    dropped: list[str] = []
+    engine._show_dropped = lambda finding_id, reason: dropped.append(finding_id)  # type: ignore[attr-defined]
+    vc.add_to_answer(engine)
+    assert dropped == [] and [f["id"] for f in engine.book.live()] == ["F7"]
+
+
+@pytest.mark.parametrize(
+    ("parts", "more"),
+    [
+        (['20"', '12"', '12"'], {"string_geometry": "verified"}),  # code proved its geometry
+        (['20"', '12"', '12"'], {"status": "same"}),  # the reading says it adds up
+        (['20"', '12"'], {}),  # other parts: another claim
+        (['20"', '12"', '12"'], {"page": 2}),  # another page
+        (['20"', '12"', '12"'], {"vendor_box": {"x0": 0, "y0": 0, "x1": 5, "y1": 5}}),  # elsewhere
+        (['20"', '12"', '12"'], {"created_by": "consistency"}),  # code's own
+    ],
+)
+def test_any_other_string_is_left_as_it_is(
+    tmp_path: Path, parts: list[str], more: dict[str, Any]
+) -> None:
+    result, string = _unsized_and_string(tmp_path, parts, **more)
+    assert vc.judge_unsized([string], result.unsized) == {}
+
+
+def test_a_string_with_no_spot_is_replaced_only_at_the_one_such_overall(tmp_path: Path) -> None:
+    result, string = _unsized_and_string(tmp_path, ['20"', '12"', '12"'])
+    del string["vendor_box"]
+    assert list(vc.judge_unsized([string], result.unsized)) == ["F7"]
+    assert vc.judge_unsized([string], result.unsized * 2) == {}
+    assert vc.judge_unsized([string], result.unsized, verified=("F7",)) == {}
+
+
 def test_the_line_work_is_read_once_per_set_and_kept_in_its_pack(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
