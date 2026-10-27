@@ -229,6 +229,14 @@ def test_a_pick_naming_the_architects_same_value_is_right() -> None:
     assert _group(linked) == "right"
 
 
+def test_a_pick_writing_the_same_two_ends_in_the_other_order_still_links() -> None:
+    # The ends are an unordered pair (2026-10-27): floor -> top and top -> floor are the same ends.
+    (found,) = _leftovers(_item())
+    reversed_ends = {"from": _SPANS["to"], "to": _SPANS["from"]}
+    linked, outcome = _link(found, _answer("p7.D3", architect_spans=reversed_ends))
+    assert outcome == "linked" and _group(linked) == "right"
+
+
 def test_a_cheap_pick_alone_never_makes_a_red() -> None:
     (found,) = _leftovers(_item())
     linked, outcome = _link(found, _answer("p7.D2"))

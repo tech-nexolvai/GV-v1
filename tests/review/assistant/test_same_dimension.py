@@ -115,8 +115,11 @@ def test_a_pick_naming_the_twin_agrees_and_everything_else_still_holds() -> None
     assert after.answers["pairing"] == "proved_by_two_picks"
     # The ends must still agree, a geometry that shows different points still blocks, a weak pick
     # still cannot settle what geometry cannot tell, a pick of another label still disagrees.
-    differ = {**REPLY, "architect_spans": {"from": "wall_face", "to": "centre_line"}}
+    # (The same two ends written in the other order agree: the ends are an unordered pair.)
+    differ = {**REPLY, "architect_spans": {"from": "centre_line", "to": "cabinet_side"}}
     assert decide(advocate=differ, extent=cannot, twins=("p2.D4",), **COMMON).result == "objects"
+    swapped = {**REPLY, "architect_spans": {"from": "wall_face", "to": "centre_line"}}
+    assert decide(advocate=swapped, extent=cannot, twins=("p2.D4",), **COMMON).result == "passed"
     apart: tuple[Extent, str] = ("different_extent", "the ends land apart")
     assert decide(advocate=REPLY, extent=apart, twins=("p2.D4",), **COMMON).result == "objects"
     weak = {**REPLY, "strong": False}
