@@ -31,9 +31,10 @@ dependencies = ["pydantic>=2.10", "shapely>=2"]
 # `rules`. CI installs both extras so nothing was broken, but a `dev`-only checkout could not run them.
 # `pytest-xdist` (MIT) runs each CI shard on four worker processes (#1289), and with it `execnet` (MIT).
 # Pinned like pytest-split: it decides which process runs which test, so a new release should arrive in a
-# reviewed change, not on a Tuesday.
+# reviewed change, not on a Tuesday. `pytest` itself is pinned the same way (2026-10-28): 9.2.0 arrived
+# unreviewed and refuses `pytest.approx()` on nested tuples, failing tests that pass on 9.1.1.
 dev = [
-    "pytest", "pytest-split==0.11.0", "pytest-xdist==3.8.0",
+    "pytest==9.1.1", "pytest-split==0.11.0", "pytest-xdist==3.8.0",
     "ruff", "black", "mypy", "httpx", "jsonschema", "pyyaml",
 ]
 
