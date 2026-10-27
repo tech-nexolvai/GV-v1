@@ -56,6 +56,7 @@ from app.review.assistant import (
     likely_problems,
     missing_items,
     reading_routes,
+    right_proof,
     rule_notes,
     same_item_pages,
     spot_guard,
@@ -530,6 +531,9 @@ def matches_unproved(finding: Mapping[str, Any]) -> bool:
     """A Right whose two dimensions code could not prove run between the same kinds of points
     (`dim_ends.LIKE_FOR_LIKE`, for the same two labels the item still pairs): named
     `MATCHES_UNPROVED`, to be folded under a proved sibling. Data only: still a Right."""
+    found = right_proof.ends_not_proved(finding)
+    if found is not None:
+        return found  # code's record for this pair (`right_proof`, 2026-10-27, option B)
     held = finding.get(dim_ends.LIKE_FOR_LIKE)
     if finding.get("status") != "same" or not isinstance(held, Mapping):
         return False
