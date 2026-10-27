@@ -274,6 +274,7 @@ from app.review.assistant.product_scope import (
 )
 from app.review.assistant.proof import proof_counts, vendor_facing
 from app.review.assistant.rate_limits import Limits, ModelLimiter, limiter_for
+from app.review.assistant.reading_routes import sides_needed
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.run_fit import add_to_answer as add_run_fit
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
@@ -421,6 +422,12 @@ SECOND_READ_MODEL: Final = "haiku"
 SECOND_READ_EFFORT: Final = "low"
 SECOND_READ_MAX_TOKENS: Final = 1024
 SECOND_READ_LIMIT: Final = 30
+#: Second reads for would-be reds first (Anant, 2026-10-27): while findings still arrive, only the
+#: findings a red could come from (`could_go_red`) are read, so a would-be red that arrives late
+#: still gets its read (on a real upload a late one never got its read and went red, while the same
+#: item with its read, on another run, was held back as unsure). Once every finding is in (the
+#: last queue), the reads left go to the rest, differences first. The cap and the money are
+#: unchanged; a read can only hold a red back, never make one.
 #: An upper bound of one second read's prompt: two crops (at most 1600 px a side, about 3,400
 #: tokens each) and the question.
 _SECOND_READ_PROMPT_TOKENS: Final = 8_000
@@ -2899,9 +2906,13 @@ class ChatEngine:
             if self.book.replace(updated):
                 self._show_finding(updated)
 
-    def _queue_second_reads(self, findings: Sequence[Mapping[str, Any]]) -> None:
+    def _queue_second_reads(
+        self, findings: Sequence[Mapping[str, Any]], *, final: bool = False
+    ) -> None:
         """Starts the second reads of these findings that have evidence pictures and no read yet,
-        differences first, up to `SECOND_READ_LIMIT` reads for the message."""
+        the ones a red could come from first (`could_go_red`), then differences, up to
+        `SECOND_READ_LIMIT` reads for the message. Until the `final` queue (every finding is in),
+        only would-be reds are read: the cap is never spent on the others first."""
         module = load_module(SECOND_READ_MODULE)
         if module is None:
             return
@@ -2911,12 +2922,15 @@ class ChatEngine:
             if (f.get("arch_picture_id") or f.get("vendor_picture_id"))
             and (f.get("checks") or {}).get("second_read", "not_run") in (None, "not_run")
         ]
-        chosen.sort(key=_differences_first)
+        chosen.sort(key=_reads_first)
         for finding in chosen:
             key = (str(finding["id"]), _read_key(finding))
+            red = could_go_red(finding)
             with self._lock:
                 if key in self._read_queued or len(self._read_queued) >= SECOND_READ_LIMIT:
                     continue
+                if not red and not final:
+                    continue  # the reads go to would-be reds first, the rest once all are in
                 self._read_queued.add(key)
             self._submit_check("second_reads", _bound(self._second_read_one, module, finding))
 
@@ -2986,7 +3000,7 @@ class ChatEngine:
             for finding in sorted(findings, key=_differences_first):
                 if needs_third_read(finding):
                     self._queue_third_read(finding)
-            self._queue_second_reads(findings)
+            self._queue_second_reads(findings, final=True)
         self._close_checks()
         with_pictures = [
             f for f in book.live() if f.get("arch_picture_id") or f.get("vendor_picture_id")
@@ -4313,7 +4327,7 @@ class ChatEngine:
             agent.partner = None if job.partner is None else by_job.get(job.partner)
         entries = self._launch(agents, on_done=self._helper_done)
         # The rest of the helpers' findings (the right items too), now every helper is done.
-        self._queue_second_reads(self.book.live())
+        self._queue_second_reads(self.book.live(), final=True)
         self._wait_checks()
         self._lead_message(agents, entries)
         return True
@@ -5597,6 +5611,25 @@ def _bound(work: Callable[..., None], *given: Any) -> Callable[[], None]:
 def _differences_first(finding: Mapping[str, Any]) -> int:
     """Differences first: they are what a reviewer acts on."""
     return {"different": 0, "check": 1}.get(str(finding.get("status")), 2)
+
+
+def could_go_red(finding: Mapping[str, Any]) -> bool:
+    """A finding a red could come from, which a second reading may hold back (2026-10-27): any
+    item not called the same, from any maker (code's own too: a roster run makes some before the
+    reads), that holds the numbers its red would compare (`reading_routes.sides_needed`: the
+    vendor's alone against GV's rule or limits or the vendor's own string, else both). A "please
+    check" item counts: code may make it a Wrong later (the escalation, the decision resolver)."""
+    if finding.get("status") == "same":
+        return False
+    inches = finding.get("inches")
+    if not isinstance(inches, Mapping):
+        return False
+    return all(str(inches.get(side) or "").strip() for side in sides_needed(finding))
+
+
+def _reads_first(finding: Mapping[str, Any]) -> tuple[int, int]:
+    """The second reads' order: would-be reds, then differences, then the rest."""
+    return (0 if could_go_red(finding) else 1, _differences_first(finding))
 
 
 def _read_key(finding: Mapping[str, Any]) -> tuple[Any, ...]:
