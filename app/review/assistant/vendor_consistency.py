@@ -2276,7 +2276,12 @@ def _unsized_replaces(
         ]
         box = finding.get("vendor_box")
         if isinstance(box, Mapping):
-            same = [found for found in same if _overlaps(box, found.overall)]
+            # At code's overall: the same file (a set may hold two vendor PDFs) and the same spot.
+            same = [
+                found
+                for found in same
+                if box.get("file") in (None, found.overall.file) and _overlaps(box, found.overall)
+            ]
         if len(same) != 1:
             continue  # not at code's overall, or two such overalls and no spot to tell them apart
         found = same[0]
@@ -2337,17 +2342,24 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
         # string of the same overall, which would otherwise hide it as a duplicate (`_already`).
         # The reading's string goes only once code's own item is in the answer.
         replaces = _unsized_replaces(book.live(), result.unsized, judged.verified)
-        live = [f for f in book.live() if str(f.get("id")) not in replaces]
+        live = book.live()
         for finding in result.findings:
-            if _already(finding, live):
+            # Only the please-check of that very overall looks past the reading's string; for
+            # every other code finding the string still counts as already there.
+            hidden = {
+                finding_id
+                for finding_id, (found, _reason) in replaces.items()
+                if _of_overall(finding, found)
+            }
+            if _already(finding, [f for f in live if str(f.get("id")) not in hidden]):
                 continue
             added = book.add_code_finding(finding, created_by=CREATED_BY)
             if added is not None:
                 engine._show_finding(added)
                 live.append(added)
-                for finding_id, (found, reason) in replaces.items():
-                    if _of_overall(finding, found) and book.absorb(finding_id):
-                        engine._show_dropped(finding_id, reason)
+                for finding_id in sorted(hidden):
+                    if book.absorb(finding_id):
+                        engine._show_dropped(finding_id, replaces[finding_id][1])
     engine.consistency_gaps = list(result.unknowns)
     # The summary's line: code's own summary carries it, else it follows the AI's (the engine).
     engine.consistency_line = summary_line(result)
