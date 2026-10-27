@@ -17,7 +17,8 @@ uploads are carried over, but only where what the AI was shown is provably the s
   and the page map's pages are the same; each answer is still checked against today's candidate
   list before it is used (`page_match._still_good`), so a drawing whose candidates changed is
   asked again;
-- the blind picks as they are: each is keyed by what the pick was shown (`pick_cache.pick_key`).
+- the blind picks under the same picture check as the matcher's answers: each is keyed by the
+  labels and crop areas it was shown (`pick_cache.pick_key`), not by the pixels.
 
 A real drawing change still asks again: a changed upload has another pack name (no earlier pack
 is found), and a changed picture or text fails the checks above. Nothing is paired that code's
@@ -203,6 +204,9 @@ def carry_over(folder: Path, listing: Sequence[Mapping[str, Any]]) -> CarryRepor
         report.source = old.name
         report.index_pages = _carry_index(old, folder, old.name)
         if _same_pictures(old, folder) and _same_map(old, folder):
+            # The blind picks' key holds the labels and crop areas, not the pixels: they are
+            # carried only when every page picture is byte for byte the same (review, 27 Oct).
+            report.picks = _carry_picks(old, folder)
             same_notes = _digest(old / "annotations.json") == _digest(folder / "annotations.json")
             if same_notes:
                 report.match_answers = _carry_matches(old, folder)
@@ -210,7 +214,6 @@ def carry_over(folder: Path, listing: Sequence[Mapping[str, Any]]) -> CarryRepor
                 report.skipped.append("the annotations differ")
         else:
             report.skipped.append("the page pictures or the page map differ")
-        report.picks = _carry_picks(old, folder)
     except Exception:  # noqa: BLE001 - the pack works without them: they are asked again
         _log.exception("set pack: the saved answers could not be carried over")
         return report

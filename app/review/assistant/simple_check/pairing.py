@@ -1890,9 +1890,12 @@ def plan_and_elevation(vendor: Facts, views: Sequence[Facts]) -> tuple[Scored, .
     titled by its kind only ("PLAN", "ELEVATION"), and `narrow` cannot pick one (Anant,
     2026-10-27; a real upload: an architect sheet of one item, its plan above its elevation, and
     the vendor's drawing of that item stayed "pairing unsure"). Two drawings of the sheet's one
-    item: compared with both, as `room_views` does for one room's walls; which view each
-    dimension is in is still code's to prove, dimension by dimension, before any red. None of the
-    two ruled out (`rank`: an accessible variant against a standard one); else nothing."""
+    item: compared with both, as `room_views` does for one room's walls. Nothing here says which
+    view a dimension is in: what keeps a plan's depth from being taken for an elevation's height
+    is the red's own line-up check (`full_check_advocate.same_extent`: the architect's sheet lined
+    up with the vendor's drawing on sizes printed once on each, and both lines' ends must land
+    together), as for any whole-page pairing. None of the two ruled out (`rank`: an accessible
+    variant against a standard one); else nothing."""
     if len(views) != 2:
         return ()
     kinds = []
