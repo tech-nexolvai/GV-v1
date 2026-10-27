@@ -113,6 +113,7 @@ __all__ = [
     "narrow",
     "opposite_hand",
     "piece_words",
+    "plan_and_elevation",
     "rank",
     "references_in",
     "reuse",
@@ -1878,6 +1879,40 @@ def reuse(shown: Sequence[str], answer: MatchAnswer, asked: Sequence[str]) -> Ma
     if not kept:
         return None
     return MatchAnswer(kept, answer.confident, answer.reason)
+
+
+#: A view title that names only its kind (2026-10-27): it draws its sheet's own item.
+_KIND_ONLY_TITLES: Final = frozenset({"plan", "elevation"})
+
+
+def plan_and_elevation(vendor: Facts, views: Sequence[Facts]) -> tuple[Scored, ...]:
+    """The two views of a paired sheet when they are its one plan and its one elevation, each
+    titled by its kind only ("PLAN", "ELEVATION"), and `narrow` cannot pick one (Anant,
+    2026-10-27; a real upload: an architect sheet of one item, its plan above its elevation, and
+    the vendor's drawing of that item stayed "pairing unsure"). Two drawings of the sheet's one
+    item: compared with both, as `room_views` does for one room's walls; which view each
+    dimension is in is still code's to prove, dimension by dimension, before any red. None of the
+    two ruled out (`rank`: an accessible variant against a standard one); else nothing."""
+    if len(views) != 2:
+        return ()
+    kinds = []
+    for view in views:
+        if len(view.view_titles) != 1:
+            return ()
+        kinds.append(title_key(view.view_titles[0]))
+    if sorted(kinds) != ["elevation", "plan"] or not set(kinds) <= _KIND_ONLY_TITLES:
+        return ()
+    if not any(v.markers for v in views):
+        # No view of the sheet is marked: a marker on the vendor's drawing cannot tell its views
+        # apart (the item was paired with the whole sheet's markers), as in `room_views`.
+        vendor = replace(vendor, markers=frozenset())
+    ranked = {s.ref: s for s in rank(vendor, views)}
+    if any(ranked[v.ref].contradicts is not None for v in views):
+        return ()
+    return tuple(
+        Scored(v.ref, 0.0, ("the sheet's one plan and one elevation, both of its one item",))
+        for v in views
+    )
 
 
 #: A number or a unit type in a title: "TYPE 1", "STATION 2", "UNIT A".
