@@ -37,7 +37,12 @@ run beside the page helpers in the roster's first phase, within its share of the
 - one whose vendor label a helper already listed joins that item (it becomes a Likely problem if
   code never proves it);
 - a count, a missing or extra piece, a layout, or a size with one label is a **Likely problem**
-  (`likely_problems`), never clouded, with the AI's reason and its spot;
+  (`likely_problems`), never clouded, with the AI's reason and its spot; a missing or extra piece
+  also carries where it is on the drawing that has it and its printed tag (`piece`), and a claim
+  that puts two differences in one or counts unlike things on its two sides is marked to ask
+  (`ask`): the look rules (`look_rules`, 2026-10-27) make those Not compared, as they do a piece
+  drawn beside the unit with no tag code reads, a spot on GV's markup or on line work that may be
+  GV's;
 - a claim naming a label code cannot find where the AI says, or taking the brand prototype, GV's
   note or the vendor's own drawing as the architect, or a size with no label at all, or a claim
   about a notch (GV cuts unusual notches on site, DECIDED 2026-10-23), is dropped: the run's log
@@ -475,7 +480,7 @@ The pictures above are this piece's drawings. Code named each one from GV's head
 {pictures}
 Compare the vendor's drawings with the architect's like an experienced millwork reviewer looking at the two sheets side by side. What is different in design: missing or extra pieces (a unit, a cabinet, an upper, a panel, an outlet or cut-out on the millwork), different counts (units, doors, drawers, shelves, outlets), different overall sizes and heights of the millwork, a different layout or arrangement, a note on the architect's drawing the vendor does not follow (pull-out drawers drawn as doors).
 One claim per vendor round: when two rounds differ from the architect, make one claim for each, on that round's own picture and label.
-For a size, name the printed labels on both sides from each picture's label list (the id whose printed value you mean); kind "size" only when both drawings print the size. A count, a missing piece or a layout has label null (or the label next to it) and its counts or words as values. Give the vendor spot as a box in percent of the vendor picture.
+For a size, name the printed labels on both sides from each picture's label list (the id whose printed value you mean); kind "size" only when both drawings print the size. A count, a missing piece or a layout has label null (or the label next to it) and its counts or words as values. Give the vendor spot as a box in percent of the vendor picture. For a missing or extra piece also give "piece": the picture that has it (the architect's for a missing piece, the vendor's for an extra one), the tightest box round it in percent of that picture, the millwork tag printed on it (or null), and its place: "inside" the unit's outline or "beside" the unit; else "piece" is null. A piece beside the unit with no tag reaches GV as a question, not a problem.
 Reply with your claims only (an empty list when the vendor follows the architect)."""
 
 
@@ -516,6 +521,40 @@ _SPOT: Final[Mapping[str, Any]] = {
     "description": "Where on the vendor's picture, in percent (0-100): the tightest box round "
     "the thing (or round where it should be)",
 }
+_PIECE: Final[Mapping[str, Any]] = {
+    "anyOf": [
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["picture", "x0", "y0", "x1", "y1", "tag", "place"],
+            "properties": {
+                "picture": {
+                    "type": "integer",
+                    "description": "The picture that HAS the piece (the architect's for a missing "
+                    "piece, the vendor's for an extra one)",
+                },
+                "x0": {"type": "number", "description": "Left, percent of that picture's width"},
+                "y0": {"type": "number", "description": "Top, percent of that picture's height"},
+                "x1": {"type": "number", "description": "Right, percent of its width"},
+                "y1": {"type": "number", "description": "Bottom, percent of its height"},
+                "tag": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "description": "The millwork tag printed on the piece, as printed (B30, "
+                    "WD-01), or null when none is printed on it",
+                },
+                "place": {
+                    "type": "string",
+                    "enum": ["inside", "beside"],
+                    "description": "inside: drawn inside this unit's outline; beside: drawn "
+                    "next to the unit (on the wall, a bracket, the side of the next unit)",
+                },
+            },
+        },
+        {"type": "null"},
+    ],
+    "description": "A missing or extra piece only (else null): where the piece is on the drawing "
+    "that has it, its printed millwork tag, and whether it is inside the unit's outline",
+}
 WHOLE_LOOK_SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
     "additionalProperties": False,
@@ -532,6 +571,7 @@ WHOLE_LOOK_SCHEMA: Final[Mapping[str, Any]] = {
                     "vendor",
                     "architect",
                     "vendor_spot",
+                    "piece",
                     "why",
                     "sure",
                 ],
@@ -543,11 +583,13 @@ WHOLE_LOOK_SCHEMA: Final[Mapping[str, Any]] = {
                     },
                     "item": {
                         "type": "string",
-                        "description": "The piece and what differs, short (Upper cabinets: height)",
+                        "description": "The piece and the ONE thing that differs, short (Upper "
+                        "cabinets: height)",
                     },
                     "vendor": _SIDE,
                     "architect": _SIDE,
                     "vendor_spot": _SPOT,
+                    "piece": _PIECE,
                     "why": {
                         "type": "string",
                         "description": "Why it matters, one plain line (which round shows it)",
@@ -589,7 +631,7 @@ architect, never one round with another. GV's review markup is hidden in the pic
 baked into a pasted drawing may remain: {colour_rule} A number in GV's note, a cloud, a tick or a \
 sticker is never the architect's or the vendor's value.
 
-Not differences: a room dimension on the architect's elevation (to the ceiling, a bulkhead or soffit, wall to wall, centre lines of lights or art) is not the millwork's size; a height to the top of a splash is not a height to the top of the counter; the architect may dimension a different extent than the vendor (with or without fillers, field cut); GV cuts unusual notches in a countertop on site, so a notch is never a difference. Claim a size difference only when you can see both dimensions run between the same two ends of the same piece; otherwise leave it out. Brand items and equipment the vendor does not supply (lights, mirrors, appliances, lockers by others) are not the vendor's millwork: leave them out. Small single numbers (a reveal, one outlet spacing, a string of parts) are checked by other helpers: do not list them.
+Not differences: a room dimension on the architect's elevation (to the ceiling, a bulkhead or soffit, wall to wall, centre lines of lights or art) is not the millwork's size; a height to the top of a splash is not a height to the top of the counter; the architect may dimension a different extent than the vendor (with or without fillers, field cut); GV cuts unusual notches in a countertop on site, so a notch is never a difference. Claim a size difference only when you can see both dimensions run between the same two ends of the same piece; otherwise leave it out. One claim is ONE difference: never put two in one claim (the base type and the number of fronts are two claims), so a wrong half never rides on a right one. A count compares the same kind of thing on both sides, one number each ("4 doors" against "3 doors"; never "4 fronts" against "2 doors + 1 bin"). A missing or extra piece is a problem only for a piece of THIS millwork unit: drawn inside the unit's outline or carrying a millwork tag; something drawn beside the unit (a bracket on the wall, the side of the next unit) with no tag is only a question: give its place as "beside". Brand items and equipment the vendor does not supply (lights, mirrors, appliances, lockers by others) are not the vendor's millwork: leave them out. Small single numbers (a reveal, one outlet spacing, a string of parts) are checked by other helpers: do not list them.
 
 Labels: each picture lists the printed dimensions code read on it (id, value, width or height, \
 where in the picture in percent across and down). For each side of a size, name the label whose \
@@ -1051,6 +1093,115 @@ def unconfirmed_mode() -> str:
     return found if found in ("drop", "likely") else "drop"
 
 
+def _look_rules() -> Any:
+    return import_module("app.review.assistant.look_rules")
+
+
+def _piece_of(look: Look, given: object) -> dict[str, Any]:
+    """The piece's spot on the drawing that has it, in page points, with the tag the look read on
+    it and its place (inside the unit's outline or beside the unit); `{}` when the look gave no
+    spot code can use (`look_rules` then asks)."""
+    if not isinstance(given, Mapping):
+        return {}
+    drawing = look.picture(given.get("picture"))
+    if drawing is None or drawing.role not in ("architect", "vendor"):
+        return {}
+    try:
+        values = [float(given[k]) for k in ("x0", "y0", "x1", "y1")]
+    except (KeyError, TypeError, ValueError):
+        return {}
+    if not (0 <= values[0] < values[2] <= 100 and 0 <= values[1] < values[3] <= 100):
+        return {}
+    spot = _spot(dict(zip(("x0", "y0", "x1", "y1"), values, strict=True)), drawing)
+    tag = given.get("tag")
+    return {
+        "side": drawing.role,
+        "file": drawing.file,
+        "page": drawing.page,
+        "box": [spot["x0"], spot["y0"], spot["x1"], spot["y1"]],
+        "tag": _text(tag, 40) if isinstance(tag, str) and tag.strip() else None,
+        "place": given.get("place") if given.get("place") in ("inside", "beside") else None,
+    }
+
+
+#: The parts of a piece a claim can be about; two different ones joined in one claim are two
+#: differences (its base and its fronts), while an attribute (layout, count, height) is not a part.
+_PARTS: Final = re.compile(
+    r"\b(?:bases?|fronts?|doors?|drawers?|shel(?:f|ves)|handles?|pulls?|hardware|"
+    r"toe[- ]?kicks?|legs?|stretchers?|panels?|bins?|pull-?outs?|outlets?|grommets?|"
+    r"cut-?outs?|tops?|splash(?:es)?|fillers?|finish(?:es)?|materials?|slats?|cleats?)\b",
+    re.IGNORECASE,
+)
+#: Where a part is ("count left of the bins", "grommet instead of the door"): not a part claimed.
+_RELATION: Final = re.compile(
+    r"\b(?:of|instead|above|below|beside|next|at|in|on|under|over|for|to|from|with|vs|"
+    r"versus|than|between|behind)\b.*$",
+    re.IGNORECASE,
+)
+_JOINED: Final = re.compile(r"\s+(?:and|&|plus)\s+|\s*[;+]\s*", re.IGNORECASE)
+#: A number standing alone ("4 doors"), not inside a unit code ("B30") or a size ("1/2").
+_COUNT_NUMBER: Final = re.compile(r"(?<![A-Za-z0-9/.\-])(\d{1,3})(?![A-Za-z0-9/.\-\"'])")
+_BRACKETS: Final = re.compile(r"\([^)]*(?:\)|$)|\[[^\]]*(?:\]|$)")
+_COUNT_STOP: Final = re.compile(
+    r"\s*(?:[,;:]|\b(?:and|plus|with|on|at|in|of|from|above|below|over|under|each)\b).*$",
+    re.IGNORECASE,
+)
+_FILLER: Final = frozenset({"shown", "drawn", "only", "total", "visible", "in", "all"})
+
+
+def _counted(value: str) -> tuple[str, str] | None:
+    """What one side's count counts: ("one", head word) for "4 open shelves", ("many", "") for two
+    numbers ("2 doors + 1 bin"), `None` when it reads no count."""
+    plain = _BRACKETS.sub(" ", value)
+    numbers = list(_COUNT_NUMBER.finditer(plain))
+    if not numbers:
+        return None
+    if len(numbers) > 1:
+        return ("many", "")
+    after = _COUNT_STOP.sub("", plain[numbers[0].end() :])
+    words = [w.lower() for w in re.findall(r"[A-Za-z][A-Za-z\-]*", after)]
+    while words and words[-1] in _FILLER:
+        words.pop()
+    if not words:
+        return None
+    head = words[-1]
+    if head.endswith("ves"):
+        head = head[:-3] + "f"
+    elif head.endswith("ies"):
+        head = head[:-3] + "y"
+    elif head.endswith(("ches", "shes", "xes")):
+        head = head[:-2]
+    elif head.endswith("s") and not head.endswith("ss"):
+        head = head[:-1]
+    return ("one", head)
+
+
+def _ask(kind: str, item: str, vendor: str, architect: str) -> str | None:
+    """Why code asks rather than raises this claim (`look_rules`): two differences in one claim,
+    or a count of different things on the two sides; `None` when neither."""
+    subject = item.rsplit(":", 1)[-1]
+    named = [
+        frozenset(word.lower().rstrip("s") for word in _PARTS.findall(_RELATION.sub("", part)))
+        for part in _JOINED.split(subject)
+    ]
+    named = [parts for parts in named if parts]
+    if len(named) >= 2 and len(set(named)) >= 2:
+        return (
+            f"the claim puts two differences in one ({_text(subject, 80)}): each is checked on "
+            "its own, so one wrong half cannot ride on a right one"
+        )
+    if kind == "count":
+        sides = (_counted(vendor), _counted(architect))
+        if any(side is not None and side[0] == "many" for side in sides) or (
+            sides[0] is not None and sides[1] is not None and sides[0][1] != sides[1][1]
+        ):
+            return (
+                f"the two sides do not count the same kind of thing ({_text(architect, 60)} "
+                f"against {_text(vendor, 60)}): a count compares like with like"
+            )
+    return None
+
+
 def _one(context: _Context, look: Look, claim: Mapping[str, Any], applied: Applied) -> None:
     kind = str(claim.get("kind") or "size")
     if kind not in likely_problems.KINDS:
@@ -1121,6 +1272,13 @@ def _one(context: _Context, look: Look, claim: Mapping[str, Any], applied: Appli
         "words": _words(item, architect_value, vendor_value, rounds),
         **({"rounds": [vendor.round]} if vendor.round is not None else {}),
     }
+    if kind in ("missing_piece", "extra_piece"):
+        # Where the piece is on the drawing that has it (`look_rules` asks about a piece code
+        # cannot place inside the unit or find a tag on).
+        look_mark[_look_rules().PIECE] = _piece_of(look, claim.get("piece"))
+    ask = _ask(kind, _text(claim.get("item"), 200), vendor_value, architect_value)
+    if ask is not None:
+        look_mark[_look_rules().ASK] = ask
     if kind == "size" and v_label is None and a_label is None:
         # A size that code finds printed on neither drawing: a scaled or misread size.
         raise _Drop("a size with no label code could find on either drawing")

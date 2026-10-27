@@ -241,10 +241,10 @@ def test_band_chains_run_the_whole_drawing_looks_as_one_chain_does(
             if params["system"][0]["text"].startswith("You are an experienced millwork reviewer"):
                 self._seen("whole_look", params)
                 claim = _claim(
-                    "missing_piece",
-                    _side(3, None, "no upper cabinet"),
-                    _side(1, None, "an upper cabinet"),
-                    item="Upper cabinet",
+                    "count",
+                    _side(3, None, "1 upper cabinet"),
+                    _side(1, None, "2 upper cabinets"),
+                    item="Upper cabinets",
                     vendor_spot={"x0": 0, "y0": 0, "x1": 50, "y1": 50},
                 )
                 return reply(text(js.dumps({"claims": [claim]})), model=SONNET)

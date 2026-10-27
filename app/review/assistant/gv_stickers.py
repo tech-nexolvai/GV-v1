@@ -18,12 +18,36 @@ reads coloured text, `under_markup` hides coloured boxes; drawings are plotted i
 - **a picture of one**: a small picture (pasted as a comment, or inside a pasted drawing) whose
   pixels are mostly GV's light yellow.
 
+**GV's markup flattened into a pasted drawing** (2026-10-27, a real upload: GV's earlier review of
+the vendor's sheet, flattened and pasted into the next set, read by the whole-drawing look as the
+vendor's own outlet and shelves). A viewer that flattens comments into a snapshot draws each one as
+a sub-drawing AFTER the drawing's own ink: the drawing's **markup layer** (its trailing run of
+sub-drawings). In that layer:
+
+- **a mark** (`mark`): every mark in colour, no black or grey at all, at most `MARK_SHARE` of the
+  drawing: GV's cloud, arrow, tick, box, or a coloured note bigger than a sticker. Hidden;
+- **a framed symbol** (`symbol`): a small sub-drawing (at most `SYMBOL_SHARE`) whose own marks are
+  only GV's colours framing a drawn symbol (GV's yellow box and red frame round an outlet drawn in
+  black: GV's markup tool). Hidden. A tiny pasted drawing that is itself such a framed symbol (GV
+  pasted the tool's outlet onto the vendor's drawing) is one too;
+- **an unsure overlay** (`overlay`): black or grey line work in a layer that is GV's markup (it
+  holds one of GV's marks, notes or symbols above, or its sub-drawings all carry the name the
+  viewer gives a flattened comment, `BBA<n>`). It may be GV's (GV pasted the architect's slats onto
+  the vendor's bay) or the vendor's own (a detail the vendor pasted on its sheet): code cannot tell,
+  so it is **never hidden** (the vendor's black line work is never removed), only listed: a claim
+  the whole-drawing look makes about what the vendor drew there is not raised as the vendor's
+  (`look_rules`).
+
+A vendor's own sub-drawings (its CAD blocks) are never in a markup layer: a trailing run with no
+coloured mark and other names (`X12`) is the drawing's own ink, left alone.
+
 Only pasted drawings are searched (`extraction.stamp_text.carries_drawing`, and pasted pictures):
 GV's other markup is its own annotations, which the drawings-only copy already drops.
 
 Each sticker is listed with its box (PDF points of the page as shown, origin top-left, as
 `pdftotext -bbox` and `report_finding`), its page and its text. `hide` empties them in an open
-document (a copy: the upload is never changed).
+document (a copy: the upload is never changed). Unsure overlays are listed apart
+(`<stem>_stickers.json`'s `overlays`, `read_overlays`), never hidden.
 
 **Loaded by name, never imported** by `app/api/` (pikepdf, Pillow).
 Verification: `tests/review/assistant/test_gv_stickers.py` (made-up stickers).
@@ -35,6 +59,7 @@ import io
 import json
 import logging
 import os
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,12 +69,21 @@ from uuid import uuid4
 import pikepdf
 
 __all__ = [
+    "MARK_SHARE",
     "SMALL_SHARE",
     "STICKERS_SUFFIX",
+    "SYMBOL_SHARE",
     "Sticker",
     "find",
+    "find_overlays",
+    "framed_symbol",
+    "hidden_copy",
+    "hidden_copy_and_overlays",
     "hide",
+    "mark_form",
+    "overlays_of",
     "read_folder",
+    "read_overlays",
     "sticker_at",
     "stickers_of",
     "write_file",
@@ -60,6 +94,19 @@ _log = logging.getLogger(__name__)
 #: A sub-drawing is a sticker only when it covers at most this share of its pasted drawing (a
 #: whole-drawing fill is the vendor's background, never a note).
 SMALL_SHARE: Final = 0.08
+#: GV's mark in a pasted drawing's markup layer (every mark in colour, text or none) covers at most
+#: this share of the drawing (a cloud round a whole cabinet run is still a part of the drawing; a
+#: coloured fill of the whole drawing is the vendor's background, never a mark).
+MARK_SHARE: Final = 0.25
+#: GV's framed symbol (a yellow box with a red frame round a drawn outlet) covers at most this share
+#: of the drawing: a symbol, never a drawing.
+SYMBOL_SHARE: Final = 0.02
+#: A pasted drawing this small (points squared, about 1 x 1 inch) that is a framed symbol is GV's
+#: symbol pasted onto the page, not a drawing.
+_SYMBOL_MAX_PT2: Final = 72.0 * 72.0
+#: The name a viewer gives a comment it flattens into a snapshot (`BBA`, `BBA12`): a sub-drawing of
+#: the markup layer, never the drawing's own CAD block (named `X12`, `Fm3`...).
+_FLATTENED: Final = re.compile(r"^/?BBA\d*$")
 #: A colour is "in colour" when its channels differ by more than this (0..1): yellow, red, green.
 _COLOURED: Final = 0.25
 #: A colour this light in every channel is white (a note's white box).
@@ -163,6 +210,8 @@ class _Marks:
     """Something black or grey, a shading, a picture or an unknown mark: the vendor's."""
     text: list[str] | None = None
     coloured_text: int = 0
+    coloured_paint: int = 0
+    """Lines, fills and text painted in colour."""
 
     def words(self) -> str:
         return " ".join(" ".join(self.text or []).split())
@@ -247,12 +296,15 @@ def _walk(form: Any, state: _State, marks: _Marks, depth: int, seen: set[tuple[i
         elif name in _FILL:
             if state.fill not in ("colour", "white"):
                 marks.ink = True
+            marks.coloured_paint += state.fill == "colour"
         elif name in _STROKE:
             if state.stroke not in ("colour", "white"):
                 marks.ink = True
+            marks.coloured_paint += state.stroke == "colour"
         elif name in _BOTH:
             if state.fill not in ("colour", "white") or state.stroke not in ("colour", "white"):
                 marks.ink = True
+            marks.coloured_paint += "colour" in (state.fill, state.stroke)
         elif name in _SHOW:
             mode = state.render % 4
             tones = (
@@ -268,6 +320,7 @@ def _walk(form: Any, state: _State, marks: _Marks, depth: int, seen: set[tuple[i
                 marks.ink = True
             elif tones:
                 marks.coloured_text += 1
+                marks.coloured_paint += 1
                 marks.text = [*(marks.text or []), _shown_text(operands, name)]
         elif name == "Do":
             target = xobjects.get(str(operands[0])) if xobjects is not None and operands else None
@@ -294,6 +347,63 @@ def note_form(form: Any) -> str | None:
     if marks.ink or not marks.coloured_text:
         return None
     return marks.words()
+
+
+def mark_form(form: Any) -> str | None:
+    """The words of a sub-drawing that is one of GV's marks by the colour rule (every mark in
+    colour, white allowed, and something painted in colour: a cloud, an arrow, a tick, a box, a
+    coloured note), `""` when it shows none, else `None`. Where and how big is the caller's."""
+    marks = _Marks()
+    _walk(form, _State(), marks, 0, set())
+    if marks.ink or not marks.coloured_paint:
+        return None
+    return marks.words()
+
+
+def framed_symbol(form: Any) -> bool:
+    """A sub-drawing whose own marks are only GV's colours (at least one) framing one or more
+    drawn symbols (sub-drawings, in any ink): GV's markup tool's symbol in its yellow box and red
+    frame. Its own black or grey mark, a picture or a shading: not one. Size is the caller's."""
+    try:
+        instructions = pikepdf.parse_content_stream(form)
+    except (pikepdf.PdfError, TypeError, ValueError):
+        return False
+    resources = form.get("/Resources")
+    xobjects = resources.get("/XObject") if isinstance(resources, pikepdf.Dictionary) else None
+    state, stack = _State(), []
+    coloured = symbols = 0
+    for instruction in instructions:
+        if isinstance(instruction, pikepdf.ContentStreamInlineImage):
+            return False
+        operands, name = list(instruction.operands), str(instruction.operator)
+        if name == "q":
+            stack.append(_State(**{f: getattr(state, f) for f in _State.__slots__}))
+        elif name == "Q":
+            state = stack.pop() if stack else _State()
+        elif name in ("rg", "k", "g", "RG", "K", "G"):
+            found = _numbers(operands)
+            tone = _tone(found) if found is not None else "unknown"
+            if name in ("rg", "k", "g"):
+                state.fill = tone
+            else:
+                state.stroke = tone
+        elif name in _FILL | _STROKE | _BOTH:
+            tones = (
+                [state.fill]
+                if name in _FILL
+                else [state.stroke] if name in _STROKE else [state.fill, state.stroke]
+            )
+            if any(tone not in ("colour", "white") for tone in tones):
+                return False
+            coloured += "colour" in tones
+        elif name == "Do":
+            target = xobjects.get(str(operands[0])) if xobjects is not None and operands else None
+            if not isinstance(target, pikepdf.Stream) or target.get("/Subtype") != "/Form":
+                return False
+            symbols += 1
+        elif name not in _QUIET:
+            return False  # text, a shading or anything else: not a framed symbol
+    return coloured > 0 and symbols > 0
 
 
 def _bbox_area(form: Any) -> float:
@@ -424,14 +534,37 @@ def _shown_box(shown: Callable[[float, float], tuple[float, float]], box: Box) -
 @dataclass(slots=True)
 class _Found:
     sticker: Sticker
-    hide: Callable[[], None]
+    hide: Callable[[], None] | None
+    """How to hide it; `None` for an unsure overlay (listed, never hidden)."""
+
+
+#: Operators that paint at the top of a pasted drawing (its own ink; a `Do` is looked at apart).
+_PAINTS: Final = _FILL | _STROKE | _BOTH | _SHOW | {"sh"}
+
+
+def _own_ink_end(instructions: Sequence[Any], xobjects: Any) -> int:
+    """The index of the pasted drawing's last own mark (a painted path or text, a shading, a
+    picture): the sub-drawings drawn after it are its markup layer."""
+    last = -1
+    for index, instruction in enumerate(instructions):
+        if isinstance(instruction, pikepdf.ContentStreamInlineImage):
+            last = index
+            continue
+        name = str(instruction.operator)
+        if name in _PAINTS:
+            last = index
+        elif name == "Do" and instruction.operands:
+            target = xobjects.get(str(instruction.operands[0]))
+            if not (isinstance(target, pikepdf.Stream) and target.get("/Subtype") == "/Form"):
+                last = index  # a picture is the drawing's own
+    return last
 
 
 def _in_drawing(
     number: int, annotation: Any, shown: Callable[[float, float], tuple[float, float]]
 ) -> list[_Found]:
     """GV's stickers inside one pasted drawing's appearance (its own sub-drawings, and pictures it
-    draws), each with how to hide it."""
+    draws), each with how to hide it, and the unsure overlays of its markup layer (never hidden)."""
     appearance = annotation.get("/AP")
     normal = appearance.get("/N") if isinstance(appearance, pikepdf.Dictionary) else None
     if not isinstance(normal, pikepdf.Stream):
@@ -441,12 +574,19 @@ def _in_drawing(
     xobjects = resources.get("/XObject") if isinstance(resources, pikepdf.Dictionary) else None
     if to_page is None or not isinstance(xobjects, pikepdf.Dictionary):
         return []
-    limit = max(_bbox_area(normal), 1.0) * SMALL_SHARE
+    whole = max(_bbox_area(normal), 1.0)
+    limit = whole * SMALL_SHARE
     try:
         instructions = list(pikepdf.parse_content_stream(normal))
     except (pikepdf.PdfError, TypeError, ValueError):
         return []
+    own_end = _own_ink_end(instructions, xobjects)
     found: list[_Found] = []
+    layer: list[str] = []
+    """The markup layer's sub-drawings, by name."""
+    gv_in_layer = False
+    black: list[Sticker] = []
+    """The layer's sub-drawings with black or grey ink: unsure overlays if the layer is GV's."""
     hidden_images: set[int] = set()
     ctm: Matrix = _IDENTITY
     stack: list[Matrix] = []
@@ -465,22 +605,35 @@ def _in_drawing(
             if not isinstance(target, pikepdf.Stream):
                 continue
             if target.get("/Subtype") == "/Form":
+                in_layer = index > own_end
+                if in_layer:
+                    layer.append(str(operands[0]))
                 box = _bbox(target)
                 area = _bbox_area(target) * abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])
-                if box is None or not 0 < area <= limit:
-                    continue
-                text = note_form(target)
-                if text is None:
+                if box is None or area <= 0:
                     continue
                 inner = _multiply(
                     _multiply(_matrix(target.get("/Matrix", _IDENTITY)), ctm), to_page
                 )
                 where = _shown_box(shown, _bounds(inner, box))
+                text = note_form(target) if area <= limit else None
+                kind = "note" if text is not None else None
+                if kind is None and in_layer and area <= whole * MARK_SHARE:
+                    text = mark_form(target)
+                    kind = "mark" if text is not None else None
+                if kind is None and in_layer and area <= whole * SYMBOL_SHARE:
+                    kind = "symbol" if framed_symbol(target) else None
+                    text = ""
+                if kind is None:
+                    if in_layer:
+                        black.append(Sticker(number, where, "", "overlay"))
+                    continue
+                gv_in_layer = gv_in_layer or in_layer
 
                 def empty(form: Any = target) -> None:
                     form.write(b"")
 
-                found.append(_Found(Sticker(number, where, text, "note"), empty))
+                found.append(_Found(Sticker(number, where, text or "", kind), empty))
             elif target.get("/Subtype") == "/Image":
                 area = abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])  # an image is the unit square
                 if not 0 < area <= limit or not _yellow_picture(target):
@@ -495,7 +648,38 @@ def _in_drawing(
             form.write(pikepdf.unparse_content_stream(kept))
 
         found.append(_Found(found[-1].sticker, drop_pictures))
+    flattened = bool(layer) and all(_FLATTENED.match(each) for each in layer)
+    if gv_in_layer or flattened:
+        found += [_Found(overlay, None) for overlay in black]
     return found
+
+
+def _pasted_symbol(
+    number: int, annotation: Any, shown: Callable[[float, float], tuple[float, float]]
+) -> _Found | None:
+    """A tiny pasted drawing that is itself GV's framed symbol (GV pasted its markup tool's outlet
+    onto the vendor's drawing): GV's, hidden whole."""
+    try:
+        rect = [float(v) for v in annotation.get("/Rect")]
+    except (TypeError, ValueError):
+        return None
+    if len(rect) != 4 or abs(rect[2] - rect[0]) * abs(rect[3] - rect[1]) > _SYMBOL_MAX_PT2:
+        return None
+    appearance = annotation.get("/AP")
+    normal = appearance.get("/N") if isinstance(appearance, pikepdf.Dictionary) else None
+    if not isinstance(normal, pikepdf.Stream) or not framed_symbol(normal):
+        return None
+    box = (
+        min(rect[0], rect[2]),
+        min(rect[1], rect[3]),
+        max(rect[0], rect[2]),
+        max(rect[1], rect[3]),
+    )
+
+    def empty(form: Any = normal) -> None:
+        form.write(b"")
+
+    return _Found(Sticker(number, _shown_box(shown, box), "", "symbol"), empty)
 
 
 def _picture_comment(
@@ -545,7 +729,10 @@ def _find(pdf: pikepdf.Pdf) -> list[_Found]:
         for annotation in page.obj.get("/Annots") or []:
             try:
                 if stamp_text.carries_drawing(annotation):
-                    found += _in_drawing(number, annotation, shown)
+                    symbol = _pasted_symbol(number, annotation, shown)
+                    found += (
+                        [symbol] if symbol is not None else _in_drawing(number, annotation, shown)
+                    )
                 else:
                     picture = _picture_comment(number, annotation, shown)
                     if picture is not None:
@@ -563,16 +750,31 @@ def _unique(found: Iterable[_Found]) -> list[Sticker]:
     return out
 
 
+def _stickers(found: Iterable[_Found]) -> list[_Found]:
+    return [each for each in found if each.hide is not None]
+
+
+def _overlays(found: Iterable[_Found]) -> list[Sticker]:
+    return _unique(each for each in found if each.hide is None)
+
+
 def find(pdf: pikepdf.Pdf) -> list[Sticker]:
-    """GV's stickers in an open document (nothing changed)."""
-    return _unique(_find(pdf))
+    """GV's stickers in an open document (nothing changed); unsure overlays are not among them."""
+    return _unique(_stickers(_find(pdf)))
+
+
+def find_overlays(pdf: pikepdf.Pdf) -> list[Sticker]:
+    """The unsure overlays in an open document: black line work in a pasted drawing's markup layer,
+    GV's or the vendor's (never hidden)."""
+    return _overlays(_find(pdf))
 
 
 def hide(pdf: pikepdf.Pdf) -> list[Sticker]:
     """GV's stickers in an open document, each emptied in it (a copy: never the upload)."""
-    found = _find(pdf)
+    found = _stickers(_find(pdf))
     for each in found:
-        each.hide()
+        if each.hide is not None:
+            each.hide()
     return _unique(found)
 
 
@@ -586,36 +788,69 @@ def stickers_of(source: Path) -> list[Sticker]:
         return []
 
 
+def overlays_of(source: Path) -> list[Sticker]:
+    """The unsure overlays in a PDF file (read only). None found when the file cannot be read."""
+    try:
+        with pikepdf.open(str(source)) as pdf:
+            return find_overlays(pdf)
+    except Exception as failed:  # noqa: BLE001 - none known: the claims stay as they are
+        _log.warning("GV overlays not searched: %s", type(failed).__name__)
+        return []
+
+
 def hidden_copy(source: Path | io.BytesIO) -> tuple[io.BytesIO | Path, list[Sticker]]:
     """`source` with GV's stickers emptied (in memory), and the stickers; `source` itself when it
     has none or cannot be read."""
+    copy, found, _overlays_found = hidden_copy_and_overlays(source)
+    return copy, found
+
+
+def hidden_copy_and_overlays(
+    source: Path | io.BytesIO,
+) -> tuple[io.BytesIO | Path, list[Sticker], list[Sticker]]:
+    """`hidden_copy`, and the unsure overlays (never hidden)."""
     try:
         if isinstance(source, io.BytesIO):
             source.seek(0)
         with pikepdf.open(source if isinstance(source, io.BytesIO) else str(source)) as pdf:
-            found = hide(pdf)
-            if not found:
+            everything = _find(pdf)
+            overlays = _overlays(everything)
+            found = _stickers(everything)
+            for each in found:
+                if each.hide is not None:
+                    each.hide()
+            stickers = _unique(found)
+            if not stickers:
                 if isinstance(source, io.BytesIO):
                     source.seek(0)
-                return source, []
+                return source, [], overlays
             buffer = io.BytesIO()
             pdf.save(buffer)
     except Exception as failed:  # noqa: BLE001 - the copy is made with them, as before
         _log.warning("GV stickers not hidden: %s", type(failed).__name__)
         if isinstance(source, io.BytesIO):
             source.seek(0)
-        return source, []
+        return source, [], []
     buffer.seek(0)
-    return buffer, found
+    return buffer, stickers, overlays
 
 
 # ---- the set pack's file -------------------------------------------------------------------------
 
 
-def write_file(path: Path, file: str, stickers: Sequence[Sticker]) -> None:
-    """`<stem>_stickers.json`: the upload's stickers (written whole, renamed into place)."""
+def write_file(
+    path: Path, file: str, stickers: Sequence[Sticker], overlays: Sequence[Sticker] = ()
+) -> None:
+    """`<stem>_stickers.json`: the upload's stickers and its unsure overlays (written whole,
+    renamed into place)."""
     body = json.dumps(
-        {"file": file, "stickers": [s.as_dict() for s in stickers]}, ensure_ascii=False, indent=1
+        {
+            "file": file,
+            "stickers": [s.as_dict() for s in stickers],
+            "overlays": [s.as_dict() for s in overlays],
+        },
+        ensure_ascii=False,
+        indent=1,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
@@ -627,6 +862,16 @@ def write_file(path: Path, file: str, stickers: Sequence[Sticker]) -> None:
 def read_folder(folder: Path | None) -> dict[tuple[str, int], list[dict[str, Any]]] | None:
     """Every upload's stickers in a set pack, by (file, page); `None` when the pack lists none
     (an older pack: the caller may search the uploads)."""
+    return _read(folder, "stickers")
+
+
+def read_overlays(folder: Path | None) -> dict[tuple[str, int], list[dict[str, Any]]] | None:
+    """Every upload's unsure overlays in a set pack, by (file, page); `None` when the pack lists
+    no stickers file (an older pack lists stickers only: no overlays known)."""
+    return _read(folder, "overlays")
+
+
+def _read(folder: Path | None, key: str) -> dict[tuple[str, int], list[dict[str, Any]]] | None:
     if folder is None or not folder.is_dir():
         return None
     out: dict[tuple[str, int], list[dict[str, Any]]] = {}
@@ -639,7 +884,7 @@ def read_folder(folder: Path | None) -> dict[tuple[str, int], list[dict[str, Any
         except (OSError, ValueError):
             continue
         file = str(raw.get("file") or "") if isinstance(raw, Mapping) else ""
-        for row in raw.get("stickers") or [] if isinstance(raw, Mapping) else []:
+        for row in raw.get(key) or [] if isinstance(raw, Mapping) else []:
             if isinstance(row, Mapping) and isinstance(row.get("page"), int):
                 out.setdefault((file, int(row["page"])), []).append(dict(row, file=file))
     return out
