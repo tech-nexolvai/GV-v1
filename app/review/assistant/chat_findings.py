@@ -1996,6 +1996,16 @@ class FindingBook:
             self.coverage[page] = {**entry, "note": joined[:_MAX_NOTE]}
         return self.coverage_map()
 
+    def drop_coverage_note(self, page: int, note: str) -> None:
+        """Every copy of code's `note` taken off a page's recorded coverage again (`note_coverage`
+        joins notes with "; "); the page's other notes and its status stay."""
+        with self._lock:
+            entry = self.coverage.get(page)
+            if entry is None or not entry.get("note"):
+                return
+            parts = [part for part in str(entry["note"]).split("; ") if part.strip() != note]
+            self.coverage[page] = {**entry, "note": "; ".join(parts) or None}
+
     def fold_into_page(self, page: int, copies: Sequence[Mapping[str, Any]]) -> None:
         """Items folded under a page's Drawing-needed card (`one_card`): kept as evidence, shown
         on the page's coverage (`folded`) whatever is recorded there later."""

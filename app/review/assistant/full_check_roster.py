@@ -270,6 +270,9 @@ AGAIN_PASSES: Final = 2
 _BAND_PHASES: Final = ("numbers", "drawn", "gaps", "provers", "lead")
 #: How a page the passes after the lead still did not compare is said (`_after_lead`).
 _MORE_LOOKS: Final = "more looks"
+#: How `_still_open` starts the line of a page never compared yet (not one left open by its
+#: helper, which is extra polishing): only such pages get the late look (`_late_pages`).
+_NOT_COMPARED_YET: Final = "page not compared yet"
 #: What the finishing steps need is kept before any extra pass spends (#1821), worked out from the
 #: red candidates there are: a blind pick as a rule (the paid run of 2026-10-21 spent $0.11 on five,
 #: $0.022 each; kept at twice that), a look-again group (the paid runs spent about $0.05 a group),
@@ -1278,12 +1281,17 @@ def unfinished_pages(planned: Sequence[int], coverage: Mapping[str, Any] | None)
 
 
 def gap_pages(
-    pages: Mapping[int, Sequence[str]], budget: int, has_record: Collection[int] = ()
+    pages: Mapping[int, Sequence[str]],
+    budget: int,
+    has_record: Collection[int] = (),
+    first: Collection[int] = (),
 ) -> tuple[list[int], list[int]]:
     """The pages the gap closers take within `budget` (at least `MIN_GAP_PAGE_MICROS` each) and
-    those left: pages with a recorded difference to place first, then in page order."""
+    those left: the pages in `first` (never compared yet: a page never compared is worse than one
+    polished less, 2026-10-28), then pages with a recorded difference to place, then in page
+    order."""
     room = max(0, budget // MIN_GAP_PAGE_MICROS)
-    ordered = sorted(pages, key=lambda page: (page not in has_record, page))
+    ordered = sorted(pages, key=lambda page: (page not in first, page not in has_record, page))
     chosen = sorted(ordered[:room])
     return chosen, sorted(ordered[room:])
 
@@ -1589,6 +1597,12 @@ class _Run:
     #: The first phase's specialists (`_p1_pools`): those still running keep their wrap-up money.
     p1_agents: list[Any] = field(default_factory=list)
     _spare_lock: threading.Lock = field(default_factory=threading.Lock)
+    #: The pages code left "not compared, out of money" (`_left_unchecked`): the late look may
+    #: take them from the money the finished steps left (`_late_pages`, 2026-10-28).
+    money_pages: set[int] = field(default_factory=set)
+    #: While the late look's items are proved (`_late_proofs`): only these items' ids, so the
+    #: proof steps never ask again about an item the first round already gave its look.
+    only_ids: frozenset[str] | None = None
 
     # -- money --
 
@@ -2467,6 +2481,8 @@ class _Run:
         engine._wait_checks()
         if not engine.cancel.is_set():
             self._proof_steps(plan, page_map)
+            # The pages left for money get one more look from what the finished steps left.
+            self._late_pages(plan, page_map)
         return self._finish("cancelled" if engine.cancel.is_set() else None)
 
     # -- a big set's bands (#1874) --
@@ -2619,6 +2635,8 @@ class _Run:
         engine._wait_checks()
         if not engine.cancel.is_set():
             self._proof_steps(plan, page_map)
+            # Set-wide, once every band is done: the bands' own money is spent or kept by then.
+            self._late_pages(plan, page_map)
 
     def _band_room(self, band: Band, phase: str) -> int:
         """A band step's money (#1874): the band's part (`Band.fraction`) of the phases its chain
@@ -2663,8 +2681,17 @@ class _Run:
                 self.round_done = True
         if engine.cancel.is_set():
             return
+        self._judging_steps(plan, page_map)
+
+    def _judging_steps(
+        self, plan: Any, page_map: Mapping[str, Any] | None, only: Collection[str] | None = None
+    ) -> None:
+        """The paid half of the proof steps: the proving reads, the blind string readings, the
+        devil's advocate and the escalation, on every red candidate, or on `only` (the late look's
+        items, `_late_proofs`)."""
+        engine = self.engine
         with engine.timings.phase("provers"):
-            self._prove_values("verifier")
+            self._prove_values("verifier", only)
         # The final red candidates: what the advocate and the escalation need, kept in that order.
         self._refresh_needs("advocate")
         if engine.cancel.is_set():
@@ -2681,6 +2708,117 @@ class _Run:
                 self._escalate(plan, page_map)
         else:
             self._note_unverified()
+
+    # -- the late look: the pages left for money, from what the finished steps left (2026-10-28) --
+
+    def _in_scope(self, finding: Mapping[str, Any]) -> bool:
+        """The proof steps take this item: always, except while the late look's items are proved
+        (`only_ids`), when only those."""
+        return self.only_ids is None or str(finding.get("id")) in self.only_ids
+
+    def _late_room(self) -> int:
+        """The late look's money (Anant, 2026-10-28: a step at its share may use what the others
+        left unspent): all that is left under the fixed price (and the message's and the set's
+        caps) less what the later checks still keep for the items the look may add: the devil's
+        advocate's and the escalation's shares (or their needs when more) and the summary's and
+        second reads' shares, as `_room` keeps them for the passes after the lead. The steps that
+        already finished (the advocate, the escalation, the provers) keep nothing more for the
+        items they already judged: what they left is the pool."""
+        self._refresh_needs("lead")
+        return self._room("lead")
+
+    def _late_pages(self, plan: Any, page_map: Mapping[str, Any] | None) -> None:
+        """The pages code left "not compared, out of money" while the later checks' money was
+        kept (`_after_lead`, `_close`) get one more closer pass once those checks are done, from
+        the money they did not spend (`_late_room`), before the finish: the live Set 2 run of
+        2026-10-28 left 6 pages "out of money" with $1.94 of its $6.55 price unspent, almost all
+        of it the devil's advocate's kept need ($1.61; it spent $0.01). Only pages never compared
+        yet (`_NOT_COMPARED_YET`): a page never compared comes before extra polishing, so pages
+        left open by their helper are not taken. The items the pass adds get their own proof steps
+        (`_late_proofs`); a page it still does not compare says why, as before."""
+        engine = self.engine
+        if self.plan is None or self._halted() or not self.money_pages:
+            return
+        engine._wait_checks()  # every read in flight charged first: the pool is what is really left
+        still_open = self._still_open()
+        pages = {
+            page: lines
+            for page, lines in still_open.items()
+            if page in self.money_pages
+            and any(line.startswith(_NOT_COMPARED_YET) for line in lines)
+        }
+        if not pages:
+            return
+        budget = self._late_room()
+        _log.warning(
+            "assistant roster late look: %d pages left for money; $%.2f the finished steps left",
+            len(pages),
+            budget / _MICROS,
+        )
+        if budget < MIN_GAP_RUN_MICROS:
+            return  # their "out of money" stands
+        self._forget_money_marks(pages, still_open)
+        before = {str(f.get("id")) for f in engine.book.live()}
+        self._step("look_again")
+        engine.helper_ceiling = engine.spent + budget
+        try:
+            with engine.timings.phase("gap_closers"):
+                taken = self._close(pages, budget, (), page_map, again=True, late=True)
+        finally:
+            engine.helper_ceiling = None
+        with engine._lock:
+            self.lead_taken |= set(taken)
+        engine._wait_checks()
+        # A page a closer took and still did not compare says so; one the money did not reach was
+        # said "out of money" by `_close`.
+        left = {page: lines for page, lines in self._still_open().items() if page in taken}
+        if left:
+            self._left_unchecked(left, f"still not compared after {_MORE_LOOKS}")
+        new = frozenset(str(f.get("id")) for f in engine.book.live()) - before
+        if new and not engine.cancel.is_set():
+            self._late_proofs(plan, page_map, new)
+
+    def _forget_money_marks(self, pages: Collection[int], still_open: Collection[int]) -> None:
+        """The "out of money" marks of `pages` taken off (their coverage notes and what was not
+        done) before the late look takes them; the pages still open it does not take keep theirs
+        (a page a later pass compared after all is no longer said to be out of money)."""
+        note = f"not compared: {OUT_OF_MONEY}"
+        for page in pages:
+            try:
+                self.engine.book.drop_coverage_note(page, note)
+            except Exception:  # noqa: BLE001 - the page's note keeps the older words
+                _log.warning("assistant roster could not clear page %s's money note", page)
+        self.money_pages.intersection_update(set(still_open) - set(pages))
+        line_end = f"not compared, {OUT_OF_MONEY}"
+        self.not_done = [line for line in self.not_done if not line.endswith(line_end)]
+        if self.money_pages:
+            self._note(f"{page_ranges_words(sorted(self.money_pages))}: {line_end}")
+        try:
+            self.engine._show_coverage()
+        except Exception:  # noqa: BLE001 - shown with the next coverage change
+            _log.debug("assistant roster coverage not shown")
+
+    def _late_proofs(
+        self, plan: Any, page_map: Mapping[str, Any] | None, new: frozenset[str]
+    ) -> None:
+        """The proof steps on the late look's items only (`only_ids`): code's free steps, then the
+        proving reads, the advocate and the escalation from what is left, under the same rules as
+        every other item (code decides red). The items of the first round are never asked again."""
+        engine = self.engine
+        from app.review.assistant.escalation import escalate_answer
+
+        self.only_ids = new
+        try:
+            self._step("proving")
+            self._prototype_references(page_map)
+            try:
+                escalate_answer(engine)
+            except Exception:  # noqa: BLE001 - the advocate judges the items as they are
+                _log.exception("assistant roster escalation's free steps failed")
+            if not engine.cancel.is_set():
+                self._judging_steps(plan, page_map, new)
+        finally:
+            self.only_ids = None
 
     # -- P3b: the round-only leftovers' cheap picks (#1861) --
 
@@ -3157,16 +3295,20 @@ class _Run:
         again: bool = False,
         band: Band | None = None,
         ceiling: int | None = None,
+        first: Collection[int] = (),
+        late: bool = False,
     ) -> list[int]:
         """Gap closers on `pages` (each with what to close there) from `budget`, several pages
         each; a page the money cannot reach is said so on its coverage, never dropped. `again`:
-        the pass after the lead review (#1817). Returns the pages given to a closer."""
+        the pass after the lead review (#1817); `late`: the late look (`_late_pages`). `first`:
+        the pages the money reaches first (never compared yet). Returns the pages given to a
+        closer."""
         engine = self.engine
         from app.review.assistant.full_check_brief import found_on_pages, helper_brief
         from app.review.assistant.full_check_plan import pair_lines
         from app.review.assistant.sandbox import UPLOADS
 
-        chosen, left = gap_pages(pages, budget, has_record=has_record)
+        chosen, left = gap_pages(pages, budget, has_record=has_record, first=first)
         if left:
             self._left_unchecked(dict.fromkeys(left), OUT_OF_MONEY)
         if not chosen:
@@ -3206,7 +3348,7 @@ class _Run:
             agents.append(
                 pool.add(
                     self._agent(
-                        call_id=f"{'again' if again else 'gap'}-{run[0]}",
+                        call_id=f"{'late' if late else 'again' if again else 'gap'}-{run[0]}",
                         description=(
                             f"Close what is still open on {where}"
                             if again
@@ -3264,11 +3406,18 @@ class _Run:
             if budget < MIN_GAP_RUN_MICROS:
                 self._left_unchecked(pages, OUT_OF_MONEY)
                 return
+            # When the money reaches only some pages, a page never compared comes before one left
+            # open by its helper (extra polishing, 2026-10-28).
+            first = {
+                page
+                for page, lines in pages.items()
+                if any(line.startswith(_NOT_COMPARED_YET) for line in lines)
+            }
             if band is None:
                 engine.helper_ceiling = engine.spent + budget
                 try:
                     with engine.timings.phase("gap_closers"):
-                        taken = self._close(pages, budget, (), page_map, again=True)
+                        taken = self._close(pages, budget, (), page_map, again=True, first=first)
                 finally:
                     engine.helper_ceiling = None
             else:
@@ -3282,6 +3431,7 @@ class _Run:
                         again=True,
                         band=band,
                         ceiling=engine.spent + budget,
+                        first=first,
                     )
             # A page a closer took is not "left open, not compared again": its closer said what it
             # did on its coverage.
@@ -3367,6 +3517,8 @@ class _Run:
         """Each page code stops sending on says why on its coverage (a page never recorded gets
         an entry), and in what was not done (#1819)."""
         engine = self.engine
+        if why == OUT_OF_MONEY:
+            self.money_pages.update(pages)  # the late look may still take them (`_late_pages`)
         for page in sorted(pages):
             note = f"not compared: {why}"
             try:
@@ -4077,6 +4229,7 @@ class _Run:
             if f.get("source") == "vendor_arithmetic"
             and f.get("status") == "different"
             and f.get("created_by") != "consistency"
+            and self._in_scope(f)
             and not proof_rule.string_verified(f)
             and f.get("parts")
             and f.get("printed_total")
@@ -4465,7 +4618,9 @@ class _Run:
         self.pairs = _code_pairs(engine)
         # Every Wrong, the biggest first, so the money left reaches the ones that matter (#1641).
         candidates = [
-            f for f in by_impact(book.live()) if f.get("status") == "different" and not _judged(f)
+            f
+            for f in by_impact(book.live())
+            if f.get("status") == "different" and not _judged(f) and self._in_scope(f)
         ]
         jobs = []
         for finding in candidates:
@@ -5112,7 +5267,11 @@ class _Run:
         waiting = self._unproved()
         # The splash step's small AI question (`assistant_splash_question` on): its open splash
         # items with the views code found to look in join this one look-again (no new call).
-        asked = splash_question_items(engine.book.live(), self.escalated)
+        asked = [
+            f
+            for f in splash_question_items(engine.book.live(), self.escalated)
+            if self._in_scope(f)
+        ]
         if not waiting and not asked:
             return
         unread = [f for f in waiting if not self._read_by_code(f)] + asked
@@ -5153,6 +5312,7 @@ class _Run:
             if f.get("status") == "different"
             and proof_rule.proof_group(f) in proof_rule.UNDECIDED
             and str(f["id"]) not in self.escalated
+            and self._in_scope(f)
         ]
 
     @staticmethod
