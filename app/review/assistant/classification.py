@@ -84,7 +84,13 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Any, Final, Literal
 
-from app.review.assistant import dim_ends, drafting_notes, job_value_rules, row_places
+from app.review.assistant import (
+    dim_ends,
+    drafting_notes,
+    job_value_rules,
+    right_proof,
+    row_places,
+)
 from app.review.assistant.finding_checks import to_inches, wrong_part
 from app.review.assistant.ledger import format_inches
 from app.review.assistant.round_picks import pick_words
@@ -1315,7 +1321,8 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
         return _not(
             "not_proved",
             _short(rule.get("why"), 300),
-            "the unit list of every sheet of {thing} (its regular and reversed sheets)",
+            str(rule.get("needs") or "")
+            or "the unit list of every sheet of {thing} (its regular and reversed sheets)",
         )
     source = str(finding.get("source") or "")
     parts = finding.get("architect_parts")
@@ -1371,6 +1378,15 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
                 "not_proved",
                 _short(elsewhere, 300),
                 "the reference's size that starts where the vendor's does along {thing}",
+            )
+        apart = right_proof.different(finding)
+        if apart is not None:
+            # Code's geometry shows the two sizes end at other places (2026-10-27): two equal
+            # numbers between different points are a tick by luck, never a Right.
+            return _not(
+                "different_reference",
+                _short(f"the two sizes do not measure the same thing: {apart}", 300),
+                "the reference's dimension that runs between the same points as {thing}",
             )
         if finding.get("compared") is False:
             return _not(

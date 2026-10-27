@@ -75,6 +75,7 @@ __all__ = [
     "mirrored",
     "mitre_build_up",
     "notch_item",
+    "open_claim",
     "reversed_unit",
     "unit_counts",
 ]
@@ -85,7 +86,18 @@ _log = logging.getLogger(__name__)
 FIELD: Final = "claim_rule"
 
 type Outcome = Literal["withdrawn", "not_compared", "kept"]
-type Rule = Literal["notch", "unit_counts", "wall_outline", "side_splash", "reversed_unit"]
+type Rule = Literal[
+    "notch",
+    "unit_counts",
+    "wall_outline",
+    "side_splash",
+    "reversed_unit",
+    # The look rules (`look_rules`, 2026-10-27) record theirs the same way.
+    "gv_markup",
+    "unsure_overlay",
+    "piece_place",
+    "look_question",
+]
 type Box = tuple[float, float, float, float]
 #: (file, page, box) -> "wall", "top", or None when code cannot tell.
 type Outlines = Callable[[str, int, Box], str | None]
@@ -98,9 +110,14 @@ class Change:
     outcome: Outcome
     rule: Rule
     why: str
+    needs: str | None = None
+    """What would settle a Not compared item ("{thing}" is the item), when not a unit list."""
 
     def record(self) -> dict[str, str]:
-        return {"rule": self.rule, "outcome": self.outcome, "why": self.why}
+        out = {"rule": self.rule, "outcome": self.outcome, "why": self.why}
+        if self.needs:
+            out["needs"] = self.needs
+        return out
 
 
 def held(finding: Mapping[str, Any]) -> str | None:
@@ -112,6 +129,12 @@ def held(finding: Mapping[str, Any]) -> str | None:
 
 
 # ---- which items -----------------------------------------------------------------------------
+
+
+def open_claim(finding: Mapping[str, Any]) -> bool:
+    """An item a claim rule may change: compared with the reference, still open, nobody decided,
+    no claim rule recorded on it yet."""
+    return _open(finding)
 
 
 def _open(finding: Mapping[str, Any]) -> bool:
