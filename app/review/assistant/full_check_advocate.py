@@ -60,6 +60,7 @@ from typing import Any, Final, Literal
 
 from app.review.assistant.colour_rule import COLOUR_RULE
 from app.review.assistant.label_origin import ocr_read
+from app.review.assistant.span_ends import same_ends
 from app.review.assistant.untrusted import fence
 
 #: Set by the roster on a blind pick made by the stronger model at high effort (#1819): only such
@@ -926,7 +927,8 @@ def decide(
         # The same dimension printed twice on the drawing (#1840): the pick agrees on it.
         answers["twin"] = "same_dimension"
     vendor_spans, architect_spans = advocate.get("vendor_spans"), advocate.get("architect_spans")
-    if vendor_spans != architect_spans:
+    if not same_ends(vendor_spans, architect_spans):
+        # The two ends are an unordered pair: the same two ends in the other order agree.
         answers["spans"] = "differ"
         return Verdict(
             "objects",
@@ -934,7 +936,9 @@ def decide(
             f"({_ends(vendor_spans)} vs {_ends(architect_spans)}).",
             answers,
         )
-    if first_spans is not None and (vendor_spans, architect_spans) != tuple(first_spans):
+    if first_spans is not None and not (
+        same_ends(vendor_spans, first_spans[0]) and same_ends(architect_spans, first_spans[1])
+    ):
         # Two blind picks of the same label must also agree on the ends (#1861).
         answers["spans"] = "picks_differ"
         return Verdict(
