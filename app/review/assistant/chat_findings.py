@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import uuid4
 
-from app.review.assistant import field_cut, reference_page
+from app.review.assistant import field_cut, likely_problems, reference_page
 from app.review.assistant.chat_corrections import parse_ref
 from app.review.assistant.dim_findings import (
     LabelRefused,
@@ -1503,6 +1503,11 @@ class FindingBook:
             finding["text_proof"] = json.loads(json.dumps(given["text_proof"]))
         if isinstance(given.get("architect_parts"), Mapping):
             finding["architect_parts"] = json.loads(json.dumps(given["architect_parts"]))
+        if isinstance(given.get(likely_problems.UNSIZED_ENDS), Mapping):
+            # An overall past its sized pieces at both ends: a please-check (DECIDED 2026-10-27).
+            finding[likely_problems.UNSIZED_ENDS] = json.loads(
+                json.dumps(given[likely_problems.UNSIZED_ENDS])
+            )
         if isinstance(given.get(WRONG_PART), Mapping):
             # The vendor string's part code's geometry names as the wrong number (#1887).
             finding[WRONG_PART] = json.loads(json.dumps(given[WRONG_PART]))

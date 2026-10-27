@@ -36,6 +36,16 @@ and page map (`page_map.json`). Three checks, each built to report only what cod
    round leaves out when the same part of the set has that round elsewhere, and sheets the vendor's
    printed sheet index lists that no page shows.
 
+And one please-check (`find_unsized_ends`, the owner's rule DECIDED 2026-10-27, never red): an
+overall over a row of its pieces (the next row, touching end to end) that runs past them at BOTH
+ends by more than GV's field cut per wall end, the leftover measured at the drawing's scale and
+equal to the printed difference, with nothing printed or drawn in either end's gap and no label of
+the drawing printing an end's size (a real upload: an overall over three cabinets with a few
+inches unsized at each end). Code never adds such ends up (the 15 false Wrongs above), so the item is a Likely problem
+("please check the ends", `likely_problems.unsized_ends`), status `check`. Where code cannot
+measure the ends, sees something written there, or a settled rule (the field cut, a printed filler,
+a field-cut overall) explains them, nothing is reported, as before.
+
 Every finding is in the chat finding shape (CONTRACT2, `created_by: "consistency"`) with its code
 witnesses: a string carries its parts and printed overall (code's `arithmetic` check) and the
 overall's label (`dims`, the `printed` check); a contradiction carries both labels (`printed` on
@@ -72,7 +82,7 @@ from time import monotonic
 from typing import Any, Final, Literal
 from uuid import uuid4
 
-from app.review.assistant import reading_routes, scale_fit
+from app.review.assistant import field_cut, likely_problems, reading_routes, scale_fit
 from app.review.assistant.finding_checks import WRONG_PART
 from app.review.assistant.ledger import add_up, format_inches
 
@@ -84,11 +94,15 @@ __all__ = [
     "MIN_SCALE_SUPPORT",
     "ROW_APART_PT",
     "TOLERANCE",
+    "UNSIZED_ENDS",
     "ConsistencyResult",
     "Label",
     "StringCheck",
+    "UnsizedEnds",
     "check_pack",
     "check_set",
+    "end_allowance",
+    "find_unsized_ends",
     "judge_string",
     "label_rows",
     "line_work",
@@ -96,6 +110,7 @@ __all__ = [
     "proved_run",
     "read_label",
     "summary_line",
+    "unsized_words",
     "warm_line_work",
 ]
 
@@ -750,6 +765,332 @@ def find_strings(labels: Sequence[_Label], segments: Segments | None = None) -> 
     return out
 
 
+# ---- an overall past its sized pieces (unsized ends) ---------------------------------------------
+
+#: Rows of one stack of dimensions are at most this far apart across (points), as
+#: `field_cut.STACK_PT`: an overall farther from its pieces' row is another view's.
+_STACK_PT: Final = 60.0
+#: An end mark (a tick, an arrowhead, a dot) lies within this of its station (points).
+_MARK_REACH_PT: Final = _MARK_MAX_PT / 2
+#: Something is written in an end's gap when at least this many short pen strokes lie there that
+#: are not a dimension line, an extension line or an end mark (a drawn character takes several;
+#: text drawn as strokes is not read, so code cannot tell what it says).
+_TEXT_STROKES: Final = 4
+#: A segment this close to square with an axis (share of its length) is a line, not a letter's
+#: curve: dimension and extension lines are left out of the strokes counted.
+_SQUARE_SHARE: Final = 0.17
+
+
+@dataclass(frozen=True, slots=True)
+class UnsizedEnds:
+    """A vendor overall that runs past its sized pieces at both ends, the ends sized nowhere (the
+    owner's rule, DECIDED 2026-10-27: a please-check, never red and never added up)."""
+
+    overall: _Label
+    parts: tuple[_Label, ...]
+    parts_sum: Fraction
+    ends: tuple[Fraction, Fraction]
+    """Each end's leftover (inches) at the drawing's scale, to the nearest 1/16"."""
+    support: int
+    """How many of the drawing's printed dimensions share the scale it was measured at."""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "page": self.overall.page,
+            "file": self.overall.file,
+            "overall": self.overall.id,
+            "printed": self.overall.text,
+            "parts": [p.id for p in self.parts],
+            "parts_text": [p.text for p in self.parts],
+            "sum": format_inches(self.parts_sum),
+            "ends": [format_inches(e) for e in self.ends],
+        }
+
+
+def _short_chain(
+    overall: _Label, row: Sequence[_Label], joint: Joint | None = None
+) -> list[_Label] | None:
+    """The row's labels that touch end to end inside the overall's span and stop short of both
+    its extension lines (by more than `END_PT`), or None. As `_chain`, but for a row that does not
+    reach the overall's ends."""
+    lo, hi = overall.start - GAP_PT, overall.end + GAP_PT
+    inside = sorted((la for la in row if la.start >= lo and la.end <= hi), key=lambda la: la.start)
+    if any(la not in inside and (la.start < lo < la.end or la.start < hi < la.end) for la in row):
+        return None
+    if len(inside) < 2:
+        return None
+    if any(abs(a.start - b.start) <= GAP_PT for a, b in pairwise(inside)):
+        return None
+    if inside[0].start - overall.start <= END_PT or overall.end - inside[-1].end <= END_PT:
+        return None
+    for a, b in pairwise(inside):
+        if abs(a.end - b.start) > GAP_PT and (joint is None or not joint(a, b)):
+            return None
+    return inside
+
+
+def _page_box(label: _Label, along: tuple[float, float], across: tuple[float, float]) -> Box:
+    """A box of the page from a span along the label's axis and one across it."""
+    if label.orientation == "h":
+        return along[0], across[0], along[1], across[1]
+    return across[0], along[0], across[1], along[1]
+
+
+def _meets(a: Box, b: Box) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _written_in(
+    gap: Box,
+    stations: Sequence[Point],
+    lines: Sequence[Segment],
+) -> bool:
+    """Whether pen strokes are drawn in the gap that are not a line or an end mark: text drawn as
+    strokes, which code does not read (`_TEXT_STROKES`)."""
+    count = 0
+    for a, b in lines:
+        if not all(gap[0] <= p[0] <= gap[2] and gap[1] <= p[1] <= gap[3] for p in (a, b)):
+            continue
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length = (dx * dx + dy * dy) ** 0.5
+        if min(abs(dx), abs(dy)) <= _SQUARE_SHARE * length:
+            continue  # a dimension line, an extension line, a straight part of the drawing
+        if any(
+            all(
+                abs(p[0] - s[0]) <= _MARK_REACH_PT and abs(p[1] - s[1]) <= _MARK_REACH_PT
+                for p in (a, b)
+            )
+            for s in stations
+        ):
+            continue  # an end mark
+        count += 1
+        if count >= _TEXT_STROKES:
+            return True
+    return False
+
+
+#: Sides whose text never sizes a vendor's end.
+_NOT_VENDOR: Final = frozenset({"architect", "brand_prototype"})
+
+
+type _Marks = Callable[[str, int], Sequence[tuple[Box, Fraction | None, str | None, str]]]
+"""A page's printed text code read: (box, inches when it is a size, orientation, label id)."""
+
+
+def _page_marks(dims: Mapping[str, Any] | None) -> _Marks:
+    """Every text of a page that may size an end: the vendor's labels (with or without a dimension
+    line), its phrases that print a number, and the numbers an OCR engine read alone."""
+    by_page: dict[tuple[str, int], list[tuple[Box, Fraction | None, str | None, str]]] = {}
+    for entry in (dims or {}).get("pages") or []:
+        if not isinstance(entry, Mapping):
+            continue
+        key = (str(entry.get("file")), int(entry.get("page") or 0))
+        out = by_page.setdefault(key, [])
+        for raw in entry.get("labels") or []:
+            if not isinstance(raw, Mapping) or str(raw.get("side") or "") in _NOT_VENDOR:
+                continue
+            box = _box(raw.get("box"))
+            if box is not None:
+                orientation = raw.get("orientation")
+                out.append(
+                    (
+                        box,
+                        _fraction(raw.get("inches")),
+                        orientation if isinstance(orientation, str) else None,
+                        str(raw.get("id") or ""),
+                    )
+                )
+        for phrase in entry.get("phrases") or []:
+            if not isinstance(phrase, Mapping) or str(phrase.get("side") or "") in _NOT_VENDOR:
+                continue
+            box = _box(phrase.get("box"))
+            if box is not None and any(ch.isdigit() for ch in str(phrase.get("text") or "")):
+                out.append((box, None, None, ""))
+        for name in ("ocr", "pictures"):
+            found = entry.get(name)
+            spots = found.get("unconfirmed") if isinstance(found, Mapping) else None
+            for spot in spots or []:
+                box = _box(spot.get("box")) if isinstance(spot, Mapping) else None
+                if box is not None:
+                    out.append((box, None, None, ""))
+
+    def marks(file: str, page: int) -> Sequence[tuple[Box, Fraction | None, str | None, str]]:
+        return by_page.get((file, page)) or ()
+
+    return marks
+
+
+def _end_sized(
+    overall: _Label,
+    parts: Sequence[_Label],
+    gap: Box,
+    measured: Fraction,
+    marks: Sequence[tuple[Box, Fraction | None, str | None, str]],
+    halves: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Whether something printed may size this end: a text in its gap, or a vendor label of the
+    same drawing and axis printing the end's measured size (a filler printed on another row)."""
+    members = {overall.id, *(p.id for p in parts)}
+    for box, inches, orientation, label_id in marks:
+        if label_id and label_id in members:
+            continue
+        if _meets(box, gap):
+            return True
+        if (
+            inches is not None
+            and orientation in (None, overall.orientation)
+            and _half_of(box, halves) == overall.half
+            and abs(inches - measured) <= max(_OFF_IN, _OFF_SHARE * measured)
+        ):
+            return True
+    return False
+
+
+def find_unsized_ends(
+    labels: Sequence[_Label],
+    segments: Segments | None,
+    *,
+    strings: Sequence[StringCheck] = (),
+    marks: _Marks | None = None,
+    halves: Callable[[str, int], Sequence[Mapping[str, Any]]] | None = None,
+    field_cuts: Callable[[str, int], Any] | None = None,
+    allowance: Fraction = Fraction(1),
+) -> list[UnsizedEnds]:
+    """Every vendor overall that runs past its sized pieces at both ends, the ends sized nowhere,
+    which code can measure from the drawing (DECIDED 2026-10-27, a real upload):
+
+    - the pieces are one row of the same drawing next to the overall's own row (no row between,
+      within `_STACK_PT`), touching end to end, inside the overall's span and short of both its
+      extension lines; every one read cleanly, with its end marks, drawn to its value at the
+      drawing's scale; the overall prints more than their sum, and the leftover drawn at the two
+      ends is that difference (within the drawing's precision, `_OFF_IN` / `_OFF_SHARE`);
+    - nothing sizes either end: no other row is the overall's string (`strings`), no text is
+      printed or drawn in the end's gap, no label of the drawing prints the end's size, and the
+      overall is not one that includes GV's field cut (`field_cuts`);
+    - each end is more than GV's settled rules explain (`allowance`: the field cut per wall end,
+      1" unless the project sets another; an end within it is a field cut or an overhang).
+
+    Anything code cannot measure or see is left as before: no item."""
+    if segments is None:
+        return []
+    proved = {(s.overall.file, s.overall.page, s.overall.id) for s in strings}
+    out: list[UnsizedEnds] = []
+    groups: dict[tuple[str, int, int | None], list[_Label]] = {}
+    for label in labels:
+        if label.side == "vendor" and label.half is not None:
+            groups.setdefault((label.file, label.page, label.half), []).append(label)
+    for (file, page, _half), members in groups.items():
+        lines: Sequence[Segment] | None = None
+        cuts = field_cuts(file, page) if field_cuts is not None else None
+        cut_overalls = set(getattr(cuts, "overalls", None) or {})
+        for orientation in ("h", "v"):
+            axis = [la for la in members if la.orientation == orientation]
+            rows = _rows(axis)
+            for overall in axis:
+                if (file, page, overall.id) in proved or overall.id in cut_overalls:
+                    continue
+                if not (overall.clean and not overall.bare and all(overall.extensions)):
+                    continue
+                near = sorted(
+                    (
+                        r
+                        for r in rows
+                        if ROW_APART_PT <= abs(r[0].across - overall.across) <= _STACK_PT
+                    ),
+                    key=lambda r: abs(r[0].across - overall.across),
+                )
+                for row in near:
+                    low, high = sorted((row[0].across, overall.across))
+                    if any(
+                        low < other[0].across < high
+                        and any(la.start < overall.end and la.end > overall.start for la in other)
+                        for other in rows
+                    ):
+                        continue  # another row lies between them: not the overall's own pieces
+                    if lines is None:
+                        lines = segments(file, page) or ()
+                    joint = (
+                        _joint(lines, segments.weight(file, page) or 0.0)
+                        if isinstance(segments, LineWork) and segments.weight(file, page)
+                        else None
+                    )
+                    parts = _short_chain(overall, row, joint)
+                    if parts is None:
+                        continue
+                    found = _unsized(
+                        overall,
+                        parts,
+                        members,
+                        lines,
+                        marks(file, page) if marks is not None else (),
+                        halves(file, page) if halves is not None else (),
+                        allowance,
+                    )
+                    if found is not None:
+                        out.append(found)
+                    break  # the nearest row of pieces is the overall's; never a farther one
+    out.sort(key=lambda u: (u.overall.file, u.overall.page, u.overall.id))
+    return out
+
+
+def _unsized(
+    overall: _Label,
+    parts: Sequence[_Label],
+    drawing: Sequence[_Label],
+    lines: Sequence[Segment],
+    marks: Sequence[tuple[Box, Fraction | None, str | None, str]],
+    halves: Sequence[Mapping[str, Any]],
+    allowance: Fraction,
+) -> UnsizedEnds | None:
+    """The overall's unsized ends over these pieces (see `find_unsized_ends`), else None."""
+    total = sum((p.inches for p in parts), Fraction(0))
+    difference = overall.inches - total
+    if difference <= 2 * allowance:
+        return None  # within a field cut (or an overhang) at each end
+    members = [overall, *parts]
+    if any(m.bare or not m.clean or m.units == "disagrees" for m in members):
+        return None
+    if not parts[0].extensions[0] or not parts[-1].extensions[1]:
+        return None
+    if not all(ends_marked(lines, m) for m in members):
+        return None
+    scale = _scale(members, drawing)
+    if scale is None or _off_scale(members, scale[0]):
+        return None
+    ppi = scale[0]
+    left = Fraction((parts[0].start - overall.start) / ppi).limit_denominator(1024)
+    right = Fraction((overall.end - parts[-1].end) / ppi).limit_denominator(1024)
+    if abs(left + right - difference) > max(_OFF_IN, _OFF_SHARE * overall.inches):
+        return None  # the drawing does not show the difference at the ends
+    if min(left, right) <= allowance + _OFF_IN:
+        return None  # one end is within a field cut (or an overhang): not unsized at each end
+    pitch = abs(parts[0].across - overall.across)
+    across = (
+        min(parts[0].across, overall.across) - pitch,
+        max(parts[0].across, overall.across) + pitch,
+    )
+    stations: list[Point] = []
+    for at, row in (
+        (overall.start, overall.across),
+        (overall.end, overall.across),
+        (parts[0].start, parts[0].across),
+        (parts[-1].end, parts[-1].across),
+    ):
+        stations.append((at, row) if overall.orientation == "h" else (row, at))
+    for (a, b), measured in (
+        ((overall.start, parts[0].start), left),
+        ((parts[-1].end, overall.end), right),
+    ):
+        gap = _page_box(overall, (a, b), across)
+        if _written_in(gap, stations, lines):
+            return None
+        if _end_sized(overall, parts, gap, measured, marks, halves):
+            return None
+    return UnsizedEnds(
+        overall, tuple(parts), total, (_sixteenths(left), _sixteenths(right)), scale[1]
+    )
+
+
 # ---- the same span printed twice -----------------------------------------------------------------
 
 
@@ -979,6 +1320,91 @@ def _string_finding(
     return finding
 
 
+#: The finding's record of an overall past its sized pieces (`likely_problems.UNSIZED_ENDS`).
+UNSIZED_ENDS: Final = likely_problems.UNSIZED_ENDS
+
+
+def _ends_words(ends: tuple[Fraction, Fraction]) -> tuple[str, str]:
+    """("about 3"", "at each end"), or ("about 3" and 4 1/2"", "at its two ends") (to 1/4")."""
+    left, right = (Fraction(round(e * 4), 4) for e in ends)
+    if left == right:
+        return f"about {format_inches(left)}", "at each end"
+    return f"about {format_inches(left)} and {format_inches(right)}", "at its two ends"
+
+
+def unsized_words(overall: str, ends: tuple[Fraction, Fraction], pieces: str, total: str) -> str:
+    """The please-check line of an overall past its sized pieces (owner's wording, 2026-10-27):
+    "Please check and confirm: the vendor's 49" overall runs about 2 1/2" past the sized pieces (20"
+    + 12" + 12" = 44") at each end; nothing sizes those ends (unsized fillers or ends). Please check
+    the ends." (made-up values)"""
+    by, where = _ends_words(ends)
+    return (
+        f"{likely_problems.LETTER_LEAD}: the vendor's {overall} overall runs {by} past the sized "
+        f"pieces ({pieces} = {total}) {where}; nothing sizes those ends (unsized fillers or "
+        "ends). Please check the ends."
+    )
+
+
+def _unsized_finding(
+    found: UnsizedEnds, area: str | None, entries: Mapping[tuple[str, int], Mapping[str, Any]]
+) -> dict[str, Any]:
+    """A please-check item (status `check`, never red): the vendor's overall, its sized pieces and
+    the leftover code measured at each end."""
+    overall, parts = found.overall, found.parts
+    pieces = " + ".join(p.text for p in parts)
+    total = format_inches(found.parts_sum)
+    place = f"{area}: " if area else ""
+    words = unsized_words(overall.text, found.ends, pieces, total)
+    said = words[len(likely_problems.LETTER_LEAD) + 2 :]
+    why = (
+        f"{said[:1].upper()}{said[1:]} Code checked the drawing: the pieces touch end to end on "
+        "the row next to the overall, all are drawn to scale, and the "
+        f"{format_inches(found.overall.inches - found.parts_sum)} difference is drawn at the two "
+        "ends, where no size is printed. GV's field cut per wall end does not explain it. Code "
+        "never adds unsized ends up (an overhang or a filler can be there), so this is never red."
+        + _drawn_note([overall, *parts])
+    )
+    return {
+        "page": overall.page,
+        "item": (
+            f"{place}overall past its sized pieces ({_direction(overall)}"
+            f"{_round_words(overall, entries)})"
+        ),
+        "category": "other",
+        "architect": f"sized pieces {pieces} = {total}",
+        "vendor": overall.text,
+        "status": "check",
+        "why": why,
+        "verified": False,
+        "source": "vendor_arithmetic",
+        "parts": [p.text for p in parts],
+        "printed_total": overall.text,
+        "vendor_box": _box_dict(overall),
+        "dims": {"vendor": _provenance(overall)},
+        "reference_side": "vendor",
+        "created_by": CREATED_BY,
+        "ledger_ids": [p.ref for p in (overall, *parts)],
+        UNSIZED_ENDS: {
+            "words": words,
+            "overall": overall.text,
+            "parts": [p.text for p in parts],
+            "sum": total,
+            "ends": [format_inches(e) for e in found.ends],
+        },
+    }
+
+
+def end_allowance(rules_md: str | None) -> Fraction:
+    """How far past its sized pieces an overall may run at each end by GV's settled rules: the
+    field cut per wall end (`field_cut.per_end_from`: 1", or the project's value), or the job's
+    countertop overhang when GV entered one and it is more."""
+    from app.review.assistant.sink_offset import setting_from
+
+    allowance = field_cut.per_end_from(rules_md)
+    overhang = setting_from(rules_md, "countertop_overhang", "countertop overhang")
+    return max(allowance, overhang.value) if overhang is not None else allowance
+
+
 def _contradiction_finding(
     found: Contradiction,
     area: str | None,
@@ -1194,6 +1620,8 @@ class ConsistencyResult:
     sheet_index: dict[str, Any] = field(default_factory=dict)
     seconds: float = 0.0
     checks: list[StringCheck] = field(default_factory=list, repr=False)
+    unsized: list[UnsizedEnds] = field(default_factory=list, repr=False)
+    """Overalls past their sized pieces at both ends (`find_unsized_ends`): please-check items."""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -1207,6 +1635,7 @@ class ConsistencyResult:
             "unknowns": len(self.unknowns),
             "seconds": self.seconds,
             "string_checks": [s.as_dict() for s in self.checks if s.verdict != "adds_up"],
+            "unsized_ends": [u.as_dict() for u in self.unsized],
         }
 
 
@@ -1235,6 +1664,15 @@ def summary_line(result: ConsistencyResult) -> str:
                 "spans printed with two values",
             )
         )
+    if result.unsized:
+        bits.append(
+            _plural(
+                len(result.unsized),
+                "overall runs past its sized pieces",
+                "overalls run past their sized pieces",
+            )
+            + " at both ends (please check)"
+        )
     if result.unknowns:
         bits.append(_plural(len(result.unknowns), "sheet gap", "sheet gaps") + " (see Not checked)")
     if result.vendor_pages_without_labels:
@@ -1254,13 +1692,15 @@ def check_set(
     index: Any = None,
     typed: reading_routes.TypedOf | None = None,
     numbers: reading_routes.NumberOf | None = None,
+    rules_md: str | None = None,
 ) -> ConsistencyResult:
     """The vendor consistency check over one set's labels and page map (see the module).
     `segments` reads a page's line work (for the end marks); without it nothing is reported.
     `index`: the set index (`set_index.json`), for telling an older copy of a sheet from the
     same sheet number reused in another part of the set (`sheet_revisions`). `typed`: both OCR
     engines on a typed number's spot (`typed_ocr`), its second reading before a red; `numbers`: the
-    number reader on a label (`read_number.label_routes`), for a number still short of two."""
+    number reader on a label (`read_number.label_routes`), for a number still short of two.
+    `rules_md`: the chat's `rules.md` (the field cut per wall end in force; GV's 1" without it)."""
     started = clock()
     entries = {(str(e.get("file")), int(e["page"])): e for e in _entries(page_map)}
     labels: list[_Label] = []
@@ -1323,6 +1763,36 @@ def check_set(
     result.contradictions = len(contradictions)
     for found in contradictions:
         result.findings.append(_contradiction_finding(found, area_of(found.odd), entries))
+    raw_pages = {
+        (str(e.get("file")), int(e.get("page") or 0)): e
+        for e in (dims or {}).get("pages") or []
+        if isinstance(e, Mapping)
+    }
+    per_end = field_cut.per_end_from(rules_md)
+
+    def cuts_of(file: str, page: int) -> field_cut.PageFieldCuts:
+        entry = raw_pages.get((file, page)) or {}
+        return field_cut.page_field_cuts(
+            [la for la in entry.get("labels") or [] if isinstance(la, Mapping)],
+            [ph for ph in entry.get("phrases") or [] if isinstance(ph, Mapping)],
+            per_end,
+        )
+
+    def halves_of(file: str, page: int) -> Sequence[Mapping[str, Any]]:
+        halves = (entries.get((file, page)) or {}).get("halves") or []
+        return [h for h in halves if isinstance(h, Mapping)]
+
+    result.unsized = find_unsized_ends(
+        labels,
+        segments,
+        strings=checks,
+        marks=_page_marks(dims),
+        halves=halves_of,
+        field_cuts=cuts_of,
+        allowance=end_allowance(rules_md),
+    )
+    for unsized in result.unsized:
+        result.findings.append(_unsized_finding(unsized, area_of(unsized.overall), entries))
     result.findings = result.findings[:MAX_FINDINGS]
     _mark_reading(result.findings, dims, segments, typed, numbers)
     unknowns = completeness(page_map) + unreadable_pages(page_map)
@@ -1546,11 +2016,15 @@ def warm_line_work(folder: Path | None, uploads: Path | None) -> int:
 
 
 def check_pack(
-    folder: Path | None, uploads: Path | None, *, read_texts: bool = True
+    folder: Path | None,
+    uploads: Path | None,
+    *,
+    read_texts: bool = True,
+    rules_md: str | None = None,
 ) -> ConsistencyResult | None:
     """The check over a set pack's `dims.json` and page map (with the reviewer's plan-check
     answers laid over it), the line work read from the uploads in `uploads`. None when the pack
-    has no labels yet."""
+    has no labels yet. `rules_md`: the chat's `rules.md` (GV's settings in force)."""
     if folder is None:
         return None
     dims = _read_json(folder / "dims.json")
@@ -1568,6 +2042,7 @@ def check_pack(
         index=_read_json(folder / "set_index.json"),
         typed=import_module("app.review.assistant.typed_ocr").reader_for_pack(folder, files),
         numbers=_numbers(folder, uploads),
+        rules_md=rules_md,
     )
 
 
@@ -1757,7 +2232,11 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
     if getattr(engine.settings, "mode", None) != "full_check":
         return None
     workspace = engine.tools.workspace
-    result = check_pack(workspace.set_pack, workspace.uploads)
+    try:
+        rules_md: str | None = (workspace.skills / "rules.md").read_text(encoding="utf-8")
+    except (OSError, AttributeError, TypeError, ValueError):
+        rules_md = None  # GV's company standard (the field cut per wall end) applies
+    result = check_pack(workspace.set_pack, workspace.uploads, rules_md=rules_md)
     if result is None:
         return None
     book = engine.book

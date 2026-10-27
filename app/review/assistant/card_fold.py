@@ -103,6 +103,7 @@ _PICK_WORDS: Final = (
     "them"
 )
 _HELD_WORDS: Final = f"Code found a difference; {check_record.HELD_WORDS}"
+_UNSIZED_WORDS: Final = "The vendor's overall runs past its sized pieces at both ends: unsized ends"
 
 
 @dataclass(slots=True)
@@ -191,6 +192,8 @@ def question_key(finding: Mapping[str, Any]) -> tuple[str, str]:
     """(key, plain words) of the question the item asks, for grouping identical reasons."""
     group = _group(finding)
     if group == "likely_problem":
+        if likely_problems.unsized_ends(finding) is not None:
+            return ("unsized_ends", _UNSIZED_WORDS)
         if proof.ends_unconfirmed(finding):
             return ("ends", _ENDS_WORDS)
         if proof.pick_disagrees(finding):
