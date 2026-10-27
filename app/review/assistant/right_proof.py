@@ -16,7 +16,11 @@ looks for proof that the two measure the same thing:
    (`dim_ends.same_kinds`).
 2. **The only such size on both drawings**: the vendor's drawing prints that size, running the
    same way, on one dimension only, and so does the reference's (the same size printed again at
-   the same place along its run, as a plan above its elevation does, is one dimension).
+   the same place along its run, as a plan above its elevation does, is one dimension). This is
+   a hint, not proof (Anant, 2026-10-27): it never takes a Right away, but such a Right is still
+   "Matches (ends not proved)". On a real upload the vendor's only counter height and the
+   reference's only one were the same number but ran to different tops (one over a splash), a
+   known trap; only code's geometry proves the ends (option B).
 
 Where code's geometry shows the two do not end at the same places (the drawings lined up and the
 ends land apart, or the drawn run ties an end to another place), the item is Not compared:
@@ -298,8 +302,9 @@ def judge(
         file, page = str(label["file"]), int(label["page"])
         counts.append(only_size(label, labels(file, page) or ()))
     if counts == [1, 1]:
+        # The only such size on both drawings: a hint, never proof of the ends (2026-10-27).
         return {
-            "proved": True,
+            "proved": False,
             "how": "only_size",
             "why": "the only dimension of that size, running that way, on both drawings",
             **keys,
@@ -349,4 +354,6 @@ def ends_not_proved(finding: Mapping[str, Any]) -> bool | None:
     held = _held(finding)
     if held is None or held.get("how") == "different":
         return None
-    return held.get("proved") is not True
+    # Only code's geometry proves the ends (option B); a record made before 2026-10-27 may say an
+    # only-such-size Right was proved: it is not.
+    return not (held.get("proved") is True and held.get("how") == "geometry")

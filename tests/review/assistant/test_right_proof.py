@@ -107,10 +107,12 @@ def _judge(finding: dict[str, Any], vendor: list[dict[str, Any]]) -> dict[str, A
 # ---- the only such size on both drawings ---------------------------------------------------------
 
 
-def test_the_only_such_size_on_both_drawings_proves_the_right() -> None:
+def test_the_only_such_size_on_both_drawings_is_a_hint_not_proof() -> None:
+    # 2026-10-27 (a known trap on a real upload: the only counter height on each drawing, the same
+    # number, ran to different tops): the Right stays, marked "Matches (ends not proved)".
     record = _judge(_finding("V1", "R1"), _vendor(band=False))
     assert record is not None
-    assert record["proved"] is True
+    assert record["proved"] is False
     assert record["how"] == "only_size"
     assert record["vendor"] == f"{VENDOR}|1|V1"
     assert record["architect"] == f"{REFERENCE}|1|R1"
@@ -134,7 +136,7 @@ def test_the_same_size_printed_again_at_the_same_place_is_one_dimension() -> Non
     finding = _finding("V2", "R1", "60")
     assert right_proof.only_size(vendor[1], vendor) == 1
     record = right_proof.judge(finding, _reader(vendor, reference))
-    assert record is not None and record["proved"] is True
+    assert record is not None and record["how"] == "only_size"
 
 
 def test_texts_with_no_line_count_as_copies_only_at_the_same_place_along_the_run() -> None:
@@ -198,7 +200,7 @@ def test_a_plan_drawn_turned_is_not_taken_as_different_ends(
     record = right_proof.judge(_finding("V1", "R1", "25"), _reader(vendor, reference))
     assert record is not None
     assert record["how"] == "only_size"
-    assert record["proved"] is True
+    assert record["proved"] is False
 
 
 # ---- what is left as it is ----------------------------------------------------------------------
@@ -266,9 +268,16 @@ def test_an_unproved_right_stays_right_marked_ends_not_proved() -> None:
     assert proof.MATCHES_UNPROVED == "Matches (ends not proved)"
 
 
-def test_a_proved_right_stays_right_and_is_not_named_unproved() -> None:
+def test_a_proved_right_stays_right_and_is_not_named_unproved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def prove(*_args: Any, **_kw: Any) -> tuple[str, str]:
+        return "same_extent", "both ends are tied on both drawings (the floor and the outlet)"
+
+    monkeypatch.setattr(same_ends, "prove_labels", prove)
     found = _escalated(_finding("V1", "R1"), _vendor(band=False))
     assert found[right_proof.FIELD]["proved"] is True
+    assert found[right_proof.FIELD]["how"] == "geometry"
     found[dim_ends.LIKE_FOR_LIKE] = {
         "proved": False,
         "vendor": f"{VENDOR}|1|V1",
@@ -314,3 +323,15 @@ def test_a_stale_record_is_ignored_once_the_item_pairs_other_labels() -> None:
 
 def test_a_saved_right_with_no_record_keeps_its_outcome() -> None:
     assert proof.proof_group(_finding("V3", "R1")) == "right"
+
+
+def test_an_only_such_size_right_is_named_unproved_even_on_an_older_record() -> None:
+    """The only such size on both drawings is not proof of the ends (2026-10-27): the item stays
+    a Right, named "Matches (ends not proved)", also when a record made before said proved."""
+    found = _escalated(_finding("V1", "R1"), _vendor(band=False))
+    assert found[right_proof.FIELD]["how"] == "only_size"
+    assert proof.proof_group(found) == "right" and proof.matches_unproved(found)
+    older = dict(found)
+    older[right_proof.FIELD] = {**found[right_proof.FIELD], "proved": True}
+    assert right_proof.ends_not_proved(older) is True
+    assert proof.proof_group(older) == "right" and proof.matches_unproved(older)
