@@ -452,6 +452,8 @@ def _proved_but_reading(finding: Mapping[str, Any]) -> bool:
         # A total the architect never prints (code's summed chain) is proof only when code proved
         # the parts are one chain end to end along the run (client meeting, 2026-10-23).
         return False
+    if finding.get(likely_problems.UNSIZED_ENDS) is not None:
+        return False  # an overall past its sized pieces: never added up, never red (2026-10-27)
     if finding.get("source") == "vendor_arithmetic" and not string_verified(finding):
         return False  # an AI-grouped string: only code's geometry proves the parts are one chain
     if ai_rule_claim(finding):

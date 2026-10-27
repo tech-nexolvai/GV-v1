@@ -117,10 +117,10 @@ UNSIZED_ENDS: Final = "unsized_ends"
 def unsized_ends(finding: Mapping[str, Any]) -> str | None:
     """The please-check line of a vendor overall that runs past its sized pieces at both ends
     (unsized fillers or ends): a Likely problem, never red and never added up (Anant, DECIDED
-    2026-10-27, a real upload). `None` for any other item, or once the item is no
-    longer a check (a reviewer's or a helper's change of status)."""
+    2026-10-27, a real upload). Whatever status a later step gives it, it stays a please-check
+    (never code-proved, `proof`), unless it is found the same. `None` for any other item."""
     mark = finding.get(UNSIZED_ENDS)
-    if not isinstance(mark, Mapping) or finding.get("status") != "check":
+    if not isinstance(mark, Mapping) or finding.get("status") == "same":
         return None
     words = " ".join(str(mark.get("words") or "").split())
     return words or None

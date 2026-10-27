@@ -366,10 +366,13 @@ def test_an_overall_past_unsized_ends_is_a_please_check_never_red(tmp_path: Path
     assert not proof.proved_wrong(item)
     assert proof.please_check_words(item) == words
     assert proof.proof_of(item)["reason"] == words
-    # Turned into a Wrong by anyone, it is no longer this please-check and never code-proved.
+    # Turned into a Wrong by a later step, it stays a please-check, never code-proved: code never
+    # adds unsized ends up.
     wrong = judged({**finding, "id": "F1", "status": "different"})
-    assert likely_problems.unsized_ends(wrong) is None
-    assert not proof.proved_wrong(wrong)
+    assert likely_problems.unsized_ends(wrong) == words
+    assert not proof.proved_wrong(wrong) and not proof.code_proved(wrong)
+    assert proof.proof_group(wrong) == "likely_problem"
+    assert likely_problems.unsized_ends({**finding, "status": "same"}) is None
     assert "1 overall runs past its sized pieces" in vc.summary_line(result)
 
 
