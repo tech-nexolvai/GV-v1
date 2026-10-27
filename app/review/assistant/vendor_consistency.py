@@ -44,7 +44,9 @@ the drawing printing an end's size (a real upload: an overall over three cabinet
 inches unsized at each end). Code never adds such ends up (the 15 false Wrongs above), so the item is a Likely problem
 ("please check the ends", `likely_problems.unsized_ends`), status `check`. Where code cannot
 measure the ends, sees something written there, or a settled rule (the field cut, a printed filler,
-a field-cut overall) explains them, nothing is reported, as before.
+a field-cut overall) explains them, nothing is reported, as before. When the reading recorded the
+same overall over the same pieces as a string that does not add up (never verified, Not compared),
+code's please-check replaces it (`judge_unsized`) instead of being hidden as its duplicate.
 
 Every finding is in the chat finding shape (CONTRACT2, `created_by: "consistency"`) with its code
 witnesses: a string carries its parts and printed overall (code's `arithmetic` check) and the
@@ -104,6 +106,7 @@ __all__ = [
     "end_allowance",
     "find_unsized_ends",
     "judge_string",
+    "judge_unsized",
     "label_rows",
     "line_work",
     "proved_chain",
@@ -2224,6 +2227,84 @@ def judge_strings(
     return StringJudgement(tuple(verified), dropped)
 
 
+def judge_unsized(
+    findings: Sequence[Mapping[str, Any]],
+    unsized: Sequence[UnsizedEnds],
+    verified: Sequence[str] = (),
+) -> dict[str, str]:
+    """The strings a reading grouped (`source: vendor_arithmetic`, not the consistency check's own)
+    that code's please-check of an overall past its sized pieces (`find_unsized_ends`) replaces,
+    with the reason (2026-10-27, a real upload): the same page, the same printed overall (at the
+    finding's spot when it has one, else the only such overall code measured on the page), and
+    the very parts code measured as the overall's sized pieces. Such a string says "the parts do
+    not add up to the overall", but code measured that the parts stop short of the overall's ends
+    and nothing sizes those ends, so the reading's claim was never verified (Not compared);
+    without this, it hid code's own please-check as a duplicate (`_already`). A string whose
+    geometry code verified, or with other parts, is left as it is. Never a red: the please-check
+    is a Likely problem (`likely_problems.unsized_ends`), and the string it replaces was never red.
+    """
+    return {
+        finding_id: reason
+        for finding_id, (_found, reason) in _unsized_replaces(findings, unsized, verified).items()
+    }
+
+
+def _unsized_replaces(
+    findings: Sequence[Mapping[str, Any]],
+    unsized: Sequence[UnsizedEnds],
+    verified: Sequence[str] = (),
+) -> dict[str, tuple[UnsizedEnds, str]]:
+    """`judge_unsized`, with the overall each replaced string belongs to."""
+    to_inches = import_module("app.review.assistant.finding_checks").to_inches
+    replaced: dict[str, tuple[UnsizedEnds, str]] = {}
+    for finding in findings:
+        if finding.get("source") != "vendor_arithmetic" or finding.get("created_by") == CREATED_BY:
+            continue
+        if finding.get("status") != "different" or not finding.get("id"):
+            continue
+        if str(finding["id"]) in verified or finding.get("string_geometry") == "verified":
+            continue
+        printed = to_inches(str(finding.get("printed_total") or finding.get("vendor") or ""))
+        read = [to_inches(str(p)) for p in finding.get("parts") or []]
+        if printed is None or not read or None in read:
+            continue
+        same = [
+            found
+            for found in unsized
+            if found.overall.page == finding.get("page")
+            and found.overall.inches == Fraction(printed)
+        ]
+        box = finding.get("vendor_box")
+        if isinstance(box, Mapping):
+            same = [found for found in same if _overlaps(box, found.overall)]
+        if len(same) != 1:
+            continue  # not at code's overall, or two such overalls and no spot to tell them apart
+        found = same[0]
+        if sorted(Fraction(v) for v in read) != sorted(p.inches for p in found.parts):
+            continue
+        pieces = " + ".join(p.text for p in found.parts)
+        reason = (
+            f"Code measured this overall on the drawing: the vendor's {found.overall.text} runs "
+            f"past its sized pieces ({pieces} = {format_inches(found.parts_sum)}) at both ends, "
+            "where nothing is sized; its own please-check replaces the reading's."
+        )
+        replaced[str(finding["id"])] = (found, reason)
+    return replaced
+
+
+def _of_overall(finding: Mapping[str, Any], found: UnsizedEnds) -> bool:
+    """Code's please-check `finding` is the one for this overall (`_unsized_finding`)."""
+    dims = finding.get("dims")
+    vendor = dims.get("vendor") if isinstance(dims, Mapping) else None
+    return (
+        isinstance(finding.get(UNSIZED_ENDS), Mapping)
+        and isinstance(vendor, Mapping)
+        and vendor.get("id") == found.overall.id
+        and vendor.get("page") == found.overall.page
+        and vendor.get("file") == found.overall.file
+    )
+
+
 def add_to_answer(engine: Any) -> ConsistencyResult | None:
     """The engine's hook (a full check, at its finish, $0): the check over the set pack; its Wrong
     items added through the finding book like the ledger's (the same checks and trust rule), unless
@@ -2252,7 +2333,11 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
         for finding_id, reason in judged.dropped.items():
             if book.absorb(finding_id):
                 engine._show_dropped(finding_id, reason)
-        live = book.live()
+        # An overall past its sized pieces: code's please-check replaces the reading's unverified
+        # string of the same overall, which would otherwise hide it as a duplicate (`_already`).
+        # The reading's string goes only once code's own item is in the answer.
+        replaces = _unsized_replaces(book.live(), result.unsized, judged.verified)
+        live = [f for f in book.live() if str(f.get("id")) not in replaces]
         for finding in result.findings:
             if _already(finding, live):
                 continue
@@ -2260,6 +2345,9 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
             if added is not None:
                 engine._show_finding(added)
                 live.append(added)
+                for finding_id, (found, reason) in replaces.items():
+                    if _of_overall(finding, found) and book.absorb(finding_id):
+                        engine._show_dropped(finding_id, reason)
     engine.consistency_gaps = list(result.unknowns)
     # The summary's line: code's own summary carries it, else it follows the AI's (the engine).
     engine.consistency_line = summary_line(result)

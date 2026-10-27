@@ -2045,6 +2045,10 @@ def _pair_across(
                 # The views of the vendor's room, all of one title ("STAFF LOUNGE 1" to
                 # "4"): compared with all of them, as with a plan and an elevation of one piece.
                 room = pairing_module.room_views(vendor_facts, item_views)
+                if not room:
+                    # The sheet's one plan and one elevation, titled by their kind only: two
+                    # drawings of its one item, compared with both (2026-10-27).
+                    room = pairing_module.plan_and_elevation(vendor_facts, item_views)
                 if room:
                     kept.append(item_id)
                     picked_views.extend(v.ref for v in room)
