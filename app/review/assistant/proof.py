@@ -64,7 +64,7 @@ from app.review.assistant import (
 )
 from app.review.assistant import full_check_advocate as advocate
 from app.review.assistant.chat_trust import inch_words
-from app.review.assistant.finding_checks import wrong_part
+from app.review.assistant.finding_checks import to_inches, wrong_part
 from app.review.assistant.round_reference import round_only
 from app.review.assistant.vendor_text import vendor_text
 
@@ -118,6 +118,8 @@ __all__ = [
     "should_be_value",
     "stated_requirement",
     "string_verified",
+    "typed_over",
+    "typed_over_words",
     "unproved_reason",
     "vendor_facing",
     "vendor_own",
@@ -431,6 +433,49 @@ def reading_held(finding: Mapping[str, Any]) -> str | None:
     return reading_routes.held(finding)
 
 
+#: How close (inches) a drawn length must be to the parts' sum, and how far from the printed value,
+#: for a vendor string's overall to count as typed over (`typed_over`).
+TYPED_OVER_SLACK: Final = Decimal("0.25")
+
+
+def typed_over(finding: Mapping[str, Any]) -> str | None:
+    """A vendor string whose printed overall does not add up, where code measured the overall's own
+    dimension line at its view's scale and it is drawn to the parts' sum, not to the printed value
+    (`reading_routes.drawn_length`): the number was typed over the line. The owner's rule
+    (DECIDED 2026-10-26): a number that disagrees with its own drawn length is never red; it is a
+    please-check (a Likely problem), with this plain reason. `None` for any other item."""
+    if finding.get("status") != "different" or finding.get("source") != "vendor_arithmetic":
+        return None
+    if _reader_error(finding) or classification.internal(finding):
+        return None
+    checks = finding.get("checks") if isinstance(finding.get("checks"), Mapping) else {}
+    if (checks or {}).get("arithmetic") != "does_not_add_up":
+        return None
+    inches = finding.get("inches") if isinstance(finding.get("inches"), Mapping) else {}
+    printed = _decimal((inches or {}).get("vendor"))
+    total = _decimal(finding.get("parts_sum"))
+    drawn_text = reading_routes.drawn_length(finding, "vendor")
+    drawn = to_inches(drawn_text) if drawn_text else None
+    if printed is None or total is None or drawn is None:
+        return None
+    if abs(drawn - total) > TYPED_OVER_SLACK or abs(drawn - printed) <= TYPED_OVER_SLACK:
+        return None
+    raw_parts = finding.get("parts")
+    parts = [str(p) for p in raw_parts if p] if isinstance(raw_parts, list) else []
+    added = f" ({' + '.join(parts)})" if parts else ""
+    return (
+        f"the vendor prints {inch_words(printed)}, but its dimension line is drawn "
+        f"{drawn_text} long and its parts{added} add up to {inch_words(total)}: the printed "
+        "number looks typed over (a number that disagrees with its own drawn line is never red)"
+    )
+
+
+def typed_over_words(finding: Mapping[str, Any]) -> str:
+    """The please-check line of a typed-over overall (`typed_over`)."""
+    item = " ".join(str(finding.get("item") or "this item").split())
+    return f"{likely_problems.LETTER_LEAD}: {item}: {typed_over(finding)}."
+
+
 def _proved_but_reading(finding: Mapping[str, Any]) -> bool:
     """`code_proved` before the reading rule (`reading_routes`)."""
     if classification.internal(finding):
@@ -708,6 +753,8 @@ def please_check_words(finding: Mapping[str, Any]) -> str:
         return pick_words(finding)
     if reading_held(finding) is not None:
         return reading_words(finding)
+    if typed_over(finding) is not None:
+        return typed_over_words(finding)
     return likely_problems.please_check(finding)
 
 
@@ -752,6 +799,10 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
     if reading_held(finding) is not None:
         # Code proved it in every other way, but a number it rests on was not read by two
         # different routes that agree (final plan #2): please check, never red.
+        return "likely_problem"
+    if typed_over(finding) is not None:
+        # The vendor's printed overall disagrees with its own drawn line, which its parts fit
+        # (DECIDED 2026-10-26): a typed-over number is a please-check, never red, never hidden.
         return "likely_problem"
     # The architect's size breaks a GV rule and the vendor follows it (#1839): decided, GV asks
     # the architect; never clouded, never on the Not-compared list.
@@ -1143,6 +1194,7 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
             or (ends_words(finding) if ends_unconfirmed(finding) else None)
             or (pick_words(finding) if pick_disagrees(finding) else None)
             or (reading_words(finding) if reading_held(finding) is not None else None)
+            or (typed_over_words(finding) if typed_over(finding) is not None else None)
             or found.why
         )
     elif group == "dismissed":

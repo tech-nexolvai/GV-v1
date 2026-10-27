@@ -19,6 +19,10 @@ paired with a reference sheet that holds pasted drawings (`pasted_views.View`). 
   reference does show a splash: the look's claim is **withdrawn** (its stated reason, that the
   sections show none, is not so; like the look's other claims code finds false, it is dropped
   with that reason); a reading's item keeps its place, its reason saying what the section draws.
+  The look's claim about the splash's height that rests on the reference showing none, or a lower
+  one with no printed height (read by eye, or off the snapshot's printed scale), goes the same way
+  as a reading's (Anant, 2026-10-27): Not compared, its Likely-problem mark taken off. A claim that
+  the reference's splash is taller, and any item a view prints a splash size for, stay as they are.
   Sizes are never compared here: a section prints no splash size, and a back splash is never
   compared with a side splash (`splash_views` does sizes, like for like).
 - **The countertop depth** (the item is the top's depth): a pasted section's agreed
@@ -72,6 +76,20 @@ _NOT_TOP: Final = re.compile(r"\bcabinet\b|\bsplash\b|\bsink\b|\bcut-?out\b", re
 _NO_SPLASH: Final = re.compile(
     r"\bno\b[^.;]*\bsplash|\bsplash\w*\b[^.;]*\b(?:not\s+(?:shown|drawn)|none)\b", re.IGNORECASE
 )
+#: A look's reference side that says the reference's splash is lower than the vendor's...
+_LOWER: Final = re.compile(
+    r"\blow(?:er)?\b|\bshort(?:er)?\b|\bupstand\b|\bsmaller\b", re.IGNORECASE
+)
+#: ...and that its height is not printed (the look read it by eye or off the snapshot's scale).
+_UNPRINTED: Final = re.compile(
+    r"\bnot\s+(?:printed|dimensioned|sized|given)\b|\bno\s+(?:size|height|dimension)\b"
+    r"|\bby\s+scale\b|\bscaled\b|\babout\b|\bapprox",
+    re.IGNORECASE,
+)
+#: A look's reference side that says the reference's splash is taller: never this step's.
+_TALLER: Final = re.compile(r"\bfull\b|\btall(?:er)?\b|\bhigher\b|\bbigger\b", re.IGNORECASE)
+#: A size printed in a view's agreed words (`4" SOLID SURFACE SPLASH`).
+_SIZED: Final = re.compile(r"\d\s*(?:\"|''|”|″)")
 _OPEN: Final = frozenset({"same", "different", "check"})
 
 
@@ -324,11 +342,27 @@ def _splash_part(finding: Mapping[str, Any]) -> Any:
     return splash.subject_of(finding.get("item")) or splash.subject_of(finding.get("vendor"))
 
 
+def _look_reads_none(architect: str) -> bool:
+    """A look's reference side that rests on the reference not showing the splash, or showing it
+    lower with no printed height (read by eye, or off a pasted snapshot's printed scale, which is
+    wrong wherever the snapshot was resized): "no 6" splash on the elevation; the section shows
+    a short upstand, about 2" by scale". Never one that says the reference's splash is
+    taller or full height (the vendor's may be too low: that claim stands)."""
+    if _TALLER.search(architect):
+        return False
+    return bool(_NO_SPLASH.search(architect)) or bool(
+        _LOWER.search(architect) and _UNPRINTED.search(architect)
+    )
+
+
 def _absence(finding: Mapping[str, Any]) -> str | None:
     """`look` (the whole-drawing look's claim that the vendor adds a splash the reference does
-    not draw), `reading` (a reading's reference side says no splash is drawn), or `None`. A
-    look's claim that the vendor leaves a splash out is never one: a section drawing the splash
-    bears it out. The vendor's side must draw the splash (a size, no words of absence)."""
+    not draw), `reading` (a reading's reference side says no splash is drawn; or a look's claim
+    about the splash's height that rests on the reference showing none, or a lower one with no
+    printed height: Anant 2026-10-27, the same section rule as a reading's), or `None`. A look's
+    claim that the vendor leaves a splash out, or that the reference's splash is taller, is never
+    one: a section drawing the splash bears it out. The vendor's side must draw the splash (a
+    size, no words of absence)."""
     classification = import_module("app.review.assistant.classification")
     record = finding.get("splash_views")
     mark = finding.get(likely_problems.FIELD)
@@ -346,7 +380,16 @@ def _absence(finding: Mapping[str, Any]) -> str | None:
                 and bool(record.get("absence_not_confirmed"))
                 and record.get("look_kind") in (None, "extra_piece")
             )
-        return "look" if added and vendor_draws else None
+        if added:
+            return "look" if vendor_draws else None
+        if (
+            isinstance(mark, Mapping)
+            and mark.get("kind") != "missing_piece"
+            and vendor_draws
+            and _look_reads_none(_flat(finding.get("architect")))
+        ):
+            return "reading"
+        return None
     if vendor_draws and _NO_SPLASH.search(_flat(finding.get("architect"))):
         return "reading"
     return None
@@ -391,10 +434,19 @@ def _splash_change(finding: Mapping[str, Any], views: Sequence[View]) -> Change 
         )
         record["outcome"] = "withdrawn"
         return Change("withdrawn", why, record)
+    if any(_SIZED.search(line.text) for v, _ in seen for line in splash_words(v)):
+        # A view prints a size beside the splash's name: "it prints no size" would not be so,
+        # and the item may be a real difference the section proves. It stays as it is.
+        return None
     why = f"{shown}, so the reference does show a splash. It prints no size for it, so no size is compared."
     if _SIDE_WORDS.search(" ".join(_flat(finding.get(key)) for key in ("item", "vendor"))):
         why += " A section shows only the back splash, so the vendor's side splashes are not checked there."
     record["outcome"] = "not_compared"
+    # A look's claim about the splash's height (it read the reference's splash as missing or lower,
+    # by eye) is held to the same rule as a reading's: Not compared, never a Likely problem.
+    mark = finding.get(likely_problems.FIELD)
+    by_look = isinstance(mark, Mapping) and mark.get("by") in ("whole_drawing_look", "whole_look")
+    drop = (likely_problems.FIELD,) if by_look else ()
     updates: dict[str, Any] = {
         "architect": f"splash drawn in the reference's {view.name}, page {view.page} (no size)",
         "splash_views": {
@@ -408,7 +460,7 @@ def _splash_change(finding: Mapping[str, Any], views: Sequence[View]) -> Change 
             "by": METHOD,
         },
     }
-    return Change("noted", why, record, updates=updates)
+    return Change("noted", why, record, updates=updates, drop=drop)
 
 
 # ---- the countertop depth -----------------------------------------------------------------------
