@@ -101,6 +101,7 @@ from app.review.assistant.round_reference import (
     round_only,
 )
 from app.review.assistant.rule_notes import RuleNote, rule_note_of, views_note_of
+from app.review.assistant.span_ends import ends_apart
 from app.review.assistant.spot_locate import VENDOR_SEARCH, search_words, spot_words
 
 __all__ = [
@@ -538,11 +539,12 @@ def _spans(finding: Mapping[str, Any]) -> tuple[str, str] | None:
     reply = pairing.get("advocate") if isinstance(pairing, Mapping) else None
     if not isinstance(reply, Mapping):
         return None
-    vendor, architect = reply.get("vendor_spans"), reply.get("architect_spans")
-    if not isinstance(vendor, Mapping) or not isinstance(architect, Mapping) or vendor == architect:
+    # The two ends are an unordered pair: the same two ends in the other order are no
+    # different reference; when they differ, the end each side names that the other does not.
+    apart = ends_apart(reply.get("vendor_spans"), reply.get("architect_spans"))
+    if apart is None:
         return None
-    v = _SPAN_WORDS.get(str(vendor.get("to")), "")
-    a = _SPAN_WORDS.get(str(architect.get("to")), "")
+    v, a = (_SPAN_WORDS.get(end, "") for end in apart)
     return (v, a) if v and a else None
 
 
