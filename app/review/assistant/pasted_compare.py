@@ -19,6 +19,10 @@ paired with a reference sheet that holds pasted drawings (`pasted_views.View`). 
   reference does show a splash: the look's claim is **withdrawn** (its stated reason, that the
   sections show none, is not so; like the look's other claims code finds false, it is dropped
   with that reason); a reading's item keeps its place, its reason saying what the section draws.
+  The look's claim about the splash's height that rests on the reference showing none, or a lower
+  one with no printed height (read by eye, or off the snapshot's printed scale), goes the same way
+  as a reading's (Anant, 2026-10-27): Not compared, its Likely-problem mark taken off. A claim that
+  the reference's splash is taller, and any item a view prints a splash size for, stay as they are.
   Sizes are never compared here: a section prints no splash size, and a back splash is never
   compared with a side splash (`splash_views` does sizes, like for like).
 - **The countertop depth** (the item is the top's depth): a pasted section's agreed
@@ -341,8 +345,8 @@ def _splash_part(finding: Mapping[str, Any]) -> Any:
 def _look_reads_none(architect: str) -> bool:
     """A look's reference side that rests on the reference not showing the splash, or showing it
     lower with no printed height (read by eye, or off a pasted snapshot's printed scale, which is
-    wrong wherever the snapshot was resized): "no 4" splash on the elevation; the section shows
-    a short upstand, about 1 1/2" by scale". Never one that says the reference's splash is
+    wrong wherever the snapshot was resized): "no 6" splash on the elevation; the section shows
+    a short upstand, about 2" by scale". Never one that says the reference's splash is
     taller or full height (the vendor's may be too low: that claim stands)."""
     if _TALLER.search(architect):
         return False

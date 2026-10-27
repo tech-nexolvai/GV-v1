@@ -423,8 +423,8 @@ def _look_height(architect: str, **more: Any) -> dict[str, Any]:
     """The whole-drawing look's claim about the splash's height (a size claim, its Likely mark)."""
     return _sink(
         id="F9",
-        item='this piece: Back splash: height (4" on vendor, low on the reference)',
-        vendor='4" back splash, 40" long',
+        item='this piece: Back splash: height (6" on vendor, low on the reference)',
+        vendor='6" back splash, 40" long',
         architect=architect,
         created_by="whole_look",
         whole_look={
@@ -445,8 +445,8 @@ _DRAWN = ((410.0, 120.0, 412.0, 130.0),)
 @pytest.mark.parametrize(
     "architect",
     [
-        'No 4" splash on the elevation; the section shows a short upstand, about 1 1/2" by scale',
-        'low splash drawn at the wall in the sections; height not printed, drawn lower than 4"',
+        'No 6" splash on the elevation; the section shows a short upstand, about 2" by scale',
+        'low splash drawn at the wall in the sections; height not printed, drawn lower than 6"',
     ],
 )
 def test_a_looks_lower_splash_height_follows_the_section_rule(architect: str) -> None:
@@ -466,8 +466,8 @@ def test_a_looks_lower_splash_height_follows_the_section_rule(architect: str) ->
     "architect",
     [
         "full height splash drawn up to the uppers; height not printed",
-        'the section prints a 6" splash',
-        'taller splash in the section, about 6" by scale',
+        'the section prints an 8" splash',
+        'taller splash in the section, about 8" by scale',
     ],
 )
 def test_a_looks_claim_the_section_may_prove_stays(architect: str) -> None:
@@ -480,7 +480,7 @@ def test_a_splash_size_the_section_prints_keeps_the_claim() -> None:
     sized = _section(
         splashes=_DRAWN, lines=(Line('6" SOLID SURFACE SPLASH', (410.0, 120.0, 450.0, 124.0)),)
     )
-    look = _look_height('no 4" splash on the elevation; the section splash is lower, about 2"')
+    look = _look_height('no 6" splash on the elevation; the section splash is lower, about 2"')
     reading = _sink(
         id="F6",
         item="Vanity: back splash",
@@ -494,7 +494,7 @@ def test_a_splash_size_the_section_prints_keeps_the_claim() -> None:
 
 
 def test_a_look_height_claim_with_no_section_splash_stays() -> None:
-    look = _look_height('no 4" splash on the elevation; about 1 1/2" by scale')
+    look = _look_height('no 6" splash on the elevation; about 2" by scale')
     _result, changed = _run([look], _ctx(_views(_section())))
     assert "pasted_views" not in changed.get("F9", {})
     assert proof.proof_group(changed.get("F9", look)) == "likely_problem"
