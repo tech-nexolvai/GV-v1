@@ -98,6 +98,8 @@ __all__ = [
     "needs_pairing",
     "no_stated_requirement",
     "pairing_proved",
+    "pick_disagrees",
+    "pick_words",
     "please_check_words",
     "proof_counts",
     "proof_group",
@@ -554,13 +556,90 @@ def ends_unconfirmed(finding: Mapping[str, Any]) -> bool:
     if not isinstance(answers, Mapping) or answers.get("pairing") != advocate.ENDS_NOT_CONFIRMED:
         return False
     # Code-proved in every other way: the same item with the picks' pairing accepted, as before.
+    return _proved_if_paired(finding, verdict, "picks")
+
+
+def _proved_if_paired(finding: Mapping[str, Any], verdict: Mapping[str, Any], how: str) -> bool:
+    """Whether the item is code-proved in every way but its pairing: the same item with the devil's
+    advocate's verdict turned to passed (its pairing `how`)."""
+    answers = verdict.get("answers") if isinstance(verdict.get("answers"), Mapping) else {}
     passed = dict(finding)
     checks = {**(finding.get("checks") or {}), "critic": "passed"}
     passed["checks"] = checks
-    passed["critic"] = {**verdict, "result": "passed", "answers": {**answers, "pairing": "picks"}}
+    passed["critic"] = {
+        **verdict,
+        "result": "passed",
+        "answers": {**(answers or {}), "pairing": how},
+    }
     passed["trust_level"] = witness.trust_level(checks, "different")
     passed["witnesses"] = witness.witnesses(checks, "different")
     return _proved_but_reading(passed) and not _reader_error(passed)
+
+
+#: The devil's advocate's code checks (`full_check_advocate.code_checks`, and code's own pairing
+#: of the vendor's label with another): one that did not pass stopped the item by code's facts.
+_CODE_CHECKS: Final = (
+    "labels",
+    "ink",
+    "annotation",
+    "roles",
+    "axis",
+    "round",
+    "units",
+    "slip",
+    "code_pair",
+)
+
+
+def pick_disagrees(finding: Mapping[str, Any]) -> bool:
+    """A Wrong whose two dimensions code's own geometry shows ending at the same places
+    (`same_extent`), that passes every code check and is code-proved in every other way, held back
+    only because the blind second pick named another reference dimension, or none. The pick is an
+    AI: it is never enough for a red, and never the last word against code's geometry either, so
+    the item is a Likely problem ("please check"), never red and never a silent Not compared (a
+    real upload, 2026-10-27: an outlet's distance from a wall that differs from the reference's;
+    code tied both ends on both drawings, the wall and the same outlet's centre, while the blind
+    pick took the vendor's dimension for a height)."""
+    if finding.get("status") != "different" or not needs_pairing(finding):
+        return False
+    verdict = _advocate(finding)
+    if verdict is None or verdict.get("result") != "objects":
+        return False
+    answers = verdict.get("answers")
+    if not isinstance(answers, Mapping) or "advocate_pick" not in answers:
+        return False
+    if answers.get("advocate_pick") == answers.get("helper_pick") or answers.get("twin"):
+        return False  # the picks agree: another check stopped it
+    if any(answers.get(name) not in (None, "pass") for name in _CODE_CHECKS):
+        return False
+    if any(answers.get(name) == "fail" for name in ("trade", "faces")):
+        return False
+    pairing = finding.get("pairing")
+    extent = pairing.get("extent") if isinstance(pairing, Mapping) else None
+    if not (isinstance(extent, Sequence) and extent and extent[0] == "same_extent"):
+        return False
+    return _proved_if_paired(finding, verdict, "proved")
+
+
+def pick_words(finding: Mapping[str, Any]) -> str:
+    """The please-check line of an item `pick_disagrees` holds back: "Please check and confirm: the
+    vendor's 9" against the reference's 1' - 2" (Left wall to outlet); they differ by 5"; code's
+    drawing shows both dimensions end at the same places, but a second AI look did not pair them
+    (it chose no reference dimension)." """
+    item = " ".join(str(finding.get("item") or "this item").split())
+    inches = finding.get("inches") if isinstance(finding.get("inches"), Mapping) else {}
+    difference = _decimal((inches or {}).get("difference"))
+    by = f"; they differ by {inch_words(abs(difference))}" if difference else "; they differ"
+    verdict = _advocate(finding) or {}
+    answers = verdict.get("answers") if isinstance(verdict.get("answers"), Mapping) else {}
+    pick = str((answers or {}).get("advocate_pick") or "none")
+    chose = "no reference dimension" if pick == "none" else f"the reference's {pick}"
+    return (
+        f"{likely_problems.LETTER_LEAD}: the vendor's {vendor_value(finding)} against the "
+        f"reference's {finding.get('architect')} ({item}){by}; code's drawing shows both "
+        f"dimensions end at the same places, but a second AI look did not pair them (it chose "
+        f"{chose})."
+    )
 
 
 def ends_words(finding: Mapping[str, Any]) -> str:
@@ -621,6 +700,8 @@ def please_check_words(finding: Mapping[str, Any]) -> str:
     """
     if ends_unconfirmed(finding):
         return ends_words(finding)
+    if pick_disagrees(finding):
+        return pick_words(finding)
     if reading_held(finding) is not None:
         return reading_words(finding)
     return likely_problems.please_check(finding)
@@ -679,6 +760,8 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
         return "not_compared"  # never a Likely problem on two unlike dimensions (fix 3)
     if ends_unconfirmed(finding):
         return "likely_problem"  # the AI's pairing, ends not confirmed by code (option C)
+    if pick_disagrees(finding):
+        return "likely_problem"  # code's geometry pairs them; a blind AI pick did not
     return "likely_problem" if likely_problems.likely(finding) else "not_compared"
 
 
@@ -1054,6 +1137,7 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
             held_back(finding)
             or (likely_problems.payload(finding) or {}).get("reason")
             or (ends_words(finding) if ends_unconfirmed(finding) else None)
+            or (pick_words(finding) if pick_disagrees(finding) else None)
             or (reading_words(finding) if reading_held(finding) is not None else None)
             or found.why
         )
