@@ -57,7 +57,12 @@ inside the full check and its fixed price, it climbs a ladder, the biggest items
    - `tags`: an item whose two sides name finish, material or product tags is read and compared by
      code (`tag_reader`): exactly the same tags at both spots is Right, a change code's finish check
      proved is Wrong, anything else Not compared with its true reason; a note in words that would
-     otherwise be "Illegible" gets its true reason (a note in words, or words drawn as strokes).
+     otherwise be "Illegible" gets its true reason (a note in words, or words drawn as strokes);
+   - `claim_rules`: GV's settled rules and code's facts on every open claim, then the look rules
+     (`look_rules`, 2026-10-27) on the whole-drawing look's words-only claims: GV's own symbol
+     at an extra piece's spot (withdrawn), a spot on line work flattened in as markup that may be
+     GV's (an unsure overlay), a piece code cannot place inside the unit or find a tag on, a claim
+     the look marked to ask: Not compared, never red.
 2. **One deeper AI look** per item that is left (the roster, `full_check_roster`): a sharper crop
    through the existing verifier and devil's advocate, under the pairing-proof setting, and only
    with the money left under the fixed price.
@@ -183,6 +188,9 @@ class EscalationContext:
     """Each page's text-layer phrases (`dims.json`), for a missing item's words and search."""
     stickers: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] = field(default_factory=dict)
     """GV's stickers (`gv_stickers`), by (file, page)."""
+    overlays: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] = field(default_factory=dict)
+    """Line work flattened into a pasted drawing as markup that may be GV's or the vendor's
+    (`gv_stickers` overlays), by (file, page): the look rules never take it as the vendor's."""
     strokes: Callable[[str, int, tuple[float, float, float, float]], Any] | None = None
     """The tag reader's stroke route (`tag_reader.StrokeReader`)."""
     changes: Sequence[Mapping[str, Any]] = ()
@@ -1929,9 +1937,10 @@ def _claims_step(
 ) -> None:
     """GV's settled rules and code's facts on every open claim (`claim_rules`, 2026-10-25): a
     notch, a unit count one sheet cannot settle, a wall outline taken for the top, a side splash
-    taken for a mitred piece, which end on a unit drawn both ways round. Only ever withdraws an
-    item or makes it Not compared (a unit count that differs per type is kept, its reason naming
-    the type); never red."""
+    taken for a mitred piece, which end on a unit drawn both ways round; then the look rules on
+    the whole-drawing look's words-only claims (`look_rules`: GV's symbol, an unsure overlay, a
+    piece beside the unit, a claim to ask). Only ever withdraws an item or makes it Not compared
+    (a unit count that differs per type is kept, its reason naming the type); never red."""
     rules = import_module("app.review.assistant.claim_rules")
     open_items = [f for f in live if str(f["id"]) not in result.absorbed]
     try:
@@ -1945,6 +1954,20 @@ def _claims_step(
     except Exception:  # noqa: BLE001 - the items stay as they were
         _log.warning("escalation: the claim rules step failed", exc_info=True)
         return
+    # The look rules (`look_rules`, 2026-10-27): the whole-drawing look's words-only claims on
+    # GV's markup, on line work code cannot tell is the vendor's, or about a piece beside the unit.
+    taken = {finding_id for finding_id, _change in found}
+    try:
+        found = list(found) + import_module("app.review.assistant.look_rules").changes(
+            [f for f in open_items if str(f["id"]) not in taken],
+            main_file=ctx.main_file,
+            stickers=ctx.stickers,
+            overlays=ctx.overlays,
+            labels=ctx.labels,
+            phrases=ctx.phrases,
+        )
+    except Exception:  # noqa: BLE001 - the look's claims stay as they were
+        _log.warning("escalation: the look rules step failed", exc_info=True)
     by_id = {str(f["id"]): f for f in open_items}
     for finding_id, change in found:
         finding = by_id[finding_id]
@@ -2417,6 +2440,7 @@ def context_from_pack(
     under: UnderReader | None = None,
     reread: NumberReader | None = None,
     stickers: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None = None,
+    overlays: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]] | None = None,
     strokes: Callable[[str, int, tuple[float, float, float, float]], Any] | None = None,
     changes: Sequence[Mapping[str, Any]] = (),
     unopened: frozenset[int] | None = None,
@@ -2430,7 +2454,8 @@ def context_from_pack(
 ) -> EscalationContext:
     """The free steps' facts from a set pack (`dims.json`, `pairs.json`, the stickers code hid
     (`<name>_stickers.json`), and for a missing item `page_texts.json`, `health.json`,
-    `annotations.json`). `stickers`: GV's stickers when the pack lists none (an older pack);
+    `annotations.json`). `stickers` / `overlays`: GV's stickers and the unsure overlays when the
+    pack lists none (an older pack);
     `unopened`: the pages the check never opened; `pasted`: the reference's pasted views
     (`pasted_views.PastedReader`), else that step does nothing; `segments`: each page's line work
     (`vendor_consistency.line_work`; default: the pack's kept line work, when it keeps any)."""
@@ -2466,9 +2491,13 @@ def context_from_pack(
         pairs = code_pairs(_read(pack / "pairs.json"))
         if page_map is None:
             page_map = _read(pack / "page_map.json")
-        listed = import_module("app.review.assistant.gv_stickers").read_folder(pack)
+        gv_stickers = import_module("app.review.assistant.gv_stickers")
+        listed = gv_stickers.read_folder(pack)
         if listed is not None:
             stickers = listed
+        unsure = gv_stickers.read_overlays(pack)
+        if unsure:
+            overlays = unsure
     return EscalationContext(
         main_file=main_file,
         labels=labels,
@@ -2478,6 +2507,7 @@ def context_from_pack(
         reread=reread,
         phrases=phrases,
         stickers=stickers or {},
+        overlays=overlays or {},
         strokes=strokes,
         changes=changes,
         page_texts=texts,
@@ -2536,6 +2566,19 @@ def stickers_of_uploads(
     for name, path in pdf_paths.items():
         if path.is_file():
             out.update(module.by_page(module.stickers_of(path), name))
+    return out
+
+
+def overlays_of_uploads(
+    pdf_paths: Mapping[str, Path],
+) -> dict[tuple[str, int], list[dict[str, Any]]]:
+    """The unsure overlays searched in the uploads themselves (a set pack made before they were
+    listed)."""
+    module = import_module("app.review.assistant.gv_stickers")
+    out: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for name, path in pdf_paths.items():
+        if path.is_file():
+            out.update(module.by_page(module.overlays_of(path), name))
     return out
 
 
@@ -2611,6 +2654,11 @@ def escalate_answer(engine: Any) -> Escalation | None:
         under=_under_reader(book.pdf_paths()),
         reread=numbers.reader_for_pack(workspace.set_pack, workspace.uploads),
         stickers=listed if listed is not None else stickers_of_uploads(book.pdf_paths()),
+        overlays=(
+            gv_stickers.read_overlays(workspace.set_pack)
+            if listed is not None
+            else overlays_of_uploads(book.pdf_paths())
+        ),
         strokes=tags.stroke_reader_for_pack(workspace.set_pack, workspace.uploads),
         changes=finish_changes(workspace.set_pack),
         unopened=frozenset(

@@ -1315,7 +1315,8 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
         return _not(
             "not_proved",
             _short(rule.get("why"), 300),
-            "the unit list of every sheet of {thing} (its regular and reversed sheets)",
+            str(rule.get("needs") or "")
+            or "the unit list of every sheet of {thing} (its regular and reversed sheets)",
         )
     source = str(finding.get("source") or "")
     parts = finding.get("architect_parts")

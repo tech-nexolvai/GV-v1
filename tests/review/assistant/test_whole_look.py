@@ -199,6 +199,7 @@ def _claim(kind: str, vendor: dict, architect: dict, **more: Any) -> dict[str, A
         "vendor": vendor,
         "architect": architect,
         "vendor_spot": more.pop("vendor_spot", None),
+        "piece": more.pop("piece", None),
         "why": more.pop("why", "The uppers are drawn shorter."),
         "sure": more.pop("sure", "sure"),
     }
@@ -505,10 +506,10 @@ def test_a_roster_full_check_runs_one_look_per_area_beside_its_helpers(
             if params["system"][0]["text"].startswith("You are an experienced millwork reviewer"):
                 self._seen("whole_look", params)
                 claim = _claim(
-                    "missing_piece",
-                    _side(3, None, "no upper cabinet"),
-                    _side(1, None, "an upper cabinet"),
-                    item="Upper cabinet",
+                    "count",
+                    _side(3, None, "1 upper cabinet"),
+                    _side(1, None, "2 upper cabinets"),
+                    item="Upper cabinets",
                     vendor_spot={"x0": 0, "y0": 0, "x1": 50, "y1": 50},
                 )
                 return reply(text(json.dumps({"claims": [claim]})), model=SONNET)
@@ -749,3 +750,30 @@ def test_a_claim_against_another_architect_dimension_never_joins_a_helpers_item(
     kept = next(f for f in book.live() if f["id"] == helper["id"])
     assert likely_problems.FIELD not in kept
     assert applied.dropped or len(book.live()) == 2
+
+
+def test_a_claim_carries_its_pieces_spot_and_why_code_asks(tmp_path: Path) -> None:
+    """2026-10-27: a missing piece says where it is on the architect's picture (code asks when it
+    is beside the unit, `look_rules`); two differences in one claim are marked to ask."""
+    book, look = _setup(tmp_path)
+    piece = {"picture": 1, "x0": 10, "y0": 10, "x1": 20, "y1": 30, "tag": None}
+    missing = _claim(
+        "missing_piece",
+        _side(3, None, "no end panel"),
+        _side(1, None, "an end panel"),
+        item="Run: end panel",
+        piece=piece,
+    )
+    bundled = _claim(
+        "layout",
+        _side(3, None, "3 doors on a toe kick"),
+        _side(1, None, "4 fronts on legs"),
+        item="Base: fronts and base",
+    )
+    applied, _shown = _apply(book, look, [missing, bundled])
+    marks = {f["item"]: f[likely_problems.FIELD] for f in book.live() if f["id"] in applied.likely}
+    end_panel = next(m for item, m in marks.items() if item.endswith("end panel"))
+    assert end_panel["piece"]["side"] == "architect" and end_panel["piece"]["page"] == 2
+    assert "ask" not in end_panel
+    base = next(m for item, m in marks.items() if item.endswith("fronts and base"))
+    assert "two differences in one" in base["ask"] and "piece" not in base
