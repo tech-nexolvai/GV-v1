@@ -41,7 +41,8 @@ run beside the page helpers in the roster's first phase, within its share of the
   also carries where it is on the drawing that has it and its printed tag (`piece`), and a claim
   that puts two differences in one or counts unlike things on its two sides is marked to ask
   (`ask`): the look rules (`look_rules`, 2026-10-27) make those Not compared, as they do a piece
-  code cannot place inside the unit, a spot on GV's markup or on line work that may be GV's;
+  drawn beside the unit with no tag code reads, a spot on GV's markup or on line work that may be
+  GV's;
 - a claim naming a label code cannot find where the AI says, or taking the brand prototype, GV's
   note or the vendor's own drawing as the architect, or a size with no label at all, or a claim
   about a notch (GV cuts unusual notches on site, DECIDED 2026-10-23), is dropped: the run's log
@@ -479,7 +480,7 @@ The pictures above are this piece's drawings. Code named each one from GV's head
 {pictures}
 Compare the vendor's drawings with the architect's like an experienced millwork reviewer looking at the two sheets side by side. What is different in design: missing or extra pieces (a unit, a cabinet, an upper, a panel, an outlet or cut-out on the millwork), different counts (units, doors, drawers, shelves, outlets), different overall sizes and heights of the millwork, a different layout or arrangement, a note on the architect's drawing the vendor does not follow (pull-out drawers drawn as doors).
 One claim per vendor round: when two rounds differ from the architect, make one claim for each, on that round's own picture and label.
-For a size, name the printed labels on both sides from each picture's label list (the id whose printed value you mean); kind "size" only when both drawings print the size. A count, a missing piece or a layout has label null (or the label next to it) and its counts or words as values. Give the vendor spot as a box in percent of the vendor picture. For a missing or extra piece also give "piece": the picture that has it (the architect's for a missing piece, the vendor's for an extra one), the tightest box round it in percent of that picture, and the millwork tag printed on it (or null); else "piece" is null.
+For a size, name the printed labels on both sides from each picture's label list (the id whose printed value you mean); kind "size" only when both drawings print the size. A count, a missing piece or a layout has label null (or the label next to it) and its counts or words as values. Give the vendor spot as a box in percent of the vendor picture. For a missing or extra piece also give "piece": the picture that has it (the architect's for a missing piece, the vendor's for an extra one), the tightest box round it in percent of that picture, the millwork tag printed on it (or null), and its place: "inside" the unit's outline or "beside" the unit; else "piece" is null. A piece beside the unit with no tag reaches GV as a question, not a problem.
 Reply with your claims only (an empty list when the vendor follows the architect)."""
 
 
@@ -525,7 +526,7 @@ _PIECE: Final[Mapping[str, Any]] = {
         {
             "type": "object",
             "additionalProperties": False,
-            "required": ["picture", "x0", "y0", "x1", "y1", "tag"],
+            "required": ["picture", "x0", "y0", "x1", "y1", "tag", "place"],
             "properties": {
                 "picture": {
                     "type": "integer",
@@ -541,12 +542,18 @@ _PIECE: Final[Mapping[str, Any]] = {
                     "description": "The millwork tag printed on the piece, as printed (B30, "
                     "WD-01), or null when none is printed on it",
                 },
+                "place": {
+                    "type": "string",
+                    "enum": ["inside", "beside"],
+                    "description": "inside: drawn inside this unit's outline; beside: drawn "
+                    "next to the unit (on the wall, a bracket, the side of the next unit)",
+                },
             },
         },
         {"type": "null"},
     ],
     "description": "A missing or extra piece only (else null): where the piece is on the drawing "
-    "that has it, and its printed millwork tag",
+    "that has it, its printed millwork tag, and whether it is inside the unit's outline",
 }
 WHOLE_LOOK_SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
@@ -624,7 +631,7 @@ architect, never one round with another. GV's review markup is hidden in the pic
 baked into a pasted drawing may remain: {colour_rule} A number in GV's note, a cloud, a tick or a \
 sticker is never the architect's or the vendor's value.
 
-Not differences: a room dimension on the architect's elevation (to the ceiling, a bulkhead or soffit, wall to wall, centre lines of lights or art) is not the millwork's size; a height to the top of a splash is not a height to the top of the counter; the architect may dimension a different extent than the vendor (with or without fillers, field cut); GV cuts unusual notches in a countertop on site, so a notch is never a difference. Claim a size difference only when you can see both dimensions run between the same two ends of the same piece; otherwise leave it out. One claim is ONE difference: never put two in one claim (the base type and the number of fronts are two claims), so a wrong half never rides on a right one. A count compares the same kind of thing on both sides, one number each ("4 doors" against "3 doors"; never "4 fronts" against "2 doors + 1 bin"). A missing or extra piece is a piece of THIS millwork unit: drawn inside the unit's outline or carrying a millwork tag; something drawn beside the unit (a bracket on the wall, the side of the next unit) with no tag is not a missing piece. Brand items and equipment the vendor does not supply (lights, mirrors, appliances, lockers by others) are not the vendor's millwork: leave them out. Small single numbers (a reveal, one outlet spacing, a string of parts) are checked by other helpers: do not list them.
+Not differences: a room dimension on the architect's elevation (to the ceiling, a bulkhead or soffit, wall to wall, centre lines of lights or art) is not the millwork's size; a height to the top of a splash is not a height to the top of the counter; the architect may dimension a different extent than the vendor (with or without fillers, field cut); GV cuts unusual notches in a countertop on site, so a notch is never a difference. Claim a size difference only when you can see both dimensions run between the same two ends of the same piece; otherwise leave it out. One claim is ONE difference: never put two in one claim (the base type and the number of fronts are two claims), so a wrong half never rides on a right one. A count compares the same kind of thing on both sides, one number each ("4 doors" against "3 doors"; never "4 fronts" against "2 doors + 1 bin"). A missing or extra piece is a problem only for a piece of THIS millwork unit: drawn inside the unit's outline or carrying a millwork tag; something drawn beside the unit (a bracket on the wall, the side of the next unit) with no tag is only a question: give its place as "beside". Brand items and equipment the vendor does not supply (lights, mirrors, appliances, lockers by others) are not the vendor's millwork: leave them out. Small single numbers (a reveal, one outlet spacing, a string of parts) are checked by other helpers: do not list them.
 
 Labels: each picture lists the printed dimensions code read on it (id, value, width or height, \
 where in the picture in percent across and down). For each side of a size, name the label whose \
@@ -1092,7 +1099,8 @@ def _look_rules() -> Any:
 
 def _piece_of(look: Look, given: object) -> dict[str, Any]:
     """The piece's spot on the drawing that has it, in page points, with the tag the look read on
-    it; `{}` when the look gave none code can use (`look_rules` then asks)."""
+    it and its place (inside the unit's outline or beside the unit); `{}` when the look gave no
+    spot code can use (`look_rules` then asks)."""
     if not isinstance(given, Mapping):
         return {}
     drawing = look.picture(given.get("picture"))
@@ -1112,6 +1120,7 @@ def _piece_of(look: Look, given: object) -> dict[str, Any]:
         "page": drawing.page,
         "box": [spot["x0"], spot["y0"], spot["x1"], spot["y1"]],
         "tag": _text(tag, 40) if isinstance(tag, str) and tag.strip() else None,
+        "place": given.get("place") if given.get("place") in ("inside", "beside") else None,
     }
 
 

@@ -18,13 +18,16 @@ Likely problem.
    the vendor's drawing as markup (`gv_stickers` overlays), which may be GV's or the vendor's: what
    the look says the vendor drew there is not raised as the vendor's: **Not compared**.
 3. **A piece beside the unit** (`piece_place`): a missing or extra piece is a Likely problem only
-   when code finds it is part of the unit on the drawing that has it: a millwork tag printed on it
-   (a unit code like B30 or a finish tag like WD-01), or its middle inside the unit's dimensioned
-   extent (the span of that drawing's own dimension lines, both across and up; a drawing with
-   dimensions one way only does not show its extent). Otherwise: **Not compared**, asking whether
-   it is part of the millwork. The piece's spot is the look's `piece` (on the architect's drawing
-   for a missing piece); an extra piece from an older look uses its vendor spot; a missing piece
-   from an older look (no `piece`) is left as it was.
+   when it is part of this unit on the drawing that has it: code finds a millwork tag printed on it
+   (a unit code like B30 or a finish tag like WD-01), or the look places it inside the unit's
+   outline (`whole_look`'s `piece.place`). A piece drawn beside the unit (a bracket on the wall,
+   the side of the next unit) with no tag code can read, or one the look gave no spot for, is
+   **Not compared**, asking whether it is part of the millwork. A look's own word only ever takes
+   a claim back to a question, never makes it more. Code does not read the unit's outline itself:
+   the dimension lines it reads are often only the short pieces beside their numbers, so their
+   span is no outline (measured on a real set: the floating shelves and the outlets of real
+   missing-piece claims fell outside it). Claims from looks made before the look gave the piece's
+   place are left as they were.
 4. **A claim to ask** (`look_question`): the look marked it to ask (`whole_look`: two differences
    in one claim, or a count of different things on the two sides): **Not compared**.
 
@@ -45,8 +48,6 @@ __all__ = [
     "PIECE",
     "changes",
     "has_tag",
-    "inside_extent",
-    "unit_extent",
 ]
 
 type Box = tuple[float, float, float, float]
@@ -62,8 +63,6 @@ _SPOT_PER_SYMBOL: Final = 10.0
 #: An overlay covers a spot when it covers at least this share of the spot, or this share of
 #: the overlay lies in the spot.
 _OVERLAY_SHARE: Final = 0.5
-#: A piece's middle may sit this far outside the dimension lines' span and still be inside (pt).
-_EXTENT_SLACK_PT: Final = 3.0
 #: A tag printed this close round the piece's box is the piece's (points).
 _TAG_SLACK_PT: Final = 6.0
 #: A millwork tag as drawings print it: a unit code (B30, BIN18R, W3036L) or a finish tag (WD-01).
@@ -154,38 +153,6 @@ def _on_overlay(spot: Box, overlays: Iterable[Box]) -> bool:
 # ---- 3. a piece beside the unit -------------------------------------------------------------------
 
 
-def unit_extent(labels: Iterable[Mapping[str, Any]], side: str) -> tuple[Box | None, str]:
-    """The unit's dimensioned extent on one side's drawing: across, the span of its horizontal
-    dimension lines; up, the span of its vertical ones. `None` with why when its dimensions do not
-    show it both ways."""
-    xs: list[float] = []
-    ys: list[float] = []
-    for label in labels:
-        if str(label.get("side") or "unknown") != side:
-            continue
-        line = label.get("dim_line")
-        if not isinstance(line, Sequence) or len(line) != 2:
-            continue
-        try:
-            (ax, ay), (bx, by) = ((float(p[0]), float(p[1])) for p in line)
-        except (TypeError, ValueError, IndexError):
-            continue
-        if abs(ax - bx) >= abs(ay - by):
-            xs += [ax, bx]
-        else:
-            ys += [ay, by]
-    if not xs or not ys:
-        missing = "across" if not xs else "up"
-        return None, f"the {side}'s drawing has no dimension lines {missing}"
-    return (min(xs), min(ys), max(xs), max(ys)), "dimension lines both ways"
-
-
-def inside_extent(box: Box, extent: Box) -> bool:
-    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-    s = _EXTENT_SLACK_PT
-    return extent[0] - s <= cx <= extent[2] + s and extent[1] - s <= cy <= extent[3] + s
-
-
 def _tags(text: object) -> set[str]:
     return {t.replace("-", "") for t in _TAG.findall(" ".join(str(text or "").upper().split()))}
 
@@ -210,50 +177,45 @@ def has_tag(
     return None
 
 
-def _piece(
-    finding: Mapping[str, Any], mark: Mapping[str, Any], main_file: str | None
-) -> tuple[str, str, int, Box, object] | None:
-    """(side, file, page, box, named tag) of the piece a missing or extra piece claim is about."""
+def _piece(mark: Mapping[str, Any], main_file: str | None) -> dict[str, Any] | None:
+    """The piece a missing or extra piece claim is about, as the look gave it (`{}` when it gave
+    none code can use); `None` for a look made before it gave one."""
     piece = mark.get(PIECE)
-    if isinstance(piece, Mapping):
-        box = _box(piece.get("box"))
-        page = piece.get("page")
-        side = str(piece.get("side") or "")
-        if box is not None and isinstance(page, int) and side in ("architect", "vendor"):
-            return side, str(piece.get("file") or main_file or ""), page, box, piece.get("tag")
-        return _UNPLACED
-    if mark.get("kind") == "extra_piece":
-        where = _where(finding, main_file)
-        if where is not None:
-            return "vendor", where[0], where[1], where[2], None
-    return None  # a missing piece from an older look: where it is on the architect's is unknown
-
-
-#: A look that gave no spot code can use for the piece (`whole_look._piece_of` wrote `{}`).
-_UNPLACED: Final = ("", "", 0, (0.0, 0.0, 0.0, 0.0), None)
-
-
-def _place(piece: tuple[str, str, int, Box, object], labels: ByPage, phrases: ByPage) -> str | None:
-    """Why the piece is not shown to be part of the unit, else `None` (a tag, or inside)."""
-    if piece == _UNPLACED:
-        return (
-            "the look did not say where the piece is on the drawing that has it, so code cannot "
-            "tell it is part of the unit: it is asked, not claimed"
-        )
-    side, file, page, box, named = piece
-    if has_tag(phrases.get((file, page), []), box, side, named) is not None:
+    if not isinstance(piece, Mapping):
         return None
-    extent, why = unit_extent(labels.get((file, page), []), side)
-    if extent is not None and inside_extent(box, extent):
-        return None
-    where = "on the architect's drawing" if side == "architect" else "on the vendor's drawing"
-    if extent is None:
+    box = _box(piece.get("box"))
+    page = piece.get("page")
+    side = str(piece.get("side") or "")
+    if box is None or isinstance(page, bool) or not isinstance(page, int):
+        return {}
+    if side not in ("architect", "vendor"):
+        return {}
+    return {
+        "side": side,
+        "file": str(piece.get("file") or main_file or ""),
+        "page": page,
+        "box": box,
+        "tag": piece.get("tag"),
+        "place": piece.get("place"),
+    }
+
+
+def _place(piece: Mapping[str, Any], phrases: ByPage) -> str | None:
+    """Why the piece is not shown to be part of the unit, else `None` (a tag code reads on it, or
+    the look places it inside the unit's outline)."""
+    if not piece:
         return (
-            f"code cannot place the piece {where} inside the unit ({why}) and finds no millwork "
-            "tag on it, so it is asked, not claimed: it may be drawn beside the unit"
+            "the look did not say where the piece is on the drawing that has it, so it is asked, "
+            "not claimed"
         )
+    side, file, page, box = piece["side"], piece["file"], piece["page"], piece["box"]
+    if has_tag(phrases.get((file, page), []), box, side, piece.get("tag")) is not None:
+        return None
+    if piece.get("place") == "inside":
+        return None
+    where = "the architect's drawing" if side == "architect" else "the vendor's drawing"
     return (
-        f"the piece is drawn outside the unit's dimensioned extent {where} with no millwork tag, "
+        f"the piece is drawn beside the unit on {where} and code reads no millwork tag on it, "
         "so it is asked, not claimed: it may be a wall item or the next unit"
     )
 
@@ -267,7 +229,6 @@ def changes(
     main_file: str | None = None,
     stickers: ByPage | None = None,
     overlays: ByPage | None = None,
-    labels: ByPage | None = None,
     phrases: ByPage | None = None,
 ) -> list[tuple[str, Any]]:
     """(finding id, `claim_rules.Change`) for each open words-only look claim a rule changes."""
@@ -313,8 +274,8 @@ def changes(
             out.append((fid, claim_rules.Change("not_compared", "look_question", ask, _ASK_NEEDS)))
             continue
         if kind in ("missing_piece", "extra_piece"):
-            piece = _piece(finding, mark, main_file)
-            placed = _place(piece, labels or {}, phrases or {}) if piece is not None else None
+            piece = _piece(mark, main_file)
+            placed = _place(piece, phrases or {}) if piece is not None else None
             if placed is not None:
                 out.append(
                     (fid, claim_rules.Change("not_compared", "piece_place", placed, _PLACE_NEEDS))

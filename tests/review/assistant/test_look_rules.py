@@ -4,8 +4,8 @@
   Not compared.
 - A vendor spot on line work flattened into the vendor's drawing as markup (an unsure overlay):
   Not compared, never raised as the vendor's.
-- A missing or extra piece is a Likely problem only when code places it inside the unit's
-  dimensioned extent or finds a millwork tag on it; otherwise it is asked (Not compared).
+- A missing or extra piece is a Likely problem only when the look places it inside the unit or
+  code reads a millwork tag on it; otherwise it is asked (Not compared).
 - A claim the look marked to ask (two differences in one, a count of unlike things): Not compared.
 - The whole-drawing look writes where the piece is and why to ask (`whole_look._ask`).
 
@@ -68,27 +68,6 @@ _SYMBOL = {"page": 4, "box": [102, 104, 116, 112], "text": "", "kind": "symbol",
 _OVERLAY = {"page": 4, "box": [300, 100, 400, 300], "text": "", "kind": "overlay", "file": VENDOR}
 
 
-def _dim(
-    fid: str, side: str, line: tuple[tuple[float, float], tuple[float, float]]
-) -> dict[str, Any]:
-    (ax, ay), (bx, by) = line
-    return {
-        "id": fid,
-        "text": '30"',
-        "inches": "30",
-        "side": side,
-        "box": [min(ax, bx), min(ay, by), max(ax, bx) + 10, max(ay, by) + 6],
-        "dim_line": [[ax, ay], [bx, by]],
-    }
-
-
-#: The reference's unit on page 9: dimension lines across 100..300 and up 50..250.
-_REF_DIMS = [
-    _dim("D1", "architect", ((100, 260), (300, 260))),
-    _dim("D2", "architect", ((90, 50), (90, 250))),
-]
-
-
 # ---- 1. GV's symbol ----------------------------------------------------------------------------
 
 
@@ -141,52 +120,52 @@ def test_a_size_two_labels_name_or_a_decided_claim_is_never_changed() -> None:
 # ---- 3. a piece beside the unit ----------------------------------------------------------------
 
 
-def _missing(fid: str, box: tuple[float, float, float, float], tag: str | None = None) -> Any:
-    piece = {"side": "architect", "file": REF, "page": 9, "box": list(box), "tag": tag}
+def _missing(fid: str, place: str | None, tag: str | None = None) -> dict[str, Any]:
+    piece = {
+        "side": "architect",
+        "file": REF,
+        "page": 9,
+        "box": [320, 60, 360, 240],
+        "tag": tag,
+        "place": place,
+    }
     return _claim(fid, "Run: tall end panel", "missing_piece", (0, 0, 10, 10), piece=piece)
 
 
-def test_a_missing_piece_inside_the_units_extent_stays_a_likely_problem() -> None:
-    inside = _missing("F1", (250, 60, 290, 240))
-    assert _changes([inside], labels={(REF, 9): _REF_DIMS}) == {}
+def test_a_missing_piece_inside_the_unit_stays_a_likely_problem() -> None:
+    assert _changes([_missing("F1", "inside")]) == {}
 
 
 def test_a_missing_piece_beside_the_unit_with_no_tag_is_asked() -> None:
-    beside = _missing("F1", (320, 60, 360, 240))
-    found = _changes([beside], labels={(REF, 9): _REF_DIMS})["F1"]
+    beside = _missing("F1", "beside")
+    found = _changes([beside])["F1"]
     assert found.outcome == "not_compared" and found.rule == "piece_place"
-    assert "outside the unit's dimensioned extent on the architect's drawing" in found.why
+    assert "drawn beside the unit on the architect's drawing" in found.why
     held = {**beside, claim_rules.FIELD: found.record()}
     assert proof_group(held) == "not_compared"
     assert "part of this millwork unit" in str(classified(held).settle)
+    assert "F1" in _changes([_missing("F1", None)])  # no place given: asked
 
 
-def test_a_millwork_tag_on_the_piece_keeps_it_wherever_it_is() -> None:
-    beside = _missing("F1", (320, 60, 360, 240), tag="TP-2")
+def test_a_millwork_tag_code_reads_on_the_piece_keeps_it_wherever_it_is() -> None:
+    beside = _missing("F1", "beside", tag="TP-2")
     phrases = {(REF, 9): [{"text": "TP-2", "box": [325, 120, 345, 128], "side": "architect"}]}
-    assert _changes([beside], labels={(REF, 9): _REF_DIMS}, phrases=phrases) == {}
+    assert _changes([beside], phrases=phrases) == {}
+    unnamed = _missing("F1", "beside")
+    assert _changes([unnamed], phrases=phrases) == {}  # a tag printed on it, named or not
     other = {(REF, 9): [{"text": "WD-1", "box": [325, 120, 345, 128], "side": "architect"}]}
-    assert "F1" in _changes([beside], labels={(REF, 9): _REF_DIMS}, phrases=other)
+    assert "F1" in _changes([beside], phrases=other)  # not the tag the look read
+    far = {(REF, 9): [{"text": "TP-2", "box": [500, 120, 520, 128], "side": "architect"}]}
+    assert "F1" in _changes([beside], phrases=far)
 
 
-def test_dimensions_one_way_only_do_not_show_the_units_extent() -> None:
-    heights_only = [_dim("D2", "architect", ((90, 50), (90, 250)))]
-    found = _changes([_missing("F1", (250, 60, 290, 240))], labels={(REF, 9): heights_only})
-    assert "no dimension lines across" in found["F1"].why
-
-
-def test_an_extra_piece_uses_its_vendor_spot_and_an_older_missing_piece_is_left() -> None:
-    vendor_dims = [
-        _dim("D1", "vendor", ((100, 260), (300, 260))),
-        _dim("D2", "vendor", ((90, 50), (90, 250))),
-    ]
-    extra_in = _claim("F1", "Run: fillers", "extra_piece", (110, 60, 120, 240))
-    extra_out = _claim("F2", "Run: bracket", "extra_piece", (330, 60, 340, 70))
-    older = _claim("F3", "Run: end panel", "missing_piece", (330, 60, 340, 70))  # no piece
-    unplaced = _claim("F4", "Run: end panel", "missing_piece", (330, 60, 340, 70), piece={})
-    found = _changes([extra_in, extra_out, older, unplaced], labels={(VENDOR, 4): vendor_dims})
-    assert set(found) == {"F2", "F4"}
-    assert "did not say where the piece is" in found["F4"].why
+def test_an_older_look_is_left_and_a_look_with_no_spot_is_asked() -> None:
+    older = _claim("F1", "Run: end panel", "missing_piece", (330, 60, 340, 70))  # no piece
+    extra = _claim("F2", "Run: bracket", "extra_piece", (330, 60, 340, 70))
+    unplaced = _claim("F3", "Run: end panel", "missing_piece", (330, 60, 340, 70), piece={})
+    found = _changes([older, extra, unplaced])
+    assert set(found) == {"F3"}
+    assert "did not say where the piece is" in found["F3"].why
 
 
 # ---- 4. a claim to ask, and the look's own marks ------------------------------------------------
@@ -237,6 +216,7 @@ def test_the_look_writes_the_pieces_spot_on_the_drawing_that_has_it() -> None:
         "page": 9,
         "box": [200.0, 100.0, 300.0, 200.0],
         "tag": "TP-2",
+        "place": None,
     }
     assert whole_look._piece_of(look, None) == {}
     assert whole_look._piece_of(look, {"picture": 3, "x0": 0, "y0": 0, "x1": 1, "y1": 1}) == {}

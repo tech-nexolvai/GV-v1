@@ -61,7 +61,7 @@ inside the full check and its fixed price, it climbs a ladder, the biggest items
    - `claim_rules`: GV's settled rules and code's facts on every open claim, then the look rules
      (`look_rules`, 2026-10-27) on the whole-drawing look's words-only claims: GV's own symbol
      at an extra piece's spot (withdrawn), a spot on line work flattened in as markup that may be
-     GV's (an unsure overlay), a piece code cannot place inside the unit or find a tag on, a claim
+     GV's (an unsure overlay), a piece drawn beside the unit with no tag code reads, a claim
      the look marked to ask: Not compared, never red.
 2. **One deeper AI look** per item that is left (the roster, `full_check_roster`): a sharper crop
    through the existing verifier and devil's advocate, under the pairing-proof setting, and only
@@ -1963,7 +1963,6 @@ def _claims_step(
             main_file=ctx.main_file,
             stickers=ctx.stickers,
             overlays=ctx.overlays,
-            labels=ctx.labels,
             phrases=ctx.phrases,
         )
     except Exception:  # noqa: BLE001 - the look's claims stay as they were

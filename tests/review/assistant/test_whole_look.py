@@ -756,7 +756,7 @@ def test_a_claim_carries_its_pieces_spot_and_why_code_asks(tmp_path: Path) -> No
     """2026-10-27: a missing piece says where it is on the architect's picture (code asks when it
     is beside the unit, `look_rules`); two differences in one claim are marked to ask."""
     book, look = _setup(tmp_path)
-    piece = {"picture": 1, "x0": 10, "y0": 10, "x1": 20, "y1": 30, "tag": None}
+    piece = {"picture": 1, "x0": 10, "y0": 10, "x1": 20, "y1": 30, "tag": None, "place": "beside"}
     missing = _claim(
         "missing_piece",
         _side(3, None, "no end panel"),
@@ -774,6 +774,7 @@ def test_a_claim_carries_its_pieces_spot_and_why_code_asks(tmp_path: Path) -> No
     marks = {f["item"]: f[likely_problems.FIELD] for f in book.live() if f["id"] in applied.likely}
     end_panel = next(m for item, m in marks.items() if item.endswith("end panel"))
     assert end_panel["piece"]["side"] == "architect" and end_panel["piece"]["page"] == 2
+    assert end_panel["piece"]["place"] == "beside"
     assert "ask" not in end_panel
     base = next(m for item, m in marks.items() if item.endswith("fronts and base"))
     assert "two differences in one" in base["ask"] and "piece" not in base
