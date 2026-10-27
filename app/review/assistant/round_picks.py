@@ -47,6 +47,7 @@ from app.review.assistant.round_reference import (
     point_at,
     round_only,
 )
+from app.review.assistant.span_ends import same_ends
 
 __all__ = [
     "CHEAP_EFFORT",
@@ -371,7 +372,8 @@ def link(
         why = f"a blind pick named {pick}, but it sees the vendor value in colour (GV's markup)"
         return _record(finding, "refused", why, kept), "refused"
     vendor_spans, architect_spans = answer.get("vendor_spans"), answer.get("architect_spans")
-    if vendor_spans != architect_spans:
+    if not same_ends(vendor_spans, architect_spans):
+        # The two ends are an unordered pair: the same two ends in the other order agree.
         why = (
             f"a blind pick named {pick}, but says their ends land in different places "
             f"({_ends(vendor_spans)} vs {_ends(architect_spans)})"
