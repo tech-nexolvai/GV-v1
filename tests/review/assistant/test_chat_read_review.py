@@ -139,7 +139,8 @@ def test_a_one_line_answer_gets_no_critic(tmp_path: Path) -> None:
     assert len(provider.helper_calls) == 1  # the second read only
 
 
-def test_at_most_ten_third_reads_per_answer(tmp_path: Path) -> None:
+def _twelve_thirds(tmp_path: Path, status: str) -> tuple[list[str], Any]:
+    """Twelve findings of `status` whose second reads all disagree; the third reads asked."""
     workspace_with_pdf(tmp_path)
     other = {"architect": '37"', "vendor": '45"', "sure": True}
     thirds: list[str] = []
@@ -153,25 +154,38 @@ def test_at_most_ten_third_reads_per_answer(tmp_path: Path) -> None:
         return reply(text(json.dumps(other)), model=HAIKU)
 
     reports = [
-        tool(f"r{n}", "report_finding", finding_input(item=f"Outlet {n} height"))
+        tool(f"r{n}", "report_finding", finding_input(item=f"Outlet {n} height", status=status))
         for n in range(1, 13)
     ]
     provider = ScriptedProvider(
-        lead=[reply(*reports, stop="tool_use"), reply(text("Twelve outlets differ."))],
+        lead=[reply(*reports, stop="tool_use"), reply(text("Twelve outlets."))],
         helper_answer=answer,
     )
     outcome = Harness(tmp_path, provider, message_cap=15 * DOLLARS).run()
+    return thirds, outcome
 
-    assert len(thirds) == 10
+
+def test_every_would_be_red_gets_its_third_read(tmp_path: Path) -> None:
+    """2026-10-28: a would-be red's third read is not counted against the ten."""
+    thirds, outcome = _twelve_thirds(tmp_path, "different")
+    assert len(thirds) == 12
     assert all("turned a quarter turn" not in asked for asked in thirds)  # wide boxes
+    assert all("printed at the centre of the picture" in asked for asked in thirds)
+    findings = _blocks(outcome, "finding")
+    assert {f["checks"]["adjudication"] for f in findings} == {"disagrees"}
+    assert all(f["trust_level"] == "to_check" for f in findings)
+    trust = _blocks(outcome, "trust")[0]
+    assert trust["checks"]["adjudication"]["disagrees"] == 12
+    assert not any(line.startswith("Third read not run") for line in trust["not_checked"])
+
+
+def test_at_most_ten_third_reads_for_items_no_red_comes_from(tmp_path: Path) -> None:
+    thirds, outcome = _twelve_thirds(tmp_path, "same")
+    assert len(thirds) == 10
     findings = _blocks(outcome, "finding")
     adjudicated = [f for f in findings if f["checks"]["adjudication"] is not None]
     assert len(adjudicated) == 10
     assert {f["checks"]["adjudication"] for f in adjudicated} == {"disagrees"}
-    assert all(f["trust_level"] == "to_check" for f in findings)
-    trust = _blocks(outcome, "trust")[0]
-    assert trust["checks"]["adjudication"]["disagrees"] == 10
-    assert any(line.startswith("Third read not run on 2 ") for line in trust["not_checked"])
 
 
 def test_no_third_read_without_room_under_the_cap(tmp_path: Path) -> None:

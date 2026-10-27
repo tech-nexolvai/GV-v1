@@ -143,8 +143,10 @@ from app.review.assistant.chat_provider import (
     failure_from,
 )
 from app.review.assistant.chat_read_review import (
+    ADJUDICATION_MODULE,
     READ_SYSTEM,
     Budget,
+    ThirdReadBudget,
     critic_jobs,
     needs_third_read,
     third_read_job,
@@ -428,6 +430,16 @@ SECOND_READ_LIMIT: Final = 30
 #: item with its read, on another run, was held back as unsure). Once every finding is in (the
 #: last queue), the reads left go to the rest, differences first. The cap and the money are
 #: unchanged; a read can only hold a red back, never make one.
+#: Third reads for would-be reds first (Anant, 2026-10-28, "yes build it"): a would-be red whose
+#: second read was unsure or disagreed gets its third read as soon as that second read comes back,
+#: before third reads open for the rest (after the lead's answer), and never counted against the
+#: others' limit (`read_adjudication.ADJUDICATION_LIMIT`). On a real upload every second read came
+#: back long before third reads opened; then the ten went in page order to the first findings and
+#: four would-be reds further on got none, so their unsure second reads held them back. A third
+#: read only settles a read: "agrees" lifts the hold an unsure or disagreeing second read puts on a
+#: red; anything else keeps it. It never makes a red (`proof.code_proved`: code's own proof and two
+#: reading routes per number are still required). At most one per second read, so this many.
+THIRD_READ_RED_LIMIT: Final = SECOND_READ_LIMIT
 #: An upper bound of one second read's prompt: two crops (at most 1600 px a side, about 3,400
 #: tokens each) and the question.
 _SECOND_READ_PROMPT_TOKENS: Final = 8_000
@@ -1151,8 +1163,12 @@ class ChatEngine:
         # lead marking a finding verified keeps it), the findings queued, and the checks running.
         self._reads: dict[str, tuple[tuple[Any, ...], str, dict[str, Any]]] = {}
         self._read_queued: set[tuple[str, tuple[Any, ...]]] = set()
-        self._third_queued: set[str] = set()
+        self._third_queued: set[tuple[str, tuple[Any, ...]]] = set()
+        #: Each finding's third read, kept like its second read while what it read is unchanged:
+        #: (what was read, the outcome, the three readings).
+        self._thirds: dict[str, tuple[tuple[Any, ...], str, list[dict[str, Any]]]] = {}
         self._third_reads_open = False
+        self._third_budget: ThirdReadBudget | None = None
         self._checks_pool: ThreadPoolExecutor | None = None
         self._checks: list[Future[None]] = []
         self._checks_budget: Budget | None = None
@@ -2110,6 +2126,11 @@ class ChatEngine:
         )
         checked.setdefault("round_status", None)
         checked["second_read_values"] = dict(kept[2]) if kept is not None else None
+        third = self._thirds.get(str(finding.get("id")))
+        if kept is not None and third is not None and third[0] == kept[0]:
+            # Its third read is kept with its second read (made early for a would-be red).
+            checks = {**(checked.get("checks") or {}), "adjudication": third[1]}
+            checked = judged({**checked, "checks": checks, "reads": list(third[2])})
         # The resolver's fields (#1554) and the escalation's (#1619) are set only on the items
         # they touch (and the round match, 2026-10-22).
         for key in (
@@ -2892,6 +2913,16 @@ class ChatEngine:
                 self._checks_budget = Budget(self)
             return self._checks_budget
 
+    def _third_read_budget(self) -> ThirdReadBudget:
+        """The third reads' money: the checks' budget, at most `ADJUDICATION_CAP_MICROS` of it."""
+        inner = self._check_budget()
+        with self._lock:
+            if self._third_budget is None:
+                module = load_module(ADJUDICATION_MODULE)
+                cap = int(getattr(module, "ADJUDICATION_CAP_MICROS", 0) or 0)
+                self._third_budget = ThirdReadBudget(inner, cap)
+            return self._third_budget
+
     def _update_finding(
         self, finding_id: str, change: Callable[[dict[str, Any]], dict[str, Any]]
     ) -> None:
@@ -2936,7 +2967,8 @@ class ChatEngine:
 
     def _second_read_one(self, module: Any, finding: Mapping[str, Any]) -> None:
         """One finding's second read; kept only when the finding still shows what was read. A
-        read that disagrees or is unsure starts its third read once those are open."""
+        read that disagrees or is unsure starts its third read: at once on a would-be red, else
+        once third reads are open (`_queue_third_read`)."""
         if self.cancel.is_set():
             return
         crops: dict[str, bytes] = {}
@@ -2972,20 +3004,53 @@ class ChatEngine:
             if not self.book.replace(updated):
                 return
             self._show_finding(updated)
-        if result in ("disagrees", "unsure") and self._third_reads_open:
+        if result in ("disagrees", "unsure"):
             self._queue_third_read(updated)
 
     def _queue_third_read(self, finding: Mapping[str, Any]) -> None:
-        """Starts one finding's third read (at most `third_read_limit()` per message)."""
+        """Starts one finding's third read, once for what its second read read. A would-be red
+        (`could_go_red`) gets one at once, up to `THIRD_READ_RED_LIMIT`; any other finding only
+        once third reads are open (the lead has answered) and while fewer than
+        `third_read_limit()` third reads were started in all, so the would-be reds' come first."""
         finding_id = str(finding["id"])
+        key = (finding_id, _read_key(finding))
+        red = could_go_red(finding)
+        if not needs_third_read(finding):
+            return
+        budget = self._third_read_budget()
         with self._lock:
-            if finding_id in self._third_queued or len(self._third_queued) >= third_read_limit():
+            if key in self._third_queued:
                 return
-            job = third_read_job(self, finding, self._check_budget(), self._update_finding)
+            if red:
+                if len(self._third_queued) >= THIRD_READ_RED_LIMIT:
+                    return
+            elif not self._third_reads_open or len(self._third_queued) >= third_read_limit():
+                return
+            job = third_read_job(self, finding, budget, self._third_read_done(key[1]))
             if job is None:
                 return
-            self._third_queued.add(finding_id)
+            self._third_queued.add(key)
         self._submit_check("third_reads", job)
+
+    def _third_read_done(
+        self, key: tuple[Any, ...]
+    ) -> Callable[[str, Callable[[dict[str, Any]], dict[str, Any]]], None]:
+        """A third read's result on its finding: kept only while the finding still shows what was
+        read (`key`), and remembered so the finding's next version keeps it (`_checked`)."""
+
+        def update(finding_id: str, change: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
+            with self.finding_lock:
+                current = next((f for f in self.book.live() if f["id"] == finding_id), None)
+                if current is None or _read_key(current) != key:
+                    return  # changed (or dropped) while it was read
+                updated = change(dict(current))
+                updated["trust_level"] = trust_level(updated["checks"], updated.get("status"))
+                outcome = str((updated.get("checks") or {}).get("adjudication") or "unsure")
+                self._thirds[finding_id] = (key, outcome, list(updated.get("reads") or []))
+                if self.book.replace(updated):
+                    self._show_finding(updated)
+
+        return update
 
     def _post_checks(self) -> int:
         """After the lead's answer: the second reads still to make, the third reads (each one
@@ -2997,9 +3062,10 @@ class ChatEngine:
             self._third_reads_open = True
             for job in critic_jobs(self, findings, self._check_budget(), self._update_finding):
                 self._submit_check("critic", job)
-            for finding in sorted(findings, key=_differences_first):
-                if needs_third_read(finding):
-                    self._queue_third_read(finding)
+            # The would-be reds' first (most were started as their second reads came back),
+            # then the rest, differences first.
+            for finding in sorted(findings, key=_reads_first):
+                self._queue_third_read(finding)
             self._queue_second_reads(findings, final=True)
         self._close_checks()
         with_pictures = [

@@ -1,10 +1,12 @@
 """The third reads and the critic, for the chat engine (#1498, run in parallel since #1512).
 
-1. **Third reads.** A finding whose second read disagrees or is unsure (at most
-   `read_adjudication.ADJUDICATION_LIMIT` per answer) is read a third time by a stronger model on
-   sharper crops; `reads`, `checks.adjudication` and the new trust level are recorded
-   (`read_adjudication.py`). `third_read_job` makes one such job: the engine starts it as soon as
-   that finding's second read comes back, so third reads run alongside the other second reads.
+1. **Third reads.** A finding whose second read disagrees or is unsure is read a third time by a
+   stronger model on sharper crops; `reads`, `checks.adjudication` and the new trust level are
+   recorded (`read_adjudication.py`). `third_read_job` makes one such job. The engine starts a
+   would-be red's as soon as its second read comes back, every would-be red's before any other
+   item's (2026-10-28); the others' wait for the lead's answer, at most
+   `read_adjudication.ADJUDICATION_LIMIT` in all. Their money is `ThirdReadBudget`: at most
+   `read_adjudication.ADJUDICATION_CAP_MICROS` per answer, inside the message's fixed price.
 2. **The critic** (`finding_critic.py`), for a whole-set or full-check answer: up to 4 calls of up
    to 8 findings, recording `critic` and `checks.critic` (`passed` / `objects` / `unsure`, or
    `not_run` for a finding the limit or the cap left out). `critic_jobs` makes them; the engine
@@ -22,6 +24,7 @@ without them, or a test that leaves the checks out, simply runs neither.
 
 from __future__ import annotations
 
+import base64
 import logging
 import threading
 from collections.abc import Callable, Mapping
@@ -31,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from app.review.assistant import chat_trust
+from app.review.assistant.agent import prompt_tokens_upper
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
 from app.review.assistant.chat_trust import trust_level
 
@@ -38,9 +42,11 @@ if TYPE_CHECKING:
     from app.review.assistant import finding_critic, read_adjudication
 
 __all__ = [
+    "ADJUDICATION_MODULE",
     "READ_SYSTEM",
     "Budget",
     "NoRoom",
+    "ThirdReadBudget",
     "critic_jobs",
     "needs_third_read",
     "review_reads",
@@ -85,10 +91,70 @@ class Budget:
         with self.lock:
             self.held -= amount
 
+    def charge(self, cost: int) -> None:
+        """What a finished call cost (only a capped budget counts it)."""
+
+
+class ThirdReadBudget:
+    """The third reads' money (2026-10-28): inside the message's caps (`inner`, the checks'
+    shared budget) and at most `cap` in all, counting what the finished reads cost and the
+    estimates of the reads running now. A read that would pass it is not made (`NoRoom`)."""
+
+    def __init__(self, inner: Budget, cap: int) -> None:
+        self.inner = inner
+        self.cap = cap
+        self.running = 0
+        self.spent = 0
+        self.lock = threading.Lock()
+
+    def hold(self, estimate: int | None) -> int:
+        amount = estimate or 0
+        with self.lock:
+            if self.spent + self.running + amount > self.cap:
+                raise NoRoom
+            held = self.inner.hold(amount)
+            self.running += held
+        return held
+
+    def release(self, amount: int) -> None:
+        self.inner.release(amount)
+        with self.lock:
+            self.running -= amount
+
+    def charge(self, cost: int) -> None:
+        with self.lock:
+            self.spent += max(0, int(cost))
+
+
+def _image_size(block: Mapping[str, Any]) -> tuple[int, int] | None:
+    """A base64 PNG picture's (width, height), from its header; `None` for any other block."""
+    source = block.get("source") if block.get("type") == "image" else None
+    if not isinstance(source, Mapping) or source.get("media_type") != "image/png":
+        return None
+    try:
+        head = base64.b64decode(str(source.get("data") or "")[:44])
+    except ValueError:
+        return None
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def content_tokens(content: list[dict[str, Any]], system: str, ceiling: int) -> int:
+    """An upper bound on one read's prompt tokens from what it really sends (its text, and each
+    picture at width x height / 750), never above `ceiling` (the read's fixed bound): a picture
+    whose size cannot be told counts as the whole `ceiling`."""
+    sizes = [_image_size(block) for block in content if block.get("type") == "image"]
+    if any(size is None for size in sizes):
+        return ceiling
+    body = {"system": system, "messages": [{"role": "user", "content": content}]}
+    pictures = [size for size in sizes if size is not None]
+    return min(ceiling, prompt_tokens_upper(body, pictures))
+
 
 def _model_call(
     engine: Any,
-    budget: Budget,
+    budget: Budget | ThirdReadBudget,
     *,
     short: str,
     effort: str,
@@ -98,13 +164,17 @@ def _model_call(
     prompt_id: str,
     output_format: Mapping[str, Any] | None = None,
     thinking: bool = False,
+    sized: bool = False,
 ) -> Callable[[list[dict[str, Any]]], str]:
     """One read-review call. `thinking`: adaptive thinking for a judgement (the critic, #1775 C4);
-    off for copying a printed value (the second and third reads)."""
+    off for copying a printed value (the second and third reads). `sized`: the call's estimate
+    comes from what it really sends (`content_tokens`, at most `prompt_tokens`), so reads
+    running at once do not hold their worst case. What the call cost is charged to `budget`."""
     model = BY_SHORT[short]
 
     def call(content: list[dict[str, Any]]) -> str:
-        held = budget.hold(engine._price(model, prompt_tokens, max_tokens))
+        tokens = content_tokens(content, system, prompt_tokens) if sized else prompt_tokens
+        held = budget.hold(engine._price(model, tokens, max_tokens))
         try:
             reply = engine._call(
                 model=model,
@@ -121,6 +191,10 @@ def _model_call(
             )
         finally:
             budget.release(held)
+        charge = getattr(budget, "charge", None)
+        cost = getattr(engine, "_cost", None)
+        if callable(charge) and callable(cost):
+            charge(cost(model, reply.usage))
         if reply.stop_reason == "refusal":
             raise RuntimeError("declined")
         text: str = reply.text()
@@ -183,7 +257,7 @@ def needs_third_read(finding: Mapping[str, Any]) -> bool:
 
 
 def third_read_job(
-    engine: Any, finding: Mapping[str, Any], budget: Budget, update: Update
+    engine: Any, finding: Mapping[str, Any], budget: Budget | ThirdReadBudget, update: Update
 ) -> Callable[[], None] | None:
     """One finding's third read as work to run (its crops drawn inside it), or `None` when the
     module is missing or the finding does not need one."""
@@ -201,6 +275,7 @@ def third_read_job(
         prompt_tokens=module.ADJUDICATION_PROMPT_TOKENS,
         prompt_id=_prompt_id(engine, "adjudicate"),
         output_format=getattr(module, "READ_SCHEMA", None),
+        sized=True,
     )
     pdf_paths = engine.book.pdf_paths()
 
