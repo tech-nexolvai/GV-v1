@@ -1,5 +1,5 @@
-"""A Right needs code's proof that both dimensions measure the same thing: code, $0, no AI
-(2026-10-27).
+"""A Right is checked for code's proof that both dimensions measure the same thing: code, $0,
+no AI (2026-10-27).
 
 A red already needs code to confirm a vendor size and a reference size end at the same places
 (`assistant_pairing_proof = code_ends`). A Right had no such bar: two equal numbers that measure
@@ -7,8 +7,8 @@ different things were a green tick. A by-eye check of a real upload found two: t
 vendor's 4" band at the counter's edge with the reference's 4" from the floor to an outlet (made-up
 values here). Both say 4", so the tick was true only by luck.
 
-**The rule.** An item called the same that pairs a vendor label with a reference label is Right
-only when code proves the pairing, by one of:
+**The rule.** For an item called the same that pairs a vendor label with a reference label, code
+looks for proof that the two measure the same thing:
 
 1. **Code's geometry** (the red's proofs, `ends_proof`, in its order): the drawings lined up on
    sizes printed once on each, and the two lines' ends land together (`same_extent`); the drawn
@@ -20,8 +20,10 @@ only when code proves the pairing, by one of:
 
 Where code's geometry shows the two do not end at the same places (the drawings lined up and the
 ends land apart, or the drawn run ties an end to another place), the item is Not compared:
-"different reference points". Otherwise, with no proof, it is Not compared: "could not confirm
-both measure the same thing", with what code saw. Never red, never a Likely problem.
+"different reference points", never a Right. Where code finds no proof either way, the item stays
+a Right marked "Matches (ends not proved)" (Anant's option B, 2026-10-27: the strict bar, Not
+compared without proof, lost 18 keyed correct Rights on the client-meeting job and caught no
+lucky one the geometry missed). Never red, never a Likely problem.
 
 Two geometry answers are not trusted to take a Right away, only to give one: "one is a width and
 the other a height" (a plan is often drawn turned on one of the drawings) and the ends' kinds
@@ -50,10 +52,11 @@ from app.review.assistant.full_check_advocate import same_extent
 
 __all__ = [
     "FIELD",
+    "different",
+    "ends_not_proved",
     "judge",
     "needs_proof",
     "only_size",
-    "unproved",
 ]
 
 _log = logging.getLogger(__name__)
@@ -314,13 +317,11 @@ def judge(
     return {"proved": False, "how": "none", "why": why, **keys}
 
 
-def unproved(finding: Mapping[str, Any]) -> tuple[Literal["different", "none"], str] | None:
-    """The item's record when it took the Right away, for the two labels the item still pairs:
-    ("different", why) or ("none", why); `None` otherwise (no record, proved, or another pair)."""
+def _held(finding: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The item's record, while the item is called the same and still pairs the two labels the
+    record was made for; `None` otherwise."""
     held = finding.get(FIELD)
-    if not isinstance(held, Mapping) or held.get("proved") is not False:
-        return None
-    if finding.get("status") != "same":
+    if not isinstance(held, Mapping) or finding.get("status") != "same":
         return None
     dims = finding.get("dims")
     if not isinstance(dims, Mapping):
@@ -329,5 +330,23 @@ def unproved(finding: Mapping[str, Any]) -> tuple[Literal["different", "none"], 
         return None
     if dim_ends._label_key(dims.get("architect")) != held.get("architect"):
         return None
-    why = str(held.get("why") or "")
-    return ("different", why) if held.get("how") == "different" else ("none", why)
+    return held
+
+
+def different(finding: Mapping[str, Any]) -> str | None:
+    """Why code's geometry shows the two dimensions end at other places (the item is then Not
+    compared, never a Right); `None` otherwise."""
+    held = _held(finding)
+    if held is None or held.get("how") != "different":
+        return None
+    return str(held.get("why") or "") or "code's geometry shows they end at other places"
+
+
+def ends_not_proved(finding: Mapping[str, Any]) -> bool | None:
+    """Whether the Right is "Matches (ends not proved)" by the record: `True` when code found no
+    proof (it stays a Right with that note, Anant's option B), `False` when code proved it;
+    `None` with no record for the labels the item pairs."""
+    held = _held(finding)
+    if held is None or held.get("how") == "different":
+        return None
+    return held.get("proved") is not True

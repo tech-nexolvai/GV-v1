@@ -1378,16 +1378,14 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
                 _short(elsewhere, 300),
                 "the reference's size that starts where the vendor's does along {thing}",
             )
-        unproved = right_proof.unproved(finding)
-        if unproved is not None:
-            # A Right needs code's proof that both dimensions measure the same thing
-            # (2026-10-27): two equal numbers between different points are a tick by luck.
-            how, why = unproved
+        apart = right_proof.different(finding)
+        if apart is not None:
+            # Code's geometry shows the two sizes end at other places (2026-10-27): two equal
+            # numbers between different points are a tick by luck, never a Right.
             return _not(
-                "different_reference" if how == "different" else "not_proved",
-                _short(f"could not confirm both measure the same thing: {why}", 300),
-                "the reference's dimension that measures the same thing as {thing}, proved by "
-                "code (the same ends, or the only such size on both drawings)",
+                "different_reference",
+                _short(f"the two sizes do not measure the same thing: {apart}", 300),
+                "the reference's dimension that runs between the same points as {thing}",
             )
         if finding.get("compared") is False:
             return _not(

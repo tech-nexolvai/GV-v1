@@ -70,9 +70,9 @@ After the ladder, on every Right (`row_places`, 2026-10-27): a piece of a row of
 against the reference piece that starts at the same place along its row (the vendor's range gap is
 not the reference's other piece of that size further up the counter): code points the item at that
 piece, or, with none, the item is Not compared. Rows code cannot measure leave the item as it was.
-Then each Right the AI paired needs code's proof that both dimensions measure the same thing
-(`right_proof`, 2026-10-27): the same ends by code's geometry, or the only such size on both
-drawings; without it the item is Not compared.
+Then each Right the AI paired is checked for code's proof that both dimensions measure the same
+thing (`right_proof`, 2026-10-27): geometry that shows other ends makes it Not compared; with no
+proof either way it stays a Right marked "Matches (ends not proved)".
 
 Code decides every outcome, with the same witness rules as the red clouds: a step only adds code's
 readings (a label, the text under the markup, code's pairing) or folds a copy into
@@ -1836,12 +1836,13 @@ def _mark_right_ends(
 def _mark_right_proof(
     live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
 ) -> None:
-    """A Right needs code's proof that both dimensions measure the same thing (2026-10-27,
+    """Each Right is checked for code's proof that both dimensions measure the same thing (2026-10-27,
     `right_proof`): the AI paired the vendor's 4" band at the counter's edge with the reference's 4"
     from the floor to an outlet, a tick true only by luck. Code records, for the two labels each
     Right pairs, whether its geometry proves the same ends, shows other ends, or the size is the
-    only such dimension on both drawings; without proof the item is Not compared
-    (`classification`). Items code compared itself, and those a reviewer decided, are left."""
+    only such dimension on both drawings. Other ends: Not compared (`classification`); no proof: a
+    Right marked "Matches (ends not proved)" (`proof.matches_unproved`). Items code compared
+    itself, and those a reviewer decided, are left."""
     if not ctx.labels:
         return
     labels = ends_proof.labels_reader(ctx.labels)

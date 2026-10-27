@@ -529,6 +529,9 @@ def matches_unproved(finding: Mapping[str, Any]) -> bool:
     """A Right whose two dimensions code could not prove run between the same kinds of points
     (`dim_ends.LIKE_FOR_LIKE`, for the same two labels the item still pairs): named
     `MATCHES_UNPROVED`, to be folded under a proved sibling. Data only: still a Right."""
+    found = right_proof.ends_not_proved(finding)
+    if found is not None:
+        return found  # code's record for this pair (`right_proof`, 2026-10-27, option B)
     held = finding.get(dim_ends.LIKE_FOR_LIKE)
     if finding.get("status") != "same" or not isinstance(held, Mapping):
         return False
@@ -537,21 +540,7 @@ def matches_unproved(finding: Mapping[str, Any]) -> bool:
         return False
     if dim_ends._label_key((dims or {}).get("architect")) != held.get("architect"):
         return False
-    if _right_proved(finding):
-        return False  # code proved the pair another way (`right_proof`, 2026-10-27)
     return held.get("proved") is False
-
-
-def _right_proved(finding: Mapping[str, Any]) -> bool:
-    """Code proved the Right's two labels measure the same thing (`right_proof`): its geometry,
-    or the only such size on both drawings."""
-    held = finding.get(right_proof.FIELD)
-    if not isinstance(held, Mapping) or held.get("proved") is not True:
-        return False
-    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
-    return dim_ends._label_key((dims or {}).get("vendor")) == held.get("vendor") and (
-        dim_ends._label_key((dims or {}).get("architect")) == held.get("architect")
-    )
 
 
 def ends_unconfirmed(finding: Mapping[str, Any]) -> bool:

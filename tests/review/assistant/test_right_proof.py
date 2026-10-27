@@ -255,15 +255,15 @@ def _escalated(finding: dict[str, Any], vendor: list[dict[str, Any]]) -> dict[st
     return judged(changed.get("F1", finding))
 
 
-def test_an_unproved_right_is_not_compared_with_a_plain_reason_never_red() -> None:
+def test_an_unproved_right_stays_right_marked_ends_not_proved() -> None:
+    # Anant's option B (2026-10-27): with no proof either way the item stays a Right, named
+    # "Matches (ends not proved)" on its card.
     found = _escalated(_finding("V3", "R1"), _vendor())
     assert found[right_proof.FIELD]["proved"] is False
-    assert proof.proof_group(found) == "not_compared"
-    classified = proof.classified(found)
-    assert classified.reason == "not_proved"
-    assert classified.why is not None
-    assert classified.why.startswith("could not confirm both measure the same thing")
-    assert "AI" not in classified.why
+    assert found[right_proof.FIELD]["how"] == "none"
+    assert proof.proof_group(found) == "right"
+    assert proof.matches_unproved(found)
+    assert proof.MATCHES_UNPROVED == "Matches (ends not proved)"
 
 
 def test_a_proved_right_stays_right_and_is_not_named_unproved() -> None:
@@ -290,13 +290,26 @@ def test_different_ends_are_different_reference_points() -> None:
     classified = proof.classified(finding)
     assert classified.outcome == "not_compared"
     assert classified.reason == "different_reference"
+    assert classified.why is not None
+    assert classified.why.startswith("the two sizes do not measure the same thing")
+    assert "AI" not in classified.why
+    assert proof.proof_group(finding) == "not_compared"
+    assert not proof.matches_unproved(finding)
 
 
 def test_a_stale_record_is_ignored_once_the_item_pairs_other_labels() -> None:
-    found = _escalated(_finding("V3", "R1"), _vendor())
-    found["dims"]["vendor"]["id"] = "V1"
-    assert right_proof.unproved(found) is None
-    assert proof.proof_group(found) == "right"
+    finding = _finding("V3", "R1")
+    finding[right_proof.FIELD] = {
+        "proved": False,
+        "how": "different",
+        "why": "the drawn run: one end lands where the other drawing has another place",
+        "vendor": f"{VENDOR}|1|V3",
+        "architect": f"{REFERENCE}|1|R1",
+    }
+    finding["dims"]["vendor"]["id"] = "V1"
+    assert right_proof.different(finding) is None
+    assert right_proof.ends_not_proved(finding) is None
+    assert proof.proof_group(finding) == "right"
 
 
 def test_a_saved_right_with_no_record_keeps_its_outcome() -> None:
