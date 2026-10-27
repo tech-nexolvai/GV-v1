@@ -289,3 +289,55 @@ def test_the_number_readers_ruler_and_stroke_shapes_are_other_routes() -> None:
         "the vendor's 3/4\" is read from two OCR engines on the drawn ink, but code's number "
         'reader reads 1/4" at its spot'
     )
+
+
+def _typed_over_string(drawn: float, parts_sum: str = "24", agrees: bool = False) -> dict[str, Any]:
+    """A vendor string whose printed 23" overall does not add up: its parts make `parts_sum`, and
+    code measured the overall's own dimension line `drawn` long at its view's scale. No geometry
+    proves the parts are one chain (`string_verified` is not set): never red."""
+    total = _label("D8", '23"', "23", "vendor")
+    finding: dict[str, Any] = {
+        "id": "F7",
+        "page": 1,
+        "item": "Dimension string",
+        "status": "different",
+        "source": "vendor_arithmetic",
+        "created_by": "ledger",
+        "vendor": '23"',
+        "architect": f'{parts_sum}"',
+        "parts": ['5"', '15"', '4"'],
+        "parts_sum": parts_sum,
+        "inches": {"vendor": "23", "architect": parts_sum, "difference": "-1"},
+        "trust_level": "confirmed",
+        "witnesses": ["arithmetic"],
+        "vendor_box": {"file": "set.pdf", "page": 1, "x0": 10, "y0": 10, "x1": 30, "y1": 18},
+        "dims": {"vendor": total},
+        "ledger_ids": ["S1"],
+        "checks": {"printed_vendor": "match", "arithmetic": "does_not_add_up"},
+    }
+    fit = _Fit({"D8": _Check(agrees, drawn)})
+    reading_routes.mark(finding, lambda f, p: [total], lambda f, p: fit)
+    return finding
+
+
+def test_a_typed_over_overall_is_a_please_check_never_red() -> None:
+    finding = _typed_over_string(24.1875)
+    assert reading_routes.drawn_length(finding) == '24 3/16"'
+    assert not proof.code_proved(finding)
+    assert proof.proof_group(finding) == "likely_problem"
+    words = proof.please_check_words(finding)
+    assert words == (
+        'Please check and confirm: Dimension string: the vendor prints 23", but its dimension '
+        'line is drawn 24 3/16" long and its parts (5" + 15" + 4") add up to 24": the printed '
+        "number looks typed over (a number that disagrees with its own drawn line is never red)."
+    )
+    assert proof.proof_of(finding)["reason"] == words
+
+
+def test_a_drawn_line_that_fits_neither_the_parts_nor_the_print_changes_nothing() -> None:
+    # Drawn 26": not the parts' 24" either, so code cannot say the overall was typed over.
+    finding = _typed_over_string(26.0)
+    assert proof.typed_over(finding) is None
+    assert proof.proof_group(finding) == "not_compared"
+    # Drawn to its printed 23": no doubt about the print, nothing typed over.
+    assert proof.typed_over(_typed_over_string(23.0, agrees=True)) is None
