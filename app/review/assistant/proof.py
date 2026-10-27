@@ -56,6 +56,7 @@ from app.review.assistant import (
     likely_problems,
     missing_items,
     reading_routes,
+    right_proof,
     rule_notes,
     same_item_pages,
     spot_guard,
@@ -536,7 +537,21 @@ def matches_unproved(finding: Mapping[str, Any]) -> bool:
         return False
     if dim_ends._label_key((dims or {}).get("architect")) != held.get("architect"):
         return False
+    if _right_proved(finding):
+        return False  # code proved the pair another way (`right_proof`, 2026-10-27)
     return held.get("proved") is False
+
+
+def _right_proved(finding: Mapping[str, Any]) -> bool:
+    """Code proved the Right's two labels measure the same thing (`right_proof`): its geometry,
+    or the only such size on both drawings."""
+    held = finding.get(right_proof.FIELD)
+    if not isinstance(held, Mapping) or held.get("proved") is not True:
+        return False
+    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    return dim_ends._label_key((dims or {}).get("vendor")) == held.get("vendor") and (
+        dim_ends._label_key((dims or {}).get("architect")) == held.get("architect")
+    )
 
 
 def ends_unconfirmed(finding: Mapping[str, Any]) -> bool:

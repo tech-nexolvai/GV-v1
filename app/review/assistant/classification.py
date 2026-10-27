@@ -84,7 +84,13 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Any, Final, Literal
 
-from app.review.assistant import dim_ends, drafting_notes, job_value_rules, row_places
+from app.review.assistant import (
+    dim_ends,
+    drafting_notes,
+    job_value_rules,
+    right_proof,
+    row_places,
+)
 from app.review.assistant.finding_checks import to_inches, wrong_part
 from app.review.assistant.ledger import format_inches
 from app.review.assistant.round_picks import pick_words
@@ -1371,6 +1377,17 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
                 "not_proved",
                 _short(elsewhere, 300),
                 "the reference's size that starts where the vendor's does along {thing}",
+            )
+        unproved = right_proof.unproved(finding)
+        if unproved is not None:
+            # A Right needs code's proof that both dimensions measure the same thing
+            # (2026-10-27): two equal numbers between different points are a tick by luck.
+            how, why = unproved
+            return _not(
+                "different_reference" if how == "different" else "not_proved",
+                _short(f"could not confirm both measure the same thing: {why}", 300),
+                "the reference's dimension that measures the same thing as {thing}, proved by "
+                "code (the same ends, or the only such size on both drawings)",
             )
         if finding.get("compared") is False:
             return _not(
