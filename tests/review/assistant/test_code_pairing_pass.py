@@ -36,6 +36,7 @@ from app.review.assistant.simple_check.pairing import (
     mirror_proof,
     named_by,
     piece_words,
+    plan_and_elevation,
     rank,
     room_views,
     swap_audit,
@@ -313,6 +314,88 @@ def test_a_rooms_views_of_one_title_are_compared_together() -> None:
         Facts("s.view2", view_titles=("CONFERENCE ROOM ELEVATION",), markers=frozenset({"ADA"})),
     ]
     assert room_views(marked, variants) == ()
+
+
+def test_a_sheets_one_plan_and_one_elevation_are_compared_together() -> None:
+    """A real upload (2026-10-27): an architect sheet of one item, its views titled only "PLAN"
+    and "ELEVATION"; the vendor's drawing of the item stayed "pairing unsure" (made-up names)."""
+    vendor = Facts("v", index_title="Sample Kitchenette")
+    views = [
+        Facts("s.view1", view_titles=("ELEVATION",)),
+        Facts("s.view2", view_titles=("PLAN",)),
+    ]
+    found = plan_and_elevation(vendor, views)
+    assert [s.ref for s in found] == ["s.view1", "s.view2"]
+    assert "one plan and one elevation" in found[0].evidence[0]
+    # Anything else is left to `narrow` as before: two elevations, a third view, a named view.
+    two = [
+        Facts("s.view1", view_titles=("ELEVATION",)),
+        Facts("s.view2", view_titles=("ELEVATION",)),
+    ]
+    assert plan_and_elevation(vendor, two) == ()
+    three = [*views, Facts("s.view3", view_titles=("SECTION",))]
+    assert plan_and_elevation(vendor, three) == ()
+    named = [
+        Facts("s.view1", view_titles=("PANTRY ELEVATION",)),
+        Facts("s.view2", view_titles=("PLAN",)),
+    ]
+    assert plan_and_elevation(vendor, named) == ()
+    assert plan_and_elevation(vendor, [views[0]]) == ()
+    # An accessible variant on one view: a marker still tells them apart (ruled out).
+    marked = Facts("v", index_title="Sample Kitchenette", markers=frozenset({"ADA"}))
+    variants = [views[0], Facts("s.view2", view_titles=("PLAN",), markers=frozenset({"ADA"}))]
+    assert plan_and_elevation(marked, variants) == ()
+
+
+def _height(id_: str, inches: str, top: float, bottom: float, x: float = 50.0) -> dict[str, Any]:
+    """A vertical dimension label whose line runs from `top` to `bottom` (points, 2 pt an inch)."""
+    return {
+        "id": id_,
+        "inches": inches,
+        "text": f'{inches}"',
+        "orientation": "v",
+        "dim_line": [[x, top], [x, bottom]],
+    }
+
+
+def test_a_plan_depth_is_never_proved_the_same_as_an_elevation_height() -> None:
+    """With a sheet's plan and elevation compared together, a plan's depth that runs up the page
+    like the elevation's height is still never the vendor's height: the line-up check maps the
+    architect's sheet onto the vendor's drawing on sizes printed once on each (here the
+    elevation's toe and counter), and the plan, drawn higher on the sheet, lands elsewhere.
+    Made-up values."""
+    from app.review.assistant.full_check_advocate import STRONG_PICK, Check, decide, same_extent
+
+    height = _height("V1", "24", 300, 348)
+    vendor = [height, _height("V2", "4", 340, 348, 60), _height("V3", "20", 308, 348, 70)]
+    plan_depth = _height("D1", "26", 100, 152)  # the plan, above the elevation on the sheet
+    architect = [
+        plan_depth,
+        _height("D2", "24", 500, 548),  # the elevation's own height
+        _height("D3", "4", 540, 548, 60),
+        _height("D4", "20", 508, 548, 70),
+    ]
+    extent = same_extent(height, plan_depth, vendor, architect)
+    assert extent[0] == "different_extent", extent
+    # The elevation's own height lines up: the check itself works on this sheet.
+    assert same_extent(height, architect[1], vendor, architect)[0] == "same_extent"
+    spans = {"from": "floor", "to": "top_of_counter"}
+    verdict = decide(
+        mode="code_ends",
+        checks=[Check(name, "pass") for name in ("ink", "annotation", "roles", "axis", "round")],
+        printed=True,
+        helper_pick="p2.D1",
+        advocate={
+            "pick": "p2.D1",
+            "vendor_spans": spans,
+            "architect_spans": spans,
+            "vendor_ink_black": "yes",
+            STRONG_PICK: True,
+        },
+        extent=extent,
+        code_paired=False,
+    )
+    assert verdict.result == "objects"  # never red
 
 
 # ---- the mirror and the swap audit -----------------------------------------------------------------
