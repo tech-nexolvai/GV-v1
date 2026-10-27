@@ -98,6 +98,10 @@ _LOOK_WORDS: Final[Mapping[str, str]] = {
 _ENDS_WORDS: Final = (
     "The AI pairs these sizes, but code could not confirm both measure the same thing"
 )
+_PICK_WORDS: Final = (
+    "Code's drawing shows these sizes end at the same places, but a second AI look did not pair "
+    "them"
+)
 _HELD_WORDS: Final = f"Code found a difference; {check_record.HELD_WORDS}"
 
 
@@ -189,6 +193,8 @@ def question_key(finding: Mapping[str, Any]) -> tuple[str, str]:
     if group == "likely_problem":
         if proof.ends_unconfirmed(finding):
             return ("ends", _ENDS_WORDS)
+        if proof.pick_disagrees(finding):
+            return ("pick", _PICK_WORDS)
         if proof.held_back(finding) is not None:
             kind = check_record.kind_of(finding)
             return (f"held:{kind}", f"{_HELD_WORDS} ({check_record.KINDS.get(kind, kind)})")

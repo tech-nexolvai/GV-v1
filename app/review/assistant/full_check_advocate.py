@@ -28,8 +28,9 @@ as proved only when ALL of these hold (under `code_ends`, the default since Anan
    only code's own pairing proves it.
 4. **Every code check passes** (`code_checks`): the vendor value is not GV's markup (on GV's
    combined sheets: the drawing's black or grey ink; on an ordinary upload every colour is the
-   drawing's own ink, `COLOUR_RULE`), not inside one of GV's text notes; the labels are on a vendor half and an architect half
-   (never a brand prototype); both run the same way; the vendor value is from the newest round;
+   drawing's own ink, `COLOUR_RULE`), not a value one of GV's text notes prints (a note lying
+   on top of the vendor's own ink does not stop it); the labels are on a vendor half and an
+   architect half (never a brand prototype); both run the same way; the vendor value is from the newest round;
    its millimetres and inches agree; and the difference is not a unit slip or a one-digit misread.
 
 In `code_only` mode only items code paired by itself can be red: the vendor's own sums (one string,
@@ -451,6 +452,69 @@ def _newest_round(
     return (max(own) if own else None), (max(newest) if newest else None)
 
 
+def note_values(text: object) -> set[Decimal]:
+    """Every size a note of GV's prints: each written dimension, and each part of one joined by a
+    plus ('39 1/4"+6"' prints 39 1/4" and 6")."""
+    from app.review.assistant.finding_checks import to_inches
+
+    found: set[Decimal] = set()
+    for match in _DIMENSION.finditer(str(text or "").translate(_MARKS)):
+        written = match.group(0).strip()
+        for piece in (written, *written.split("+")):
+            value = to_inches(piece.strip()) if piece.strip() else None
+            if value is not None:
+                found.add(value)
+    return found
+
+
+def _annotation_check(
+    vendor: Mapping[str, Any],
+    box: Sequence[float],
+    page: int,
+    file: object,
+    annotations: Iterable[Mapping[str, Any]],
+) -> Check:
+    """Whether the vendor's value may be GV's text note instead of the vendor's own ink.
+
+    Code reads every label from the vendor's own layer: the page's content and its pasted
+    drawings, with GV's notes left out (`verify_value._vendor_page`; nothing in a PDF annotation
+    is ever read, 2026-10-19). So a note of GV's lying on top of the label is not what code read:
+    GV writes its notes over the very sizes it questions, and stopping every value under one hid
+    real vendor mistakes (a real upload, 2026-10-27: two vendor strings that do not add up and an
+    overall against the reference, each under a GV note giving GV's own size; the same stop on
+    four keyed items of another set, 2026-10-20). The simple check already dropped this box check
+    for the same reason (`simple_check.verify`, `gv_ink`). It still fails when the note
+    itself prints the vendor's value (whose number it is cannot be told by eye then), or when
+    the value has no code label (read from a picture of the page, notes and all)."""
+    notes = [
+        a
+        for a in annotations
+        if a.get("page") == page
+        and a.get("kind") == "FreeText"
+        and (file is None or a.get("file") in (None, file))
+        and isinstance(a.get("box"), Sequence)
+        and _inside(box, [float(v) for v in a["box"]])
+    ]
+    if not notes:
+        return Check("annotation", "pass")
+    said = str(notes[0].get("text"))[:60]
+    value = _inches(vendor)
+    if not vendor.get("route") or value is None:
+        return Check("annotation", "fail", f"inside GV's note {said!r}")
+    for note in notes:
+        if value in note_values(note.get("text")):
+            return Check(
+                "annotation",
+                "fail",
+                f"GV's note {str(note.get('text'))[:60]!r} prints the same value",
+            )
+    return Check(
+        "annotation",
+        "pass",
+        f"under GV's note {said!r}, which prints another value: code read the vendor's own ink",
+    )
+
+
 def code_checks(
     vendor: Mapping[str, Any] | None,
     architect: Mapping[str, Any] | None,
@@ -490,21 +554,8 @@ def code_checks(
             if share > 0.25
             else Check("ink", "pass")
         )
-    # 2. Not inside one of GV's text notes ("STONE TOP by GV").
-    notes = [
-        a
-        for a in annotations
-        if a.get("page") == page
-        and a.get("kind") == "FreeText"
-        and (file is None or a.get("file") in (None, file))
-        and isinstance(a.get("box"), Sequence)
-        and _inside(box, [float(v) for v in a["box"]])
-    ]
-    checks.append(
-        Check("annotation", "fail", f"inside GV's note {str(notes[0].get('text'))[:60]!r}")
-        if notes
-        else Check("annotation", "pass")
-    )
+    # 2. Not GV's text note: the value is not one a note of GV's on top of it prints.
+    checks.append(_annotation_check(vendor, box, page, file, annotations))
     # 3. Roles: a vendor half and an architect half; a brand prototype only when it is the
     # reference (no architect elevation of the item, R1).
     vendor_side = str(vendor.get("side") or "unknown")
