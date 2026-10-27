@@ -470,8 +470,10 @@ def test_a_label_inside_a_gv_note_box_is_no_longer_blocked() -> None:
         "text": '45" + 6"',
         "box": [90, 95, 140, 115],
     }
-    old = code_checks(label, None, annotations=[note], vendor_ink=BLACK)
-    assert any(c.name == "annotation" and c.outcome == "fail" for c in old)
+    # The full check's own note check agrees now (2026-10-27): a note printing another value lies
+    # on top of the vendor's own ink and does not stop it.
+    full = code_checks(label, None, annotations=[note], vendor_ink=BLACK)
+    assert any(c.name == "annotation" and c.outcome == "pass" for c in full)
     assert _one(_pair("p2.D1", "p1.D1"), pack=pack).outcome == "candidate"
 
 
