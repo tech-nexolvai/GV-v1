@@ -219,7 +219,9 @@ def test_the_code_checks_catch_gvs_notes_the_wrong_roles_axis_round_and_units() 
     architect = _label("D2", "architect", "37", (100, 174))
     clean = code_checks(vendor, architect, vendor_ink=(40, 0.0))
     assert all(check.outcome == "pass" for check in clean), clean
-    note = {"page": 5, "file": FILE, "kind": "FreeText", "text": "STONE TOP by GV",
+    # GV's note printing the vendor's own value (a note printing another value lies on top of the
+    # vendor's own ink and does not stop it: `test_pick_disagrees`).
+    note = {"page": 5, "file": FILE, "kind": "FreeText", "text": '46" by GV',
             "box": [300, 180, 360, 210]}  # fmt: skip
     failed = {c.name: c for c in code_checks(vendor, architect, annotations=[note],
                                              vendor_ink=(40, 0.5))}  # fmt: skip
