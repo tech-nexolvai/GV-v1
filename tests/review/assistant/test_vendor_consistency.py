@@ -11,6 +11,8 @@ import json
 import threading
 import zlib
 from collections.abc import Sequence
+from fractions import Fraction
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -323,6 +325,116 @@ def test_an_overhang_is_never_added_up(tmp_path: Path) -> None:
     result = _check(tmp_path, _sheet_overhang())
     assert result.strings["found"] == 0
     assert result.findings == []
+
+
+# ---- an overall past its sized pieces (DECIDED 2026-10-27) ----------------------------------------
+
+
+def _sheet_unsized(
+    *, left: float = 5, right: float = 5, printed: str = '49"', extra: bytes = b""
+) -> bytes:
+    """An overall drawn at 2 pt per inch over 20" + 12" + 12" pieces on the next row (15 pt apart),
+    the pieces starting `left` points in from the overall's left end and stopping `right` points
+    short of its right end (5 pt = 2 1/2" unsized at each end; made-up values)."""
+    start = 300 + left
+    return (
+        _dim(300, start + 88 + right, 300, printed)
+        + _dim(start, start + 40, 285, '20"')
+        + _dim(start + 40, start + 64, 285, '12"')
+        + _dim(start + 64, start + 88, 285, '12"')
+        + extra
+    )
+
+
+def test_an_overall_past_unsized_ends_is_a_please_check_never_red(tmp_path: Path) -> None:
+    from app.review.assistant import likely_problems, proof
+    from app.review.assistant.chat_trust import judged
+
+    result = _check(tmp_path, _sheet_unsized())
+    assert result.strings["does_not_add_up"] == 0  # never added up
+    assert [u.as_dict()["ends"] for u in result.unsized] == [['2 1/2"', '2 1/2"']]
+    (finding,) = result.findings
+    assert finding["status"] == "check" and finding["source"] == "vendor_arithmetic"
+    words = finding[vc.UNSIZED_ENDS]["words"]
+    assert words == (
+        'Please check and confirm: the vendor\'s 49" overall runs about 2 1/2" past the sized '
+        'pieces (20" + 12" + 12" = 44") at each end; nothing sizes those ends (unsized '
+        "fillers or ends). Please check the ends."
+    )
+    item = judged({**finding, "id": "F1"})
+    assert proof.proof_group(item) == "likely_problem"
+    assert not proof.proved_wrong(item)
+    assert proof.please_check_words(item) == words
+    assert proof.proof_of(item)["reason"] == words
+    # Turned into a Wrong by a later step, it stays a please-check, never code-proved: code never
+    # adds unsized ends up.
+    wrong = judged({**finding, "id": "F1", "status": "different"})
+    assert likely_problems.unsized_ends(wrong) == words
+    assert not proof.proved_wrong(wrong) and not proof.code_proved(wrong)
+    assert proof.proof_group(wrong) == "likely_problem"
+    assert likely_problems.unsized_ends({**finding, "status": "same"}) is None
+    assert "1 overall runs past its sized pieces" in vc.summary_line(result)
+
+
+def test_ends_within_the_field_cut_are_not_a_please_check(tmp_path: Path) -> None:
+    """1" past the pieces at each end (46" over 44"): GV's field cut per wall end explains it."""
+    result = _check(tmp_path, _sheet_unsized(left=2, right=2, printed='46"'))
+    assert result.unsized == [] and result.findings == []
+
+
+def test_a_projects_bigger_field_cut_explains_the_ends(tmp_path: Path) -> None:
+    dims, page_map, uploads = _pack(tmp_path, [_sheet_unsized()])
+    rules = "| Field cut per wall end (`field_cut`) | 3\" | this project's value | CT-WIDTH-001 |"
+    result = vc.check_set(dims, page_map, segments=vc.line_work(uploads), rules_md=rules)
+    assert result.unsized == [] and result.findings == []
+
+
+def test_an_end_past_the_pieces_at_one_end_only_is_left_as_before(tmp_path: Path) -> None:
+    result = _check(tmp_path, _sheet_unsized(left=0.0, right=10))
+    assert result.unsized == [] and result.findings == []
+
+
+def test_a_size_printed_in_an_end_explains_it(tmp_path: Path) -> None:
+    """A filler whose size is printed at the end (no dimension line of its own) sizes it."""
+    result = _check(tmp_path, _sheet_unsized(extra=_text(300.5, 288, '2 1/2"', size=3)))
+    assert result.unsized == [] and result.findings == []
+
+
+def test_an_overall_with_its_own_string_has_its_ends_sized(tmp_path: Path) -> None:
+    """When another row is the overall's string (its parts end on the overall's lines), that row
+    sizes the ends: no please-check."""
+    dims, _page_map, uploads = _pack(tmp_path, [_sheet_unsized()])
+    raws = dims["pages"][0]["labels"]
+    labels = [la for raw in raws if (la := vc._label(raw, FILE, 1, VENDOR)) is not None]
+    lines = vc.line_work(uploads)
+    assert len(vc.find_unsized_ends(labels, lines)) == 1
+    overall = next(la for la in labels if la.text == '49"')
+    string = vc.StringCheck(overall, (), "adds_up", Fraction(49), "")
+    assert vc.find_unsized_ends(labels, lines, strings=[string]) == []
+
+
+def test_strokes_drawn_in_an_end_leave_it_as_before(tmp_path: Path) -> None:
+    """Text drawn as pen strokes (code does not read it) in the gap: code cannot say it is unsized."""
+    points = [(301.0, 290.0), (302.0, 293.0), (303.0, 290.0), (304.0, 293.0), (304.8, 290.0)]
+    scribble = b"".join(_line(*a, *b) for a, b in pairwise(points))
+    result = _check(tmp_path, _sheet_unsized(extra=scribble))
+    assert result.unsized == [] and result.findings == []
+
+
+def test_a_difference_not_drawn_at_the_ends_is_left_as_before(tmp_path: Path) -> None:
+    """The overall prints 51" but its ends show 5" between them: the drawing does not show the
+    difference at the ends, so code cannot measure them."""
+    result = _check(tmp_path, _sheet_unsized(printed='51"'))
+    assert result.unsized == []
+    assert all(vc.UNSIZED_ENDS not in f for f in result.findings)
+
+
+def test_the_book_keeps_the_please_check_mark() -> None:
+    from app.review.assistant import likely_problems
+
+    finding = {"status": "check", likely_problems.UNSIZED_ENDS: {"words": "Please check: x."}}
+    assert likely_problems.unsized_ends(finding) == "Please check: x."
+    assert likely_problems.unsized_ends({"status": "check"}) is None
 
 
 def _sheet_doors(inset: float) -> bytes:
@@ -679,7 +791,7 @@ def _result() -> vc.ConsistencyResult:
 def test_the_hook_adds_new_findings_gaps_and_a_summary_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads: _result())
+    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads, **_: _result())
     # The lead already reported the vendor's 60" string on page 3: it is not added twice.
     engine = _Engine("full_check", [{"page": 3, "source": "vendor_arithmetic", "vendor": '60"'}])
     vc.add_to_answer(engine)
@@ -690,7 +802,7 @@ def test_the_hook_adds_new_findings_gaps_and_a_summary_line(
 
 
 def test_the_hook_runs_only_in_a_full_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads: _result())
+    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads, **_: _result())
     engine = _Engine("chat", [])
     assert vc.add_to_answer(engine) is None
     assert engine.book.added == [] and engine.consistency_line is None
@@ -864,7 +976,7 @@ def test_the_hook_drops_a_grouped_string_codes_geometry_refutes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     result = _check(tmp_path, _sheet_two_chains())
-    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads: result)
+    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads, **_: result)
     engine = _Engine("full_check", [])
     engine.book = _FullBook([_ledger_string(['20"', '25"'])])
     dropped: list[str] = []

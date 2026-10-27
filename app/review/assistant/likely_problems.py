@@ -46,11 +46,13 @@ __all__ = [
     "KINDS",
     "LETTER_LEAD",
     "SHORT_WORDS",
+    "UNSIZED_ENDS",
     "likely",
     "likely_only",
     "needs_code_ends",
     "payload",
     "please_check",
+    "unsized_ends",
 ]
 
 #: The proof group's name.
@@ -105,6 +107,23 @@ def likely(finding: Mapping[str, Any]) -> bool:
     if isinstance(held, Mapping) and held.get("outcome") == "not_compared":
         return False
     return _mark(finding) is not None and finding.get("status") in ("different", "check")
+
+
+#: The vendor consistency check's record of an overall that runs past its sized pieces at both
+#: ends, nothing sizing those ends (`vendor_consistency.find_unsized_ends`, DECIDED 2026-10-27).
+UNSIZED_ENDS: Final = "unsized_ends"
+
+
+def unsized_ends(finding: Mapping[str, Any]) -> str | None:
+    """The please-check line of a vendor overall that runs past its sized pieces at both ends
+    (unsized fillers or ends): a Likely problem, never red and never added up (Anant, DECIDED
+    2026-10-27, a real upload). Whatever status a later step gives it, it stays a please-check
+    (never code-proved, `proof`), unless it is found the same. `None` for any other item."""
+    mark = finding.get(UNSIZED_ENDS)
+    if not isinstance(mark, Mapping) or finding.get("status") == "same":
+        return None
+    words = " ".join(str(mark.get("words") or "").split())
+    return words or None
 
 
 def please_check(finding: Mapping[str, Any]) -> str:

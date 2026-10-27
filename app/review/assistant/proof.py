@@ -498,6 +498,8 @@ def _proved_but_reading(finding: Mapping[str, Any]) -> bool:
         # A total the architect never prints (code's summed chain) is proof only when code proved
         # the parts are one chain end to end along the run (client meeting, 2026-10-23).
         return False
+    if finding.get(likely_problems.UNSIZED_ENDS) is not None:
+        return False  # an overall past its sized pieces: never added up, never red (2026-10-27)
     if finding.get("source") == "vendor_arithmetic" and not string_verified(finding):
         return False  # an AI-grouped string: only code's geometry proves the parts are one chain
     if ai_rule_claim(finding):
@@ -747,6 +749,9 @@ def please_check_words(finding: Mapping[str, Any]) -> str:
     """A Likely problem's please-check line, before any held-back note: the ends' words for an item
     `ends_unconfirmed` holds back, else the whole-drawing look's (`likely_problems.please_check`).
     """
+    unsized = likely_problems.unsized_ends(finding)
+    if unsized is not None:
+        return unsized
     if ends_unconfirmed(finding):
         return ends_words(finding)
     if pick_disagrees(finding):
@@ -786,6 +791,10 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
         return "clouded"
     if decided == "not_a_problem":
         return "dismissed"
+    if likely_problems.unsized_ends(finding) is not None:
+        # The vendor's overall runs past its sized pieces at both ends, nothing sizing them
+        # (DECIDED 2026-10-27): please check the ends, never red, never added up.
+        return "likely_problem"
     if drafting_notes.softened(finding) is not None:
         # The reference marks its size V.I.F. or +/-, or the difference is the half-inch drafting
         # convention to a wall's face (final plan #9): a field-verify note, never red or Likely.
@@ -1190,6 +1199,7 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
     elif likely:
         reason = (
             held_back(finding)
+            or likely_problems.unsized_ends(finding)
             or (likely_problems.payload(finding) or {}).get("reason")
             or (ends_words(finding) if ends_unconfirmed(finding) else None)
             or (pick_words(finding) if pick_disagrees(finding) else None)
