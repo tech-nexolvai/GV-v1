@@ -4,7 +4,8 @@ Second reads are capped per message (`SECOND_READ_LIMIT`) and queued as the help
 real upload a would-be red arrived late, after the cap was spent on items no red could come from,
 so it went red without the read that, on another run of the same drawings, held it back as unsure.
 
-- a would-be red (`could_go_red`): the AI's difference between two numbers, one on each side;
+- a would-be red (`could_go_red`): any item not called the same, from any maker, with the
+  numbers its red would compare;
 - while findings still arrive, only would-be reds are read; a late one still gets its read; the
   last queue gives what is left to the rest, differences first;
 - the cap itself is unchanged.
@@ -59,12 +60,33 @@ def _queue(engine: Any, findings: list[dict[str, Any]], *, final: bool = False) 
     return sorted({key[0] for key in engine._read_queued} - before)
 
 
-def test_a_would_be_red_is_a_difference_of_two_numbers_the_ai_reported() -> None:
+def test_a_would_be_red_is_any_item_not_same_with_the_numbers_its_red_compares() -> None:
     assert could_go_red(_red("F1"))
     assert not could_go_red(_finding("F1"))  # a please-check item
     assert not could_go_red({**_red("F1"), "status": "same"})
     assert not could_go_red({**_red("F1"), "inches": {"vendor": "31", "architect": None}})
-    assert not could_go_red({**_red("F1"), "created_by": "ledger"})  # code's own, made later
+    # Review of 27 Oct: code's own differences count (a roster run makes some before the reads),
+    # a "please check" item with both numbers counts (code may make it a Wrong later), and the
+    # vendor's number alone counts where the red compares it with GV's rule.
+    assert could_go_red({**_red("F1"), "created_by": "ledger"})
+    assert could_go_red({**_red("F1"), "status": "check"})
+    rule = {**_red("F1"), "source": "rules", "inches": {"vendor": "31", "architect": None}}
+    assert could_go_red(rule)
+
+
+def test_a_please_check_item_with_both_numbers_is_read_before_later_reds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The review's case: a "check" item with both numbers arrives first, then 30 would-be reds;
+    it is still read (the base code read it too)."""
+    engine = _engine(monkeypatch)
+    first = _finding("F1", "check", inches={"vendor": "31", "architect": "30"})
+    _queue(engine, [first])
+    reds = [_red(f"F{n}") for n in range(2, 32)]
+    _queue(engine, [first, *reds])
+    _queue(engine, [first, *reds], final=True)
+    assert ("F1" in {key[0] for key in engine._read_queued}) is True
+    assert len(engine._read_queued) == SECOND_READ_LIMIT
 
 
 def test_a_late_would_be_red_still_gets_its_read(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -77,6 +77,7 @@ __all__ = [
     "held",
     "lost_slash",
     "mark",
+    "sides_needed",
     "verdict",
 ]
 
@@ -385,6 +386,12 @@ def _sides_needed(finding: Mapping[str, Any]) -> tuple[str, ...]:
     ):
         return ("vendor",)
     return ("vendor", "architect")
+
+
+def sides_needed(finding: Mapping[str, Any]) -> tuple[str, ...]:
+    """The sides whose numbers a red of this item compares (`_sides_needed`): the vendor's alone
+    against GV's rule, its limits or the vendor's own string; else both."""
+    return _sides_needed(finding)
 
 
 def mark(

@@ -274,6 +274,7 @@ from app.review.assistant.product_scope import (
 )
 from app.review.assistant.proof import proof_counts, vendor_facing
 from app.review.assistant.rate_limits import Limits, ModelLimiter, limiter_for
+from app.review.assistant.reading_routes import sides_needed
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.run_fit import add_to_answer as add_run_fit
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
@@ -5613,15 +5614,17 @@ def _differences_first(finding: Mapping[str, Any]) -> int:
 
 
 def could_go_red(finding: Mapping[str, Any]) -> bool:
-    """A finding a red could come from, which a second reading may hold back (2026-10-27): a
-    difference between two numbers, one on each side, that the AI reported (code's own findings,
-    `CODE_ROOM_MAKERS`, are made at the finish from code's own reading, after the reads)."""
-    if finding.get("status") != "different" or finding.get("created_by") in CODE_ROOM_MAKERS:
+    """A finding a red could come from, which a second reading may hold back (2026-10-27): any
+    item not called the same, from any maker (code's own too: a roster run makes some before the
+    reads), that holds the numbers its red would compare (`reading_routes.sides_needed`: the
+    vendor's alone against GV's rule or limits or the vendor's own string, else both). A "please
+    check" item counts: code may make it a Wrong later (the escalation, the decision resolver)."""
+    if finding.get("status") == "same":
         return False
     inches = finding.get("inches")
     if not isinstance(inches, Mapping):
         return False
-    return all(str(inches.get(side) or "").strip() for side in ("vendor", "architect"))
+    return all(str(inches.get(side) or "").strip() for side in sides_needed(finding))
 
 
 def _reads_first(finding: Mapping[str, Any]) -> tuple[int, int]:
