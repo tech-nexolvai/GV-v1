@@ -62,6 +62,7 @@ from app.review.assistant.label_origin import ocr_read
 
 __all__ = [
     "DRAWN",
+    "DRAWN_DOUBT",
     "FIELD",
     "KINDS",
     "OCR",
@@ -72,6 +73,7 @@ __all__ = [
     "Value",
     "Verdict",
     "agreed",
+    "drawn_length",
     "held",
     "lost_slash",
     "mark",
@@ -96,6 +98,8 @@ ROUTE_WORDS: Final[Mapping[str, str]] = {
     UNITS: "the millimetres printed with it",
     STROKES: "the pen-stroke reader",
 }
+#: The doubt a value that does not agree with its drawn length names, before that length.
+DRAWN_DOUBT: Final = "its drawn length at its view's own scale is "
 #: How many different kinds of route must agree on a number before it may feed a red.
 NEEDED: Final = 2
 
@@ -282,7 +286,7 @@ def _label_value(
         if check.agrees:
             routes.append(DRAWN)
         else:
-            doubts.append(f"its drawn length at its view's own scale is {_inches(check.drawn_in)}")
+            doubts.append(f"{DRAWN_DOUBT}{_inches(check.drawn_in)}")
     if lost_slash(text):
         doubts.append("it reads like a fraction that lost its slash")
     if typed is not None and TEXT in routes:
@@ -548,6 +552,22 @@ def verdict(finding: Mapping[str, Any]) -> Verdict:
         doubts=tuple(_ai_doubts(checks)),
         unrecorded=stored is None and finding.get("source") == "vendor_arithmetic",
     )
+
+
+def drawn_length(finding: Mapping[str, Any], side: str = "vendor") -> str | None:
+    """The drawn length (`24 3/16"`) code measured for the item's own `side` label when that
+    length does not agree with its printed value (the `DRAWN_DOUBT`), else `None`."""
+    label = _dims(finding).get(side)
+    if label is None:
+        return None
+    key = _key(label)
+    for value in verdict(finding).values:
+        if value.side != side or (value.label and value.key != key):
+            continue
+        for doubt in value.doubts:
+            if doubt.startswith(DRAWN_DOUBT):
+                return doubt[len(DRAWN_DOUBT) :].strip() or None
+    return None
 
 
 def held(finding: Mapping[str, Any]) -> str | None:

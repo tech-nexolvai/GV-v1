@@ -56,6 +56,7 @@ from app.review.assistant import (
     likely_problems,
     missing_items,
     reading_routes,
+    right_proof,
     rule_notes,
     same_item_pages,
     spot_guard,
@@ -63,7 +64,7 @@ from app.review.assistant import (
 )
 from app.review.assistant import full_check_advocate as advocate
 from app.review.assistant.chat_trust import inch_words
-from app.review.assistant.finding_checks import wrong_part
+from app.review.assistant.finding_checks import to_inches, wrong_part
 from app.review.assistant.round_reference import round_only
 from app.review.assistant.vendor_text import vendor_text
 
@@ -98,6 +99,8 @@ __all__ = [
     "needs_pairing",
     "no_stated_requirement",
     "pairing_proved",
+    "pick_disagrees",
+    "pick_words",
     "please_check_words",
     "proof_counts",
     "proof_group",
@@ -115,6 +118,8 @@ __all__ = [
     "should_be_value",
     "stated_requirement",
     "string_verified",
+    "typed_over",
+    "typed_over_words",
     "unproved_reason",
     "vendor_facing",
     "vendor_own",
@@ -428,6 +433,49 @@ def reading_held(finding: Mapping[str, Any]) -> str | None:
     return reading_routes.held(finding)
 
 
+#: How close (inches) a drawn length must be to the parts' sum, and how far from the printed value,
+#: for a vendor string's overall to count as typed over (`typed_over`).
+TYPED_OVER_SLACK: Final = Decimal("0.25")
+
+
+def typed_over(finding: Mapping[str, Any]) -> str | None:
+    """A vendor string whose printed overall does not add up, where code measured the overall's own
+    dimension line at its view's scale and it is drawn to the parts' sum, not to the printed value
+    (`reading_routes.drawn_length`): the number was typed over the line. The owner's rule
+    (DECIDED 2026-10-26): a number that disagrees with its own drawn length is never red; it is a
+    please-check (a Likely problem), with this plain reason. `None` for any other item."""
+    if finding.get("status") != "different" or finding.get("source") != "vendor_arithmetic":
+        return None
+    if _reader_error(finding) or classification.internal(finding):
+        return None
+    checks = finding.get("checks") if isinstance(finding.get("checks"), Mapping) else {}
+    if (checks or {}).get("arithmetic") != "does_not_add_up":
+        return None
+    inches = finding.get("inches") if isinstance(finding.get("inches"), Mapping) else {}
+    printed = _decimal((inches or {}).get("vendor"))
+    total = _decimal(finding.get("parts_sum"))
+    drawn_text = reading_routes.drawn_length(finding, "vendor")
+    drawn = to_inches(drawn_text) if drawn_text else None
+    if printed is None or total is None or drawn is None:
+        return None
+    if abs(drawn - total) > TYPED_OVER_SLACK or abs(drawn - printed) <= TYPED_OVER_SLACK:
+        return None
+    raw_parts = finding.get("parts")
+    parts = [str(p) for p in raw_parts if p] if isinstance(raw_parts, list) else []
+    added = f" ({' + '.join(parts)})" if parts else ""
+    return (
+        f"the vendor prints {inch_words(printed)}, but its dimension line is drawn "
+        f"{drawn_text} long and its parts{added} add up to {inch_words(total)}: the printed "
+        "number looks typed over (a number that disagrees with its own drawn line is never red)"
+    )
+
+
+def typed_over_words(finding: Mapping[str, Any]) -> str:
+    """The please-check line of a typed-over overall (`typed_over`)."""
+    item = " ".join(str(finding.get("item") or "this item").split())
+    return f"{likely_problems.LETTER_LEAD}: {item}: {typed_over(finding)}."
+
+
 def _proved_but_reading(finding: Mapping[str, Any]) -> bool:
     """`code_proved` before the reading rule (`reading_routes`)."""
     if classification.internal(finding):
@@ -528,6 +576,9 @@ def matches_unproved(finding: Mapping[str, Any]) -> bool:
     """A Right whose two dimensions code could not prove run between the same kinds of points
     (`dim_ends.LIKE_FOR_LIKE`, for the same two labels the item still pairs): named
     `MATCHES_UNPROVED`, to be folded under a proved sibling. Data only: still a Right."""
+    found = right_proof.ends_not_proved(finding)
+    if found is not None:
+        return found  # code's record for this pair (`right_proof`, 2026-10-27, option B)
     held = finding.get(dim_ends.LIKE_FOR_LIKE)
     if finding.get("status") != "same" or not isinstance(held, Mapping):
         return False
@@ -554,13 +605,90 @@ def ends_unconfirmed(finding: Mapping[str, Any]) -> bool:
     if not isinstance(answers, Mapping) or answers.get("pairing") != advocate.ENDS_NOT_CONFIRMED:
         return False
     # Code-proved in every other way: the same item with the picks' pairing accepted, as before.
+    return _proved_if_paired(finding, verdict, "picks")
+
+
+def _proved_if_paired(finding: Mapping[str, Any], verdict: Mapping[str, Any], how: str) -> bool:
+    """Whether the item is code-proved in every way but its pairing: the same item with the devil's
+    advocate's verdict turned to passed (its pairing `how`)."""
+    answers = verdict.get("answers") if isinstance(verdict.get("answers"), Mapping) else {}
     passed = dict(finding)
     checks = {**(finding.get("checks") or {}), "critic": "passed"}
     passed["checks"] = checks
-    passed["critic"] = {**verdict, "result": "passed", "answers": {**answers, "pairing": "picks"}}
+    passed["critic"] = {
+        **verdict,
+        "result": "passed",
+        "answers": {**(answers or {}), "pairing": how},
+    }
     passed["trust_level"] = witness.trust_level(checks, "different")
     passed["witnesses"] = witness.witnesses(checks, "different")
     return _proved_but_reading(passed) and not _reader_error(passed)
+
+
+#: The devil's advocate's code checks (`full_check_advocate.code_checks`, and code's own pairing
+#: of the vendor's label with another): one that did not pass stopped the item by code's facts.
+_CODE_CHECKS: Final = (
+    "labels",
+    "ink",
+    "annotation",
+    "roles",
+    "axis",
+    "round",
+    "units",
+    "slip",
+    "code_pair",
+)
+
+
+def pick_disagrees(finding: Mapping[str, Any]) -> bool:
+    """A Wrong whose two dimensions code's own geometry shows ending at the same places
+    (`same_extent`), that passes every code check and is code-proved in every other way, held back
+    only because the blind second pick named another reference dimension, or none. The pick is an
+    AI: it is never enough for a red, and never the last word against code's geometry either, so
+    the item is a Likely problem ("please check"), never red and never a silent Not compared (a
+    real upload, 2026-10-27: an outlet's distance from a wall that differs from the reference's;
+    code tied both ends on both drawings, the wall and the same outlet's centre, while the blind
+    pick took the vendor's dimension for a height)."""
+    if finding.get("status") != "different" or not needs_pairing(finding):
+        return False
+    verdict = _advocate(finding)
+    if verdict is None or verdict.get("result") != "objects":
+        return False
+    answers = verdict.get("answers")
+    if not isinstance(answers, Mapping) or "advocate_pick" not in answers:
+        return False
+    if answers.get("advocate_pick") == answers.get("helper_pick") or answers.get("twin"):
+        return False  # the picks agree: another check stopped it
+    if any(answers.get(name) not in (None, "pass") for name in _CODE_CHECKS):
+        return False
+    if any(answers.get(name) == "fail" for name in ("trade", "faces")):
+        return False
+    pairing = finding.get("pairing")
+    extent = pairing.get("extent") if isinstance(pairing, Mapping) else None
+    if not (isinstance(extent, Sequence) and extent and extent[0] == "same_extent"):
+        return False
+    return _proved_if_paired(finding, verdict, "proved")
+
+
+def pick_words(finding: Mapping[str, Any]) -> str:
+    """The please-check line of an item `pick_disagrees` holds back: "Please check and confirm: the
+    vendor's 9" against the reference's 1' - 2" (Left wall to outlet); they differ by 5"; code's
+    drawing shows both dimensions end at the same places, but a second AI look did not pair them
+    (it chose no reference dimension)." """
+    item = " ".join(str(finding.get("item") or "this item").split())
+    inches = finding.get("inches") if isinstance(finding.get("inches"), Mapping) else {}
+    difference = _decimal((inches or {}).get("difference"))
+    by = f"; they differ by {inch_words(abs(difference))}" if difference else "; they differ"
+    verdict = _advocate(finding) or {}
+    answers = verdict.get("answers") if isinstance(verdict.get("answers"), Mapping) else {}
+    pick = str((answers or {}).get("advocate_pick") or "none")
+    chose = "no reference dimension" if pick == "none" else f"the reference's {pick}"
+    return (
+        f"{likely_problems.LETTER_LEAD}: the vendor's {vendor_value(finding)} against the "
+        f"reference's {finding.get('architect')} ({item}){by}; code's drawing shows both "
+        f"dimensions end at the same places, but a second AI look did not pair them (it chose "
+        f"{chose})."
+    )
 
 
 def ends_words(finding: Mapping[str, Any]) -> str:
@@ -621,8 +749,12 @@ def please_check_words(finding: Mapping[str, Any]) -> str:
     """
     if ends_unconfirmed(finding):
         return ends_words(finding)
+    if pick_disagrees(finding):
+        return pick_words(finding)
     if reading_held(finding) is not None:
         return reading_words(finding)
+    if typed_over(finding) is not None:
+        return typed_over_words(finding)
     return likely_problems.please_check(finding)
 
 
@@ -668,6 +800,10 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
         # Code proved it in every other way, but a number it rests on was not read by two
         # different routes that agree (final plan #2): please check, never red.
         return "likely_problem"
+    if typed_over(finding) is not None:
+        # The vendor's printed overall disagrees with its own drawn line, which its parts fit
+        # (DECIDED 2026-10-26): a typed-over number is a please-check, never red, never hidden.
+        return "likely_problem"
     # The architect's size breaks a GV rule and the vendor follows it (#1839): decided, GV asks
     # the architect; never clouded, never on the Not-compared list.
     if classified(finding).outcome == "rule_note":
@@ -679,6 +815,8 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
         return "not_compared"  # never a Likely problem on two unlike dimensions (fix 3)
     if ends_unconfirmed(finding):
         return "likely_problem"  # the AI's pairing, ends not confirmed by code (option C)
+    if pick_disagrees(finding):
+        return "likely_problem"  # code's geometry pairs them; a blind AI pick did not
     return "likely_problem" if likely_problems.likely(finding) else "not_compared"
 
 
@@ -1054,7 +1192,9 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
             held_back(finding)
             or (likely_problems.payload(finding) or {}).get("reason")
             or (ends_words(finding) if ends_unconfirmed(finding) else None)
+            or (pick_words(finding) if pick_disagrees(finding) else None)
             or (reading_words(finding) if reading_held(finding) is not None else None)
+            or (typed_over_words(finding) if typed_over(finding) is not None else None)
             or found.why
         )
     elif group == "dismissed":
