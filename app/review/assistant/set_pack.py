@@ -66,7 +66,10 @@ that set-up once per upload, in the background, and the agent sees it read-only 
 
 **Made once per upload.** The pack's folder is named by a hash of the uploads' names and SHA-256
 (`set-packs/<key>` under the chat root), so every chat on the same PDFs reuses it. Each file is
-written to a temporary name and renamed, so a reader never sees half a file.
+written to a temporary name and renamed, so a reader never sees half a file. The name holds the
+pack's version, so a version bump builds the pack again; the earlier version's saved AI answers
+(set index, page matcher, blind picks) are carried over where what the AI was shown is the same
+(`pack_carry`), so a bump never asks them again.
 
 **Boxes** in `page_map.json` and `annotations.json` are in PDF points of the page as shown (its
 rotation applied), origin top-left: the units of `pdftotext -bbox`, `report_finding` and `zoom`.
@@ -219,12 +222,13 @@ type Box = tuple[float, float, float, float]
 # ---- where the pack lives ------------------------------------------------------------------------
 
 
-def pack_key(listing: Sequence[Mapping[str, Any]]) -> str:
+def pack_key(listing: Sequence[Mapping[str, Any]], *, version: int = PACK_VERSION) -> str:
     """The pack's name: a hash of the uploads' names and SHA-256, in order. A separate architect
     file adds its role (#1719): its pages are read as the architect's, so a pack made before that
     is made again; a set with no separate architect file keeps its name. A file the front door
     changed (`working_sha256`, #1724) adds its working copy's, so its pack is made from that copy;
-    a file it left as it was keeps the name its pack always had."""
+    a file it left as it was keeps the name its pack always had. `version`: an earlier pack
+    version's name for the same uploads (`pack_carry`)."""
     roles = upload_roles(listing)
     text = "\n".join(
         f"{item.get('name')}:{item.get('sha256')}"
@@ -232,7 +236,7 @@ def pack_key(listing: Sequence[Mapping[str, Any]]) -> str:
         + (f":{item['working_sha256']}" if item.get("working_sha256") else "")
         for item in listing
     )
-    return hashlib.sha256(f"v{PACK_VERSION}\n{text}".encode()).hexdigest()[:32]
+    return hashlib.sha256(f"v{version}\n{text}".encode()).hexdigest()[:32]
 
 
 def _is_architect_kind(item: Mapping[str, Any]) -> bool:
@@ -1209,6 +1213,9 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
         # it, and the next message builds the pack again.
         _set_status(folder, READY_WITHOUT_LABELS, done, files=names, labels_error=labels_error)
         return
+    # The earlier version's saved AI answers for the same uploads, where what the AI was shown is
+    # the same (2026-10-27): a version bump no longer asks them again (`pack_carry`).
+    import_module("app.review.assistant.pack_carry").carry_over(folder, listing)
     _set_status(folder, "ready", done, files=names)
 
 
