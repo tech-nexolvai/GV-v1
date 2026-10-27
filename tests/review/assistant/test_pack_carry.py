@@ -144,7 +144,8 @@ def test_a_changed_picture_asks_that_page_and_the_matcher_again(tmp_path: Path) 
     report = pack_carry.carry_over(new, LISTING)
     assert report.index_pages == 2 and "architect.pdf#2" not in set_index.load(new)
     assert report.match_answers == 0 and not (new / "page_match.json").exists()
-    assert report.picks == 1  # keyed by what each pick was shown
+    assert report.picks == 0  # a pick's key holds no pixels: asked again
+    assert not (new / "blind_picks.json").exists()
 
 
 def test_a_changed_printed_text_asks_that_page_again(tmp_path: Path) -> None:
