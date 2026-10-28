@@ -18,26 +18,22 @@ from pathlib import Path
 
 import pytest
 
-from eval.experiments.agent_scorecard import PageGeometry
 from extraction.glyph_bands import FractionBarGeometry
 from extraction.reader import MissingSpace
 from workflow.association import AssociationSettings, LocalizedOcrSettings
 from workflow.part_pictures import PartPictureSettings
-from workflow.reader_pictures import PictureSettings
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 SCRIPTS = REPOSITORY / "scripts"
-#: `PictureSettings` since #907: the dpi a reader's upright, sharper picture is rendered at;
 #: `MissingSpace` since #912: how wide a gap inside the inches is a space the file left out; and
-#: `PageGeometry`, which carries it to the pages a scorecard reads as the stage does (#907, #912);
 #: `PartPictureSettings` since #897: how each suggested part's picture is cut has no default either.
+#: (`PictureSettings` and the scorecard's `PageGeometry` left this list on 2026-10-28 with the
+#: reading scorecards that built them; no script builds either now.)
 GUARDED = (
     FractionBarGeometry,
     AssociationSettings,
     LocalizedOcrSettings,
-    PictureSettings,
     MissingSpace,
-    PageGeometry,
     PartPictureSettings,
 )
 
@@ -54,7 +50,6 @@ CALLERS = ("scripts", "eval", "workflow", "extraction", "app", "evidence", "retr
 #: (`scripts/drain_outbox.py`) builds and runs its stages in `workflow/sutradhar.py` since #1227.
 STAGES_THAT_READ = (
     "evaluate_goldset.py",
-    "fraction_parts_scorecard.py",
     "seed_demo.py",
     "sutradhar.py",
 )
@@ -137,29 +132,6 @@ def test_the_guard_finds_calls_to_check() -> None:
         assert any(_calls(path.read_text(), cls.__name__) for path in _sources()), cls.__name__
 
 
-def test_the_fraction_scorecard_reads_every_setting_it_uses() -> None:
-    """Passing the field is half of it: the setting must also be one the script reads (#902).
-
-    `fraction_parts_scorecard.py` reads only the names in `READER_SETTINGS` from the settings
-    file, so a `stated["…"]` lookup of any other name fails on the first run, as the first fix for
-    #902 did with `GV_READER_FRACTION_TURNED_ASPECT_MIN`.
-    """
-    from scripts.fraction_parts_scorecard import READER_SETTINGS
-
-    tree = ast.parse((SCRIPTS / "fraction_parts_scorecard.py").read_text())
-    looked_up = {
-        node.slice.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Subscript)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "stated"
-        and isinstance(node.slice, ast.Constant)
-        and isinstance(node.slice.value, str)
-    }
-    assert looked_up, "the check found no settings lookups to compare"
-    assert looked_up <= set(READER_SETTINGS), sorted(looked_up - set(READER_SETTINGS))
-
-
 def _names(call: ast.Call, keyword: str) -> bool:
     """Whether `call` passes `keyword`, or spreads a mapping that may hold it."""
     return any(item.arg in (keyword, None) for item in call.keywords)
@@ -179,17 +151,6 @@ def test_every_caller_that_reads_a_page_passes_the_missing_space_setting(reader:
     assert calls, f"the check found no call to {reader}"
     gaps = [f"{path}:{call.lineno}" for path, call in calls if not _names(call, "missing_space")]
     assert not gaps, f"{reader} called without missing_space: {gaps}"
-
-
-def test_the_caller_check_sees_the_scorecard_pages() -> None:
-    """Not vacuous: #907's scorecard pages, which read printed text, are among what it reads."""
-    source = (REPOSITORY / "eval" / "experiments" / "agent_scorecard.py").read_text()
-    assert _calls(source, "read_page_contents") and _calls(source, "read_stamp_text")
-    assert all(
-        _names(call, "missing_space")
-        for name in ("read_page_contents", "read_stamp_text")
-        for call in _calls(source, name)
-    )
 
 
 def test_every_script_whose_stages_read_a_page_builds_them_with_the_setting() -> None:
@@ -227,18 +188,9 @@ def test_the_demo_states_the_reader_setting_once_for_everything_it_starts() -> N
 def test_every_script_that_reads_the_setting_from_the_demo_finds_it() -> None:
     """Passing the setting is half of it: each script that reads it from a `scripts/demo.sh`-style
     file must read it from there, or its first page fails (#902's lesson, for #912's setting)."""
-    from scripts.agent_geometry_check import read_settings as read_check_settings
-    from scripts.author_reading_answer_key import _frame_settings, _stated_missing_space
-    from scripts.fraction_parts_scorecard import READER_SETTINGS, read_stated
-    from scripts.gate_replay import read_settings
     from scripts.glyph_inventory import read_missing_space
 
     demo = SCRIPTS / "demo.sh"
     stated = MissingSpace(gap_heights=Decimal("0.1"))
 
-    assert _stated_missing_space(demo) == stated
-    assert _frame_settings(demo)["GV_READER_MISSING_SPACE_HEIGHTS"] == "0.1"
-    assert read_settings(demo)["GV_READER_MISSING_SPACE_HEIGHTS"] == "0.1"
-    assert read_stated(demo, READER_SETTINGS)["GV_READER_MISSING_SPACE_HEIGHTS"] == "0.1"
-    assert read_check_settings(demo)["GV_READER_MISSING_SPACE_HEIGHTS"] == "0.1"
     assert read_missing_space(demo) == stated

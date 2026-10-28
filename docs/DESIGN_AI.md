@@ -14,7 +14,6 @@ The findings narrator is presentation after deterministic checking, never anothe
 extraction/agent/   trigger.py graph.py tools.py outcomes.py checkpoints.py
 extraction/models/  nova.py validation.py invocations.py context.py sanitisation.py
 workflow/            findings_composer.py findings_bedrock.py
-eval/experiments/   agent_vs_fixed.py
 ```
 
 ## 2. Import rules
