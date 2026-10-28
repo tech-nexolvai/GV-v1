@@ -26,10 +26,11 @@ from app.review.assistant import read_spots
 from app.review.assistant.chat_engine import ChatEngine
 from app.review.assistant.read_adjudication import SideCrops, third_read
 from app.review.assistant.read_spots import (
-    LONG_THIN,
+    CONTEXT_PT,
     MIN_SIDE_PT,
     NO_LINE_ACROSS_PT,
     NO_LINE_ALONG_PT,
+    PAD_PT,
     ReadPictures,
     ReadSpot,
     spots,
@@ -122,11 +123,15 @@ def test_a_label_with_no_dimension_line_shows_more_along_its_direction() -> None
     flat = _label("D3", "3' - 1\"", [300.0, 400.0, 330.0, 408.0], "h")
     region = spots(_finding(flat), lambda f, p: [flat])["architect"].region
     assert _size(region) == (NO_LINE_ALONG_PT, NO_LINE_ACROSS_PT)
-    # With a dimension line, the line decides (at least the minimum), as before.
+    # With a dimension line: at least `CONTEXT_PT` a side since 2026-10-29 (was the 96 pt
+    # minimum: a short line's picture showed the number but not what it measures) ...
     lined = {**flat, "dim_line": [[290.0, 410.0], [340.0, 410.0]]}
     region = spots(_finding(lined), lambda f, p: [lined])["architect"].region
-    # Both ends (25 pt from the centre) and the margin: 98 wide; 96 high, the minimum.
-    assert _size(region) == (98.0, MIN_SIDE_PT)
+    assert _size(region) == (CONTEXT_PT, CONTEXT_PT)
+    # ... and a long line still decides: both ends (155 pt from the centre) and the margin.
+    long = {**flat, "dim_line": [[160.0, 410.0], [470.0, 410.0]]}
+    region = spots(_finding(long), lambda f, p: [long])["architect"].region
+    assert _size(region) == (2 * (155.0 + PAD_PT), CONTEXT_PT)
 
 
 def test_a_long_thin_region_adds_a_close_up_of_the_label() -> None:
@@ -135,12 +140,19 @@ def test_a_long_thin_region_adds_a_close_up_of_the_label() -> None:
     small["side"] = "vendor"
     spot = spots(_finding(small, "vendor"), lambda f, p: [small])["vendor"]
     width, height = _size(spot.region)
-    assert height >= LONG_THIN * width
+    # Since 2026-10-29 the region is at least `CONTEXT_PT` wide (192 x 302, no longer long and
+    # thin): it is still far bigger than the close-up, which it adds.
+    assert (width, height) == (CONTEXT_PT, 302.0)
+    assert height >= read_spots.CLOSE_UP_RATIO * MIN_SIDE_PT
     assert spot.zoom is not None and _size(spot.zoom) == (MIN_SIDE_PT, MIN_SIDE_PT)
     assert spot.zoom[1] > spot.region[1] and spot.zoom[3] < spot.region[3]
-    # A square region adds none.
+    # A region the close-up's own size adds none (since 2026-10-29 a label's region is at least
+    # `CONTEXT_PT`, twice the close-up, so a label's region always adds it: see below).
+    own = (400.0, 300.0, 410.0, 318.0)
+    assert read_spots._zoom(read_spots.around(own), own) is None
     square = {**small, "dim_line": [[405, 280], [405, 340]]}
-    assert spots(_finding(square, "vendor"), lambda f, p: [square])["vendor"].zoom is None
+    zoom = spots(_finding(square, "vendor"), lambda f, p: [square])["vendor"].zoom
+    assert zoom is not None and _size(zoom) == (MIN_SIDE_PT, MIN_SIDE_PT)
 
 
 # ---- both readings see the same pictures --------------------------------------------------------------
@@ -250,21 +262,22 @@ def _pixels(png: bytes) -> tuple[int, int]:
     return size
 
 
-def test_a_sideways_long_label_is_drawn_upright_with_an_upright_close_up(tmp_path: Path) -> None:
+def test_a_sideways_long_label_is_drawn_as_drawn_with_an_upright_close_up(tmp_path: Path) -> None:
+    """Since 2026-10-29 the region is shown as drawn (the drawing its own way up: a turned
+    elevation lay on its side and hid what a height measures) and the close-up alone is turned,
+    its text upright (was: the region turned, then the close-up)."""
     pdf = _page(tmp_path / "uploads")
     small = _label("D21", '73 1/2"', [100.0, 300.0, 110.0, 318.0], "v", [[105, 182], [105, 435]])
     finding = _finding(small, "architect", page=1)
     drawn = read_spots.draw(finding, labels_of=lambda f, p: [small], pdf_for=lambda _f: pdf)
     crop = drawn.crops["architect"]
-    assert crop.sideways and crop.turned is not None and crop.zoom is not None
+    assert not crop.sideways and crop.turned is None and crop.zoom is not None
+    assert crop.zoom_upright
     shown = crop.pictures()
-    assert [kind for kind, _png in shown] == ["upright", "zoom"]
+    assert [kind for kind, _png in shown] == ["plain", "zoom_upright"]
     region_w, region_h = _pixels(crop.upright)
-    assert region_h > region_w and _pixels(shown[0][1]) == (region_h, region_w)
+    assert region_h > region_w and shown[0][1] == crop.upright
     assert _pixels(crop.zoom) == (400, 400)
     # Both readings key the same pictures: the close-up is part of the reading's key.
-    plain = ReadPictures(
-        crops={"architect": SideCrops(upright=crop.upright, turned=crop.turned, sideways=True)},
-        spots=drawn.spots,
-    )
+    plain = ReadPictures(crops={"architect": SideCrops(upright=crop.upright)}, spots=drawn.spots)
     assert plain.key("ask") != drawn.key("ask")

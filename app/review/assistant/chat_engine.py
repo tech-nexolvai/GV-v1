@@ -3038,6 +3038,8 @@ class ChatEngine:
             finding_id = str(finding["id"])
             key = (finding_id, _read_key(finding))
             red = could_go_red(finding)
+            if not red and _nothing_to_copy(finding):
+                continue  # words on every side: a reading could never agree, nor take a place
             with self._lock:
                 if key in self._read_queued:
                     continue
@@ -3318,6 +3320,7 @@ class ChatEngine:
             1
             for f in with_pictures
             if (f.get("checks") or {}).get("second_read") in (None, "not_run")
+            and (could_go_red(f) or not _nothing_to_copy(f))
         )
 
     def _accuracy(self) -> None:
@@ -6009,6 +6012,37 @@ def _count_only(finding: Mapping[str, Any]) -> bool:
     values = [finding.get(side) for side in sides_needed(finding)]
     return bool(values) and all(
         isinstance(value, str) and _COUNTED.match(value) is not None for value in values
+    )
+
+
+#: A printed number a reading can copy and code can compare: digits with only a dimension's marks
+#: (feet, inches, fractions, millimetres with inches in brackets), never words ("3 drawers", "no
+#: outlet", "a finish tag").
+_PRINTED_NUMBER: Final = re.compile(
+    r"^[\d\s/.'\"\u2019\u2032\u201d\u2033\-\u2013\u2212\[\]]*\d"
+    r"[\d\s/.'\"\u2019\u2032\u201d\u2033\-\u2013\u2212\[\]]*$"
+)
+
+
+def _nothing_to_copy(finding: Mapping[str, Any]) -> bool:
+    """No side a reading would be shown holds a printed number: every value is words (a look
+    finding: "2 drawers + 1 door", "no outlet", "a finish tag printed"). A reading of it
+    can never agree (`second_read.compare_read` compares numbers only), so it is not asked; only a
+    finding no red can come from is skipped (`_queue_second_reads`). 2026-10-29: 30 of the 56
+    "unsure" second readings of a real upload were such findings, and they took 30 of the
+    `SECOND_READ_LIMIT` places other items could have used."""
+    sides = [
+        side
+        for side, box, picture in (
+            ("architect", "arch_box", "arch_picture_id"),
+            ("vendor", "vendor_box", "vendor_picture_id"),
+        )
+        if (finding.get(box) or finding.get(picture))
+        and not (side == "architect" and finding.get("source") == "vendor_arithmetic")
+    ]
+    return bool(sides) and not any(
+        isinstance(value := finding.get(side), str) and _PRINTED_NUMBER.match(value) is not None
+        for side in sides
     )
 
 

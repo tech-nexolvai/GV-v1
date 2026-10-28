@@ -31,9 +31,13 @@ __all__ = [
     "READ_SCHEMA",
     "REPLY_KEPT_CHARS",
     "SIDES",
+    "SURE_WORDS",
+    "TIE_WORDS",
+    "UNITS_WORDS",
     "SecondRead",
     "compare_read",
     "kept_reply",
+    "neutral_item",
     "parse_reply",
     "picture_names",
     "question",
@@ -88,7 +92,12 @@ READ_SCHEMA: Final[Mapping[str, Any]] = {
             "anyOf": [{"type": "string"}, {"type": "null"}],
             "description": "The value printed on the vendor's drawing, as printed, or null",
         },
-        "sure": {"type": "boolean", "description": "Whether you are sure of what you read"},
+        "sure": {
+            "type": "boolean",
+            "description": (
+                "Whether you read each value clearly and can see it is the one for the item"
+            ),
+        },
     },
 }
 
@@ -109,11 +118,56 @@ OVERALL_WORDS: Final = (
 )
 
 
+#: How a value is tied to the item (2026-10-29: on a real upload both readers read the vendor's
+#: outlet height and gave null for the architect's, whose picture did not show the outlet; the
+#: pictures now show what a dimension's lines reach, and the question says to look).
+TIE_WORDS: Final = (
+    "The item's value is the dimension whose line, with the extension lines at its ends, spans "
+    "what the item names; the drawing around it shows what those lines reach."
+)
+#: A value printed in two units is copied whole (2026-10-29: millimetre values were copied without
+#: their inches in brackets, which can never match).
+UNITS_WORDS: Final = (
+    "A value printed in two units (millimetres with inches in brackets, for example 610 [24]) is "
+    "copied whole: both numbers and the brackets."
+)
+#: What "sure" means (2026-10-29): read clearly AND tied to the item. Never looser than before: a
+#: reader that cannot tell which value is the item's is told to say it is not sure.
+SURE_WORDS: Final = (
+    "Say you are sure only when you read each value clearly and can see that it is the one for "
+    "that item; if you cannot tell which value is the item's, you are not sure."
+)
+
+#: A dimension written in an item's name ("outlet spacing 31\"", "heights stack (20 3/4\")"):
+#: feet and inches, inches, or millimetres with inches in brackets. Dropped from the name the
+#: readers are asked about, so the question never carries a value (`neutral_item`).
+_VALUE_IN_NAME: Final = re.compile(r"""(?x)
+    \d+(?:\s+\d+/\d+|/\d+|\.\d+)?\s*['’′]
+        (?:\s*[-–−]?\s*\d+(?:\s+\d+/\d+|/\d+|\.\d+)?\s*["”″])?
+    | \d+(?:\s+\d+/\d+|/\d+|\.\d+)?\s*["”″]
+    | \d+(?:\.\d+)?\s*\[[^\]]*\]
+    """)
+
+
+def neutral_item(item: object) -> str:
+    """The item's name as the readers are asked about it: one line, and any dimension written in
+    it dropped ("Shelf: heights stack (20 3/4\")" -> "Shelf: heights stack"), so the question
+    never names a value a reader could copy. Empty when nothing is left."""
+    text = " ".join(str(item).split())
+    if not _VALUE_IN_NAME.search(text):
+        return text
+    text = _VALUE_IN_NAME.sub(" ", text)
+    text = re.sub(r"\(\s*\)|\[\s*\]", " ", text)
+    text = " ".join(text.split())
+    return text.strip(" ,;:-–")
+
+
 #: What one picture of a side is (`read_spots`, 2026-10-28): the region as drawn (`plain`); its
 #: quarter-turned copy shown alone, for a value code knows is written sideways, so its text reads
 #: upright (`upright`); the turned copy shown after the plain one, for a box whose direction code
-#: does not know (`turned`); a close-up of the label itself, centred the same (`zoom`).
-KINDS: Final = ("plain", "upright", "turned", "zoom")
+#: does not know (`turned`); a close-up of the label itself, centred the same (`zoom`), turned so
+#: its sideways text reads upright after the region as drawn (`zoom_upright`, 2026-10-29).
+KINDS: Final = ("plain", "upright", "turned", "zoom", "zoom_upright")
 
 type Shown = Sequence[tuple[str, str]]
 """Each picture shown, in order: its side and its kind (`KINDS`)."""
@@ -142,6 +196,11 @@ def picture_names(shown: Shown) -> str:
             names.append(
                 f"image {index} is a close-up of the same spot on {name}, centred the same"
             )
+        elif kind == "zoom_upright":
+            names.append(
+                f"image {index} is a close-up of the same spot on {name}, centred the same and "
+                "turned a quarter turn, so its sideways text reads upright"
+            )
         else:
             names.append(f"image {index} is {name}")
     return "; ".join(names)
@@ -169,7 +228,7 @@ def question(
     `sides`: the side of each picture shown, or (side, kind) pairs (`picture_names`);
     `overall`: the item is a vendor string, and its overall is asked (`OVERALL_WORDS`);
     `centred`: the item's value is the one at the centre of each picture (`CENTRE_WORDS`)."""
-    label = " ".join(str(item).split())[:_LONGEST_ITEM] or "this item"
+    label = neutral_item(item)[:_LONGEST_ITEM] or "this item"
     shown = picture_names(_shown(sides))
     return (
         f"These are crops of construction drawings: {shown}. {COLOUR_RULE} The item, as another "
@@ -177,9 +236,10 @@ def question(
         f"{fence(label, 'item')}\n"
         f"{OVERALL_WORDS + ' ' if overall else ''}"
         f"{CENTRE_WORDS + ' ' if centred else ''}"
+        f"{TIE_WORDS} "
         "What value is printed for that item on each drawing? Copy it exactly as printed, with its "
-        'marks (for example 7\'-2" or 12 3/4"). Use null for a drawing you were not shown or where '
-        "no value for it is printed, and say whether you are sure of what you read."
+        f'marks (for example 7\'-2" or 12 3/4"). {UNITS_WORDS} Use null for a drawing you were '
+        f"not shown or where no value for it is printed. {SURE_WORDS}"
     )
 
 

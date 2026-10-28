@@ -60,8 +60,12 @@ from app.review.assistant.second_read import (
     OVERALL_WORDS,
     READ_SCHEMA,
     SIDES,
+    SURE_WORDS,
+    TIE_WORDS,
+    UNITS_WORDS,
     SecondRead,
     kept_reply,
+    neutral_item,
     parse_reply,
     picture_names,
 )
@@ -155,14 +159,18 @@ class SideCrops:
     the turned copy is shown alone, its text upright (2026-10-28: the second reading had only
     sideways text to read). Else a turned copy, where there is one, follows the region as drawn."""
     zoom: bytes | None = None
-    """A close-up of the label at the same centre, turned as the picture it follows, for a long
-    thin region where the label is small (`read_spots`)."""
+    """A close-up of the label at the same centre, turned as the picture it follows, for a region
+    much bigger than the label (`read_spots`)."""
+    zoom_upright: bool = False
+    """The close-up alone is turned, its sideways text upright, while the region is shown as
+    drawn (2026-10-29, `read_spots.draw`: the drawing keeps its own way up, so what the number
+    measures reads as drawn, and the number is read from the close-up)."""
 
     def pictures(self) -> list[tuple[str, bytes]]:
         """What a reading is shown of this side, in order, as (kind, picture) pairs
         (`second_read.KINDS`), at most two: the turned copy alone for a value known to be
         sideways, else the region as drawn and its turned copy for a box whose direction code
-        does not know; then the close-up, where there is room."""
+        does not know; then the close-up, where there is room (`zoom_upright`: turned alone)."""
         if self.sideways and self.turned is not None:
             shown: list[tuple[str, bytes]] = [("upright", self.turned)]
         else:
@@ -170,7 +178,7 @@ class SideCrops:
             if self.turned is not None:
                 shown.append(("turned", self.turned))
         if self.zoom is not None and len(shown) < 2:
-            shown.append(("zoom", self.zoom))
+            shown.append(("zoom_upright" if self.zoom_upright else "zoom", self.zoom))
         return shown
 
 
@@ -307,7 +315,7 @@ def question(
     say that the item's value is the one at the centre of each picture (`CENTRE_WORDS`), only
     for a picture centred on a box that holds one value (`read_spots`); `overall`: the item is a
     vendor string, and its overall is asked (`OVERALL_WORDS`)."""
-    label = " ".join(str(item).split())[:_LONGEST_ITEM] or "this item"
+    label = neutral_item(item)[:_LONGEST_ITEM] or "this item"
     kinds = [
         (side, ("turned" if kind else "plain") if isinstance(kind, bool) else kind)
         for side, kind in shown
@@ -323,11 +331,11 @@ def question(
         f"{fence(label, 'item')}\n"
         f"{OVERALL_WORDS + ' ' if overall else ''}"
         f"{CENTRE_WORDS + ' ' if centred else ''}"
+        f"{TIE_WORDS} "
         "What value is printed for that item on each drawing? Copy it exactly as printed, with its "
-        'marks (for example 7\'-2" or 12 3/4"); a stacked fraction is written 3/4. Read the '
-        f"drawing's own ink, never GV's markup: {COLOUR_RULE} Use null for a drawing you were not "
-        "shown or where no "
-        "value for it is printed, and say whether you are sure of what you read."
+        'marks (for example 7\'-2" or 12 3/4"); a stacked fraction is written 3/4. '
+        f"{UNITS_WORDS} Read the drawing's own ink, never GV's markup: {COLOUR_RULE} Use null for "
+        f"a drawing you were not shown or where no value for it is printed. {SURE_WORDS}"
     )
 
 
@@ -507,7 +515,7 @@ def adjudicate(
         extra={
             "dpi": dpis[0] if dpis else None,
             "turned": any(
-                kind in ("upright", "turned")
+                kind in ("upright", "turned", "zoom_upright")
                 for side in read.asked
                 for kind, _png in crops[side].pictures()
             ),

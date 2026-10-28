@@ -29,9 +29,22 @@ What each picture shows (2026-10-28, after a real upload's outlet items stayed u
 - **A long thin region** (one way at least `LONG_THIN` times the other: a label on a long
   dimension line) adds a close-up of the label (`zoom`, the `MIN_SIDE_PT` region around it), so a
   small stacked fraction is not lost in the drawing.
+
+What the picture reaches (2026-10-29, after a real upload's outlet height stayed unread: the
+architect's 6' - 0" was in view, but the outlet it measures to was 6 pt outside the picture):
+
+- **A label's region is at least `CONTEXT_PT` a side**, and reaches its extension lines' far ends
+  (what the dimension is taken from: a floor, a top, an outlet), each followed at most `REACH_PT`
+  from the label's centre; a label with no dimension line in the pack gets `NO_LINE_ALONG_PT` both
+  ways (its extension lines run across it, so across matters as much as along).
+- **Any region much bigger than the label's close-up** (`CLOSE_UP_RATIO` times, either way) adds
+  that close-up, so the number stays sharp while the drawing around it shows what it measures.
 - **A label code reads up the page** is shown turned, its text upright, to both readings, and
   alone (`SideCrops.sideways`); only a box whose direction code does not know keeps the region as
   drawn beside its turned copy. At most two pictures a side (`SideCrops.pictures`).
+  Since 2026-10-29, when such a label's region adds a close-up, the region is shown as drawn and
+  the close-up alone is turned (`SideCrops.zoom_upright`): a turned elevation lay on its side
+  (the floor at the left), which hid what a height measures.
 
 The pictures are drawn **without GV's markup**: from the set pack's drawings-only copy of the
 upload (`set_pack.drawings_only`: GV's comments dropped, its stickers hidden) with GV's layers
@@ -57,11 +70,14 @@ from app.review.assistant.finding_checks import to_inches
 _log = logging.getLogger(__name__)
 
 __all__ = [
+    "CLOSE_UP_RATIO",
+    "CONTEXT_PT",
     "LONG_THIN",
     "MIN_SIDE_PT",
     "NO_LINE_ACROSS_PT",
     "NO_LINE_ALONG_PT",
     "PAD_PT",
+    "REACH_PT",
     "ReadPictures",
     "ReadSpot",
     "around",
@@ -79,12 +95,22 @@ MIN_SIDE_PT: Final = 96.0
 #: The margin around a label and its dimension line's ends, or around a finding's box (points).
 PAD_PT: Final = 24.0
 #: The region of a label with no dimension line in the pack (points): this long along the label's
-#: direction (three times the minimum) and this wide across it (twice), so what it measures shows.
+#: direction and this wide across it, both three times the minimum, so what it measures shows
+#: (2026-10-29: twice the minimum across left the outlet a 6' - 0" measures to just outside).
 NO_LINE_ALONG_PT: Final = 3 * MIN_SIDE_PT
-NO_LINE_ACROSS_PT: Final = 2 * MIN_SIDE_PT
+NO_LINE_ACROSS_PT: Final = 3 * MIN_SIDE_PT
+#: The least size of a label's region with a dimension line (points; twice the minimum): the
+#: drawing around the number shows what it measures; its close-up keeps the number sharp.
+CONTEXT_PT: Final = 2 * MIN_SIDE_PT
+#: How far from the label's centre its region follows the label's extension lines (points): to
+#: their far ends (the floor, top or outlet they come from), at most this far each way.
+REACH_PT: Final = 1.5 * MIN_SIDE_PT
 #: A region at least this many times longer one way than the other is long and thin: the label's
 #: close-up is added (`ReadSpot.zoom`).
 LONG_THIN: Final = 2.5
+#: A region at least this many times the close-up's size, either way, adds the close-up (a long
+#: thin region always does).
+CLOSE_UP_RATIO: Final = 1.5
 
 type Box = tuple[float, float, float, float]
 type LabelsOf = Callable[[str, int], Sequence[Mapping[str, Any]] | None]
@@ -159,6 +185,32 @@ def _ends(label: Mapping[str, Any]) -> list[tuple[float, float]]:
     return out
 
 
+def _reach(label: Mapping[str, Any], own: Box) -> list[tuple[float, float]]:
+    """Both ends of each of the label's extension lines (`extension`, when the pack knows them),
+    each brought to at most `REACH_PT` from the label's centre either way: the region follows them
+    towards what they come from, never further than that."""
+    raw = label.get("extension")
+    cx, cy = (own[0] + own[2]) / 2, (own[1] + own[3]) / 2
+    out: list[tuple[float, float]] = []
+    for line in raw if isinstance(raw, (list, tuple)) else ():
+        if not isinstance(line, (list, tuple)):
+            continue
+        for end in line:
+            if not (isinstance(end, (list, tuple)) and len(end) == 2):
+                continue
+            try:
+                x, y = float(end[0]), float(end[1])
+            except (TypeError, ValueError):
+                continue
+            out.append(
+                (
+                    min(max(x, cx - REACH_PT), cx + REACH_PT),
+                    min(max(y, cy - REACH_PT), cy + REACH_PT),
+                )
+            )
+    return out
+
+
 def around(
     box: Box,
     ends: Sequence[tuple[float, float]] = (),
@@ -178,11 +230,11 @@ def around(
 
 
 def _least(label: Mapping[str, Any], ends: Sequence[tuple[float, float]]) -> tuple[float, float]:
-    """The least size of a label's region: `MIN_SIDE_PT` each way, or, with no dimension line in
+    """The least size of a label's region: `CONTEXT_PT` each way, or, with no dimension line in
     the pack (no `ends`), `NO_LINE_ALONG_PT` along the label's direction and `NO_LINE_ACROSS_PT`
     across it (along both, for a direction code does not know)."""
     if ends:
-        return (MIN_SIDE_PT, MIN_SIDE_PT)
+        return (CONTEXT_PT, CONTEXT_PT)
     orientation = label.get("orientation")
     if orientation == "h":
         return (NO_LINE_ALONG_PT, NO_LINE_ACROSS_PT)
@@ -193,12 +245,17 @@ def _least(label: Mapping[str, Any], ends: Sequence[tuple[float, float]]) -> tup
 
 def _zoom(region: Box, own: Box) -> Box | None:
     """The label's close-up (`around(own)`, the `MIN_SIDE_PT` minimum) for a long thin region,
-    one way at least `LONG_THIN` times the other; `None` else."""
+    one way at least `LONG_THIN` times the other, or a region at least `CLOSE_UP_RATIO` times the
+    close-up's size either way; `None` else."""
     width, height = region[2] - region[0], region[3] - region[1]
-    if min(width, height) <= 0 or max(width, height) < LONG_THIN * min(width, height):
+    if min(width, height) <= 0:
         return None
     close = around(own)
-    if (close[2] - close[0]) >= width and (close[3] - close[1]) >= height:
+    close_w, close_h = close[2] - close[0], close[3] - close[1]
+    if close_w >= width and close_h >= height:
+        return None
+    long_thin = max(width, height) >= LONG_THIN * min(width, height)
+    if not long_thin and max(width / close_w, height / close_h) < CLOSE_UP_RATIO:
         return None
     return close
 
@@ -287,7 +344,7 @@ def spots(finding: Mapping[str, Any], labels_of: LabelsOf | None = None) -> dict
             own = _four(label.get("box"))
             assert own is not None
             ends = _ends(label)
-            region = around(own, ends, least=_least(label, ends))
+            region = around(own, [*ends, *_reach(label, own)], least=_least(label, ends))
             known = label.get("orientation") in ("h", "v")
             tall = sideways(label, own)
             out[side] = ReadSpot(
@@ -380,7 +437,9 @@ class ReadPictures:
             if crop.turned is not None:
                 pictures.append(bytes(crop.turned))
             if getattr(crop, "zoom", None) is not None:
-                pictures.append(b"zoom")
+                pictures.append(
+                    b"zoom-upright" if getattr(crop, "zoom_upright", False) else b"zoom"
+                )
                 pictures.append(bytes(crop.zoom))
         return crop_hash(pictures, words)
 
@@ -411,7 +470,13 @@ def draw(
         kwargs: dict[str, Any] = {"pad": 0.0, "tall": spot.tall}
         if render is not None:
             kwargs["render"] = render
-        drawn = adjudication.render_crops(pdf, spot.box(), **kwargs)
+        # A label code reads up the page, in a region with its close-up: the region as drawn
+        # (the drawing its own way up, so what the number measures reads as drawn) and the
+        # close-up turned, its text upright (2026-10-29). With no close-up: turned alone.
+        split = spot.upright_only and spot.zoom is not None
+        drawn = adjudication.render_crops(
+            pdf, spot.box(), **({**kwargs, "tall": False} if split else kwargs)
+        )
         if drawn is None:
             continue
         zoom: bytes | None = None
@@ -419,5 +484,12 @@ def draw(
             close = adjudication.render_crops(pdf, spot.box(spot.zoom), **kwargs)
             if close is not None:
                 zoom = close.turned if spot.upright_only and close.turned else close.upright
+        if split:
+            crops[side] = replace(drawn, zoom=zoom, zoom_upright=zoom is not None)
+            if zoom is None:  # no close-up after all: the region turned alone, as before
+                again = adjudication.render_crops(pdf, spot.box(), **kwargs)
+                if again is not None:
+                    crops[side] = replace(again, sideways=True)
+            continue
         crops[side] = replace(drawn, sideways=spot.upright_only, zoom=zoom)
     return ReadPictures(crops=crops, spots=found)

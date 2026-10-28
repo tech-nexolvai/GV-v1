@@ -52,7 +52,8 @@ def test_the_request_holds_both_crops_and_a_neutral_question() -> None:
     assert '<drawing_data source="item">\nSink base width\n</drawing_data>' in text
     assert "image 1 is the architect's drawing" in text
     assert "image 2 is the vendor's shop drawing" in text
-    assert "whether you are sure" in text
+    # "Sure" means read clearly and tied to the item (2026-10-29; was "sure of what you read").
+    assert "Say you are sure only when you read each value clearly" in text
     assert read == SecondRead(
         architect='37"', vendor='46"', result="unsure", sure=True, asked=("architect", "vendor")
     )
