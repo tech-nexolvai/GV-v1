@@ -42,7 +42,6 @@ from app.models.evidence import (
 from app.models.review import Approval, ApprovedFinding, ReviewAction, ReviewSession
 from app.models.signed_exports import ApprovalExportSnapshot
 from app.review.ledger import record_correction
-from app.review.review_item_actions import CHECKED_WRONG_NOTE
 from app.review.reviewer_marks import (
     FrozenReviewerMarks,
     initials,
@@ -55,6 +54,7 @@ from app.review.signed_exports import (
     load_snapshot,
     request_signed_exports,
 )
+from app.review.signed_record import CHECKED_WRONG_NOTE
 from storage.local import LocalStore
 from tests.api.test_slot_rows import _package_rows, _run_current_checks
 from tests.app.postgres_fixture import alembic_config

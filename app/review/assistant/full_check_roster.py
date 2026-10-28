@@ -5693,6 +5693,9 @@ class _Run:
                 _log.exception("assistant roster could not work out whether it is sendable")
                 engine.incomplete_note = "whether every page was compared could not be worked out"
         files: list[str] = []
+        # The double-read rule's last sweep, after every step that may change a finding and
+        # before the files, the summary and the stored answer (2026-10-28).
+        engine._mark_unread_reds()
         self._step("finish")
         if engine._progress is not None:
             engine._progress.phase("writing")

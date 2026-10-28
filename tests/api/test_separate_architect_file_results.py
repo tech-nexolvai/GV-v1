@@ -16,9 +16,9 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.visual_countertops import _countertop_results_for_revision
 from app.db.session import session_factory
 from app.models import ObservationCandidate, PackageRevision
+from app.review.countertop_results import _countertop_results_for_revision
 from reports.spreadsheet import architect_line
 from tests.api.test_visual_architect import _items
 from tests.app.postgres_fixture import alembic_config

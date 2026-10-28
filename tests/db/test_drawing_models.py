@@ -1093,11 +1093,6 @@ RUN_AWARE: frozenset[str] = frozenset(
         "app/models/drawing.py",
         "workflow/countertop_runs.py",
         "workflow/part_operands.py",
-        "app/evidence/countertop_runs.py",
-        "app/api/countertop_runs.py",
-        # The row-scoped reviewer endpoint loads only the newest slot-reader extraction run.
-        "app/api/slot_rows.py",
-        "app/main.py",
         # Sign-off reads only when a run decision was recorded, never its run, to tell whether the
         # checks have seen it yet (#1137).
         "app/review/approval.py",
@@ -1293,9 +1288,6 @@ LINK_AWARE: frozenset[str] = frozenset(
         "app/models/drawing.py",
         "workflow/reading_parts.py",
         "workflow/part_operands.py",
-        "app/evidence/reading_parts.py",
-        "app/api/reading_parts.py",
-        "app/main.py",
         # Sign-off reads only when a link was recorded, never what it links, to tell whether the
         # checks have seen it yet (#1137).
         "app/review/approval.py",

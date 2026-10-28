@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     bedrock_connect_timeout: int = Field(default=10, ge=1)
     bedrock_read_timeout: int = Field(default=120, ge=1)
 
+    # **No longer read (2026-10-28).** The old review assistant these configured was removed with the old
+    # review screens. The fields stay so existing `.env` files and start scripts that still name them
+    # (`GV_REVIEW_ASSISTANT_*`) stay valid: `.env` refuses an unknown key. Remove them only together
+    # with those lines. What they configured:
     # The review assistant (#1128): grounded answers about one review, from its records only, by
     # Claude Sonnet 5.5 through OpenRouter on the readers' keep-no-data route (Google Vertex global,
     # no fallbacks, no data kept). Off unless enabled AND `OPENROUTER_API_KEY` is set; off, it still

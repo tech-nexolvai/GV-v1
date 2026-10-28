@@ -13,7 +13,6 @@ two. Both failures are silent, and both read as a clean package.
 from __future__ import annotations
 
 import hashlib
-import json
 import pathlib
 from collections.abc import Iterator
 from fractions import Fraction
@@ -25,7 +24,6 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.finding_chain import classify_trace
 from app.db.base import utc_now
 from app.db.session import session_factory
 from app.models import (
@@ -488,27 +486,6 @@ def test_a_finding_citing_an_unpublished_snapshot_is_refused(session: Session) -
 # ---------------------------------------------------------------------------
 # What is written can be read back
 # ---------------------------------------------------------------------------
-
-
-def test_every_stored_trace_is_one_the_reader_recognises(session: Session) -> None:
-    """**This is the first code ever to write `findings.trace`.**
-
-    `classify_trace` has been reading that column since the chain endpoint was built, against rows
-    that were only ever inserted by hand. If the writer and the reader disagree the failure is
-    silent: an unrecognised trace becomes `OpaqueTraceOut` and renders as a blank panel rather than
-    an error.
-    """
-    revision = _revision(session)
-    _publish_rulebook(session)
-    DatabaseStages().run_checks(session, revision.id)
-
-    for finding in _live_findings(session, revision.id):
-        # Through JSON, because that is what the column round-trips through in production.
-        classified = classify_trace(json.loads(json.dumps(finding.trace)))
-        assert (
-            classified.kind == "abstention"
-        ), f"{finding.outcome} stored a trace the reader classified as {classified.kind!r}"
-        assert "kind" not in finding.trace, "the reader adds `kind`; a stored one would shadow it"
 
 
 def test_no_verdict_inputs_are_written_when_nothing_was_read(session: Session) -> None:

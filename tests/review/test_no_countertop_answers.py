@@ -11,33 +11,18 @@ Synthetic values only.
 from __future__ import annotations
 
 import hashlib
-import io
 from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import HTTPException, Response
-from fastapi.testclient import TestClient
-from openpyxl import load_workbook  # type: ignore[import-untyped]
-from pypdf import PdfReader
-from sqlalchemy import Engine, func, select
+from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.dependencies import get_artifact_store, get_session
-from app.api.visual_countertops import (
-    PAGE_NOT_LISTED,
-    NoCountertopAnswerIn,
-    _countertop_results_for_revision,
-    answer_no_countertop_page,
-)
-from app.auth import Principal, Role, authenticate
-from app.config import Settings
+from app.auth import Principal, Role
 from app.db.session import session_factory
-from app.main import create_app
 from app.models import (
     Document,
     DocumentKind,
@@ -51,34 +36,21 @@ from app.models import (
 )
 from app.models.document import Page
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
-from app.models.signed_exports import ApprovalExportSnapshot
 from app.review.approval import (
-    approval_readiness,
-    approval_readiness_many,
     approve_package,
 )
+from app.review.countertop_results import _countertop_results_for_revision
 from app.review.no_countertop import (
     pages_blocking_sign_off,
     reading_answer,
 )
 from app.review.session import open_session
-from app.review.signed_exports import frozen_countertop_results, load_snapshot
-from reports.findings_pdf import FindingsPdfInput, write_findings_pdf
-from reports.spreadsheet import StoredFinding, write_stored_workbook
 from storage.local import LocalStore
-from tests.api.test_slot_rows import _row_holds, _run_current_checks
 from tests.api.test_unchosen_row_pages import (
     NO_COUNTERTOP_KINDS,
     NONE_PICKS,
     NONE_WHY,
-    _all_live,
-    _decide,
-    _decided_rows,
     _live,
-    _results,
-    _revision_of,
-    _unchosen_record,
-    code_no_row_record,
 )
 from tests.app.postgres_fixture import alembic_config
 from workflow.slot_row_scope import unchosen_page
@@ -87,7 +59,6 @@ pytest_plugins = ("tests.app.postgres_fixture",)
 
 LISTED = NONE_PICKS + NO_COUNTERTOP_KINDS
 REVIEWER = "synthetic-reviewer"
-SIGNED_OFF = "This review is signed off. Start a new revision to change it."
 
 
 @pytest.fixture
@@ -102,50 +73,6 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
         opened.close()
 
 
-def _reviewer(
-    project_id: UUID, *, roles: frozenset[Role] = frozenset({Role.REVIEWER})
-) -> Principal:
-    return Principal(id=REVIEWER, roles=roles, projects=frozenset({project_id}))
-
-
-def _answer(
-    session: Session, project_id: UUID, package_id: UUID, record_id: UUID, answer: str
-) -> Any:
-    principal = _reviewer(project_id)
-    return answer_no_countertop_page(
-        principal,
-        principal,
-        session,
-        project_id,
-        package_id,
-        record_id,
-        NoCountertopAnswerIn.model_validate({"answer": answer}),
-        Response(),
-    )
-
-
-def _client(session: Session, principal: Principal, root: Path) -> TestClient:
-    app = create_app(Settings(database_url="postgresql+psycopg://unused/unused"))
-    app.dependency_overrides[authenticate] = lambda: principal
-    app.dependency_overrides[get_session] = lambda: session
-    store = LocalStore(root=root / "signed", ticket_secret=b"synthetic-test")
-    app.dependency_overrides[get_artifact_store] = lambda: store
-    return TestClient(app, raise_server_exceptions=False)
-
-
-def _listed_page(session: Session, tmp_path: Path) -> tuple[UUID, UUID, PackageRevision, UUID]:
-    """Two checked and decided countertops (pages 1 and 2) and page 3, which both AIs said has no
-    countertop (with kinds, so it is listed). The review waits for sign-off."""
-    project_id, package_id = _decided_rows(session)
-    revision = _revision_of(session, package_id)
-    record_id = _unchosen_record(session, revision.id, page_index=2, flags=LISTED, reason=NONE_WHY)
-    _run_current_checks(session, package_id, tmp_path)
-    _decide(session, revision.id)
-    revision.state = PackageState.AWAITING_REVIEW.value
-    session.commit()
-    return project_id, package_id, revision, record_id
-
-
 def _review_session(session: Session, revision_id: UUID) -> UUID:
     review = open_session(session, package_revision_id=revision_id, reviewer=REVIEWER)
     session.commit()
@@ -155,300 +82,7 @@ def _review_session(session: Session, revision_id: UUID) -> UUID:
 # --- sign-off waits for every listed page ---------------------------------------------------------
 
 
-def test_a_listed_page_is_optional_and_can_still_be_confirmed(
-    session: Session, tmp_path: Path
-) -> None:
-    project_id, package_id, revision, record_id = _listed_page(session, tmp_path)
-
-    # Nothing is pre-selected: the page is listed with no confirmation. Every question is optional
-    # (owner decision 2026-10-16): it is still listed for a person, but sign-off does not wait.
-    (listed,) = _results(session, package_id).pages_without_countertop
-    assert (listed.page_number, listed.record_id, listed.confirmation) == (3, record_id, None)
-    readiness = approval_readiness(session, revision.id)
-    assert readiness.blocking_findings == 0
-    assert readiness.unconfirmed_no_countertop_pages == (3,)
-    assert readiness.can_approve
-    assert readiness.reason is None
-    # The Documents summary reads the same rule.
-    assert approval_readiness_many(session, [revision.id])[revision.id] == readiness
-    review_id = _review_session(session, revision.id)
-
-    answered = _answer(session, project_id, package_id, record_id, "no_countertop")
-
-    (confirmed,) = answered.pages_without_countertop
-    assert confirmed.confirmation is not None
-    assert confirmed.confirmation.confirmed_by == REVIEWER
-    assert confirmed.confirmation.from_revision is None
-    stored = session.scalars(select(NoCountertopAnswer)).one()
-    assert (stored.answer, stored.answered_by, stored.page_number) == (
-        "no_countertop",
-        REVIEWER,
-        3,
-    )
-    assert stored.created_at == confirmed.confirmation.confirmed_at
-    readiness = approval_readiness(session, revision.id)
-    assert readiness.unconfirmed_no_countertop_pages == ()
-    assert readiness.can_approve, readiness.reason
-    decision = approve_package(
-        session, principal=_reviewer(project_id), review_session_id=review_id
-    )
-    session.commit()
-    assert decision.approval.package_revision_id == revision.id
-
-
-def test_there_is_a_countertop_makes_the_page_a_blocking_split_item(
-    session: Session, tmp_path: Path
-) -> None:
-    project_id, package_id, revision, record_id = _listed_page(session, tmp_path)
-
-    answered = _answer(session, project_id, package_id, record_id, "countertop")
-
-    # No longer listed: it is an item, held like a split page, with nothing read on it yet.
-    assert answered.pages_without_countertop == ()
-    (item,) = [item for item in answered.items if item.row_id == record_id]
-    assert item.hold is not None and item.hold.code == "row-choice-split"
-    # The hold names who said there is a countertop, and when (it is printed in the signed files).
-    said = item.hold.reason
-    assert said.startswith(f"{REVIEWER} said on ") and "that this page has a countertop" in said
-    assert item.finding_id is None and item.needs_decision
-    readiness = approval_readiness(session, revision.id)
-    assert readiness.unchecked_countertop_pages == (3,)
-    assert readiness.reason == (
-        "Page 3 has no check result yet. Run the checks before signing off."
-    )
-    # The page is no longer listed, so a second answer is refused in plain words.
-    with pytest.raises(HTTPException) as refused:
-        _answer(session, project_id, package_id, record_id, "no_countertop")
-    assert refused.value.status_code == 409 and refused.value.detail == PAGE_NOT_LISTED
-
-    # The next check run makes it one "needs you" result, decided like any split page.
-    _run_current_checks(session, package_id, tmp_path)
-    (finding,) = [f for f in _live(session, revision.id) if f.scope_row_candidate_id == record_id]
-    assert finding.outcome == "REVIEW_REQUIRED"
-    assert finding.reason == said
-    readiness = approval_readiness(session, revision.id)
-    # The new countertop gets its own six depth and sink holds (#1201), which ask; the first two
-    # countertops' own holds were decided and stay decided (they are about those two alone).
-    holds = _row_holds(session, revision.id)
-    its_own = {
-        f.id
-        for f in _all_live(session, revision.id)
-        if f.id in holds and f.scope_row_candidate_id == record_id
-    }
-    assert len(its_own) == 6 and len(holds) == 18
-    # The holds wait for values nothing has read: they no longer hold sign-off (decision
-    # 2026-10-16) and are printed NOT CHECKED; they are still offered to settle.
-    assert set(readiness.blocking_finding_ids) == {finding.id}
-    assert set(readiness.not_checked_finding_ids) == its_own
-    assert readiness.unchecked_countertop_pages == ()
-    _decide(session, revision.id)
-    session.commit()
-    assert approval_readiness(session, revision.id).can_approve
-
-
-def test_there_is_a_countertop_after_the_last_run_asks_for_a_check_run(
-    session: Session, tmp_path: Path
-) -> None:
-    """The answer is an input the checks read, like a wall answer (#1137): a run older than it does
-    not count."""
-    from app.review.approval import _revisions_with_unchecked_inputs
-
-    project_id, package_id, revision, record_id = _listed_page(session, tmp_path)
-    _answer(session, project_id, package_id, record_id, "no_countertop")
-    assert revision.id not in _revisions_with_unchecked_inputs(session, [revision.id])
-
-    _answer(session, project_id, package_id, record_id, "countertop")
-    assert revision.id in _revisions_with_unchecked_inputs(session, [revision.id])
-
-
-def _older_page(session: Session, tmp_path: Path) -> tuple[UUID, UUID, PackageRevision, UUID]:
-    """Like `_listed_page`, but page 3 is an older reading: both AIs picked 0 with no kind."""
-    project_id, package_id = _decided_rows(session)
-    revision = _revision_of(session, package_id)
-    record_id = _unchosen_record(
-        session, revision.id, page_index=2, flags=NONE_PICKS, reason=NONE_WHY
-    )
-    _run_current_checks(session, package_id, tmp_path)
-    _decide(session, revision.id)
-    revision.state = PackageState.AWAITING_REVIEW.value
-    session.commit()
-    return project_id, package_id, revision, record_id
-
-
-def test_an_older_reading_is_listed_until_confirmed_and_then_is_a_confirmed_no_countertop_page(
-    session: Session, tmp_path: Path
-) -> None:
-    """Review finding 9: an older all-0 reading gets the same two buttons. Until answered it is
-    listed for a person (optional since 2026-10-16, so it no longer blocks sign-off); "Confirm"
-    makes it a confirmed no-countertop page, never a "not checkable" result."""
-    project_id, package_id, revision, record_id = _older_page(session, tmp_path)
-    # The check stage wrote no "needs you" result for it.
-    assert all(f.scope_row_candidate_id != record_id for f in _live(session, revision.id))
-    readiness = approval_readiness(session, revision.id)
-    assert readiness.unconfirmed_no_countertop_pages == (3,)
-    review_id = _review_session(session, revision.id)
-
-    answered = _answer(session, project_id, package_id, record_id, "no_countertop")
-
-    (page,) = answered.pages_without_countertop
-    assert page.older_reading and page.confirmation is not None
-    assert page.confirmation.confirmed_by == REVIEWER
-    # A run after the answer still writes nothing for the page, and nothing waits for a run.
-    _run_current_checks(session, package_id, tmp_path)
-    assert all(f.scope_row_candidate_id != record_id for f in _live(session, revision.id))
-    _decide(session, revision.id)
-    session.commit()
-    assert approval_readiness(session, revision.id).can_approve
-    decision = approve_package(
-        session, principal=_reviewer(project_id), review_session_id=review_id
-    )
-    session.commit()
-    assert decision.approval.package_revision_id == revision.id
-
-
-def test_an_older_reading_with_there_is_a_countertop_takes_the_split_path(
-    session: Session, tmp_path: Path
-) -> None:
-    project_id, package_id, revision, record_id = _older_page(session, tmp_path)
-
-    answered = _answer(session, project_id, package_id, record_id, "countertop")
-
-    assert answered.pages_without_countertop == ()
-    (item,) = [item for item in answered.items if item.row_id == record_id]
-    assert item.hold is not None and item.hold.code == "row-choice-split"
-    _run_current_checks(session, package_id, tmp_path)
-    (finding,) = [f for f in _live(session, revision.id) if f.scope_row_candidate_id == record_id]
-    assert finding.outcome == "REVIEW_REQUIRED"
-
-
-def test_a_package_for_another_product_never_waits_for_a_countertop_result(
-    session: Session, tmp_path: Path
-) -> None:
-    """`countertops_checked=False`: a cabinet package's checks never write a countertop result, so
-    a page a reviewer said has a countertop does not wait for one."""
-    from app.models import Package
-    from app.review.no_countertop import blocking_pages, countertops_checked
-
-    project_id, package_id, revision, record_id = _listed_page(session, tmp_path)
-    _answer(session, project_id, package_id, record_id, "countertop")
-    assert pages_blocking_sign_off(session, [revision.id])[revision.id].unchecked == (3,)
-    package = session.get(Package, package_id)
-    assert package is not None
-    package.product_type = "cabinet"
-    session.commit()
-
-    assert not countertops_checked("cabinet") and countertops_checked(None)
-    assert pages_blocking_sign_off(session, [revision.id])[revision.id].unchecked == ()
-    assert approval_readiness(session, revision.id).unchecked_countertop_pages == ()
-    # #1205: a package that checks no countertop lists no countertop item or page at all.
-    assert _results(session, package_id).items == ()
-    assert blocking_pages((), {}, set(), countertops_checked=False).unchecked == ()
-
-
-def test_a_cabinet_package_is_never_held_by_a_countertop_page_question(
-    session: Session, tmp_path: Path
-) -> None:
-    """#1205: a cabinet package read before #1205 still lists a page "with no countertop", with no
-    answer. That countertop question never blocks a cabinet review's sign-off, and the results say
-    the package's product and, instead of countertop wording, where the cabinet checks take their
-    values from. A countertop package is unchanged."""
-    from app.models import Package
-    from app.review.cabinet_reading import CABINET_LISTS_LINE
-
-    project_id, package_id, revision, _record_id = _listed_page(session, tmp_path)
-    before = _results(session, package_id)
-    assert (before.product_type, before.countertops_checked, before.reading_note) == (
-        "countertop",
-        True,
-        None,
-    )
-    assert approval_readiness(session, revision.id).unconfirmed_no_countertop_pages == (3,)
-    package = session.get(Package, package_id)
-    assert package is not None
-    package.product_type = "cabinet"
-    session.commit()
-
-    pages = pages_blocking_sign_off(session, [revision.id])[revision.id]
-    assert (pages.unconfirmed, pages.unchecked, pages.carried) == ((), (), ())
-    readiness = approval_readiness(session, revision.id)
-    assert readiness.unconfirmed_no_countertop_pages == ()
-    assert readiness.can_approve, readiness.reason
-    after = _results(session, package_id)
-    assert (after.product_type, after.countertops_checked, after.reading_note) == (
-        "cabinet",
-        False,
-        CABINET_LISTS_LINE,
-    )
-    # Nothing countertop-shaped reaches any reader of the projection (#1205 review): the screen,
-    # the review assistant and the signed files all take it from here.
-    assert (
-        after.items,
-        after.pages_without_countertop,
-        after.rows_not_checked,
-        after.drawings_not_read,
-    ) == ((), (), (), ())
-    review_id = _review_session(session, revision.id)
-    decision = approve_package(
-        session, principal=_reviewer(project_id), review_session_id=review_id
-    )
-    session.commit()
-    assert decision.approval.package_revision_id == revision.id
-
-
 # --- repeat clicks --------------------------------------------------------------------------------
-
-
-def test_a_repeated_confirm_records_nothing_and_keeps_the_first_person_and_time(
-    session: Session, tmp_path: Path
-) -> None:
-    project_id, package_id, _revision, record_id = _listed_page(session, tmp_path)
-    url = (
-        f"/api/v1/projects/{project_id}/packages/{package_id}/no-countertop-pages/"
-        f"{record_id}/answer"
-    )
-    first = _client(session, _reviewer(project_id), tmp_path).post(
-        url, json={"answer": "no_countertop"}
-    )
-    other = Principal(
-        id="synthetic-second", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
-    )
-    again = _client(session, other, tmp_path).post(url, json={"answer": "no_countertop"})
-
-    assert (first.status_code, again.status_code) == (201, 200)
-    assert session.scalar(select(func.count()).select_from(NoCountertopAnswer)) == 1
-    confirmed = again.json()["pages_without_countertop"][0]["confirmation"]
-    assert confirmed == first.json()["pages_without_countertop"][0]["confirmation"]
-    assert confirmed["confirmed_by"] == REVIEWER
-
-
-def test_answers_on_one_revision_are_taken_one_at_a_time(session: Session, tmp_path: Path) -> None:
-    """The newest answer is read under a transaction-scoped advisory lock, before anything is
-    written, so a "Confirm" sent with a "There is a countertop" waits for it and is then refused
-    (the page is no longer listed) instead of overriding it."""
-    from sqlalchemy import event
-
-    project_id, package_id, _revision, record_id = _listed_page(session, tmp_path)
-    statements: list[str] = []
-
-    def seen(*args: object) -> None:
-        statements.append(str(args[2]))
-
-    engine = session.get_bind()
-    event.listen(engine, "before_cursor_execute", seen)
-    try:
-        _answer(session, project_id, package_id, record_id, "countertop")
-    finally:
-        event.remove(engine, "before_cursor_execute", seen)
-    lock = next(i for i, text in enumerate(statements) if "pg_advisory_xact_lock" in text)
-    insert = next(
-        i for i, text in enumerate(statements) if "INSERT INTO no_countertop_answers" in text
-    )
-    reads = [i for i, text in enumerate(statements) if "FROM no_countertop_answers" in text]
-    assert lock < min(reads) < insert
-    # The later "Confirm" finds the page no longer listed.
-    with pytest.raises(HTTPException) as refused:
-        _answer(session, project_id, package_id, record_id, "no_countertop")
-    assert refused.value.status_code == 409
 
 
 # --- carried only onto an identical page ----------------------------------------------------------
@@ -494,42 +128,6 @@ def _record_on(session: Session, run_id: UUID, page: Page, flags: tuple[str, ...
     session.add(record)
     session.flush()
     return record.id
-
-
-@pytest.mark.parametrize(
-    ("flags", "carried"),
-    [
-        (LISTED, True),
-        # The same page answered by other readers: another reading answer, asked again.
-        (
-            (
-                "row-pick:opus-6-0:0",
-                "row-pick:sonnet-6-0:0",
-                "row-kind:opus-6-0:no_countertop",
-                "row-kind:sonnet-6-0:no_countertop",
-            ),
-            False,
-        ),
-    ],
-    ids=["identical-page-and-answer", "answer-changed"],
-)
-def test_a_confirmation_carries_over_a_rereading_only_with_the_same_answer(
-    session: Session, tmp_path: Path, flags: tuple[str, ...], carried: bool
-) -> None:
-    project_id, package_id, revision, record_id = _listed_page(session, tmp_path)
-    _answer(session, project_id, package_id, record_id, "no_countertop")
-    page = session.get(Page, session.get(ObservationCandidate, record_id).page_id)  # type: ignore[union-attr]
-    assert page is not None
-
-    again = _record_on(session, _reread(session, revision.id), page, flags)
-    session.commit()
-
-    (listed,) = _results(session, package_id).pages_without_countertop
-    assert listed.record_id == again
-    assert (listed.confirmation is not None) is carried
-    assert pages_blocking_sign_off(session, [revision.id])[revision.id].unconfirmed == (
-        () if carried else (3,)
-    )
 
 
 def _two_revision_pages(
@@ -676,133 +274,7 @@ def test_an_answer_given_on_revision_two_never_reaches_revision_one(session: Ses
 # --- who may answer, and when ---------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "roles",
-    [frozenset({Role.RULE_ADMIN}), frozenset()],
-    ids=["rule-admin", "no-role"],
-)
-def test_only_a_reviewer_may_answer(
-    session: Session, tmp_path: Path, roles: frozenset[Role]
-) -> None:
-    project_id, package_id, _revision, record_id = _listed_page(session, tmp_path)
-    url = (
-        f"/api/v1/projects/{project_id}/packages/{package_id}/no-countertop-pages/"
-        f"{record_id}/answer"
-    )
-
-    refused = _client(session, _reviewer(project_id, roles=roles), tmp_path).post(
-        url, json={"answer": "no_countertop"}
-    )
-    accepted = _client(session, _reviewer(project_id), tmp_path).post(
-        url, json={"answer": "no_countertop"}
-    )
-
-    # A refused action answers like an absence (`app/auth/dependencies._refuse`): 404, never 403.
-    assert refused.status_code == 404, refused.text
-    assert accepted.status_code == 201, accepted.text
-    assert (
-        accepted.json()["pages_without_countertop"][0]["confirmation"]["confirmed_by"] == REVIEWER
-    )
-    assert session.scalar(select(func.count()).select_from(NoCountertopAnswer)) == 1
-
-
-def test_an_answer_must_be_one_of_the_two_buttons(session: Session, tmp_path: Path) -> None:
-    project_id, package_id, _revision, record_id = _listed_page(session, tmp_path)
-    url = (
-        f"/api/v1/projects/{project_id}/packages/{package_id}/no-countertop-pages/"
-        f"{record_id}/answer"
-    )
-    client = _client(session, _reviewer(project_id), tmp_path)
-
-    assert client.post(url, json={}).status_code == 422
-    assert client.post(url, json={"answer": "maybe"}).status_code == 422
-    assert session.scalar(select(func.count()).select_from(NoCountertopAnswer)) == 0
-
-
-def test_answers_are_refused_after_sign_off(session: Session, tmp_path: Path) -> None:
-    project_id, package_id, revision, record_id = _listed_page(session, tmp_path)
-    _answer(session, project_id, package_id, record_id, "no_countertop")
-    approve_package(
-        session,
-        principal=_reviewer(project_id),
-        review_session_id=_review_session(session, revision.id),
-    )
-    session.commit()
-
-    refused = _client(session, _reviewer(project_id), tmp_path).post(
-        f"/api/v1/projects/{project_id}/packages/{package_id}/no-countertop-pages/"
-        f"{record_id}/answer",
-        json={"answer": "countertop"},
-    )
-
-    assert refused.status_code == 409
-    assert refused.json()["message"] == SIGNED_OFF
-    assert session.scalar(select(func.count()).select_from(NoCountertopAnswer)) == 1
-
-
 # --- frozen at sign-off and printed ---------------------------------------------------------------
-
-
-def test_the_confirmation_is_frozen_at_sign_off_and_printed_in_the_signed_files(
-    session: Session, tmp_path: Path
-) -> None:
-    project_id, package_id, revision, record_id = _listed_page(session, tmp_path)
-    _answer(session, project_id, package_id, record_id, "no_countertop")
-    decision = approve_package(
-        session,
-        principal=_reviewer(project_id),
-        review_session_id=_review_session(session, revision.id),
-    )
-    session.commit()
-
-    snapshot = session.scalars(
-        select(ApprovalExportSnapshot).where(
-            ApprovalExportSnapshot.approval_id == decision.approval.id
-        )
-    ).one()
-    frozen = frozen_countertop_results(session, load_snapshot(session, snapshot))
-    (page,) = frozen.pages_without_countertop
-    assert page.record_id == record_id
-    assert page.confirmation is not None and page.confirmation.confirmed_by == REVIEWER
-    stamp = page.confirmation.confirmed_at.isoformat()
-
-    finding = StoredFinding(
-        rule_id="CT-WIDTH-001",
-        outcome="PASS",
-        severity="FLAG",
-        snapshot_id="synthetic-snapshot",
-        engine_version="0.1.0",
-        trace={},
-        reason="Synthetic.",
-    )
-    pdf = write_findings_pdf(
-        FindingsPdfInput(
-            package_revision_id=revision.id,
-            revision_number=1,
-            vendor="Synthetic vendor",
-            findings=(finding,),
-            countertop_results=frozen.items,
-            pages_without_countertop=frozen.pages_without_countertop,
-        )
-    )
-    text = " ".join(
-        " ".join((sheet.extract_text() or "").split()) for sheet in PdfReader(io.BytesIO(pdf)).pages
-    )
-    assert f"Confirmed no countertop: page 3 — {REVIEWER}," in text
-    book = load_workbook(
-        io.BytesIO(
-            write_stored_workbook(
-                (finding,), pages_without_countertop=frozen.pages_without_countertop
-            )
-        )
-    )
-    sheet = book["Pages Not Checked"]
-    assert [cell.value for cell in sheet[1]] == ["page", "reason", "confirmed"]
-    assert [cell.value for cell in sheet[2]] == [
-        "3",
-        NONE_WHY,
-        f"Confirmed no countertop: page 3 — {REVIEWER}, {stamp}",
-    ]
 
 
 # --- carried to revision 2 ------------------------------------------------------------------------
@@ -897,32 +369,6 @@ def test_a_carried_there_is_a_countertop_needs_no_tick_and_gets_a_result_in_the_
     assert pages_blocking_sign_off(session, [two.id])[two.id].unchecked == ()
 
 
-def test_there_is_a_countertop_on_a_page_code_read_nothing_on_says_code_found_no_row(
-    session: Session, tmp_path: Path
-) -> None:
-    """#1193: a page code read no row on (no vendor drawing it could read) is answered with the same
-    two buttons; "There is a countertop" makes it a blocking item whose reason says code, not the
-    AIs, found no row."""
-    project_id, package_id = _decided_rows(session)
-    revision = _revision_of(session, package_id)
-    record_id = code_no_row_record(session, revision.id, page_index=2)
-    _run_current_checks(session, package_id, tmp_path)
-    _decide(session, revision.id)
-    revision.state = PackageState.AWAITING_REVIEW.value
-    session.commit()
-
-    answered = _answer(session, project_id, package_id, record_id, "countertop")
-
-    assert answered.pages_without_countertop == ()
-    (item,) = [item for item in answered.items if item.row_id == record_id]
-    assert item.hold is not None and item.hold.code == "row-choice-split"
-    assert "although code found no countertop row to read on it" in item.hold.reason
-    assert "both AIs" not in item.hold.reason
-    _run_current_checks(session, package_id, tmp_path)
-    (finding,) = [f for f in _live(session, revision.id) if f.scope_row_candidate_id == record_id]
-    assert finding.outcome == "REVIEW_REQUIRED" and finding.reason == item.hold.reason
-
-
 def test_a_code_listed_page_s_answer_carries_to_revision_two_only_with_the_same_reason_code(
     session: Session,
 ) -> None:
@@ -982,93 +428,3 @@ def test_a_code_listed_page_s_answer_carries_to_revision_two_only_with_the_same_
     assert carried is not None and (carried.from_revision, carried.confirmed_by) == (1, REVIEWER)
     assert confirmations[2] is None  # same page, but code now reads it for another reason
     assert pages_blocking_sign_off(session, [two.id])[two.id].unconfirmed == (2,)
-
-
-def test_a_cabinet_package_s_assistant_offers_no_countertop_question(
-    session: Session, tmp_path: Path
-) -> None:
-    """#1205 review: "Which pages have no countertop?" is a countertop question; a cabinet review is
-    never offered it, even when its drawings were read before #1205."""
-    from app.api.review_assistant import load_snapshot as assistant_snapshot
-    from app.models import Package
-    from app.review.assistant.starters import NO_COUNTERTOP_PAGES, ROWS_NOT_CHECKED, starters
-
-    project_id, package_id, revision, _record_id = _listed_page(session, tmp_path)
-    before = assistant_snapshot(session, project_id, package_id, revision)
-    assert NO_COUNTERTOP_PAGES in starters(before), "a countertop package is still offered it"
-    package = session.get(Package, package_id)
-    assert package is not None
-    package.product_type = "cabinet"
-    session.commit()
-
-    after = assistant_snapshot(session, project_id, package_id, revision)
-
-    assert after.pages_without_countertop == () and after.rows_not_checked == ()
-    assert after.countertops == ()
-    assert NO_COUNTERTOP_PAGES not in starters(after)
-    assert ROWS_NOT_CHECKED not in starters(after)
-
-
-def test_a_signed_cabinet_package_prints_the_cabinet_line_and_no_countertop_page(
-    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """#1205 review: sign off a cabinet package read before #1205, with a page still listed "with no
-    countertop" and never answered. The frozen record holds no countertop page or row, and the
-    signed PDF and workbook print the cabinet line instead of "Pages not checked"."""
-    from pypdf import PdfWriter
-
-    from app.models import OutputArtifact, Package
-    from app.review.cabinet_reading import CABINET_LISTS_LINE
-    from workflow.redline_outputs import RedlineOutput
-    from workflow.signed_outputs import generate_signed_outputs
-
-    project_id, package_id, revision, _record_id = _listed_page(session, tmp_path)
-    package = session.get(Package, package_id)
-    assert package is not None
-    package.product_type = "cabinet"
-    session.commit()
-    decision = approve_package(
-        session,
-        principal=_reviewer(project_id),
-        review_session_id=_review_session(session, revision.id),
-    )
-    session.commit()
-    snapshot = session.scalars(
-        select(ApprovalExportSnapshot).where(
-            ApprovalExportSnapshot.approval_id == decision.approval.id
-        )
-    ).one()
-    frozen = frozen_countertop_results(session, load_snapshot(session, snapshot))
-    assert (frozen.items, frozen.pages_without_countertop, frozen.rows_not_checked) == ((), (), ())
-    assert (frozen.countertops_checked, frozen.reading_note) == (False, CABINET_LISTS_LINE)
-
-    def redline(_db: Session, the_store: LocalStore, **_given: Any) -> RedlineOutput:
-        """This synthetic package's drawings were never stored; the redline is not what is tested."""
-        page = io.BytesIO()
-        writer = PdfWriter()
-        writer.add_blank_page(width=72, height=72)
-        writer.write(page)
-        page.seek(0)
-        return RedlineOutput(
-            the_store.put(f"redline/{uuid4()}.pdf", page, content_type="application/pdf"), None
-        )
-
-    monkeypatch.setattr("workflow.signed_outputs.render_evidence_grounded_redline", redline)
-    store = LocalStore(root=tmp_path / "signed", ticket_secret=b"synthetic-test")
-    bundle = generate_signed_outputs(session, store, decision.approval.id)
-    session.commit()
-
-    pdf = session.get(OutputArtifact, bundle.pdf_id)
-    workbook = session.get(OutputArtifact, bundle.workbook_id)
-    assert pdf is not None and workbook is not None
-    text = " ".join(
-        " ".join((sheet.extract_text() or "").split())
-        for sheet in PdfReader(io.BytesIO(store.get(pdf.storage_key).read())).pages
-    )
-    assert CABINET_LISTS_LINE in text
-    assert "PAGES NOT CHECKED" not in text and NONE_WHY not in text
-    book = load_workbook(io.BytesIO(store.get(workbook.storage_key).read()))
-    assert "Pages Not Checked" not in book.sheetnames
-    assert "Countertops" not in book.sheetnames
-    cells = {cell.value for sheet in book.worksheets for row in sheet.iter_rows() for cell in row}
-    assert CABINET_LISTS_LINE in cells

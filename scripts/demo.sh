@@ -192,12 +192,14 @@ API_PID=$!
 # half the narrowest space. Every value from 0.023 to below 1 reads both drawings exactly as before;
 # at 0.02, thirteen labels on `AI_Set_1` go blank.
 #
-# **The phrase index is on (#849).** After extraction the worker joins each line's words into
-# passages (#836), which is what `workflow/parameter_proposals.py` searches when it looks for the
-# passage that states a setting. Words join when the space between them is at most 0.34 of the
-# line's height. Measured on both client drawings in #840: the space between two words of one note
-# is at most 0.333 line heights, and the narrowest space between two separate items is 0.372 on
-# AI_Set_2 and 0.421 on AI_Set_1. The admin's decision of 2026-10-03, on #798. No model is called.
+# **The phrase index's gap is stated (#849).** After extraction the worker can join each line's words
+# into passages (#836), which is what the value hunter (parked, off) searches when it looks for
+# the passage that states a setting. Since 2026-10-28 the index is built only with the value hunter on,
+# its one reader, and the demo does not turn the hunter on. Words join when the space between them is
+# at most 0.34 of the line's height. Measured on both client drawings in #840: the space between two
+# words of one note is at most 0.333 line heights, and the narrowest space between two separate items
+# is 0.372 on AI_Set_2 and 0.421 on AI_Set_1. The admin's decision of 2026-10-03, on #798. No model is
+# called.
 #
 # **Every suggested part has its own picture (#897)** — the admin's decision of 2026-10-04. The worker
 # cuts one per suggestion from the vendor's page (the reviewer's markup left out, as for every

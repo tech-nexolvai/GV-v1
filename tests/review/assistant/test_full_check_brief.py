@@ -328,8 +328,8 @@ def _row(key: str, result: str) -> SimpleNamespace:
 
 def test_the_whole_set_review_results_lists_the_leads(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.api import company_settings
-    from app.api.review_assistant import ai_review_and_job_values
     from app.review import ai_review, review_items
+    from app.review.recorded_results import ai_review_and_job_values
 
     sheet = SimpleNamespace(
         page=5,

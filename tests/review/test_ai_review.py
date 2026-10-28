@@ -250,37 +250,6 @@ def test_readiness_ignores_the_ai_review_different_rows(session: Session) -> Non
     assert _compare_open(session, [revision_id]) == {}
 
 
-def test_the_review_list_and_the_answer_route_carry_the_ai_review(session: Session) -> None:
-    from app.models import Package
-    from tests.api.test_review_item_actions import _act, _client, _items
-
-    package_id, _revision_id, rows = _review(session)
-    package = session.get(Package, package_id)
-    assert package is not None
-    session.commit()
-    client = _client(session, package.project_id)
-
-    body = _items(client, package.project_id, package_id)
-    assert [p["page"] for p in body["ai_review"]["pages"]] == [1, 2]
-    assert body["ai_review"]["pages"][1]["reason"]
-    assert body["ai_review"]["counts"]["needs_person"] == 0
-    assert body["ai_review"]["pages"][0]["rows"][1]["actions"] == []
-    assert body["ai_review"]["pages"][0]["rows"][1]["clouded"] is True
-    assert body["architect_compare"] == []
-    key = f"air:{rows[1].id}"
-
-    agreed = _act(client, package.project_id, package_id, key, "agree")
-    assert agreed.status_code == 201, agreed.text
-    again = _act(client, package.project_id, package_id, key, "agree")
-    assert again.status_code == 200, again.text
-    not_this = _act(client, package.project_id, package_id, key, "answer", {"answer": "not_this"})
-    assert not_this.status_code == 201, not_this.text
-    listed = not_this.json()["review_items"]["ai_review"]["pages"][0]["rows"][1]
-    assert listed["answer"] == "not_this"
-    refused = _act(client, package.project_id, package_id, f"air:{rows[0].id}", "agree")
-    assert refused.status_code == 422, refused.text
-
-
 def test_the_old_direct_compare_is_off_by_default_and_its_records_stay(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

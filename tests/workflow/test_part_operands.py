@@ -11,8 +11,6 @@ import pytest
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
-from app.api.finding_chain import build_chain
-from app.api.findings import _as_finding, _base_query
 from app.db.session import session_factory
 from app.models import (
     CanonicalObservation,
@@ -664,30 +662,6 @@ def test_multiple_runs_are_not_combined(session: Session, store: LocalStore) -> 
     by_subject = {finding.scope_item_id: finding for finding in findings}
     assert by_subject[assembly.parts[0]].outcome == "PASS"
     assert by_subject[second].outcome == "NOT_FOUND"
-
-
-def test_one_countertop_finding_names_its_subject(session: Session, store: LocalStore) -> None:
-    assembly = Assembly(session, store)
-    finding = assembly.check(session, store)
-    assert finding.scope_item_id == assembly.parts[0]
-    assert finding.scope_label == "Countertop on page 1, item 1"
-    assert finding.outcome == "PASS"
-    package = session.get_one(Package, assembly.revision.package_id)
-    listed = [
-        _as_finding(row)
-        for row in session.execute(_base_query(package.project_id, package.id))
-        if row.rule_id == RULE
-    ]
-    assert len(listed) == 1
-    assert listed[0]["scope_item_id"] == assembly.parts[0]
-    assert listed[0]["scope_label"] == finding.scope_label
-    assert any("walls at both ends" in note for note in listed[0]["notes"])
-    run = session.get_one(CheckRun, finding.check_run_id)
-    snapshot = session.get_one(RuleSnapshot, run.rule_snapshot_id)
-    definition = session.get_one(RuleDefinition, snapshot.rule_definition_id)
-    chain = build_chain(session, finding, run, snapshot, definition)
-    assert chain.scope_item_id == assembly.parts[0]
-    assert chain.scope_label == finding.scope_label
 
 
 def test_a_legacy_run_without_layout_abstains_until_reconfirmed(

@@ -16,6 +16,10 @@ The only fakes are the two readers: one client answering every question by `(mod
 the two-panel question it reads the blue badges off the picture itself and answers by where they
 are drawn (left to right), so a badge drawn on the wrong span would pair the wrong dimensions.
 No model is called. Every value is invented; no client value appears here.
+
+The chain test itself went with the old review screens' architect-view pick route (2026-10-28); its
+fixtures and helpers stay here because `test_read_unread_wall_hold.py` and `test_budget_stop.py`
+use them (some re-exported, listed in `__all__`).
 """
 
 from __future__ import annotations
@@ -24,27 +28,20 @@ import json
 import re
 import tempfile
 from collections.abc import Iterator, Mapping
-from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.architect_matches import pick_architect_view
-from app.auth.roles import Principal, Role
 from app.db.session import session_factory
-from app.models import ObservationCandidate, Package, PackageRevision, Page
-from app.models.evidence import ArchitectPairingRecord, ArchitectViewMatchRecord
+from app.models import ObservationCandidate, PackageRevision, Page
 from app.models.runs import TaskRun, WorkflowRun
-from app.schemas.architect_matches import ArchitectViewPickIn
 from evidence.crop import decode_rgb_png
-from extraction.architect.reader import MEASURED_ARCHITECT_SETTINGS
-from extraction.slot_reader.bedrock import ARCH_PAIR_2PANEL_PROMPT_ID
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.architect import architect_sheet as sheet_parts
@@ -52,7 +49,6 @@ from tests.extraction.architect.combined_sheet import _dashed, _row, _text
 from tests.extraction.slot_reader import sheets
 from tests.extraction.slot_reader.test_arch_pair_question import Rates as PricedRates
 from tests.extraction.test_reader import MISSING_SPACE
-from tests.workflow.test_architect_file_reader import _add_architectural
 from tests.workflow.test_architect_reader import _stages, _upload
 from tests.workflow.test_markup_route import _SilentOcr
 from tests.workflow.test_slot_reader import (
@@ -61,12 +57,26 @@ from tests.workflow.test_slot_reader import (
     claude_crops_to_texts,
     runtime,
 )
-from tests.workflow.test_stages import _publish_rulebook
 from workflow.architect_pairing import _ARCHITECT_COLOUR, _GLYPHS, _VENDOR_COLOUR
-from workflow.architect_row_plan import ARCHITECT_CHECK_RULE_ID
-from workflow.stages import DatabaseStages, _SpendMeter
+from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
+
+# Names the importing tests read off this module (`chain.<name>`), re-exported helpers included.
+__all__ = [
+    "MISSING_SPACE",
+    "TEXTS",
+    "VENDOR",
+    "PricedRates",
+    "Readers",
+    "_SilentOcr",
+    "_anchor",
+    "_architect_file",
+    "_read_slots",
+    "_stages",
+    "_upload",
+    "runtime",
+]
 
 TEXTS: dict[int | None, str] = {0: '24"', 1: '48"', 2: '24"', None: '96"'}
 VENDOR = sheets.sheet(sheets.text_labels(('24"', '48"', '24"'), '96"'))
@@ -291,131 +301,3 @@ def _anchor(session: Session) -> ObservationCandidate:
         .order_by(ObservationCandidate.created_at.desc())
         .limit(1)
     ).one()
-
-
-def _match(session: Session, anchor: ObservationCandidate) -> ArchitectViewMatchRecord:
-    return session.scalars(
-        select(ArchitectViewMatchRecord)
-        .where(ArchitectViewMatchRecord.row_anchor_candidate_id == anchor.id)
-        .order_by(ArchitectViewMatchRecord.created_at.desc())
-        .limit(1)
-    ).one()
-
-
-def test_pick_then_re_read_carries_the_match_and_pairs_by_code_and_both_ais_to_an_exact_pass(
-    session: Session, store: LocalStore
-) -> None:
-    revision = _upload(session, store, VENDOR)
-    _add_architectural(session, store, revision, _architect_file())
-    reading = _stages(store)
-    reading.extract_pages(session, revision.id)
-    session.commit()
-    _publish_rulebook(session)
-    readers = Readers()
-    # As production builds it: the Claude readers always store their question packets, which bind
-    # each answer to its label (#1225).
-    plain = replace(runtime(readers, claude_row_reader=True), question_packets=True)
-    # Priced, so every call is metered as in production.
-    slot_runtime = replace(plain, form=replace(plain.form, rates=PricedRates()))  # type: ignore[arg-type]
-    slot = DatabaseStages(
-        store,
-        dpi=150,
-        ocr_engine=_SilentOcr(),
-        missing_space=MISSING_SPACE,
-        form_reader=slot_runtime.form,
-        slot_reader=slot_runtime,
-        architect_reader=MEASURED_ARCHITECT_SETTINGS,
-    )
-    # What `extract_pages` sets up before it reads: the drawing set's spend meter (#757), and the
-    # architect reader's results for this extraction.
-    slot._meter = _SpendMeter(cap_micros=1_000_000_000)
-    slot._architect_pages = dict(reading._architect_pages)
-    slot._architect_view_crops = dict(reading._architect_view_crops)
-    assert len(slot._architect_view_crops) == 2, "both twin views were indexed"
-
-    # 1. The first read: the real matcher sees twins (code ties), so the reviewer chooses.
-    _read_slots(session, slot, revision, readers)
-    first = _anchor(session)
-    assert [first.value_numerator] == [24], "the vendor's row was read from the PDF"
-    automatic = _match(session, first)
-    assert (automatic.source, automatic.status) == ("automatic", "needs_reviewer")
-    assert session.scalars(select(ArchitectPairingRecord)).all() == []
-    candidates = [candidate["view_id"] for candidate in automatic.candidates]
-    assert len(candidates) == 2
-
-    # 2. The reviewer picks the second twin, through #1166's handler.
-    package = session.get_one(Package, revision.package_id)
-    principal = Principal(
-        id="reviewer (synthetic test)",
-        roles=frozenset({Role.REVIEWER}),
-        projects=frozenset({package.project_id}),
-    )
-    picked_view = UUID(str(candidates[1]))
-    pick_architect_view(
-        principal,
-        principal,
-        session,
-        package.project_id,
-        package.id,
-        first.id,
-        ArchitectViewPickIn(view_id=picked_view, expected_record_id=automatic.id),
-    )
-
-    # 3. The slot stage reads again: the pick is carried; code and both AIs pair against it.
-    _read_slots(session, slot, revision, readers)
-    second = _anchor(session)
-    assert second.id != first.id
-    carried = _match(session, second)
-    assert (carried.source, carried.status, carried.matched_view_id) == (
-        "carried",
-        "carried_over",
-        picked_view,
-    )
-    pairing = session.scalars(
-        select(ArchitectPairingRecord).where(
-            ArchitectPairingRecord.row_anchor_candidate_id == second.id
-        )
-    ).one()
-    assert (pairing.source, pairing.status) == ("code+ais", "paired"), pairing.details["reasons"]
-    assert pairing.details["architect_view_id"] == str(picked_view)
-    assert pairing.details["match_record_id"] == str(carried.id)
-    ai: Any = pairing.details["ai"]
-    assert ai["prompt_id"] == ARCH_PAIR_2PANEL_PROMPT_ID
-
-    # The badges drawn on the picture map to the ids the packet names: left to right, A-numbers
-    # name the architect's spans left to right (`arch-slot:0`, `1`, `2`) of the picked view.
-    (picture,) = set(readers.pairing_pictures[-2:])
-    drawn = [label for label, _x in sorted(_badges(picture, _ARCHITECT_COLOUR), key=lambda b: b[1])]
-    numbering = ai["numbering"]["architect"]
-    assert sorted(drawn) == sorted(numbering)
-    assert [numbering[label]["slot"] for label in drawn] == [0, 1, 2]
-    for label in drawn:
-        candidate = session.get_one(ObservationCandidate, UUID(numbering[label]["candidate_id"]))
-        assert candidate.page_id is not None
-        assert any(flag.startswith("arch-view:") for flag in candidate.ambiguity_flags or [])
-    vendor_drawn = [
-        label for label, _x in sorted(_badges(picture, _VENDOR_COLOUR), key=lambda b: b[1])
-    ]
-    assert vendor_drawn == ["V1", "V2", "V3"]
-
-    # 4. The check stage: exact PASS, compared with the picked view.
-    from app.models.rules import RuleDefinition, RuleSnapshot
-    from app.models.verdicts import CheckRun, Finding
-
-    DatabaseStages(store).run_checks(session, revision.id)
-    session.commit()
-    (finding,) = session.scalars(
-        select(Finding)
-        .join(CheckRun, CheckRun.id == Finding.check_run_id)
-        .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
-        .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
-        .where(
-            Finding.package_revision_id == revision.id,
-            CheckRun.superseded_at.is_(None),
-            RuleDefinition.rule_id == ARCHITECT_CHECK_RULE_ID,
-            Finding.scope_row_candidate_id.is_not(None),
-        )
-    ).all()
-    assert finding.scope_row_candidate_id == second.id
-    assert finding.outcome == "PASS", (finding.reason, finding.notes)
-    assert (finding.notes or [""])[0].startswith("compared with ")

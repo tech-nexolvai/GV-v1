@@ -38,7 +38,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.review import list_finding_actions
 from app.db.session import session_factory
 from app.models import ReviewAction
 from app.models.review import TAGS_CHECK, ReviewActionKind, ReviewActionTag
@@ -51,7 +50,6 @@ from app.review.carry_over import (
     decision_records,
 )
 from app.review.evidence_actions import ReadingDecision, confirm_candidate_reading
-from app.review.requirements import needs_note
 from app.review.reviewer_marks import reviewer_marks_for
 from app.review.session import record_action
 from app.review.signed_record import ReviewDisposition, SignedReviewFinding
@@ -61,7 +59,6 @@ from tests.app.postgres_fixture import alembic_config
 from tests.review.test_held_reading_actions import (
     REVIEWER,
     _held_rows,
-    _held_slot_flags,
     _review_session_id,
     _reviewer,
     _revision,
@@ -195,34 +192,6 @@ def test_the_database_refuses_a_tag_off_an_answer_about_a_held_reading(
 
 
 # -- item 1: the drawn length disagreed -----------------------------------------------------------
-
-
-def test_a_confirmed_reading_whose_drawn_length_disagreed_is_tagged_never_noted(
-    session: Session, tmp_path: Path
-) -> None:
-    """Input: the held label carries the reader's `drawn-length` hold (both AIs read 20", the drawn
-    length disagreed); a person confirms 20". Outcome: the confirm action is tagged
-    `held-reading-answer` and `drawn-length-disagreed`, with no note; the history returns both tags;
-    nothing is decided: the result still blocks sign-off and its decision does not hold."""
-    project_id, package_id, anchors = _held_rows(
-        session, slot_flags=_held_slot_flags("drawn-length")
-    )
-    waiting = _width_finding(session, package_id, anchors[0], tmp_path)
-    assert waiting.outcome == "REVIEW_REQUIRED"
-
-    action = _confirm(session, project_id, package_id, waiting, anchors[0]).action
-
-    assert (action.action, action.note, action.tags) == ("confirm", None, [HELD, DRAWN])
-    assert needs_note(waiting.outcome, action.action)  # the note rule itself is unchanged
-    records = decision_records(session, [waiting.id])
-    assert waiting.id not in records.decisions
-    assert not decision_holds(waiting, records, when=_now())
-    assert waiting.id in _unaddressed(session, (waiting,))
-    reviewer = _reviewer(project_id)
-    (shown,) = list_finding_actions(
-        reviewer, reviewer, session, project_id, package_id, waiting.id
-    ).items
-    assert (shown.action, shown.note, shown.tags) == ("confirm", None, [HELD, DRAWN])
 
 
 def test_an_answer_never_hides_the_decision_before_it(session: Session, tmp_path: Path) -> None:

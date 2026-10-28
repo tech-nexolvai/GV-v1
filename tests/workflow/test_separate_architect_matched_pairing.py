@@ -41,13 +41,10 @@ from sqlalchemy.orm import Session
 
 import workflow.architect_row_plan as row_plan
 from alembic import command
-from app.api.architect_matches import pick_architect_view
-from app.auth.roles import Principal, Role
 from app.db.session import session_factory
 from app.models import (
     MeasurementProposal,
     ObservationCandidate,
-    Package,
     PackageRevision,
     Page,
 )
@@ -57,7 +54,6 @@ from app.models.evidence import (
     ArchitectViewMatchRecord,
 )
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
-from app.schemas.architect_matches import ArchitectViewPickIn
 from evidence.crop import RenderedPage
 from extraction.ink import InkClass
 from extraction.slot_reader.bedrock import (
@@ -101,7 +97,6 @@ from workflow.architect_pairing import (
     vendor_row_input,
 )
 from workflow.architect_pairing_records import (
-    DecidedPair,
     architect_spans_for_row,
     latest_architect_pairing,
     latest_record,
@@ -109,11 +104,7 @@ from workflow.architect_pairing_records import (
 from workflow.architect_row_evidence import architect_candidate_refusal
 from workflow.architect_row_plan import (
     ARCHITECT_CHECK_RULE_ID,
-    CHOOSE_ARCHITECT_VIEW,
-    NO_ARCHITECT_VIEW_MATCHES,
-    NOTHING_PAIRED_ON_REVISION,
     SEPARATE_ARCHITECT_FILE_NOT_COMPARED,
-    Disposition,
     architect_file_indexed,
     plan_architect_row,
 )
@@ -485,32 +476,6 @@ def _pair(
     return anchor, paired, asked
 
 
-def _pick(session: Session, package: TwoFiles, anchor: UUID, view: MatchedView | None) -> None:
-    """The reviewer's one click, through #1166's POST handler (which records code's pairing for the
-    picked view, #1167)."""
-    record = _latest_match_record(session, anchor)
-    assert record is not None
-    package_row = session.get_one(Package, package.revision.package_id)
-    principal = Principal(
-        id="reviewer (synthetic test)",
-        roles=frozenset({Role.REVIEWER}),
-        projects=frozenset({package_row.project_id}),
-    )
-    pick_architect_view(
-        principal,
-        principal,
-        session,
-        package_row.project_id,
-        package_row.id,
-        anchor,
-        ArchitectViewPickIn(
-            view_id=None if view is None else view.view_id,
-            none_of_these=view is None,
-            expected_record_id=record.id,
-        ),
-    )
-
-
 def _latest_match_record(session: Session, anchor: UUID) -> ArchitectViewMatchRecord | None:
     return session.scalars(
         select(ArchitectViewMatchRecord)
@@ -593,120 +558,7 @@ def test_an_automatic_match_is_paired_by_code_and_both_ais_and_decided_exactly(
 # --- (b) twin views → the reviewer picks → the checks run again → compared --------------------------
 
 
-def test_twin_views_wait_for_the_reviewers_pick_then_are_compared_with_that_view_only(
-    session: Session, store: LocalStore
-) -> None:
-    package = _two_file_package(session, store, views=2)
-    second = package.views[2]
-
-    anchor, paired, asked = _pair(
-        session,
-        package,
-        FakeMatcher(package, "needs_reviewer", None),
-        drawn=EQUAL[0],
-        printed=EQUAL[1],
-    )
-
-    assert paired.architect_pairing is None, "nothing is paired before the reviewer picks"
-    assert asked == []
-    assert session.scalars(select(ArchitectPairingRecord)).all() == []
-    found = _check(session, store, package.revision)
-    (waiting,) = found["row"]
-    assert (waiting.outcome, waiting.reason) == ("REVIEW_REQUIRED", CHOOSE_ARCHITECT_VIEW)
-
-    _pick(session, package, anchor, second)
-
-    picked = _latest_match_record(session, anchor)
-    assert picked is not None
-    # Until the checks run again, the screen says the row waits for that run (#1167 review).
-    assert row_plan.architect_matches_waiting_for_run(
-        session, package.revision.id, {picked.id}
-    ) == {picked.id}
-    appended = session.scalars(select(ArchitectPairingRecord)).one()
-    assert (appended.source, appended.status) == ("code", "paired")
-    assert appended.details["architect_view_id"] == str(second.view_id)
-    pairing = latest_architect_pairing(session, anchor)
-    assert pairing is not None and pairing.source == "code"
-    second_view = _candidates_in_view(session, package.architect_page, 2)
-    assert pairing.pairs and {p.architect_candidate_id for p in pairing.pairs} <= second_view
-
-    found = _check(session, store, package.revision)
-    assert (
-        row_plan.architect_matches_waiting_for_run(session, package.revision.id, {picked.id})
-        == set()
-    )
-    (compared,) = found["row"]
-    # One judgment (code's) on the pairing: compared, and the reviewer confirms the pairing.
-    assert compared.outcome == "REVIEW_REQUIRED"
-    assert "Only code paired these" in (compared.reason or "")
-    assert any("The engine's comparison" in note and "PASS" in note for note in compared.notes)
-    assert compared.notes[1] == compared_with_text(second), compared.notes
-
-    # The reviewer confirms the pairing: a span of the other twin is refused; then a PASS.
-    anchor_row = session.get_one(ObservationCandidate, anchor)
-    other = min(_candidates_in_view(session, package.architect_page, 1))
-    with pytest.raises(
-        ReviewerPairingRefused, match="not in the architect's view matched with this row"
-    ):
-        record_reviewer_pairing(
-            session,
-            anchor=anchor_row,
-            package_revision_id=package.revision.id,
-            piece_count=3,
-            pairs=[DecidedPair("piece", other, (0,))],
-            note=None,
-            actor="reviewer@example.com",
-        )
-    record_reviewer_pairing(
-        session,
-        anchor=anchor_row,
-        package_revision_id=package.revision.id,
-        piece_count=3,
-        pairs=[
-            DecidedPair(pair.kind, pair.architect_candidate_id, pair.vendor_slot_indices)
-            for pair in pairing.pairs
-        ],
-        note=None,
-        actor="reviewer@example.com",
-    )
-    session.commit()
-
-    found = _check(session, store, package.revision)
-    (decided,) = found["row"]
-    assert decided.outcome == "PASS", decided.reason
-    assert decided.notes[0] == compared_with_text(second)
-
-
 # --- (c) "none of these" → not compared, said plainly ------------------------------------------------
-
-
-def test_none_of_these_is_not_compared_and_says_so(session: Session, store: LocalStore) -> None:
-    package = _two_file_package(session, store, views=2)
-    anchor, _paired, _asked = _pair(
-        session,
-        package,
-        FakeMatcher(package, "needs_reviewer", None),
-        drawn=EQUAL[0],
-        printed=EQUAL[1],
-    )
-    _pick(session, package, anchor, None)
-
-    found = _check(session, store, package.revision)
-
-    assert found["row"] == [], "nothing compared: no finding for the row"
-    assert session.scalars(select(ArchitectPairingRecord)).all() == []
-    (line,) = found["package"]
-    assert (line.outcome, line.reason) == ("NO_APPLICABLE_RULE", NOTHING_PAIRED_ON_REVISION)
-    (row,) = slot_rows_and_unchosen_pages(session, package.revision.id)[0]
-    plan = plan_architect_row(
-        session,
-        row,
-        latest_architect_pairing(session, anchor),
-        separate_architect_file=True,
-        match=effective_architect_match(session, anchor),
-        architect_file_indexed=True,
-    )
-    assert (plan.disposition, plan.reason) == (Disposition.NOT_COMPARED, NO_ARCHITECT_VIEW_MATCHES)
 
 
 # --- the guards: never a value from outside the matched view ----------------------------------------
@@ -777,48 +629,6 @@ def test_a_pairing_for_a_view_that_is_no_longer_the_match_never_counts(
     assert architect_candidate_refusal(session, rows[0], candidate) == (
         "it is on a different sheet from the vendor's row."
     ), "without a match the refusal is word for word as before"
-
-
-def test_a_reviewers_pairing_made_under_an_earlier_match_never_comes_back(
-    session: Session, store: LocalStore
-) -> None:
-    """#1167 review: auto view 1 → the reviewer pairs on it → "none of these" → view 1 again. The
-    earlier pairing names view 1 too, but it was made under another match: it stays dead, and the
-    new match brings code's own pairing (one judgment, the reviewer confirms it again)."""
-    package = _two_file_package(session, store, views=2)
-    first = package.views[1]
-    anchor, paired, _asked = _pair(
-        session, package, FakeMatcher(package, "auto_matched", 1), drawn=EQUAL[0], printed=EQUAL[1]
-    )
-    assert paired.architect_pairing is not None
-    anchor_row = session.get_one(ObservationCandidate, anchor)
-    automatic = latest_architect_pairing(session, anchor)
-    assert automatic is not None and automatic.source == "code+ais"
-    earlier = record_reviewer_pairing(
-        session,
-        anchor=anchor_row,
-        package_revision_id=package.revision.id,
-        piece_count=3,
-        pairs=[
-            DecidedPair(pair.kind, pair.architect_candidate_id, pair.vendor_slot_indices)
-            for pair in automatic.pairs
-        ],
-        note=None,
-        actor="reviewer@example.com",
-    )
-    session.commit()
-    effective = latest_architect_pairing(session, anchor)
-    assert effective is not None and effective.record_id == earlier.id
-
-    _pick(session, package, anchor, None)
-    assert latest_architect_pairing(session, anchor) is None
-    assert architect_spans_for_row(session, anchor_row, latest_record(session, anchor)) == []
-    _pick(session, package, anchor, first)
-
-    again = latest_architect_pairing(session, anchor)
-    assert again is not None
-    assert again.record_id != earlier.id and again.source == "code", "not the earlier pairing"
-    assert latest_record(session, anchor, sources=("reviewer",)) is not None
 
 
 def test_the_pairing_step_and_the_matcher_ask_one_rule_for_a_pages_own_architect_view(

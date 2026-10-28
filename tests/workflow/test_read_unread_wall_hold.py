@@ -12,7 +12,7 @@ derived by `workflow/slot_row_scope.slot_rows_and_unchosen_pages`, no new table)
 again, the width result waits for the reviewer and blocks sign-off, and the row says why in plain
 words. It only ever holds; it never passes more.
 
-Synthetic drawings and fake readers (`tests/workflow/test_separate_architect_production_chain.py`):
+Synthetic drawings and fake readers (`tests/workflow/separate_architect_chain_fixtures.py`):
 three pieces 24", 48" and 24" with an overall of 96", which is right only with no wall at either
 end (a 1" field cut per wall end). Code's wall ink is seen at both ends and both AIs say walls at
 both ends, so the automatic walls (both ends) apply and the width FAILs with no click. No network,
@@ -33,22 +33,18 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.slot_rows import SlotRowReviewIn, list_slot_rows, review_slot_row
-from app.api.visual_countertops import _wall as _results_wall
-from app.auth.roles import Principal, Role
 from app.db.session import session_factory
 from app.lifecycle.carry_forward import carry_row_answers_within_revision
-from app.models import ObservationCandidate, Package, PackageRevision
+from app.models import ObservationCandidate, PackageRevision
 from app.models.document import PackageRevisionDocument
 from app.models.evidence import SlotRowReviewDecision
 from app.models.rules import RuleDefinition, RuleSnapshot
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from app.models.verdicts import CheckRun, Finding
 from app.review.approval import approval_readiness
-from app.review.carry_over import fingerprint_bodies
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.workflow import test_separate_architect_production_chain as chain
+from tests.workflow import separate_architect_chain_fixtures as chain
 from tests.workflow.test_slot_reader import _to_walls, _with_wall_ink
 from tests.workflow.test_stages import _publish_rulebook
 from vocabulary.blank_page import BLANK_PAGE_RULE
@@ -220,14 +216,6 @@ def _width(session: Session, store: LocalStore, revision: Any, anchor: Any) -> F
     ).one()
 
 
-def _principal(session: Session, revision: Any) -> tuple[Principal, Package]:
-    package = session.get_one(Package, revision.package_id)
-    principal = Principal(
-        id=REVIEWER, roles=frozenset({Role.REVIEWER}), projects=frozenset({package.project_id})
-    )
-    return principal, package
-
-
 def _assert_held(session: Session, store: LocalStore, revision: Any, anchor: Any) -> None:
     """The page's new row: its walls held naming the reviewer's answer, the width result waits for
     the reviewer, and sign-off is blocked."""
@@ -261,37 +249,6 @@ def test_the_automatic_walls_decide_the_row_before_any_answer(
     assert getattr(row, "wall_hold", None) is None
 
 
-def test_an_answer_the_new_reading_cannot_carry_holds_the_new_rows_walls(
-    session: Session, store: LocalStore
-) -> None:
-    """Before: the new row took the automatic walls at both ends and was decided (FAIL) with no
-    click; the reviewer's "back wall and left end" was only written in the audit trail."""
-    revision, slot, readers, first = _first_reading(session, store)
-    decision = _answer(session, first)
-
-    anchor, carried = _re_read(session, slot, revision, readers)
-    assert carried == 0, "another row chosen by a newer reader is not provably the same row"
-
-    _assert_held(session, store, revision, anchor)
-    finding = _width(session, store, revision, anchor)
-    # Carry-over compares what the check used: no wall on the held row, never the automatic one.
-    body = fingerprint_bodies(session, [finding])[finding.id]
-    assert body["row"]["wall_layout"] is None
-    # The screen: the reason is on the row, above the wall choices; no automatic proposal is shown.
-    principal, package = _principal(session, revision)
-    (listed,) = list_slot_rows(principal, session, package.project_id, package.id).rows
-    (row,) = slot_rows(session, revision.id)
-    assert getattr(listed, "wall_hold_reason", None) == row.wall_hold
-    assert listed.wall_reason == row.wall_hold
-    assert listed.wall_proposal is None and listed.wall_config is None
-    assert decision.id != listed.decision_id
-    # The results screen, the needs-you queue and the signed PDF (which freezes the screen's
-    # results) never name the sealed automatic walls as the walls this held result used.
-    layout = _results_wall(row, None, finding)
-    assert (layout.config, layout.label, layout.source) == (None, None, "not established")
-    assert layout.line == f"Walls asked again: {row.wall_hold}"
-
-
 @pytest.mark.parametrize(
     "third",
     [
@@ -316,41 +273,6 @@ def test_the_hold_survives_a_third_reading(
 
 
 # --- 2. answered again, or carried: not held -------------------------------------------------------
-
-
-def test_the_reviewers_answer_on_the_new_row_clears_the_hold_and_is_used(
-    session: Session, store: LocalStore
-) -> None:
-    revision, slot, readers, first = _first_reading(session, store)
-    _answer(session, first)
-    anchor, _carried = _re_read(session, slot, revision, readers)
-    principal, package = _principal(session, revision)
-
-    review_slot_row(
-        principal,
-        principal,
-        session,
-        package.project_id,
-        package.id,
-        anchor.id,
-        SlotRowReviewIn(wall_config="back_only"),
-    )
-    session.commit()
-
-    (row,) = slot_rows(session, revision.id)
-    assert row.decision is not None and row.wall_hold is None
-    assert slot_row_check(session, row).wall_config == "back_only"
-    finding = _width(session, store, revision, anchor)
-    assert finding.outcome == "PASS", (finding.outcome, finding.reason)
-    (listed,) = list_slot_rows(principal, session, package.project_id, package.id).rows
-    assert listed.wall_hold_reason is None
-
-    # The next reading of the same row carries the new answer: still nothing held.
-    again, carried = _re_read(session, slot, revision, readers)
-    assert carried == 1
-    (row,) = slot_rows(session, revision.id)
-    assert row.anchor.id == again.id and row.wall_hold is None
-    assert row.decision is not None and row.decision.wall_config == "back_only"
 
 
 def test_an_answer_with_no_wall_on_the_new_row_keeps_the_hold(

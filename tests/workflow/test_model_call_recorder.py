@@ -75,7 +75,7 @@ def rates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _revision(session: Session) -> tuple[UUID, AssignmentContext]:
     """A revision with one real, attached reading, and the context the step would assemble."""
-    from tests.api.test_measurement_proposal import _package_with_readings
+    from tests.api.measurement_proposal_fixtures import _package_with_readings
 
     package, ids = _package_with_readings(session, readings=(("25 1/2", 51, 2, None, None),))
     revision_id = session.execute(

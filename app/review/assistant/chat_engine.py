@@ -278,7 +278,7 @@ from app.review.assistant.product_scope import (
 )
 from app.review.assistant.proof import proof_counts, vendor_facing
 from app.review.assistant.rate_limits import Limits, ModelLimiter, limiter_for
-from app.review.assistant.reading_routes import sides_needed
+from app.review.assistant.reading_routes import NOT_DOUBLE_READ, sides_needed
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.run_fit import add_to_answer as add_run_fit
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
@@ -441,7 +441,13 @@ SECOND_READ_LIMIT: Final = 30
 #: read only settles a read: "agrees" lifts the hold an unsure or disagreeing second read puts on a
 #: red; anything else keeps it. It never makes a red (`proof.code_proved`: code's own proof and two
 #: reading routes per number are still required). At most one per second read, so this many.
-THIRD_READ_RED_LIMIT: Final = SECOND_READ_LIMIT
+#: Every would-be red gets its second reading whatever `SECOND_READ_LIMIT` (Anant, 2026-10-28:
+#: the cap was full before 4 real reds arrived, so they went red never read twice): the cap holds
+#: for the other findings only; this is the hard ceiling of readings one answer makes (a reading
+#: costs about $0.0001-0.001 with Haiku, so at most about $0.20), and of would-be reds' third
+#: reads. A would-be red past it is never red: "not double-read" (`reading_routes`).
+READ_HARD_CEILING: Final = 200
+THIRD_READ_RED_LIMIT: Final = READ_HARD_CEILING
 #: An upper bound of one second read's prompt: two crops (at most 1600 px a side, about 3,400
 #: tokens each) and the question.
 _SECOND_READ_PROMPT_TOKENS: Final = 8_000
@@ -1165,6 +1171,14 @@ class ChatEngine:
         # lead marking a finding verified keeps it), the findings queued, and the checks running.
         self._reads: dict[str, tuple[tuple[Any, ...], str, dict[str, Any]]] = {}
         self._read_queued: set[tuple[str, tuple[Any, ...]]] = set()
+        #: The findings no red can come from that took one of `SECOND_READ_LIMIT`'s places.
+        self._others_read: set[str] = set()
+        #: Each reading made, by its key (`read_spots.crop_hash`: its pictures' bytes and its
+        #: question): what it read, `_IN_FLIGHT` while it runs. An identical picture drawn again
+        #: is the same reading: no new call, no new place.
+        self._read_slots: dict[str, Any] = {}
+        #: The findings waiting for a reading that runs now, by its key.
+        self._read_waiting: dict[str, list[Mapping[str, Any]]] = {}
         self._third_queued: set[tuple[str, tuple[Any, ...]]] = set()
         #: Each finding's third read, kept like its second read while what it read is unchanged:
         #: (what was read, the outcome, the three readings).
@@ -1908,12 +1922,22 @@ class ChatEngine:
         return getattr(breaker, "kind", None) == "payment"
 
     def stored_blocks(self) -> list[dict[str, Any]]:
+        """The answer's blocks as stored. The last guard of the double-read rule (2026-10-28):
+        a would-be red still without its second reading and its reason is stored with the reason
+        (`_unread_why`), whatever step changed it last, so it is never stored red."""
         with self._lock:
-            return [
+            blocks = [
                 json.loads(json.dumps(block))
                 for n, block in enumerate(self.blocks)
                 if n not in self._discarded
             ]
+        if not self._reads_twice():
+            return blocks
+        for block in blocks:
+            finding = block.get("finding") if block.get("type") == "finding" else None
+            if isinstance(finding, dict) and _unread_red(finding):
+                finding[NOT_DOUBLE_READ] = self._unread_why()
+        return blocks
 
     # ---- tools -----------------------------------------------------------------------------------
 
@@ -2984,30 +3008,91 @@ class ChatEngine:
     def _queue_second_reads(
         self, findings: Sequence[Mapping[str, Any]], *, final: bool = False
     ) -> None:
-        """Starts the second reads of these findings that have evidence pictures and no read yet,
-        the ones a red could come from first (`could_go_red`), then differences, up to
-        `SECOND_READ_LIMIT` reads for the message. Until the `final` queue (every finding is in),
-        only would-be reds are read: the cap is never spent on the others first."""
+        """Starts the second reads of these findings that have a spot or a picture and no read
+        yet, the ones a red could come from first (`could_go_red`), then differences. Every
+        would-be red is read (Anant, 2026-10-28), up to `READ_HARD_CEILING` readings for the
+        message; the others share `SECOND_READ_LIMIT` places, and only once every finding is in
+        (the `final` queue). A would-be red past the ceiling is marked "not double-read"."""
         module = load_module(SECOND_READ_MODULE)
         if module is None:
             return
         chosen = [
             f
             for f in findings
-            if (f.get("arch_picture_id") or f.get("vendor_picture_id"))
+            if any(
+                f.get(key)
+                for key in ("arch_picture_id", "vendor_picture_id", "arch_box", "vendor_box")
+            )
             and (f.get("checks") or {}).get("second_read", "not_run") in (None, "not_run")
         ]
         chosen.sort(key=_reads_first)
         for finding in chosen:
-            key = (str(finding["id"]), _read_key(finding))
+            finding_id = str(finding["id"])
+            key = (finding_id, _read_key(finding))
             red = could_go_red(finding)
             with self._lock:
-                if key in self._read_queued or len(self._read_queued) >= SECOND_READ_LIMIT:
+                if key in self._read_queued:
                     continue
                 if not red and not final:
                     continue  # the reads go to would-be reds first, the rest once all are in
-                self._read_queued.add(key)
+                full = len(self._read_queued) >= READ_HARD_CEILING
+                if not red and (
+                    full
+                    or (
+                        finding_id not in self._others_read
+                        and len(self._others_read) >= SECOND_READ_LIMIT
+                    )
+                ):
+                    continue
+                if not full:
+                    self._read_queued.add(key)
+                    if not red:
+                        self._others_read.add(finding_id)
+            if full:
+                self._not_double_read(
+                    finding, f"past the {READ_HARD_CEILING} readings one check makes at most"
+                )
+                continue
             self._submit_check("second_reads", _bound(self._second_read_one, module, finding))
+
+    def _reads_twice(self) -> bool:
+        """This answer reads each would-be red twice: not the simple full check (it reads once
+        by design), and only where the reading module is there."""
+        return not self._simple and load_module(SECOND_READ_MODULE) is not None
+
+    def _unread_why(self) -> str:
+        return STOPPED_WHY if self.cancel.is_set() else NOT_REACHED_WHY
+
+    def _mark_unread_reds(self) -> None:
+        """Each would-be red still without its second reading, and with no reason yet, says why
+        ("not double-read"), so it is never red (Anant, 2026-10-28). Run after the finish's
+        steps that can make a would-be red, and again right before the files and the stored
+        answer (`seal`): no later step may leave one unmarked. Not in the simple full check."""
+        if not self._reads_twice():
+            return
+        why = self._unread_why()
+        for finding in self.book.live():
+            if _unread_red(finding):
+                self._not_double_read(finding, why)
+
+    def _not_double_read(self, finding: Mapping[str, Any], why: str) -> None:
+        """A would-be red whose second reading could not be made: why, on the finding
+        (`reading_routes.NOT_DOUBLE_READ`), so it is never red but a please-check that says so;
+        a Continue reads it."""
+        if not could_go_red(finding):
+            return
+        with self.finding_lock:
+            current = next((f for f in self.book.live() if f["id"] == finding["id"]), None)
+            if current is None:
+                return
+            if (current.get("checks") or {}).get("second_read") not in (None, "not_run"):
+                return  # read meanwhile
+            if current.get(NOT_DOUBLE_READ) == why:
+                return
+            updated = {**current, NOT_DOUBLE_READ: why}
+            if not self.book.replace(updated):
+                return
+        self._show_finding(updated)
 
     def reading_pictures(self, finding: Mapping[str, Any]) -> read_spots.ReadPictures:
         """The second and third readings' pictures of `finding` (`read_spots`, 2026-10-28): each
@@ -3050,6 +3135,7 @@ class ChatEngine:
         read that disagrees or is unsure starts its third read: at once on a would-be red, else
         once third reads are open (`_queue_third_read`)."""
         if self.cancel.is_set():
+            self._not_double_read(finding, STOPPED_WHY)
             return
         drawn = self.reading_pictures(finding)
         crops: dict[str, bytes] = drawn.upright()
@@ -3064,18 +3150,66 @@ class ChatEngine:
                         crops[side] = self.read_picture(str(finding[picture]))
                     except OSError:
                         continue
+        if not crops:
+            self._not_double_read(finding, "no picture of its spot could be drawn")
+            return
+        item = str(finding.get("item") or "")
+        words = _asked_words(module.second_read, drawn)
+        slot = read_spots.crop_hash(
+            [b for side in sorted(crops) for b in (side.encode("ascii"), crops[side])],
+            f"{item}\n{sorted(words.items())}",
+        )
+        with self._lock:
+            state = self._read_slots.get(slot)
+            if state is None:
+                self._read_slots[slot] = _IN_FLIGHT
+                self._read_waiting[slot] = []
+            elif state is _IN_FLIGHT:
+                # The same pictures and question are being read now: its answer serves this too.
+                self._read_waiting[slot].append(finding)
+                return
+        if state is not None:
+            self._apply_second_read(module, finding, state)
+            return
+        why: str | None = None
+        read: Any = None
         try:
             read = module.second_read(
                 crops,
-                str(finding.get("item") or ""),
+                item,
                 lambda content: self._second_read_call(content, self._read_share),
-                **_asked_words(module.second_read, drawn),
+                **words,
             )
-            read = module.compare_read(read, finding)
-        except (_NoRoom, _Cancelled, ProviderFailure):
-            return
+        except _NoRoom:
+            why = "the readings' share of the fixed price was used up"
+        except _Cancelled:
+            why = STOPPED_WHY
+        except ProviderFailure as failure:
+            why = _failure_why(failure)
         except Exception as failed:  # noqa: BLE001 - a failed read is "not run"
             _log.warning("assistant chat second read failed: %s", type(failed).__name__)
+            why = "the reading failed"
+        with self._lock:
+            waiting = self._read_waiting.pop(slot, [])
+            if why is None:
+                self._read_slots[slot] = read
+            else:
+                self._read_slots.pop(slot, None)  # never made: it may be asked again
+        for one in (finding, *waiting):
+            if why is None:
+                self._apply_second_read(module, one, read)
+            else:
+                self._not_double_read(one, why)
+
+    def _apply_second_read(self, module: Any, finding: Mapping[str, Any], read: Any) -> None:
+        """A reading's answer on one finding: compared with its values by code, kept only when
+        the finding still shows what was read. A read that disagrees or is unsure starts its
+        third read."""
+        try:
+            read = module.compare_read(read, finding)
+        except Exception as failed:  # noqa: BLE001 - a failed comparison is "not run"
+            _log.warning("assistant chat second read not compared: %s", type(failed).__name__)
+            self._not_double_read(finding, "the reading failed")
             return
         result = str(read.result)
         if result not in ("agrees", "disagrees", "unsure"):
@@ -3088,6 +3222,7 @@ class ChatEngine:
                 return  # changed (or dropped) while it was read: read again later
             self._reads[str(current["id"])] = (key, result, values)
             updated = {**with_second_read(current, result), "second_read_values": values}
+            updated.pop(NOT_DOUBLE_READ, None)
             if not self.book.replace(updated):
                 return
             self._show_finding(updated)
@@ -3362,6 +3497,7 @@ class ChatEngine:
         self._resolve_decisions()
         self._escalate()
         self._drop_off_pair()
+        self._mark_unread_reds()
         book = self.book
         statuses = round_statuses(book.live())
         with self._lock:
@@ -3721,6 +3857,8 @@ class ChatEngine:
         )
         if register is None:
             return []
+        # The double-read rule's last sweep before anything is drawn or written (2026-10-28).
+        self._mark_unread_reds()
         book, workspace = self.book, self.tools.workspace
         # Only what may reach the vendor (#1652): items for GV's reviewer only stay on the screen.
         findings = [f for f in book.live() if vendor_facing(f)]
@@ -5832,6 +5970,36 @@ def could_go_red(finding: Mapping[str, Any]) -> bool:
 def _reads_first(finding: Mapping[str, Any]) -> tuple[int, int]:
     """The second reads' order: would-be reds, then differences, then the rest."""
     return (0 if could_go_red(finding) else 1, _differences_first(finding))
+
+
+#: A reading running now (`ChatEngine._read_slots`).
+_IN_FLIGHT: Final = object()
+#: Why a would-be red was not read twice when the check was stopped, or ended first.
+STOPPED_WHY: Final = "the check was stopped before it was read"
+NOT_REACHED_WHY: Final = "it was not reached before the check ended"
+
+
+def _unread_red(finding: Mapping[str, Any]) -> bool:
+    """A would-be red with no second reading and no reason given yet (`NOT_DOUBLE_READ`)."""
+    return (
+        could_go_red(finding)
+        and (finding.get("checks") or {}).get("second_read") in (None, "not_run")
+        and not finding.get(NOT_DOUBLE_READ)
+    )
+
+
+def _failure_why(failure: ProviderFailure) -> str:
+    """Why a second reading could not be made, in plain words, by what stopped the call."""
+    kind = getattr(failure, "kind", None)
+    if kind == "payment":
+        return "the AI account ran out of credit"
+    if kind == "unreachable":
+        return "the AI service could not be reached"
+    if kind in ("key", "account"):
+        return "the AI service refused the call"
+    if kind == "busy":
+        return "the AI service was too busy"
+    return "the AI call failed"
 
 
 def _asked_words(read: Callable[..., Any], drawn: read_spots.ReadPictures) -> dict[str, bool]:

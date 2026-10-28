@@ -25,12 +25,10 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.slot_rows import SlotRowReviewIn, review_slot_row
 from app.auth.roles import Principal, Role
 from app.db.session import session_factory
 from app.models import (
@@ -41,7 +39,6 @@ from app.models import (
     ObservationCandidate,
     PackageRevision,
     ReviewAction,
-    SlotRowReviewDecision,
     ViewRole,
 )
 from app.models.verdicts import Finding, VerdictInput
@@ -764,64 +761,6 @@ def test_a_row_with_another_hold_stays_held_after_its_readings_are_confirmed(
 
 
 # -- no typed widths -------------------------------------------------------------------------------
-
-
-def test_a_typed_width_is_refused_and_nothing_is_stored(session: Session) -> None:
-    """Input: a width typed for a row (missing or not). Outcome: 422, no row decision written."""
-    project_id, package_id, anchors = _package_rows(session, unsealed_page=0)
-    principal = _reviewer(project_id)
-
-    for body in (
-        SlotRowReviewIn(measurements={"piece_widths:0": '21"'}),
-        SlotRowReviewIn(wall_config="back_left_right", measurements={"countertop_width": '41"'}),
-    ):
-        with pytest.raises(HTTPException) as refused:
-            review_slot_row(principal, principal, session, project_id, package_id, anchors[0], body)
-        assert refused.value.status_code == 422
-        assert "confirm" in str(refused.value.detail).lower()
-    assert session.query(SlotRowReviewDecision).count() == 0
-
-
-def test_the_walls_of_a_row_people_completed_can_be_chosen(
-    session: Session, tmp_path: Path
-) -> None:
-    """Input: the held row, its held label confirmed, walls not yet chosen. Outcome: the wall
-    choice is accepted for that row (the "incomplete" hold no longer applies to it)."""
-    project_id, package_id, anchors = _held_rows(session, walls_confirmed=False)
-    finding = _width_finding(session, package_id, anchors[0], tmp_path)
-    principal = _reviewer(project_id)
-    with pytest.raises(HTTPException) as held:
-        review_slot_row(
-            principal,
-            principal,
-            session,
-            project_id,
-            package_id,
-            anchors[0],
-            SlotRowReviewIn(wall_config="back_left_right"),
-        )
-    assert held.value.status_code == 409
-
-    confirm_candidate_reading(
-        session,
-        principal=principal,
-        review_session_id=_review_session_id(session, package_id),
-        finding_id=finding.id,
-        candidate_id=anchors[0],
-        expected_value=Fraction(20),
-    )
-    session.commit()
-    saved = review_slot_row(
-        principal,
-        principal,
-        session,
-        project_id,
-        package_id,
-        anchors[0],
-        SlotRowReviewIn(wall_config="back_left_right"),
-    )
-    assert saved.wall_config == "back_left_right"
-    assert _width_finding(session, package_id, anchors[0], tmp_path).outcome == "PASS"
 
 
 # -- combined sheets: the side comes from ReadingSides ---------------------------------------------

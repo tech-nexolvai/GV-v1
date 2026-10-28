@@ -21,21 +21,13 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import Engine, event, select, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.dependencies import get_session
-from app.api.slot_rows import SlotRowReviewIn, review_slot_row
-from app.auth import Principal, Role, authenticate
-from app.config import Settings
 from app.db.session import session_factory
-from app.main import API_PREFIX, create_app
 from app.models import (
-    ApprovalExportSnapshot,
-    ApprovedFinding,
     CanonicalObservation,
     ObservationCandidate,
     Package,
@@ -48,16 +40,14 @@ from app.models.evidence import (
     MeasurementProposal,
     SlotRowReviewDecision,
 )
-from app.models.package import PackageState
 from app.models.parameters import load_parameter_sets, to_rows
 from app.models.review import ExceptionScope, FindingDecisionCarryover, ReviewActionKind
 from app.models.rules import RuleDefinition, RuleSnapshot
 from app.models.runs import ExtractionRun, TaskRun
 from app.models.verdicts import CheckRun, Finding, VerdictInput
 from app.review import approval as approval_module
-from app.review.approval import approval_readiness, approval_readiness_many, approve_package
+from app.review.approval import approval_readiness
 from app.review.session import grant_exception, open_session, record_action
-from app.review.signed_exports import load_snapshot
 from app.verdicts.record import supersede_runs
 from evidence.canonical import Authority, EvidenceStatus
 from rules.parameters import ParameterLayer, Provenance
@@ -68,10 +58,9 @@ from rules.semantic_types import DocumentRole, SemanticType
 from storage.local import LocalStore
 from tests.api.test_slot_rows import (
     _package_rows,
-    _row_holds,
     _run_current_checks,
-    _save_all_row_widths,
 )
+from tests.app.countertop_results import countertop_results
 from tests.app.postgres_fixture import alembic_config
 from tests.review.test_session import _revision
 from tests.workflow.test_part_operands import Assembly
@@ -102,25 +91,6 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
         yield opened
     finally:
         opened.close()
-
-
-def _client(session: Session, project_id: UUID) -> TestClient:
-    app = create_app(Settings(database_url="postgresql+psycopg://gv:gv@localhost:5433/gv"))
-    app.dependency_overrides[authenticate] = lambda: Principal(
-        id="reviewer",
-        roles=frozenset({Role.REVIEWER}),
-        projects=frozenset({project_id}),
-    )
-    app.dependency_overrides[get_session] = lambda: session
-    return TestClient(app)
-
-
-def _principal(project_id: UUID) -> Principal:
-    return Principal(
-        id="anant (synthetic test)",
-        roles=frozenset({Role.REVIEWER}),
-        projects=frozenset({project_id}),
-    )
 
 
 def _revision_of(session: Session, package_id: UUID) -> PackageRevision:
@@ -160,244 +130,9 @@ def _decide_everything(session: Session, revision_id: UUID, reviewer: str = "ana
     return review.id
 
 
-def _two_decided_rows(session: Session, tmp_path: Path) -> tuple[UUID, UUID, dict[int, UUID]]:
-    project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="code-ink-and-both-ais"
-    )
-    for anchor in anchors.values():
-        _save_all_row_widths(session, project_id, package_id, anchor)
-    _run_current_checks(session, package_id, tmp_path)
-    revision = _revision_of(session, package_id)
-    _decide_everything(session, revision.id)
-    assert approval_readiness(session, revision.id).blocking_findings == 0
-    return project_id, package_id, anchors
-
-
 # ---------------------------------------------------------------------------
 # End to end through the real check run
 # ---------------------------------------------------------------------------
-
-
-def test_unchanged_rerun_keeps_every_decision_and_sign_off_is_allowed(
-    session: Session, tmp_path: Path
-) -> None:
-    _project_id, package_id, _anchors = _two_decided_rows(session, tmp_path)
-    revision = _revision_of(session, package_id)
-    before = {finding.id for finding in _live(session, revision.id)}
-    actions_before = session.query(ReviewAction).count()
-
-    _run_current_checks(session, package_id, tmp_path)
-
-    after = _live(session, revision.id)
-    assert before.isdisjoint({finding.id for finding in after}), "a re-run writes new results"
-    readiness = approval_readiness(session, revision.id)
-    assert readiness.blocking_findings == 0, readiness.reason
-    assert approval_readiness_many(session, [revision.id])[revision.id].blocking_findings == 0
-    # The decisions stay the reviewer's own: nothing is written under anybody's name.
-    assert session.query(ReviewAction).count() == actions_before
-    decided = [
-        finding for finding in after if finding.outcome in {"FAIL", "REVIEW_REQUIRED", "NOT_FOUND"}
-    ]
-    assert decided
-    assert session.query(_links()).count() == len(decided)
-
-    session.execute(
-        update(PackageRevision)
-        .where(PackageRevision.id == revision.id)
-        .values(state=PackageState.AWAITING_REVIEW.value)
-    )
-    review = open_session(session, package_revision_id=revision.id, reviewer="anant")
-    decision = approve_package(
-        session,
-        principal=Principal("anant", frozenset({Role.REVIEWER})),
-        review_session_id=review.id,
-    )
-    approved = set(
-        session.scalars(
-            select(ApprovedFinding.finding_id).where(
-                ApprovedFinding.approval_id == decision.approval.id
-            )
-        )
-    )
-    assert approved == {finding.id for finding in after}
-
-    # The signed record freezes the carried decision as the reviewer's own, and re-verifies it.
-    snapshot = session.scalars(
-        select(ApprovalExportSnapshot).where(
-            ApprovalExportSnapshot.approval_id == decision.approval.id
-        )
-    ).one()
-    payload = load_snapshot(session, snapshot)
-    for frozen in payload.review.findings:
-        if frozen.outcome not in {"FAIL", "REVIEW_REQUIRED", "NOT_FOUND"}:
-            continue
-        assert frozen.actions, frozen
-        last = frozen.actions[-1]
-        assert last.carried_from_finding_id is not None
-        assert last.carried_from_finding_id in before
-        assert last.reviewer == "anant"
-        assert last.note is not None and last.note.startswith(NOTE)
-        assert "carried over from the previous check run" in frozen.wording.lower()
-
-
-def test_a_carried_decision_shows_the_original_actor_and_note_marked_carried(
-    session: Session, tmp_path: Path
-) -> None:
-    project_id, package_id, anchors = _two_decided_rows(session, tmp_path)
-    revision = _revision_of(session, package_id)
-    old = {finding.scope_row_candidate_id: finding for finding in _live(session, revision.id)}
-    old_row = next(
-        finding
-        for finding in _live(session, revision.id)
-        if finding.scope_row_candidate_id == anchors[0] and finding.outcome == "FAIL"
-    )
-    original = session.scalars(
-        select(ReviewAction).where(ReviewAction.finding_id == old_row.id)
-    ).one()
-
-    _run_current_checks(session, package_id, tmp_path)
-    new_row = next(
-        finding
-        for finding in _live(session, revision.id)
-        if finding.scope_row_candidate_id == anchors[0] and finding.outcome == "FAIL"
-    )
-    assert old[anchors[0]].id != new_row.id
-    client = _client(session, project_id)
-
-    results = client.get(
-        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results"
-    )
-    assert results.status_code == 200, results.text
-    item = next(row for row in results.json()["items"] if row["row_id"] == str(anchors[0]))
-    assert item["finding_id"] == str(new_row.id)
-    assert item["needs_decision"] is False
-    decision = item["reviewer_decision"]
-    assert decision["action"] == "confirm"
-    assert decision["actor"] == original.actor
-    assert decision["note"] == original.note
-    assert decision["carried_over"] is True
-    assert decision["carried_from_finding_id"] == str(old_row.id)
-    assert datetime.fromisoformat(decision["time"]) == original.created_at
-
-    listed = client.get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/findings")
-    assert listed.status_code == 200, listed.text
-    entry = next(row for row in listed.json()["items"] if row["id"] == str(new_row.id))
-    assert entry["reviewer_action"]["actor"] == original.actor
-    assert entry["reviewer_action"]["note"] == original.note
-    assert entry["reviewer_action"]["carried_over"] is True
-    assert entry["reviewer_action"]["carried_from_finding_id"] == str(old_row.id)
-
-    history = client.get(
-        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/findings/{new_row.id}/actions"
-    )
-    assert history.status_code == 200, history.text
-    (carried,) = history.json()["items"]
-    assert carried["id"] == str(original.id)
-    assert carried["finding_id"] == str(old_row.id)
-    assert carried["actor"] == original.actor
-    assert carried["note"] == original.note
-    assert carried["carried_over"] is True
-    assert carried["carried_from_finding_id"] == str(old_row.id)
-
-    # A fresh decision on the new result is the reviewer's own again, and wins.
-    review = open_session(session, package_revision_id=revision.id, reviewer="second reviewer")
-    record_action(
-        session,
-        review_session_id=review.id,
-        finding_id=new_row.id,
-        action=ReviewActionKind.DISMISS,
-        actor="second reviewer",
-        note=f"{NOTE} changed mind",
-    )
-    session.flush()
-    item = next(
-        row
-        for row in client.get(
-            f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results"
-        ).json()["items"]
-        if row["row_id"] == str(anchors[0])
-    )
-    assert item["reviewer_decision"]["actor"] == "second reviewer"
-    assert item["reviewer_decision"]["carried_over"] is False
-    assert item["reviewer_decision"]["carried_from_finding_id"] is None
-    history = client.get(
-        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/findings/{new_row.id}/actions"
-    ).json()["items"]
-    assert [entry["carried_over"] for entry in history] == [False, True]
-
-
-@pytest.mark.parametrize("change", ["value", "walls", "the same values again"])
-def test_a_change_on_one_row_asks_only_that_row_again(
-    session: Session, tmp_path: Path, change: str
-) -> None:
-    project_id, package_id, anchors = _two_decided_rows(session, tmp_path)
-    revision = _revision_of(session, package_id)
-    if change == "value":
-        # A person fixes one of the row's readings (#1339): a correction on its live result.
-        from app.review.evidence_actions import correct_candidate_reading
-        from app.review.wall_cases import latest_width_findings
-        from workflow.row_answers import own_slot_labels
-        from workflow.slot_row_scope import slot_rows
-
-        (row,) = [row for row in slot_rows(session, revision.id) if row.anchor.id == anchors[0]]
-        finding = latest_width_findings(session, revision.id, [anchors[0]])[anchors[0]]
-        correct_candidate_reading(
-            session,
-            principal=_principal(project_id),
-            review_session_id=open_session(
-                session, package_revision_id=revision.id, reviewer="second reviewer"
-            ).id,
-            finding_id=finding.id,
-            candidate_id=own_slot_labels(row)[None].id,
-            corrected_value="41 in",
-        )
-        session.commit()
-    elif change == "walls":
-        _save_all_row_widths(session, project_id, package_id, anchors[0], wall_config="back_only")
-    else:
-        # A new decision record superseding the last, with the same content (#1177): a row's
-        # decision is compared by what it says, not by the record that holds it. Since #1339 a
-        # row's decision holds only its walls, so the same wall choice is saved again.
-        _save_all_row_widths(session, project_id, package_id, anchors[0], wall_config="back_only")
-        _run_current_checks(session, package_id, tmp_path)
-        _decide_everything(session, revision.id)
-        assert approval_readiness(session, revision.id).blocking_findings == 0
-        decisions = session.query(SlotRowReviewDecision).count()
-        review_slot_row(
-            _principal(project_id),
-            _principal(project_id),
-            session,
-            project_id,
-            package_id,
-            anchors[0],
-            SlotRowReviewIn(wall_config="back_only"),
-        )
-        assert session.query(SlotRowReviewDecision).count() == decisions + 1
-
-    _run_current_checks(session, package_id, tmp_path)
-    if change == "the same values again":
-        assert approval_readiness(session, revision.id).blocking_findings == 0
-        return
-
-    readiness = approval_readiness(session, revision.id)
-    blocked = {
-        finding.scope_row_candidate_id
-        for finding in _live(session, revision.id)
-        if finding.id in readiness.blocking_finding_ids
-    }
-    assert blocked == {anchors[0]}
-    # The rows' width results; each row's own depth and sink holds (#1201) are about other values:
-    # a held depth stays decided when the row's widths change.
-    holds = _row_holds(session, revision.id)
-    carried_rows = {
-        finding.scope_row_candidate_id
-        for finding in session.scalars(
-            select(Finding).join(_links(), _links().new_finding_id == Finding.id)
-        )
-        if finding.id not in holds
-    }
-    assert anchors[0] not in carried_rows
-    assert anchors[1] in carried_rows
 
 
 # ---------------------------------------------------------------------------
@@ -770,27 +505,6 @@ def test_carry_links_are_append_only(session: Session) -> None:
         with pytest.raises(DBAPIError), session.begin_nested():
             session.execute(text(statement))
     assert session.query(_links()).count() == 1
-
-
-def test_another_projects_history_is_not_found(session: Session, tmp_path: Path) -> None:
-    project_id, package_id, anchors = _two_decided_rows(session, tmp_path)
-    _run_current_checks(session, package_id, tmp_path)
-    revision = _revision_of(session, package_id)
-    new_row = next(
-        finding
-        for finding in _live(session, revision.id)
-        if finding.scope_row_candidate_id == anchors[0]
-    )
-    stranger = uuid4()
-    response = _client(session, stranger).get(
-        f"{API_PREFIX}/projects/{stranger}/packages/{package_id}/findings/{new_row.id}/actions"
-    )
-    assert response.status_code == 404
-    other_package = uuid4()
-    response = _client(session, project_id).get(
-        f"{API_PREFIX}/projects/{project_id}/packages/{other_package}/findings/{new_row.id}/actions"
-    )
-    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -1525,51 +1239,6 @@ def test_the_wall_in_force_follows_the_supersede_chain_not_the_clock(session: Se
     assert carried == 0
 
 
-def test_an_architect_click_on_a_row_keeps_its_width_decision_end_to_end(
-    session: Session, tmp_path: Path
-) -> None:
-    """The audit's scenario C through the real check run: a hand pairing on the row, re-run."""
-    _project_id, package_id, anchors = _two_decided_rows(session, tmp_path)
-    revision = _revision_of(session, package_id)
-    anchor = session.get(ObservationCandidate, anchors[0])
-    assert anchor is not None
-    session.add(
-        ArchitectPairingRecord(
-            package_revision_id=revision.id,
-            page_id=anchor.page_id,
-            row_anchor_candidate_id=anchor.id,
-            extraction_run_id=None,
-            source="reviewer",
-            status="reviewer",
-            pairs=[],
-            details={"reasons": ["TEST ONLY synthetic hand pairing"]},
-            decided_by="a",
-        )
-    )
-    session.flush()
-
-    _run_current_checks(session, package_id, tmp_path)
-
-    width = next(
-        finding
-        for finding in _live(session, revision.id)
-        if finding.scope_row_candidate_id == anchor.id
-        and finding.check_run_id
-        in set(
-            session.scalars(
-                select(CheckRun.id)
-                .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
-                .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
-                .where(RuleDefinition.rule_id == "CT-WIDTH-001")
-            )
-        )
-    )
-    assert session.scalars(
-        select(FindingDecisionCarryover).where(FindingDecisionCarryover.new_finding_id == width.id)
-    ).one()
-    assert width.id not in approval_readiness(session, revision.id).blocking_finding_ids
-
-
 # ---------------------------------------------------------------------------
 # Bounded queries
 # ---------------------------------------------------------------------------
@@ -1636,9 +1305,7 @@ def test_countertop_results_stay_bounded_with_carried_decisions(
     session.flush()
     counter, bind, listener = _count(session)
     try:
-        response = _client(session, project_id).get(
-            f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results"
-        )
+        response = countertop_results(session, project_id, package_id)
     finally:
         event.remove(bind, "before_cursor_execute", listener)
     assert response.status_code == 200, response.text
