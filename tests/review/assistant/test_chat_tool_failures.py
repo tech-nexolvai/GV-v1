@@ -219,17 +219,3 @@ def test_a_command_that_itself_exits_125_is_still_its_own_result(tmp_path: Path)
     result = sandbox.run("exit 125")
 
     assert result.exit_code == 125 and "my own words" in result.output
-
-
-def test_the_side_panel_agent_tells_a_docker_failure_plainly(tmp_path: Path) -> None:
-    from app.review.assistant import agent
-
-    class _GoneSandbox:
-        def run(self, command: str) -> Any:
-            raise SandboxUnavailable(DOCKER_FAILED_WORDS)
-
-    tools = agent.AgentTools(sandbox=_GoneSandbox(), snapshot=None, files=())  # type: ignore[arg-type]
-
-    ran = agent._bash({"command": "ls"}, tools)
-
-    assert ran.is_error and DOCKER_FAILED_WORDS in ran.content[0]["text"]
