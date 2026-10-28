@@ -55,8 +55,9 @@ def test_the_phrase_gap_has_no_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_the_demo_worker_states_the_measured_phrase_gap(monkeypatch: pytest.MonkeyPatch) -> None:
-    """**The index is on in the demo (#849)**, at the admin's 0.34 of 2026-10-03, measured on both
-    client drawings in #840. Read from the worker's block the way the worker reads its environment.
+    """**The demo states the index's gap (#849)**, at the admin's 0.34 of 2026-10-03, measured on
+    both client drawings in #840 (the index is built when the value hunter is on). Read from the
+    worker's block the way the worker reads its environment.
     """
     import scripts.drain_outbox as worker
     from retrieval.package_text import PhraseGrouping
@@ -117,6 +118,9 @@ def test_a_failed_phrase_build_is_reported_never_raised(monkeypatch: pytest.Monk
     def _broken(*_: object) -> object:
         raise RuntimeError("a row quoting SINK BASE 30 1/2")
 
+    from workflow.value_hunter import VALUE_HUNTER_ENV
+
+    monkeypatch.setenv(VALUE_HUNTER_ENV, "1")  # the index's one reader (2026-10-28)
     monkeypatch.setenv(worker.PHRASE_GAP_VARIABLE, "0.3")
     monkeypatch.setattr(package_text, "build_package_phrases", _broken)
 

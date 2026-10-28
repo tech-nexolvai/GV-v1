@@ -226,12 +226,14 @@ API_PID=$!
 # declined to raise it (#716), so Nova reads only the crops the gate reader found a value in.
 # Nothing that could be confirmed is lost: a confirmation is two readers' values agreeing (#775).
 #
-# **The phrase index is on (#849).** After extraction the worker joins each line's words into
-# passages (#836), which is what `workflow/parameter_proposals.py` searches when it looks for the
-# passage that states a setting. Words join when the space between them is at most 0.34 of the
-# line's height. Measured on both client drawings in #840: the space between two words of one note
-# is at most 0.333 line heights, and the narrowest space between two separate items is 0.372 on
-# AI_Set_2 and 0.421 on AI_Set_1. The admin's decision of 2026-10-03, on #798. No model is called.
+# **The phrase index's gap is stated (#849).** After extraction the worker can join each line's words
+# into passages (#836), which is what the value hunter (`GV_VALUE_HUNTER`) searches when it looks for
+# the passage that states a setting. Since 2026-10-28 the index is built only with the value hunter on,
+# its one reader, and the demo does not turn the hunter on. Words join when the space between them is
+# at most 0.34 of the line's height. Measured on both client drawings in #840: the space between two
+# words of one note is at most 0.333 line heights, and the narrowest space between two separate items
+# is 0.372 on AI_Set_2 and 0.421 on AI_Set_1. The admin's decision of 2026-10-03, on #798. No model is
+# called.
 #
 # **Stacked fractions are read piece by piece (#848, #865), on in the demo only** — the admin's decision
 # of 2026-10-03, on #756. Each laid-out stacked label's whole number, numerator and denominator are
