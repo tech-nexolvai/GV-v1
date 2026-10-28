@@ -5349,9 +5349,9 @@ class _Run:
         self.pick_phase = "escalation"
         try:
             # Every item still not proved that no earlier escalation looked at, the ones the
-            # sharper look just gave a spot included (the paid Set 2 run of 2026-10-29: GV's
-            # recorded row for the microwave outlets got its vendor label only here, after the
-            # advocate's turn found none, and was never judged at it).
+            # sharper look just gave a spot included (a paid run of 2026-10-29: a recorded row
+            # got its vendor label only here, after the advocate's turn found none, and was never
+            # judged at it).
             for finding in self._unproved(looked_before):
                 if engine.cancel.is_set():
                     break

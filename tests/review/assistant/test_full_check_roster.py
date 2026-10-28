@@ -1176,8 +1176,8 @@ def test_the_advocate_judges_an_item_the_escalations_sharper_look_gave_its_spot(
     """GV's recorded row with no spot (its value printed by two vendor labels, so code placed it
     nowhere): the devil's advocate's turn found no label to judge ("the vendor's value has no
     label code read"). The escalation's sharper look then named the label and code read it; the
-    advocate must judge it there, as for any item code now reads on both sides (the paid Set 2 run
-    of 2026-10-29: the microwave outlets' 10" against 8" stayed Not compared, never judged)."""
+    advocate must judge it there, as for any item code now reads on both sides (a paid run of
+    2026-10-29: such a real vendor error stayed Not compared, never judged)."""
     from types import SimpleNamespace
 
     from app.review.assistant import proof
