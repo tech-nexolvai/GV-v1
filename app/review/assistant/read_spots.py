@@ -21,6 +21,18 @@ So each side a reading looks at is a **read spot** (`spots`):
   (`values`): the third reading is told "the value at the centre" only when the box holds at most
   one value (`centred`).
 
+What each picture shows (2026-10-28, after a real upload's outlet items stayed unread):
+
+- **A label with no dimension line** in the pack shows more of what it measures: its region is
+  `NO_LINE_ALONG_PT` along the label's direction and `NO_LINE_ACROSS_PT` across it (a 6' - 0"
+  outlet height showed neither the outlet nor the floor at the 96 pt minimum).
+- **A long thin region** (one way at least `LONG_THIN` times the other: a label on a long
+  dimension line) adds a close-up of the label (`zoom`, the `MIN_SIDE_PT` region around it), so a
+  small stacked fraction is not lost in the drawing.
+- **A label code reads up the page** is shown turned, its text upright, to both readings, and
+  alone (`SideCrops.sideways`); only a box whose direction code does not know keeps the region as
+  drawn beside its turned copy. At most two pictures a side (`SideCrops.pictures`).
+
 The pictures are drawn **without GV's markup**: from the set pack's drawings-only copy of the
 upload (`set_pack.drawings_only`: GV's comments dropped, its stickers hidden) with GV's layers
 dropped too (`extraction.rasterise.render_region(vendor_only=True)`), as the third reading always
@@ -35,7 +47,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
@@ -45,7 +57,10 @@ from app.review.assistant.finding_checks import to_inches
 _log = logging.getLogger(__name__)
 
 __all__ = [
+    "LONG_THIN",
     "MIN_SIDE_PT",
+    "NO_LINE_ACROSS_PT",
+    "NO_LINE_ALONG_PT",
     "PAD_PT",
     "ReadPictures",
     "ReadSpot",
@@ -63,6 +78,13 @@ __all__ = [
 MIN_SIDE_PT: Final = 96.0
 #: The margin around a label and its dimension line's ends, or around a finding's box (points).
 PAD_PT: Final = 24.0
+#: The region of a label with no dimension line in the pack (points): this long along the label's
+#: direction (three times the minimum) and this wide across it (twice), so what it measures shows.
+NO_LINE_ALONG_PT: Final = 3 * MIN_SIDE_PT
+NO_LINE_ACROSS_PT: Final = 2 * MIN_SIDE_PT
+#: A region at least this many times longer one way than the other is long and thin: the label's
+#: close-up is added (`ReadSpot.zoom`).
+LONG_THIN: Final = 2.5
 
 type Box = tuple[float, float, float, float]
 type LabelsOf = Callable[[str, int], Sequence[Mapping[str, Any]] | None]
@@ -87,6 +109,11 @@ class ReadSpot:
     tall: bool = False
     """Written sideways: a turned copy helps. The label's own direction decides (`sideways`); only
     a box whose direction code does not know is judged by its shape (taller than wide)."""
+    upright_only: bool = False
+    """The label's own direction says it is written up the page: the readings are shown its turned
+    copy alone (text upright), never the region as drawn (`SideCrops.sideways`)."""
+    zoom: Box | None = None
+    """A close-up region around the label, for a long thin region (`LONG_THIN`); `None` else."""
 
     @property
     def centred(self) -> bool:
@@ -94,8 +121,9 @@ class ReadSpot:
         said): the region is centred on a box that holds at most one printed value."""
         return self.values <= 1
 
-    def box(self) -> dict[str, Any]:
-        x0, y0, x1, y1 = self.region
+    def box(self, region: Box | None = None) -> dict[str, Any]:
+        """The region drawn (`region`, else the spot's own) as a box for the renderer."""
+        x0, y0, x1, y1 = region or self.region
         out: dict[str, Any] = {"page": self.page, "x0": x0, "y0": y0, "x1": x1, "y1": y1}
         if self.file is not None:
             out["file"] = self.file
@@ -131,15 +159,48 @@ def _ends(label: Mapping[str, Any]) -> list[tuple[float, float]]:
     return out
 
 
-def around(box: Box, ends: Sequence[tuple[float, float]] = ()) -> Box:
+def around(
+    box: Box,
+    ends: Sequence[tuple[float, float]] = (),
+    *,
+    least: tuple[float, float] = (MIN_SIDE_PT, MIN_SIDE_PT),
+) -> Box:
     """A region centred on `box`, reaching both `ends` (a dimension line's) and the margin, at
-    least `MIN_SIDE_PT` each way: the box stays at the centre of the picture."""
+    least `least` (width, height; `MIN_SIDE_PT` each way unless said): the box stays at the
+    centre of the picture."""
     x0, y0, x1, y1 = box
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     half_w = max([(x1 - x0) / 2, *(abs(x - cx) for x, _y in ends)]) + PAD_PT
     half_h = max([(y1 - y0) / 2, *(abs(y - cy) for _x, y in ends)]) + PAD_PT
-    half_w, half_h = max(half_w, MIN_SIDE_PT / 2), max(half_h, MIN_SIDE_PT / 2)
+    half_w = max(half_w, MIN_SIDE_PT / 2, least[0] / 2)
+    half_h = max(half_h, MIN_SIDE_PT / 2, least[1] / 2)
     return (cx - half_w, cy - half_h, cx + half_w, cy + half_h)
+
+
+def _least(label: Mapping[str, Any], ends: Sequence[tuple[float, float]]) -> tuple[float, float]:
+    """The least size of a label's region: `MIN_SIDE_PT` each way, or, with no dimension line in
+    the pack (no `ends`), `NO_LINE_ALONG_PT` along the label's direction and `NO_LINE_ACROSS_PT`
+    across it (along both, for a direction code does not know)."""
+    if ends:
+        return (MIN_SIDE_PT, MIN_SIDE_PT)
+    orientation = label.get("orientation")
+    if orientation == "h":
+        return (NO_LINE_ALONG_PT, NO_LINE_ACROSS_PT)
+    if orientation == "v":
+        return (NO_LINE_ACROSS_PT, NO_LINE_ALONG_PT)
+    return (NO_LINE_ALONG_PT, NO_LINE_ALONG_PT)
+
+
+def _zoom(region: Box, own: Box) -> Box | None:
+    """The label's close-up (`around(own)`, the `MIN_SIDE_PT` minimum) for a long thin region,
+    one way at least `LONG_THIN` times the other; `None` else."""
+    width, height = region[2] - region[0], region[3] - region[1]
+    if min(width, height) <= 0 or max(width, height) < LONG_THIN * min(width, height):
+        return None
+    close = around(own)
+    if (close[2] - close[0]) >= width and (close[3] - close[1]) >= height:
+        return None
+    return close
 
 
 def values_in(box: Box, labels: Sequence[Mapping[str, Any]] | None) -> int:
@@ -225,14 +286,22 @@ def spots(finding: Mapping[str, Any], labels_of: LabelsOf | None = None) -> dict
         if label is not None:
             own = _four(label.get("box"))
             assert own is not None
+            ends = _ends(label)
+            region = around(own, ends, least=_least(label, ends))
+            known = label.get("orientation") in ("h", "v")
+            tall = sideways(label, own)
             out[side] = ReadSpot(
                 side=side,
                 file=file,
                 page=page,
-                region=around(own, _ends(label)),
+                region=region,
                 values=1,
                 overall=string,
-                tall=sideways(label, own),
+                tall=tall,
+                upright_only=known and tall,
+                # A close-up only where it fits two pictures a side (`SideCrops.pictures`): not
+                # beside the region as drawn and its turned copy.
+                zoom=_zoom(region, own) if known or not tall else None,
             )
             continue
         x0, y0, x1, y1 = box
@@ -295,8 +364,14 @@ class ReadPictures:
     def upright(self) -> dict[str, bytes]:
         return {side: bytes(crop.upright) for side, crop in self.crops.items()}
 
+    def for_reading(self) -> dict[str, list[tuple[str, bytes]]]:
+        """What each side's reading is shown (`SideCrops.pictures`): (kind, picture) pairs, the
+        same for the second and the third reading."""
+        return {side: list(crop.pictures()) for side, crop in self.crops.items()}
+
     def key(self, words: str) -> str:
-        """`crop_hash` of every picture (upright and turned, side by side) and `words`."""
+        """`crop_hash` of every picture (upright, turned and close-up, side by side) and
+        `words`."""
         pictures: list[bytes] = []
         for side in sorted(self.crops):
             crop = self.crops[side]
@@ -304,6 +379,9 @@ class ReadPictures:
             pictures.append(bytes(crop.upright))
             if crop.turned is not None:
                 pictures.append(bytes(crop.turned))
+            if getattr(crop, "zoom", None) is not None:
+                pictures.append(b"zoom")
+                pictures.append(bytes(crop.zoom))
         return crop_hash(pictures, words)
 
 
@@ -320,8 +398,9 @@ def draw(
 ) -> ReadPictures:
     """The reading's pictures of `finding`: each read spot's region drawn without GV's markup
     (`read_adjudication.render_crops`, the PDF `pdf_for` names), up to 300 dpi, turned too for a
-    value written sideways. A side that cannot be drawn is left out. Not thread-safe (pdfium):
-    the caller holds the drawing lock."""
+    value written sideways, with the label's close-up for a long thin region (turned the same
+    way). A side that cannot be drawn is left out. Not thread-safe (pdfium): the caller holds the
+    drawing lock."""
     adjudication = import_module("app.review.assistant.read_adjudication")
     found = spots(finding, labels_of)
     crops: dict[str, Any] = {}
@@ -333,6 +412,12 @@ def draw(
         if render is not None:
             kwargs["render"] = render
         drawn = adjudication.render_crops(pdf, spot.box(), **kwargs)
-        if drawn is not None:
-            crops[side] = drawn
+        if drawn is None:
+            continue
+        zoom: bytes | None = None
+        if spot.zoom is not None:
+            close = adjudication.render_crops(pdf, spot.box(spot.zoom), **kwargs)
+            if close is not None:
+                zoom = close.turned if spot.upright_only and close.turned else close.upright
+        crops[side] = replace(drawn, sideways=spot.upright_only, zoom=zoom)
     return ReadPictures(crops=crops, spots=found)

@@ -3142,7 +3142,9 @@ class ChatEngine:
             self._not_double_read(finding, STOPPED_WHY)
             return
         drawn = self.reading_pictures(finding)
-        crops: dict[str, bytes] = drawn.upright()
+        # The same pictures as the third reading's (`SideCrops.pictures`): a value written up the
+        # page turned upright, a long thin region's close-up (2026-10-28).
+        crops: dict[str, list[tuple[str, bytes]]] = drawn.for_reading()
         if not crops:
             # No clean picture could be drawn (no box on its page, no file): the evidence crops.
             for side, picture in (
@@ -3151,7 +3153,7 @@ class ChatEngine:
             ):
                 if finding.get(picture):
                     try:
-                        crops[side] = self.read_picture(str(finding[picture]))
+                        crops[side] = [("plain", self.read_picture(str(finding[picture])))]
                     except OSError:
                         continue
         if not crops:
@@ -3160,7 +3162,12 @@ class ChatEngine:
         item = str(finding.get("item") or "")
         words = _asked_words(module.second_read, drawn)
         slot = read_spots.crop_hash(
-            [b for side in sorted(crops) for b in (side.encode("ascii"), crops[side])],
+            [
+                part
+                for side in sorted(crops)
+                for kind, png in crops[side]
+                for part in (side.encode("ascii"), kind.encode("ascii"), png)
+            ],
             f"{item}\n{sorted(words.items())}",
         )
         with self._lock:
