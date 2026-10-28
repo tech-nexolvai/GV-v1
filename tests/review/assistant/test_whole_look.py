@@ -752,6 +752,52 @@ def test_a_claim_against_another_architect_dimension_never_joins_a_helpers_item(
     assert applied.dropped or len(book.live()) == 2
 
 
+@pytest.mark.parametrize("kind", ["extra_piece", "missing_piece", "count", "layout"])
+def test_a_piece_count_or_layout_never_joins_a_helpers_size_item(tmp_path: Path, kind: str) -> None:
+    """2026-10-28, a real upload: the look claimed an added splash and named the vendor's top-depth
+    label as where it is; it joined the helper's top-depth item on that label, which turned a
+    depth GV had confirmed (Not compared: a job value missing) into a please-check. A claim that
+    is not a size names a label only to mark where it is: its own item, the size item untouched."""
+    book, look = _setup(tmp_path)
+    helper, _ = book.report(
+        {
+            "page": 2, "item": "Top depth", "category": "other", "status": "different",
+            "verified": False, "source": "architect", "vendor_dim": "D2", "architect_dim": "D1",
+        },
+        "helper:1",
+    )  # fmt: skip
+    group_before = proof.proof_group(helper)
+    piece = {"picture": 3, "x0": 10, "y0": 20, "x1": 25, "y1": 35, "tag": None, "place": "beside"}
+    claim = _claim(
+        kind,
+        _side(3, "D2", 'side splash, 4" high x 30" long'),
+        _side(1, None, "no side splash drawn"),
+        item="Countertop: side splash at the end of the top",
+        piece=piece if kind.endswith("_piece") else None,
+    )
+    applied, _shown = _apply(book, look, [claim])
+    assert not applied.joined and applied.likely
+    kept = next(f for f in book.live() if f["id"] == helper["id"])
+    assert likely_problems.FIELD not in kept  # the size item keeps its own words and group
+    assert proof.proof_group(kept) == group_before
+    assert len(book.live()) == 2
+
+
+def test_a_size_claim_with_one_label_still_joins_the_helpers_size_item(tmp_path: Path) -> None:
+    """The same label and the same kind of question: one card, as before."""
+    book, look = _setup(tmp_path)
+    helper, _ = book.report(
+        {
+            "page": 2, "item": "Uppers height", "category": "other", "status": "different",
+            "verified": False, "source": "architect", "vendor_dim": "D2", "architect_dim": "D1",
+        },
+        "helper:1",
+    )  # fmt: skip
+    claim = _claim("size", _side(3, "D2", '30"'), _side(1, None, "3'-6\""))
+    applied, _shown = _apply(book, look, [claim])
+    assert applied.joined == [helper["id"]]
+
+
 def test_a_claim_carries_its_pieces_spot_and_why_code_asks(tmp_path: Path) -> None:
     """2026-10-27: a missing piece says where it is on the architect's picture (code asks when it
     is beside the unit, `look_rules`); two differences in one claim are marked to ask."""

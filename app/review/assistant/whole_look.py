@@ -35,7 +35,9 @@ run beside the page helpers in the roster's first phase, within its share of the
   never on two agreeing AI picks (`proof.pairing_proved`; the paid Set 3 run of 2026-10-23 sent a
   splash-top height red against a counter-top height on two picks). Else it is a Likely problem;
 - one whose vendor label a helper already listed joins that item (it becomes a Likely problem if
-  code never proves it);
+  code never proves it); a count, a missing or extra piece or a layout never joins a helper's
+  size item (2026-10-28): the label it names only marks where it is, so an added splash named at the
+  top's depth label once turned that depth, which GV had confirmed, into a please-check;
 - a count, a missing or extra piece, a layout, or a size with one label is a **Likely problem**
   (`likely_problems`), never clouded, with the AI's reason and its spot; a missing or extra piece
   also carries where it is on the drawing that has it and its printed tag (`piece`), and a claim
@@ -918,9 +920,14 @@ def _existing(context: _Context, label: Mapping[str, Any]) -> dict[str, Any] | N
     return None
 
 
-def _same_helper_item(context: _Context, probe: Mapping[str, Any]) -> dict[str, Any] | None:
+def _same_helper_item(
+    context: _Context, probe: Mapping[str, Any], kind: str = "size"
+) -> dict[str, Any] | None:
     """A live item a helper recorded that code knows is this claim's item (`one_card.same_item`:
-    the same label, spot or finish tags), still open (Wrong or Not compared); else `None`."""
+    the same label, spot or finish tags), still open (Wrong or Not compared); else `None`. A claim
+    that is not a size (`kind`: a count, a missing or extra piece, a layout) never joins an item
+    that compares a size: its label only marks where it is (`_label`), so sharing it says nothing
+    about being the same question."""
     from app.review.assistant.classification import internal
     from app.review.assistant.one_card import compares_architect, same_item
 
@@ -929,6 +936,8 @@ def _same_helper_item(context: _Context, probe: Mapping[str, Any]) -> dict[str, 
             continue
         if not compares_architect(finding):
             continue  # GV's rule or the vendor's own check: another question, never joined
+        if kind != "size" and _sized(finding):
+            continue  # a piece, a count or a layout is never a size's question
         if finding.get("status") not in ("different", "check"):
             continue
         how = same_item(probe, finding)
@@ -938,6 +947,21 @@ def _same_helper_item(context: _Context, probe: Mapping[str, Any]) -> dict[str, 
             continue  # one vendor dimension against two architect dimensions: two claims
         return dict(finding)
     return None
+
+
+def _sized(finding: Mapping[str, Any]) -> bool:
+    """The item compares a size: a value in inches on either side, as its checks or its labels
+    read it."""
+    inches = finding.get("inches")
+    if isinstance(inches, Mapping) and any(
+        _inches(inches.get(side)) is not None for side in ("vendor", "architect")
+    ):
+        return True
+    dims = finding.get("dims")
+    return isinstance(dims, Mapping) and any(
+        isinstance(dims.get(side), Mapping) and _label_inches(dims[side]) is not None
+        for side in ("vendor", "architect")
+    )
 
 
 def _same_architect_side(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
@@ -1363,7 +1387,7 @@ def _one(context: _Context, look: Look, claim: Mapping[str, Any], applied: Appli
         },
     }
     with context.lock:
-        helper = _same_helper_item(context, probe)
+        helper = _same_helper_item(context, probe, kind)
         if helper is not None:
             # A helper already listed this item (the same label, spot or tags: code facts): the
             # look joins it, so it is one card, never a second one beside it.
