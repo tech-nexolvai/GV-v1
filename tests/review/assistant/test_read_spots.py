@@ -240,3 +240,54 @@ def test_the_engine_reads_from_the_set_packs_drawings_only_copy(tmp_path: Path) 
     assert set(drawn.crops) == {"vendor"} and _red(drawn.crops["vendor"].upright) == 0
     assert (pack / "set_drawings_only.pdf").is_file()
     assert engine.reading_pictures(finding) is drawn
+
+
+# ---- the label's own direction decides the turned copy (2026-10-28) ------------------------------
+
+
+def _one_label(label: dict[str, Any], page: int = 3) -> dict[str, Any]:
+    box = label["box"]
+    return {
+        "id": "F10",
+        "item": "Spacing between the two microwave outlets",
+        "source": "architect",
+        "status": "different",
+        "vendor": label["text"],
+        "architect": '9"',
+        "vendor_box": {"page": page, "x0": box[0], "y0": box[1], "x1": box[2], "y1": box[3]}
+        | {"file": FILE},
+        "dims": {"vendor": {"id": label["id"], "box": box, "page": page, "file": FILE}},
+    }
+
+
+def test_a_horizontal_label_gets_no_turned_copy_whatever_its_box() -> None:
+    """A stacked `254 [10]` (two lines) is taller than wide; code read it along the page, so its
+    text is horizontal and a turned copy only shows it on its side."""
+    stacked = {**_label("D37", "254 [10]", [300.0, 400.0, 312.0, 420.0]), "orientation": "h"}
+    spot = spots(_one_label(stacked), lambda file, page: [stacked])["vendor"]
+    assert not spot.tall
+    upright = {**stacked, "box": [300.0, 400.0, 320.0, 406.0], "orientation": "v"}
+    assert spots(_one_label(upright), lambda file, page: [upright])["vendor"].tall
+
+
+def test_a_label_without_a_known_direction_is_judged_by_its_box() -> None:
+    for orientation in (None, "turned"):
+        tall = {**_label("D5", '46"', [300.0, 400.0, 306.0, 430.0]), "orientation": orientation}
+        assert spots(_one_label(tall), lambda file, page, one=tall: [one])["vendor"].tall
+        wide = {**tall, "box": [300.0, 400.0, 330.0, 406.0]}
+        assert not spots(_one_label(wide), lambda file, page, one=wide: [one])["vendor"].tall
+
+
+def test_a_horizontal_label_is_drawn_without_a_turned_copy(tmp_path: Path) -> None:
+    pdf = _marked_upload(tmp_path / "uploads")
+    stacked = {**_label("D37", '36"', [100.0, 80.0, 112.0, 100.0]), "orientation": "h"}
+    finding = _one_label(stacked, page=1)
+    pictures = read_spots.draw(
+        finding, labels_of=lambda file, page: [stacked], pdf_for=lambda _file: pdf
+    )
+    assert pictures.crops["vendor"].turned is None
+    upright = {**stacked, "orientation": "v"}
+    pictures = read_spots.draw(
+        _one_label(upright, page=1), labels_of=lambda file, page: [upright], pdf_for=lambda _f: pdf
+    )
+    assert pictures.crops["vendor"].turned is not None
