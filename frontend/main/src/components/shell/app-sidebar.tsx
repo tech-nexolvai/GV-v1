@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BarChart2, BookOpen, Files, History as HistoryIcon, ListChecks, Moon, SlidersHorizontal, SquarePen, Sun } from 'lucide-react';
+import { BarChart2, BookOpen, Files, History as HistoryIcon, Moon, SlidersHorizontal, SquarePen, Sun } from 'lucide-react';
 
 import { listPackages } from '@/api/client';
 import type { PackagePage } from '@/api/client';
@@ -20,9 +20,6 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSkeleton,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
   useSidebar,
 } from '@/components/ui/sidebar';
 
@@ -52,11 +49,6 @@ export interface AppSidebarProps {
   onNavigate: (page: Page) => void;
   /** A drawing set picked here: the app opens its chat (#1464). */
   onOpenPackage: (packageId: string) => void;
-  /**
-   * The open drawing set's "Review list": its review screen. With it, the open set shows a small
-   * "Review list" link under its name (and its chats), so the review screen stays one click away.
-   */
-  onOpenReviewList?: (packageId: string) => void;
   onNewReview: () => void;
   onToggleTheme: () => void;
   /**
@@ -80,7 +72,6 @@ export function AppSidebar({
   refreshKey,
   onNavigate,
   onOpenPackage,
-  onOpenReviewList,
   onNewReview,
   onToggleTheme,
   chatsSlotRef,
@@ -216,8 +207,7 @@ export function AppSidebar({
                       <SidebarMenuButton
                         size="lg"
                         isActive={active}
-                        // With its two links below, the link for the open screen is the "page"; the set is the current one.
-                        aria-current={active ? (onOpenReviewList ? 'true' : 'page') : undefined}
+                        aria-current={active ? 'page' : undefined}
                         className="h-auto flex-col items-start gap-1 py-2"
                         onClick={closing(() => onOpenPackage(pkg.id))}
                       >
@@ -229,18 +219,6 @@ export function AppSidebar({
                         <SetStatus pkg={pkg} />
                       </SidebarMenuButton>
                       {active && activePage === 'chat' && chatsSlotRef && <div ref={chatsRef} data-slot="sidebar-chats" className="group-data-[collapsible=icon]:hidden" />}
-                      {active && onOpenReviewList && (
-                        <SidebarMenuSub aria-label={`${pkg.vendor ?? 'Untitled document set'}: review list`}>
-                          <SidebarMenuSubItem>
-                            <SidebarMenuSubButton asChild size="sm" isActive={activePage === 'review'}>
-                              <button type="button" aria-current={activePage === 'review' ? 'page' : undefined} onClick={closing(() => onOpenReviewList(pkg.id))} className="text-muted-foreground">
-                                <ListChecks aria-hidden="true" />
-                                <span>Review list</span>
-                              </button>
-                            </SidebarMenuSubButton>
-                          </SidebarMenuSubItem>
-                        </SidebarMenuSub>
-                      )}
                     </SidebarMenuItem>
                   );
                 })}

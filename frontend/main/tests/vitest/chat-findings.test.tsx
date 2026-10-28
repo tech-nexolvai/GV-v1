@@ -240,14 +240,15 @@ describe('a narrow answer (a few pages)', () => {
 describe('the evidence viewer', () => {
   it('opens on a row, steps with the arrows, shows a placeholder for a missing picture, and closes on Esc', async () => {
     const user = userEvent.setup();
-    const { node } = show(answer({ findings: FINDINGS }), { fullPageHref: '#/review/pkg-1' });
+    const { node } = show(answer({ findings: FINDINGS }));
     await openViewer(user, node, 'Vanity top depth');
     const viewer = await screen.findByRole('dialog');
     expect(within(viewer).getByRole('heading', { name: /^Vanity top depth\s*· page 3$/ })).toBeTruthy();
     expect(within(viewer).getByRole('img', { name: 'Architect, page 3' }).getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/arch-f3');
     expect(within(viewer).getByText('No evidence picture')).toBeTruthy();
     expect(within(viewer).getByText((_, node) => node?.getAttribute('data-slot') === 'chat-evidence-position' && node.textContent === '1 of 4 items')).toBeTruthy();
-    expect(within(viewer).getByRole('link', { name: 'Open in review screen' }).getAttribute('href')).toBe('#/review/pkg-1');
+    // The old review screens are gone (2026-10-28): no link out to them.
+    expect(within(viewer).queryByRole('link', { name: 'Open in review screen' })).toBeNull();
 
     // The arrows follow the screen's order: Wrong by area, then Not compared, then Right.
     await user.keyboard('{ArrowRight}');

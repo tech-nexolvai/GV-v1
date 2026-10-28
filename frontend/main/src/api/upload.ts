@@ -20,7 +20,7 @@
  * so a truncated or swapped file is refused rather than recorded.
  */
 
-import { openReviewSession, startRevision } from './client';
+import { openReviewSession } from './client';
 import { IncompletePackageUpload, packageCreateBody, uploadPlan } from './uploadState';
 import type { ProductType } from './uploadState';
 
@@ -238,80 +238,4 @@ export async function createPackage(
     // A package was already recorded. Never tell the reviewer that a failed later step erased it.
     throw new IncompletePackageUpload(created.id, failure);
   }
-}
-
-export interface NewRevision {
-  /** The newest revision the screen shows; a revision someone else just started is refused (409). */
-  expectedRevision: number;
-  /** The vendor's re-issued shop drawing. Required. */
-  shop: File;
-  /** A new architect's drawing; left out, the previous revision's is used again. */
-  architectural?: File | null;
-}
-
-/**
- * Start the next revision of a review (#1180) and upload the re-issued drawing(s) into it.
- *
- * The same four steps as a first upload, through the same routes: hash in the browser, ask the API
- * for tickets (here `POST …/revisions`, which also opens the revision), PUT the bytes, confirm.
- * A drawing the API already holds the exact bytes of is not sent again. Then reading is queued.
- * Returns the new revision's number.
- */
-export async function uploadRevision(
-  projectId: string,
-  packageId: string,
-  input: NewRevision,
-  onProgress?: (progress: UploadProgress) => void,
-): Promise<number> {
-  const files: Partial<Record<'shop' | 'architectural', File>> = { shop: input.shop };
-  if (input.architectural) files.architectural = input.architectural;
-
-  onProgress?.({ step: 'Hashing', file: input.shop.name, kind: 'shop' });
-  const shopDigest = await sha256(input.shop);
-  let archDigest: string | null = null;
-  if (input.architectural) {
-    onProgress?.({ step: 'Hashing', file: input.architectural.name, kind: 'architectural' });
-    archDigest = await sha256(input.architectural);
-  }
-
-  onProgress?.({ step: 'Starting the new revision' });
-  const started = await startRevision(projectId, packageId, {
-    expected_revision: input.expectedRevision,
-    shop: { sha256: shopDigest },
-    architectural: archDigest === null ? null : { sha256: archDigest },
-  });
-
-  const { countPdfPages } = await import('./pdf');
-  for (const upload of started.uploads) {
-    const file = files[upload.kind];
-    if (!file) continue;
-    if (upload.status !== 'upload' || !upload.ticket) {
-      // Already stored or unchanged: nothing to send.
-      onProgress?.({ step: 'Uploaded', file: file.name, kind: upload.kind });
-      continue;
-    }
-    const ticket = upload.ticket as Ticket;
-    onProgress?.({ step: 'Uploading', file: file.name, kind: upload.kind, loaded: 0, total: file.size });
-    const status = await putWithProgress(
-      writableUrl(ticket),
-      ticket.method,
-      ticket.required_headers,
-      file,
-      (loaded, total) => onProgress?.({ step: 'Uploading', file: file.name, kind: upload.kind, loaded, total }),
-    );
-    if (status < 200 || status >= 300) {
-      throw new Error(`The drawing could not be written to storage (${status}).`);
-    }
-    onProgress?.({ step: 'Confirming', file: file.name, kind: upload.kind });
-    await post(`/projects/${projectId}/documents/${upload.document_id}/confirm`, {
-      sha256: upload.kind === 'shop' ? shopDigest : archDigest,
-      page_count: await countPdfPages(file),
-      file_name: file.name,
-    });
-    onProgress?.({ step: 'Uploaded', file: file.name, kind: upload.kind });
-  }
-
-  onProgress?.({ step: 'Queuing AI reading' });
-  await startExtraction(projectId, packageId);
-  return started.revision.revision_number;
 }

@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import { formatRoute, parseRoute } from '../src/app/route.js';
 
-assert.deepEqual(parseRoute('#/review/package-1'), { page: 'review', packageId: 'package-1' });
+// The old review screens' address (#/review/<set>, and /advanced) was retired on 2026-10-28: a saved or
+// shared link opens that drawing set's chat.
+assert.deepEqual(parseRoute('#/review/package-1'), { page: 'chat', packageId: 'package-1' });
+assert.deepEqual(parseRoute('#/review/package-1/advanced'), { page: 'chat', packageId: 'package-1' });
+assert.deepEqual(parseRoute('#/review'), { page: 'review', packageId: null });
 assert.deepEqual(parseRoute('#/documents'), { page: 'documents', packageId: null });
 assert.deepEqual(parseRoute('#/%'), { page: 'review', packageId: null });
-assert.equal(formatRoute({ page: 'review', packageId: 'package-1' }), '#/review/package-1');
+assert.equal(formatRoute({ page: 'review', packageId: 'package-1' }), '#/chat/package-1');
 
-console.log('review route survives reload and malformed hashes');
+console.log('an old review link opens the chat, and malformed hashes the start page');
 
 // #1578: the job tracker, and a chat link that opens one finding.
 assert.deepEqual(parseRoute('#/tracker'), { page: 'tracker', packageId: null });

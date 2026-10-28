@@ -54,9 +54,10 @@ describe('chat routes', () => {
     expect(parseRoute(formatRoute({ page: 'chat', packageId: 'a b', chatId: 'c/d' }))).toEqual({ page: 'chat', packageId: 'a b', chatId: 'c/d' });
   });
 
-  it('a chat with no drawing set is the start screen, and the review list keeps its route', () => {
+  it('a chat with no drawing set is the start screen, and an old review link opens the set\'s chat', () => {
     expect(parseRoute('#/chat')).toEqual({ page: 'review', packageId: null });
-    expect(parseRoute('#/review/pkg-1')).toEqual({ page: 'review', packageId: 'pkg-1' });
+    // The old review screens were retired on 2026-10-28: their address opens the chat.
+    expect(parseRoute('#/review/pkg-1')).toEqual({ page: 'chat', packageId: 'pkg-1' });
   });
 });
 

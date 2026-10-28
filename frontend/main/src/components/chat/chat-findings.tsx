@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from 'react';
-import { Check, ChevronRight, CircleAlert, ExternalLink, ImageOff, Maximize2, X } from 'lucide-react';
+import { Check, ChevronRight, CircleAlert, ImageOff, Maximize2, X } from 'lucide-react';
 
 import { RoundChip } from '@/components/chat/chat-trust';
 import { useMediaQuery } from '@/hooks/use-media-query';
@@ -308,11 +308,10 @@ function DecisionButtons({ decision, onDecide, busy, makeWrong = false }: Decisi
 // ── The item's card (owner: "from the reviewer's perspective") ─
 
 /** Everything about one finding, in the reviewer's words, with the two pictures large. */
-export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
+export function FindingCard({ finding, pictureUrl, onOpen }: {
   finding: ChatFinding;
   pictureUrl: (pictureId: string) => string;
   onOpen: () => void;
-  fullPageHref?: string | null;
 }) {
   const words = reviewerWords(finding);
   const status = statusOf(finding);
@@ -389,12 +388,6 @@ export function FindingCard({ finding, pictureUrl, onOpen, fullPageHref }: {
             <Maximize2 aria-hidden="true" className="size-3.5" />
             Open viewer
           </button>
-          {fullPageHref && (
-            <a href={fullPageHref} className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-3 text-[13px] font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
-              <ExternalLink aria-hidden="true" className="size-3.5" />
-              Open full page
-            </a>
-          )}
         </div>
       </div>
     </div>
@@ -486,11 +479,10 @@ interface RowProps {
   onToggle: () => void;
   onOpen: () => void;
   pictureUrl: (pictureId: string) => string;
-  fullPageHref?: string | null;
   decision?: DecisionProps | null;
 }
 
-function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl, fullPageHref, decision }: RowProps) {
+function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl, decision }: RowProps) {
   const detailId = useId();
   const nothing = finding.status === 'check' ? notComparedWords(finding) : null;
   const tag = sourceTag(finding);
@@ -564,7 +556,7 @@ function FindingRow({ finding, area, open, leaving, onToggle, onOpen, pictureUrl
       </div>
       {open && !leaving && (
         <div id={detailId} data-slot="chat-finding-detail" data-id={finding.id} className="border-t border-border/60 bg-muted/30 px-4 py-6 lg:pl-[4.5rem]">
-          <FindingCard finding={finding} pictureUrl={pictureUrl} onOpen={onOpen} fullPageHref={fullPageHref} />
+          <FindingCard finding={finding} pictureUrl={pictureUrl} onOpen={onOpen} />
         </div>
       )}
     </li>
@@ -581,14 +573,13 @@ export interface FindingsListProps {
   openRowsAtFirst?: boolean;
   onOpen: (finding: ChatFinding) => void;
   pictureUrl: (pictureId: string) => string;
-  fullPageHref?: string | null;
   /** The reviewer's answer on each finding; null hides the buttons (no route yet, or a Right list). */
   decisionFor?: ((finding: ChatFinding) => DecisionProps) | null;
   /** What the list is, for screen readers ("What’s wrong"). */
   label: string;
 }
 
-export function FindingsList({ findings, openGroups = 'all', openRowsAtFirst = false, onOpen, pictureUrl, fullPageHref, decisionFor, label }: FindingsListProps) {
+export function FindingsList({ findings, openGroups = 'all', openRowsAtFirst = false, onOpen, pictureUrl, decisionFor, label }: FindingsListProps) {
   const baseId = useId();
   const leaving = useLeaving(findings);
   const leavingIds = new Set(leaving.map((finding) => finding.id));
@@ -641,7 +632,7 @@ export function FindingsList({ findings, openGroups = 'all', openRowsAtFirst = f
                     onToggle={() => toggleRow(finding.id)}
                     onOpen={() => onOpen(finding)}
                     pictureUrl={pictureUrl}
-                    fullPageHref={fullPageHref}
+                   
                     decision={decisionFor && finding.status !== 'same' ? decisionFor(finding) : null}
                   />
                 ))}
@@ -659,7 +650,7 @@ export function FindingsList({ findings, openGroups = 'all', openRowsAtFirst = f
  * what changes fabrication and the size of the difference), under a quiet "Biggest first" note.
  * The same rows as below; the list by area then holds the rest.
  */
-function BiggestFirst({ findings, onOpen, pictureUrl, fullPageHref, decisionFor }: Omit<FindingsListProps, 'label' | 'openGroups' | 'openRowsAtFirst'>) {
+function BiggestFirst({ findings, onOpen, pictureUrl, decisionFor }: Omit<FindingsListProps, 'label' | 'openGroups' | 'openRowsAtFirst'>) {
   const [rows, setRows] = useState<ReadonlySet<string>>(() => new Set());
   const toggleRow = (id: string) => setRows((now) => { const next = new Set(now); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   return (
@@ -679,7 +670,7 @@ function BiggestFirst({ findings, onOpen, pictureUrl, fullPageHref, decisionFor 
             onToggle={() => toggleRow(finding.id)}
             onOpen={() => onOpen(finding)}
             pictureUrl={pictureUrl}
-            fullPageHref={fullPageHref}
+           
             decision={decisionFor ? decisionFor(finding) : null}
           />
         ))}
@@ -696,7 +687,6 @@ export interface FindingsSectionsProps {
   onFilter: (filter: FindingFilter) => void;
   onOpen: (finding: ChatFinding) => void;
   pictureUrl: (pictureId: string) => string;
-  fullPageHref?: string | null;
   decisionFor?: ((finding: ChatFinding) => DecisionProps) | null;
   /** A narrow answer (a few pages): its few cards start open. */
   narrow?: boolean;
@@ -772,7 +762,7 @@ export function FindingsSections({ architectView = false, ...props }: FindingsSe
   );
 }
 
-function Sections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref, decisionFor, narrow = false, ids, resolver = null, sections, architectView }: Omit<FindingsSectionsProps, 'architectView'> & { sections: readonly SectionDef[]; architectView: boolean }) {
+function Sections({ findings, filter, onFilter, onOpen, pictureUrl, decisionFor, narrow = false, ids, resolver = null, sections, architectView }: Omit<FindingsSectionsProps, 'architectView'> & { sections: readonly SectionDef[]; architectView: boolean }) {
   const isNarrowScreen = useMediaQuery(FINDINGS_NARROW);
   const categories = categoriesPresent(findings);
   const shown = findings.filter((finding) => (filter.category === null || (finding.category ?? 'other') === filter.category) && (filter.page === null || finding.page === filter.page || finding.vs_page === filter.page));
@@ -844,7 +834,7 @@ function Sections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref
             </SectionHead>
             {biggest.length > 0 && (
               <div className={cn(rest.length > 0 && 'mb-3')}>
-                <BiggestFirst findings={biggest} onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} decisionFor={decisionFor} />
+                <BiggestFirst findings={biggest} onOpen={onOpen} pictureUrl={pictureUrl} decisionFor={decisionFor} />
               </div>
             )}
             {rest.length > 0 && <FindingsList
@@ -854,7 +844,7 @@ function Sections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref
               openRowsAtFirst={narrow && of('different').length + of('check').length <= 3}
               onOpen={onOpen}
               pictureUrl={pictureUrl}
-              fullPageHref={fullPageHref}
+             
               decisionFor={decisionFor}
             />}
           </section>
@@ -863,12 +853,12 @@ function Sections({ findings, filter, onFilter, onOpen, pictureUrl, fullPageHref
       {resolver && resolver.settled.length > 0 && <SettledGroup resolver={resolver} decisions={findings.filter((finding) => finding.status === 'check').length} />}
       {right.length > 0 && (
         <Folded status="same" words="Right" count={right.length} hint="Matches the architect, the prototype or GV’s rules" id={ids?.same}>
-          <FindingsList findings={right} label="Right" onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} />
+          <FindingsList findings={right} label="Right" onOpen={onOpen} pictureUrl={pictureUrl} />
         </Folded>
       )}
       {architectView && notCompared.length > 0 && (
         <Folded status="check" words="Not compared" count={notCompared.length} hint="Not on the cloud drawing; each with its reason and what is needed (the Not-compared list)" id={ids?.check}>
-          <FindingsList findings={notCompared} label="Not compared" onOpen={onOpen} pictureUrl={pictureUrl} fullPageHref={fullPageHref} decisionFor={decisionFor} />
+          <FindingsList findings={notCompared} label="Not compared" onOpen={onOpen} pictureUrl={pictureUrl} decisionFor={decisionFor} />
         </Folded>
       )}
     </section>

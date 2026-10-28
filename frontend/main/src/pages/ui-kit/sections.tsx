@@ -97,11 +97,6 @@ import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { SAMPLE_BY_PAGE, SAMPLE_FINDINGS, SAMPLE_TOTALS, type SampleFinding } from './sample-data';
-import type { ArchitectResult, CountertopResult } from '@/api/client';
-import { ArchitectLine, ArchitectNotice, ArchitectPairs } from '@/components/results/architect-line';
-import { CountertopTable } from '@/components/results/countertop-table';
-import { ListedPages } from '@/components/results/no-countertop-pages';
-import { NoCrops } from '@/components/drawing/evidence-crops';
 
 const ALL_OUTCOMES: Outcome[] = ['PASS', 'FAIL', 'REVIEW_REQUIRED', 'NOT_FOUND', 'NO_APPLICABLE_RULE'];
 
@@ -357,127 +352,6 @@ const FINDING_COLUMNS: ColumnDef<SampleFinding>[] = [
 
 function outcomeRank(outcome: Outcome): number {
   return ['FAIL', 'REVIEW_REQUIRED', 'NOT_FOUND', 'NO_APPLICABLE_RULE', 'PASS'].indexOf(outcome);
-}
-
-/* ── Matches the architect (#1085) ─────────────────────────────────────────── */
-
-const sampleValue = (numerator: string, display: string) => ({ numerator, denominator: '1', display });
-function sampleArchitect(extra: Partial<ArchitectResult>): ArchitectResult {
-  return {
-    outcome: 'PASS', finding_id: 'sample', reason: null, needs_decision: false, not_compared_reason: null,
-    pairing_source: 'code+ais', pairing_judgments: 'code and both AIs',
-    compared: [{
-      kind: 'overall', vendor_piece: null, vendor: sampleValue('84', '84"'), architect: sampleValue('84', '84"'), delta: sampleValue('0', '0"'),
-      vendor_display: '84"', architect_display: '84"', delta_display: '0"', outcome: 'PASS', architect_location: null,
-    }],
-    ...extra,
-  };
-}
-const FAIL_PAIRS: ArchitectResult['compared'] = [
-  { kind: 'overall', vendor_piece: null, vendor: sampleValue('88', '88"'), architect: sampleValue('84', '84"'), delta: sampleValue('4', '+4"'), vendor_display: '88"', architect_display: '84"', delta_display: '+4"', outcome: 'FAIL', architect_location: null },
-  { kind: 'piece', vendor_piece: 2, vendor: sampleValue('30', '30"'), architect: sampleValue('30', '30"'), delta: sampleValue('0', '0"'), vendor_display: '30"', architect_display: '30"', delta_display: '0"', outcome: 'PASS', architect_location: null },
-];
-// As the API sends a one-judgment result: the pair waits too, so its numbers carry no verdict.
-const WAITING_PAIRS: ArchitectResult['compared'] = [
-  { kind: 'overall', vendor_piece: null, vendor: sampleValue('88', '88"'), architect: sampleValue('84', '84"'), delta: sampleValue('4', '+4"'), vendor_display: '88"', architect_display: '84"', delta_display: '+4"', outcome: 'REVIEW_REQUIRED', architect_location: null },
-];
-const ARCHITECT_SAMPLES: { name: string; result: ArchitectResult }[] = [
-  { name: 'Not compared', result: sampleArchitect({ outcome: null, finding_id: null, compared: [], pairing_source: null, pairing_judgments: null, not_compared_reason: 'the architect prints only sink centre lines here' }) },
-  { name: 'PASS, two judgments', result: sampleArchitect({}) },
-  { name: 'FAIL, two judgments', result: sampleArchitect({ outcome: 'FAIL', compared: FAIL_PAIRS }) },
-  { name: 'One judgment: code only', result: sampleArchitect({ outcome: 'REVIEW_REQUIRED', needs_decision: true, pairing_source: 'code', pairing_judgments: 'code only', compared: WAITING_PAIRS }) },
-  { name: 'One judgment: both AIs only', result: sampleArchitect({ outcome: 'REVIEW_REQUIRED', needs_decision: true, pairing_source: 'both-ais', pairing_judgments: 'both AIs only', compared: WAITING_PAIRS }) },
-  { name: 'A reviewer paired it', result: sampleArchitect({ pairing_source: 'reviewer', pairing_judgments: 'reviewer' }) },
-];
-
-export function ArchitectSection() {
-  return (
-    <Section
-      id="architect"
-      title="Matches the architect"
-      lead="The architect line under a countertop, in each state. Not compared is grey words, never a chip. One judgment asks the reviewer to confirm the pairing."
-    >
-      <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
-        {ARCHITECT_SAMPLES.map((sample) => (
-          <div key={sample.name} className="flex flex-col gap-1 border-b pb-3 last:border-b-0 last:pb-0">
-            <span className="text-xs text-muted-foreground">{sample.name}</span>
-            <ArchitectLine result={sample.result} />
-          </div>
-        ))}
-        <div className="flex flex-col gap-1">
-          <span className="text-xs text-muted-foreground">Every compared pair (row details)</span>
-          <ArchitectPairs result={sampleArchitect({ outcome: 'FAIL', compared: FAIL_PAIRS })} />
-        </div>
-      </div>
-    </Section>
-  );
-}
-
-/* ── Results: said once, quiet notes (#1126) ──────────────────────────────── */
-
-const SAMPLE_NOT_COMPARED = 'No architect dimension on this sheet measures a countertop or a cabinet run, so there is nothing to compare.';
-function sampleRow(id: string, page: number, extra: Partial<CountertopResult>): CountertopResult {
-  return {
-    finding_id: `sample-${id}`, row_id: id, page_number: page, label: `Countertop row ${page}.1`, row_location: null,
-    outcome: 'PASS', needs_decision: false, printed_overall: sampleValue('84', '84"'),
-    pieces: [{ index: 0, value: sampleValue('42', '42"'), source: 'sealed', kind: 'cabinet' }, { index: 1, value: sampleValue('42', '42"'), source: 'sealed', kind: 'cabinet' }],
-    field_cut_per_end: sampleValue('0', '0"'), field_cut_count: 0, expected_total: sampleValue('84', '84"'), delta: sampleValue('0', '0"'),
-    hold: null, reviewer_decision: null, drawn_length_note: null,
-    wall_layout: { config: 'back_only', label: 'back wall only', source: 'drawing clues' },
-    agreement: { both_readers_agreed_on_row: true, code_clue_used: true, values_agreed: [true, true] },
-    architect: sampleArchitect({ outcome: null, finding_id: null, compared: [], pairing_source: null, pairing_judgments: null, not_compared_reason: SAMPLE_NOT_COMPARED }),
-    ...extra,
-  } as CountertopResult;
-}
-const RESULT_SAMPLES: CountertopResult[] = [
-  sampleRow('noted', 2, { drawn_length_note: 'Drawn length not checked (no scale): piece 2, the overall' }),
-  sampleRow('walls', 5, {
-    outcome: 'REVIEW_REQUIRED', needs_decision: true, delta: null, expected_total: null,
-    wall_layout: { config: null, label: null, source: 'not established' },
-  }),
-];
-const SAMPLE_ACTIONS = { onShowDrawing: () => {}, onOpenCard: () => {}, onDecide: () => {}, canDecide: () => false };
-
-export function ResultsNotesSection() {
-  return (
-    <Section
-      id="results-notes"
-      title="Results: said once"
-      lead="A reason every countertop shares is one notice above the table. The drawn-length note sits on its own row. Lines that were not checked are listed, never blocking; each page with no countertop is listed and needs a reviewer's confirmation before sign-off."
-    >
-      <div className="flex flex-col gap-3">
-        <ArchitectNotice reason={SAMPLE_NOT_COMPARED} />
-        <CountertopTable rows={RESULT_SAMPLES} actions={SAMPLE_ACTIONS} architectNotice />
-        <ListedPages
-          pagesWithoutCountertop={[
-            {
-              page_number: 1,
-              reason: 'Title or divider page: nothing drawn. Code checked the PDF: no pasted drawing, no picture and no lines beyond the page frame and its typed title, so there is no countertop to check.',
-              record_id: 'sample-1',
-              confirmation: null,
-              needs_answer: false,
-              blank_page: { rule: 1, stamps: 0, other_annotations: 0, images: 0, drawn_paths: 0, frames: 1, white_paint: 1, typed_texts: 2, typed_characters: 20 },
-            },
-            { page_number: 15, reason: 'Both AIs saw only tall units on this page.', record_id: 'sample-15', confirmation: null },
-            { page_number: 16, reason: 'Code found no row of dimensions on the vendor\'s drawing that could be a countertop, so nothing on it was read.', record_id: 'sample-16', confirmation: null, doubtful: true },
-            {
-              page_number: 17,
-              reason: 'Both AIs saw a cover sheet.',
-              record_id: 'sample-17',
-              confirmation: { confirmed_by: 'Sample Reviewer', confirmed_at: '2026-10-12T10:00:00Z', from_revision: 1 },
-            },
-          ]}
-          rowsNotChecked={[{ page_number: 4, reason: 'An AI named a second countertop line on this page; one line per page is read.' }]}
-          onAnswer={async () => {}}
-          onConfirmMany={async () => {}}
-        />
-        <div className="rounded-xl border bg-card p-4">
-          <span className="text-xs text-muted-foreground">Drawing panel, a held result</span>
-          <NoCrops line="No readings used" why="The check was held before it used any reading, so there is nothing to crop." reason="The stone stops short of the walls, so the check was held." />
-        </div>
-      </div>
-    </Section>
-  );
 }
 
 export function DataSection() {

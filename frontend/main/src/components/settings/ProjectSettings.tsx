@@ -277,7 +277,7 @@ function ProjectBlock({ initial }: { initial: Project }) {
         <h3 id={titleId} className="text-base font-semibold">{project.name}</h3>
         <p className="text-sm text-muted-foreground">
           {project.product_types.length > 0 ? `Drawing sets for: ${project.product_types.join(', ')}. ` : ''}
-          {readOnly ? '' : 'Reviewers and admins in this project can change these. '}A value typed for one package on Measurements still wins for that package.
+          {readOnly ? '' : 'Reviewers and admins in this project can change these. '}A value saved earlier for one package still wins for that package.
         </p>
         {readOnly && <p className="text-sm" data-part="read-only">Only reviewers on this project can change these.</p>}
       </div>

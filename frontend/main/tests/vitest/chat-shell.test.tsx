@@ -1,15 +1,14 @@
 // @vitest-environment jsdom
 /**
  * The chat-first flow through the whole app (#1464): an upload lands in a new chat about the drawing set, the
- * sidebar opens a set's chats and keeps its review list one click away, and the review screen's
- * Assistant button opens the chat. Synthetic data only; the upload form is a stand-in.
+ * sidebar opens a set's chats, and "Continue a review" and an old review link open the chat (the old review
+ * screens were retired on 2026-10-28). Synthetic data only; the upload form is a stand-in.
  */
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { chatOut, modelsOut, SET_NAME, summary } from './fixtures/chat';
-import { reviewItems } from './fixtures/review-items';
 
 vi.mock('@/api/config', () => ({ projectId: () => 'p' }));
 // The real form uploads files; here "the upload finished" is one click.
@@ -31,7 +30,6 @@ beforeEach(() => {
       next_cursor: null,
     }),
     'GET /projects/p/packages/pkg-1': () => json({ id: 'pkg-1', vendor: SET_NAME, current_revision_number: 1 }),
-    'GET /projects/p/packages/pkg-1/review-items': () => json(reviewItems()),
     'GET /assistant/models': () => json(modelsOut()),
     'GET /packages/pkg-1/chats': () => json({ chats: [summary('c-1', { title: 'Widths', turns: 1 })], package_name: SET_NAME }),
     'GET /chats/c-1': () => json(chatOut('c-1')),
@@ -57,7 +55,7 @@ describe('chat first', () => {
     await waitFor(() => expect(document.title).toBe(`${SET_NAME} · GV Review`));
   });
 
-  it('one sidebar: the open set lists its chats (New chat on top) and a Review list link; the top bar is quiet', async () => {
+  it('one sidebar: the open set lists its chats (New chat on top) and no Review list link; the top bar is quiet', async () => {
     routes['GET /packages/pkg-1/chats'] = () => json({ chats: [summary('c-1', { title: 'Widths', turns: 1 }), summary('c-2', { title: 'Sinks', turns: 1 })] });
     window.location.hash = '#/chat/pkg-1/c-1';
     render(<App />);
@@ -73,10 +71,9 @@ describe('chat first', () => {
     expect(document.querySelector('[data-slot="chat-crumb"]')?.textContent).toBe('Widths');
     expect(screen.queryByLabelText('Graniti Vicentia')).toBeNull();
 
-    const reviewList = within(sidebar).getByRole('list', { name: `${SET_NAME}: review list` });
-    await userEvent.setup().click(within(reviewList).getByRole('button', { name: 'Review list' }));
-    await waitFor(() => expect(window.location.hash).toBe('#/review/pkg-1'));
-    expect(within(sidebar).queryByRole('navigation', { name: 'Chats in this drawing set' })).toBeNull();
+    // The old review screens are gone (2026-10-28): no Review list link under the set or in the top bar.
+    expect(within(sidebar).queryByRole('list', { name: `${SET_NAME}: review list` })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Review list' })).toBeNull();
   });
 
   it('a set with many chats shows ten, then Show all', async () => {
@@ -121,20 +118,26 @@ describe('chat first', () => {
     phone.mockRestore();
   });
 
-  it('the review screen’s Assistant button opens the set’s chat; picking the set in the sidebar does too', async () => {
-    window.location.hash = '#/review/pkg-1';
+  it('an old review link (#/review/<set>, also /advanced) opens the set’s chat; picking the set in the sidebar does too', async () => {
+    window.location.hash = '#/review/pkg-1/advanced';
     render(<App />);
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: 'Assistant' }));
-    await waitFor(() => expect(window.location.hash).toBe('#/chat/pkg-1'));
     expect(await screen.findByRole('heading', { name: `What do you want to know about ${SET_NAME}?` })).toBeTruthy();
-    // The old docked panel stays closed: the chat page is where questions go now.
+    // No old screen and no old docked panel.
     expect(document.querySelector('[data-slot="assistant-panel"]')).toBeNull();
 
-    window.location.hash = '#/review/pkg-1';
+    window.location.hash = '#/';
     await waitFor(() => expect(screen.queryByRole('heading', { name: `What do you want to know about ${SET_NAME}?` })).toBeNull());
     const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
-    await user.click(within(sidebar).getByText(SET_NAME));
+    await userEvent.setup().click(within(sidebar).getByText(SET_NAME));
     await waitFor(() => expect(window.location.hash).toBe('#/chat/pkg-1'));
+  });
+
+  it('"Continue a review" on the start page opens the set’s chat', async () => {
+    window.location.hash = '#/';
+    render(<App />);
+    const recent = await screen.findByRole('region', { name: 'Continue a review' });
+    await userEvent.setup().click(within(recent).getByRole('button', { name: new RegExp(SET_NAME) }));
+    await waitFor(() => expect(window.location.hash).toBe('#/chat/pkg-1'));
+    expect(await screen.findByRole('heading', { name: `What do you want to know about ${SET_NAME}?` })).toBeTruthy();
   });
 });

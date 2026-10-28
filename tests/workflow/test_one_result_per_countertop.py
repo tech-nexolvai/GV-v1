@@ -736,15 +736,6 @@ def test_a_countertop_s_own_result_never_names_another_countertop(
     assert seen
 
 
-def test_the_queue_takes_only_the_width_result_for_a_row_s_own() -> None:
-    """The Needs-you queue lists every row-scoped result as a check of its own except the width
-    result the row shows (#1201 review); that check is the server's width rule."""
-    from workflow.pariksha_run_check import WIDTH_RULE_ID
-
-    shown = (Path(__file__).parents[2] / "frontend/main/src/lib/countertop-results.ts").read_text()
-    assert f"export const ROW_WIDTH_CHECK = '{WIDTH_RULE_ID}';" in shown
-
-
 # -- 6. the run check sees a countertop that lost its own result (#1305) --------------------------
 
 OWN_RESULT = "countertop-without-depth-or-sink-result"
