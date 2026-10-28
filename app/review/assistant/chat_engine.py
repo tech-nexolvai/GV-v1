@@ -3218,12 +3218,11 @@ class ChatEngine:
         result = str(read.result)
         if result not in ("agrees", "disagrees", "unsure"):
             result = "unsure"
-        # The reply's own text too (cut, `second_read.kept_reply`): a read of nothing says why.
-        values = {
-            "architect": read.architect,
-            "vendor": read.vendor,
-            "reply": getattr(read, "reply", None),
-        }
+        values = {"architect": read.architect, "vendor": read.vendor}
+        reply = getattr(read, "reply", None)
+        if isinstance(reply, str):
+            # The reply's own text (cut, `second_read.kept_reply`): a read of nothing says why.
+            values["reply"] = reply
         key = _read_key(finding)
         with self.finding_lock:
             current = next((f for f in self.book.live() if f["id"] == finding["id"]), None)
