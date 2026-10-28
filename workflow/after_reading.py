@@ -1,12 +1,13 @@
 """What a finished reading asks for next, on its own (Set 3 QA).
 
-A new upload used to stop at `NEEDS_INPUT` after reading with nothing else queued: no page pictures
-(only the old Measure screen asked for them, so "Look" showed nothing on a new set), and no check
-run (the review list then said "Run the checks first" until someone asked). Now the reading's last
-stage queues both, in its own transaction, so they land with the hand-over or not at all:
+A new upload used to stop at `NEEDS_INPUT` after reading with nothing else queued: no check run (the
+review list then said "Run the checks first" until someone asked). Now the reading's last stage
+queues it, in its own transaction, so it lands with the hand-over or not at all.
 
-- **Page pictures:** the worker's free render of every page still without a picture, once (never
-  a second job while one waits), exactly what `POST .../pages/pictures` queues.
+**No page pictures any more (2026-10-28).** This also queued the worker's 300 dpi picture of every
+page, for the old review screens' "Look". Those screens were removed (#1991) and the chat makes its
+own pictures, so nothing read them; the reading no longer asks for them.
+
 - **The check run:** queued when nothing a run needs is missing, with the discriminators a person
   confirmed (as `POST .../checks` sends them; code's clues never settle the walls alone, #1202).
   It is the same rule the screen used: a run is not asked for while one already waits, or while
@@ -29,13 +30,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import OutboxEntry, Page
-from app.models.document import PackageRevisionDocument
+from app.models import OutboxEntry
 from workflow.outbox import enqueue
-from workflow.vendor_page_pictures import (
-    RENDER_VENDOR_PAGE_PICTURES_WORKFLOW,
-    pages_without_pictures,
-)
 
 __all__ = ["RUN_CHECKS_WORKFLOW", "AfterReading", "queue_after_reading"]
 
@@ -53,7 +49,6 @@ CHECKS_QUEUED_NEED: Final = (
 class AfterReading:
     """What the reading's end queued, and in plain words what still stops the checks."""
 
-    pictures_queued: bool
     checks_queued: bool
     needed: str
 
@@ -72,29 +67,6 @@ def _waiting(session: Session, workflow: str, revision_id: UUID) -> bool:
         )
         is not None
     )
-
-
-def _queue_pictures(session: Session, revision_id: UUID) -> bool:
-    page_ids = list(
-        session.scalars(
-            select(Page.id)
-            .join(
-                PackageRevisionDocument,
-                PackageRevisionDocument.document_version_id == Page.document_version_id,
-            )
-            .where(PackageRevisionDocument.package_revision_id == revision_id)
-        )
-    )
-    if not pages_without_pictures(session, page_ids):
-        return False
-    if _waiting(session, RENDER_VENDOR_PAGE_PICTURES_WORKFLOW, revision_id):
-        return False
-    enqueue(
-        session,
-        workflow=RENDER_VENDOR_PAGE_PICTURES_WORKFLOW,
-        payload={"package_revision_id": str(revision_id)},
-    )
-    return True
 
 
 def _refused_settings(session: Session, confirmed: dict[str, str]) -> list[str]:
@@ -126,19 +98,17 @@ def _refused_settings(session: Session, confirmed: dict[str, str]) -> list[str]:
 
 
 def queue_after_reading(session: Session, revision_id: UUID) -> AfterReading:
-    """Queue the page pictures and, when nothing it needs is missing, the check run. Flushes only:
-    the caller's commit lands these with the reading's hand-over."""
+    """Queue the check run when nothing it needs is missing. Flushes only: the caller's commit
+    lands it with the reading's hand-over."""
     from workflow.layout_proposals import DISCRIMINATOR_FROM_REVIEWER, confirmed_discriminators
     from workflow.slot_row_scope import budget_stopped_pages
 
-    pictures = _queue_pictures(session, revision_id)
     waiting_pages = budget_stopped_pages(session, revision_id)
     if waiting_pages:
         listed = ", ".join(str(page) for page in waiting_pages)
         noun = "Page" if len(waiting_pages) == 1 else "Pages"
         verb = "waits" if len(waiting_pages) == 1 else "wait"
         return AfterReading(
-            pictures,
             False,
             f"{noun} {listed} {verb} for the AI budget. Read them (or answer them) first; then run "
             "the checks.",
@@ -147,12 +117,11 @@ def queue_after_reading(session: Session, revision_id: UUID) -> AfterReading:
     refused = _refused_settings(session, confirmed)
     if refused:
         return AfterReading(
-            pictures,
             False,
             "The checks did not start: " + "; ".join(refused) + ". Change it, then run the checks.",
         )
     if _waiting(session, RUN_CHECKS_WORKFLOW, revision_id):
-        return AfterReading(pictures, False, CHECKS_QUEUED_NEED)
+        return AfterReading(False, CHECKS_QUEUED_NEED)
     enqueue(
         session,
         workflow=RUN_CHECKS_WORKFLOW,
@@ -162,4 +131,4 @@ def queue_after_reading(session: Session, revision_id: UUID) -> AfterReading:
             "discriminator_sources": {name: DISCRIMINATOR_FROM_REVIEWER for name in confirmed},
         },
     )
-    return AfterReading(pictures, True, CHECKS_QUEUED_NEED)
+    return AfterReading(True, CHECKS_QUEUED_NEED)

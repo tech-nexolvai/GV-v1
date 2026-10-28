@@ -378,6 +378,12 @@ def phrase_grouping() -> object | None:
 def build_package_text(session: object, package_revision_id: UUID) -> Mapping[str, object]:
     """Build the revision's phrase index, and report what happened. Never raises.
 
+    **Built only for the value hunter (2026-10-28).** The index is searched by the value hunter
+    (`GV_VALUE_HUNTER`, parked and off) and by nothing else that is switched on: the old Measure
+    screen's citations went with the old screens, and the chat and the full check never read it. So
+    with the hunter off nothing is built, and the result says why; switched on, the hunter gets its
+    index exactly as before.
+
     **It cannot fail the extraction.** The drawings were read and the readings are recorded; a
     search index is built from them and can be built again. So every failure is caught and reported
     in the worker's log line, and the build runs inside a savepoint, so a failure part-way through
@@ -392,6 +398,13 @@ def build_package_text(session: object, package_revision_id: UUID) -> Mapping[st
         return {"built": False, "reason": str(error)}
     if grouping is None:
         return {"built": False, "reason": f"{PHRASE_GAP_VARIABLE} is not set"}
+    from workflow.value_hunter import VALUE_HUNTER_ENV, value_hunter_enabled
+
+    if not value_hunter_enabled():
+        return {
+            "built": False,
+            "reason": f"{VALUE_HUNTER_ENV} is off, and nothing else reads the phrase index",
+        }
     from retrieval.package_text import build_package_phrases
 
     try:
@@ -854,8 +867,9 @@ def run_extraction(
     # handler, a failure here left the package in `MATCHING` with nothing said, redelivered every poll.
     try:
         record_progress(side_engine(session), package_revision_id, "form")  # type: ignore[arg-type]
-        # **Index the package's own words, once they are all recorded** (#836). Built from the stored
-        # rows, so it needs nothing extraction did not already write, and it cannot fail the extraction:
+        # **Index the package's own words, once they are all recorded** (#836), for the value hunter
+        # only: with it off, nothing is built (2026-10-28). Built from the stored rows, so it needs
+        # nothing extraction did not already write, and it cannot fail the extraction:
         # `build_package_text` reports a failure rather than raising one.
         measure = (
             timings.measure("worker.package_text", run_id=str(package_revision_id))
@@ -900,14 +914,11 @@ def run_extraction(
         # the next actor is the reviewer: confirm the untyped proposals and supply the values the
         # reader abstained on. Leaving a zero-result revision in VALIDATING_EVIDENCE makes that
         # honest abstention indistinguishable from a worker that is still running.
-        # **Then ask for what comes next, on its own** (Set 3 QA): the page pictures "Look" needs,
-        # and the check run when nothing it needs is missing. Queued in this transaction, so they
-        # land with the hand-over; what still stops the checks is said in `needed`.
+        # **Then ask for what comes next, on its own** (Set 3 QA): the check run when nothing it
+        # needs is missing. Queued in this transaction, so it lands with the hand-over; what still
+        # stops the checks is said in `needed`.
         after = queue_after_reading(session, package_revision_id)  # type: ignore[arg-type]
-        results["after_reading"] = {
-            "pictures_queued": after.pictures_queued,
-            "checks_queued": after.checks_queued,
-        }
+        results["after_reading"] = {"checks_queued": after.checks_queued}
         enter_needs_input(
             session,
             package_revision_id,
