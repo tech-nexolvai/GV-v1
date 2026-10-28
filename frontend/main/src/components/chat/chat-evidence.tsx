@@ -241,8 +241,6 @@ export interface EvidenceViewerProps {
   openId: string | null;
   onOpen: (findingId: string | null) => void;
   pictureUrl: (pictureId: string) => string;
-  /** Where "Open in review screen" goes; the link is left out when there is none. */
-  fullPageHref?: string | null;
   /** #1717: the vendor's page picture (100 dpi, the set pack's), to show the spot boxed; absent when there is none. Results v2: another upload's page with `where`. */
   pagePicture?: PagePicture | null;
   /** #1717: the cloud drawing at a page ("Open on the cloud drawing"); absent when there is none. */
@@ -323,7 +321,7 @@ function ArchitectQuestion({ note }: { note: RuleNoteWords }) {
  * plain words), the comment for the vendor, and the optional override. J / K or ← / → step through
  * the result's items, Esc closes and focus goes back to the row.
  */
-export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageHref, pagePicture = null, cloudAt = null, decisionFor = null, numberOf = null, notice = null, draft = null, results = null, cardOf = null, lookup = null }: EvidenceViewerProps) {
+export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, pagePicture = null, cloudAt = null, decisionFor = null, numberOf = null, notice = null, draft = null, results = null, cardOf = null, lookup = null }: EvidenceViewerProps) {
   // Plan change #8: the arrows step card by card. A copy of a folded card (opened from its card's
   // "same question" box) stands at its card's place: the count and J / K never step through copies.
   const own = openId === null ? -1 : findings.findIndex((finding) => finding.id === openId);
@@ -447,9 +445,6 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, fullPageH
               <span className="flex-1" />
               {cloudAt && group === 'clouded' && !draft?.stale && (
                 <a href={cloudAt(finding.vendor_box?.page ?? finding.page)} target="_blank" rel="noopener noreferrer" className={SMALL_BUTTON}><ExternalLink className="size-3.5" aria-hidden="true" />Open on the cloud drawing</a>
-              )}
-              {fullPageHref && (
-                <a href={fullPageHref} className={SMALL_BUTTON}><ExternalLink className="size-3.5" aria-hidden="true" />Open in review screen</a>
               )}
             </div>
           </div>

@@ -21,8 +21,6 @@ interface AppShellProps {
   onNavigate: (page: Page) => void;
   /** A drawing set picked in the sidebar: the app opens its chat (#1464). */
   onOpenPackage: (packageId: string) => void;
-  /** The open drawing set's "Review list" in the sidebar: its review screen (#1464). */
-  onOpenReviewList?: (packageId: string) => void;
   onNewReview: () => void;
   onToggleTheme: () => void;
 }
@@ -56,7 +54,6 @@ export function AppShell({
   evidencePanel,
   onNavigate,
   onOpenPackage,
-  onOpenReviewList,
   onNewReview,
   onToggleTheme,
 }: AppShellProps) {
@@ -94,7 +91,6 @@ export function AppShell({
           refreshKey={sidebarRefreshKey}
           onNavigate={onNavigate}
           onOpenPackage={onOpenPackage}
-          onOpenReviewList={onOpenReviewList}
           onNewReview={onNewReview}
           onToggleTheme={onToggleTheme}
           chatsSlotRef={setChatsSlot}

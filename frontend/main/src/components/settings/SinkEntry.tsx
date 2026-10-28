@@ -13,19 +13,13 @@
  */
 import { useId, useState } from 'react';
 
-import { ApiError, getProjectSink, getSinkInUse, saveProjectSink, type ProjectSink, type SinkInUse } from '@/api/client';
+import { ApiError, saveProjectSink, type ProjectSink } from '@/api/client';
 import { projectId } from '@/api/config';
-import { useAsync } from '@/api/useAsync';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { SINK_NOTE_HINT, sinkNoteSentence } from '@/lib/depth-readings';
-import { SIGNED_OFF_NOTE, useSignedOff } from '@/lib/signed-off';
 
 type Sink = NonNullable<ProjectSink['sink']>;
-
-const ORIGIN_WORDS = { sink_card: 'from the sink card', package: 'typed for this package' } as const;
 
 /** The sink card's entry in one line: name, then the sizes in the number font. */
 export function SinkSummary({ sink }: { sink: Sink }) {
@@ -42,51 +36,6 @@ export function SinkSummary({ sink }: { sink: Sink }) {
         {sink.source_note && <> · {sink.source_note}</>}
       </span>
     </p>
-  );
-}
-
-/** "In use for this package: …", each size with where it is from. Nothing in use says so. */
-export function SinkInUseLine({ inUse }: { inUse: SinkInUse }) {
-  const sizes = [
-    ['wide', inUse.inside_width],
-    ['deep', inUse.inside_depth],
-  ] as const;
-  if (!inUse.inside_width && !inUse.inside_depth) {
-    return <p className="text-sm" data-slot="sink-in-use">In use for this package: no sink size yet. The sink checks wait.</p>;
-  }
-  return (
-    <p className="text-sm" data-slot="sink-in-use">
-      <span className="font-medium">In use for this package:</span> {inUse.model_name && <>{inUse.model_name}, </>}
-      {sizes.map(([word, size], index) => (
-        <span key={word}>
-          {index > 0 && ' × '}
-          {size ? (
-            <>
-              <span className="num">{size.text}</span> {word} <span className="text-muted-foreground">({ORIGIN_WORDS[size.origin]})</span>
-            </>
-          ) : (
-            <>not set {word}</>
-          )}
-        </span>
-      ))}
-    </p>
-  );
-}
-
-/**
- * The vendor's own printed note naming the sink (#1295), from the pages the depth and sink reader read:
- * shown as a hint, never filled into the boxes (Anant, 2026-10-14). Nothing shows without one.
- */
-export function VendorSinkNotes({ inUse }: { inUse: SinkInUse }) {
-  const notes = inUse.vendor_notes ?? [];
-  if (notes.length === 0) return null;
-  return (
-    <div data-slot="vendor-sink-notes" role="note" className="flex flex-col gap-0.5 rounded-md bg-muted/50 px-3 py-2 text-sm">
-      {notes.map((note) => (
-        <p key={`${note.page_number}-${note.text}`}>{sinkNoteSentence(note)}</p>
-      ))}
-      <p className="text-xs text-muted-foreground">{SINK_NOTE_HINT}</p>
-    </div>
   );
 }
 
@@ -146,7 +95,7 @@ export function SinkEntryForm({
       }}
     >
       <p role="note" className="rounded-md border border-dashed px-3 py-2 text-sm">
-        This sink applies to every package in this job. A size typed for one package on Measurements still wins there.
+        This sink applies to every package in this job. A size saved earlier for one package still wins there.
       </p>
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={`${id}-name`}>Sink name or model</Label>
@@ -174,91 +123,5 @@ export function SinkEntryForm({
         {!ready && <span className="text-xs text-muted-foreground" data-slot="sink-save-why">Type {missing.join(', ')} to save.</span>}
       </div>
     </form>
-  );
-}
-
-/** The small card on Measurements: what this package uses, the sink card's entry, and the boxes. */
-export function SinkEntryCard({ packageId, onSaved }: { packageId?: string | null; onSaved?: () => void }) {
-  const [version, setVersion] = useState(0);
-  const [editing, setEditing] = useState(false);
-  const [justSaved, setJustSaved] = useState(false);
-  const signedOff = useSignedOff();
-  const current = useAsync(() => getProjectSink(projectId()), [version]);
-  const inUse = useAsync(() => (packageId ? getSinkInUse(projectId(), packageId) : Promise.resolve(null)), [packageId, version]);
-  const sink = current.status === 'ready' ? current.data.sink : null;
-
-  return (
-    <section data-slot="sink-entry" aria-labelledby="sink-entry-title" className="flex flex-col gap-3 rounded-xl border bg-card p-4 font-sans">
-      <div className="flex flex-col gap-1">
-        <h3 id="sink-entry-title" className="text-base font-semibold">Sink</h3>
-        <p className="text-sm text-muted-foreground">Entered once for the job, from the sink&apos;s spec sheet. Every sink check of every package uses it.</p>
-      </div>
-      {inUse.status === 'ready' && inUse.data && <SinkInUseLine inUse={inUse.data} />}
-      {inUse.status === 'ready' && inUse.data && <VendorSinkNotes inUse={inUse.data} />}
-      {current.status === 'loading' && <p className="text-sm text-muted-foreground" role="status">Loading the sink…</p>}
-      {current.status === 'error' && <p role="alert" className="text-sm">The sink could not be loaded: {current.error.message}</p>}
-      {current.status === 'ready' && !editing && (
-        <>
-          {sink ? (
-            <div>
-              <p className="mb-0.5 text-xs text-muted-foreground">Sink card</p>
-              <SinkSummary sink={sink} />
-            </div>
-          ) : (
-            <p className="text-sm">No sink entered for this job yet.</p>
-          )}
-          {justSaved && <p role="status" className="text-sm">Saved. Run checks to update the sink results.</p>}
-          {signedOff ? (
-            // A closed review changes nothing (#1182); the sink is changed from an open review.
-            <p className="text-sm text-muted-foreground" role="note" data-part="signed-off">{SIGNED_OFF_NOTE}</p>
-          ) : (
-            <div>
-              <Button size="sm" variant="outline" onClick={() => { setJustSaved(false); setEditing(true); }}>
-                {sink ? 'Change the sink' : 'Enter the sink'}
-              </Button>
-            </div>
-          )}
-        </>
-      )}
-      {editing && (
-        <SinkEntryForm
-          onCancel={() => setEditing(false)}
-          onSaved={() => {
-            setEditing(false);
-            setJustSaved(true);
-            setVersion((n) => n + 1);
-            onSaved?.();
-          }}
-        />
-      )}
-    </section>
-  );
-}
-
-/** The same entry, opened from a sink check's "Needs" line. */
-export function SinkEntryDialog({
-  open,
-  packageId,
-  onOpenChange,
-  onSaved,
-}: {
-  open: boolean;
-  packageId: string;
-  onOpenChange: (open: boolean) => void;
-  onSaved: () => void;
-}) {
-  const inUse = useAsync(() => (open ? getSinkInUse(projectId(), packageId) : Promise.resolve(null)), [open, packageId]);
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>The job&apos;s sink</DialogTitle>
-          <DialogDescription>Entered once from the sink&apos;s spec sheet; every sink check uses it once the checks run again.</DialogDescription>
-        </DialogHeader>
-        {inUse.status === 'ready' && inUse.data && <SinkInUseLine inUse={inUse.data} />}
-        {inUse.status === 'ready' && inUse.data && <VendorSinkNotes inUse={inUse.data} />}
-        {open && <SinkEntryForm onCancel={() => onOpenChange(false)} onSaved={() => onSaved()} />}
-      </DialogContent>
-    </Dialog>
   );
 }

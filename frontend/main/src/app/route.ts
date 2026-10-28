@@ -22,8 +22,8 @@ export type Page = 'review' | 'chat' | 'documents' | 'tracker' | 'rulebook' | 's
 export interface Route {
   page: Page;
   /**
-   * The package under review, or whose chats are open. Only meaningful on `review` (where `null` is
-   * the start screen) and `chat` (never `null` there).
+   * The drawing set whose chats are open. Only meaningful on `chat` (never `null` there); `review` is
+   * the start screen and always `null`.
    */
   packageId: string | null;
   /**
@@ -36,11 +36,6 @@ export interface Route {
    * finding in the evidence viewer, as the job tracker's rows do. Absent on plain chat routes.
    */
   finding?: { messageId: string; findingId: string };
-  /**
-   * The old tabs and wizard (#1343): `#/review/<id>/advanced`, reached from "More". Without it a
-   * review opens on the simple review page. Absent rather than false, so plain routes stay plain.
-   */
-  advanced?: true;
   /**
    * Company settings only (#1369): `#/settings/company?focus=<setting>` opens the page on that field,
    * so a "Not checked: set in Company settings" item links straight to it. `project` narrows it to one
@@ -70,8 +65,10 @@ export function parseRoute(hash: string): Route {
   const page = PAGES.find((candidate) => candidate === parts[0]);
   if (page === undefined) return { page: 'review', packageId: null };
   if (page === 'review') {
-    const packageId = parts[1] ?? null;
-    return packageId !== null && parts[2] === 'advanced' ? { page, packageId, advanced: true } : { page, packageId };
+    // `#/review/<set>` (and `/advanced`) was the old review screens' address, retired on 2026-10-28:
+    // a saved or shared link opens that drawing set's chat instead.
+    const packageId = parts[1];
+    return packageId ? { page: 'chat', packageId } : { page, packageId: null };
   }
   if (page === 'chat') {
     const packageId = parts[1];
@@ -93,7 +90,7 @@ export function parseRoute(hash: string): Route {
 export function formatRoute(route: Route): string {
   if (route.page === 'review') {
     if (!route.packageId) return '#/';
-    return `#/review/${encodeURIComponent(route.packageId)}${route.advanced ? '/advanced' : ''}`;
+    return `#/chat/${encodeURIComponent(route.packageId)}`;
   }
   if (route.page === 'chat') {
     if (!route.packageId) return '#/';

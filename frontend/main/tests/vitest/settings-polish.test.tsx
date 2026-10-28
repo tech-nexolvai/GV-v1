@@ -72,8 +72,8 @@ describe('the settings link from "Not checked" (#1369 item 3)', () => {
     expect(parseRoute('#/settings')).toEqual({ page: 'settings', packageId: null });
     expect(formatRoute({ page: 'settings', packageId: null, focus: 'cabinet_depth' })).toBe('#/settings/company?focus=cabinet_depth');
     expect(formatRoute({ page: 'settings', packageId: null })).toBe('#/settings');
-    // A query never leaks into a review's id.
-    expect(parseRoute('#/review/abc?x=1')).toEqual({ page: 'review', packageId: 'abc' });
+    // A query never leaks into a drawing set's id (an old review link opens its chat).
+    expect(parseRoute('#/review/abc?x=1')).toEqual({ page: 'chat', packageId: 'abc' });
   });
 
   it("focuses the project's field, opening the set-apart list it sits in, and highlights its row", async () => {

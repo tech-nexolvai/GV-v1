@@ -24,11 +24,10 @@
  */
 
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ChevronRight, CircleAlert, ListChecks, RotateCw, WifiOff } from 'lucide-react';
+import { ArrowDown, ChevronRight, CircleAlert, RotateCw, WifiOff } from 'lucide-react';
 
 import { formatRoute } from '@/app/route';
 import { HeaderActions, HeaderTitleExtra, SidebarChats } from '@/components/shell/ShellHeader';
-import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ChatComposer } from '@/components/chat/chat-composer';
@@ -684,11 +683,6 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
       <div data-tw data-slot="chat-page" className="flex min-h-0 w-full min-w-0 flex-1 font-sans text-sm text-foreground antialiased">
         <HeaderActions>
           {!centred && <FullCheckButton variant="bar" summary={fullCheckSummary} scope={fullCheckScope} onRun={runFullCheck} blocked={fullCheckBlocked} loadPlan={loadPlan} priceRule={fullCheckRule} />}
-          <Button variant="ghost" size="sm" asChild>
-            <a href={formatRoute({ page: 'review', packageId })} aria-label="Review list">
-              <ListChecks /> <span className="hidden sm:inline">Review list</span>
-            </a>
-          </Button>
         </HeaderActions>
         {/* The set's name is the top bar's; the open chat's title follows it after a "›". */}
         {chatName && (
@@ -778,7 +772,6 @@ export function ChatPage({ packageId, chatId, onOpenChat, onNameChange, api = LI
                     makeMarkupPdf={(messageId) => api.markup(chatId, messageId)}
                     decide={api.decide ? (messageId, findingId, decision, extra) => (extra ? api.decide!(chatId, messageId, findingId, decision, extra) : api.decide!(chatId, messageId, findingId, decision)) : undefined}
                     remakeCloud={api.remakeCloud ? (messageId) => api.remakeCloud!(chatId, messageId) : undefined}
-                    fullPageHref={formatRoute({ page: 'review', packageId })}
                     pagePicture={(page, where) => chatPaths.planPage(packageId, page, where)}
                     pageTitles={pageTitles}
                     fullCheck={isFullCheck(message, asked?.role === 'user' ? asked : null)}

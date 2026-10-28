@@ -885,11 +885,3 @@ def test_confirming_the_countertops_asks_no_decision_again_and_a_new_one_does(
     assert len(holds) == 12 and not holds & blocking
     whole = _whole_package_holds(session, made.revision.id)
     assert len(whole) == 6 and whole <= blocking
-
-
-def test_the_screens_find_the_notes_by_the_server_s_own_opening_words() -> None:
-    from workflow.several_countertops import COUNTERTOPS_NOTE, UNCHECKED_NOTE
-
-    shown = (Path(__file__).parents[2] / "frontend/main/src/lib/countertop-notes.ts").read_text()
-    for note in (COUNTERTOPS_NOTE, UNCHECKED_NOTE):
-        assert f"'{note.split('{names}')[0]}'" in shown, note

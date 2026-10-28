@@ -1,9 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { AppShell } from './components/shell/AppShell';
 import type { Crumb } from './components/shell/app-topbar';
-import { ReviewPage } from './pages/ReviewPage';
-import { SimpleReviewPage } from './pages/SimpleReviewPage';
-import { AdvancedBanner } from './components/simple-review/advanced-banner';
 import { PackagesPage } from './pages/PackagesPage';
 import { WelcomePage } from './pages/WelcomePage';
 import { CompanySettingsPage } from './pages/CompanySettingsPage';
@@ -36,13 +33,8 @@ const PAGE_TITLES: Record<Page, string> = {
 export default function App() {
   const [route, navigate] = useRoute();
   const [theme, toggleTheme] = useTheme();
-  const [evidencePanel, setEvidencePanel] = useState<React.ReactNode>(null);
-  // The vendor and revision of the review on screen, reported by the review once its package has loaded.
-  const [reviewTitle, setReviewTitle] = useState<{ packageId: string; title: string; revision: number | null } | null>(null);
   // The drawing set whose chats are open, named by the chat page once its chat has loaded (#1464).
   const [chatName, setChatName] = useState<{ packageId: string; name: string } | null>(null);
-  // Whether the open review's failed reading is restarting now (`reading.retrying`, #1249), so the
-  // sidebar's badge says the same as the review's header.
   // Bumped after a new review is created, so the sidebar lists it without a reload.
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
   const [documentPosition, setDocumentPosition] = useState(() => {
@@ -56,61 +48,31 @@ export default function App() {
     setDocumentPosition({ cursors, notice });
   }, []);
 
-  const packageId = route.page === 'review' ? route.packageId : null;
-  // The drawing set whose chats are open (#1464); the sidebar marks it like an open review.
+  // The drawing set whose chats are open (#1464); the sidebar marks it as the open set.
   const chatPackageId = route.page === 'chat' ? route.packageId : null;
-  const chatSetName =
-    chatPackageId !== null
-      ? chatName?.packageId === chatPackageId
-        ? chatName.name
-        : reviewTitle?.packageId === chatPackageId
-          ? reviewTitle.title
-          : null
-      : null;
-  const title =
-    packageId !== null
-      ? reviewTitle?.packageId === packageId
-        ? reviewTitle.title
-        : 'Review'
-      : chatPackageId !== null
-        ? chatSetName ?? PAGE_TITLES.chat
-        : PAGE_TITLES[route.page];
+  const chatSetName = chatPackageId !== null && chatName?.packageId === chatPackageId ? chatName.name : null;
+  const title = chatPackageId !== null ? chatSetName ?? PAGE_TITLES.chat : PAGE_TITLES[route.page];
 
   useEffect(() => {
     document.title = `${title} · GV Review`;
   }, [title]);
 
-  // Where you are: Documents › vendor › Revision N on a review, the page's own name elsewhere.
-  const revision = packageId !== null && reviewTitle?.packageId === packageId ? reviewTitle.revision : null;
+  // Where you are: Documents › the drawing set on a chat, the page's own name elsewhere.
   const crumbs: Crumb[] =
-    packageId !== null
-      ? [
-          { label: 'Documents', onSelect: () => go('documents') },
-          { label: title },
-          ...(revision !== null ? [{ label: `Revision ${revision}` }] : []),
-        ]
-      : chatPackageId !== null
-        ? [{ label: 'Documents', onSelect: () => go('documents') }, { label: title }]
-        : [{ label: title }];
+    chatPackageId !== null
+      ? [{ label: 'Documents', onSelect: () => go('documents') }, { label: title }]
+      : [{ label: title }];
 
   function go(page: Page) {
-    setEvidencePanel(null);
     navigate({ page, packageId: null });
   }
 
-  function openReview(id: string) {
-    setEvidencePanel(null);
-    navigate({ page: 'review', packageId: id });
-  }
-
   function newReview() {
-    setEvidencePanel(null);
     navigate({ page: 'review', packageId: null });
   }
 
   /** A drawing set's chats (#1464): its newest chat, or a new one. Where an upload lands. */
   function openChats(id: string) {
-    setEvidencePanel(null);
     navigate({ page: 'chat', packageId: id });
   }
 
@@ -140,17 +102,15 @@ export default function App() {
       title={title}
       crumbs={crumbs}
       activePage={route.page}
-      activePackage={packageId ?? chatPackageId}
+      activePackage={chatPackageId}
       theme={theme}
       sidebarRefreshKey={sidebarRefreshKey}
-      evidencePanel={evidencePanel}
       onNavigate={go}
       onOpenPackage={openChats}
-      onOpenReviewList={openReview}
       onNewReview={newReview}
       onToggleTheme={toggleTheme}
     >
-      {route.page === 'review' && packageId === null && (
+      {route.page === 'review' && (
         <WelcomePage
           onCreated={(id) => {
             setSidebarRefreshKey((key) => key + 1);
@@ -159,36 +119,10 @@ export default function App() {
           }}
           onOpenSaved={(id) => {
             setSidebarRefreshKey((key) => key + 1);
-            openReview(id);
+            openChats(id);
           }}
-          onOpenReview={openReview}
-        />
-      )}
-
-      {/* The simple review page (#1343) at #/review/<id>; the old tabs at #/review/<id>/advanced. */}
-      {route.page === 'review' && packageId !== null && !route.advanced && (
-        <SimpleReviewPage
-          key={packageId}
-          packageId={packageId}
-          onOpenAdvanced={() => navigate({ page: 'review', packageId, advanced: true })}
-          onOpenChat={() => openChats(packageId)}
-          onTitleChange={(vendor, revisionNumber) => setReviewTitle({ packageId, title: vendor, revision: revisionNumber })}
-          onPackageChanged={() => setSidebarRefreshKey((key) => key + 1)}
-        />
-      )}
-
-      {route.page === 'review' && packageId !== null && route.advanced && (
-        <AdvancedBanner onBack={() => navigate({ page: 'review', packageId })} />
-      )}
-
-      {route.page === 'review' && packageId !== null && route.advanced && (
-        <ReviewPage
-          key={packageId}
-          sessionId={packageId}
-          onEvidenceChange={setEvidencePanel}
-          onTitleChange={(vendor, revisionNumber) => setReviewTitle({ packageId, title: vendor, revision: revisionNumber })}
-          onBackToDocuments={() => go('documents')}
-          onPackageChanged={() => setSidebarRefreshKey((key) => key + 1)}
+          // "Continue a review" opens the drawing set's chat (decided 2026-10-28, the old review screens retired).
+          onOpenReview={openChats}
         />
       )}
 

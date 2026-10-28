@@ -303,8 +303,6 @@ export interface AssistantMessageProps {
    * shows on a finished answer with findings when this is given.
    */
   makeMarkupPdf?: (messageId: string) => Promise<ChatFile>;
-  /** Chat v2: where the evidence viewer's "Open in review screen" goes; left out when absent. */
-  fullPageHref?: string | null;
   /** #1717: the vendor's page picture (the set pack's, 100 dpi), for the evidence panel's boxed spot; results v2: another upload's page with `where`. */
   pagePicture?: PagePicture | null;
   /** Results v2: what each vendor page shows (the set pack), for the "By page" headings and the drawings request. */
@@ -334,7 +332,7 @@ export interface LiveStopControls {
   onAskStop: (open: boolean) => void;
 }
 
-export function AssistantMessage({ message, chatId, models, onReload, onRetry, onRunAnyway, onContinue, latest = false, makeMarkupPdf, fullPageHref, pagePicture = null, pageTitles = null, fullCheck = false, decide, remakeCloud, focusFindingId = null, liveStop = null }: AssistantMessageProps) {
+export function AssistantMessage({ message, chatId, models, onReload, onRetry, onRunAnyway, onContinue, latest = false, makeMarkupPdf, pagePicture = null, pageTitles = null, fullCheck = false, decide, remakeCloud, focusFindingId = null, liveStop = null }: AssistantMessageProps) {
   const running = message.status === 'running';
   // #1727: the live card while a full check runs (from the first moment: getting ready). An older
   // server that sends only `progress` keeps the one calm line instead.
@@ -603,7 +601,6 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
       onFilter={setFilter}
       onOpen={(finding) => setViewing(finding.id)}
       pictureUrl={pictureUrl}
-      fullPageHref={fullPageHref}
       decisionFor={decisionFor}
       narrow={narrow}
       ids={sectionIds}
@@ -712,7 +709,6 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           openId={viewing}
           onOpen={(id) => { if (id === null) setSteps(null); setViewing(id); }}
           pictureUrl={pictureUrl}
-          fullPageHref={resultShown ? null : fullPageHref}
           pagePicture={pagePicture}
           cloudAt={resultShown && made.cloud ? () => openHref(made.cloud!, made.cloud!.url || chatPaths.file(chatId, made.cloud!.id)) : null}
           decisionFor={resultShown ? decisionFor : null}
