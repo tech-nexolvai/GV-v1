@@ -59,6 +59,7 @@ from app.review.assistant.second_read import (
     READ_SCHEMA,
     SIDES,
     SecondRead,
+    kept_reply,
     parse_reply,
 )
 from app.review.assistant.untrusted import fence
@@ -322,9 +323,9 @@ def third_read(
     centred: bool = False,
     overall: bool = False,
 ) -> SecondRead:
-    """Ask the stronger model what is printed on the sharper crops (the reply read strictly, as
-    the second read's: anything but the asked-for JSON is a read of nothing). `centred`,
-    `overall`: what the question says (`question`)."""
+    """Ask the stronger model what is printed on the sharper crops (the reply read as the second
+    read's, `second_read.parse_reply`: the one asked-for JSON object, else a read of nothing; its
+    text kept on the read). `centred`, `overall`: what the question says (`question`)."""
     sides = tuple(side for side in SIDES if side in crops)
     if not sides:
         return SecondRead(architect=None, vendor=None, asked=())
@@ -340,9 +341,15 @@ def third_read(
     content.append(
         {"type": "text", "text": question(item, shown, centred=centred, overall=overall)}
     )
-    read = parse_reply(model_call(content))
+    reply = model_call(content)
+    read = parse_reply(reply)
     return SecondRead(
-        architect=read.architect, vendor=read.vendor, sure=read.sure, asked=sides, result="unsure"
+        architect=read.architect,
+        vendor=read.vendor,
+        sure=read.sure,
+        asked=sides,
+        result="unsure",
+        reply=kept_reply(reply),
     )
 
 
@@ -418,7 +425,8 @@ def decide(
 
 def reads_of(finding: Mapping[str, Any], second_model: str) -> tuple[Reading, Reading | None]:
     """The finding's own values (the first reading) and its second read as recorded. A second read
-    recorded `unsure` does not vote (it was not sure, or could not compare a side)."""
+    recorded `unsure` does not vote (it was not sure, or could not compare a side). Its reply's
+    text, where it was kept (`second_read_values.reply`), stays with it."""
     first = Reading(
         model=str(finding.get("created_by") or "lead"),
         architect=finding.get("architect") if isinstance(finding.get("architect"), str) else None,
@@ -430,12 +438,14 @@ def reads_of(finding: Mapping[str, Any], second_model: str) -> tuple[Reading, Re
     result = (finding.get("checks") or {}).get("second_read")
     if not isinstance(values, Mapping) or result not in ("agrees", "disagrees", "unsure"):
         return first, None
+    reply = values.get("reply")
     second = Reading(
         model=second_model,
         architect=values.get("architect") if isinstance(values.get("architect"), str) else None,
         vendor=values.get("vendor") if isinstance(values.get("vendor"), str) else None,
         sure=result != "unsure",
         role="second",
+        extra={"reply": kept_reply(reply)} if isinstance(reply, str) else {},
     )
     return first, second
 
@@ -473,6 +483,7 @@ def adjudicate(
         extra={
             "dpi": dpis[0] if dpis else None,
             "turned": any(crops[side].turned is not None for side in read.asked),
+            "reply": read.reply,
         },
     )
     outcome = decide(finding, second, third, read.asked)

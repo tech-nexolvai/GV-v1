@@ -2988,6 +2988,18 @@
             "title": "Model",
             "type": "string"
           },
+          "reply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A second or third reading's reply as the model wrote it, cut to 2000 characters (diagnosis only; its values are value_arch and value_vendor).",
+            "title": "Reply"
+          },
           "role": {
             "anyOf": [
               {
@@ -7181,6 +7193,18 @@
               }
             ],
             "title": "Architect"
+          },
+          "reply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reading's reply as the model wrote it, cut to 2000 characters (diagnosis only; its values are the two fields above).",
+            "title": "Reply"
           },
           "vendor": {
             "anyOf": [

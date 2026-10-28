@@ -2298,6 +2298,11 @@ export interface components {
             dpi?: number | null;
             /** Model */
             model: string;
+            /**
+             * Reply
+             * @description A second or third reading's reply as the model wrote it, cut to 2000 characters (diagnosis only; its values are value_arch and value_vendor).
+             */
+            reply?: string | null;
             /** Role */
             role?: ("first" | "second" | "third") | null;
             /**
@@ -4265,6 +4270,11 @@ export interface components {
         ChatSecondReadValuesOut: {
             /** Architect */
             architect?: string | null;
+            /**
+             * Reply
+             * @description The reading's reply as the model wrote it, cut to 2000 characters (diagnosis only; its values are the two fields above).
+             */
+            reply?: string | null;
             /** Vendor */
             vendor?: string | null;
         };

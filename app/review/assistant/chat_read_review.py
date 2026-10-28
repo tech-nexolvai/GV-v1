@@ -165,11 +165,14 @@ def _model_call(
     output_format: Mapping[str, Any] | None = None,
     thinking: bool = False,
     sized: bool = False,
+    enforce_format: bool = False,
 ) -> Callable[[list[dict[str, Any]]], str]:
     """One read-review call. `thinking`: adaptive thinking for a judgement (the critic, #1775 C4);
     off for copying a printed value (the second and third reads). `sized`: the call's estimate
     comes from what it really sends (`content_tokens`, at most `prompt_tokens`), so reads
-    running at once do not hold their worst case. What the call cost is charged to `budget`."""
+    running at once do not hold their worst case. `enforce_format`: `output_format` is enforced
+    on OpenRouter too (`chat_request.call_params`; the third read). What the call cost is charged
+    to `budget`."""
     model = BY_SHORT[short]
 
     def call(content: list[dict[str, Any]]) -> str:
@@ -188,6 +191,7 @@ def _model_call(
                 prompt_id=prompt_id,
                 display=None,
                 output_format=output_format,
+                **({"enforce_format": True} if enforce_format else {}),
             )
         finally:
             budget.release(held)
@@ -276,6 +280,7 @@ def third_read_job(
         prompt_id=_prompt_id(engine, "adjudicate"),
         output_format=getattr(module, "READ_SCHEMA", None),
         sized=True,
+        enforce_format=True,
     )
     pdf_paths = engine.book.pdf_paths()
 

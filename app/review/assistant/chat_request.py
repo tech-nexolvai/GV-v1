@@ -508,14 +508,19 @@ def call_params(
     max_tokens: int,
     context_management: Mapping[str, Any] | None = None,
     output_format: Mapping[str, Any] | None = None,
+    enforce_format: bool = False,
 ) -> dict[str, Any]:
     """The keyword arguments of one streamed call (`client.beta.messages.create(stream=True)` on
     Anthropic's API with a beta, else `client.messages.create(stream=True)`): everything that
     leaves the process apart from the key. `messages` already carry their pictures' bytes.
 
     `output_format`: a JSON schema the reply must follow (structured outputs). On Anthropic's own
-    API it goes in `output_config.format`, so the reply is that JSON and nothing else; OpenRouter's
-    route is not known to pass it through, so there the schema is added to the system prompt."""
+    API it goes in `output_config.format`, so the reply is that JSON and nothing else. On
+    OpenRouter the schema is added to the system prompt; with `enforce_format` it is also sent in
+    `output_config.format` (OpenRouter's Messages API takes it, and with `require_parameters` the
+    route only runs on a host that enforces it). Only the readings ask for that (2026-10-28: their
+    third reader wrapped its JSON in words on 30 of 48 calls of a real upload); every other call
+    with a schema is unchanged."""
     listed = [dict(tool) for tool in tools]
     if provider != "anthropic":
         # Tool search is Anthropic's: every tool goes loaded elsewhere.
@@ -547,7 +552,7 @@ def call_params(
     if not listed:
         # A call without tools (a finding's second read) sends neither field.
         del params["tools"], params["tool_choice"]
-    if output_format is not None and provider == "anthropic":
+    if output_format is not None and (provider == "anthropic" or enforce_format):
         params["output_config"]["format"] = {
             "type": "json_schema",
             "schema": json.loads(json.dumps(output_format)),
