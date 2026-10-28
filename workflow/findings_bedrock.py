@@ -3,6 +3,12 @@
 The model receives immutable finding facts and can call exactly one tool.  Local validation and the
 fidelity guard in ``workflow.findings_composer`` remain authoritative; a provider failure simply
 causes output generation to use the structured fallback.
+
+**No AWS credentials, no call.** A worker that cannot reach AWS (the live upload worker blocks it on
+purpose) used to try anyway on every upload, fail with `NoCredentialsError` and record a failed model
+call. Now the step looks for credentials first, the way botocore would, and when there are none it
+skips: no client, no call, no `model_invocations` row, and the findings keep their plain wording with
+the reason recorded as the composition's fallback reason.
 """
 
 from __future__ import annotations
@@ -33,7 +39,11 @@ from workflow.findings_composer import (
     narration_overview_context,
 )
 
-__all__ = ["BedrockFindingsComposer", "configured_findings_composer"]
+__all__ = [
+    "BedrockFindingsComposer",
+    "FindingsBedrockUnavailable",
+    "configured_findings_composer",
+]
 
 logger = logging.getLogger("gv.workflow.findings_bedrock")
 
@@ -81,6 +91,28 @@ class FindingsBedrockError(RuntimeError):
     """The provider could not return the single strict narration payload."""
 
 
+class FindingsBedrockUnavailable(FindingsBedrockError):
+    """The call was not made: this process has no AWS credentials to make it with."""
+
+
+def _missing_aws_credentials(config: NovaConfig) -> str | None:
+    """Why there is no call to make, or `None` when botocore finds credentials.
+
+    The same lookup botocore runs before it signs a request (environment, shared files, container,
+    instance metadata). It sends nothing to Bedrock. A lookup that itself fails is a reason too: the
+    call would have failed the same way.
+    """
+    try:
+        import boto3  # type: ignore[import-untyped]
+
+        credentials = boto3.session.Session(region_name=config.region_name).get_credentials()
+    except Exception as error:  # noqa: BLE001 - any lookup failure means no call can be made
+        return f"the AWS credentials could not be looked up ({type(error).__name__})"
+    if credentials is None:
+        return "no AWS credentials are available to this process"
+    return None
+
+
 class BedrockFindingsComposer:
     """One configured Bedrock call over a complete deterministic finding batch."""
 
@@ -112,7 +144,7 @@ class BedrockFindingsComposer:
     def _runtime_client(self) -> BedrockRuntimeClient:
         if self._client is not None:
             return self._client
-        import boto3  # type: ignore[import-untyped]
+        import boto3
         from botocore.config import Config  # type: ignore[import-untyped]
 
         transport = Config(
@@ -133,6 +165,12 @@ class BedrockFindingsComposer:
         forcing two protocols for one capability."""
         del question
         """Return provider output; the caller performs the deterministic fidelity checks."""
+        if self._client is None:
+            missing = _missing_aws_credentials(self._config)
+            if missing is not None:
+                raise FindingsBedrockUnavailable(
+                    f"skipped: {missing}, so the findings keep their plain wording"
+                )
         try:
             return self._attempt(findings, self._config.model_id)
         except Exception as error:
