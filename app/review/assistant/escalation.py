@@ -1977,7 +1977,7 @@ def _claims_step(
     notch, a unit count one sheet cannot settle, a wall outline taken for the top, a side splash
     taken for a mitred piece, which end on a unit drawn both ways round; then the look rules on
     the whole-drawing look's words-only claims (`look_rules`: GV's symbol, an unsure overlay, a
-    piece beside the unit, a claim to ask). Only ever withdraws an item or makes it Not compared
+    piece beside the unit, a claim to ask, a size the look added up itself). Only ever withdraws an item or makes it Not compared
     (a unit count that differs per type is kept, its reason naming the type); never red."""
     rules = import_module("app.review.assistant.claim_rules")
     open_items = [f for f in live if str(f["id"]) not in result.absorbed]

@@ -30,6 +30,14 @@ Likely problem.
    place are left as they were.
 4. **A claim to ask** (`look_question`): the look marked it to ask (`whole_look`: two differences
    in one claim, or a count of different things on the two sides): **Not compared**.
+5. **A size the look worked out** (`look_own_sum`, 2026-10-28): a size claim whose side with no
+   printed label code found gives a value the look added up or estimated itself (numbers joined
+   by "+", a chain or a sum, "about", "approx.", "~", a size by scale), not a size printed on that
+   drawing: **Not compared**. Code cannot check which parts such a sum adds or what it measures.
+   A real upload: the look added up a vendor height chain that ran past the counter to the top
+   of the splash and set its total against the architect's floor-to-counter height, a Likely
+   problem on a height that matches (the vendor prints the same height elsewhere); the look's own
+   instructions already say a size is named "as printed" and never invented.
 
 Pure code: no I/O, no AI call. Verification: `tests/review/assistant/test_look_rules.py` (made-up
 drawings and values).
@@ -48,6 +56,7 @@ __all__ = [
     "PIECE",
     "changes",
     "has_tag",
+    "own_sum",
 ]
 
 type Box = tuple[float, float, float, float]
@@ -83,6 +92,14 @@ _OVERLAY_WHY: Final = (
 _OVERLAY_NEEDS: Final = "the vendor's own drawing of {thing} without GV's markup"
 _PLACE_NEEDS: Final = "whether {thing} is part of this millwork unit"
 _ASK_NEEDS: Final = "each difference of {thing} checked on its own"
+_SUM_NEEDS: Final = "a size printed on both drawings for {thing}"
+#: A value the look worked out itself instead of reading it: numbers joined by "+" or "plus", a
+#: chain or a sum, or an estimate ("about", "approx.", "~", "roughly", a size by scale).
+_OWN_VALUE: Final = re.compile(
+    r"\d[^+]*\+\s*\[?\d|\bplus\b|\bchain\b|\bsum\b|\badds?\s+up\b"
+    r"|\babout\b|\bapprox|~|\broughly\b|\bscal(?:ed|es|ing)\b|\bby\s+scale\b|\bestimat",
+    re.IGNORECASE,
+)
 
 
 def _box(value: object) -> Box | None:
@@ -220,6 +237,30 @@ def _place(piece: Mapping[str, Any], phrases: ByPage) -> str | None:
     )
 
 
+# ---- 5. a size the look worked out ---------------------------------------------------------------
+
+
+def own_sum(finding: Mapping[str, Any]) -> str | None:
+    """Why a size claim's value is the look's own sum or estimate on a side with no printed label
+    code found (see the module), else `None`. A side with a label code found prints the look's
+    value (`whole_look._label` checks it), so only an unlabelled side is looked at."""
+    dims = finding.get("dims")
+    named = dims if isinstance(dims, Mapping) else {}
+    for side in ("vendor", "architect"):
+        if isinstance(named.get(side), Mapping):
+            continue
+        value = " ".join(str(finding.get(side) or "").split())
+        if not _OWN_VALUE.search(value):
+            continue
+        shown = value if len(value) <= 80 else f"{value[:79]}…"
+        whose = "vendor's" if side == "vendor" else "architect's"
+        return (
+            f"the {whose} value is the whole-drawing look's own sum or estimate ({shown}), not a "
+            f"size printed on the {whose} drawing, so code cannot check what it adds up or measures"
+        )
+    return None
+
+
 # ---- the step -------------------------------------------------------------------------------------
 
 
@@ -272,6 +313,12 @@ def changes(
         ask = " ".join(str(mark.get(ASK) or "").split())
         if ask:
             out.append((fid, claim_rules.Change("not_compared", "look_question", ask, _ASK_NEEDS)))
+            continue
+        summed = own_sum(finding) if kind == "size" else None
+        if summed is not None:
+            out.append(
+                (fid, claim_rules.Change("not_compared", "look_own_sum", summed, _SUM_NEEDS))
+            )
             continue
         if kind in ("missing_piece", "extra_piece"):
             piece = _piece(mark, main_file)

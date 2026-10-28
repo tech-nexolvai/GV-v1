@@ -97,6 +97,7 @@ type Rule = Literal[
     "unsure_overlay",
     "piece_place",
     "look_question",
+    "look_own_sum",
 ]
 type Box = tuple[float, float, float, float]
 #: (file, page, box) -> "wall", "top", or None when code cannot tell.
