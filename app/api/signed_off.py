@@ -143,40 +143,12 @@ for _dependency in (open_revision, open_revision_unlocked, open_session_revision
 EXEMPT_WRITES: Final[dict[tuple[str, str], str]] = {
     (
         "POST",
-        "/api/v1/projects/{project_id}/packages/{package_id}/revisions",
-    ): "starting a new revision is the way to change a closed review (#1180)",
-    (
-        "POST",
-        "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/approve",
-    ): "approval is the sign-off itself; it requires AWAITING_REVIEW already",
-    (
-        "POST",
-        "/api/v1/projects/{project_id}/packages/{package_id}/signed-exports",
-    ): "publishes the frozen record of a signed-off review; it requires APPROVED",
-    (
-        "POST",
-        "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/complete",
-    ): "ends a sitting; records no input or decision",
-    (
-        "POST",
         "/api/v1/projects/{project_id}/packages/{package_id}/documents",
     ): "assembly only; refuses a closed revision after its own update lock (ensure_revision_writable)",
     (
         "POST",
         "/api/v1/projects/{project_id}/packages/{package_id}/extract",
     ): "assembly only; refuses a closed revision after its own update lock (ensure_revision_writable)",
-    (
-        "POST",
-        "/api/v1/projects/{project_id}/packages/{package_id}/pages/pictures",
-    ): "renders page pictures from immutable drawings; a signed export may need them",
-    (
-        "POST",
-        "/api/v1/projects/{project_id}/packages/{package_id}/parts/page-pictures",
-    ): "cuts part pictures from immutable drawings; records no input or decision",
-    (
-        "POST",
-        "/api/v1/projects/{project_id}/packages/{package_id}/assistant/stream",
-    ): "answers a question from the records; writes no input or decision",
     (
         "POST",
         "/api/v1/packages/{package_id}/chats",

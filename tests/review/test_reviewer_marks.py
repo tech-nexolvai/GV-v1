@@ -42,7 +42,7 @@ from app.models.evidence import (
 from app.models.review import Approval, ApprovedFinding, ReviewAction, ReviewSession
 from app.models.signed_exports import ApprovalExportSnapshot
 from app.review.ledger import record_correction
-from app.review.review_item_actions import CHECKED_WRONG_NOTE
+from app.review.signed_record import CHECKED_WRONG_NOTE
 from app.review.reviewer_marks import (
     FrozenReviewerMarks,
     initials,

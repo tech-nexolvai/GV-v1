@@ -144,11 +144,8 @@ def test_checked_by_hand_wrong_prints_wrong_never_ok_or_accepted(outcome: str) -
     """A person's "checked by hand: wrong" (#1358) is a DISMISS with the one shared note: printed as
     WRONG, a problem for the vendor, with the recorded check unchanged; and marked for the cloud PDF
     without matching its words."""
-    from app.review.review_item_actions import FINDING_ANSWERS
     from app.review.signed_record import CHECKED_WRONG_NOTE
 
-    kind, note = FINDING_ANSWERS["checked_wrong"]
-    assert (kind.value, note) == ("dismiss", CHECKED_WRONG_NOTE)
     wrong = ReviewDisposition(
         action_id=uuid4(),
         action="dismiss",
