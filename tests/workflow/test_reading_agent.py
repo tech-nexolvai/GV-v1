@@ -29,7 +29,7 @@ from app.models import ObservationCandidate
 from app.models.runs import ExtractionRun
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.coordinates import ImagePoint, StoredPoint
-from evidence.crop import RenderedPage, decode_rgb_png
+from evidence.crop import RenderedPage, crop_box_px, decode_rgb_png
 from evidence.polygon import Polygon
 from extraction.agent.tools import RefineCropArguments, Refinement
 from extraction.glyph_bands import FractionLayout
@@ -54,7 +54,6 @@ from workflow.reading_agent import (
     READING_AGENT_ENV,
     ReadingAgentSettings,
     RegionCrops,
-    crop_box_px,
     reading_agent_from_environment,
 )
 from workflow.stages import VISION_CROP_CONTEXT_MARGIN_PT, DatabaseStages

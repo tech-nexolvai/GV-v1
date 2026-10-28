@@ -30,8 +30,8 @@ from app.models.runs import ExtractionRun
 from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
 from evidence.crop import RenderedPage
 from evidence.polygon import Polygon
-from extraction.agent.geometry import LabelReach
 from extraction.annotations import PathSegment, SegmentKind, VectorPath
+from extraction.geometry.labels import LabelReach
 from extraction.ocr import OcrItem
 from storage.local import LocalStore
 from tests.extraction.test_reader import MISSING_SPACE

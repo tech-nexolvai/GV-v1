@@ -41,7 +41,10 @@ characters side by side. That costs readings, and is meant to.
 **Nothing here has a default.** Both gathering lengths and the run gap are the deployment's to
 state, and all of them are in `LabelReach.config_hash`.
 
-Source: issues #757, #918 · Verification: `tests/extraction/agent/test_geometry.py`
+Moved here from `extraction/agent/geometry.py`: the agreement gate's guards and the placing of AI readings
+use it, not only the reading agent.
+
+Source: issues #757, #918 · Verification: `tests/extraction/geometry/test_labels.py`
 """
 
 from __future__ import annotations
@@ -62,6 +65,7 @@ __all__ = [
     "Box",
     "LabelDirection",
     "LabelGeometry",
+    "LabelLengths",
     "LabelReach",
     "label_direction",
     "label_geometry",
@@ -103,6 +107,25 @@ class LabelReach:
             f"label_gap_pt={self.label_gap_pt};maximum_label_pt={self.maximum_label_pt};"
             f"glyph_gap_pt={self.glyph_gap_pt}"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class LabelLengths:
+    """The two lengths a label is gathered by, as a deployment states them. None has a default.
+
+    The run gap is not one of them: it is the association settings' own (`LabelReach.glyph_gap_pt`).
+    """
+
+    label_gap_pt: Decimal
+    maximum_label_pt: Decimal
+
+    def __post_init__(self) -> None:
+        # Checked now, by the rule `LabelReach` checks every length by.
+        self.reach(Decimal(1))
+
+    def reach(self, glyph_gap_pt: Decimal) -> LabelReach:
+        """How a label is gathered, with the run gap the page's regions were formed by."""
+        return LabelReach(self.label_gap_pt, self.maximum_label_pt, glyph_gap_pt)
 
 
 @dataclass(frozen=True, slots=True)

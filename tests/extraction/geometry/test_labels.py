@@ -1,6 +1,6 @@
 """Whether a crop cut a label off, and which way the label runs, from the file's paths (#757, #918).
 
-Verification for: `extraction/agent/geometry.py`.
+Verification for: `extraction/geometry/labels.py`.
 
 The one that matters most is `test_a_crop_that_cuts_the_first_digit_off_is_cut`: the #641 failure —
 a three-digit label cropped to its last two — seen from the paths alone, before any reader looks.
@@ -15,7 +15,8 @@ from decimal import Decimal
 
 import pytest
 
-from extraction.agent.geometry import (
+from extraction.annotations import VectorPath
+from extraction.geometry.labels import (
     BOTH_WAYS,
     NO_PATHS,
     NO_RUN,
@@ -25,7 +26,6 @@ from extraction.agent.geometry import (
     label_direction,
     label_geometry,
 )
-from extraction.annotations import VectorPath
 from tests.extraction.test_glyph_reader import _fraction, _row, _turned
 
 REACH = LabelReach(label_gap_pt=Decimal(4), maximum_label_pt=Decimal(80), glyph_gap_pt=Decimal(4))

@@ -377,6 +377,17 @@ def crop_pixel_box(
     return pixel_box(rendered.width_px, rendered.height_px, spec)
 
 
+def crop_box_px(
+    rendered: RenderedPage, polygon: Polygon, margin_pt: Decimal
+) -> tuple[int, int, int, int]:
+    """The page pixels a crop of `polygon`, `margin_pt` round it, is cut from at `rendered`'s
+    resolution: `crop_pixel_box` for a polygon crop. Moved here from the reading agent (#757),
+    because the agreement gate's guards cut by it too."""
+    return crop_pixel_box(
+        rendered, CropSpec(polygon=polygon, context_margin_pt=margin_pt, dpi=rendered.dpi)
+    )
+
+
 def pixel_box(
     width_px: int, height_px: int, spec: CropSpec | BoxCropSpec
 ) -> tuple[int, int, int, int]:
