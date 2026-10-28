@@ -11,8 +11,8 @@ in `model_invocations`. Nova supports tools, so this is the first exercise of `n
 **It costs money, so it is small and it is counted.** Two live calls, and both print their token
 usage. Everything else here is arithmetic and scripted clients.
 
-**It skips rather than fails when there is nothing to talk to**, exactly as the Ollama smoke test
-skips without `GV_OPENMODEL_ID` and the database tests skip without `DATABASE_URL`. Three things
+**It skips rather than fails when there is nothing to talk to**, exactly as the database tests
+skip without `DATABASE_URL`. Three things
 have to be true — credentials resolve, a database is reachable, and boto3 is installed — and a test
 that passed while none of them held would be worse than one that says it did not run.
 
