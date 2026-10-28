@@ -177,47 +177,6 @@ def test_the_worker_refuses_to_guess_the_turned_aspect(monkeypatch: pytest.Monke
 
 
 # ---------------------------------------------------------------------------
-# Stacked fractions read piece by piece, on in the demo (#875)
-# ---------------------------------------------------------------------------
-
-
-def test_the_demo_worker_reads_stacked_fractions_piece_by_piece(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """**On in the demo, at the sizes #848 measured** (the admin's decision of 2026-10-03, on #756).
-    Built the way the worker builds it, from what the demo's worker block states — and with the gate
-    reader stated too, because the route's second reader is that reader and it refuses to start
-    without one (#865)."""
-    from workflow.stages import FRACTION_PARTS_ENV, fraction_parts_from_environment
-
-    demo = (Path(__file__).resolve().parents[2] / "scripts" / "demo.sh").read_text(encoding="utf-8")
-    worker_block = demo[: demo.index("scripts/drain_outbox.py --watch")]
-    stated = dict(
-        re.findall(
-            r"^(GV_FRACTION_PARTS[A-Z0-9_]*|GV_VISION_GATE_READER)=(\S+) \\$",
-            worker_block,
-            flags=re.MULTILINE,
-        )
-    )
-    for name in list(os.environ):
-        if name.startswith(FRACTION_PARTS_ENV):
-            monkeypatch.delenv(name)
-    for name, value in stated.items():
-        monkeypatch.setenv(name, value)
-
-    drawing = fraction_parts_from_environment()
-
-    assert drawing is not None, "the demo does not switch the fraction-parts route on"
-    assert (drawing.height_px, drawing.stroke_px, drawing.margin_px, drawing.bezier_steps) == (
-        40,
-        4,
-        32,
-        8,
-    )
-    assert stated.get("GV_VISION_GATE_READER"), "the route's second reader is not stated"
-
-
-# ---------------------------------------------------------------------------
 # Every suggested part's picture (#897)
 # ---------------------------------------------------------------------------
 
@@ -375,7 +334,7 @@ def test_the_worker_refuses_to_guess_the_missing_space_setting(
 
 
 # ---------------------------------------------------------------------------
-# The reader pair, Qwen3-VL + Nova 2 Lite, on in the demo (#907)
+# The label lengths the cut-label guard is stated with, in the demo (#919)
 # ---------------------------------------------------------------------------
 
 
@@ -386,189 +345,55 @@ def _demo_worker_settings(*names: str) -> dict[str, str]:
     return dict(re.findall(rf"^({pattern})=(\S+) \\$", worker_block, flags=re.MULTILINE))
 
 
-def test_demo_reading_agent_has_no_escalation_reader() -> None:
-    stated = _demo_worker_settings("GV_AGENT_MAX_ESCALATIONS", "GV_AGENT_ESCALATION_READER")
+def test_the_demo_worker_states_the_label_lengths_the_reading_agent_had(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**The same 4 and 40 pt as before.** The demo's reading agent stated them; it was retired with
+    the label-first route (2026-10-28), and the cut-label guard now takes them on their own. Built the
+    way the worker builds them, from what the demo's worker block states."""
+    from decimal import Decimal
 
-    assert stated["GV_AGENT_MAX_ESCALATIONS"] == "0"
-    assert "GV_AGENT_ESCALATION_READER" not in stated
+    from extraction.geometry.labels import LabelLengths
+    from workflow.stages import LABEL_LENGTH_SETTINGS, label_lengths_from_environment
+
+    stated = _demo_worker_settings(*LABEL_LENGTH_SETTINGS)
+    assert stated == {"GV_LABEL_GAP_PT": "4", "GV_MAX_LABEL_PT": "40"}
+    for name, value in stated.items():
+        monkeypatch.setenv(name, value)
+
+    assert label_lengths_from_environment() == LabelLengths(Decimal(4), Decimal(40))
 
 
-def test_the_demo_worker_runs_the_new_pair_with_qwen_first(monkeypatch: pytest.MonkeyPatch) -> None:
-    """**On in the demo** (the admin's decision of 2026-10-04, after the production measurement):
-    the worker names Qwen3-VL and Nova 2 Lite as the trial measured it, Qwen reads first (#787),
-    and Nova's sharper picture is rendered at the stated 900 dpi. Built the way the worker builds
-    its stages, from what the demo's worker block states — they start, so nothing is missing."""
-    from extraction.models.nova import (
-        NOVA_2_LITE_TAUGHT_EXTRACTOR,
-        QWEN3_VL_235B_EXTRACTOR,
-        AnswerFormat,
-        ReaderPicture,
-    )
-    from workflow.reader_pictures import PictureSettings, picture_settings_from_environment
-    from workflow.stages import (
-        DatabaseStages,
-        configured_vision_readers_from_environment,
-        fraction_parts_from_environment,
-    )
-
-    stated = _demo_worker_settings(
+def test_the_demo_worker_turns_on_no_retired_reader() -> None:
+    """The label-first route's switches are gone from the demo's worker block (2026-10-28)."""
+    retired = (
         "GV_BEDROCK_VISION_ENABLED",
         "GV_BEDROCK_VISION_READERS",
         "GV_VISION_GATE_READER",
         "GV_VISION_SHARPER_PICTURE_DPI",
-        "GV_FRACTION_PARTS",
-        "GV_FRACTION_PARTS_HEIGHT_PX",
-        "GV_FRACTION_PARTS_STROKE_PX",
-        "GV_FRACTION_PARTS_MARGIN_PX",
-        "GV_FRACTION_PARTS_BEZIER_STEPS",
-    )
-    for name, value in stated.items():
-        monkeypatch.setenv(name, value)
-
-    assert stated["GV_BEDROCK_VISION_READERS"] == "qwen3-vl-235b,nova-2-lite-taught"
-    assert stated["GV_VISION_GATE_READER"] == QWEN3_VL_235B_EXTRACTOR
-    assert picture_settings_from_environment() == PictureSettings(sharper_dpi=900)
-    readers = configured_vision_readers_from_environment()
-    by_name = {reader.config.extractor: reader.config for reader in readers}
-    assert set(by_name) == {QWEN3_VL_235B_EXTRACTOR, NOVA_2_LITE_TAUGHT_EXTRACTOR}
-    assert by_name[QWEN3_VL_235B_EXTRACTOR].answer_format is AnswerFormat.JSON_SCHEMA
-    assert by_name[NOVA_2_LITE_TAUGHT_EXTRACTOR].picture is ReaderPicture.UPRIGHT_SHARPER
-    DatabaseStages(
-        None,
-        vision_readers=readers,
-        vision_gate=stated["GV_VISION_GATE_READER"],
-        reader_pictures=picture_settings_from_environment(),
-    )
-    assert (
-        fraction_parts_from_environment() is not None
-    ), "the stacked route's second reader is Qwen"
-
-
-def test_the_demo_worker_without_the_sharper_dpi_would_not_start(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The control: the same readers with the dpi left out are refused, never given a default."""
-    from workflow.reader_pictures import SHARPER_PICTURE_DPI_ENV, picture_settings_from_environment
-    from workflow.stages import DatabaseStages, configured_vision_readers_from_environment
-
-    stated = _demo_worker_settings("GV_BEDROCK_VISION_ENABLED", "GV_BEDROCK_VISION_READERS")
-    for name, value in stated.items():
-        monkeypatch.setenv(name, value)
-    monkeypatch.delenv(SHARPER_PICTURE_DPI_ENV, raising=False)
-
-    with pytest.raises(ValueError, match=SHARPER_PICTURE_DPI_ENV):
-        DatabaseStages(
-            None,
-            vision_readers=configured_vision_readers_from_environment(),
-            reader_pictures=picture_settings_from_environment(),
-        )
-
-
-def test_every_vision_run_identity_fits_its_column_on_the_demo_s_settings(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """**A run's identity is 200 characters at most** (`extraction_runs.config_hash`). Written
-    out, the demo's settings, a gate and an upright, sharper picture ran past it — 262 characters,
-    which the database would have refused on the first page the demo read. Every defined reader,
-    gated or not, on the settings the demo's worker block states, fits; so do the runs that read
-    the file's own text, which carry the reader's missing-space setting too (#912)."""
-    import scripts.drain_outbox as worker
-    from app.models import ExtractionRun
-    from extraction.models.nova import (
-        VISION_READERS,
-        ReaderPicture,
-        vision_config_for_extractor,
-    )
-    from workflow.reader_pictures import picture_settings_from_environment
-    from workflow.reading_agent import reading_agent_from_environment
-    from workflow.stages import (
-        RUN_IDENTITY_CHARACTERS,
-        BedrockVisionReader,
-        DatabaseStages,
-        missing_space_from_environment,
-    )
-
-    _demo_reader_environment(monkeypatch)
-    for name, value in _demo_worker_settings(
-        "GV_VISION_SHARPER_PICTURE_DPI",
         "GV_READING_AGENT",
-        "GV_AGENT_MAX_STEPS",
-        "GV_AGENT_MAX_ESCALATIONS",
-        "GV_AGENT_SHARPER_DPI",
-        "GV_AGENT_PRIMARY_READER",
-        "GV_AGENT_ESCALATION_READER",
-        "GV_AGENT_LABEL_GAP_PT",
-        "GV_AGENT_MAX_LABEL_PT",
-    ).items():
-        monkeypatch.setenv(name, value)
-    association, localized = worker._reader_configuration()
-    assert association is not None
-    readers = []
-    for definition in VISION_READERS:
-        config = vision_config_for_extractor(definition.extractor)
-        if config is not None:
-            readers.append(BedrockVisionReader(config))
-    assert any(reader.config.picture is ReaderPicture.UPRIGHT_SHARPER for reader in readers)
-    stages = DatabaseStages(
-        None,
-        association=association,  # type: ignore[arg-type]
-        localized_ocr=localized,  # type: ignore[arg-type]
-        vision_readers=readers,
-        reading_agent=reading_agent_from_environment(),
-        reader_pictures=picture_settings_from_environment(),
-        missing_space=missing_space_from_environment(),
+        "GV_FRACTION_PARTS",
     )
-    limit = ExtractionRun.__table__.c.config_hash.type.length
-    assert stages._text_run_config() == "dpi=300;missing_space>=0.1"
-    assert limit == RUN_IDENTITY_CHARACTERS
-    longest_gate = max((reader.config.extractor for reader in readers), key=len)
 
-    for reader in readers:
-        for gate in (None, longest_gate):
-            identity = stages._vision_run_config(reader, gate=gate)
-            assert len(identity) <= limit, (reader.config.extractor, gate, len(identity))
-            assert identity.startswith("dpi=300;route=vision;")
-            if reader.config.picture is ReaderPicture.UPRIGHT_SHARPER:
-                assert "picture=upright_sharper;sharper_picture_dpi=900;run=" in identity
-            else:
-                assert "picture=" not in identity
-        if reader.config.picture is ReaderPicture.AS_CUT:
-            # Unchanged from before #907 where it fits: written out, so old runs are found again.
-            assert "fraction_bar=" in stages._vision_run_config(reader, gate=None)
-    sharper = next(r for r in readers if r.config.picture is ReaderPicture.UPRIGHT_SHARPER)
-    assert stages._vision_run_config(sharper, gate=None) != stages._vision_run_config(
-        sharper, gate=longest_gate
-    ), "a gated reader's run is another run, whatever its picture"
+    assert _demo_worker_settings(*retired) == {}
 
 
 def test_every_run_identity_fits_its_column_whatever_the_missing_space_setting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """**#907's identities and #912's setting together.** The setting is part of every run that
-    reads the file's own text, and of the fingerprint of a reader shown an upright, sharper picture,
-    whose turn reads that text. Stated with digits enough to run past the column, a text run's
-    identity is a fingerprint instead, never cut short; another value is always another run; and a
-    reader shown the crop as cut keeps the identity it had, which the setting does not touch."""
+    """**#912's setting in every run that reads the file's own text.** Stated with digits enough to
+    run past the column, a text run's identity is a fingerprint instead, never cut short; another
+    value is always another run. (The vision readers' identities were checked here too until they
+    were retired with the label-first route, 2026-10-28.)"""
     from decimal import Decimal
 
     import scripts.drain_outbox as worker
     from app.models import ExtractionRun
-    from extraction.models.nova import VISION_READERS, ReaderPicture, vision_config_for_extractor
     from extraction.reader import MissingSpace
-    from workflow.reader_pictures import picture_settings_from_environment
-    from workflow.stages import BedrockVisionReader, DatabaseStages
+    from workflow.stages import DatabaseStages
 
     _demo_reader_environment(monkeypatch)
-    monkeypatch.setenv(
-        "GV_VISION_SHARPER_PICTURE_DPI",
-        _demo_worker_settings("GV_VISION_SHARPER_PICTURE_DPI")["GV_VISION_SHARPER_PICTURE_DPI"],
-    )
     association, localized = worker._reader_configuration()
-    readers = [
-        BedrockVisionReader(config)
-        for definition in VISION_READERS
-        if (config := vision_config_for_extractor(definition.extractor)) is not None
-    ]
     limit = ExtractionRun.__table__.c.config_hash.type.length
 
     def stages(gap_heights: str) -> DatabaseStages:
@@ -576,30 +401,18 @@ def test_every_run_identity_fits_its_column_whatever_the_missing_space_setting(
             None,
             association=association,  # type: ignore[arg-type]
             localized_ocr=localized,  # type: ignore[arg-type]
-            vision_readers=readers,
-            reader_pictures=picture_settings_from_environment(),
             missing_space=MissingSpace(gap_heights=Decimal(gap_heights)),
         )
 
     demo, other, long = stages("0.1"), stages("0.12"), stages("0." + "1" * 300)
     identities = {
-        name: (
-            built._text_run_config(),
-            {r: built._vision_run_config(r, gate=None) for r in readers},
-        )
+        name: built._text_run_config()
         for name, built in (("demo", demo), ("other", other), ("long", long))
     }
-    for text, vision in identities.values():
+    for text in identities.values():
         assert len(text) <= limit
-        assert all(len(identity) <= limit for identity in vision.values())
-    assert identities["long"][0].startswith("dpi=300;run=")
-    assert len({text for text, _ in identities.values()}) == 3, "another value is another run"
-    for reader in readers:
-        seen = {vision[reader] for _, vision in identities.values()}
-        if reader.config.picture is ReaderPicture.UPRIGHT_SHARPER:
-            assert len(seen) == 3, "the turn reads the text the setting decides"
-        else:
-            assert len(seen) == 1, "a reader shown the crop as cut keeps its identity"
+    assert identities["long"].startswith("dpi=300;run=")
+    assert len(set(identities.values())) == 3, "another value is another run"
 
 
 # ---------------------------------------------------------------------------

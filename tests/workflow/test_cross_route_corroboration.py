@@ -1,4 +1,13 @@
-"""Cross-route second-reader wiring for issue #622."""
+"""Cross-route second-reader wiring for issue #622.
+
+Verification for: `DatabaseStages._apply_cross_route_corroboration`, the agreement gate every page's
+readings go through.
+
+**Since 2026-10-28** the second route here is a reading recorded beside the drawing's own, as the
+gate receives one, not a scripted vision reader inside `extract_pages`: the vision readers were
+retired with the label-first route. What the gate decides is unchanged, and so is every outcome
+below.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +15,8 @@ import hashlib
 import io
 import tempfile
 from collections.abc import Iterator
-from dataclasses import dataclass
 from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 from uuid import uuid4
 
@@ -32,20 +41,9 @@ from app.models import (
     SourceArtifact,
 )
 from app.models.runs import TaskRun, WorkflowRun
-from evidence.candidate import ObservationCandidate as DomainCandidate
-from evidence.coordinates import ImagePoint
-from extraction.models.context import AssembledContext
-from extraction.models.nova import (
-    NovaConfig,
-    NovaInvocation,
-    NovaInvocationOutcome,
-    NovaRequest,
-)
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import MISSING_SPACE, _pdf
-from tests.workflow.test_cut_label_guard import stated_geometry
-from units.measurement import Unit
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import DatabaseStages, _AgreementGuard, _MixedFractionGuard
@@ -137,66 +135,6 @@ def _revision(session: Session, store: LocalStore, data: bytes | None = None) ->
     return revision
 
 
-@dataclass(frozen=True, slots=True)
-class _Reader:
-    config: NovaConfig
-    reading: str = '24"'
-    confidence: Decimal | None = None
-
-    def extract(self, request: NovaRequest, recorder: object) -> DomainCandidate:
-        recorder.record(  # type: ignore[attr-defined]
-            NovaInvocation(
-                model_id=self.config.model_id,
-                prompt_id=self.config.prompt_id,
-                template_id=self.config.template_id,
-                attempt=1,
-                latency_ms=1,
-                input_tokens=10,
-                output_tokens=2,
-                outcome=NovaInvocationOutcome.OK,
-                request_id=f"request-{self.config.extractor}",
-                context=AssembledContext(nearby_text=(), nearby_geometry=()),
-                bound_pt=Decimal(9),
-                injection_attempts=(),
-            )
-        )
-        return DomainCandidate(
-            candidate_id=request.candidate_id,
-            extractor=self.config.extractor,
-            extractor_version=self.config.model_id,
-            raw_text=self.reading,
-            parsed_value=None,
-            unit_guess=Unit.INCH,
-            semantic_guess=None,
-            page=request.page,
-            polygon=(ImagePoint(0, 0), ImagePoint(1, 0), ImagePoint(1, 1)),
-            confidence=self.confidence,
-            ambiguity_flags=(),
-        )
-
-
-def _reader(
-    extractor: str,
-    model_id: str,
-    *,
-    reading: str = '24"',
-    confidence: Decimal | None = None,
-) -> _Reader:
-    return _Reader(
-        NovaConfig(
-            model_id=model_id,
-            prompt_id="dimension-reader-v1",
-            template_id="bounded-crop-v1",
-            connect_timeout_seconds=1,
-            read_timeout_seconds=1,
-            max_attempts=1,
-            extractor=extractor,
-        ),
-        reading=reading,
-        confidence=confidence,
-    )
-
-
 def _candidate_runs(session: Session) -> list[tuple[ObservationCandidate, ExtractionRun]]:
     rows = session.execute(
         select(ObservationCandidate, ExtractionRun)
@@ -206,21 +144,92 @@ def _candidate_runs(session: Session) -> list[tuple[ObservationCandidate, Extrac
     return [(candidate, run) for candidate, run in rows]
 
 
+class _HoldsNothingBack(_AgreementGuard):
+    """A guard that lets every agreement through, so only `corroborate` decides here."""
+
+    def _reason(self, region: ObservationCandidate) -> str | None:
+        del region
+        return None
+
+
+def _two_routes(
+    session: Session,
+    store: LocalStore,
+    *,
+    extractor: str,
+    version: str,
+    label: str = '24"',
+    reading: str = '24"',
+    inches: Fraction | int = 24,
+    confidence: Decimal | None = None,
+    mixed_fraction: _MixedFractionGuard | None = None,
+) -> list[tuple[ObservationCandidate, ExtractionRun]]:
+    """The drawing's own `label` and a second route's `reading` of the same region, through the gate.
+
+    Both readings are new, as the gate receives a page's readings: the drawing's under the vector
+    reader's run, the other under `extractor`'s. Returns them with their runs.
+    """
+    revision = _revision(
+        session, store, data=_drawing(f"BT /F1 10 Tf 1 0 0 1 20 70 Tm ({label}) Tj ET\n".encode())
+    )
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
+    read = session.execute(select(ObservationCandidate)).scalars().one()
+    first = session.get(ExtractionRun, read.extraction_run_id)
+    assert first is not None
+    second = open_extraction_run(
+        session,
+        task_run_id=first.task_run_id,
+        extractor=extractor,
+        extractor_version=version,
+        config_hash="test",
+        dpi=first.dpi,
+    )
+    rows = [
+        (
+            ObservationCandidate(
+                document_version_id=read.document_version_id,
+                page_id=read.page_id,
+                extraction_run_id=run.id,
+                raw_text=text,
+                value_numerator=Fraction(value).numerator,
+                value_denominator=Fraction(value).denominator,
+                unit="in",
+                unit_guess="in",
+                semantic_guess=None,
+                polygon=[list(point) for point in read.polygon],
+                coordinate_space="image",
+                confidence=certainty,
+                ambiguity_flags=[],
+            ),
+            run,
+        )
+        for run, text, value, certainty in (
+            (
+                first,
+                read.raw_text,
+                Fraction(read.value_numerator, read.value_denominator),
+                read.confidence,
+            ),
+            (second, reading, inches, confidence),
+        )
+    ]
+    session.add_all(row for row, _ in rows)
+    DatabaseStages._apply_cross_route_corroboration(
+        session,
+        page_index=0,
+        candidates=[row for row, _ in rows],
+        gv_mark=_HoldsNothingBack(),  # type: ignore[arg-type]
+        cut_label=_HoldsNothingBack(),  # type: ignore[arg-type]
+        mixed_fraction=_MixedFractionGuard() if mixed_fraction is None else mixed_fraction,
+    )
+    return rows
+
+
 def test_two_routes_agreeing_on_one_region_get_the_second_reader_lane(
     session: Session, store: LocalStore
 ) -> None:
-    revision = _revision(session, store)
+    rows = _two_routes(session, store, extractor="bedrock-nova-pro", version="amazon.nova-pro-v1:0")
 
-    DatabaseStages(
-        store,
-        vision_readers=(_reader("bedrock-nova-pro", "amazon.nova-pro-v1:0"),),
-        missing_space=MISSING_SPACE,
-        # The drawing's geometry stated: without it nothing rules out that the reader's crop cut
-        # the label, and the agreement is not confirmed (#919).
-        **stated_geometry("bedrock-nova-pro"),  # type: ignore[arg-type]
-    ).extract_pages(session, revision.id)
-
-    rows = _candidate_runs(session)
     assert {run.extractor for _, run in rows} == {"pdfplumber", "bedrock-nova-pro"}
     assert {row.raw_text for row, _ in rows} == {'24"'}
     assert all(row.corroboration_status == "RAW_CANDIDATE" for row, _ in rows)
@@ -230,22 +239,16 @@ def test_two_routes_agreeing_on_one_region_get_the_second_reader_lane(
 def test_two_routes_disagreeing_on_one_region_become_conflicting_without_a_winner(
     session: Session, store: LocalStore
 ) -> None:
-    revision = _revision(session, store)
-
-    DatabaseStages(
+    rows = _two_routes(
+        session,
         store,
-        vision_readers=(
-            _reader(
-                "bedrock-nova-pro",
-                "amazon.nova-pro-v1:0",
-                reading='25"',
-                confidence=Decimal("0.99"),
-            ),
-        ),
-        missing_space=MISSING_SPACE,
-    ).extract_pages(session, revision.id)
+        extractor="bedrock-nova-pro",
+        version="amazon.nova-pro-v1:0",
+        reading='25"',
+        inches=25,
+        confidence=Decimal("0.99"),
+    )
 
-    rows = _candidate_runs(session)
     assert {row.raw_text for row, _ in rows} == {'24"', '25"'}
     assert all(row.corroboration_status == "CONFLICTING" for row, _ in rows)
     assert all(row.corroboration_lane == "SECOND_READER" for row, _ in rows)
@@ -267,16 +270,10 @@ def test_single_route_region_keeps_no_corroboration_lane(
 def test_two_versions_of_the_same_extractor_do_not_count_as_independent(
     session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    revision = _revision(session, store)
     monkeypatch.setattr("workflow.stages.EXTRACTOR", "same-reader")
 
-    DatabaseStages(
-        store,
-        vision_readers=(_reader("same-reader", "same-reader/v2"),),
-        missing_space=MISSING_SPACE,
-    ).extract_pages(session, revision.id)
+    rows = _two_routes(session, store, extractor="same-reader", version="same-reader/v2")
 
-    rows = _candidate_runs(session)
     assert {run.extractor for _, run in rows} == {"same-reader"}
     assert all(row.raw_text == '24"' for row, _ in rows)
     assert all(row.corroboration_status is None for row, _ in rows)
@@ -286,14 +283,6 @@ def test_two_versions_of_the_same_extractor_do_not_count_as_independent(
 # ---------------------------------------------------------------------------
 # A reading with no value abstains (#924)
 # ---------------------------------------------------------------------------
-
-
-class _HoldsNothingBack(_AgreementGuard):
-    """A guard that lets every agreement through, so only `corroborate` decides here."""
-
-    def _reason(self, region: ObservationCandidate) -> str | None:
-        del region
-        return None
 
 
 AGREED = ((10, 10), (20, 10), (20, 20), (10, 20))

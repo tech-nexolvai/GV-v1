@@ -74,11 +74,13 @@ cannot acquire verdict authority.
 
 **Control (§16):** Maximum steps, call budget and mandatory abstention.
 **Status:** ENFORCED
-**Refs:** module:extraction/agent/graph.py, module:app/budget/ceiling.py, module:workflow/ai_budget.py, module:extraction/slot_reader/stop.py
+**Refs:** module:app/budget/ceiling.py, module:workflow/ai_budget.py, module:extraction/slot_reader/stop.py
 **Owner:** #244, #264, #265, #1206
 **Effectiveness claim:** exceeding any bound produces abstention rather than a partial answer, and
 reaching the AI budget stops the reading cleanly and lists every page left unread, which blocks
-sign-off, rather than a verdict on the pages that happened to finish (#1206).
+sign-off, rather than a verdict on the pages that happened to finish (#1206). The bounded reading
+agent's own step graph (`extraction/agent/graph.py`) was one of these bounds; the agent was retired
+with the label-first reading route on 2026-10-28, so it no longer needs one.
 
 ## R5 — False PASS
 

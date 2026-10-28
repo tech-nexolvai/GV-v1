@@ -357,6 +357,38 @@ def test_a_reading_whose_region_is_not_a_box_is_on_no_drawing(polygon: object) -
     assert PlacedReading.from_observation(row, []) is None
 
 
+def test_placed_readings_are_suggested_only_by_lines_they_are_printed_between() -> None:
+    """**#913's rule stays** (admin decision 2026-10-04): a reading the association attached to a
+    line it is printed beyond counts by nothing, whatever reader read it.
+
+    Moved here from `tests/workflow/test_ai_region_association.py`, which went with the AI readings
+    placed by their regions (the label-first route, retired 2026-10-28); this one never used them.
+    """
+    part = PlacedPart(
+        item_id=uuid4(),
+        kind=PartKind.FILLER,
+        view_id=uuid4(),
+        left=Decimal("0.40"),
+        right=Decimal("0.416"),
+        top=Decimal("0.50"),
+        bottom=Decimal("0.50"),
+    )
+    beyond = PlacedReading(
+        observation_id=uuid4(),
+        page_id=uuid4(),
+        region=(Decimal("0.43"), Decimal("0.49"), Decimal("0.44"), Decimal("0.498")),
+        geometry=ReadingGeometry.LINE,
+        left=Decimal("0.4000"),
+        right=Decimal("0.4160"),
+        unplaced=None,
+    )
+
+    (suggestion,) = suggest_links([part], [beyond], edge_tolerance=TOLERANCE)
+
+    assert suggestion.reading is None
+    assert "set aside" in suggestion.said
+
+
 # -- the decision: against a real database ---------------------------------------------------------
 
 

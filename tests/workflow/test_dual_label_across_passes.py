@@ -9,11 +9,10 @@ the groups, which shows one of them misread; #924 already refuses that within on
 **After #928** a dual label is sealed only where every agreeing group read the same millimetres and
 the same inches. Otherwise the region is a conflict, and a reviewer decides:
 
-- the agent's contradiction check (`DatabaseStages._mark_regions_the_agent_contradicted`) marks the
-  new readings `CONFLICTING`, which holds the whole region (`automatic_typing` refuses a region with
-  a conflicting reading, #790);
+- the agent's contradiction check marked the new readings `CONFLICTING`; it went with the reading
+  agent when the label-first route was retired (2026-10-28);
 - automatic typing itself (`_second_reader_candidate_ids`) refuses such a region, which protects a
-  run stored before this check existed.
+  run stored before that check existed, and any two groups that agree apart.
 
 Same millimetres and inches across the groups still seal; one group is unchanged.
 
@@ -125,30 +124,21 @@ class _Region:
 
 
 def _two_passes(
-    session: Session, store: LocalStore, first_label: str, agent_label: str, *, saved_first: bool
+    session: Session, store: LocalStore, first_label: str, agent_label: str
 ) -> tuple[list[ObservationCandidate], list[ObservationCandidate]]:
-    """The page as the stage leaves it: the first pass's pair agreed, then the agent's pair read
-    the same region, was agreed, and the agent's contradiction check ran.
-
-    `saved_first`: the first readings were saved before the agent ran, as a real run's panel step
-    saves them (#790), so only the agent's readings can still be marked.
-    """
+    """Two groups of one region, each agreed by the gate on its own: the first pair, saved, then a
+    second pair that read the same region (as the agent's pair did), and saved."""
     region = _Region(session, store)
     first = [region.reading(QWEN, first_label), region.reading(NOVA_TAUGHT, first_label)]
     region.agree(first)
     assert {row.corroboration_lane for row in first} == {"SECOND_READER"}, "the first pair agreed"
-    if saved_first:
-        session.flush()
+    session.flush()
     agent = [
         region.reading(AGENT_PRIMARY, agent_label),
         region.reading(AGENT_ESCALATION, agent_label),
     ]
-    page_rows = first + agent
-    region.agree(page_rows)
-    assert {row.corroboration_lane for row in agent} == {"SECOND_READER"}, "the agent pair agreed"
-    DatabaseStages._mark_regions_the_agent_contradicted(
-        session, page_index=0, candidates=page_rows, agent_rows=agent
-    )
+    region.agree(first + agent)
+    assert {row.corroboration_lane for row in agent} == {"SECOND_READER"}, "the second pair agreed"
     session.flush()
     return first, agent
 
@@ -158,19 +148,14 @@ def _two_passes(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("saved_first", [False, True], ids=["unsaved", "first-pass-saved"])
-def test_two_groups_agreeing_on_the_inches_but_not_the_millimetres_are_a_conflict(
-    session: Session, store: LocalStore, saved_first: bool
+def test_two_groups_agreeing_on_the_inches_but_not_the_millimetres_are_not_sealed(
+    session: Session, store: LocalStore
 ) -> None:
-    """**#928.** The first pair agreed on `914 [36]`, the agent's pair on `915 [36]`. Outcome: the
-    readings the stage can still mark are `CONFLICTING`, and no reading of the region can be
-    sealed — where before each pair kept its agreement and the region could be sealed on 36"."""
-    first, agent = _two_passes(session, store, "914 [36]", "915 [36]", saved_first=saved_first)
+    """**#928.** The first pair agreed on `914 [36]`, a second pair on `915 [36]`. Outcome: no
+    reading of the region can be sealed — where before each pair kept its agreement and the region
+    could be sealed on 36"."""
+    first, agent = _two_passes(session, store, "914 [36]", "915 [36]")
 
-    markable = agent if saved_first else first + agent
-    assert {(row.corroboration_status, row.corroboration_lane) for row in markable} == {
-        ("CONFLICTING", "SECOND_READER")
-    }
     assert all(_second_reader_candidate_ids(session, row) == () for row in first + agent)
 
 
@@ -205,7 +190,7 @@ def test_two_groups_agreeing_on_the_same_millimetres_and_inches_still_seal(
 ) -> None:
     """The control. Both pairs agreed on `914 [36]`. Outcome: nothing is conflicting and every
     reading of the region is offered to the seal, as before."""
-    first, agent = _two_passes(session, store, "914 [36]", "914 [36]", saved_first=True)
+    first, agent = _two_passes(session, store, "914 [36]", "914 [36]")
 
     rows = first + agent
     assert all(row.corroboration_status != "CONFLICTING" for row in rows)
@@ -233,7 +218,7 @@ def test_two_groups_agreeing_on_plain_inches_are_unchanged(
 ) -> None:
     """No dual label anywhere: both pairs agreed on `36"`. Outcome: as before — nothing conflicting,
     every reading offered to the seal. The rule is about a dual label's millimetres."""
-    first, agent = _two_passes(session, store, '36"', '36"', saved_first=True)
+    first, agent = _two_passes(session, store, '36"', '36"')
 
     rows = first + agent
     assert all(row.corroboration_status != "CONFLICTING" for row in rows)

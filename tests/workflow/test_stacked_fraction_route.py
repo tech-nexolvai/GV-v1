@@ -1,48 +1,24 @@
-"""A vision crop known to show a stacked fraction is refused before a model call (#735, #713).
+"""Whether a crop shows a stacked fraction, and which ones (#735, #834).
 
-#541 built the guard and tested it by setting the flag by hand. In production the chain was broken
-in three places — the geometry was never measured, the region's flag was never carried, and neither
-adapter passed it — so the guard never once ran. The workflow now applies that same deterministic
-fact before Bedrock: a crop the local geometry already says must go to review is not a paid call.
-These tests go through `DatabaseStages` itself: a real stamp is read, a real crop is cut, and the
-stage decides whether the reader should see it.
+The rule every reading over a stacked fraction is held to (`stacked_reading_check`, #846). It was
+first the vision readers' pre-call check; the vision readers were retired with the label-first
+route (2026-10-28), and the tests of that route went with them. The sheets here are shared with
+the OCR routes' tests.
 
-Verification for: `workflow/stages.py` (`_read_page_by_vision`, `crop_shows_a_stacked_fraction`,
-`stacked_layouts_shown`).
+Verification for: `workflow/stages.py` (`crop_shows_a_stacked_fraction`, `stacked_layouts_shown`).
 """
 
 from __future__ import annotations
 
-import tempfile
-from collections.abc import Iterator
-from dataclasses import dataclass, field, replace
 from decimal import Decimal
-from pathlib import Path
 
-import pytest
-from sqlalchemy import Engine
-from sqlalchemy.orm import Session
-
-from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.coordinates import ImagePoint
 from evidence.polygon import Polygon
 from extraction.annotations import StackedFraction
 from extraction.glyph_bands import FractionLayout
-from extraction.models.context import AssembledContext
-from extraction.models.nova import NovaConfig, NovaInvocation, NovaInvocationOutcome, NovaRequest
-from extraction.ocr import OcrItem
-from storage.local import LocalStore
 from tests.extraction.models.test_validation import THIRTY_SEVEN_AND_A_HALF_LAYOUT, THREE_QUARTERS
 from tests.extraction.test_annotations import STACKED_APPEARANCE, _appearance, _pdf, _stamp
-from tests.extraction.test_reader import MISSING_SPACE
-from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
-from units.measurement import Unit
-from workflow.stages import (
-    DatabaseStages,
-    _vision_pre_call_refusal,
-    crop_shows_a_stacked_fraction,
-    stacked_layouts_shown,
-)
+from workflow.stages import crop_shows_a_stacked_fraction, stacked_layouts_shown
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -67,153 +43,6 @@ PLAIN_SHEET = _pdf(
         )
     ],
 )
-
-
-class _WholeCropOcr:
-    """Reports one reading covering the whole crop it is handed, so the vision crop is the label's."""
-
-    name = "stacked-route-ocr"
-    version = "test/1"
-
-    def __init__(self, text: str = '28"') -> None:
-        self.text = text
-
-    def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
-        assert rgb
-        return (
-            OcrItem(
-                text=self.text,
-                confidence=Decimal("0.9"),
-                image_extent=(
-                    ImagePoint(0, 0),
-                    ImagePoint(width - 1, 0),
-                    ImagePoint(width - 1, height - 1),
-                    ImagePoint(0, height - 1),
-                ),
-            ),
-        )
-
-
-@dataclass
-class _RecordingVisionReader:
-    """A vision reader double that keeps every request it is sent."""
-
-    config: NovaConfig
-    requests: list[NovaRequest] = field(default_factory=list)
-
-    def extract(self, request: NovaRequest, recorder: object) -> DomainCandidate:
-        self.requests.append(request)
-        recorder.record(  # type: ignore[attr-defined]
-            NovaInvocation(
-                model_id=self.config.model_id,
-                prompt_id=self.config.prompt_id,
-                template_id=self.config.template_id,
-                attempt=1,
-                latency_ms=1,
-                input_tokens=1,
-                output_tokens=1,
-                outcome=NovaInvocationOutcome.OK,
-                request_id=f"request-{request.candidate_id}",
-                context=AssembledContext(nearby_text=(), nearby_geometry=()),
-                bound_pt=Decimal(9),
-                injection_attempts=(),
-            )
-        )
-        return DomainCandidate(
-            candidate_id=request.candidate_id,
-            extractor=self.config.extractor,
-            extractor_version=self.config.model_id,
-            raw_text='28"',
-            parsed_value=None,
-            unit_guess=Unit.INCH,
-            semantic_guess=None,
-            page=request.page,
-            polygon=(ImagePoint(0, 0), ImagePoint(1, 0), ImagePoint(1, 1), ImagePoint(0, 1)),
-            confidence=None,
-            ambiguity_flags=(),
-        )
-
-
-def _reader() -> _RecordingVisionReader:
-    return _RecordingVisionReader(
-        NovaConfig(
-            model_id="stacked-route-vision/v1",
-            prompt_id="dimension-reader-v1",
-            template_id="bounded-crop-v1",
-            connect_timeout_seconds=1,
-            read_timeout_seconds=1,
-            max_attempts=1,
-            extractor="stacked-route-vision",
-        )
-    )
-
-
-@pytest.fixture
-def session(postgres_engine: Engine) -> Iterator[Session]:
-    from app.db.session import session_factory
-
-    _upgrade(postgres_engine)
-    opened = session_factory(postgres_engine)()
-    try:
-        yield opened
-    finally:
-        opened.close()
-
-
-@pytest.fixture
-def store() -> Iterator[LocalStore]:
-    with tempfile.TemporaryDirectory() as directory:
-        yield LocalStore(root=Path(directory), ticket_secret=b"a secret only this test knows")
-
-
-def _vision_result_for(
-    session: Session, store: LocalStore, data: bytes, *, ocr_text: str = '28"'
-) -> tuple[list[NovaRequest], dict[str, object]]:
-    revision = _revision(session, store, data=data)
-    session.commit()
-    reader = _reader()
-    (result,) = DatabaseStages(
-        store,
-        dpi=150,
-        association=replace(SETTINGS, proximity_limit=Decimal("0.9")),
-        ocr_engine=_WholeCropOcr(ocr_text),
-        localized_ocr=LOCALIZED,
-        vision_readers=(reader,),
-        missing_space=MISSING_SPACE,
-    ).extract_pages(session, revision.id)
-    session.commit()
-    return reader.requests, dict(result.payload)
-
-
-def _requests_for(session: Session, store: LocalStore, data: bytes) -> list[NovaRequest]:
-    requests, _ = _vision_result_for(session, store, data)
-    return requests
-
-
-def test_a_crop_that_shows_a_stacked_fraction_is_skipped_before_the_model_call(
-    session: Session, store: LocalStore
-) -> None:
-    """A real stamp, the real reader, a real crop: the guaranteed rejection is not a paid call.
-
-    OCR reads the label as its layout allows, so its box is recorded and offered to the vision
-    reader. A reading the layout rules out would have no row, and nothing to offer (#846)."""
-    requests, payload = _vision_result_for(session, store, STACKED_SHEET, ocr_text='28 3/4"')
-
-    assert requests == []
-    assert payload["vision_invocations"] == 0
-    assert payload["vision_candidates"] == 0
-    refusals = payload["vision_refusals"]
-    assert isinstance(refusals, list)
-    assert any("stacked_fraction_requires_review" in str(refusal) for refusal in refusals)
-
-
-def test_the_same_label_without_its_fraction_is_not(session: Session, store: LocalStore) -> None:
-    """The control: the flag comes from the drawing, not from every crop being marked."""
-    requests, payload = _vision_result_for(session, store, PLAIN_SHEET)
-
-    assert requests, "no region reached the vision reader, so this test proves nothing"
-    assert not any(request.stacked_label for request in requests)
-    assert payload["vision_invocations"] == len(requests)
 
 
 # ---------------------------------------------------------------------------
@@ -270,19 +99,6 @@ def test_a_fraction_elsewhere_on_the_page_is_not() -> None:
 
 def test_no_fractions_nothing_shown() -> None:
     assert not crop_shows_a_stacked_fraction((100, 100, 200, 200), [])
-
-
-def test_stacked_crop_has_a_pre_call_refusal() -> None:
-    """The model call would be rejected after it returns, so the workflow can skip it before."""
-
-    assert (
-        _vision_pre_call_refusal((100, 100, 200, 200), [_fraction(120, 120, 140, 160)])
-        == "stacked_fraction_requires_review"
-    )
-
-
-def test_unstacked_crop_has_no_pre_call_refusal() -> None:
-    assert _vision_pre_call_refusal((100, 100, 200, 200), []) is None
 
 
 def test_a_crop_has_the_layouts_of_the_fractions_it_shows_and_no_others() -> None:

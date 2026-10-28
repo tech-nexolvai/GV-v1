@@ -7,7 +7,6 @@ from decimal import Decimal
 
 import pytest
 
-from extraction.agent.tools import PERMITTED_TOOLS
 from extraction.models.context import AssembledContext, NearbyText
 from extraction.models.sanitisation import (
     NOVA_GRID_COORDINATE_INSTRUCTION,
@@ -74,15 +73,6 @@ def test_detection_does_not_sanitise_or_drop_source_evidence() -> None:
         InjectionSignal.INSTRUCTION_OVERRIDE,
         InjectionSignal.VERDICT_REQUEST,
     }
-
-
-def test_compromised_output_has_no_governance_capability() -> None:
-    """Input: fixed agent surface. Output: no governance tools. Why: response cannot decide."""
-
-    reachable = {tool.value for tool in PERMITTED_TOOLS}
-    prohibited = {"approve", "alter_tolerance", "select_rule", "write_verdict"}
-
-    assert reachable.isdisjoint(prohibited)
 
 
 # ---------------------------------------------------------------------------

@@ -22,18 +22,13 @@ from sqlalchemy.orm import Session
 from app.models import ExtractionRun, ObservationCandidate
 from storage.local import LocalStore
 from tests.extraction.test_reader import MISSING_SPACE
-from tests.workflow.test_cross_route_corroboration import (
-    _drawing,
-    _reader,
-    _revision,
-    _upgrade,
-)
-from tests.workflow.test_cut_label_guard import stated_geometry
+from tests.workflow.test_cross_route_corroboration import _revision, _two_routes, _upgrade
 from units.measurement import Measurement, Unit
 from workflow.stages import (
     MIXED_FRACTION_REASON,
     DatabaseStages,
     _MixedFractionGuard,
+    agreement_refusal_reasons,
     mixed_fraction_refusal,
 )
 
@@ -111,7 +106,7 @@ def test_no_value_is_not_held_back() -> None:
 
 
 # ---------------------------------------------------------------------------
-# In the stage
+# In the agreement gate
 # ---------------------------------------------------------------------------
 
 
@@ -136,57 +131,55 @@ def store() -> Iterator[LocalStore]:
         yield LocalStore(root=Path(directory), ticket_secret=b"a secret only this test knows")
 
 
-def _extract(session: Session, store: LocalStore, label: str, reading: str) -> dict[str, object]:
-    """The file's own text says `label`; a vision reader of another vendor reads `reading`."""
-    revision = _revision(
-        session, store, data=_drawing(f"BT /F1 10 Tf 1 0 0 1 20 70 Tm ({label}) Tj ET\n".encode())
-    )
-    (result,) = DatabaseStages(
+def _extract(
+    session: Session, store: LocalStore, label: str, reading: str, inches: Fraction
+) -> tuple[set[tuple[str, str, str | None, str | None]], _MixedFractionGuard]:
+    """The file's own text says `label`; a second route of another vendor reads `reading`
+    (`inches`), in the same region, and the agreement gate judges them with this guard."""
+    guard = _MixedFractionGuard()
+    rows = _two_routes(
+        session,
         store,
-        vision_readers=(_reader("bedrock-nova-pro", "amazon.nova-pro-v1:0", reading=reading),),
-        missing_space=MISSING_SPACE,
-        **stated_geometry("bedrock-nova-pro"),  # type: ignore[arg-type]
-    ).extract_pages(session, revision.id)
-    return dict(result.payload)
-
-
-def _lanes(session: Session) -> set[tuple[str, str, str | None, str | None]]:
-    return {
+        extractor="bedrock-nova-pro",
+        version="amazon.nova-pro-v1:0",
+        label=label,
+        reading=reading,
+        inches=inches,
+        mixed_fraction=guard,
+    )
+    lanes = {
         (run.extractor, row.raw_text, row.corroboration_status, row.corroboration_lane)
-        for row, run in session.execute(
-            select(ObservationCandidate, ExtractionRun).join(
-                ExtractionRun, ObservationCandidate.extraction_run_id == ExtractionRun.id
-            )
-        )
+        for row, run in rows
     }
+    return lanes, guard
 
 
 def test_two_routes_agreeing_on_a_whole_number_and_a_fraction_do_not_confirm_it(
     session: Session, store: LocalStore
 ) -> None:
-    """**The guard in production.** The file's own `13.5"` and a vision reader's `13.5"` agree;
+    """**The guard in production.** The file's own `13.5"` and a second route's `13.5"` agree;
     neither takes the second-reader lane, and the page result counts the refusal and says why."""
-    payload = _extract(session, store, '13.5"', '13.5"')
+    lanes, guard = _extract(session, store, '13.5"', '13.5"', Fraction(27, 2))
 
-    assert _lanes(session) == {
+    assert lanes == {
         ("pdfplumber", '13.5"', None, None),
         ("bedrock-nova-pro", '13.5"', None, None),
     }
-    assert payload["agreement_refusals"] == 1
-    assert payload["agreement_refusal_reasons"] == [f"1 × {MIXED_FRACTION_REASON}"]
+    assert len(guard.refused) == 1
+    assert agreement_refusal_reasons((guard,), 20) == [f"1 × {MIXED_FRACTION_REASON}"]
 
 
 def test_the_same_agreement_on_a_whole_number_is_confirmed(
     session: Session, store: LocalStore
 ) -> None:
     """The control: it is the value's kind that holds the agreement back, not the routes."""
-    payload = _extract(session, store, '13"', '13"')
+    lanes, guard = _extract(session, store, '13"', '13"', Fraction(13))
 
-    assert _lanes(session) == {
+    assert lanes == {
         ("pdfplumber", '13"', "RAW_CANDIDATE", "SECOND_READER"),
         ("bedrock-nova-pro", '13"', "RAW_CANDIDATE", "SECOND_READER"),
     }
-    assert payload["agreement_refusals"] == 0
+    assert len(guard.refused) == 0
 
 
 def test_a_disagreement_on_a_whole_number_and_a_fraction_is_still_a_conflict(
@@ -199,12 +192,10 @@ def test_a_disagreement_on_a_whole_number_and_a_fraction_is_still_a_conflict(
 
     monkeypatch.setattr(_MixedFractionGuard, "_reason", never)
 
-    payload = _extract(session, store, '13.5"', '13.25"')
+    lanes, guard = _extract(session, store, '13.5"', '13.25"', Fraction(53, 4))
 
-    assert {(status, lane) for *_, status, lane in _lanes(session)} == {
-        ("CONFLICTING", "SECOND_READER")
-    }
-    assert payload["agreement_refusals"] == 0
+    assert {(status, lane) for *_, status, lane in lanes} == {("CONFLICTING", "SECOND_READER")}
+    assert len(guard.refused) == 0
 
 
 def test_the_guard_is_asked_about_a_reading_that_agreed(

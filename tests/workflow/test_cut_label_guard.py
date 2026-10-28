@@ -1,7 +1,8 @@
 """The agreement gate does not confirm a label cut off at its crop's edge (#919).
 
 Verification for: `workflow/stages.py` (`cut_label_refusal`, `_CutLabelGuard`,
-`agreement_refusal_reasons` and `DatabaseStages._apply_cross_route_corroboration`).
+`agreement_refusal_reasons`, `DatabaseStages._apply_cross_route_corroboration`, and the label
+lengths that let the guard see a cut: `label_lengths_from_environment`).
 
 **The admin's decision, 2026-10-04.** A label cut off at its crop's edge is never confirmed by
 agreement; it is only pre-filled for a person. With the Qwen3-VL + Nova 2 Lite pair both readers
@@ -9,8 +10,13 @@ agreed on a label running past the edge of the crop they were shown (#907). The 
 gate replay measured (#851), moved into production so the two cannot disagree; it only ever takes a
 confirmation away.
 
-The drawings are made up here, or are the made-up `10192"` sheet of
-`tests/workflow/test_reading_agent.py`. No model is called and no client drawing is read.
+The drawings are made up here, or are the made-up `10192"` sheet (`SHEET`). No model is called and
+no client drawing is read.
+
+**Since 2026-10-28** the vision readers and the reading agent are gone (the label-first route), so
+the tests that had two of them agree on the sheet inside `extract_pages` went with them. The guard
+itself, its wiring into the agreement gate, and the label lengths it is stated with are tested
+here.
 """
 
 from __future__ import annotations
@@ -31,30 +37,25 @@ from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
 from evidence.crop import RenderedPage
 from evidence.polygon import Polygon
 from extraction.annotations import PathSegment, SegmentKind, VectorPath
-from extraction.geometry.labels import LabelReach
+from extraction.geometry.labels import LabelLengths, LabelReach
 from extraction.ocr import OcrItem
 from storage.local import LocalStore
+from tests.extraction.test_annotations import _appearance, _pdf, _stamp
+from tests.extraction.test_glyph_reader import _row
 from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
-from tests.workflow.test_reading_agent import (
-    DPI,
-    SHEET,
-    _config,
-    _PartOfTheLabel,
-    _WholeLabelReader,
-)
-from workflow.reading_agent import ReadingAgentSettings
+from tests.workflow.test_glyph_route import _content
 from workflow.stages import (
     CUT_LABEL_REASON,
     CUT_LABEL_UNCHECKED_REASON,
     CUT_LABEL_UNSTATED_REASON,
     DatabaseStages,
-    _AgentPageOutcome,
     _AgreementGuard,
     _CutLabelGuard,
     _MixedFractionGuard,
     agreement_refusal_reasons,
     cut_label_refusal,
+    label_lengths_from_environment,
 )
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -63,32 +64,48 @@ pytest_plugins = ("tests.app.postgres_fixture",)
 REACH = LabelReach(label_gap_pt=Decimal(4), maximum_label_pt=Decimal(40), glyph_gap_pt=Decimal(4))
 
 
-def label_lengths(primary_reader: str, *, sharper_dpi: int = 600) -> ReadingAgentSettings:
-    """The reading agent, on with `primary_reader` and no second reader, for its label lengths: what
-    gathers a label from the drawing's glyph paths, so what lets the gate see a cut (#919)."""
-    return ReadingAgentSettings(
-        max_steps=6,
-        max_vlm_escalations=0,
-        sharper_dpi=sharper_dpi,
-        primary_reader=primary_reader,
-        escalation_reader=None,
-        label_gap_pt=REACH.label_gap_pt,
-        maximum_label_pt=REACH.maximum_label_pt,
-    )
+#: The same lengths as a deployment states them (`GV_LABEL_GAP_PT`, `GV_MAX_LABEL_PT`).
+LABEL_LENGTHS = LabelLengths(REACH.label_gap_pt, REACH.maximum_label_pt)
 
 
-def stated_geometry(primary_reader: str, *, sharper_dpi: int = 600) -> dict[str, object]:
+def stated_geometry() -> dict[str, object]:
     """What a stage needs to see a cut (#919): the association settings, which read the drawing's
-    glyph paths, and the reading agent's label lengths, which gather a label from them.
+    glyph paths, and the label lengths, which gather a label from them."""
+    return {"association": SETTINGS, "label_lengths": LABEL_LENGTHS}
 
-    For the tests of other rules whose readers must be confirmed: without these, nothing rules a
-    cut out, and the gate confirms no agreement. The agent asks no second reader, and looks only
-    where its own trigger sends it.
-    """
-    return {
-        "association": SETTINGS,
-        "reading_agent": label_lengths(primary_reader, sharper_dpi=sharper_dpi),
-    }
+
+#: A dimension line with `10192"` above it, in appearance space (page = appearance − (50, 450)).
+LABEL, _ = _row('10192"', 110, 520, scale=0.9)
+SHEET = _pdf(
+    annotations=[_stamp(appearance_object=6)],
+    extra_objects=[_appearance(b"1 w 105 515 m 205 515 l S\n" + _content(LABEL))],
+)
+DPI = 150
+
+
+@dataclass
+class _PartOfTheLabel:
+    """An OCR engine that reads the last two digits of whatever it is shown — the #641 crop."""
+
+    text: str = "92"
+    name: str = "part-ocr"
+    version: str = "part/1"
+
+    def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
+        del rgb
+        left = width * 11 // 20
+        return (
+            OcrItem(
+                text=self.text,
+                confidence=Decimal("0.9"),
+                image_extent=(
+                    ImagePoint(left, 0),
+                    ImagePoint(width - 1, 0),
+                    ImagePoint(width - 1, height - 1),
+                    ImagePoint(left, height - 1),
+                ),
+            ),
+        )
 
 
 def _never_rendered() -> RenderedPage | None:
@@ -240,8 +257,8 @@ class _Renders:
 
 
 def test_the_guard_counts_one_refusal_per_region_with_its_reason() -> None:
-    """Asked twice about one region — the stage asks again once the reading agent has looked — it
-    is one refusal; the whole label is none. The page is rendered once for both."""
+    """Asked twice about one region, it is one refusal; the whole label is none. The page is
+    rendered once for both."""
     renders = _Renders(_rendered())
     guard = _CutLabelGuard(reach=REACH, transform=TRANSFORM, glyphs=GLYPHS, render=renders)
 
@@ -275,7 +292,60 @@ def test_a_page_that_cannot_be_rendered_holds_every_agreement_back() -> None:
 
 
 # ---------------------------------------------------------------------------
-# In the stage: two readers agree on the #641 sheet's label, shown cut or whole
+# The label lengths the guard is stated with: both or neither, never defaulted
+# ---------------------------------------------------------------------------
+
+
+def test_stated_label_lengths_give_the_stage_its_reach() -> None:
+    """With the association settings, the stated lengths are the reach the guard gathers a label
+    by, the run gap being the association settings' own."""
+    stages = DatabaseStages(None, missing_space=MISSING_SPACE, **stated_geometry())  # type: ignore[arg-type]
+
+    assert stages._label_reach() == REACH
+
+
+@pytest.mark.parametrize(
+    "stated",
+    [{}, {"association": SETTINGS}, {"label_lengths": LABEL_LENGTHS}],
+    ids=["neither", "no-label-lengths", "no-association-settings"],
+)
+def test_without_both_the_stage_has_no_reach(stated: dict[str, object]) -> None:
+    """**As in every deployment so far.** No reach, so the guard holds every agreement it is asked
+    about for a person (`CUT_LABEL_UNSTATED_REASON`)."""
+    stages = DatabaseStages(None, missing_space=MISSING_SPACE, **stated)  # type: ignore[arg-type]
+
+    assert stages._label_reach() is None
+
+
+def test_unset_label_lengths_are_none() -> None:
+    assert label_lengths_from_environment({}) is None
+
+
+def test_label_lengths_are_read_exactly_as_stated() -> None:
+    stated = label_lengths_from_environment({"GV_LABEL_GAP_PT": "4", "GV_MAX_LABEL_PT": "40"})
+
+    assert stated == LABEL_LENGTHS
+
+
+@pytest.mark.parametrize(
+    "environ",
+    [
+        {"GV_LABEL_GAP_PT": "4"},
+        {"GV_MAX_LABEL_PT": "40"},
+        {"GV_LABEL_GAP_PT": "four", "GV_MAX_LABEL_PT": "40"},
+        {"GV_LABEL_GAP_PT": "0", "GV_MAX_LABEL_PT": "40"},
+        {"GV_LABEL_GAP_PT": "4", "GV_MAX_LABEL_PT": "-1"},
+    ],
+    ids=["gap-only", "maximum-only", "not-a-number", "zero", "negative"],
+)
+def test_one_length_alone_or_a_length_that_is_not_one_is_refused(environ: dict[str, str]) -> None:
+    """A guessed length would decide which labels count as cut, so none is filled in."""
+    with pytest.raises(ValueError):
+        label_lengths_from_environment(environ)
+
+
+# ---------------------------------------------------------------------------
+# A stage to read a sheet with, for the agreements below
 # ---------------------------------------------------------------------------
 
 
@@ -298,172 +368,6 @@ def store() -> Iterator[LocalStore]:
 
     with tempfile.TemporaryDirectory() as directory:
         yield LocalStore(root=Path(directory), ticket_secret=b"a secret only this test knows")
-
-
-@dataclass
-class _WholeOcr:
-    """An OCR engine that reads `text` across the whole of whatever crop it is shown."""
-
-    text: str
-    name: str = "whole-ocr"
-    version: str = "whole/1"
-
-    def read(self, rgb: bytes, *, width: int, height: int) -> tuple[OcrItem, ...]:
-        del rgb
-        return (
-            OcrItem(
-                text=self.text,
-                confidence=Decimal("0.9"),
-                image_extent=(
-                    ImagePoint(0, 0),
-                    ImagePoint(width - 1, 0),
-                    ImagePoint(width - 1, height - 1),
-                    ImagePoint(0, height - 1),
-                ),
-            ),
-        )
-
-
-def _agent_held_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    """**Only the first pass judges here.** The reading agent would look again at a cut label and
-    read it whole; held out, the readers' agreement is what the gate is asked about, alone."""
-
-    def nothing(self: DatabaseStages, session: Session, **kwargs: object) -> _AgentPageOutcome:
-        del self, session, kwargs
-        return _AgentPageOutcome()
-
-    monkeypatch.setattr(DatabaseStages, "_run_bounded_agent_for_ambiguous_regions", nothing)
-
-
-def _read(
-    session: Session,
-    store: LocalStore,
-    ocr: object,
-    reading: str,
-) -> tuple[list[tuple[str, str, str | None, str | None]], dict[str, object]]:
-    """Read the sheet with the OCR box and both readers' reading; every row, and the page result."""
-    revision = _revision(session, store, data=SHEET)
-    session.commit()
-    readers = (
-        _WholeLabelReader(_config("reader-a"), reading),
-        _WholeLabelReader(_config("reader-b"), reading),
-    )
-    (result,) = DatabaseStages(
-        store,
-        dpi=DPI,
-        ocr_engine=ocr,  # type: ignore[arg-type]
-        localized_ocr=LOCALIZED,
-        vision_readers=readers,
-        missing_space=MISSING_SPACE,
-        **stated_geometry("reader-a", sharper_dpi=2 * DPI),  # type: ignore[arg-type]
-    ).extract_pages(session, revision.id)
-    session.commit()
-    rows = sorted(
-        (
-            (row.raw_text, run.extractor, row.corroboration_status, row.corroboration_lane)
-            for row, run in session.execute(
-                select(ObservationCandidate, ExtractionRun).join(
-                    ExtractionRun, ObservationCandidate.extraction_run_id == ExtractionRun.id
-                )
-            )
-        ),
-        key=str,
-    )
-    return rows, dict(result.payload)
-
-
-def test_two_readers_agreeing_on_a_cut_label_do_not_confirm_it(
-    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """**Done when, first line.** OCR's box holds the last two digits of `10192"`, and both readers,
-    shown the crop round it, read `92"` with it: three readers agree on part of a label. No reading
-    takes the second-reader lane, so none can be sealed; each is a pre-fill a person ticks, and the
-    page result counts the refusal and says why."""
-    _agent_held_out(monkeypatch)
-
-    rows, payload = _read(session, store, _PartOfTheLabel('92"'), '92"')
-
-    assert rows == [
-        ('92"', "part-ocr", None, None),
-        ('92"', "reader-a", None, None),
-        ('92"', "reader-b", None, None),
-    ]
-    assert payload["agreement_refusals"] == 1
-    assert payload["agreement_refusal_reasons"] == [f"1 × {CUT_LABEL_REASON}"]
-
-
-def test_the_same_agreement_on_a_whole_label_is_confirmed(
-    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """**Done when, second line.** OCR's box holds the whole label, so the readers' crop does too;
-    the same three readers agreeing on `10192"` confirm it, as before."""
-    _agent_held_out(monkeypatch)
-
-    rows, payload = _read(session, store, _WholeOcr('10192"'), '10192"')
-
-    assert rows == [
-        ('10192"', "reader-a", "RAW_CANDIDATE", "SECOND_READER"),
-        ('10192"', "reader-b", "RAW_CANDIDATE", "SECOND_READER"),
-        ('10192"', "whole-ocr", "RAW_CANDIDATE", "SECOND_READER"),
-    ]
-    assert payload["agreement_refusals"] == 0
-    assert payload["agreement_refusal_reasons"] == []
-
-
-def test_a_disagreement_on_a_cut_label_is_still_a_conflict(
-    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """**Only stricter.** Readers who disagree are a conflict for a reviewer whatever the crop
-    shows; the guard is never asked, so it cannot turn a conflict into a pre-fill."""
-    _agent_held_out(monkeypatch)
-
-    def never(self: _CutLabelGuard, region: ObservationCandidate) -> str | None:
-        raise AssertionError("the guard is asked only about an agreement")
-
-    monkeypatch.setattr(_CutLabelGuard, "_reason", never)
-
-    rows, payload = _read(session, store, _PartOfTheLabel('92"'), '93"')
-
-    assert {(status, lane) for *_, status, lane in rows} == {("CONFLICTING", "SECOND_READER")}
-    assert payload["agreement_refusals"] == 0
-
-
-def test_a_page_whose_drawing_could_not_be_read_confirms_no_agreement(
-    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """**Stricter where it cannot check.** The page's drawing does not parse, so none of its
-    characters are known and no crop on it can be shown to hold a whole label: the same readers
-    agreeing on the whole label stay pre-fills, and the page says why."""
-    _agent_held_out(monkeypatch)
-
-    def unreadable(
-        self: DatabaseStages, session: Session, **kwargs: object
-    ) -> tuple[list[object], None]:
-        del self, session, kwargs
-        return [], None
-
-    monkeypatch.setattr(DatabaseStages, "_read_page_markup", unreadable)
-
-    rows, payload = _read(session, store, _WholeOcr('10192"'), '10192"')
-
-    assert {text for text, *_ in rows} == {'10192"'}
-    assert {(status, lane) for *_, status, lane in rows} == {(None, None)}
-    assert payload["agreement_refusal_reasons"] == [f"1 × {CUT_LABEL_UNCHECKED_REASON}"]
-
-
-def test_the_cut_label_s_refusal_is_the_page_s_only_reason_once_the_agent_has_looked(
-    session: Session, store: LocalStore
-) -> None:
-    """**With the reading agent on, as in the demo.** It widens the cut crop and reads `10192"`,
-    agreeing with the readers who were shown it cut. The region is still the one whose crop cut
-    the label, so the agreement stays a pre-fill: counted once, though the gate was asked twice."""
-    rows, payload = _read(session, store, _PartOfTheLabel('10192"'), '10192"')
-
-    assert {text for text, *_ in rows} == {'10192"'}
-    assert {(status, lane) for *_, status, lane in rows} == {(None, None)}
-    assert payload["agent_regions"] == 1
-    assert payload["agreement_refusals"] == 1
-    assert payload["agreement_refusal_reasons"] == [f"1 × {CUT_LABEL_REASON}"]
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +404,6 @@ def _agreeing_pairs(session: Session, store: LocalStore) -> list[ObservationCand
         ocr_engine=_PartOfTheLabel('92"'),  # type: ignore[arg-type]
         association=SETTINGS,
         localized_ocr=LOCALIZED,
-        vision_readers=(),
         missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
     template = session.execute(select(ObservationCandidate)).scalars().one()
@@ -554,8 +457,8 @@ def test_a_gv_mark_and_a_cut_label_are_each_refused_once_and_counted_together(
     """**#901's guard first, then this one.** A region the GV-mark guard holds back is never asked
     about its cut — had it been, the cut guard here would hold it back too — so each refusal has one
     reason, and the page's count is the two guards' counts added. The region neither holds back is
-    confirmed. Asked again, as the stage asks once the reading agent has looked, a guard answers a
-    region it refused from what it already decided; a region it let through is asked again."""
+    confirmed. Asked again, a guard answers a region it refused from what it already decided; a
+    region it let through is asked again."""
     rows = _agreeing_pairs(session, store)
     gv_mark = _Says({MARKED: "a GV mark"})
     cut_label = _Says({MARKED: "a cut label", CUT: "a cut label"})
