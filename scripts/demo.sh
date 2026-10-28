@@ -227,7 +227,7 @@ API_PID=$!
 # Nothing that could be confirmed is lost: a confirmation is two readers' values agreeing (#775).
 #
 # **The phrase index's gap is stated (#849).** After extraction the worker can join each line's words
-# into passages (#836), which is what the value hunter (`GV_VALUE_HUNTER`) searches when it looks for
+# into passages (#836), which is what the value hunter (parked, off) searches when it looks for
 # the passage that states a setting. Since 2026-10-28 the index is built only with the value hunter on,
 # its one reader, and the demo does not turn the hunter on. Words join when the space between them is
 # at most 0.34 of the line's height. Measured on both client drawings in #840: the space between two
