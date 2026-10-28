@@ -166,15 +166,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         packages_summary,
         project_sink,
         review,
-        revisions,
         rules,
         usage,
     )
 
     app.include_router(packages.router, prefix=API_PREFIX)
     app.include_router(documents.router, prefix=API_PREFIX)
-    # Revisions of a review (#1180): an upload of the vendor's next round starts one.
-    app.include_router(revisions.router, prefix=API_PREFIX)
     app.include_router(company_settings.router, prefix=API_PREFIX)
     app.include_router(project_sink.router, prefix=API_PREFIX)
     app.include_router(packages_summary.router, prefix=API_PREFIX)
