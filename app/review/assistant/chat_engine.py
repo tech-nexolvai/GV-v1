@@ -72,6 +72,7 @@ got no reply at all stores no API messages, so an unanswered question never ente
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import random
@@ -93,6 +94,7 @@ from app.review.assistant import (
     likely_problems,
     not_compared,
     one_card,
+    read_spots,
     reading_coverage,
     reference_page,
     same_item_pages,
@@ -1167,6 +1169,8 @@ class ChatEngine:
         #: Each finding's third read, kept like its second read while what it read is unchanged:
         #: (what was read, the outcome, the three readings).
         self._thirds: dict[str, tuple[tuple[Any, ...], str, list[dict[str, Any]]]] = {}
+        #: Each finding's reading pictures (`reading_pictures`), by its id and what it reads.
+        self._read_pictures: dict[tuple[str, tuple[Any, ...]], read_spots.ReadPictures] = {}
         self._third_reads_open = False
         self._third_budget: ThirdReadBudget | None = None
         self._checks_pool: ThreadPoolExecutor | None = None
@@ -1227,6 +1231,10 @@ class ChatEngine:
         #: Continue of a full check that did not finish (#1821): set by `chat_service` after
         #: `carry_over`, so a roster check compares only the pages its earlier answer left.
         self.continuing = False
+        #: What is left of the earlier answer's own price on a Continue (its price minus what it
+        #: spent, millionths of $), set by `chat_service`; `None` when it is not known. A roster
+        #: check's Continue costs that plus what its finishing steps need (2026-10-28).
+        self.continue_left: int | None = None
         self.extra_gaps: list[dict[str, Any]] = []
         #: The set's gaps the Not-compared list named, once it is made (#1803).
         self._set_gaps: list[Any] | None = None
@@ -1261,7 +1269,16 @@ class ChatEngine:
     ) -> int:
         """Continue (#1514): the findings and page coverage an answer a server restart cut off had
         already made, kept as this answer's own (shown at once; code checks each again). Returns
-        how many findings were kept."""
+        how many findings were kept.
+
+        Each finding keeps every field it had (2026-10-28: Continue had dropped the whole-drawing
+        look's mark, the claim rules, the reasons, the decision help, `settled`, `also_on` and the
+        scale mark, so 8 please-checks came back Not compared), except what this answer works
+        out again (`CARRY_RECOMPUTED`). GV's recorded items come as placed (their spots and
+        `record_id`), so seeding finds them by `record_id` (`_seed_recorded`) instead of making a
+        spotless copy. The AI readings already made (second and third reads) are kept while what
+        they read is unchanged, as are code's drawn-ink reads of the same values at the same
+        spots: Continue never pays again for a reading it has."""
         kept = 0
         for given in findings:
             # An earlier answer's AI findings take the AI's room, code's own take code's (#1827).
@@ -1272,13 +1289,16 @@ class ChatEngine:
                 continue
             finding = {
                 **finding,
-                "created_by": str(given.get("created_by") or "lead"),
+                **{k: v for k, v in given.items() if k not in CARRY_RECOMPUTED},
+                "created_by": maker,
                 "verified": bool(given.get("verified")),
             }
             if isinstance(given.get(SAME_ITEM), Mapping):
                 # One item, one card: its folded copies were dropped from the earlier answer, so
                 # the card keeps them (a conflict stays Not compared, never red again).
                 finding[SAME_ITEM] = dict(given[SAME_ITEM])
+            self._carry_reads(given, finding)
+            finding = _kept_drawn_ink(given, self._checked(finding))
             self.book.replace(finding)
             self._show_finding(finding)
             kept += 1
@@ -1300,6 +1320,29 @@ class ChatEngine:
             self.book.set_coverage({"pages": pages}, "earlier")
             self._show_coverage()
         return kept
+
+    def _carry_reads(self, given: Mapping[str, Any], finding: Mapping[str, Any]) -> None:
+        """Continue: the earlier answer's second read (and its third read) of `given`, kept for
+        its carried copy `finding` (its new id) while what it read is unchanged: the same item,
+        values and boxes (its pictures are drawn again from the same boxes). A read that never
+        ran stays to be made."""
+        checks = given.get("checks") if isinstance(given.get("checks"), Mapping) else {}
+        assert isinstance(checks, Mapping)
+        second = checks.get("second_read")
+        values = given.get("second_read_values")
+        if second not in ("agrees", "disagrees", "unsure") or not isinstance(values, Mapping):
+            return
+        if any(given.get(k) != finding.get(k) for k in _CARRY_READ_SAME):
+            return
+        key = _read_key(finding)
+        finding_id = str(finding["id"])
+        with self._lock:
+            self._reads[finding_id] = (key, str(second), dict(values))
+            third = checks.get("adjudication")
+            reads = given.get("reads")
+            if isinstance(third, str) and isinstance(reads, list):
+                self._thirds[finding_id] = (key, third, [dict(r) for r in reads])
+                self._third_queued.add((finding_id, key))
 
     # ---- money -----------------------------------------------------------------------------------
 
@@ -2966,24 +3009,67 @@ class ChatEngine:
                 self._read_queued.add(key)
             self._submit_check("second_reads", _bound(self._second_read_one, module, finding))
 
+    def reading_pictures(self, finding: Mapping[str, Any]) -> read_spots.ReadPictures:
+        """The second and third readings' pictures of `finding` (`read_spots`, 2026-10-28): each
+        side's read spot drawn without GV's markup from the set pack's drawings-only copy (else
+        the upload, GV's layers dropped), the item's own label at the centre with both ends of
+        its dimension around it; a vendor string's printed overall. Drawn once per finding and
+        what it reads."""
+        key = (str(finding.get("id")), _read_key(finding))
+        with self._lock:
+            kept = self._read_pictures.get(key)
+        if kept is not None:
+            return kept
+        workspace = self.tools.workspace
+        pack = workspace.set_pack
+        main = self.book.main_file
+        labels = self.book.dim_labels
+
+        def labels_of(file: str, page: int) -> Any:
+            return labels.on_page(file, page, read_now=False)
+
+        def pdf_for(file: str | None) -> Path | None:
+            name = file or main
+            if name is None:
+                return None
+            return read_spots.source_pdf(pack, workspace.uploads, name)
+
+        drawing = import_module("app.review.assistant.chat_drawing")
+        try:
+            with drawing._PDFIUM_LOCK:
+                drawn = read_spots.draw(finding, labels_of=labels_of, pdf_for=pdf_for)
+        except Exception as failed:  # noqa: BLE001 - no clean picture: the evidence crops then
+            _log.warning("assistant chat reading picture failed: %s", type(failed).__name__)
+            drawn = read_spots.ReadPictures(crops={}, spots={})
+        with self._lock:
+            self._read_pictures[key] = drawn
+        return drawn
+
     def _second_read_one(self, module: Any, finding: Mapping[str, Any]) -> None:
         """One finding's second read; kept only when the finding still shows what was read. A
         read that disagrees or is unsure starts its third read: at once on a would-be red, else
         once third reads are open (`_queue_third_read`)."""
         if self.cancel.is_set():
             return
-        crops: dict[str, bytes] = {}
-        for side, picture in (("architect", "arch_picture_id"), ("vendor", "vendor_picture_id")):
-            if finding.get(picture):
-                try:
-                    crops[side] = self.read_picture(str(finding[picture]))
-                except OSError:
-                    continue
+        drawn = self.reading_pictures(finding)
+        crops: dict[str, bytes] = drawn.upright()
+        if not crops:
+            # No clean picture could be drawn (no box on its page, no file): the evidence crops.
+            for side, picture in (
+                ("architect", "arch_picture_id"),
+                ("vendor", "vendor_picture_id"),
+            ):
+                if finding.get(picture):
+                    try:
+                        crops[side] = self.read_picture(str(finding[picture]))
+                    except OSError:
+                        continue
         try:
             read = module.second_read(
                 crops,
                 str(finding.get("item") or ""),
                 lambda content: self._second_read_call(content, self._read_share),
+                **_asked_words(module.second_read, drawn),
             )
             read = module.compare_read(read, finding)
         except (_NoRoom, _Cancelled, ProviderFailure):
@@ -3569,9 +3655,14 @@ class ChatEngine:
         if not recorded.readable:
             return []
         self.book.record_ids = frozenset(item["record_id"] for item in recorded.differences)
+        # Continue: the records the earlier answer held are carried as placed (`carry_over`);
+        # matched by `record_id`, never seeded again without their spots.
+        held = {str(f["record_id"]) for f in self.book.live() if f.get("record_id")}
         areas = self._page_areas()
         seeded = []
         for item in recorded.differences:
+            if str(item["record_id"]) in held:
+                continue
             area = areas.get(item.get("page")) if item.get("source") == "ai_page_review" else None
             what = str(item.get("what") or "")
             if area and not what.lower().startswith(area.lower()):
@@ -5743,12 +5834,86 @@ def _reads_first(finding: Mapping[str, Any]) -> tuple[int, int]:
     return (0 if could_go_red(finding) else 1, _differences_first(finding))
 
 
+def _asked_words(read: Callable[..., Any], drawn: read_spots.ReadPictures) -> dict[str, bool]:
+    """What the reading's question may say of its pictures (`read_spots`): the centre and the
+    overall, for a reader that takes them (a module loaded by name may be an older one)."""
+    try:
+        named = inspect.signature(read).parameters
+    except (TypeError, ValueError):
+        return {}
+    words = {"centred": drawn.centred, "overall": drawn.overall}
+    return {name: value for name, value in words.items() if name in named}
+
+
 def _read_key(finding: Mapping[str, Any]) -> tuple[Any, ...]:
     """What a second read read: the item, both values and both crops."""
     return tuple(
         finding.get(key)
         for key in ("item", "architect", "vendor", "arch_picture_id", "vendor_picture_id")
     )
+
+
+#: What Continue works out again for a carried finding (`ChatEngine.carry_over`) instead of
+#: keeping the earlier answer's; every other field is kept as it was:
+#: - `id`: this answer's own numbering;
+#: - `arch_picture_id`, `vendor_picture_id`: drawn again from the same boxes (the same pictures,
+#:   this answer's own files);
+#: - `checks`, `trust_level`, `evidence_kind`, `witnesses`, `inches`, `parts_sum`: code's checks
+#:   ($0), worked out again from the same values and spots (`apply_checks`); the AI readings in
+#:   them come back from the earlier answer while what they read is unchanged (`_carry_reads`),
+#:   and so do code's drawn-ink reads (`_kept_drawn_ink`);
+#: - `reads`, `second_read_values`: the readings, kept the same way (`_carry_reads`);
+#: - `decision`, `updated_in`: the reviewer's call and a later correction, added when the stored
+#:   answer is read, never stored on a finding.
+CARRY_RECOMPUTED: Final = frozenset(
+    {
+        "id",
+        "arch_picture_id",
+        "vendor_picture_id",
+        "checks",
+        "trust_level",
+        "evidence_kind",
+        "witnesses",
+        "inches",
+        "parts_sum",
+        "reads",
+        "second_read_values",
+        "decision",
+        "updated_in",
+    }
+)
+#: (The devil's advocate's `critic` is carried and kept by the checks while the labels it judged
+#: are the finding's, `chat_trust.kept_advocate`; else it is judged again.)
+#: A carried finding's readings are kept only while these are the earlier answer's (with its
+#: pictures drawn from the same boxes, what the readings read).
+_CARRY_READ_SAME: Final = ("item", "architect", "vendor", "arch_box", "vendor_box")
+
+
+def _kept_drawn_ink(earlier: Mapping[str, Any], finding: Mapping[str, Any]) -> dict[str, Any]:
+    """A carried finding with the earlier answer's drawn-ink reads (`drawn_ink_checks`, $0 OCR at
+    the finish) of the sides its own checks left waiting, while the values and boxes they were
+    read for are unchanged; judged again. Anything else stays as its checks say."""
+    out = dict(finding)
+    before = earlier.get("checks") if isinstance(earlier.get("checks"), Mapping) else {}
+    now = dict(out.get("checks") or {})
+    assert isinstance(before, Mapping)
+    if any(earlier.get(k) != out.get(k) for k in _CARRY_READ_SAME):
+        return out
+    changed = False
+    for key in ("verify_architect", "verify_vendor"):
+        old, new = before.get(key), now.get(key)
+        if (
+            isinstance(old, Mapping)
+            and not old.get("pending")
+            and isinstance(new, Mapping)
+            and new.get("pending")
+        ):
+            now[key] = dict(old)
+            changed = True
+    if not changed:
+        return out
+    out["checks"] = now
+    return judged(out)
 
 
 def _fresh_input(usage: Mapping[str, Any]) -> int:
