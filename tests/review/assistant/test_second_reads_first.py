@@ -8,7 +8,9 @@ so it went red without the read that, on another run of the same drawings, held 
   numbers its red would compare;
 - while findings still arrive, only would-be reds are read; a late one still gets its read; the
   last queue gives what is left to the rest, differences first;
-- the cap itself is unchanged.
+- every would-be red is read whatever the cap (Anant, 2026-10-28): the cap holds for the other
+  findings only; a would-be red past the hard ceiling (`READ_HARD_CEILING`) is marked "not
+  double-read", never red.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import pytest
 
 from app.review.assistant import chat_engine
 from app.review.assistant.chat_engine import (
+    READ_HARD_CEILING,
     SECOND_READ_LIMIT,
     ChatEngine,
     could_go_red,
@@ -48,8 +51,11 @@ def _red(id_: str) -> dict[str, Any]:
 
 def _engine(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(chat_engine, "load_module", lambda name: object())
-    engine = types.SimpleNamespace(_lock=threading.Lock(), _read_queued=set(), started=[])
+    engine = types.SimpleNamespace(
+        _lock=threading.Lock(), _read_queued=set(), _others_read=set(), started=[], unread=[]
+    )
     engine._second_read_one = lambda module, finding: None
+    engine._not_double_read = lambda finding, why: engine.unread.append((finding["id"], why))
     engine._submit_check = lambda phase, job: engine.started.append(phase)
     return engine
 
@@ -86,7 +92,8 @@ def test_a_please_check_item_with_both_numbers_is_read_before_later_reds(
     _queue(engine, [first, *reds])
     _queue(engine, [first, *reds], final=True)
     assert ("F1" in {key[0] for key in engine._read_queued}) is True
-    assert len(engine._read_queued) == SECOND_READ_LIMIT
+    # 2026-10-28: every would-be red is read, past the old cap of 30.
+    assert len(engine._read_queued) == 31 > SECOND_READ_LIMIT
 
 
 def test_a_late_would_be_red_still_gets_its_read(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -96,10 +103,10 @@ def test_a_late_would_be_red_still_gets_its_read(monkeypatch: pytest.MonkeyPatch
     assert _queue(engine, [*early, *reds]) == sorted(f["id"] for f in reds)
     late = _red("F99")  # arrives after them all
     assert _queue(engine, [*early, *reds, late]) == ["F99"]
-    # Once every finding is in, the reads left go to the rest; the cap holds.
+    # Once every finding is in, the rest get the cap's places (the would-be reds take none).
     rest = _queue(engine, [*early, *reds, late], final=True)
-    assert len(engine._read_queued) == SECOND_READ_LIMIT
-    assert len(rest) == SECOND_READ_LIMIT - 11
+    assert len(rest) == SECOND_READ_LIMIT
+    assert len(engine._read_queued) == SECOND_READ_LIMIT + 11
 
 
 def test_differences_come_before_the_rest_at_the_end(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,11 +122,24 @@ def test_would_be_reds_are_read_first_in_a_batch(monkeypatch: pytest.MonkeyPatch
     batch = [_finding(f"F{n}") for n in range(1, 40)] + [_red("F50"), _red("F51")]
     taken = _queue(engine, batch, final=True)
     assert "F50" in taken and "F51" in taken
-    assert len(taken) == SECOND_READ_LIMIT
+    assert len(taken) == SECOND_READ_LIMIT + 2
 
 
-def test_the_cap_is_unchanged_for_would_be_reds_too(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_every_would_be_red_is_read_past_the_old_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anant, 2026-10-28: on a real upload the cap of 30 was full before 4 would-be reds
+    arrived, and they went red never read twice. Every would-be red is read now; past the hard
+    ceiling one is marked "not double-read" (never red) instead of silently skipped."""
     engine = _engine(monkeypatch)
     reds = [_red(f"F{n}") for n in range(1, 41)]
-    assert len(_queue(engine, reds)) == SECOND_READ_LIMIT
-    assert _queue(engine, [_red("F99")], final=True) == []
+    assert len(_queue(engine, reds)) == 40 > SECOND_READ_LIMIT
+    assert _queue(engine, [_red("F99")], final=True) == ["F99"]
+    many = [_red(f"F{n}") for n in range(100, 100 + READ_HARD_CEILING)]
+    _queue(engine, many, final=True)
+    assert len(engine._read_queued) == READ_HARD_CEILING
+    assert engine.unread and all(
+        f"{READ_HARD_CEILING} readings" in why for _f, why in engine.unread
+    )
+    # The others keep the cap.
+    others = [_finding(f"F{n}") for n in range(500, 540)]
+    fresh = _engine(monkeypatch)
+    assert len(_queue(fresh, others, final=True)) == SECOND_READ_LIMIT
