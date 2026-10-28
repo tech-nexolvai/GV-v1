@@ -1,4 +1,8 @@
-"""Reviewer-facing Bedrock narration calls are recorded in the model ledger."""
+"""Reviewer-facing Bedrock narration calls are recorded in the model ledger.
+
+The old reviewer chat was removed on 2026-10-28; the recorder properties its calls proved (#694,
+#700) are now proved through the findings wording call, the recorder's remaining caller.
+"""
 
 from __future__ import annotations
 
@@ -23,10 +27,6 @@ from app.models import (
     TaskRun,
     WorkflowRun,
 )
-from app.review.chat_bedrock import PROMPT_ID as CHAT_PROMPT_ID
-from app.review.chat_bedrock import TEMPLATE_ID as CHAT_TEMPLATE_ID
-from app.review.chat_bedrock import TOOL_NAME as CHAT_TOOL_NAME
-from app.review.chat_bedrock import BedrockReviewerChat, _Config
 from app.runs.invocations import BedrockConverseInvocationRecorder
 from extraction.models.nova import NovaConfig
 from tests.app.postgres_fixture import alembic_config
@@ -116,33 +116,6 @@ def _finding() -> ComposerFinding:
     )
 
 
-def _chat_response(finding_key: str) -> dict[str, object]:
-    return {
-        "stopReason": "tool_use",
-        "usage": {"inputTokens": 321, "outputTokens": 45},
-        "output": {
-            "message": {
-                "content": [
-                    {
-                        "toolUse": {
-                            "name": CHAT_TOOL_NAME,
-                            "input": {
-                                "summary": "1 FAIL finding needs review.",
-                                "findings": [
-                                    {
-                                        "finding_key": finding_key,
-                                        "explanation": "Review the vendor depth before approval.",
-                                    }
-                                ],
-                            },
-                        }
-                    }
-                ]
-            }
-        },
-    }
-
-
 def _findings_response(finding_key: str) -> dict[str, object]:
     return {
         "stopReason": "tool_use",
@@ -170,68 +143,26 @@ def _findings_response(finding_key: str) -> dict[str, object]:
     }
 
 
+def _composer(
+    session: Session, revision_id: UUID, response: Mapping[str, object]
+) -> BedrockFindingsComposer:
+    return BedrockFindingsComposer(
+        NovaConfig(
+            model_id="configured-model",
+            prompt_id=FINDINGS_PROMPT_ID,
+            template_id=FINDINGS_TEMPLATE_ID,
+            connect_timeout_seconds=1,
+            read_timeout_seconds=2,
+            max_attempts=1,
+            region_name="us-east-1",
+        ),
+        _Client(response),
+        BedrockConverseInvocationRecorder(session, revision_id),
+    )
+
+
 def _rows(session: Session) -> list[ModelInvocation]:
     return list(session.scalars(select(ModelInvocation).order_by(ModelInvocation.created_at)))
-
-
-def test_reviewer_chat_success_writes_one_model_invocation(
-    postgres_engine: Engine,
-) -> None:
-    _upgrade(postgres_engine)
-    factory = session_factory(postgres_engine)
-    with factory() as session:
-        revision_id, _run_id = _revision_with_run(session)
-        finding = _finding()
-        chat = BedrockReviewerChat(
-            _Config("configured-model", "us-east-1", 1, 2),
-            _Client(_chat_response(finding.key)),
-            BedrockConverseInvocationRecorder(session, revision_id),
-        )
-
-        chat.compose((finding,), question="Why did this fail?")
-
-        rows = _rows(session)
-        assert len(rows) == 1
-        assert rows[0].extraction_run_id is None
-        assert rows[0].package_revision_id == revision_id
-        assert rows[0].model_id == "configured-model"
-        assert rows[0].prompt_id == CHAT_PROMPT_ID
-        assert rows[0].template_id == CHAT_TEMPLATE_ID
-        assert rows[0].input_tokens == 321
-        assert rows[0].output_tokens == 45
-        # No price file is stated in this test, so the cost of a call that used tokens is unknown —
-        # recorded as NULL, never as a free 0 (#700).
-        assert rows[0].cost_micros is None
-        assert rows[0].outcome == ModelInvocationOutcome.OK
-
-
-def test_reviewer_chat_refusal_is_recorded_with_zero_output_tokens(
-    postgres_engine: Engine,
-) -> None:
-    _upgrade(postgres_engine)
-    factory = session_factory(postgres_engine)
-    with factory() as session:
-        revision_id, _ = _revision_with_run(session)
-        chat = BedrockReviewerChat(
-            _Config("configured-model", "us-east-1", 1, 2),
-            _Client(
-                {
-                    "stopReason": "guardrail_intervened",
-                    "usage": {"inputTokens": 19, "outputTokens": 8},
-                    "output": {"message": {"content": []}},
-                }
-            ),
-            BedrockConverseInvocationRecorder(session, revision_id),
-        )
-
-        with pytest.raises(RuntimeError, match="one tool call"):
-            chat.compose((_finding(),), question="Why did this fail?")
-
-        rows = _rows(session)
-        assert len(rows) == 1
-        assert rows[0].input_tokens == 19
-        assert rows[0].output_tokens == 0
-        assert rows[0].outcome == ModelInvocationOutcome.REFUSED
 
 
 def test_findings_narration_success_writes_one_model_invocation(
@@ -294,7 +225,7 @@ def _revision_without_run(session: Session) -> UUID:
     return revision.id
 
 
-def test_a_chat_on_a_package_nobody_extracted_answers_and_is_recorded(
+def test_a_call_on_a_package_nobody_extracted_answers_and_is_recorded(
     postgres_engine: Engine,
 ) -> None:
     """**The defect #694 reproduced**, now the property that must hold.
@@ -309,15 +240,11 @@ def test_a_chat_on_a_package_nobody_extracted_answers_and_is_recorded(
     with factory() as session:
         revision_id = _revision_without_run(session)
         finding = _finding()
-        chat = BedrockReviewerChat(
-            _Config("configured-model", "us-east-1", 1, 2),
-            _Client(_chat_response(finding.key)),
-            BedrockConverseInvocationRecorder(session, revision_id),
-        )
+        composer = _composer(session, revision_id, _findings_response(finding.key))
 
-        reply = chat.compose((finding,), question="Why did this fail?")
+        reply = composer.compose((finding,))
 
-        assert reply is not None, "the chat did not answer"
+        assert reply is not None, "the call did not answer"
         rows = _rows(session)
         assert len(rows) == 1, "exactly one row per call, whatever the origin"
         assert rows[0].extraction_run_id is None
@@ -365,7 +292,7 @@ def test_a_row_with_both_origins_cannot_be_built() -> None:
         )
 
 
-def test_with_a_stated_price_the_chat_call_records_its_real_cost(
+def test_with_a_stated_price_the_call_records_its_real_cost(
     postgres_engine: Engine, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """**#700.** The same call as above, with a price file stated: 321 input and 45 output tokens at
@@ -398,12 +325,9 @@ def test_with_a_stated_price_the_chat_call_records_its_real_cost(
     with factory() as session:
         revision_id, _run_id = _revision_with_run(session)
         finding = _finding()
-        chat = BedrockReviewerChat(
-            _Config("configured-model", "us-east-1", 1, 2),
-            _Client(_chat_response(finding.key)),
-            BedrockConverseInvocationRecorder(session, revision_id),
-        )
-
-        chat.compose((finding,), question="Why did this fail?")
+        response = _findings_response(finding.key)
+        # The token counts the removed chat test used, so the expected cost below is unchanged.
+        response["usage"] = {"inputTokens": 321, "outputTokens": 45}
+        _composer(session, revision_id, response).compose((finding,))
 
         assert _rows(session)[0].cost_micros == 401

@@ -21,8 +21,6 @@ from typing import Final, Literal
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.review.chat_models import ChatModelChoice
-
 #: The gates `GV_TRY_AGAIN_GATES` may name (#1309), in step with
 #: `extraction/slot_reader/try_again.TRY_AGAIN_GATES` (`tests/workflow/test_try_again.py` checks).
 TRY_AGAIN_GATE_NAMES: frozenset[str] = frozenset(
@@ -75,9 +73,9 @@ class Settings(BaseSettings):
     # (`app/host_guard.py`, against DNS rebinding).
     trusted_hosts: tuple[str, ...] = ()
 
-    # The reviewer chat is optional presentation over completed findings.  It shares the deployment's
-    # configured Bedrock identity. An API without model credentials still serves the plain deterministic
-    # findings view because provider construction and every call are behind the fallback boundary.
+    # The optional Bedrock wording of the upload's findings (`workflow/findings_bedrock.py`). An API
+    # without model credentials still serves the plain deterministic findings, because provider
+    # construction and every call are behind the fallback boundary.
     bedrock_chat_enabled: bool = True
     # Empty explicitly disables the optional presentation provider.  Deterministic checks, reports
     # and grounded structured chat continue to work with this setting unset.
@@ -85,11 +83,6 @@ class Settings(BaseSettings):
     bedrock_region: str = Field(default="us-east-1", min_length=1)
     bedrock_connect_timeout: int = Field(default=10, ge=1)
     bedrock_read_timeout: int = Field(default=120, ge=1)
-    # The models a reviewer may pick from in the chat, as a JSON list of {id, label}. This is an
-    # allow-list, not a free choice: the endpoint refuses any id not in it, so a reviewer can never
-    # reach an unapproved or unmetered model. Empty means "only the default `bedrock_model`" — the
-    # picker then offers that single model, which is exactly today's behaviour made visible.
-    bedrock_chat_models: tuple[ChatModelChoice, ...] = ()
 
     # The review assistant (#1128): grounded answers about one review, from its records only, by
     # Claude Sonnet 5.5 through OpenRouter on the readers' keep-no-data route (Google Vertex global,

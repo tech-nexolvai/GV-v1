@@ -907,84 +907,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/projects/{project_id}/packages/{package_id}/chat": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Ask about one deterministic review run
-         * @description Narrate the package's current findings without changing, calculating, or extending them.
-         */
-        post: operations["reviewer_chat_api_v1_projects__project_id__packages__package_id__chat_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/projects/{project_id}/packages/{package_id}/chat/models": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * The models a reviewer may pick to narrate this run
-         * @description List the allow-listed narration models and the default, for the chat model picker.
-         *
-         *     An empty list means the deployment configured no chat model; the chat then serves its plain
-         *     deterministic findings view and the picker has nothing to offer.
-         */
-        get: operations["reviewer_chat_models_api_v1_projects__project_id__packages__package_id__chat_models_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/projects/{project_id}/packages/{package_id}/chat/stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Ask about one deterministic review run, streamed
-         * @description The same answer as ``/chat``, sent in the order it becomes known.
-         *
-         *     1. ``facts``: the recorded findings the question selects, at once. No model is involved.
-         *     2. ``stage``: only when a provider is about to be called.
-         *     3. ``narration``: the **complete, guarded** reply, identical to ``/chat``'s response body.
-         *     4. ``done``.
-         *
-         *     **Why the narration is not streamed token by token.** The provider returns every narrative in
-         *     one structured call, and ``compose_findings`` accepts or rejects that batch as a whole. A token
-         *     stream would show a reviewer sentences the guard might then discard. So the provider's words
-         *     are sent once, after the guard has accepted them; what streams is everything that did not
-         *     need a model.
-         *
-         *     Runs in a worker thread (FastAPI iterates a sync generator in its threadpool), and the request's
-         *     session stays open until the stream ends, so the provider call is recorded exactly as ``/chat``
-         *     records it.
-         */
-        post: operations["reviewer_chat_stream_api_v1_projects__project_id__packages__package_id__chat_stream_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/projects/{project_id}/packages/{package_id}/checks": {
         parameters: {
             query?: never;
@@ -6529,26 +6451,6 @@ export interface components {
             thinking?: boolean | null;
             /** @description #1551: how the app understood the question before the work (its `understood` block); null when it made no task spec, and on older answers. */
             understood?: components["schemas"]["ChatUnderstoodOut"] | null;
-        };
-        /**
-         * ChatModelChoice
-         * @description One selectable model: the exact Bedrock id, and the name a reviewer reads.
-         */
-        ChatModelChoice: {
-            /** Id */
-            id: string;
-            /** Label */
-            label: string;
-        };
-        /**
-         * ChatModelsOut
-         * @description The models a reviewer may choose from, and which one answers by default.
-         */
-        ChatModelsOut: {
-            /** Default */
-            default?: string | null;
-            /** Models */
-            models: components["schemas"]["ChatModelChoice"][];
         };
         /** ChatOut */
         ChatOut: {
@@ -12352,52 +12254,6 @@ export interface components {
             /** Note */
             note?: string | null;
         };
-        /**
-         * ReviewerChatNarrative
-         * @description One answer fragment and the deterministic finding that backs it.
-         */
-        ReviewerChatNarrative: {
-            /**
-             * Finding Id
-             * Format: uuid
-             */
-            finding_id: string;
-            /** Text */
-            text: string;
-        };
-        /**
-         * ReviewerChatOut
-         * @description Bounded chat response; every narrative has a finding id from this exact run.
-         */
-        ReviewerChatOut: {
-            /** Answer */
-            answer: string;
-            /** Fallback Reason */
-            fallback_reason?: string | null;
-            /** Findings */
-            findings: components["schemas"]["ReviewerChatNarrative"][];
-            /** Mode */
-            mode: string;
-            /** Model Id */
-            model_id?: string | null;
-            /** Summary */
-            summary?: string | null;
-        };
-        /**
-         * ReviewerChatRequest
-         * @description A reviewer question; it cannot carry findings, values, rules, or verdicts.
-         *
-         *     ``model_id`` is an optional presentation choice — which allow-listed model narrates. It changes
-         *     no fact: the answer is still composed from stored findings and the narration guard is unchanged.
-         *     An id the deployment did not allow-list is refused (422), so a reviewer cannot select an
-         *     unapproved model. ``None`` uses the deployment default.
-         */
-        ReviewerChatRequest: {
-            /** Model Id */
-            model_id?: string | null;
-            /** Question */
-            question: string;
-        };
         /** ReviewerDecisionOut */
         ReviewerDecisionOut: {
             /** Action */
@@ -15725,110 +15581,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChangedValuesOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reviewer_chat_api_v1_projects__project_id__packages__package_id__chat_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-                package_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ReviewerChatRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ReviewerChatOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reviewer_chat_models_api_v1_projects__project_id__packages__package_id__chat_models_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-                package_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChatModelsOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reviewer_chat_stream_api_v1_projects__project_id__packages__package_id__chat_stream_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-                package_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ReviewerChatRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": unknown;
                 };
             };
             /** @description Validation Error */

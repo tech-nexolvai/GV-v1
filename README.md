@@ -185,7 +185,7 @@ a rule never guesses them. The rule files live in [`rules/rulebook/`](rules/rule
 | ⚙️ **Workflow** | Hatchet Lite (durable steps) · transactional outbox · idempotent workers and dispatcher |
 | 📄 **PDF and vision** | pdfplumber · pypdfium2 · pikepdf · OpenCV · Shapely · RapidOCR (pages with no vector text) |
 | 🤖 **AI readers** | Claude Opus 5.5 + Claude Sonnet 5.5 as the independent reader pair, through OpenRouter (Google Vertex, zero data retention); the direct Anthropic API is one setting away |
-| ☁️ **Amazon Bedrock** | Kimi + Qwen3-VL form readers · Bedrock models (Nova) for findings narration and the reviewer chat |
+| ☁️ **Amazon Bedrock** | Kimi + Qwen3-VL form readers · Bedrock models (Nova) for findings narration |
 | 🧠 **Agent** | LangGraph, bounded: fixed step and retry limits, otherwise the item goes to review |
 | 🧮 **Verdict engine** | Python standard library only · typed operation registry · exact `Fraction` / `Decimal` arithmetic · isolated from models, search and network |
 | 📑 **Reports** | ReportLab (signed findings PDF) · pypdf (redline) · openpyxl (workbook) |

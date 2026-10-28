@@ -186,7 +186,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         review_assistant,
         review_items,
         review_pages,
-        reviewer_chat,
         revisions,
         rules,
         slot_rows,
@@ -262,7 +261,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Review sessions and the actions a reviewer takes (#229). The service has existed since
     # D4.1; this is what lets the workspace reach it.
     app.include_router(review.router, prefix=API_PREFIX)
-    app.include_router(reviewer_chat.router, prefix=API_PREFIX)
     # The review assistant (#1128): answers from one review's records, guarded; points, never decides.
     app.include_router(review_assistant.router, prefix=API_PREFIX)
     # The chat-first assistant (#1463): saved chats per drawing set, streamed, read-only on the review.

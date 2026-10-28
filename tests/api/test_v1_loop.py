@@ -332,22 +332,6 @@ def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_rev
         item for item in findings.json()["items"] if item["rule_id"] == "CT-DEPTH-001"
     )
 
-    # The reviewer chat is a presentation layer over this *same* live run. With its optional
-    # provider disabled in this test, it must still return the plain structured finding rather than
-    # fail the review or claim a new outcome.
-    chat = client.post(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/chat",
-        json={"question": "Which sheet passed, and why?"},
-    )
-    assert chat.status_code == 200, chat.text
-    answer = chat.json()
-    assert answer["mode"] == "structured_fallback"
-    assert len(answer["findings"]) == 1
-    assert answer["findings"][0]["finding_id"] == depth_finding["id"]
-    assert answer["findings"][0]["text"].startswith(
-        "Countertop depth verification — Looks right (CT-DEPTH-001)."
-    )
-
     chain = client.get(
         f"/api/v1/projects/{PROJECT}/packages/{package_id}/findings/{depth_finding['id']}/chain"
     )
