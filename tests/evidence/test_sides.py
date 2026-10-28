@@ -22,7 +22,6 @@ import tempfile
 from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -50,7 +49,6 @@ from app.models import (
 )
 from app.models.runs import TaskRun, WorkflowRun
 from storage.local import LocalStore
-from tests.api.test_drawing_views import _client
 from tests.evidence.test_bridge import _upgrade
 from tests.extraction.test_annotations import _free_text
 from tests.extraction.test_annotations import _pdf as _annotated_pdf
@@ -537,53 +535,6 @@ def test_the_form_filler_uses_each_readings_drawing_and_never_an_unconfirmed_one
     assert offered == {"36 in": "SHOP"}
 
 
-def test_the_measure_page_is_told_each_readings_side_and_why_one_has_none(
-    session: Session, store: LocalStore
-) -> None:
-    """Outcome: the candidates list carries the drawing's side, and for a reading on an unconfirmed
-    drawing no side and the sentence that says what to do."""
-    revision = _read(session, store, kind="shop")
-    _halves(session, revision, left=None, right=ViewRole.SHOP)
-    session.commit()
-    package = session.get(Package, revision.package_id)
-    assert package is not None
-
-    response = _client(session, store, package.project_id).get(
-        f"/api/v1/projects/{package.project_id}/packages/{package.id}/candidates?page_number=1"
-    )
-
-    assert response.status_code == 200, response.text
-    by_text: dict[str, Any] = {item["raw_text"]: item for item in response.json()["candidates"]}
-    assert (by_text['36"']["source"], by_text['36"']["source_refusal"]) == ("SHOP", None)
-    assert by_text['24"']["source"] is None
-    assert "confirm whether this drawing" in by_text['24"']["source_refusal"]
-    assert session.execute(select(DrawingView)).scalars().all()
-
-
-@pytest.mark.parametrize(
-    ("also", "expected"),
-    [("architectural", "shop"), (None, None)],
-)
-def test_the_drawings_list_says_which_drawings_the_upload_decides(
-    session: Session, store: LocalStore, also: str | None, expected: str | None
-) -> None:
-    """Outcome: in a two-PDF package the shop file's one drawing is listed as decided by the upload;
-    alone, it is not — so the Measure page asks only about the drawings that need a person."""
-    revision = _read(session, store, kind="shop", also=also)
-    _one_drawing(session, revision, None)
-    session.commit()
-    package = session.get(Package, revision.package_id)
-    assert package is not None
-
-    response = _client(session, store, package.project_id).get(
-        f"/api/v1/projects/{package.project_id}/packages/{package.id}/views"
-    )
-
-    assert response.status_code == 200, response.text
-    (view,) = response.json()["views"]
-    assert (view["role"], view["upload_side"]) == (None, expected)
-
-
 # ---------------------------------------------------------------------------
 # A reviewer's markup (#802)
 # ---------------------------------------------------------------------------
@@ -633,24 +584,6 @@ def test_the_form_filler_never_offers_a_reviewers_markup(
     revision, _markup = _markup_on_a_confirmed_vendor_drawing(session, store)
 
     assert assignment_readings(session, revision) == ()
-
-
-def test_the_measure_page_says_a_markup_reading_is_neither_drawing(
-    session: Session, store: LocalStore
-) -> None:
-    revision, _markup = _markup_on_a_confirmed_vendor_drawing(session, store)
-    session.commit()
-    package = session.get(Package, revision.package_id)
-    assert package is not None
-
-    response = _client(session, store, package.project_id).get(
-        f"/api/v1/projects/{package.project_id}/packages/{package.id}/candidates?page_number=1"
-    )
-
-    assert response.status_code == 200, response.text
-    (item,) = response.json()["candidates"]
-    assert item["source"] is None
-    assert "reviewer's markup" in item["source_refusal"]
 
 
 def test_the_markup_route_named_here_is_the_one_the_stage_records() -> None:

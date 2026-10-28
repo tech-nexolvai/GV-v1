@@ -1,27 +1,22 @@
 """A review verb alone cannot resolve a live check (#1026 safety review D1–D6)."""
 
-from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
 from uuid import UUID, uuid4
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_artifact_store
-from app.main import API_PREFIX
 from app.models import (
     CanonicalObservation,
-    CheckRun,
     Finding,
     FindingEvidence,
     PackageRevision,
-    ReviewAction,
     ReviewSession,
 )
-from app.models.review import ReviewActionKind, ReviewException
+from app.models.review import ReviewActionKind
 from app.review.approval import _findings, approval_readiness
 from app.review.evidence_actions import correct_evidence
 from app.review.session import open_session, record_action
@@ -54,133 +49,6 @@ def _case(
     return project, revision, finding, review, _review_client(db, project)
 
 
-def _assert_blocked(
-    client: TestClient,
-    project: UUID,
-    revision: PackageRevision,
-    review: ReviewSession,
-    finding: Finding,
-    *,
-    rerun: bool = False,
-) -> None:
-    readiness = client.get(
-        f"{API_PREFIX}/projects/{project}/packages/{revision.package_id}/approval-readiness"
-    )
-    assert readiness.status_code == 200, readiness.text
-    # The finding is still open: the refused or unsupported action did not answer it. Since every
-    # question is optional (owner decision 2026-10-16) an open finding no longer locks sign-off; it
-    # is signed as "Not confirmed by a person", never as answered.
-    assert readiness.json()["blocking_finding_ids"] == [str(finding.id)]
-    # A recorded correction waits for the checks to run again: a system state, so still locked.
-    assert readiness.json()["can_approve"] is not rerun
-    if rerun:
-        response = client.post(
-            f"{API_PREFIX}/projects/{project}/review-sessions/{review.id}/approve"
-        )
-        assert response.status_code == 409, response.text
-
-
-@pytest.mark.parametrize("action", ["correct", "except"])
-def test_bare_special_action_is_refused_and_does_not_unlock_signoff(
-    session: Session, action: str
-) -> None:
-    project, revision, finding, review, client = _case(session)
-    response = client.post(
-        f"{API_PREFIX}/projects/{project}/review-sessions/{review.id}/actions",
-        json={"finding_id": str(finding.id), "action": action},
-    )
-    assert response.status_code == 422, response.text
-    _assert_blocked(client, project, revision, review, finding)
-
-
-@pytest.mark.parametrize("action", ["correct", "except"])
-def test_legacy_action_without_its_supporting_record_never_unlocks_signoff(
-    session: Session, action: str
-) -> None:
-    project, revision, finding, review, client = _case(session)
-    session.add(
-        ReviewAction(
-            review_session_id=review.id,
-            finding_id=finding.id,
-            package_revision_id=revision.id,
-            action=action,
-            actor="anant",
-            note="Synthetic unsupported legacy action",
-        )
-    )
-    session.commit()
-    _assert_blocked(client, project, revision, review, finding, rerun=action == "correct")
-
-
-@pytest.mark.parametrize("expired,wrong_scope", [(True, False), (False, True), (False, False)])
-def test_only_matching_unexpired_exception_resolves_the_finding(
-    session: Session, expired: bool, wrong_scope: bool
-) -> None:
-    project, revision, finding, review, client = _case(session)
-    now = datetime.now(UTC)
-    action = ReviewAction(
-        review_session_id=review.id,
-        finding_id=finding.id,
-        package_revision_id=revision.id,
-        action="except",
-        actor="anant",
-        note="Synthetic exception",
-        created_at=now - timedelta(days=2),
-    )
-    session.add(action)
-    session.flush()
-    session.add(
-        ReviewException(
-            review_action_id=action.id,
-            scope="finding",
-            scope_id=uuid4() if wrong_scope else finding.id,
-            reason="Synthetic exception",
-            approved_by="anant",
-            created_at=now - timedelta(days=2),
-            expires_at=now + timedelta(days=-1 if expired else 1),
-        )
-    )
-    session.commit()
-    if expired or wrong_scope:
-        _assert_blocked(client, project, revision, review, finding)
-    else:
-        assert approval_readiness(session, revision.id).blocking_finding_ids == ()
-
-
-@pytest.mark.parametrize("note", [None, "", "   "])
-def test_dismissing_fail_requires_a_note(session: Session, note: str | None) -> None:
-    project, revision, finding, review, client = _case(session)
-    response = client.post(
-        f"{API_PREFIX}/projects/{project}/review-sessions/{review.id}/actions",
-        json={"finding_id": str(finding.id), "action": "dismiss", "note": note},
-    )
-    assert response.status_code == 422, response.text
-    _assert_blocked(client, project, revision, review, finding)
-
-
-def test_fail_dismissal_note_is_recorded_in_the_signed_words(session: Session) -> None:
-    project, revision, finding, review, client = _case(session)
-    response = client.post(
-        f"{API_PREFIX}/projects/{project}/review-sessions/{review.id}/actions",
-        json={
-            "finding_id": str(finding.id),
-            "action": "dismiss",
-            "note": "Detail cannot be checked",
-        },
-    )
-    assert response.status_code == 201, response.text
-    action = response.json()
-    words = ReviewDisposition(
-        action_id=action["id"],
-        action=action["action"],
-        reviewer=action["actor"],
-        at=action["created_at"],
-        note=action["note"],
-    ).wording("FAIL")
-    assert "Detail cannot be checked" in words and "FAIL" in words
-    assert approval_readiness(session, revision.id).blocking_finding_ids == ()
-
-
 def test_confirmed_fail_is_a_problem_for_the_vendor_without_a_note(session: Session) -> None:
     _, revision, finding, review, _ = _case(session)
     action = record_action(
@@ -196,23 +64,6 @@ def test_confirmed_fail_is_a_problem_for_the_vendor_without_a_note(session: Sess
     ).wording("FAIL")
     assert "problem for the vendor" in words.lower()
     assert "FAIL" in words
-
-
-def test_approval_cannot_use_a_session_from_another_project(session: Session) -> None:
-    project, _, _, _, _ = _case(session)
-    _, _, foreign, foreign_review, _ = _case(session)
-    record_action(
-        session,
-        review_session_id=foreign_review.id,
-        finding_id=foreign.id,
-        action=ReviewActionKind.CONFIRM,
-        actor="anant",
-    )
-    session.commit()
-    response = _review_client(session, project).post(
-        f"{API_PREFIX}/projects/{project}/review-sessions/{foreign_review.id}/approve"
-    )
-    assert response.status_code == 404, response.text
 
 
 def test_correction_blocks_until_new_live_run_and_new_finding(
@@ -277,40 +128,3 @@ def test_correction_blocks_until_new_live_run_and_new_finding(
         replacement.id
         in approval_readiness(session, finding.package_revision_id).blocking_finding_ids
     )
-
-
-def test_missing_input_reason_is_plain_without_changing_stored_reason(session: Session) -> None:
-    project, revision, original, _, client = _case(session, Outcome.NOT_FOUND)
-    reason = "the final operation could not resolve required value 'shop_cabinets'"
-    parent = session.get(CheckRun, original.check_run_id)
-    run = CheckRun(
-        package_revision_id=revision.id,
-        rule_snapshot_id=parent.rule_snapshot_id,
-        engine_version="synthetic",
-    )
-    session.add(run)
-    session.flush()
-    finding = Finding(
-        check_run_id=run.id,
-        package_revision_id=revision.id,
-        outcome="NOT_FOUND",
-        severity="FLAG",
-        trace={},
-        parameter_set_versions={},
-        reason=reason,
-    )
-    session.add(finding)
-    session.commit()
-    items = client.get(
-        f"{API_PREFIX}/projects/{project}/packages/{revision.package_id}/findings"
-    ).json()["items"]
-    shown = next(item for item in items if item["id"] == str(finding.id))
-    assert "shop_cabinets" not in shown["reviewer_reason"]
-    assert "cabinet" in shown["reviewer_reason"].lower()
-    chain = client.get(
-        f"{API_PREFIX}/projects/{project}/packages/{revision.package_id}/findings/{finding.id}/chain"
-    )
-    assert chain.status_code == 200, chain.text
-    assert "shop_cabinets" not in chain.json()["reviewer_reason"]
-    session.refresh(finding)
-    assert finding.reason == reason

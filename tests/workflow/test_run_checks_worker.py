@@ -140,14 +140,6 @@ def test_run_checks_is_declared_with_one_queued_run_per_revision() -> None:
     assert task["execution_timeout"] == CHECK_RUN_TAKES_UP_TO == timedelta(minutes=30)
 
 
-def test_the_name_is_the_one_the_outbox_enqueues() -> None:
-    """A different name would be a request no worker ever picks up."""
-    from app.api.measurements import RUN_CHECKS_WORKFLOW as FROM_THE_API
-    from workflow.stages import RUN_CHECKS_AFTER_READING
-
-    assert RUN_CHECKS_WORKFLOW == FROM_THE_API == RUN_CHECKS_AFTER_READING
-
-
 def test_the_key_is_the_revision_id_the_run_is_asked_with() -> None:
     """The engine evaluates the key over the run's input, which is the outbox payload as the API
     writes it (`_run_checks_payload`). Two runs for one revision share a group; another revision's

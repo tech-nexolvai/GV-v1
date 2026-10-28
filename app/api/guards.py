@@ -106,26 +106,11 @@ class ReadOnlyFilter:
 #:
 #: Every future read endpoint that filters on a verdict value needs its own entry here. That is the
 #: cost of the strict default, and it is the point: each line is a decision somebody wrote down.
-READ_ONLY_FILTERS: tuple[ReadOnlyFilter, ...] = (
-    ReadOnlyFilter(
-        method="GET",
-        path="/api/v1/projects/{project_id}/packages/{package_id}/findings",
-        field="outcome",
-        reason=(
-            "Narrows a list of findings the engine already decided. Read-only, and the value never "
-            "reaches an arithmetic comparison — it becomes a WHERE clause over rows we wrote."
-        ),
-    ),
-    ReadOnlyFilter(
-        method="GET",
-        path="/api/v1/projects/{project_id}/packages/{package_id}/findings",
-        field="severity",
-        reason=(
-            "The same, for severity. A reviewer asking to see only the critical findings is reading "
-            "our conclusions, not offering theirs."
-        ),
-    ),
-)
+#: None today: the one read endpoint that filtered on verdict values, the old findings list
+#: (`GET …/packages/{package_id}/findings`, `outcome` and `severity`), was removed with the old review
+#: screens on 2026-10-28, and an exemption for a route nobody serves is refused by
+#: `unused_read_only_filters`.
+READ_ONLY_FILTERS: tuple[ReadOnlyFilter, ...] = ()
 
 
 class ClientVerdictAccepted(RuntimeError):

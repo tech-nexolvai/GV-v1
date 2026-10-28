@@ -223,13 +223,22 @@ def test_the_shipped_api_accepts_no_verdict() -> None:
 def test_the_factory_would_refuse_to_build_an_unsafe_api() -> None:
     """**The startup half of the guard, proven by making the real app unsafe.**
 
-    With the exemptions removed, the shipped findings filters are offences — so if `create_app` did
-    not call the guard, this would pass silently and the whole check would be test-only. Rewriting the
-    exemption list rather than asserting the call is present is the difference between checking the
-    mechanism runs and checking it is spelled correctly.
+    One of the routers the factory wires is swapped for one that filters on a verdict value with no
+    exemption — so if `create_app` did not call the guard, this would pass silently and the whole check
+    would be test-only. (Until 2026-10-28 the shipped findings filters were the offence used here; that
+    route was removed with the old review screens.)
     """
+    offending = APIRouter()
+
+    @offending.get("/projects/{project_id}/verdict-filter")
+    async def verdict_filter(
+        project_id: UUID,
+        outcome: Annotated[Outcome | None, Query()] = None,
+    ) -> dict[str, str]:  # pragma: no cover - never called
+        return {}
+
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr("app.api.guards.READ_ONLY_FILTERS", ())
+        patch.setattr("app.api.usage.router", offending)
         with pytest.raises(ClientVerdictAccepted):
             _app()
 
@@ -244,31 +253,15 @@ def test_the_audit_can_see_the_wired_routers() -> None:
     """
     paths = [mounted.path for mounted in mounted_routes(_app())]
 
-    assert FINDINGS_PATH in paths, "the audit cannot see routes behind include_router"
+    assert (
+        "/api/v1/projects/{project_id}/packages-summary" in paths
+    ), "the audit cannot see routes behind include_router"
     assert sum(path.startswith("/api/v1/") for path in paths) >= 5
 
 
 # ---------------------------------------------------------------------------
 # The exemptions are load-bearing, and cannot be stretched
 # ---------------------------------------------------------------------------
-
-
-def test_the_findings_filters_would_be_refused_without_their_exemption() -> None:
-    """Proof the two entries in `READ_ONLY_FILTERS` are doing real work.
-
-    If these fields were not offences in the first place, the exemptions would be decoration and a
-    later reader would conclude the strict default is not really strict.
-
-    The app is built *before* the exemptions are removed, because building it is what runs the startup
-    assertion — patch first and the factory raises before the audit can be inspected.
-    """
-    app = _app()
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr("app.api.guards.READ_ONLY_FILTERS", ())
-        refused = {(o.path, o.field) for o in offences(app)}
-
-    assert (FINDINGS_PATH, "outcome") in refused
-    assert (FINDINGS_PATH, "severity") in refused
 
 
 def test_every_shipped_exemption_excuses_something_that_exists() -> None:
@@ -352,13 +345,11 @@ def test_the_validator_accepts_the_shipped_exemptions() -> None:
     validate_read_only_filters(READ_ONLY_FILTERS)
 
 
-def test_the_exemptions_are_only_the_findings_filters() -> None:
+def test_there_are_no_shipped_exemptions() -> None:
     """A growing list is how this erodes — each entry defensible alone until the set means nothing.
-    Two read-only filters today; adding a third should be a decision somebody sees in review."""
-    assert {(f.method, f.path, f.field) for f in READ_ONLY_FILTERS} == {
-        ("GET", FINDINGS_PATH, "outcome"),
-        ("GET", FINDINGS_PATH, "severity"),
-    }
+    None today (the old findings list's two filters went with that route on 2026-10-28); adding one
+    should be a decision somebody sees in review."""
+    assert READ_ONLY_FILTERS == ()
 
 
 # ---------------------------------------------------------------------------

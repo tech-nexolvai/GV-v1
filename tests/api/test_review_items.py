@@ -3,40 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import Engine, event, select
+from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.dependencies import get_session
-from app.auth import Principal, Role, authenticate
-from app.config import Settings
 from app.db.session import session_factory
-from app.main import API_PREFIX, create_app
-from app.models import CheckRun, Finding, ObservationCandidate, PackageRevision
-from app.models.rules import RuleDefinition, RuleSnapshot
-from app.review.approval import approval_readiness
-from tests.api.test_slot_rows import _package_rows, _run_current_checks
-from tests.api.test_wall_cases_api import _sealed
 from tests.app.postgres_fixture import alembic_config
 
 pytest_plugins = ("tests.app.postgres_fixture",)
-
-BLOCKING = {"FAIL", "REVIEW_REQUIRED", "NOT_FOUND"}
-DEPTH_AND_SINK = {
-    "CT-DEPTH-001",
-    "CT-SINK-CUTOUT-WIDTH-001",
-    "CT-SINK-CUTOUT-DEPTH-001",
-    "CT-SINK-OFFSET-FRONT-001",
-    "CT-BACK-OFFSET-MIN-001",
-    "CT-SINK-CABINET-WIDTH-001",
-}
 
 
 @pytest.fixture
@@ -49,184 +27,6 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
         yield opened
     finally:
         opened.close()
-
-
-def _client(session: Session, project_id: UUID) -> TestClient:
-    app = create_app(Settings(database_url="postgresql+psycopg://gv:gv@localhost:5434/unused"))
-    app.dependency_overrides[authenticate] = lambda: Principal(
-        id="reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
-    )
-    app.dependency_overrides[get_session] = lambda: session
-    return TestClient(app)
-
-
-def _readers_differ(page_index: int, _row_offset: int, slot: str) -> list[str]:
-    """Page 1's first piece: two readers wrote different numbers (made-up values)."""
-    if page_index == 0 and slot == "0":
-        return ["reader:model-a:20", "reader:model-b:28", "readers-differ"]
-    return []
-
-
-def _live(session: Session, package_id: UUID) -> list[tuple[Finding, str]]:
-    revision = session.query(PackageRevision).filter_by(package_id=package_id).one()
-    return [
-        (finding, rule_id)
-        for finding, rule_id in session.execute(
-            select(Finding, RuleDefinition.rule_id)
-            .join(CheckRun, CheckRun.id == Finding.check_run_id)
-            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
-            .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
-            .where(Finding.package_revision_id == revision.id, CheckRun.superseded_at.is_(None))
-        ).all()
-    ]
-
-
-def test_every_blocking_result_is_listed_exactly_once(session: Session, tmp_path: Path) -> None:
-    project_id, package_id, anchors = _package_rows(
-        session, unsealed_page=0, piece_count=2, slot_flags=_readers_differ
-    )
-    _run_current_checks(session, package_id, tmp_path)
-    session.commit()
-    live = _live(session, package_id)
-    blocking = {finding.id for finding, _rule in live if finding.outcome in BLOCKING}
-    assert blocking, "the fixture must give blocking results to account for"
-
-    response = _client(session, project_id).get(
-        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items"
-    )
-    assert response.status_code == 200, response.text
-    body = response.json()
-
-    assert body["unaccounted"] == []
-    groups: dict[str, list[str]] = {}
-    for name in ("items", "failures", "not_checked"):
-        ids = {entry["finding_id"] for entry in body[name] if entry["finding_id"] is not None}
-        for finding_id in ids:
-            groups.setdefault(finding_id, []).append(name)
-    assert set(groups) == {str(finding_id) for finding_id in blocking}
-    assert all(len(placed) == 1 for placed in groups.values()), groups
-    # failures and not_checked list each result once.
-    for name in ("failures", "not_checked"):
-        listed = [entry["finding_id"] for entry in body[name]]
-        assert len(listed) == len(set(listed))
-
-    outcomes = {str(finding.id): finding.outcome for finding, _rule in live}
-    assert all(outcomes[entry["finding_id"]] == "FAIL" for entry in body["failures"])
-    # With the depth and sink reader off, every depth and sink check waiting is "not checked".
-    assert {entry["finding_id"] for entry in body["not_checked"]} == {
-        str(finding.id)
-        for finding, rule in live
-        if rule in DEPTH_AND_SINK and finding.outcome in BLOCKING
-    }
-    assert body["not_checked"], "the fixture must give depth and sink checks waiting"
-    assert all(entry["status"] == "open" for entry in body["not_checked"])
-
-    # The held number on page 1: one item of its own, with the stored suggestion as the guess and
-    # each reader's text, the readers' disagreement in plain words, and Confirm/Fix while open.
-    numbers = [item for item in body["items"] if item["kind"] == "number"]
-    assert len(numbers) == 1
-    number = numbers[0]
-    assert number["page"] == 1
-    assert number["candidate_id"] == str(anchors[0])
-    assert number["what"] == "Piece 1 width"
-    assert number["best_guess"]["source"] == "suggestion"
-    assert number["best_guess"]["value"]["display"] == '20"'
-    assert [reader["text"] for reader in number["readers"]] == ["20", "28"]
-    assert number["actions"] == ["confirm", "fix"]
-    assert number["status"] == "open"
-    assert number["finding_id"] in groups
-
-    revision = session.query(PackageRevision).filter_by(package_id=package_id).one()
-    readiness = approval_readiness(session, revision.id)
-    header = body["header"]
-    assert header["can_finalise"] is readiness.can_approve
-    assert header["blocked_reason"] == readiness.reason
-    assert header["failures"] == len(body["failures"])
-    assert header["not_checked"] == len(body["not_checked"])
-    assert header["numbers"] == 6
-    assert header["confirmed_by_ai"] == 5
-
-
-def test_a_not_checked_entry_names_the_settings_it_waits_for(
-    session: Session, tmp_path: Path
-) -> None:
-    """#1373: a check missing a company or project setting carries its key and plain name, so the
-    screen can link to that field; one missing only a drawn value carries none. Each key is a field
-    the Company settings page lists for the project (`focus=<key>` lands on it)."""
-    project_id, package_id, _anchors = _package_rows(session, unsealed_page=0)
-    _run_current_checks(session, package_id, tmp_path)
-    session.commit()
-    client = _client(session, project_id)
-
-    response = client.get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items")
-    assert response.status_code == 200, response.text
-    by_rule: dict[str, list[dict[str, Any]]] = {}
-    for entry in response.json()["not_checked"]:
-        by_rule.setdefault(str(entry["rule_id"]), []).append(entry)
-
-    def settings(rule_id: str) -> list[list[tuple[str, str, str]]]:
-        assert by_rule.get(rule_id), f"the fixture must leave {rule_id} not checked"
-        return [
-            [(need["key"], need["name"], need["project_id"]) for need in entry["settings"]]
-            for entry in by_rule[rule_id]
-        ]
-
-    project = str(project_id)
-    # Missing two project settings (and a drawn value): both named, on every one of its results.
-    assert all(
-        listed
-        == [
-            ("cabinet_depth", "Cabinet depth", project),
-            ("countertop_overhang", "Countertop overhang", project),
-        ]
-        for listed in settings("CT-DEPTH-001")
-    )
-    # Missing only a drawn value: no setting, so no link.
-    assert all(listed == [] for listed in settings("CT-SINK-OFFSET-FRONT-001"))
-    # Missing the sink's inside width: on the sink card, not a settings field, so not listed.
-    assert all(listed == [] for listed in settings("CT-SINK-CUTOUT-WIDTH-001"))
-
-    projects = client.get(f"{API_PREFIX}/company-settings/projects")
-    assert projects.status_code == 200, projects.text
-    fields = {
-        setting["name"]
-        for listed in projects.json()["projects"]
-        if listed["id"] == project
-        for setting in listed["settings"]
-    }
-    keys = {need["key"] for entry in response.json()["not_checked"] for need in entry["settings"]}
-    assert keys, "the fixture must give a setting to link to"
-    assert keys <= fields, keys - fields
-
-
-def test_reading_the_list_writes_nothing(session: Session, tmp_path: Path) -> None:
-    project_id, package_id, _anchors = _package_rows(session, unsealed_page=0)
-    _run_current_checks(session, package_id, tmp_path)
-    session.commit()
-    writes: list[str] = []
-
-    def record(_conn: object, _cursor: object, statement: str, *_rest: object) -> None:
-        if statement.lstrip().split(None, 1)[0].upper() in {"INSERT", "UPDATE", "DELETE"}:
-            writes.append(statement)
-
-    engine = session.get_bind()
-    event.listen(engine, "before_cursor_execute", record)
-    try:
-        response = _client(session, project_id).get(
-            f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items"
-        )
-    finally:
-        event.remove(engine, "before_cursor_execute", record)
-    assert response.status_code == 200, response.text
-    assert writes == []
-
-
-def test_an_unknown_package_is_not_found(session: Session) -> None:
-    project_id = uuid4()
-    response = _client(session, project_id).get(
-        f"{API_PREFIX}/projects/{project_id}/packages/{uuid4()}/review-items"
-    )
-    assert response.status_code == 404
 
 
 def _candidate(flags: list[str], value: tuple[int, int] | None = None) -> SimpleNamespace:
@@ -327,45 +127,6 @@ def test_reviewer_wrote_is_removed_to_the_end_of_its_clause() -> None:
     assert plain_why("reviewer wrote 42.5", fallback) == fallback
 
 
-def test_a_held_number_with_no_place_on_the_row_is_checked_by_hand(
-    session: Session, tmp_path: Path
-) -> None:
-    """A held record with no `slot:` flag is never skipped: it is listed to check by hand."""
-    project_id, package_id, anchors = _package_rows(session, unsealed_page=0)
-    anchor = session.get(ObservationCandidate, anchors[0])
-    assert anchor is not None
-    unplaced = ObservationCandidate(
-        document_version_id=anchor.document_version_id,
-        page_id=anchor.page_id,
-        extraction_run_id=anchor.extraction_run_id,
-        raw_text="17",
-        value_numerator=17,
-        value_denominator=1,
-        unit="in",
-        polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
-        coordinate_space="image",
-        ambiguity_flags=["slot-reader", "row-rank:1", "ink:vendor", "reader:model-a:17"],
-        review_reason="made-up hold",
-    )
-    session.add(unplaced)
-    session.flush()
-    _run_current_checks(session, package_id, tmp_path)
-    session.commit()
-
-    body = (
-        _client(session, project_id)
-        .get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items")
-        .json()
-    )
-    assert body["unaccounted"] == []
-    assert all(item["candidate_id"] != str(unplaced.id) for item in body["items"])
-    by_hand = [
-        item for item in body["items"] if item["kind"] == "countertop_by_hand" and item["page"] == 1
-    ]
-    assert len(by_hand) == 1
-    assert "place on the row was not recorded" in by_hand[0]["what"]
-
-
 def test_the_accounting_names_a_result_or_page_left_out_or_listed_twice() -> None:
     from app.review.review_items import (
         FailureOut,
@@ -416,101 +177,6 @@ def test_the_accounting_names_a_result_or_page_left_out_or_listed_twice() -> Non
 # --- walls: a countertop whose only open question is its walls (#1358) ----------------------------
 
 
-def test_a_wall_only_row_is_one_wall_choice_with_each_layouts_result_even_with_a_proposal(
-    session: Session, tmp_path: Path
-) -> None:
-    """Every number sealed, nothing held, the readers proposed walls at both ends, and the walls
-    change the result: one `wall_choice`, never checked by hand (whose "It is right" would confirm
-    a width resting on walls nobody chose). Pieces 20" + 21", overall 42", 1" field cut."""
-    project_id, package_id, anchors = _sealed(session, wall_source="readers", field_cuts=1)
-    _run_current_checks(session, package_id, tmp_path)
-    session.commit()
-
-    body = (
-        _client(session, project_id)
-        .get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items")
-        .json()
-    )
-
-    assert body["unaccounted"] == []
-    assert [item for item in body["items"] if item["kind"] == "countertop_by_hand"] == []
-    walls = next(item for item in body["items"] if item["row_id"] == str(anchors[0]))
-    assert walls["kind"] == "wall_choice"
-    assert walls["key"] == f"walls:{walls['finding_id']}"
-    assert walls["actions"] == ["choose_wall"], "no right or wrong on a wall choice"
-    assert walls["status"] == "open"
-    assert walls["best_guess"] is None
-    assert walls["wall_results_note"] is None
-    assert walls["vendor_wrote"]["display"] == '42"'
-    choices = {
-        choice["layout"]: (choice["proposed"], choice["result"], choice["needed"]["display"])
-        for choice in walls["wall_choices"]
-    }
-    assert choices == {
-        "back_left_right": (True, "FAIL", '43"'),
-        "back_and_left": (False, "PASS", '42"'),
-        "back_and_right": (False, "PASS", '42"'),
-        "back_only": (False, "FAIL", '41"'),
-        "island": (False, "FAIL", '41"'),
-    }
-    assert walls["wall_choices"][0]["words"] == "walls at both ends"
-
-
-def test_a_wall_only_row_with_no_recorded_cases_offers_every_layout_and_says_why(
-    session: Session, tmp_path: Path
-) -> None:
-    """The check could not work out every wall case (the numbers did not seal for it): the walls
-    are still the open question. Every published layout is offered, the proposal pre-selected, and
-    the item says why no choice shows a result."""
-    from app.review.wall_cases import NOT_ALL_SEALED
-
-    project_id, package_id, anchors = _package_rows(session, wall_source="readers")
-    _run_current_checks(session, package_id, tmp_path)
-    session.commit()
-
-    body = (
-        _client(session, project_id)
-        .get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items")
-        .json()
-    )
-
-    assert body["unaccounted"] == []
-    walls = next(item for item in body["items"] if item["row_id"] == str(anchors[0]))
-    assert walls["kind"] == "wall_choice" and walls["actions"] == ["choose_wall"]
-    assert [
-        (choice["layout"], choice["proposed"], choice["result"]) for choice in walls["wall_choices"]
-    ] == [
-        ("back_left_right", True, None),
-        ("back_and_left", False, None),
-        ("back_and_right", False, None),
-        ("back_only", False, None),
-        ("island", False, None),
-    ]
-    assert walls["wall_results_note"] == NOT_ALL_SEALED
-
-
-def test_walls_a_person_chose_before_the_run_are_no_wall_question(
-    session: Session, tmp_path: Path
-) -> None:
-    """Page 1's walls were chosen by the reviewer before the run, so its result used them: no wall
-    choice there. Page 2's walls are still open: its one wall choice."""
-    project_id, package_id, anchors = _sealed(
-        session, wall_source="readers", field_cuts=1, walls_confirmed=(0,)
-    )
-    _run_current_checks(session, package_id, tmp_path)
-    session.commit()
-
-    body = (
-        _client(session, project_id)
-        .get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items")
-        .json()
-    )
-
-    assert body["unaccounted"] == []
-    walls = [item for item in body["items"] if item["kind"] == "wall_choice"]
-    assert [item["row_id"] for item in walls] == [str(anchors[1])]
-
-
 def test_walls_the_readers_did_not_agree_on_propose_nothing() -> None:
     """`walls-held:` (the readers differ), or a person's earlier answer asked again: every layout
     is offered with nothing pre-selected, as the wall review shows it."""
@@ -533,42 +199,3 @@ def test_walls_the_readers_did_not_agree_on_propose_nothing() -> None:
     asked_again = row(sealed, wall_hold="an earlier answer could not be carried")
     assert _readers_proposal(result("back_left_right"), asked_again) is None
     assert _readers_proposal(result("back_and_left", chosen=True), row(sealed)) is None
-
-
-def test_a_setting_saved_since_the_run_says_so(session: Session, tmp_path: Path) -> None:
-    """#1382: saving a setting does not re-run a check. Each setting a not-checked entry names says
-    whether the company or project settings hold it now; one saved after the run says so, and one
-    still unset does not. Before the save, none is set."""
-    project_id, package_id, _anchors = _package_rows(session, unsealed_page=0)
-    _run_current_checks(session, package_id, tmp_path)
-    session.commit()
-    client = _client(session, project_id)
-    url = f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items"
-
-    def depth_settings() -> list[dict[str, bool]]:
-        response = client.get(url)
-        assert response.status_code == 200, response.text
-        listed = [
-            {need["key"]: need["set_now"] for need in entry["settings"]}
-            for entry in response.json()["not_checked"]
-            if entry["rule_id"] == "CT-DEPTH-001"
-        ]
-        assert listed, "the fixture must leave the depth check not checked"
-        return listed
-
-    assert all(
-        listed == {"cabinet_depth": False, "countertop_overhang": False}
-        for listed in depth_settings()
-    )
-
-    saved = client.post(
-        f"{API_PREFIX}/company-settings/projects/{project_id}",
-        json={"values": [{"name": "cabinet_depth", "value": '24"', "source": "G.C / Client"}]},
-    )
-    assert saved.status_code == 201, saved.text
-
-    # Still not checked (nothing re-ran), still naming both; only the saved one is set now.
-    assert all(
-        listed == {"cabinet_depth": True, "countertop_overhang": False}
-        for listed in depth_settings()
-    )

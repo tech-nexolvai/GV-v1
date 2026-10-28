@@ -11,14 +11,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from app.review.assistant.guard import check
-from app.review.assistant.placeholders import render
 from app.review.assistant.records import ReviewSnapshot, build_snapshot, prompt_records
-from app.review.assistant.records_only import (
-    answer_for_question,
-    architect_difference_answer,
-    is_architect_difference_question,
-)
 from tests.review.assistant.synthetic import Inputs, review_list
 
 
@@ -111,66 +104,3 @@ def test_the_header_counts_are_used_when_sent() -> None:
     snapshot = _snapshot(ENTRIES, counts)
     assert snapshot.totals["architect_compared"] == 94
     assert snapshot.totals["architect_need_you"] == 5
-
-
-def test_what_is_different_is_answered_from_the_records_and_passes_the_guard() -> None:
-    snapshot = _snapshot(ENTRIES)
-    question = "What is different from the architect?"
-    assert is_architect_difference_question(question)
-    draft = answer_for_question(snapshot, question)
-    assert draft is not None
-    check(draft, snapshot, by_model=False)
-    text = render(draft.text, snapshot).text
-    assert "6 architect numbers were compared with the vendor's" in text
-    assert "1 architect number is different from the vendor's" in text
-    assert 'Vendor 30 1/2" vs architect 30" on page 5' in text
-    assert "half an inch more" in text
-    assert "2 architect numbers have no vendor number beside them or were not read" in text
-    assert draft.actions == (("open_page", "P5"),)
-    # Records only: no decision words of the assistant's own.
-    for word in ("approve", "accept", "sign off", "should"):
-        assert word not in text.casefold()
-
-
-def test_nothing_different_says_so() -> None:
-    snapshot = _snapshot([_entry(0, "same"), _entry(1, "same")])
-    draft = architect_difference_answer(snapshot)
-    assert draft is not None
-    check(draft, snapshot, by_model=False)
-    text = render(draft.text, snapshot).text
-    assert "no architect number is different from the vendor's" in text.casefold()
-    assert draft.actions == ()
-
-
-def test_without_the_section_nothing_changes() -> None:
-    for entries in (None, []):
-        snapshot = _snapshot(entries)
-        assert not [item for item in snapshot.review_items if item.group == "architect"]
-        assert "architect_compared" not in snapshot.totals
-        assert architect_difference_answer(snapshot) is None
-    # An older list still answers the same question the way it did before.
-    assert answer_for_question(_snapshot(None), "What is different from the architect?") == (
-        answer_for_question(_snapshot([]), "What is different from the architect?")
-    )
-
-
-def test_a_page_question_keeps_the_page_answer() -> None:
-    assert not is_architect_difference_question("Is page 4 different from the architect?")
-
-
-def test_an_open_comparison_waits_for_the_reviewer_and_gets_only_the_list_button() -> None:
-    from app.review.assistant.contract import Draft
-
-    entries = [_entry(2, "different", status="open", actions=["agree", "not_this"])]
-    snapshot = _snapshot(entries)
-    (item,) = [entry for entry in snapshot.review_items if entry.group == "architect"]
-    assert item.needs_you and item.status == "open"
-    # The guard lets the review-list button point at it, because it is open.
-    check(
-        Draft(text="{" + item.id + ".what}.", actions=(("open_review_item", item.id),)),
-        snapshot,
-        by_model=False,
-    )
-    # A rechecking one does not wait.
-    rechecking = _snapshot([_entry(2, "different", status="rechecking")])
-    assert not next(e for e in rechecking.review_items if e.group == "architect").needs_you

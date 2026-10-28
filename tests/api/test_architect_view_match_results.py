@@ -24,7 +24,6 @@ from sqlalchemy import Engine, event, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.visual_countertops import _countertop_results_for_revision
 from app.db.session import session_factory
 from app.models import (
     Document,
@@ -43,6 +42,7 @@ from app.review.architect_view_match import (
     match_out,
     separate_file_views,
 )
+from app.review.countertop_results import _countertop_results_for_revision
 from app.review.row_location import RowLocation
 from app.schemas.architect_matches import ArchitectViewRefOut
 from app.schemas.visual_ui import CountertopResultsOut
@@ -59,7 +59,6 @@ from workflow.architect_row_plan import (
     CHOOSE_ARCHITECT_VIEW,
     NOT_MATCHED_YET_ROW,
     PAIR_BY_REVIEWER,
-    no_dimensions_line_up_reason,
 )
 from workflow.slot_row_scope import slot_rows
 from workflow.stages import DatabaseStages
@@ -231,61 +230,6 @@ def _blocks(results: CountertopResultsOut) -> dict[UUID, Any]:
 
 
 # --- the countertop results ------------------------------------------------------------------------
-
-
-def test_a_row_waiting_for_the_reviewer_and_a_matched_row(session: Session, tmp_path: Path) -> None:
-    package_id, anchors = _sealed_rows(session)
-    first, second = _architect_file(session, package_id)
-    _record(session, anchors[0], "needs_reviewer")
-    _record(session, anchors[1], "auto_matched", view=first, reasons=("Synthetic: reference.",))
-    _run(session, package_id, tmp_path)
-
-    results = _results(session, package_id)
-    blocks = _blocks(results)
-
-    waiting = blocks[anchors[0]]
-    assert waiting.outcome is not None and waiting.outcome.value == "REVIEW_REQUIRED"
-    assert waiting.reason == CHOOSE_ARCHITECT_VIEW
-    assert waiting.needs_decision is True
-    assert waiting.can_pair is False
-    assert waiting.match is not None
-    assert waiting.match.status == "needs_reviewer"
-    assert waiting.match.needs_decision is True
-    assert waiting.match.waits_for_run is False
-    assert waiting.match.judgments is None
-    assert waiting.match.code_verdict == "geometry_tie"
-    assert [(p.model_label, p.answer) for p in waiting.match.ai_picks] == [
-        ("reader-a", "view"),
-        ("reader-b", "unsure"),
-    ]
-    assert waiting.compared_with is None and waiting.compared_with_text is None
-
-    matched = blocks[anchors[1]]
-    assert matched.match is not None
-    assert matched.match.status == "auto_matched"
-    assert matched.match.judgments == "code and both AIs"
-    assert matched.match.reason == "Synthetic: reference."
-    view = matched.match.matched_view
-    assert isinstance(view, ArchitectViewRefOut)
-    assert view.view_id == first and view.view_id != second
-    assert view.page_number == 2
-    assert view.file_name == ARCHITECT_FILE_NAME
-    assert view.label == "Page 2, view 1: SAMPLE ELEVATION 1 (sheet Z-9)"
-    assert view.region is not None and view.region.polygon[0] == ["0.1", "0.2"]
-    assert view.picture_url is not None and view.picture_url.endswith(
-        f"/architect-views/{first}/picture"
-    )
-    # Matched, but nothing in the view lines up with the row: compared by hand (no pairing to
-    # offer), and nothing compared, so no "compared with".
-    assert matched.reason == no_dimensions_line_up_reason(_matched_view(session, first))
-    assert matched.can_pair is False
-    assert matched.compared == ()
-    assert matched.compared_with is None and matched.compared_with_text is None
-    # The report says the same as the screen.
-    item = next(i for i in results.items if i.row_id == anchors[0])
-    assert (
-        architect_line(item) == f"Matches the architect: REVIEW_REQUIRED: {CHOOSE_ARCHITECT_VIEW}"
-    )
 
 
 def test_a_pairing_is_offered_only_where_the_check_asks_for_one(
@@ -645,19 +589,3 @@ def test_odd_stored_ai_answers_are_read_safely() -> None:
     out = match_out(_found("auto_matched", _WHEN), UUID(int=7))
     assert [(p.model_label, p.answer, p.why) for p in out.ai_picks] == [("x", "no_answer", "3")]
     assert out.matched_view == _REF
-
-
-class _Stored:
-    def __init__(self, questions: object, code_pick: UUID | None) -> None:
-        self.details = {} if questions is None else {"questions": questions}
-        self.code_pick_view_id = code_pick
-
-
-def test_the_picker_order_comes_from_what_the_matcher_did() -> None:
-    from app.api.architect_matches import candidate_order
-
-    asked = ["synthetic-packet-sha"]
-    assert candidate_order(_Stored(asked, UUID(int=1))) == "code"  # type: ignore[arg-type]
-    assert candidate_order(_Stored(asked, None)) == "ais_then_code"  # type: ignore[arg-type]
-    assert candidate_order(_Stored([], None)) == "code_ais_not_asked"  # type: ignore[arg-type]
-    assert candidate_order(_Stored(None, UUID(int=1))) == "code_ais_not_asked"  # type: ignore[arg-type]

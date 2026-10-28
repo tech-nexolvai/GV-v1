@@ -15,15 +15,10 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_artifact_store, get_session
-from app.auth import Principal, Role, authenticate
-from app.config import Settings
 from app.evidence.sides import reading_transform
-from app.main import API_PREFIX, create_app
 from app.models import (
     CanonicalObservation,
     EvidenceArtifact,
@@ -41,6 +36,7 @@ from storage.local import LocalStore
 from tests.api import test_slot_rows as slot_row_tests
 from tests.api.test_slot_rows import _package_rows, _reader_support, _run_current_checks
 from tests.api.test_visual_ui import session  # noqa: F401
+from tests.app.countertop_results import countertop_results
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -57,21 +53,8 @@ def _boxes(page_index: int, row_offset: int, slot: str) -> list[str]:
     return [f"slot-box:{x0},{y0},{x1},{y1}"]
 
 
-def _client(db: Session, project_id: UUID, store: LocalStore | None = None) -> TestClient:
-    app = create_app(Settings(database_url="postgresql+psycopg://gv:gv@localhost:5433/gv"))
-    app.dependency_overrides[authenticate] = lambda: Principal(
-        id="reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
-    )
-    app.dependency_overrides[get_session] = lambda: db
-    if store is not None:
-        app.dependency_overrides[get_artifact_store] = lambda: store
-    return TestClient(app)
-
-
 def _results(db: Session, project_id: UUID, package_id: UUID) -> list[dict[str, Any]]:
-    response = _client(db, project_id).get(
-        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results"
-    )
+    response = countertop_results(db, project_id, package_id)
     assert response.status_code == 200, response.text
     items = response.json()["items"]
     assert isinstance(items, list)
@@ -199,46 +182,6 @@ def test_one_good_slot_box_is_placed_even_when_its_neighbour_is_broken(
     assert pieces[1]["location"]["polygon"] == _expected(session, str(anchors[0]), _box(0, 0, "1"))
 
 
-def _canonical(
-    db: Session, candidate: ObservationCandidate, *, status: str = "CORROBORATED"
-) -> CanonicalObservation:
-    canonical = CanonicalObservation(
-        document_version_id=candidate.document_version_id,
-        page_id=candidate.page_id,
-        document_role="SHOP",
-        polygon=[["0.1", "0.1"], ["0.2", "0.1"], ["0.2", "0.2"], ["0.1", "0.2"]],
-        coordinate_space="stored",
-        semantic_type="countertop_piece_width",
-        value_numerator=candidate.value_numerator or 1,
-        value_denominator=candidate.value_denominator or 1,
-        unit="in",
-        status=status,
-        authority="AUTHORITATIVE",
-    )
-    db.add(canonical)
-    db.flush()
-    return canonical
-
-
-def _support(db: Session, candidate: ObservationCandidate) -> ObservationCandidate:
-    """A per-reader child that supports `candidate`, the way the automatic lane records it."""
-    child = ObservationCandidate(
-        document_version_id=candidate.document_version_id,
-        page_id=candidate.page_id,
-        extraction_run_id=candidate.extraction_run_id,
-        raw_text=candidate.raw_text,
-        value_numerator=candidate.value_numerator,
-        value_denominator=candidate.value_denominator,
-        unit=candidate.unit,
-        polygon=candidate.polygon,
-        coordinate_space="image",
-        ambiguity_flags=["slot-reader-support", f"supports:{candidate.id}", "reader-id:a"],
-    )
-    db.add(child)
-    db.flush()
-    return child
-
-
 def _crop(
     db: Session,
     store: LocalStore,
@@ -265,79 +208,6 @@ def _crop(
         )
     )
     db.flush()
-
-
-def test_a_crop_id_is_given_only_for_a_sealed_reading_with_a_stored_crop(
-    session: Session, tmp_path: Path  # noqa: F811
-) -> None:
-    store = LocalStore(root=tmp_path / "store", ticket_secret=b"synthetic-test")
-    project_id, package_id, anchors = _package_rows(
-        session, piece_count=2, unsealed_page=1, slot_flags=_boxes
-    )
-    first, second = str(anchors[0]), str(anchors[1])
-
-    # Row 1, piece 1: sealed; canonical supported by a reader child that owns a crop -> shown.
-    piece = _slot_candidate(session, first, "0")
-    child = _support(session, piece)
-    shown = _canonical(session, piece)
-    session.add(
-        EvidenceSupportingCandidate(
-            canonical_observation_id=shown.id, candidate_id=child.id, role="primary"
-        )
-    )
-    _crop(session, store, piece, candidate_id=child.id)
-    # Row 1, piece 2: sealed and canonical, but no crop stored -> null.
-    plain = _slot_candidate(session, first, "1")
-    no_crop = _canonical(session, plain)
-    session.add(
-        EvidenceSupportingCandidate(
-            canonical_observation_id=no_crop.id, candidate_id=plain.id, role="primary"
-        )
-    )
-    # Row 1, overall: sealed; canonical-owned crop -> shown.
-    overall = _slot_candidate(session, first, "overall")
-    owned = _canonical(session, overall)
-    session.add(
-        EvidenceSupportingCandidate(
-            canonical_observation_id=owned.id, candidate_id=overall.id, role="primary"
-        )
-    )
-    _crop(session, store, overall, canonical_id=owned.id)
-    # Row 2, piece 1: NOT sealed, even with a canonical and a crop -> null.
-    unsealed = _slot_candidate(session, second, "0")
-    stray = _canonical(session, unsealed)
-    session.add(
-        EvidenceSupportingCandidate(
-            canonical_observation_id=stray.id, candidate_id=unsealed.id, role="primary"
-        )
-    )
-    _crop(session, store, unsealed, canonical_id=stray.id)
-    # Row 2, piece 2: sealed but two canonicals, each with a crop -> ambiguous -> null.
-    doubled = _slot_candidate(session, second, "1")
-    for _ in range(2):
-        twin = _canonical(session, doubled)
-        session.add(
-            EvidenceSupportingCandidate(
-                canonical_observation_id=twin.id, candidate_id=doubled.id, role="primary"
-            )
-        )
-        _crop(session, store, doubled, canonical_id=twin.id)
-    session.flush()
-
-    items = {item["row_id"]: item for item in _results(session, project_id, package_id)}
-    row1, row2 = items[first], items[second]
-    assert [p["canonical_observation_id"] for p in row1["pieces"]] == [str(shown.id), None]
-    assert row1["printed_overall_canonical_observation_id"] == str(owned.id)
-    assert [p["canonical_observation_id"] for p in row2["pieces"]] == [None, None]
-    assert row2["pieces"][0]["source"] != "sealed"
-
-    # Each id given is one the crop endpoint serves for this package.
-    client = _client(session, project_id, store)
-    for canonical_id in (shown.id, owned.id):
-        crop = client.get(
-            f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/evidence/{canonical_id}/crop"
-        )
-        assert crop.status_code == 200, crop.text
 
 
 def test_a_checked_rows_crop_ids_are_the_recorded_operands_own_observations(
@@ -388,20 +258,6 @@ def test_a_checked_rows_crop_ids_are_the_recorded_operands_own_observations(
     ]
     assert item["printed_overall_canonical_observation_id"] == str(recorded["countertop_width"])
     _assert_located(session, item, 0, 0)
-
-
-def test_another_projects_reviewer_sees_no_locations(session: Session) -> None:  # noqa: F811
-    project_id, package_id, _ = _package_rows(session, piece_count=2, slot_flags=_boxes)
-    response = _client(session, uuid4()).get(
-        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results"
-    )
-    assert response.status_code == 404
-    assert "polygon" not in response.text
-    elsewhere = _client(session, project_id).get(
-        f"{API_PREFIX}/projects/{uuid4()}/packages/{package_id}/countertop-results"
-    )
-    assert elsewhere.status_code == 404
-    assert "polygon" not in elsewhere.text
 
 
 def _statements(db: Session, call: Callable[[], object]) -> list[str]:

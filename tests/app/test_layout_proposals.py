@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import pathlib
 from collections.abc import Iterator
-from datetime import UTC, datetime
 from decimal import Decimal
-from io import BytesIO
-from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -18,52 +14,31 @@ from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.dependencies import get_artifact_store, get_session
-from app.config import Settings
 from app.db.session import session_factory
-from app.main import create_app
 from app.models import (
     Document,
     DocumentVersion,
     EvidenceArtifact,
     EvidenceArtifactKind,
     ObservationCandidate,
-    OutboxEntry,
     Package,
     PackageRevision,
     PackageRevisionDocument,
     PackageState,
     Project,
-    RuleDefinition,
-    RuleSnapshot,
     SourceArtifact,
 )
 from app.models.document import DocumentKind, Page
-from app.models.evidence import LayoutConfirmation, LayoutProposal
+from app.models.evidence import LayoutProposal
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from rules.schema import Rule
-from rules.snapshot import publish
-from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from workflow.layout_proposals import DRAWING_CLUE_WALL_PROMPT_ID, record_layout_proposal
+from workflow.layout_proposals import record_layout_proposal
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
 PROJECT = uuid4()
 RULEBOOK = pathlib.Path(__file__).resolve().parents[2] / "rules" / "rulebook"
-
-
-def _settings() -> Settings:
-    return Settings(  # type: ignore[call-arg]
-        database_url="postgresql+psycopg://unused@localhost/unused",
-        environment="test",
-    )
-
-
-def _principal() -> Any:
-    from app.auth import Principal, Role
-
-    return Principal(id="anant", roles=frozenset({Role.ADMIN}), projects=frozenset({PROJECT}))
 
 
 @pytest.fixture
@@ -76,40 +51,6 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
         yield opened
     finally:
         opened.close()
-
-
-def _client(session: Session, store: LocalStore | None = None) -> Any:
-    from fastapi.testclient import TestClient
-
-    from app.auth import authenticate
-
-    app = create_app(_settings())
-    app.dependency_overrides[get_session] = lambda: session
-    app.dependency_overrides[authenticate] = _principal
-    if store is not None:
-        app.dependency_overrides[get_artifact_store] = lambda: store
-    return TestClient(app, raise_server_exceptions=False)
-
-
-def _publish_rulebook(session: Session) -> None:
-    for path in sorted(RULEBOOK.glob("*.yaml")):
-        rule = Rule.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
-        snapshot = publish(rule)
-        definition = RuleDefinition(rule_id=rule.id)
-        session.add(definition)
-        session.flush()
-        session.add(
-            RuleSnapshot(
-                rule_definition_id=definition.id,
-                snapshot_id=snapshot.snapshot_id,
-                version=rule.version,
-                canonical_json=snapshot.canonical_json,
-                product_type=rule.product_type.value,
-                check_type=rule.check_type.value,
-                unconfirmed_tolerance_count=0,
-            )
-        )
-    session.flush()
 
 
 def _package_with_crop(session: Session, *, crop_sha: str = "2" * 64) -> tuple[UUID, UUID, UUID]:
@@ -217,46 +158,6 @@ def _record_wall_config_proposal(
     )
 
 
-def test_a_proposal_without_confirmation_cannot_reach_run_checks(session: Session) -> None:
-    _publish_rulebook(session)
-    package_id, revision_id, crop_id = _package_with_crop(session)
-    _record_wall_config_proposal(session, revision_id, crop_id)
-    session.commit()
-
-    response = _client(session).post(f"/api/v1/projects/{PROJECT}/packages/{package_id}/checks")
-
-    assert response.status_code == 202, response.text
-    entry = session.execute(select(OutboxEntry)).scalar_one()
-    assert entry.payload["discriminators"] == {}
-
-
-def test_required_inputs_returns_the_layout_proposal_beside_choices(session: Session) -> None:
-    _publish_rulebook(session)
-    package_id, revision_id, crop_id = _package_with_crop(session)
-    proposal = _record_wall_config_proposal(session, revision_id, crop_id)
-    session.commit()
-
-    response = _client(session).get(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/required-inputs"
-    )
-
-    assert response.status_code == 200, response.text
-    wall_config = next(
-        discriminator
-        for discriminator in response.json()["discriminators"]
-        if discriminator["name"] == "wall_config"
-    )
-    assert "back_only" in wall_config["choices"]
-    assert wall_config["proposal"] == {
-        "value": "back_only",
-        "crop_artifact_id": str(proposal.crop_artifact_id),
-        "model_id": "amazon.nova-lite-v1:0",
-        "prompt_id": "layout-discriminator-v1",
-        "confirmed": False,
-        "requires_confirmation": True,
-    }
-
-
 def test_unchanged_layout_evidence_does_not_mint_a_duplicate_proposal(
     session: Session,
 ) -> None:
@@ -281,51 +182,6 @@ def test_the_recorded_crop_artifact_is_retrievable(session: Session) -> None:
     assert artifact.media_type == "image/png"
 
 
-def test_the_layout_proposal_crop_bytes_are_retrievable(
-    session: Session, tmp_path: pathlib.Path
-) -> None:
-    crop_bytes = b"layout crop pixels"
-    crop_sha = hashlib.sha256(crop_bytes).hexdigest()
-    package_id, revision_id, crop_id = _package_with_crop(session, crop_sha=crop_sha)
-    _record_wall_config_proposal(session, revision_id, crop_id)
-    artifact = session.get(EvidenceArtifact, crop_id)
-    assert artifact is not None
-    store = LocalStore(tmp_path / "artifacts")
-    store.put(artifact.storage_key, BytesIO(crop_bytes), content_type=artifact.media_type)
-    session.commit()
-
-    response = _client(session, store).get(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/layout-proposals/{crop_id}/crop"
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.headers["content-type"] == "image/png"
-    assert response.content == crop_bytes
-
-
-def test_confirming_a_discriminator_records_who_and_when(session: Session) -> None:
-    _publish_rulebook(session)
-    package_id, revision_id, crop_id = _package_with_crop(session)
-    proposal = _record_wall_config_proposal(session, revision_id, crop_id)
-    session.commit()
-
-    response = _client(session).post(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/checks",
-        json={"discriminators": {"wall_config": "back_only"}},
-    )
-
-    assert response.status_code == 202, response.text
-    confirmation = session.execute(select(LayoutConfirmation)).scalar_one()
-    assert confirmation.package_revision_id == revision_id
-    assert confirmation.discriminator_name == "wall_config"
-    assert confirmation.value == "back_only"
-    assert confirmation.confirmed_by == "anant"
-    assert confirmation.created_at is not None
-    assert session.get(LayoutProposal, proposal.id).proposed_value == "back_only"
-    entry = session.execute(select(OutboxEntry)).scalar_one()
-    assert entry.payload["discriminators"] == {"wall_config": "back_only"}
-
-
 def test_layout_tables_are_declared_append_only_in_their_migration() -> None:
     path = pathlib.Path(__file__).resolve().parents[2] / "alembic/versions/0047_layout_proposals.py"
     spec = importlib.util.spec_from_file_location("layout_proposal_migration", path)
@@ -341,233 +197,6 @@ def test_layout_tables_are_declared_append_only_in_their_migration() -> None:
 # ---------------------------------------------------------------------------------------------
 
 READERS = "us.moonshotai.kimi-k3 + qwen.qwen3-vl-235b-a22b"
-
-
-def _wall_run(
-    session: Session,
-    revision_id: UUID,
-    rows: list[str | None],
-    *,
-    propose: str | None,
-    prompt_id: str = "slot-walls-v1",
-    model_id: str = READERS,
-) -> LayoutProposal | None:
-    """One slot-reader run's wall candidates — a sealed layout per row, or `None` for a row that
-    went to the person — and, when asked, the readers' layout proposal from that run."""
-    version_id = session.execute(
-        select(PackageRevisionDocument.document_version_id).where(
-            PackageRevisionDocument.package_revision_id == revision_id
-        )
-    ).scalar_one()
-    page = session.execute(select(Page).where(Page.document_version_id == version_id)).scalar_one()
-    workflow_run = WorkflowRun(package_revision_id=revision_id, engine_run_id=str(uuid4()))
-    session.add(workflow_run)
-    session.flush()
-    task_run = TaskRun(
-        workflow_run_id=workflow_run.id,
-        idempotency_key=str(uuid4()),
-        task_type="extract",
-        attempt=1,
-        outcome="SUCCEEDED",
-    )
-    session.add(task_run)
-    session.flush()
-    run = ExtractionRun(
-        task_run_id=task_run.id,
-        extractor="extraction.form_reader",
-        extractor_version="slot-reader-v1-ink-v1",
-        config_hash=str(uuid4()),
-    )
-    session.add(run)
-    session.flush()
-    artifacts: list[UUID] = []
-    for layout in rows:
-        candidate = ObservationCandidate(
-            document_version_id=version_id,
-            page_id=page.id,
-            extraction_run_id=run.id,
-            raw_text=f"walls: {layout or 'for the person'}",
-            polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
-            ambiguity_flags=[
-                "wall-reader",
-                f"walls-sealed:{layout}" if layout else "walls-held:walls-not-agreed",
-            ],
-        )
-        session.add(candidate)
-        session.flush()
-        artifact = EvidenceArtifact(
-            candidate_id=candidate.id,
-            canonical_observation_id=None,
-            document_version_id=version_id,
-            page_id=page.id,
-            kind=EvidenceArtifactKind.CROP.value,
-            storage_key=f"evidence-crops/{uuid4()}.png",
-            sha256="3" * 64,
-            media_type="image/png",
-            coordinate_space="image",
-        )
-        session.add(artifact)
-        session.flush()
-        artifacts.append(artifact.id)
-    proposal = None
-    if propose is not None:
-        proposal = record_layout_proposal(
-            session,
-            package_revision_id=revision_id,
-            discriminator_name="wall_config",
-            proposed_value=propose,
-            crop_artifact_id=artifacts[0],
-            model_id=model_id,
-            prompt_id=prompt_id,
-        )
-    session.commit()
-    return proposal
-
-
-def _requested(session: Session, package_id: UUID, body: dict[str, Any] | None = None) -> Any:
-    response = _client(session).post(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/checks", json=body
-    )
-    assert response.status_code == 202, response.text
-    accepted = UUID(response.json()["accepted_id"])
-    entry = session.execute(select(OutboxEntry).where(OutboxEntry.id == accepted)).scalar_one()
-    payload = entry.payload
-    # The worker takes each run before the next is asked for: a run still queued refuses a second
-    # request with 409 (#1179).
-    entry.attempts = 1
-    entry.dispatched_at = datetime.now(UTC)
-    session.commit()
-    return payload
-
-
-def test_an_ai_only_wall_layout_stays_a_proposal_until_the_reviewer_selects_it(
-    session: Session,
-) -> None:
-    _publish_rulebook(session)
-    package_id, revision_id, _crop = _package_with_crop(session)
-    proposal = _wall_run(
-        session, revision_id, ["back_left_right", "back_left_right"], propose="back_left_right"
-    )
-    assert proposal is not None
-    from app.api.measurements import _stored_layout_proposal_out
-
-    revision = session.get(PackageRevision, revision_id)
-    assert revision is not None
-    proposal_out = _stored_layout_proposal_out(session, revision)["wall_config"]
-    assert proposal_out.requires_confirmation is True
-
-    unconfirmed = _requested(session, package_id)
-    assert unconfirmed["discriminators"] == {}
-    assert unconfirmed["discriminator_sources"] == {}
-    assert session.execute(select(LayoutConfirmation)).scalars().all() == []
-
-    payload = _requested(
-        session, package_id, {"discriminators": {"wall_config": "back_left_right"}}
-    )
-    assert payload["discriminators"] == {"wall_config": "back_left_right"}
-    assert payload["discriminator_sources"] == {"wall_config": "reviewer"}
-    assert len(session.execute(select(LayoutConfirmation)).scalars().all()) == 1
-
-
-def test_an_older_runs_code_backed_wall_layout_is_now_only_a_proposal(session: Session) -> None:
-    """#1202: code alone never settles the walls, an older run's drawing-clue proposal included."""
-    _publish_rulebook(session)
-    package_id, revision_id, _crop = _package_with_crop(session)
-    proposal = _wall_run(
-        session,
-        revision_id,
-        ["back_left_right"],
-        propose="back_left_right",
-        prompt_id=DRAWING_CLUE_WALL_PROMPT_ID,
-        model_id="deterministic:vendor-drawing-clues",
-    )
-    assert proposal is not None
-
-    payload = _requested(session, package_id)
-
-    assert payload["discriminators"] == {}
-    assert payload["discriminator_sources"] == {}
-
-    from app.api.measurements import _stored_layout_proposal_out
-
-    proposal_out = _stored_layout_proposal_out(
-        session,
-        session.get(PackageRevision, revision_id),  # type: ignore[arg-type]
-    )["wall_config"]
-    assert proposal_out.requires_confirmation is True
-
-
-def test_a_value_the_reviewer_states_always_wins(session: Session) -> None:
-    _publish_rulebook(session)
-    package_id, revision_id, _crop = _package_with_crop(session)
-    _wall_run(session, revision_id, ["back_left_right"], propose="back_left_right")
-
-    stated = _requested(session, package_id, {"discriminators": {"wall_config": "back_only"}})
-    assert stated["discriminators"] == {"wall_config": "back_only"}
-    assert stated["discriminator_sources"] == {"wall_config": "reviewer"}
-    # And it stays the reviewer's on the next request, which states nothing.
-    again = _requested(session, package_id)
-    assert again["discriminators"] == {"wall_config": "back_only"}
-    assert again["discriminator_sources"] == {"wall_config": "reviewer"}
-
-
-@pytest.mark.parametrize(
-    "rows",
-    [
-        ["back_left_right", None],  # one row went to the person
-        ["back_left_right", "back_only"],  # two rows disagree
-    ],
-)
-def test_a_run_whose_rows_do_not_all_seal_the_same_layout_supplies_none(
-    session: Session, rows: list[str | None]
-) -> None:
-    _publish_rulebook(session)
-    package_id, revision_id, _crop = _package_with_crop(session)
-    _wall_run(session, revision_id, rows, propose="back_left_right")
-
-    payload = _requested(session, package_id)
-    assert payload["discriminators"] == {}
-    assert payload["discriminator_sources"] == {}
-
-
-def test_an_older_runs_layout_is_not_used_when_the_newest_run_did_not_seal(
-    session: Session,
-) -> None:
-    _publish_rulebook(session)
-    package_id, revision_id, _crop = _package_with_crop(session)
-    _wall_run(session, revision_id, ["back_left_right"], propose="back_left_right")
-    _wall_run(session, revision_id, [None], propose=None)
-
-    assert _requested(session, package_id)["discriminators"] == {}
-
-
-def test_a_newer_proposal_that_says_otherwise_withholds_the_readers_layout(
-    session: Session,
-) -> None:
-    _publish_rulebook(session)
-    package_id, revision_id, crop_id = _package_with_crop(session)
-    _wall_run(session, revision_id, ["back_left_right"], propose="back_left_right")
-    _record_wall_config_proposal(session, revision_id, crop_id)  # one model: back_only
-    session.commit()
-
-    assert _requested(session, package_id)["discriminators"] == {}
-
-
-def test_a_single_models_proposal_never_reaches_the_check(session: Session) -> None:
-    _publish_rulebook(session)
-    package_id, revision_id, crop_id = _package_with_crop(session)
-    record_layout_proposal(
-        session,
-        package_revision_id=revision_id,
-        discriminator_name="wall_config",
-        proposed_value="back_left_right",
-        crop_artifact_id=crop_id,
-        model_id="qwen.qwen3-vl-235b-a22b",
-        prompt_id="layout-discriminator-v1",
-    )
-    session.commit()
-
-    assert _requested(session, package_id)["discriminators"] == {}
 
 
 def test_the_finding_note_names_the_readers_only_when_they_chose() -> None:

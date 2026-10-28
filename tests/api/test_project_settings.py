@@ -109,7 +109,7 @@ def test_every_value_the_review_settings_step_asks_for_is_listed(session: Sessio
 
     assert response.status_code == 200, response.text
     project = _one(response, project_id)
-    from app.api.measurements import _published_rules
+    from app.api.setting_values import _published_rules
 
     asked = {parameter.name for parameter in required_inputs(_published_rules(session)).parameters}
     listed = set(_settings(project))

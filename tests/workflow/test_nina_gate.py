@@ -16,17 +16,13 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 import workflow.stages as stages_module
 from alembic import command
-from app.auth import Principal, Role
 from app.db.session import session_factory
-from app.models import Package, PackageRevision
 from app.models.verdicts import CheckRun, Finding, VerdictInput
-from tests.api.test_findings_query import _app, _url
 from tests.api.test_slot_rows import _unwitnessed_on_first_page
 from tests.app.postgres_fixture import alembic_config
 from tests.eval.test_run_check import (
@@ -234,31 +230,6 @@ def test_a_pass_on_automatic_walls_is_held(
         assert [nina_hold_code(note) for note in _gate_notes(held)] == ["pass-on-automatic-walls"]
         _reviewer_words(held)
     assert run_check(session, revision_id).items == ()
-
-
-def test_the_held_reason_reaches_the_findings_api(
-    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(stages_module, "confirm_unwitnessed_pass", lambda finding, _u: finding)
-    revision_id, anchors = _rows(session, tmp_path, slot_flags=_unwitnessed_on_first_page)
-    held, _run = _live_for(session, revision_id, "CT-WIDTH-001", row=anchors[0])
-    revision = session.get(PackageRevision, revision_id)
-    assert revision is not None
-    package = session.get(Package, revision.package_id)
-    assert package is not None
-    principal = Principal(
-        id="synthetic reviewer",
-        roles=frozenset({Role.REVIEWER}),
-        projects=frozenset({package.project_id}),
-    )
-
-    body = TestClient(_app(principal, session)).get(_url(package.project_id, package.id)).json()
-
-    shown = [item for item in body["items"] if item["id"] == str(held.id)]
-    assert len(shown) == 1
-    assert shown[0]["outcome"] == "REVIEW_REQUIRED"
-    assert shown[0]["reason"] == held.reason
-    assert shown[0]["reviewer_reason"] == held.reason
 
 
 # --- seeded breaks a broken step would leave, handed to the gate ---------------------------------

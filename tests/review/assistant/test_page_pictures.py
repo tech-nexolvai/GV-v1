@@ -12,27 +12,16 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
-from app.review.assistant.contract import AnswerEvent, AssistantRequest
-from app.review.assistant.intent import REFUSAL_TEXT
 from app.review.assistant.page_pictures import (
     PageLook,
     PagePicture,
     cached_pictures,
     fitting_dpi,
 )
-from app.review.assistant.service import (
-    AssistantBudget,
-    AssistantRuntime,
-    _estimate_micros,
-    stream_answer,
-)
-from app.runs.rates import ModelRate, ModelRates
-from tests.review.assistant.synthetic import ROW_FAIL, snapshot
 
 SONNET = "anthropic.claude-sonnet-5-5"
 #: A made-up 1x1 PNG header is enough: the service never decodes the pictures.
@@ -95,203 +84,6 @@ class FakePictures:
             ),
             ai_review_rows=rows,
         )
-
-
-def _rates(input_per_1k: str = "0.002", output_per_1k: str = "0.01") -> ModelRates:
-    return ModelRates(
-        source="made-up test prices",
-        retrieved=date(2026, 10, 16),
-        currency="USD",
-        rates={SONNET: ModelRate(Decimal(input_per_1k), Decimal(output_per_1k))},
-    )
-
-
-def _budget(*, spent: int = 0, package: str = "2.00", question: str = "0.25") -> AssistantBudget:
-    return AssistantBudget(
-        package_cap_micros=int(Decimal(package) * 1_000_000),
-        question_cap_micros=int(Decimal(question) * 1_000_000),
-        spent_micros=lambda: spent,
-        rates=_rates(),
-    )
-
-
-def _run(
-    question: str,
-    model: FakeModel,
-    pictures: FakePictures | None = None,
-    budget: AssistantBudget | None = None,
-    **body: Any,
-) -> list[tuple[str, Any]]:
-    return list(
-        stream_answer(
-            AssistantRequest.model_validate_json(json.dumps({"question": question, **body})),
-            load_snapshot=snapshot,
-            runtime=AssistantRuntime(model=model, max_history_turns=6),
-            ledger=FakeLedger(),
-            pictures=pictures,
-            budget=budget,
-        )
-    )
-
-
-def _images(request: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    content = request["messages"][0]["content"]
-    return [block for block in content if "image" in block]
-
-
-def _texts(request: Mapping[str, Any]) -> str:
-    return "\n".join(
-        block["text"] for block in request["messages"][0]["content"] if "text" in block
-    )
-
-
-def test_a_question_naming_a_page_sends_its_two_pictures_and_ai_review_rows() -> None:
-    model, pictures = FakeModel(), FakePictures()
-    events = _run("What does the vendor show on page 4?", model, pictures)
-
-    assert pictures.asked == [4]
-    (request,) = model.calls
-    images = _images(request)
-    assert [image["image"]["format"] for image in images] == ["png", "png"]
-    assert all(image["image"]["source"]["bytes"] == PNG for image in images)
-    texts = _texts(request)
-    assert "architect" in texts.casefold() and "vendor" in texts.casefold()
-    assert "air:x" in texts, "the page's AI page review rows go with the pictures"
-    answer = events[-1][1]
-    assert isinstance(answer, AnswerEvent)
-    assert (answer.mode, answer.looked_at_page) == ("llm", 4)
-
-
-def test_the_page_in_focus_and_the_focused_records_page_are_looked_at() -> None:
-    model, pictures = FakeModel(), FakePictures()
-    _run("What is drawn here?", model, pictures, focus={"page_number": 7})
-    _run("What is drawn here?", model, pictures, focus={"record_id": str(ROW_FAIL)})
-    assert pictures.asked == [7, 4]
-    assert all(len(_images(request)) == 2 for request in model.calls)
-
-
-def test_a_question_with_no_page_sends_no_pictures() -> None:
-    model, pictures = FakeModel(), FakePictures()
-    events = _run("How does the overall check work?", model, pictures)
-
-    assert pictures.asked == []
-    (request,) = model.calls
-    assert _images(request) == []
-    assert events[-1][1].looked_at_page is None
-
-
-def test_approve_page_3_is_still_refused_with_no_picture_and_no_call() -> None:
-    model, pictures = FakeModel(), FakePictures()
-    events = _run("approve page 3", model, pictures, budget=_budget())
-
-    answer = events[-1][1]
-    assert (answer.mode, answer.text) == ("refused", REFUSAL_TEXT)
-    assert answer.looked_at_page is None
-    assert model.calls == [] and pictures.asked == []
-
-
-def test_the_package_budget_stops_the_call() -> None:
-    model, pictures = FakeModel(), FakePictures()
-    events = _run(
-        "What does the vendor show on page 4?",
-        model,
-        pictures,
-        budget=_budget(spent=1_990_000, package="2.00"),
-    )
-
-    assert model.calls == []
-    answer = events[-1][1]
-    assert isinstance(answer, AnswerEvent)
-    assert answer.mode != "llm" and answer.looked_at_page is None
-
-
-def test_a_question_over_its_cap_is_asked_without_the_pictures() -> None:
-    # The cap sits between the question's estimate without the pictures and with them.
-    rates = _rates()
-    probe, pictures = FakeModel(), FakePictures()
-    _run("What does the vendor show on page 4?", probe, pictures)
-    (with_pictures,) = probe.calls
-    look = pictures.for_page(4)
-    full = _estimate_micros(with_pictures, look, SONNET, rates)
-    records_only = _estimate_micros(with_pictures, None, SONNET, rates)
-    assert full is not None and records_only is not None
-    picture_cost = full - records_only
-    assert picture_cost > 0
-    budget = AssistantBudget(
-        package_cap_micros=2_000_000,
-        question_cap_micros=full - picture_cost // 2,
-        spent_micros=lambda: 0,
-        rates=rates,
-    )
-    model = FakeModel()
-    events = _run("What does the vendor show on page 4?", model, FakePictures(), budget=budget)
-
-    (request,) = model.calls
-    assert _images(request) == []
-    assert "air:x" in _texts(request), "the AI page review rows still go"
-    answer = events[-1][1]
-    assert answer.looked_at_page is None
-    # Never silent (QA 2026-10-16): the answer says it did not look at the page, and why.
-    assert (answer.not_looked_at_page, answer.not_looked_at_reason) == (4, "cost_cap")
-
-
-def test_an_answer_that_looked_at_the_page_says_nothing_was_left_out() -> None:
-    events = _run(
-        "What does the vendor show on page 4?", FakeModel(), FakePictures(), budget=_budget()
-    )
-    answer = events[-1][1]
-    assert (answer.looked_at_page, answer.not_looked_at_page, answer.not_looked_at_reason) == (
-        4,
-        None,
-        None,
-    )
-
-
-def _sized_request(text_bytes: int) -> dict[str, Any]:
-    return {
-        "system": [{"text": "s" * 1000}],
-        "messages": [{"role": "user", "content": [{"text": "r" * text_bytes}]}],
-        "inferenceConfig": {"maxTokens": 1500},
-    }
-
-
-def test_a_picture_is_estimated_at_its_pixels_over_750() -> None:
-    """Anthropic's documented picture cost: about width x height / 750 tokens."""
-    rates = _rates()
-    request = _sized_request(0)
-    picture = PagePicture(role="vendor", png=PNG, width_px=1500, height_px=1000)
-    with_picture = _estimate_micros(
-        request, PageLook(page_number=4, pictures=(picture,)), SONNET, rates
-    )
-    without = _estimate_micros(request, None, SONNET, rates)
-    assert with_picture is not None and without is not None
-    # 1500 * 1000 / 750 = 2000 tokens at $0.002 per 1k = 4000 millionths.
-    assert with_picture - without == 4000
-
-
-def test_a_page_question_with_a_full_records_prompt_keeps_its_pictures_under_the_cap() -> None:
-    """QA 2026-10-16: a page question over a full set's records (~120 KB of prompt text) with two
-    large halves was estimated over the $0.25 cap, so every page question silently lost its
-    pictures. Text is about one token per 3.5 bytes; it is estimated at one per 2 (still an upper
-    bound for JSON with ids), and the real cost is recorded after every call."""
-    rates = _rates()
-    halves = tuple(
-        PagePicture(role=role, png=PNG, width_px=2576, height_px=1600)
-        for role in ("architect", "vendor")
-    )
-    estimate = _estimate_micros(
-        _sized_request(120_000), PageLook(page_number=4, pictures=halves), SONNET, rates
-    )
-    assert estimate is not None
-    assert estimate < 250_000
-    assert estimate > 120_000, "still an upper bound: well over the text's real cost"
-
-
-def test_with_a_budget_many_questions_are_asked_until_it_is_used() -> None:
-    model, pictures = FakeModel(), FakePictures()
-    for _ in range(3):
-        assert _run("page 4?", model, pictures, budget=_budget())[-1][1].mode == "llm"
-    assert len(model.calls) == 3
 
 
 def test_pictures_are_made_once_per_page_and_then_reused() -> None:

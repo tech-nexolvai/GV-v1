@@ -5,7 +5,6 @@ Every value here is synthetic.
 
 from __future__ import annotations
 
-import contextlib
 import io
 from decimal import Decimal
 from typing import Any
@@ -13,10 +12,10 @@ from uuid import UUID, uuid4
 
 import pytest
 from pypdf import PdfReader, PdfWriter
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.models import CheckRun, DocumentVersion, Finding, OutboxEntry, OutputArtifact, Page
+from app.models import CheckRun, DocumentVersion, Finding, OutputArtifact, Page
 from app.models.package import PackageRevision
 from app.models.rules import RuleDefinition, RuleSnapshot
 from app.models.signed_exports import ApprovalExportBundle
@@ -27,8 +26,7 @@ from tests.api.test_v1_loop import PROJECT, _uploaded
 from tests.api.test_v1_loop import client as client_fixture
 from tests.api.test_v1_loop import session as session_fixture
 from tests.api.test_v1_loop import store as store_fixture
-from workflow.draft_cloud import DRAFT_CLOUD_WORKFLOW, DraftCloudRefused
-from workflow.outbox import OutboxDispatchError, dispatch_committed
+from workflow.draft_cloud import DraftCloudRefused
 
 session = session_fixture
 store = store_fixture
@@ -110,83 +108,6 @@ def _checked(db: Session, storage: LocalStore) -> tuple[UUID, PackageRevision]:
     return package_id, revision
 
 
-def _drain(db: Session, storage: LocalStore, monkeypatch: pytest.MonkeyPatch) -> None:
-    """What the local worker does with the queued request: `sutradhar.consume`, its own session."""
-    from workflow import sutradhar
-
-    monkeypatch.setenv("GV_DEV_STORAGE", str(storage.root))
-    factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
-
-    def start(*, workflow: str, payload: Any, idempotency_key: str) -> None:
-        with factory() as own:
-            sutradhar.consume(
-                own, workflow=workflow, payload=payload, idempotency_key=idempotency_key
-            )
-            own.commit()
-
-    # A refusal is parked with its reason and re-raised once; the tests read the parked reason.
-    with contextlib.suppress(OutboxDispatchError):
-        dispatch_committed(factory, start)
-    db.expire_all()
-
-
-def _pages_text(content: bytes) -> list[str]:
-    return [
-        " ".join((page.extract_text() or "").split())
-        for page in PdfReader(io.BytesIO(content)).pages
-    ]
-
-
-def test_asking_for_a_draft_with_no_results_is_refused(
-    session: Session, store: LocalStore, client: Any
-) -> None:
-    package_id, _, _ = _uploaded(session, store)
-    answer = client.post(f"/api/v1/projects/{PROJECT}/packages/{package_id}/draft-cloud")
-    assert answer.status_code == 409, answer.text
-    assert "Run the checks first" in answer.json()["message"]
-
-
-def test_a_draft_is_queued_once_drawn_by_the_worker_and_bannered_on_every_page(
-    session: Session, store: LocalStore, client: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    package_id, _ = _checked(session, store)
-    base = f"/api/v1/projects/{PROJECT}/packages/{package_id}"
-    assert client.get(base + "/draft-cloud").json()["status"] == "not_requested"
-    assert client.get(base + "/draft-cloud.pdf").status_code == 409
-
-    first = client.post(base + "/draft-cloud")
-    assert first.status_code == 202, first.text
-    assert first.json()["status"] == "preparing"
-    second = client.post(base + "/draft-cloud")
-    assert second.json()["request_id"] == first.json()["request_id"]
-    assert (
-        session.scalar(
-            select(func.count(OutboxEntry.id)).where(OutboxEntry.workflow == DRAFT_CLOUD_WORKFLOW)
-        )
-        == 1
-    )
-
-    _drain(session, store, monkeypatch)
-    status = client.get(base + "/draft-cloud").json()
-    assert status["status"] == "ready", status
-    assert status["findings"] == 4 and status["bytes"] > 0
-
-    pdf = client.get(base + "/draft-cloud.pdf")
-    assert pdf.status_code == 200 and pdf.headers["content-type"] == "application/pdf"
-    pages = _pages_text(pdf.content)
-    assert all(BANNER in text for text in pages), pages
-    front = pages[0]
-    assert "Will be clouded as wrong (1)" in front
-    assert "Vendor wrote 72 in; it should be 66 in." in front
-    assert "Needs a person (1)" in front and "The two AIs did not agree on this line." in front
-    assert "NOT CHECKED (1)" in front and "NOT CHECKED: 1 check(s): Waiting for" in front
-    # The waiting check is printed NOT CHECKED on the drawing's own summary too, never as judged.
-    rest = " ".join(text.replace(BANNER, "") for text in pages[1:]).split()
-    assert "NOT CHECKED: Waiting for the countertop depth" in " ".join(rest)
-    kinds = set(session.scalars(select(OutputArtifact.kind)))
-    assert kinds == {"draft_redline"}
-
-
 def test_the_same_request_delivered_twice_records_one_draft(
     session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -200,25 +121,6 @@ def test_the_same_request_delivered_twice_records_one_draft(
     again = render_draft_cloud(session, store, revision.id, request, requested_by="ana@example.com")
     assert again == {"draft_id": first["draft_id"], "already_recorded": True}
     assert first["failures"] == 1 and first["needs_a_person"] == 1 and first["not_checked"] == 1
-
-
-def test_a_draft_that_cannot_be_drawn_is_failed_with_its_reason_never_silent(
-    session: Session, store: LocalStore, client: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    package_id, revision, _ = _uploaded(session, store)  # no page transforms recorded
-    _result(session, revision, "FAIL", "Wrong.")
-    session.commit()
-    base = f"/api/v1/projects/{PROJECT}/packages/{package_id}"
-    assert client.post(base + "/draft-cloud").status_code == 202
-    _drain(session, store, monkeypatch)
-    status = client.get(base + "/draft-cloud").json()
-    assert status["status"] == "failed"
-    assert status["reason"].startswith("The draft could not be drawn")
-    refused = client.get(base + "/draft-cloud.pdf")
-    assert refused.status_code == 409 and refused.json()["message"] == status["reason"]
-    # Asking again queues a new request rather than hiding behind the parked one.
-    again = client.post(base + "/draft-cloud").json()
-    assert again["status"] == "preparing" and again["request_id"] != status["request_id"]
 
 
 def test_the_worker_turns_any_failure_into_a_sentence() -> None:
@@ -288,17 +190,6 @@ def test_a_draft_is_never_served_as_the_signed_cloud_pdf(
         refused = client.get(base + "/" + endpoint)
         assert refused.status_code == 409, (endpoint, refused.text)
         assert "incomplete or belongs to a different revision" in refused.json()["message"]
-
-
-def test_before_sign_off_the_signed_download_refuses_even_with_a_draft_ready(
-    session: Session, store: LocalStore, client: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    package_id, _ = _checked(session, store)
-    base = f"/api/v1/projects/{PROJECT}/packages/{package_id}"
-    client.post(base + "/draft-cloud")
-    _drain(session, store, monkeypatch)
-    assert client.get(base + "/draft-cloud").json()["status"] == "ready"
-    assert client.get(base + "/redline.pdf").status_code == 409
 
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
@@ -388,19 +279,3 @@ def test_identical_not_checked_reasons_are_said_once_with_every_result() -> None
         (WAITING, ("Countertop row on page 2", "Countertop row on page 4")),
         ("No rule covers this.", ("Countertop row on page 3",)),
     ]
-
-
-def test_a_draft_is_refused_once_the_review_is_signed_off(
-    session: Session, store: LocalStore, client: Any
-) -> None:
-    """A draft is for before sign-off; the signed cloud PDF stands for a signed review."""
-    package_id, _, _ = _legacy(session, store)
-    answer = client.post(f"/api/v1/projects/{PROJECT}/packages/{package_id}/draft-cloud")
-    assert answer.status_code == 409, answer.text
-    assert "signed off" in answer.json()["message"]
-    assert (
-        session.scalar(
-            select(func.count(OutboxEntry.id)).where(OutboxEntry.workflow == DRAFT_CLOUD_WORKFLOW)
-        )
-        == 0
-    )

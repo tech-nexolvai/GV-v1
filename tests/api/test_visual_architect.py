@@ -11,18 +11,13 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api import visual_countertops
-from app.api.dependencies import get_session
-from app.auth import Principal, Role, authenticate
-from app.config import Settings
 from app.db.session import session_factory
-from app.main import API_PREFIX, create_app
 from app.review import countertop_results
+from tests.app.countertop_results import countertop_results as results_response
 from tests.app.postgres_fixture import alembic_config
 from tests.workflow.test_architect_row_evidence import (
     ARCH_RULE,
@@ -58,14 +53,7 @@ def _project_of(session: Session, package_id: UUID) -> UUID:
 
 def _items(session: Session, package_id: UUID, project_id: UUID | None = None) -> dict[str, dict]:
     project = _project_of(session, package_id) if project_id is None else project_id
-    app = create_app(Settings(database_url="postgresql+psycopg://gv:gv@localhost:5433/gv"))
-    app.dependency_overrides[authenticate] = lambda: Principal(
-        id="reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project})
-    )
-    app.dependency_overrides[get_session] = lambda: session
-    response = TestClient(app).get(
-        f"{API_PREFIX}/projects/{project}/packages/{package_id}/countertop-results"
-    )
+    response = results_response(session, project, package_id)
     assert response.status_code == 200, response.text
     return {item["row_id"]: item for item in response.json()["items"]}
 
@@ -225,44 +213,3 @@ def test_a_row_with_nothing_compared_says_why_and_needs_no_decision(
     second = items[str(anchors[1])]["architect"]
     assert second["not_compared_reason"] == "No architect dimension is paired with this row."
     assert second["pairing_source"] is None
-
-
-def test_a_pairing_made_after_the_last_run_asks_for_a_run(
-    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    package_id, anchors = _sealed_rows(session)
-    run = _architect_drawing(session, anchors[0])
-    overall = _architect_value(session, run, anchors[0], "3' - 7\"")
-    _run(session, package_id, tmp_path)
-    pairing = _pairing(_overall(overall))
-    monkeypatch.setattr(
-        countertop_results,
-        "effective_architect_pairings",
-        lambda _session, rows: {
-            anchor: pairing if anchor == anchors[0] else None for anchor in rows
-        },
-    )
-
-    block = _items(session, package_id)[str(anchors[0])]["architect"]
-
-    assert block["finding_id"] is None
-    assert block["not_compared_reason"] == visual_countertops.NOT_CHECKED_YET
-
-
-def test_another_projects_reviewer_sees_nothing(session: Session, tmp_path: Path) -> None:
-    package_id, anchors = _sealed_rows(session)
-    run = _architect_drawing(session, anchors[0])
-    overall = _architect_value(session, run, anchors[0], "3' - 7\"")
-    _run(session, package_id, tmp_path, {anchors[0]: _pairing(_overall(overall))})
-    other = uuid4()
-    app = create_app(Settings(database_url="postgresql+psycopg://gv:gv@localhost:5433/gv"))
-    app.dependency_overrides[authenticate] = lambda: Principal(
-        id="reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({other})
-    )
-    app.dependency_overrides[get_session] = lambda: session
-
-    response = TestClient(app).get(
-        f"{API_PREFIX}/projects/{other}/packages/{package_id}/countertop-results"
-    )
-
-    assert response.status_code == 404

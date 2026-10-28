@@ -17,18 +17,12 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import Engine, event, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.dependencies import get_session
-from app.api.slot_rows import get_architect_pairing
-from app.auth import Principal, Role, authenticate
-from app.config import Settings
 from app.db.session import session_factory
 from app.evidence.sides import reading_transform
-from app.main import API_PREFIX, create_app
 from app.models import ObservationCandidate, Page, ReviewAction
 from app.models.evidence import ArchitectPairingRecord
 from app.models.runs import ExtractionRun
@@ -44,7 +38,7 @@ from app.review.row_location import (
 from evidence.coordinates import ImagePoint, PdfPoint, StoredPoint
 from extraction.architect.reader import MEASURED_ARCHITECT_SETTINGS
 from storage.local import LocalStore
-from tests.api.test_architect_pairing import Row
+from tests.app.countertop_results import countertop_results as results_response
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.architect.combined_sheet import (
     ARCH_RECT,
@@ -477,52 +471,7 @@ def test_a_well_formed_line_height_is_used(session: Session) -> None:
 # --- the pairing picker ---------------------------------------------------------------------------
 
 
-def test_the_pairing_picker_places_each_span_it_offers(session: Session) -> None:
-    row = Row(session)
-    # `Row` stores its spans with no ticks (and one-pixel labels): none of them can be placed.
-    shown = get_architect_pairing(
-        row.principal, session, row.project_id, row.package_id, row.anchor.id
-    )
-    assert [span.location for span in shown.spans] == [None, None, None]
-
-    placed = _variant(
-        row.cabinet,
-        id=None,
-        raw_text="3' - 0\"",
-        value_numerator=36,
-        value_denominator=1,
-        unit="in",
-        polygon=[[300, 200], [400, 200], [400, 230], [300, 230]],
-        ambiguity_flags=[
-            *(f for f in row.cabinet.ambiguity_flags if not f.startswith("arch-slot:")),
-            "arch-slot:3",
-            "arch-ticks:110:170",
-        ],
-    )
-    session.add(placed)
-    session.commit()
-
-    shown = get_architect_pairing(
-        row.principal, session, row.project_id, row.package_id, row.anchor.id
-    )
-    spans = {span.candidate_id: span for span in shown.spans}
-    location = spans[placed.id].location
-    assert location is not None
-    assert location == architect_location(placed, *_context(session, placed))
-    assert location.page_id == row.anchor.page_id
-    assert spans[row.cabinet.id].location is None
-
-
 # --- the countertop results -----------------------------------------------------------------------
-
-
-def _client(session: Session, project_id: UUID) -> TestClient:
-    app = create_app(Settings(database_url="postgresql+psycopg://gv:gv@localhost:5433/gv"))
-    app.dependency_overrides[authenticate] = lambda: Principal(
-        id="reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
-    )
-    app.dependency_overrides[get_session] = lambda: session
-    return TestClient(app)
 
 
 def _project_of(session: Session, package_id: UUID) -> UUID:
@@ -533,9 +482,7 @@ def _project_of(session: Session, package_id: UUID) -> UUID:
 
 def _results(session: Session, package_id: UUID) -> dict[str, dict]:  # type: ignore[type-arg]
     project = _project_of(session, package_id)
-    response = _client(session, project).get(
-        f"{API_PREFIX}/projects/{project}/packages/{package_id}/countertop-results"
-    )
+    response = results_response(session, project, package_id)
     assert response.status_code == 200, response.text
     return {item["row_id"]: item for item in response.json()["items"]}
 
@@ -644,16 +591,6 @@ def test_the_line_height_changes_no_outcome_and_only_tightens_the_compared_box(
     assert after == before
     assert tight == architect_location(new, *_context(session, new)).model_dump(mode="json")  # type: ignore[union-attr]
     assert tight != band
-
-
-def test_reading_the_offered_locations_changes_no_pairing(session: Session) -> None:
-    row = Row(session, source="code+ais", status="paired")
-    before = _snapshot(session)
-
-    for _ in range(2):
-        get_architect_pairing(row.principal, session, row.project_id, row.package_id, row.anchor.id)
-
-    assert _snapshot(session) == before
 
 
 def _statements(session: Session, package_id: UUID) -> int:
