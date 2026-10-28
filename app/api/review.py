@@ -28,18 +28,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
-from app.api.signed_off import ensure_revision_writable, open_revision, open_session_revision
+from app.api.signed_off import ensure_revision_writable, open_revision
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models.evidence import CanonicalObservation
 from app.models.package import Package, PackageRevision
-from app.models.review import ReviewActionKind, ReviewSession
-from app.models.verdicts import Finding
-from app.review.carry_over import decision_records
 from app.review.evidence_actions import (
     EvidenceActionRefused,
     EvidenceConfirmationNotAuthorised,
-    confirm_evidence,
-    correct_evidence,
 )
 from app.review.session import (
     ActionOutsideTheSession,
@@ -53,23 +48,12 @@ from app.review.session import (
     ReviewNeedsANote,
     RevisionSuperseded,
     SessionAlreadyComplete,
-    complete_session,
-    grant_exception,
     open_session,
-    record_action,
 )
 from app.review.sizes import NOT_ABOVE_ZERO, is_positive_size, typed_negative
 from app.schemas.review import (
-    DecidedEvidenceOut,
-    DecideEvidence,
-    GrantException,
     OpenReviewSession,
-    RecordAction,
-    ReviewActionOut,
-    ReviewActionPage,
-    ReviewExceptionOut,
     ReviewSessionOut,
-    ReviewSessionPage,
 )
 from units.measurement import Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches, typed_fraction_refusal
@@ -94,21 +78,6 @@ _UNPROCESSABLE = (
     ReviewNeedsANote,
 )
 _NOT_FOUND = (NoSuchPackageRevision, NoSuchReviewSession, NoSuchFinding)
-
-
-def _session_is_in_project(db: Session, project_id: UUID, review_session_id: UUID) -> bool:
-    """Whether this session belongs to the caller's project.
-
-    Checked in SQL rather than trusted from the path. The dependency establishes that the caller may
-    see *this project*; it says nothing about whether the session they named is in it.
-    """
-    statement = (
-        select(ReviewSession.id)
-        .join(PackageRevision, PackageRevision.id == ReviewSession.package_revision_id)
-        .join(Package, Package.id == PackageRevision.package_id)
-        .where(ReviewSession.id == review_session_id, Package.project_id == project_id)
-    )
-    return db.execute(statement).first() is not None
 
 
 def _revision_is_in_project(db: Session, project_id: UUID, revision_id: UUID) -> bool:
@@ -141,14 +110,6 @@ def _refuse(error: Exception) -> HTTPException:
         # together — deliberately without saying which, for the reason `NOT_FOUND_DETAIL` gives.
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
     raise error
-
-
-def _rendered(observation: CanonicalObservation) -> str:
-    """One observation as the ledger stores it: exact, with its unit and type, never a float."""
-    return (
-        f"{observation.value_numerator}/{observation.value_denominator} "
-        f"{observation.unit} ({observation.semantic_type})"
-    )
 
 
 def _corrected_inches(db: Session, observation_id: UUID, typed: str) -> Fraction:
@@ -243,282 +204,3 @@ def open_review_session(
         raise _refuse(error) from error
 
     return ReviewSessionOut.model_validate(opened)
-
-
-@router.get(
-    "/projects/{project_id}/review-sessions",
-    response_model=ReviewSessionPage,
-    summary="Review sessions in this project, newest first",
-)
-def list_review_sessions(
-    principal: Annotated[Principal, Depends(require_project_access)],
-    db: Annotated[Session, Depends(get_session)],
-    project_id: UUID,
-    mine: bool = True,
-) -> ReviewSessionPage:
-    """The sessions a reviewer picks up again — what the workspace sidebar lists.
-
-    `mine` defaults to true. A reviewer's own sittings are what they came back for, and a list
-    defaulting to everyone's would bury them on any project with more than one reviewer.
-    """
-    statement = (
-        select(ReviewSession)
-        .join(PackageRevision, PackageRevision.id == ReviewSession.package_revision_id)
-        .join(Package, Package.id == PackageRevision.package_id)
-        .where(Package.project_id == project_id)
-        .order_by(ReviewSession.created_at.desc(), ReviewSession.id.desc())
-    )
-    if mine:
-        statement = statement.where(ReviewSession.reviewer == principal.id)
-
-    rows = db.execute(statement).scalars().all()
-    return ReviewSessionPage(items=[ReviewSessionOut.model_validate(row) for row in rows])
-
-
-@router.get(
-    "/projects/{project_id}/packages/{package_id}/findings/{finding_id}/actions",
-    response_model=ReviewActionPage,
-    summary="Read one finding's review history, newest first",
-)
-def list_finding_actions(
-    _: Annotated[Principal, Depends(require_project_access)],
-    __: Annotated[Principal, Depends(require_action(Action.READ_PACKAGE))],
-    db: Annotated[Session, Depends(get_session)],
-    project_id: UUID,
-    package_id: UUID,
-    finding_id: UUID,
-) -> ReviewActionPage:
-    """Return every recorded action for a finding, without changing review state.
-
-    Project and package are both checked in SQL. The project dependency says the caller may access
-    the named project; it does not make a finding from another package belong to this request.
-    Returning the full append-only history lets the visual review show how the current decision
-    came to be rather than only the latest row.
-    """
-    scoped_revision_id = (
-        select(Finding.package_revision_id)
-        .join(PackageRevision, PackageRevision.id == Finding.package_revision_id)
-        .join(Package, Package.id == PackageRevision.package_id)
-        .where(
-            Finding.id == finding_id,
-            Package.id == package_id,
-            Package.project_id == project_id,
-        )
-    )
-    revision_id = db.execute(scoped_revision_id).scalar_one_or_none()
-    if revision_id is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
-
-    # The shared reader (#1073): this finding's own actions, plus the decision it carried over an
-    # unchanged re-run, which stays the reviewer's own row and is marked as carried.
-    records = decision_records(db, [finding_id])
-    own = [
-        ReviewActionOut.model_validate(action)
-        for action in records.own_actions.get(finding_id, ())
-        if action.package_revision_id == revision_id
-    ]
-    carried = records.carried.get(finding_id)
-    entries = own + (
-        []
-        if carried is None or carried.action.package_revision_id != revision_id
-        else [
-            ReviewActionOut.model_validate(carried.action).model_copy(
-                update={
-                    "carried_over": True,
-                    "carried_from_finding_id": carried.carried_from_finding_id,
-                }
-            )
-        ]
-    )
-    entries.sort(key=lambda entry: (entry.created_at, str(entry.id)), reverse=True)
-    return ReviewActionPage(items=entries)
-
-
-@router.post(
-    "/projects/{project_id}/review-sessions/{review_session_id}/actions",
-    response_model=ReviewActionOut,
-    status_code=status.HTTP_201_CREATED,
-    summary="Record what the reviewer did to one finding",
-    dependencies=[Depends(open_session_revision)],
-)
-def record_review_action(
-    principal: Annotated[Principal, Depends(require_project_access)],
-    _: Annotated[Principal, Depends(require_action(Action.CONFIRM_EVIDENCE))],
-    db: Annotated[Session, Depends(get_session)],
-    project_id: UUID,
-    review_session_id: UUID,
-    body: RecordAction,
-) -> ReviewActionOut:
-    """Append one action. Never an edit — a changed mind is a second row and the first one stays.
-
-    The actor is the caller and the revision is read off the finding the service loads, so neither
-    can be stated by the client. That is what "an action references a server-side finding revision"
-    means in code rather than in a comment.
-    """
-    if not _session_is_in_project(db, project_id, review_session_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
-
-    try:
-        action = record_action(
-            db,
-            review_session_id=review_session_id,
-            finding_id=body.finding_id,
-            action=body.action,
-            actor=principal.id,
-            note=body.note,
-        )
-        db.commit()
-    except Exception as error:
-        db.rollback()
-        raise _refuse(error) from error
-
-    return ReviewActionOut.model_validate(action)
-
-
-@router.post(
-    "/projects/{project_id}/review-sessions/{review_session_id}/evidence",
-    response_model=DecidedEvidenceOut,
-    status_code=status.HTTP_201_CREATED,
-    summary="Confirm or correct one reading behind a finding",
-    dependencies=[Depends(open_session_revision)],
-)
-def decide_evidence(
-    principal: Annotated[Principal, Depends(require_project_access)],
-    _: Annotated[Principal, Depends(require_action(Action.CONFIRM_EVIDENCE))],
-    db: Annotated[Session, Depends(get_session)],
-    project_id: UUID,
-    review_session_id: UUID,
-    body: DecideEvidence,
-) -> DecidedEvidenceOut:
-    """**The way into the correction ledger, which had none.**
-
-    `correct_evidence` writes a `correction_ledger` entry in the same transaction as its action row,
-    exactly as `AGENTS.md` §2.6 requires — and it had no route, so no reviewer could ever create
-    one and `D5.4`'s correction rate measured an empty table. That reads as "no corrections were
-    needed", which is the most flattering possible account of a system nobody can correct.
-
-    A correction never edits the reading the system made. The original observation stays and a new
-    `HUMAN_CONFIRMED` one is written beside it, which is what keeps "what did we get wrong?"
-    answerable.
-
-    **The corrected value is parsed, not trusted.** It arrives as typed, with its unit, and
-    `normalise_to_inches` refuses a bare number — the same refusal `app/api/measurements.py`
-    inherits deliberately, because a `984` whose `mm` was lost once became 984 inches.
-    """
-    if not _session_is_in_project(db, project_id, review_session_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
-
-    corrected: Fraction | None = None
-    if body.corrected_value is not None:
-        corrected = _corrected_inches(db, body.observation_id, body.corrected_value)
-
-    try:
-        if body.action is ReviewActionKind.CORRECT:
-            assert corrected is not None
-            decision = correct_evidence(
-                db,
-                principal=principal,
-                review_session_id=review_session_id,
-                finding_id=body.finding_id,
-                observation_id=body.observation_id,
-                corrected_value=corrected,
-            )
-        else:
-            decision = confirm_evidence(
-                db,
-                principal=principal,
-                review_session_id=review_session_id,
-                finding_id=body.finding_id,
-                observation_id=body.observation_id,
-            )
-        db.commit()
-    except Exception as error:
-        db.rollback()
-        raise _refuse(error) from error
-
-    return DecidedEvidenceOut(
-        action=ReviewActionOut.model_validate(decision.action),
-        original_observation_id=decision.original.id,
-        resulting_observation_id=decision.resulting.id,
-        original_value=_rendered(decision.original),
-        resulting_value=_rendered(decision.resulting),
-    )
-
-
-@router.post(
-    "/projects/{project_id}/review-sessions/{review_session_id}/exceptions",
-    response_model=ReviewExceptionOut,
-    status_code=status.HTTP_201_CREATED,
-    summary="Accept one specific deviation, until a date",
-    dependencies=[Depends(open_session_revision)],
-)
-def grant_review_exception(
-    principal: Annotated[Principal, Depends(require_project_access)],
-    _: Annotated[Principal, Depends(require_action(Action.CONFIRM_EVIDENCE))],
-    db: Annotated[Session, Depends(get_session)],
-    project_id: UUID,
-    review_session_id: UUID,
-    body: GrantException,
-) -> ReviewExceptionOut:
-    """**The way into the exceptions table, which had none.**
-
-    `ReviewException` appeared only in the models and the tests: nothing granted one and
-    `apply_exceptions` had no caller, so the whole control was inert in both directions.
-
-    The expiry is required at every layer and this is the last of them — the column is `NOT NULL`,
-    `ExceptionGrant` has no default for it, the schema refuses its absence, and `grant_exception`
-    refuses one already past. A permanent silent exception is not representable, which is the
-    control: somebody has to look again.
-
-    The approver is the caller. Never a field.
-    """
-    if not _session_is_in_project(db, project_id, review_session_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
-
-    try:
-        # Not `_`: that name is already the authorisation dependency in this signature, and binding
-        # the action to it would make the two the same variable.
-        _action, granted = grant_exception(
-            db,
-            review_session_id=review_session_id,
-            finding_id=body.finding_id,
-            actor=principal.id,
-            scope=body.scope,
-            scope_id=body.scope_id,
-            reason=body.reason,
-            expires_at=body.expires_at,
-        )
-        db.commit()
-    except Exception as error:
-        db.rollback()
-        raise _refuse(error) from error
-
-    return ReviewExceptionOut.model_validate(granted)
-
-
-@router.post(
-    "/projects/{project_id}/review-sessions/{review_session_id}/complete",
-    response_model=ReviewSessionOut,
-    summary="Finish a review session",
-)
-def complete_review_session(
-    principal: Annotated[Principal, Depends(require_project_access)],
-    _: Annotated[Principal, Depends(require_action(Action.CONFIRM_EVIDENCE))],
-    db: Annotated[Session, Depends(get_session)],
-    project_id: UUID,
-    review_session_id: UUID,
-) -> ReviewSessionOut:
-    """Close the sitting. Completing twice is refused rather than treated as a no-op — the second
-    attempt means somebody believes they are finishing work that was already finished."""
-    del principal
-    if not _session_is_in_project(db, project_id, review_session_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
-
-    try:
-        completed = complete_session(db, review_session_id=review_session_id)
-        db.commit()
-    except Exception as error:
-        db.rollback()
-        raise _refuse(error) from error
-
-    return ReviewSessionOut.model_validate(completed)

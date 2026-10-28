@@ -887,37 +887,6 @@ def test_the_record_layer_refuses_a_value_not_tied_to_the_row_s_suggestion(
 # -- the simple review screen, end to end ----------------------------------------------------------
 
 
-def test_the_simple_screen_offers_confirm_on_the_row_s_own_result_and_records_it(
-    session: Session, store: LocalStore
-) -> None:
-    from tests.api.test_depth_readings import _base, _client
-
-    rows, row, front = _waiting_row(session, store)
-    session.commit()
-    client = _client(session, store, rows)  # type: ignore[arg-type]
-
-    response = client.get(f"{_base(rows)}/review-items")  # type: ignore[arg-type]
-    assert response.status_code == 200, response.text
-    (item,) = [
-        entry
-        for entry in response.json()["items"]
-        if entry["kind"] == "depth_reading" and entry["finding_id"] == str(front.id)
-    ]
-    assert item["actions"] == ["confirm"]
-    assert item["candidate_id"] == str(row.id)
-
-    answered = client.post(
-        f"{_base(rows)}/review-items/{item['key']}/confirm",  # type: ignore[arg-type]
-        json={"expected_finding_id": item["finding_id"], "shown_value": item["best_guess"]["text"]},
-    )
-
-    assert answered.status_code < 300, answered.text
-    person = session.scalars(
-        select(CanonicalObservation).where(CanonicalObservation.status == "HUMAN_CONFIRMED")
-    ).all()
-    assert len(person) == 1 and person[0].semantic_type == CT007
-
-
 # -- several countertops: a row's confirmed value is the row's, never a package hold ---------------
 
 

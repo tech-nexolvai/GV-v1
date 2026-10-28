@@ -63,8 +63,6 @@ def _prompts() -> dict[str, str]:
             "upper height", (("architect", False),)
         ),
         "tag brief": full_check_roster.TAG_BRIEF,
-        "chat agent": review_agent.AGENT_SYSTEM_PROMPT,
-        "chat subagent": review_agent.SUB_SYSTEM_PROMPT,
         "vendor mistakes": (
             Path(review_agent.__file__).parent / "skills/gv-review/knowledge/vendor-mistakes.md"
         ).read_text(encoding="utf-8"),

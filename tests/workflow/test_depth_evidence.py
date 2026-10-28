@@ -738,27 +738,6 @@ def test_confirming_a_reader_s_own_row_confirms_the_reading(
     assert operand.status is EvidenceStatus.HUMAN_CONFIRMED
 
 
-def test_a_reader_s_own_rows_are_not_listed_for_a_person_to_confirm(
-    session: Session, store: LocalStore
-) -> None:
-    from app.api.confirmations import list_candidates
-    from app.models import Package
-
-    sheet = _Set(session, store)
-    row = sheet.reading(CT010, 24, QUALIFIED, link=sheet.link())
-    package = session.get_one(Package, sheet.revision.package_id)
-
-    listed = list_candidates(
-        None,  # type: ignore[arg-type]
-        session,
-        package.project_id,
-        package.id,
-        page_number=1,
-    )
-
-    assert [candidate.candidate_id for candidate in listed.candidates] == [row.id]
-
-
 def test_an_unplaced_reading_with_another_value_holds_the_tied_one(
     session: Session, store: LocalStore
 ) -> None:

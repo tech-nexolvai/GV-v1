@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -15,19 +14,18 @@ from sqlalchemy.orm import Session
 
 from alembic import command
 from app.api.dependencies import get_session
-from app.api.slot_rows import SlotRowReviewIn, review_slot_row
 from app.auth import Principal, Role, authenticate
 from app.config import Settings
 from app.db.session import session_factory
 from app.main import API_PREFIX, create_app
-from app.models import Approval, ModelInvocation, Package, PackageRevision
+from app.models import ModelInvocation, Package, PackageRevision
 from app.review.approval import approval_readiness
 from tests.api.test_slot_rows import (
     _confirm_row_readings,
     _package_rows,
     _run_current_checks,
-    _save_all_row_widths,
 )
+from tests.app.countertop_results import countertop_results
 from tests.app.postgres_fixture import alembic_config
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -80,9 +78,7 @@ def test_checked_countertop_values_are_the_recorded_exact_inputs(
     findings = _run_current_checks(session, package_id, tmp_path)
     finding = next(row for row in findings if row.scope_row_candidate_id == anchors[0])
 
-    response = _client(session, project_id).get(
-        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results"
-    )
+    response = countertop_results(session, project_id, package_id)
     assert response.status_code == 200, response.text
     item = next(row for row in response.json()["items"] if row["row_id"] == str(anchors[0]))
     assert item["finding_id"] == str(finding.id)
@@ -114,9 +110,7 @@ def test_drawing_clue_pass_uses_the_recorded_zero_delta(session: Session, tmp_pa
     _save_widths(session, project_id, package_id, anchors[0], 22)
     findings = _run_current_checks(session, package_id, tmp_path)
     finding = next(row for row in findings if row.scope_row_candidate_id == anchors[0])
-    response = _client(session, project_id).get(
-        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results"
-    )
+    response = countertop_results(session, project_id, package_id)
     item = next(row for row in response.json()["items"] if row["row_id"] == str(anchors[0]))
     assert finding.outcome == "PASS"
     assert item["outcome"] == "PASS"
@@ -124,201 +118,14 @@ def test_drawing_clue_pass_uses_the_recorded_zero_delta(session: Session, tmp_pa
     assert item["delta"]["display"] == '0"'
 
 
-def test_between_panels_pass_requires_row_confirmation_and_has_no_end_cut(
-    session: Session, tmp_path: Path
-) -> None:
-    project_id, package_id, anchors = _package_rows(
-        session,
-        unsealed_all=True,
-        check_hold_page=0,
-        wall_source="code-ink-and-both-ais",
-        overall_override=20,
-    )
-    principal = Principal(
-        id="reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
-    )
-    review_slot_row(
-        principal,
-        principal,
-        session,
-        project_id,
-        package_id,
-        anchors[0],
-        SlotRowReviewIn(wall_config="back_only"),
-    )
-    _save_widths(session, project_id, package_id, anchors[0], 20)
-    findings = _run_current_checks(session, package_id, tmp_path)
-    finding = next(row for row in findings if row.scope_row_candidate_id == anchors[0])
-    item = next(
-        row
-        for row in _client(session, project_id)
-        .get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results")
-        .json()["items"]
-        if row["row_id"] == str(anchors[0])
-    )
-    assert finding.outcome == "PASS"
-    assert item["wall_layout"]["source"] == "between panels"
-    assert item["wall_layout"]["chosen_by_reviewer"] is True  # #1332
-    # #1138: said as "no field cut", never "back wall only": nothing was said about the walls.
-    assert item["wall_layout"]["label"] == "no field cut: the stone stops at panels"
-    assert item["field_cut_count"] == 0
-    assert item["expected_total"]["display"] == '20"'
-
-
-def _wall_layout(
-    session: Session, project_id: UUID, package_id: UUID, row_id: UUID
-) -> dict[str, Any]:
-    response = _client(session, project_id).get(
-        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results"
-    )
-    assert response.status_code == 200, response.text
-    item = next(row for row in response.json()["items"] if row["row_id"] == str(row_id))
-    layout: dict[str, Any] = item["wall_layout"]
-    return layout
-
-
-def test_a_reviewers_choice_between_panels_stays_the_reviewers(
-    session: Session, tmp_path: Path
-) -> None:
-    """#1332: "between panels" says where the stone stops; it never hides who chose the walls."""
-    project_id, package_id, anchors = _package_rows(
-        session,
-        unsealed_all=True,
-        check_hold_page=0,
-        wall_source="code-ink-and-both-ais",
-        overall_override=20,
-    )
-    _run_current_checks(session, package_id, tmp_path)
-
-    # No one has chosen the walls yet: only the side panels speak, so this is not a choice.
-    before = _wall_layout(session, project_id, package_id, anchors[0])
-    assert before["source"] == "between panels"
-    assert before["chosen_by_reviewer"] is False
-
-    principal = Principal(
-        id="reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
-    )
-    review_slot_row(
-        principal,
-        principal,
-        session,
-        project_id,
-        package_id,
-        anchors[0],
-        SlotRowReviewIn(wall_config="back_only"),
-    )
-    # Chosen after the run, before the checks run again: still between panels, and the reviewer's.
-    # The screen reads this flag to stop listing the run's wall cases under the row (#1332).
-    after = _wall_layout(session, project_id, package_id, anchors[0])
-    assert after["source"] == "between panels"
-    assert after["chosen_by_reviewer"] is True
-    assert after["config"] == "back_only"
-    assert after["line"] is not None and "chosen by reviewer" in after["line"]
-
-
-def test_a_wall_at_one_end_is_labelled_and_takes_one_field_cut(
-    session: Session, tmp_path: Path
-) -> None:
-    """#1138: the countertop results name the layout in words and need one inch, not two."""
-    project_id, package_id, anchors = _package_rows(
-        session,
-        unsealed_all=True,
-        wall_source="readers",
-        sealed_layout="back_and_left",
-        overall_override=21,
-    )
-    principal = Principal(
-        id="reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
-    )
-    review_slot_row(
-        principal,
-        principal,
-        session,
-        project_id,
-        package_id,
-        anchors[0],
-        SlotRowReviewIn(wall_config="back_and_left"),
-    )
-    _save_widths(session, project_id, package_id, anchors[0], 21)
-    findings = _run_current_checks(session, package_id, tmp_path)
-    finding = next(row for row in findings if row.scope_row_candidate_id == anchors[0])
-    item = next(
-        row
-        for row in _client(session, project_id)
-        .get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results")
-        .json()["items"]
-        if row["row_id"] == str(anchors[0])
-    )
-    assert finding.outcome == "PASS", finding.reason
-    assert item["wall_layout"] == {
-        "config": "back_and_left",
-        "label": "back wall and left end",
-        "source": "reviewer",
-        # Given on this revision, so nothing was carried from an earlier one (#1180).
-        "carried_from_revision": None,
-        "carried_by": None,
-        "carried_given_at": None,
-        # Which walls were used and who decided (#1202).
-        "line": "wall at the left end — chosen by reviewer",
-        "chosen_by_reviewer": True,
-    }
-    assert item["field_cut_count"] == 1
-    assert item["expected_total"]["display"] == '21"'
-
-
-def test_project_boundary_hides_a_package_from_another_project(session: Session) -> None:
-    _project_id, package_id, _ = _package_rows(session)
-    other = uuid4()
-    response = _client(session, other).get(
-        f"{API_PREFIX}/projects/{other}/packages/{package_id}/countertop-results"
-    )
-    assert response.status_code == 404
-
-
 def test_project_boundary_hides_summary_and_usage(session: Session) -> None:
-    project_id, package_id, _ = _package_rows(session)
+    project_id, _package_id, _ = _package_rows(session)
     other_project = uuid4()
     client = _client(session, project_id)
     summary = client.get(f"{API_PREFIX}/projects/{other_project}/packages-summary")
     usage = client.get(f"{API_PREFIX}/projects/{other_project}/usage")
-    countertop = client.get(
-        f"{API_PREFIX}/projects/{other_project}/packages/{package_id}/countertop-results"
-    )
     assert summary.status_code == 404
     assert usage.status_code == 404
-    assert countertop.status_code == 404
-
-
-def test_summary_counts_match_existing_findings_summary(session: Session, tmp_path: Path) -> None:
-    project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="code-ink-and-both-ais"
-    )
-    _save_all_row_widths(session, project_id, package_id, anchors[0])
-    _run_current_checks(session, package_id, tmp_path)
-    revision = session.query(PackageRevision).filter_by(package_id=package_id).one()
-    # Historical approvals may coexist with a re-review. The summary's joins must not multiply
-    # findings by the number of approval/export rows.
-    session.add_all(
-        [
-            Approval(package_revision_id=revision.id, approved_by="reviewer-a"),
-            Approval(package_revision_id=revision.id, approved_by="reviewer-b"),
-        ]
-    )
-    session.flush()
-    client = _client(session, project_id)
-    legacy = client.get(
-        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/findings/summary"
-    )
-    summary = client.get(f"{API_PREFIX}/projects/{project_id}/packages-summary?limit=1")
-    assert summary.status_code == 200, summary.text
-    item = next(row for row in summary.json()["items"] if row["package_id"] == str(package_id))
-    counts = item["outcomes"]
-    assert counts["pass"] == legacy.json()["passed"]
-    assert counts["fail"] == legacy.json()["failed"]
-    assert counts["review"] == legacy.json()["review_required"]
-    assert counts["not_found"] == legacy.json()["not_found"]
-    assert counts["no_rule"] == legacy.json()["no_applicable_rule"]
-    assert item["needs_decision"] == approval_readiness(session, revision.id).blocking_findings
 
 
 def test_usage_totals_match_invocations_and_never_expose_raw_answers(session: Session) -> None:
@@ -405,9 +212,7 @@ def test_countertop_result_query_count_stays_bounded_for_twenty_rows(
 
     event.listen(session.bind, "before_cursor_execute", count_statements)
     try:
-        response = _client(session, project_id).get(
-            f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results"
-        )
+        response = countertop_results(session, project_id, package_id)
     finally:
         event.remove(session.bind, "before_cursor_execute", count_statements)
     assert response.status_code == 200
@@ -440,9 +245,7 @@ def test_a_cabinet_package_s_results_cost_one_statement_more_at_most(session: Se
 
     event.listen(session.bind, "before_cursor_execute", count_statements)
     try:
-        response = _client(session, project_id).get(
-            f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results"
-        )
+        response = countertop_results(session, project_id, package_id)
     finally:
         event.remove(session.bind, "before_cursor_execute", count_statements)
     assert response.status_code == 200
@@ -457,9 +260,7 @@ def test_held_countertop_has_no_recomputed_total_or_delta(session: Session, tmp_
         session, wall_source="code-ink-and-both-ais", held_page=0
     )
     _run_current_checks(session, package_id, tmp_path)
-    response = _client(session, project_id).get(
-        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results"
-    )
+    response = countertop_results(session, project_id, package_id)
     item = next(row for row in response.json()["items"] if row["row_id"] == str(anchors[0]))
     assert item["hold"] is not None
     assert item["printed_overall"] is not None

@@ -103,28 +103,6 @@ def test_no_exemption_outlives_its_route_or_is_also_guarded() -> None:
     assert all(reason.strip() for reason in EXEMPT_WRITES.values())
 
 
-def test_the_writes_named_in_the_audit_are_all_guarded() -> None:
-    """The inputs and decisions the audit (2026-10-11) named, by path. A refactor that drops one of
-    the guards fails here by name, not only as a count."""
-    paths = {path for _, path in GUARDED}
-    base = "/api/v1/projects/{project_id}/packages/{package_id}"
-    for suffix in (
-        "/measurements",
-        "/checks",
-        "/measurements/propose",
-        "/slot-rows/{row_id}/review",
-        "/slot-rows/{row_id}/architect-pairing",
-        "/views/{view_id}/role",
-        "/candidates/{candidate_id}/confirm",
-        "/review-sessions",
-    ):
-        assert base + suffix in paths, suffix
-    assert any("architect" in path and "match" in path for path in paths), paths
-    sessions = "/api/v1/projects/{project_id}/review-sessions/{review_session_id}"
-    for suffix in ("/actions", "/evidence", "/exceptions"):
-        assert sessions + suffix in paths, suffix
-
-
 # ---------------------------------------------------------------------------
 # The behaviour
 # ---------------------------------------------------------------------------
@@ -211,76 +189,6 @@ def test_every_guarded_write_is_refused_on_a_signed_off_review(
     assert response.status_code == 409, response.text
     assert response.json()["message"] == SIGNED_OFF
     assert _counts(session) == before
-
-
-def test_the_screens_two_writes_from_the_audit_are_refused_with_real_bodies(
-    session: Session,
-) -> None:
-    """The audit's own repro: Save values (201 before) and Run checks (202 before) on an approved
-    package. Outcome: both 409, no parameter set written, no run queued."""
-    package_id, _, _ = _package(session, PackageState.APPROVED)
-    client = _client(session, _admin())
-    base = f"/api/v1/projects/{PROJECT}/packages/{package_id}"
-
-    saved = client.post(
-        f"{base}/measurements",
-        json={"parameters": [{"name": "countertop_overhang", "value": '1 1/2"'}]},
-    )
-    checked = client.post(f"{base}/checks")
-
-    assert (saved.status_code, checked.status_code) == (409, 409)
-    assert saved.json()["message"] == checked.json()["message"] == SIGNED_OFF
-    assert _counts(session) == (0, 0)
-
-
-@pytest.mark.parametrize(
-    ("state", "words"),
-    [
-        (PackageState.CHANGES_REQUESTED, "Changes were requested on this review"),
-        (PackageState.SUPERSEDED, "A newer revision replaced this one"),
-        (PackageState.CANCELLED, "This review was cancelled"),
-    ],
-    ids=["changes-requested", "superseded", "cancelled"],
-)
-def test_every_closed_review_is_refused_in_its_own_words(
-    session: Session, state: PackageState, words: str
-) -> None:
-    package_id, _, _ = _package(session, state)
-
-    response = _client(session, _admin()).post(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/checks"
-    )
-
-    assert response.status_code == 409
-    assert response.json()["message"].startswith(words)
-
-
-def test_an_open_review_still_takes_the_same_writes(session: Session) -> None:
-    """Outcome: the guard lets an open review through (Run checks is accepted and queued)."""
-    package_id, _, _ = _package(session, PackageState.AWAITING_REVIEW)
-
-    response = _client(session, _admin()).post(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/checks"
-    )
-
-    assert response.status_code == 202, response.text
-    assert _counts(session)[0] == 1
-
-
-def test_someone_outside_the_project_still_gets_not_found_not_signed_off(
-    session: Session,
-) -> None:
-    """The guard runs before the endpoint's own dependencies, so it checks membership itself: a
-    409 would confirm the package exists."""
-    package_id, review_id, _ = _package(session, PackageState.APPROVED)
-    outsider = _client(session, _admin(projects=frozenset({uuid4()})))
-
-    package_write = outsider.post(f"/api/v1/projects/{PROJECT}/packages/{package_id}/checks")
-    session_write = outsider.post(
-        f"/api/v1/projects/{PROJECT}/review-sessions/{review_id}/actions", json={}
-    )
-
-    assert (package_write.status_code, session_write.status_code) == (404, 404)
 
 
 @pytest.mark.parametrize(

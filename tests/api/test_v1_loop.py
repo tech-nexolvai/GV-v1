@@ -26,13 +26,10 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from openpyxl import load_workbook
-from pypdf import PdfReader
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.confirmations import _verified_crop_content
 from app.api.dependencies import get_artifact_store, get_session
 from app.api.documents import storage_key
 from app.config import Settings
@@ -41,10 +38,7 @@ from app.main import create_app
 from app.models import (
     Document,
     DocumentVersion,
-    EvidenceArtifact,
     ObservationCandidate,
-    OutputArtifact,
-    OutputArtifactKind,
     Package,
     PackageRevision,
     PackageRevisionDocument,
@@ -56,14 +50,12 @@ from app.models.runs import WorkflowRun
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import MISSING_SPACE, _pdf
-from tests.workflow.test_stages import _project_depth_parameters, _publish_rulebook
 from workflow.review import run_all
 from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
 PROJECT = UUID("22222222-2222-2222-2222-222222222222")
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 #: A shop drawing stating one dimension the reader keeps whole, and one it cannot read.
 #:
@@ -76,35 +68,6 @@ DRAWING = _pdf(
     b"BT /F1 10 Tf 1 0 0 1 20 55 Tm (100 [4]) Tj ET\n"
     b'BT /F1 10 Tf 1 0 0 1 20 40 Tm (SINK 25 1/2") Tj ET\n'
 )
-
-#: What `CT-DEPTH-001` reads.
-DEPTH_TYPE = "CT010"
-
-
-def test_crop_endpoint_refuses_bytes_that_do_not_match_the_recorded_digest(
-    tmp_path: Path,
-) -> None:
-    from fastapi import HTTPException
-
-    original = b"recorded crop bytes"
-    changed = b"different crop bytes"
-    key = "evidence/crops/digest-check.png"
-    store = LocalStore(tmp_path)
-    store.put(key, io.BytesIO(changed), content_type="image/png")
-    crop = EvidenceArtifact(
-        candidate_id=UUID(int=1),
-        document_version_id=UUID(int=2),
-        page_id=UUID(int=3),
-        kind="crop",
-        storage_key=key,
-        sha256=hashlib.sha256(original).hexdigest(),
-        media_type="image/png",
-        coordinate_space="image",
-    )
-
-    with pytest.raises(HTTPException, match="recorded digest") as error:
-        _verified_crop_content(store, crop)
-    assert error.value.status_code == 409
 
 
 def _settings() -> Settings:
@@ -219,302 +182,6 @@ def _uploaded(session: Session, store: LocalStore) -> tuple[UUID, PackageRevisio
     return package.id, revision, run.id
 
 
-def test_a_reviewer_takes_a_drawing_from_upload_to_a_downloadable_signed_off_review(
-    session: Session, store: LocalStore, client: Any
-) -> None:
-    """**The acceptance criterion, start to finish.**
-
-    Seven steps, each one a thing a reviewer does, and every one of them through the API. The point
-    is not that any single step works — each has its own tests — but that there is a path from one
-    end to the other with nothing missing in between. Twice in this project a step has been complete,
-    tested and unreachable.
-    """
-    package_id, revision, run_id = _uploaded(session, store)
-    _publish_rulebook(session)
-    _project_depth_parameters(session, revision)
-    session.commit()
-
-    # 1. The mechanical pass, driven by the real workflow so the package moves through its states.
-    #    Calling the stages directly would skip the transitions, and `APPROVED` is reachable only
-    #    from `AWAITING_REVIEW` — which is exactly the dead end this story found.
-    run_all(
-        _factory(session),
-        package_revision_id=revision.id,
-        workflow_run_id=run_id,
-        stages=DatabaseStages(store, missing_space=MISSING_SPACE),
-    )
-    session.expire_all()
-
-    # 2. The reviewer sees what was read, with the value and the crop.
-    listed = client.get(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates?page_number=1"
-    )
-    assert listed.status_code == 200, listed.text
-    readings = listed.json()["candidates"]
-    assert readings, "the reviewer was shown nothing to confirm"
-
-    depth = next(row for row in readings if row["raw_text"] == "648 [25 1/2]")
-    assert depth["value"] == "25 1/2 in", depth
-    assert depth["source"] == "SHOP"
-    assert depth["crop_key"] is not None
-    assert depth["crop_shows_gv_mark"] is False
-    crop_path = (
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}"
-        f"/candidates/{depth['candidate_id']}/crop"
-    )
-    crop_response = client.get(crop_path)
-    assert crop_response.status_code == 200, crop_response.text
-    assert crop_response.content.startswith(PNG_SIGNATURE)
-    foreign_package = client.get(
-        f"/api/v1/projects/{PROJECT}/packages/{uuid4()}/candidates/" f"{depth['candidate_id']}/crop"
-    )
-    assert foreign_package.status_code == 404
-
-    # 3. The reviewer says what one of them is. The value is not re-entered.
-    confirmed = client.post(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}"
-        f"/candidates/{depth['candidate_id']}/confirm",
-        json={"semantic_type": DEPTH_TYPE},
-    )
-    assert confirmed.status_code == 201, confirmed.text
-    assert confirmed.json()["status"] == "HUMAN_CONFIRMED"
-
-    # The Measure form is server-backed: returning to it later (or from a different browser) carries
-    # the exact reading the reviewer confirmed on the crop.  This is not a semantic guess — the
-    # confirmation above is the only thing that put it in this response.
-    required = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/required-inputs")
-    assert required.status_code == 200, required.text
-    confirmed_readings = required.json()["confirmed_readings"]
-    assert len(confirmed_readings) == 1
-    assert confirmed_readings[0]["key"] == f"SHOP:{DEPTH_TYPE}"
-    assert confirmed_readings[0]["value"] == "25 1/2 in"
-    assert confirmed_readings[0]["qualification"] == "reviewer_confirmed"
-
-    # The request commits its canonical observation.  Reloading the proposal queue must not offer
-    # the same raw candidate for a second type — that would be an apparent successful confirmation
-    # followed by a duplicate/conflicting reviewer action on the next page load.
-    reloaded = client.get(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates?page_number=1"
-    )
-    assert reloaded.status_code == 200, reloaded.text
-    assert depth["candidate_id"] not in {
-        item["candidate_id"] for item in reloaded.json()["candidates"]
-    }
-    assert len(reloaded.json()["candidates"]) == len(readings) - 1
-
-    # A second genuine typed reading is deliberately not an operand for any published check. It
-    # must not appear on CT-DEPTH-001's redline merely because it lives on the same sheet.
-    unrelated = next(row for row in readings if row["raw_text"] == "100 [4]")
-    unrelated_confirmed = client.post(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}"
-        f"/candidates/{unrelated['candidate_id']}/confirm",
-        json={"semantic_type": "filler_width"},
-    )
-    assert unrelated_confirmed.status_code == 201, unrelated_confirmed.text
-
-    # 4. The checks run again now that the reading has a meaning, and the report is rebuilt.
-    #    Re-running is what a reviewer does after confirming: the first pass had no evidence to
-    #    decide from, and `run_checks` supersedes its own previous run rather than adding to it.
-    stages = DatabaseStages(store, missing_space=MISSING_SPACE)
-    stages.run_checks(session, revision.id)
-    output_result = stages.generate_outputs(session, revision.id)
-    assert output_result["redline"] == {"generated": True, "reason": None}, output_result
-    session.commit()
-
-    findings = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/findings")
-    assert findings.status_code == 200, findings.text
-    outcomes = {item["rule_id"]: item["outcome"] for item in findings.json()["items"]}
-    assert outcomes["CT-DEPTH-001"] == "PASS", outcomes
-
-    # The re-run finding retains the confirmed observation identity.  Its viewer path returns the
-    # same candidate-sized PNG the reviewer inspected — never a page render or redline.
-    depth_finding = next(
-        item for item in findings.json()["items"] if item["rule_id"] == "CT-DEPTH-001"
-    )
-
-    chain = client.get(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/findings/{depth_finding['id']}/chain"
-    )
-    assert chain.status_code == 200, chain.text
-    evidence = chain.json()["operands"][0]["evidence"]
-    assert evidence["canonical_observation_id"] == confirmed.json()["canonical_observation_id"]
-
-    crop = client.get(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/evidence/"
-        f"{evidence['canonical_observation_id']}/crop"
-    )
-    assert crop.status_code == 200, crop.text
-    assert crop.headers["content-type"] == "image/png"
-    assert crop.content.startswith(b"\x89PNG\r\n\x1a\n")
-    assert b"%PDF" not in crop.content
-
-    # 5. The report exists and is deliberately out of reach until somebody signs for it.
-    early = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report")
-    assert early.status_code == 409, early.text
-    assert "not been signed off" in early.text
-    early_pdf = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report.pdf")
-    assert early_pdf.status_code == 409, early_pdf.text
-    early_redline = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/redline.pdf")
-    assert early_redline.status_code == 409, early_redline.text
-
-    # 6. The reviewer addresses every abstention and signs off.
-    _address_every_abstention(client, session, package_id, revision)
-
-    # Approval freezes the record, but no pre-review file may escape while the worker prepares it.
-    pending = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report")
-    assert pending.status_code == 409
-    assert "signed exports" in pending.text
-    from app.models.review import Approval
-    from workflow.signed_outputs import generate_signed_outputs
-
-    approval = session.scalar(select(Approval).where(Approval.package_revision_id == revision.id))
-    assert approval is not None
-    generate_signed_outputs(session, store, approval.id)
-    session.commit()
-
-    # 7. And takes the review away.
-    report = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report")
-    assert report.status_code == 200, report.text
-    assert report.content.startswith(b"PK\x03\x04"), "the report is not a workbook"
-    assert "attachment" in report.headers["content-disposition"]
-    summary = load_workbook(io.BytesIO(report.content))["Review Summary"]
-    assert summary["B11"].value == "SIGNED OFF — report released after approval"
-    assert summary["B12"].value == "ana@example.com"
-    assert summary["B13"].value != "not yet recorded"
-
-    pdf = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report.pdf")
-    assert pdf.status_code == 200, pdf.text
-    assert pdf.headers["content-type"] == "application/pdf"
-    assert pdf.content.startswith(b"%PDF-"), "the branded handoff is not a PDF"
-    assert "attachment" in pdf.headers["content-disposition"]
-
-    redline = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/redline.pdf")
-    assert redline.status_code == 200, redline.text
-    assert redline.headers["content-type"] == "application/pdf"
-    assert redline.content.startswith(b"%PDF-"), "the evidence-grounded redline is not a PDF"
-    # The external callout header and stored-fact note name this finding; on the drawing itself
-    # only its tag "02" sits by the cloud (a format-3 snapshot, final QA 2026-10-16). The source
-    # drawing did not contain any of them.
-    drawing_page_text = " ".join(
-        page.extract_text() or "" for page in PdfReader(io.BytesIO(redline.content)).pages
-    )
-    assert "02 · CT-DEPTH-001 · PASS" not in drawing_page_text
-    assert "02  CT-DEPTH-001 · PASS" in drawing_page_text
-    assert "CT-DEPTH-001 · PASS." in drawing_page_text
-
-    # The newest, which is what the endpoint serves. Two reports exist here and both are real: the
-    # pipeline wrote one before the reading had a meaning, and the reviewer's confirmation made the
-    # checks decidable, so re-running produced a second. `output_artifacts` is append-only, so the
-    # first is not overwritten — it is simply no longer the current one.
-    stored = (
-        session.execute(
-            select(OutputArtifact)
-            .where(OutputArtifact.kind == OutputArtifactKind.FINDINGS_WORKBOOK.value)
-            .order_by(OutputArtifact.created_at.desc())
-            .limit(1)
-        )
-        .scalars()
-        .one()
-    )
-    assert (
-        hashlib.sha256(report.content).hexdigest() == stored.sha256
-    ), "the bytes served are not the ones the approval covers"
-    stored_pdf = (
-        session.execute(
-            select(OutputArtifact)
-            .where(OutputArtifact.kind == OutputArtifactKind.FINDINGS_PDF.value)
-            .order_by(OutputArtifact.created_at.desc())
-            .limit(1)
-        )
-        .scalars()
-        .one()
-    )
-    assert hashlib.sha256(pdf.content).hexdigest() == stored_pdf.sha256
-    stored_redline = (
-        session.execute(
-            select(OutputArtifact)
-            .where(OutputArtifact.kind == OutputArtifactKind.REDLINE.value)
-            .order_by(OutputArtifact.created_at.desc())
-            .limit(1)
-        )
-        .scalars()
-        .one()
-    )
-    assert hashlib.sha256(redline.content).hexdigest() == stored_redline.sha256
-
-
-def _address_every_abstention(
-    client: Any, session: Session, package_id: UUID, revision: PackageRevision
-) -> None:
-    """Open a sitting, dismiss each REVIEW REQUIRED finding, then approve.
-
-    Approval refuses while any abstention is unaddressed, which is the rule this exercises rather
-    than works around: a check that declined to decide and that nobody looked at is not a check.
-    """
-    findings = client.get(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/findings?limit=100"
-    ).json()["items"]
-
-    # The sitting names the *revision*, not the package: a package moves on, and a review that
-    # followed it would record decisions against drawings the reviewer never saw.
-    opened = client.post(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/review-sessions",
-        json={"package_revision_id": str(revision.id)},
-    )
-    assert opened.status_code in (200, 201), opened.text
-    review_session_id = opened.json()["id"]
-
-    for finding in findings:
-        if finding["outcome"] not in {"FAIL", "REVIEW_REQUIRED", "NOT_FOUND"}:
-            continue
-        recorded = client.post(
-            f"/api/v1/projects/{PROJECT}/review-sessions/{review_session_id}/actions",
-            json={
-                "finding_id": finding["id"],
-                "action": "dismiss",
-                "note": "not applicable to this package",
-            },
-        )
-        assert recorded.status_code in (200, 201), recorded.text
-
-    approved = client.post(
-        f"/api/v1/projects/{PROJECT}/review-sessions/{review_session_id}/approve"
-    )
-    assert approved.status_code == 201, approved.text
-    assert approved.json()["state"] == PackageState.APPROVED.value
-
-    session.expire_all()
-    assert PackageState(session.get(PackageRevision, revision.id).state) is PackageState.APPROVED
-
-
-def test_the_report_is_refused_until_the_package_is_approved(
-    session: Session, store: LocalStore, client: Any
-) -> None:
-    """**Approval is the gate, not the file's existence.**
-
-    `generate_outputs` writes the workbook as soon as the checks have run, which is before anybody
-    has read a finding. Serving it then would let a review leave in a state nobody signed for — the
-    thing ADR-0010 forbids — and it would look identical to a signed one on the way out.
-    """
-    package_id, revision, run_id = _uploaded(session, store)
-    _publish_rulebook(session)
-    session.commit()
-    run_all(
-        _factory(session),
-        package_revision_id=revision.id,
-        workflow_run_id=run_id,
-        stages=DatabaseStages(store, missing_space=MISSING_SPACE),
-    )
-    session.expire_all()
-
-    assert session.execute(select(OutputArtifact)).scalars().all(), "no report was produced"
-
-    refused = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report")
-
-    assert refused.status_code == 409
-    assert "not been signed off" in refused.text
-
-
 def test_nothing_in_the_loop_types_a_candidate_on_its_own(
     session: Session, store: LocalStore, client: Any
 ) -> None:
@@ -538,61 +205,3 @@ def test_nothing_in_the_loop_types_a_candidate_on_its_own(
     )
 
     assert guesses == [None], f"something assigned a semantic type: {guesses}"
-
-
-def test_a_project_member_who_may_not_confirm_evidence_cannot_confirm_a_reading(
-    session: Session, store: LocalStore, client: Any
-) -> None:
-    """**Confirming a reading is a role, not just membership** (#1137).
-
-    A rules administrator belongs to the project and may read it, but may not confirm evidence. The
-    request is refused like every other refusal (404, nothing said) and writes nothing: no canonical
-    observation, no link to the reading, no audit event. A reviewer then confirms the same reading,
-    so the refusal was the role and not the data.
-    """
-    from app.auth import Principal, Role, authenticate
-    from app.models import AuditEvent, CanonicalObservation, EvidenceSupportingCandidate
-
-    package_id, revision, run_id = _uploaded(session, store)
-    run_all(
-        _factory(session),
-        package_revision_id=revision.id,
-        workflow_run_id=run_id,
-        stages=DatabaseStages(store, missing_space=MISSING_SPACE),
-    )
-    session.expire_all()
-    listed = client.get(
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates?page_number=1"
-    )
-    assert listed.status_code == 200, listed.text
-    depth = next(row for row in listed.json()["candidates"] if row["raw_text"] == "648 [25 1/2]")
-    confirm = (
-        f"/api/v1/projects/{PROJECT}/packages/{package_id}"
-        f"/candidates/{depth['candidate_id']}/confirm"
-    )
-
-    def written() -> tuple[int, ...]:
-        return tuple(
-            len(session.execute(select(model.id)).all())
-            for model in (CanonicalObservation, EvidenceSupportingCandidate, AuditEvent)
-        )
-
-    before = written()
-    rules_admin = Principal(
-        id="rules@example.com", roles=frozenset({Role.RULE_ADMIN}), projects=frozenset({PROJECT})
-    )
-    client.app.dependency_overrides[authenticate] = lambda: rules_admin
-    refused = client.post(confirm, json={"semantic_type": DEPTH_TYPE})
-
-    assert refused.status_code == 404, refused.text
-    assert refused.json()["message"] == "Not found"
-    session.expire_all()
-    assert written() == before
-
-    reviewer = Principal(
-        id="ana@example.com", roles=frozenset({Role.REVIEWER}), projects=frozenset({PROJECT})
-    )
-    client.app.dependency_overrides[authenticate] = lambda: reviewer
-    accepted = client.post(confirm, json={"semantic_type": DEPTH_TYPE})
-
-    assert accepted.status_code == 201, accepted.text

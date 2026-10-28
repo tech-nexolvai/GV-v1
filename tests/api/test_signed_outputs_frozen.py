@@ -22,11 +22,11 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.visual_countertops import _countertop_results_for_revision
 from app.db.session import session_factory
 from app.models import CheckRun, Finding, OutputArtifact, PackageRevision, SlotRowReviewDecision
 from app.models.review import Approval, ApprovedFinding
 from app.models.signed_exports import ApprovalExportSnapshot
+from app.review.countertop_results import _countertop_results_for_revision
 from app.review.signed_exports import (
     load_snapshot,
     printable_countertops,

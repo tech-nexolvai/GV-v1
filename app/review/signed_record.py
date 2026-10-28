@@ -24,12 +24,12 @@ __all__ = [
 ]
 
 #: The fixed note of a person's "checked by hand: wrong" (a DISMISS on the simple review). Written
-#: by `app/review/review_item_actions.py`, read here and by the cloud PDF through
+#: by the old Review list's answer actions (removed 2026-10-28), read here and by the cloud PDF through
 #: `ReviewDisposition.checked_wrong_by_hand`.
 CHECKED_WRONG_NOTE: Final = "Checked by hand: wrong (simple review)."
 
 #: How every "Not this" on a depth or sink reading (a DISMISS on the simple review, #1360) begins;
-#: the rest names the countertop and the reading. Written by `app/review/review_item_actions.py`,
+#: the rest names the countertop and the reading. Written by the old Review list (removed 2026-10-28),
 #: read through `ReviewDisposition.not_this_reading`: such a result is printed NOT CHECKED
 #: (Anant, 2026-10-16: "Not this" = Not checked).
 DEPTH_NOT_THIS_PREFIX: Final = "Not checked: a person said the AI's reading "

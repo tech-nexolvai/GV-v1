@@ -14,7 +14,6 @@ from pathlib import Path
 import anthropic
 import httpx
 
-from app.review.assistant import chat_request, contract, service
 from app.review.assistant.chat_provider import RETENTION_WORDS, failure_from
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -111,13 +110,3 @@ def test_provider_failures_never_say_claude() -> None:
     for error in errors:
         assert not WORD.search(str(failure_from(error))), error
     assert not WORD.search(RETENTION_WORDS)
-
-
-def test_models_are_named_by_their_short_name() -> None:
-    labels = [model.label for model in chat_request.MODELS.values()]
-    assert "Opus 5.5" in labels
-    assert not [label for label in labels if WORD.search(label)]
-    assert contract.model_label("anthropic.claude-opus-5-5") == "Opus 5.5"
-    assert contract.MODEL_LABEL == "Sonnet 5.5"
-    assert not [label for label in contract.STAGE_LABELS.values() if WORD.search(label)]
-    assert not WORD.search(service.BUDGET_TEXT)

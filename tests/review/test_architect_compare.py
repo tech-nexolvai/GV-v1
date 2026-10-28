@@ -332,48 +332,6 @@ def test_the_worker_stores_every_architect_dimension_once_and_never_twice(
     assert {item.result for item in items} <= {"unpaired", "unread", "same", "different", "rule"}
 
 
-def test_the_review_list_and_the_answer_route_carry_the_compare(session: Session) -> None:
-    from app.models import Package
-    from tests.api.test_review_item_actions import _act, _client, _items
-
-    package_id, _revision_id, records = _setup(session)
-    package = session.get(Package, package_id)
-    assert package is not None
-    session.commit()
-    client = _client(session, package.project_id)
-
-    body = _items(client, package.project_id, package_id)
-    assert len(body["architect_compare"]) == len(records)
-    assert body["header"]["architect_compare_counts"]["different"] == 1
-    different = f"arch:{records[1].id}"
-
-    agreed = _act(client, package.project_id, package_id, different, "agree")
-    assert agreed.status_code == 201, agreed.text
-    again = _act(client, package.project_id, package_id, different, "agree")
-    assert again.status_code == 200, again.text
-    stale = _act(
-        client,
-        package.project_id,
-        package_id,
-        NOT_COMPARED_GROUP,
-        "answer",
-        {"answer": "clear_not_compared", "expected_keys": []},
-    )
-    assert stale.status_code == 409, stale.text
-    by_hand = _act(
-        client,
-        package.project_id,
-        package_id,
-        f"arch:{records[2].id}",
-        "answer",
-        {"answer": "checked_wrong"},
-    )
-    assert by_hand.status_code == 201, by_hand.text
-    listed = {e["key"]: e for e in by_hand.json()["review_items"]["architect_compare"]}
-    assert listed[different]["answer"] == "vendor_wrong"
-    assert listed[f"arch:{records[2].id}"]["status"] == "done"
-
-
 def test_the_open_count_costs_a_fixed_number_of_statements_whatever_the_revisions(
     session: Session,
 ) -> None:

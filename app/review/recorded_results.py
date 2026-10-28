@@ -17,7 +17,6 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.visual_countertops import _countertop_results_for_revision
 from app.models import (
     CheckRun,
     Finding,
@@ -29,6 +28,7 @@ from app.models import (
 from app.review.approval import readiness_and_decisions
 from app.review.assistant.full_check_brief import LEAD_RESULTS
 from app.review.assistant.records import ReviewSnapshot, build_snapshot
+from app.review.countertop_results import _countertop_results_for_revision
 from app.review.review_items import review_items_for_revision
 from workflow.findings_composer import ComposerFinding, ComposerOperand, reviewer_reason
 

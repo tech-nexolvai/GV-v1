@@ -317,14 +317,14 @@ def test_with_an_architect_file_a_stop_in_the_dimensions_lists_no_page_that_was_
     unasked, and the page was listed as unread although its row and dimensions were read. Now it
     is kept, held with the budget named."""
     from extraction.architect.reader import MEASURED_ARCHITECT_SETTINGS
-    from tests.workflow.test_architect_file_reader import _add_architectural
-    from tests.workflow.test_architect_reader import _upload
-    from tests.workflow.test_separate_architect_production_chain import (
+    from tests.workflow.separate_architect_chain_fixtures import (
         TEXTS,
         VENDOR,
         Readers,
         _architect_file,
     )
+    from tests.workflow.test_architect_file_reader import _add_architectural
+    from tests.workflow.test_architect_reader import _upload
     from tests.workflow.test_slot_reader import claude_crops_to_texts
 
     class Stopping(Readers):
@@ -484,50 +484,6 @@ def test_out_of_credit_stops_the_reading_and_sends_nothing_after_it(
     assert readers.sent == 5
 
 
-def test_read_the_unread_pages_through_the_package_screen_and_the_worker(
-    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The product path: the package says which pages wait for the budget, a reviewer asks to read
-    them (audited, queued in the outbox), and the local worker's own consumer reads them on the
-    same revision."""
-    import scripts.drain_outbox as worker
-    from app.auth import Role
-    from app.lifecycle.side_states import enter_needs_input
-    from app.lifecycle.states import transition
-    from app.models import OutboxEntry, Package, PackageRevision, PackageState
-    from tests.api.test_reading_again import _ask, _client
-
-    revision, _readers = _stopped_reading(session, store)
-    transition(session, revision.id, PackageState.MATCHING, actor="the worker")
-    transition(session, revision.id, PackageState.VALIDATING_EVIDENCE, actor="the worker")
-    enter_needs_input(session, revision.id, actor="the worker", needed="values to confirm")
-    session.commit()
-    package = session.get_one(Package, revision.package_id)
-    screen = _client(session, package.project_id, frozenset({Role.REVIEWER}))
-    shown = screen.get(f"/api/v1/projects/{package.project_id}/packages/{package.id}").json()
-    assert shown["pages_waiting_for_budget"] == [2, 3]
-
-    asked = _ask(session, session.get_one(PackageRevision, revision.id))
-    assert asked.status_code == 202, asked.text
-    assert (asked.json()["action"], asked.json()["pages"]) == ("read_unread_pages", [2, 3])
-    row = session.scalars(
-        select(OutboxEntry).where(OutboxEntry.workflow == "read_unread_pages")
-    ).one()
-
-    again = StoppingReaders(refuse_at=None)
-    monkeypatch.setattr(worker, "_stages", lambda **_: _stages(store, again))
-    result = worker._consume(
-        session, workflow=row.workflow, payload=row.payload, idempotency_key=str(row.id)
-    )
-    session.commit()
-
-    assert result["still_waiting"] == []
-    assert again.sent == PAGES * PER_PAGE - BEFORE_PAGE_TWO
-    shown = screen.get(f"/api/v1/projects/{package.project_id}/packages/{package.id}").json()
-    assert shown["pages_waiting_for_budget"] == []
-    assert [row.page_number for row in slot_rows(session, revision.id)] == [1, 2, 3]
-
-
 # --- #1209 re-review: what "Read the unread pages" must never undo ------------------------------
 
 
@@ -671,79 +627,3 @@ def test_the_stop_says_when_reading_the_unread_pages_cannot_help_on_its_own(
     session.commit()
 
     assert budget_limit(session, revision.id) == limit
-
-
-def _awaiting_person(session: Session, revision_id: Any) -> None:
-    from app.lifecycle.side_states import enter_needs_input
-    from app.lifecycle.states import transition
-    from app.models import PackageState
-
-    transition(session, revision_id, PackageState.MATCHING, actor="the worker")
-    transition(session, revision_id, PackageState.VALIDATING_EVIDENCE, actor="the worker")
-    enter_needs_input(session, revision_id, actor="the worker", needed="values to confirm")
-    session.commit()
-
-
-def _screen(session: Session, revision_id: Any, **settings: Any) -> tuple[Any, str]:
-    from fastapi.testclient import TestClient
-
-    from app.api.dependencies import get_session
-    from app.auth import Principal, Role, authenticate
-    from app.config import Settings
-    from app.main import create_app
-    from app.models import Package, PackageRevision
-
-    revision = session.get_one(PackageRevision, revision_id)
-    package = session.get_one(Package, revision.package_id)
-    app = create_app(
-        Settings(database_url="postgresql+psycopg://gv:gv@localhost:5433/gv", **settings)
-    )
-    app.dependency_overrides[authenticate] = lambda: Principal(
-        id="synthetic reviewer",
-        roles=frozenset({Role.REVIEWER}),
-        projects=frozenset({package.project_id}),
-    )
-    app.dependency_overrides[get_session] = lambda: session
-    client = TestClient(app, raise_server_exceptions=False)
-    return client, f"/api/v1/projects/{package.project_id}/packages/{package.id}"
-
-
-def test_the_screen_refuses_reading_the_unread_pages_with_stored_answers_off(
-    session: Session, store: LocalStore
-) -> None:
-    """N3, through the endpoint: refused with the plain reason, nothing queued."""
-    from app.api.reading_again import NEEDS_REUSE
-    from app.models import OutboxEntry
-
-    revision, _readers = _stopped_reading(session, store)
-    _awaiting_person(session, revision.id)
-    client, package = _screen(session, revision.id, reader_reuse_answers=False)
-
-    answer = client.post(f"{package}/reading-again")
-
-    assert answer.status_code == 409
-    assert answer.json()["message"] == NEEDS_REUSE
-    assert session.scalars(select(OutboxEntry)).all() == []
-
-
-def test_after_a_call_with_no_price_the_screen_says_fix_the_rates_first_and_refuses(
-    session: Session, store: LocalStore
-) -> None:
-    """N4, through the endpoint: the package names the limit, and the action is refused with the
-    reason, because every later call would be refused too until the rates name the model."""
-    from app.api.reading_again import UNPRICED_FIRST
-
-    revision = _revision(session, store, _file(), pages=PAGES)
-    session.commit()
-    _earlier_call(session, revision.id, None)
-    _stages(store, StoppingReaders(refuse_at=None)).extract_pages(session, revision.id)
-    session.commit()
-    _awaiting_person(session, revision.id)
-    client, package = _screen(session, revision.id)
-
-    shown = client.get(package).json()
-    answer = client.post(f"{package}/reading-again")
-
-    assert (shown["pages_waiting_for_budget"], shown["budget_limit"]) == ([1, 2, 3], "unpriced")
-    assert answer.status_code == 409
-    assert answer.json()["message"] == UNPRICED_FIRST
