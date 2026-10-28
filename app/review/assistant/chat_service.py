@@ -1407,6 +1407,11 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             if job.continue_from is None
             else _interrupted(session, job.chat_id, job.continue_from)
         )
+        earlier_left = (
+            None
+            if job.continue_from is None
+            else _price_left(session, job.chat_id, job.continue_from)
+        )
     # The lead's system prompt and tools: the ones the chat began with (#1577), so the history's
     # thinking stays valid after a restart on a newer harness; a newer prompt comes as a note.
     harness = chat_harness(workspace.root, replayed=bool(replay))
@@ -1562,15 +1567,16 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         # interrupted findings would be listed twice.
         _blocks, _question = earlier
         coverage = _last_coverage(_blocks)
-        # GV Review's recorded differences are seeded again by the check itself.
+        # GV Review's recorded items come as placed (their spots and `record_id`): the check's
+        # seeding finds them by `record_id` and seeds only the records they do not hold.
         try:
-            engine.carry_over(
-                [f for f in live_findings(_blocks) if not f.get("record_id")], coverage
-            )
+            engine.carry_over(live_findings(_blocks), coverage)
             # The strings and readings it recorded too, so code's string check sees them (#1827).
             engine.carry_ledger(_blocks)
-            # A roster check then compares only the pages the earlier answer left (#1821).
+            # A roster check then compares only the pages the earlier answer left (#1821), for
+            # what is left of the earlier answer's price (2026-10-28).
             engine.continuing = True
+            engine.continue_left = earlier_left
         except Exception:  # noqa: BLE001 - the check goes on; it just redoes more
             _log.exception("assistant chat could not carry over the interrupted findings")
     if job.mode == "chat" and job.continue_from is None:
@@ -2066,6 +2072,19 @@ def _interrupted(
         if message.id == message_id and continuable(message):
             question = next((m.text for m in reversed(messages[:at]) if m.role == "user"), "")
             return [dict(b) for b in message.blocks or [] if isinstance(b, Mapping)], question
+    return None
+
+
+def _price_left(session: Session, chat_id: UUID, message_id: UUID) -> int | None:
+    """What is left of the price of the answer Continue goes on from (millionths of $): its own
+    cap (a full check's fixed price) minus what it spent; `None` when either is not stored."""
+    for message in messages_of(session, chat_id):
+        if message.id != message_id:
+            continue
+        cap, spent = message.message_cap_micros, message.cost_micros
+        if cap is None or spent is None:
+            return None
+        return max(0, int(cap) - int(spent))
     return None
 
 

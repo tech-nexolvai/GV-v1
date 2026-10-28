@@ -1227,6 +1227,10 @@ class ChatEngine:
         #: Continue of a full check that did not finish (#1821): set by `chat_service` after
         #: `carry_over`, so a roster check compares only the pages its earlier answer left.
         self.continuing = False
+        #: What is left of the earlier answer's own price on a Continue (its price minus what it
+        #: spent, millionths of $), set by `chat_service`; `None` when it is not known. A roster
+        #: check's Continue costs that plus what its finishing steps need (2026-10-28).
+        self.continue_left: int | None = None
         self.extra_gaps: list[dict[str, Any]] = []
         #: The set's gaps the Not-compared list named, once it is made (#1803).
         self._set_gaps: list[Any] | None = None
@@ -1261,7 +1265,16 @@ class ChatEngine:
     ) -> int:
         """Continue (#1514): the findings and page coverage an answer a server restart cut off had
         already made, kept as this answer's own (shown at once; code checks each again). Returns
-        how many findings were kept."""
+        how many findings were kept.
+
+        Each finding keeps every field it had (2026-10-28: Continue had dropped the whole-drawing
+        look's mark, the claim rules, the reasons, the decision help, `settled`, `also_on` and the
+        scale mark, so 8 please-checks came back Not compared), except what this answer works
+        out again (`CARRY_RECOMPUTED`). GV's recorded items come as placed (their spots and
+        `record_id`), so seeding finds them by `record_id` (`_seed_recorded`) instead of making a
+        spotless copy. The AI readings already made (second and third reads) are kept while what
+        they read is unchanged, as are code's drawn-ink reads of the same values at the same
+        spots: Continue never pays again for a reading it has."""
         kept = 0
         for given in findings:
             # An earlier answer's AI findings take the AI's room, code's own take code's (#1827).
@@ -1272,13 +1285,16 @@ class ChatEngine:
                 continue
             finding = {
                 **finding,
-                "created_by": str(given.get("created_by") or "lead"),
+                **{k: v for k, v in given.items() if k not in CARRY_RECOMPUTED},
+                "created_by": maker,
                 "verified": bool(given.get("verified")),
             }
             if isinstance(given.get(SAME_ITEM), Mapping):
                 # One item, one card: its folded copies were dropped from the earlier answer, so
                 # the card keeps them (a conflict stays Not compared, never red again).
                 finding[SAME_ITEM] = dict(given[SAME_ITEM])
+            self._carry_reads(given, finding)
+            finding = _kept_drawn_ink(given, self._checked(finding))
             self.book.replace(finding)
             self._show_finding(finding)
             kept += 1
@@ -1300,6 +1316,29 @@ class ChatEngine:
             self.book.set_coverage({"pages": pages}, "earlier")
             self._show_coverage()
         return kept
+
+    def _carry_reads(self, given: Mapping[str, Any], finding: Mapping[str, Any]) -> None:
+        """Continue: the earlier answer's second read (and its third read) of `given`, kept for
+        its carried copy `finding` (its new id) while what it read is unchanged: the same item,
+        values and boxes (its pictures are drawn again from the same boxes). A read that never
+        ran stays to be made."""
+        checks = given.get("checks") if isinstance(given.get("checks"), Mapping) else {}
+        assert isinstance(checks, Mapping)
+        second = checks.get("second_read")
+        values = given.get("second_read_values")
+        if second not in ("agrees", "disagrees", "unsure") or not isinstance(values, Mapping):
+            return
+        if any(given.get(k) != finding.get(k) for k in _CARRY_READ_SAME):
+            return
+        key = _read_key(finding)
+        finding_id = str(finding["id"])
+        with self._lock:
+            self._reads[finding_id] = (key, str(second), dict(values))
+            third = checks.get("adjudication")
+            reads = given.get("reads")
+            if isinstance(third, str) and isinstance(reads, list):
+                self._thirds[finding_id] = (key, third, [dict(r) for r in reads])
+                self._third_queued.add((finding_id, key))
 
     # ---- money -----------------------------------------------------------------------------------
 
@@ -3569,9 +3608,14 @@ class ChatEngine:
         if not recorded.readable:
             return []
         self.book.record_ids = frozenset(item["record_id"] for item in recorded.differences)
+        # Continue: the records the earlier answer held are carried as placed (`carry_over`);
+        # matched by `record_id`, never seeded again without their spots.
+        held = {str(f["record_id"]) for f in self.book.live() if f.get("record_id")}
         areas = self._page_areas()
         seeded = []
         for item in recorded.differences:
+            if str(item["record_id"]) in held:
+                continue
             area = areas.get(item.get("page")) if item.get("source") == "ai_page_review" else None
             what = str(item.get("what") or "")
             if area and not what.lower().startswith(area.lower()):
@@ -5749,6 +5793,69 @@ def _read_key(finding: Mapping[str, Any]) -> tuple[Any, ...]:
         finding.get(key)
         for key in ("item", "architect", "vendor", "arch_picture_id", "vendor_picture_id")
     )
+
+
+#: What Continue works out again for a carried finding (`ChatEngine.carry_over`) instead of
+#: keeping the earlier answer's; every other field is kept as it was:
+#: - `id`: this answer's own numbering;
+#: - `arch_picture_id`, `vendor_picture_id`: drawn again from the same boxes (the same pictures,
+#:   this answer's own files);
+#: - `checks`, `trust_level`, `evidence_kind`, `witnesses`, `inches`, `parts_sum`: code's checks
+#:   ($0), worked out again from the same values and spots (`apply_checks`); the AI readings in
+#:   them come back from the earlier answer while what they read is unchanged (`_carry_reads`),
+#:   and so do code's drawn-ink reads (`_kept_drawn_ink`);
+#: - `reads`, `second_read_values`: the readings, kept the same way (`_carry_reads`);
+#: - `decision`, `updated_in`: the reviewer's call and a later correction, added when the stored
+#:   answer is read, never stored on a finding.
+CARRY_RECOMPUTED: Final = frozenset(
+    {
+        "id",
+        "arch_picture_id",
+        "vendor_picture_id",
+        "checks",
+        "trust_level",
+        "evidence_kind",
+        "witnesses",
+        "inches",
+        "parts_sum",
+        "reads",
+        "second_read_values",
+        "decision",
+        "updated_in",
+    }
+)
+#: (The devil's advocate's `critic` is carried and kept by the checks while the labels it judged
+#: are the finding's, `chat_trust.kept_advocate`; else it is judged again.)
+#: A carried finding's readings are kept only while these are the earlier answer's (with its
+#: pictures drawn from the same boxes, what the readings read).
+_CARRY_READ_SAME: Final = ("item", "architect", "vendor", "arch_box", "vendor_box")
+
+
+def _kept_drawn_ink(earlier: Mapping[str, Any], finding: Mapping[str, Any]) -> dict[str, Any]:
+    """A carried finding with the earlier answer's drawn-ink reads (`drawn_ink_checks`, $0 OCR at
+    the finish) of the sides its own checks left waiting, while the values and boxes they were
+    read for are unchanged; judged again. Anything else stays as its checks say."""
+    out = dict(finding)
+    before = earlier.get("checks") if isinstance(earlier.get("checks"), Mapping) else {}
+    now = dict(out.get("checks") or {})
+    assert isinstance(before, Mapping)
+    if any(earlier.get(k) != out.get(k) for k in _CARRY_READ_SAME):
+        return out
+    changed = False
+    for key in ("verify_architect", "verify_vendor"):
+        old, new = before.get(key), now.get(key)
+        if (
+            isinstance(old, Mapping)
+            and not old.get("pending")
+            and isinstance(new, Mapping)
+            and new.get("pending")
+        ):
+            now[key] = dict(old)
+            changed = True
+    if not changed:
+        return out
+    out["checks"] = now
+    return judged(out)
 
 
 def _fresh_input(usage: Mapping[str, Any]) -> int:
