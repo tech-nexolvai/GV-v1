@@ -65,6 +65,7 @@ __all__ = [
     "DRAWN_DOUBT",
     "FIELD",
     "KINDS",
+    "NOT_DOUBLE_READ",
     "OCR",
     "ROUTE_WORDS",
     "STROKES",
@@ -83,6 +84,11 @@ __all__ = [
 
 #: The finding's record of how each number it rests on was read.
 FIELD: Final = "reading_routes"
+#: Why a would-be red's second AI reading was never made (Anant, 2026-10-28: the reading's cap,
+#: a failed call, an outage, a credit stop, the check stopped or ended first), set by the check
+#: that reads twice: a doubt, so the item is a please-check "not double-read", never red, until a
+#: reading is made (a Continue makes it). The simple full check reads once by design: never set.
+NOT_DOUBLE_READ: Final = "not_double_read"
 
 TEXT: Final = "text"
 OCR: Final = "ocr"
@@ -499,9 +505,13 @@ def _spot_routes(checks: Mapping[str, Any], side: str) -> tuple[list[str], list[
     return routes, doubts
 
 
-def _ai_doubts(checks: Mapping[str, Any]) -> list[str]:
-    """An AI reading of the spot that is unsure or disagrees (never a route, but a doubt)."""
+def _ai_doubts(checks: Mapping[str, Any], finding: Mapping[str, Any]) -> list[str]:
+    """An AI reading of the spot that is unsure or disagrees (never a route, but a doubt); or no
+    AI reading at all where the check reads twice (`NOT_DOUBLE_READ`)."""
     result = witness.read_result(checks)
+    why = finding.get(NOT_DOUBLE_READ)
+    if result in (None, "not_run") and isinstance(why, str) and why.strip():
+        return [f"not double-read: {why.strip()}"]
     if result == "unsure":
         return ["a second reading of the drawing was unsure"]
     if result == "disagrees":
@@ -556,7 +566,7 @@ def verdict(finding: Mapping[str, Any]) -> Verdict:
         )
     return Verdict(
         values=tuple(out),
-        doubts=tuple(_ai_doubts(checks)),
+        doubts=tuple(_ai_doubts(checks, finding)),
         unrecorded=stored is None and finding.get("source") == "vendor_arithmetic",
     )
 
