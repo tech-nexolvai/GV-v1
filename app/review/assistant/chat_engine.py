@@ -3031,6 +3031,10 @@ class ChatEngine:
         ]
         chosen.sort(key=_reads_first)
         for finding in chosen:
+            if _count_only(finding):
+                # No printed number to copy: never read; a would-be red is held, never red.
+                self._not_double_read(finding, COUNT_WHY)
+                continue
             finding_id = str(finding["id"])
             key = (finding_id, _read_key(finding))
             red = could_go_red(finding)
@@ -5980,6 +5984,32 @@ def could_go_red(finding: Mapping[str, Any]) -> bool:
     if not isinstance(inches, Mapping):
         return False
     return all(str(inches.get(side) or "").strip() for side in sides_needed(finding))
+
+
+#: A count of drawn things ("7 outlets", "6 pendant lights"): a number and what is counted, one of
+#: these things drawn as symbols. A unit count ("2 UNITS") is left out: a vendor prints its unit
+#: lines, and a reading can copy one.
+_COUNTED: Final = re.compile(
+    r"^\s*\d{1,3}\s+(?:[A-Za-z][A-Za-z-]*\s+){0,2}"
+    r"(?:outlets?|receptacles?|(?:pendant\s+)?lights?|pendants?|fixtures?|sconces?|switch(?:es)?"
+    r"|drawers?|doors?|shel(?:f|ves)|pulls?|knobs?|handles?|hinges?|legs?|brackets?|grommets?"
+    r"|holes?|cut-?outs?|sinks?|faucets?|panels?|stools?|seats?)\s*$",
+    re.IGNORECASE,
+)
+#: Why a would-be red that is a count is not read twice (`_count_only`).
+COUNT_WHY: Final = "it is a count of drawn things, with no printed number for a reading to copy"
+
+
+def _count_only(finding: Mapping[str, Any]) -> bool:
+    """A count of drawn things on every side its red would compare (`sides_needed`): no number is
+    printed for it, so a reading, asked to copy a printed value, can only come back with nothing
+    (2026-10-28: "7 outlets" against "3 outlets", read twice, always "nothing, not sure"). It is
+    never sent to the readers; a would-be red is marked "not double-read" instead, so it is never
+    red without a reading (`_queue_second_reads`)."""
+    values = [finding.get(side) for side in sides_needed(finding)]
+    return bool(values) and all(
+        isinstance(value, str) and _COUNTED.match(value) is not None for value in values
+    )
 
 
 def _reads_first(finding: Mapping[str, Any]) -> tuple[int, int]:
