@@ -112,7 +112,14 @@ def _engine(findings: list[dict[str, Any]], picture: bytes = b"same picture") ->
         spots={"vendor": ReadSpot("vendor", None, 1, (0.0, 0.0, 96.0, 96.0), values=1)},
     )
     engine._second_read_call = lambda content, share: "{}"
-    for name in ("_not_double_read", "_apply_second_read", "_second_read_one", "_mark_unread_reds"):
+    for name in (
+        "_not_double_read",
+        "_apply_second_read",
+        "_second_read_one",
+        "_mark_unread_reds",
+        "_reads_twice",
+        "_unread_why",
+    ):
         setattr(engine, name, getattr(ChatEngine, name).__get__(engine))
     return engine
 
@@ -193,3 +200,68 @@ def test_the_simple_check_marks_nothing(monkeypatch: pytest.MonkeyPatch) -> None
     engine._simple = True
     engine._mark_unread_reds()
     assert NOT_DOUBLE_READ not in engine.book.found["F1"]
+
+
+# ---- the invariant: nothing is stored red without its second reading ------------------------------
+
+
+def test_no_red_is_stored_without_its_second_reading(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A whole roster full check whose second readings all fail: every would-be red is stored a
+    please-check "not double-read", none red; and the stored answer's last guard marks one that a
+    late step left unmarked."""
+    from tests.review.assistant.test_full_check_roster import _clean_ink, _Roster, _roster
+
+    _clean_ink(monkeypatch)
+    script = _Roster()
+    asked: list[str] = []
+
+    def answer(params: Any) -> Any:
+        system = params["system"][0]["text"]
+        if system == chat_engine.SECOND_READ_SYSTEM and params["model"].startswith("claude-haiku"):
+            asked.append("read")
+            raise ProviderFailure("boom", status=500, retryable=False)
+        return script(params)
+
+    harness = _roster(tmp_path, _Roster())
+    harness.provider.helper_answer = answer
+    outcome = harness.run()
+
+    findings = [b["finding"] for b in outcome.blocks if b["type"] == "finding"]
+    assert asked  # the readings were asked, and failed
+    marked = [f for f in findings if f.get(NOT_DOUBLE_READ)]
+    assert marked and all(proof.proof_group(f) != "clouded" for f in marked)
+    for finding in findings:
+        if proof.proof_group(finding) == "clouded":
+            assert finding["checks"]["second_read"] not in (None, "not_run"), finding["id"]
+
+    # A late step that rebuilds a would-be red without its mark: the stored answer marks it.
+    engine = harness.engine
+    one = next(f for f in engine.book.live() if f.get(NOT_DOUBLE_READ))
+    stripped = {k: v for k, v in one.items() if k != NOT_DOUBLE_READ}
+    engine.book.replace(stripped)
+    engine._show_finding(stripped)
+    stored = next(
+        b["finding"]
+        for b in engine.stored_blocks()
+        if b["type"] == "finding" and b["finding"]["id"] == one["id"]
+    )
+    assert stored[NOT_DOUBLE_READ] == chat_engine.NOT_REACHED_WHY
+
+
+def test_one_card_keeps_the_kept_cards_own_mark() -> None:
+    """One item, one card: the card kept is one of the copies, unchanged, so it keeps its own
+    "not double-read" mark; the copies folded on it never decide its group."""
+    from app.review.assistant import one_card
+
+    box = {"page": 1, "x0": 10.0, "y0": 10.0, "x1": 30.0, "y1": 18.0, "file": "set.pdf"}
+    copies = [
+        {**_proved(second_read="not_run"), "id": f"F{n}", "vendor_box": box,
+         NOT_DOUBLE_READ: "the AI call failed"}
+        for n in (1, 2)
+    ]  # fmt: skip
+    folded = one_card.fold(copies)
+    kept = folded.kept or copies
+    assert all(k.get(NOT_DOUBLE_READ) == "the AI call failed" for k in kept)
+    assert all(proof.proof_group(k) == "likely_problem" for k in kept)

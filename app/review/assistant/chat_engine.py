@@ -1922,12 +1922,22 @@ class ChatEngine:
         return getattr(breaker, "kind", None) == "payment"
 
     def stored_blocks(self) -> list[dict[str, Any]]:
+        """The answer's blocks as stored. The last guard of the double-read rule (2026-10-28):
+        a would-be red still without its second reading and its reason is stored with the reason
+        (`_unread_why`), whatever step changed it last, so it is never stored red."""
         with self._lock:
-            return [
+            blocks = [
                 json.loads(json.dumps(block))
                 for n, block in enumerate(self.blocks)
                 if n not in self._discarded
             ]
+        if not self._reads_twice():
+            return blocks
+        for block in blocks:
+            finding = block.get("finding") if block.get("type") == "finding" else None
+            if isinstance(finding, dict) and _unread_red(finding):
+                finding[NOT_DOUBLE_READ] = self._unread_why()
+        return blocks
 
     # ---- tools -----------------------------------------------------------------------------------
 
@@ -3045,20 +3055,25 @@ class ChatEngine:
                 continue
             self._submit_check("second_reads", _bound(self._second_read_one, module, finding))
 
+    def _reads_twice(self) -> bool:
+        """This answer reads each would-be red twice: not the simple full check (it reads once
+        by design), and only where the reading module is there."""
+        return not self._simple and load_module(SECOND_READ_MODULE) is not None
+
+    def _unread_why(self) -> str:
+        return STOPPED_WHY if self.cancel.is_set() else NOT_REACHED_WHY
+
     def _mark_unread_reds(self) -> None:
-        """At the finish, after the last step that can make a would-be red: each one still
-        without its second reading, and with no reason yet, says why ("not double-read"), so it
-        is never red (Anant, 2026-10-28). Not in the simple full check, which makes no second
-        readings by design."""
-        if self._simple or load_module(SECOND_READ_MODULE) is None:
+        """Each would-be red still without its second reading, and with no reason yet, says why
+        ("not double-read"), so it is never red (Anant, 2026-10-28). Run after the finish's
+        steps that can make a would-be red, and again right before the files and the stored
+        answer (`seal`): no later step may leave one unmarked. Not in the simple full check."""
+        if not self._reads_twice():
             return
-        why = STOPPED_WHY if self.cancel.is_set() else "it was not reached before the check ended"
+        why = self._unread_why()
         for finding in self.book.live():
-            if (finding.get("checks") or {}).get("second_read") not in (None, "not_run"):
-                continue
-            if finding.get(NOT_DOUBLE_READ):
-                continue
-            self._not_double_read(finding, why)
+            if _unread_red(finding):
+                self._not_double_read(finding, why)
 
     def _not_double_read(self, finding: Mapping[str, Any], why: str) -> None:
         """A would-be red whose second reading could not be made: why, on the finding
@@ -3842,6 +3857,8 @@ class ChatEngine:
         )
         if register is None:
             return []
+        # The double-read rule's last sweep before anything is drawn or written (2026-10-28).
+        self._mark_unread_reds()
         book, workspace = self.book, self.tools.workspace
         # Only what may reach the vendor (#1652): items for GV's reviewer only stay on the screen.
         findings = [f for f in book.live() if vendor_facing(f)]
@@ -5957,8 +5974,18 @@ def _reads_first(finding: Mapping[str, Any]) -> tuple[int, int]:
 
 #: A reading running now (`ChatEngine._read_slots`).
 _IN_FLIGHT: Final = object()
-#: Why a would-be red was not read twice when the check was stopped.
+#: Why a would-be red was not read twice when the check was stopped, or ended first.
 STOPPED_WHY: Final = "the check was stopped before it was read"
+NOT_REACHED_WHY: Final = "it was not reached before the check ended"
+
+
+def _unread_red(finding: Mapping[str, Any]) -> bool:
+    """A would-be red with no second reading and no reason given yet (`NOT_DOUBLE_READ`)."""
+    return (
+        could_go_red(finding)
+        and (finding.get("checks") or {}).get("second_read") in (None, "not_run")
+        and not finding.get(NOT_DOUBLE_READ)
+    )
 
 
 def _failure_why(failure: ProviderFailure) -> str:
