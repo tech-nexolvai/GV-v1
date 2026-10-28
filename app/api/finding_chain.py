@@ -432,7 +432,7 @@ def build_chain(
 ) -> FindingChain:
     """Assemble one finding's chain from rows the caller has already resolved.
 
-    Extracted for `app/api/finding_export.py` (#224), which needs the same assembly for many findings.
+    Extracted for the findings export (#224, removed 2026-10-28), which needed the same assembly for many.
     Copying it would have been forty lines of duplicated provenance logic, and two copies of "how a finding
     explains itself" is two answers waiting to differ — the export could keep rendering an operand shape
     this endpoint had stopped using and nothing would notice.
