@@ -1028,6 +1028,33 @@ def test_codes_unsized_ends_please_check_replaces_the_readings_string_of_that_ov
     assert proof.proof_group(item) == "likely_problem" and not proof.proved_wrong(item)
 
 
+def test_a_string_read_after_codes_please_check_is_in_the_answer_is_replaced_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-10-28: the late look reads a string of an overall after code's please-check of that
+    overall is in the answer. The hook replaces a string only when it adds code's item, so run
+    again it keeps the string beside code's item (`_already` sees code's own item): the "hidden"
+    set does not hold on a second run. `replaced_by_own` names it, with the hook's reason."""
+    result, string = _unsized_and_string(tmp_path, ['20"', '12"', '12"'])
+    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads, **_: result)
+    engine = _Engine("full_check", [])
+    engine.book = _FullBook([])
+    vc.add_to_answer(engine)  # the first round: code's please-check, no reading's string yet
+    ((given, by),) = engine.book.added
+    own = {**given, "id": "F8", "created_by": by}
+    engine.book = _FullBook([own, string])
+    dropped: list[str] = []
+    engine._show_dropped = lambda finding_id, reason: dropped.append(finding_id)  # type: ignore[attr-defined]
+    vc.add_to_answer(engine)  # run again: the later string stays beside code's item
+    assert dropped == [] and [f["id"] for f in engine.book.live()] == ["F8", "F7"]
+    replaced = vc.replaced_by_own([own, string], result)
+    assert list(replaced) == ["F7"] and "its own please-check replaces" in replaced["F7"]
+    # Without code's own item in the answer nothing is named (the hook adds it first then).
+    assert vc.replaced_by_own([string], result) == {}
+    # A string code's geometry verified is never replaced.
+    assert vc.replaced_by_own([own, {**string, "string_geometry": "verified"}], result) == {}
+
+
 class _RefusingBook(_FullBook):
     def add_code_finding(self, given: dict[str, Any], *, created_by: str) -> None:  # type: ignore[override]
         return None  # out of scope, or the book is full

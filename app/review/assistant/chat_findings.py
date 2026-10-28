@@ -1002,6 +1002,9 @@ class FindingBook:
     left_out_for_room: dict[str, int] = field(default_factory=dict)
     """Findings refused because the book was full, by who made them (`ai` or `code`, #1827): never
     silent; the engine says so in the answer."""
+    code_made: set[tuple[Any, ...]] = field(default_factory=set)
+    """Every code finding this book was given, added or not (`late_code_findings.code_signature`):
+    the late look's round of code findings never makes one twice (2026-10-28)."""
     _count: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _cut_pages: dict[tuple[str, int], field_cut.PageFieldCuts] = field(default_factory=dict)
@@ -1410,6 +1413,10 @@ class FindingBook:
         for code's own makers, `ai` for the rest: `CODE_ROOM_MAKERS`); a carried-over AI finding
         passes `ai` (#1827).
         """
+        from app.review.assistant.late_code_findings import code_signature
+
+        with self._lock:
+            self.code_made.add(code_signature(given, created_by))
         fields_given = {k: v for k, v in given.items() if k in _FINDING_FIELDS}
         for name, limit in (("item", _MAX_ITEM), ("why", _MAX_WHY)):
             value = fields_given.get(name)

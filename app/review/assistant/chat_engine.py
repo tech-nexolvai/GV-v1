@@ -78,7 +78,7 @@ import random
 import re
 import threading
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -2668,13 +2668,14 @@ class ChatEngine:
         ledger = self.reading_ledger
         return bool(ledger.strings or ledger.readings)
 
-    def _ledger_findings(self) -> None:
+    def _ledger_findings(self, book: Any = None) -> None:
         """At finish: code's findings from the reading ledger (vendor sums that don't add up, the
         same item read differently across views, items one side shows and the other never does),
-        added through the finding book like any finding, so they get the same checks."""
+        added through the finding book like any finding, so they get the same checks. `book`: the
+        late look's scoped book (`late_code_findings.LateBook`), else this answer's."""
         if not self._ledger_used():
             return
-        book = self.book
+        book = self.book if book is None else book
         live = book.live()
         coverage = book.coverage_map() if book.coverage_used else None
         reported_sums = {
@@ -3169,6 +3170,24 @@ class ChatEngine:
         # The pack's state before the checks read its labels counts too: it may turn `ready` while
         # they run on partial labels (#1768 review).
         unlabelled = pack_without_labels(self.tools.workspace.set_pack)
+        self._run_code_steps(steps)
+        if self.settings.mode != "full_check" or self._simple:
+            return  # the simple check names its broken steps once, with its other reasons
+        if unlabelled or pack_without_labels(self.tools.workspace.set_pack):
+            # The roster and the lead go on without labels; code's pairs are then missing.
+            self.code_checks_failed.append(LABELS_STEP)
+        if self.code_checks_failed:
+            # A check that crashed took its reds with it: the check is not for sending (S0).
+            self.incomplete_note = "; ".join(
+                part
+                for part in (self.incomplete_note, broken_steps_note(self.code_checks_failed))
+                if part
+            )
+
+    def _run_code_steps(self, steps: Sequence[tuple[str, Callable[[], object]]]) -> None:
+        """Code's finding steps in order (`add_code_findings`, `add_late_code_findings`): a step
+        that fails, or leaves a finding of code's own out for room, is named in
+        `code_checks_failed` (the check is then not for sending)."""
         with self.timings.phase("finish_checks"):
             for name, step in steps:
                 if self.cancel.is_set() and name != CODE_CHECK_NAMES["ledger"]:
@@ -3187,18 +3206,44 @@ class ChatEngine:
                     # A finding of code's own left out for room took its red with it (#1827).
                     _log.warning("assistant chat code check left findings out: %s", name)
                     self.code_checks_failed.append(name)
-        if self.settings.mode != "full_check" or self._simple:
-            return  # the simple check names its broken steps once, with its other reasons
-        if unlabelled or pack_without_labels(self.tools.workspace.set_pack):
-            # The roster and the lead go on without labels; code's pairs are then missing.
-            self.code_checks_failed.append(LABELS_STEP)
-        if self.code_checks_failed:
-            # A check that crashed took its reds with it: the check is not for sending (S0).
+
+    def add_late_code_findings(self, pages: Collection[int], before: Collection[str]) -> list[str]:
+        """Code's own findings ($0) on the pages the late look compared (2026-10-28), after its
+        helpers and before its proof steps: the reading ledger's sums of the late strings, the
+        consistency check's judgement of them, GV's site-fit, filler and sink rules on the late
+        items' labels, the splash's other views and the measuring by scale of the late items.
+        Scoped to the late look's items and pages (`late_code_findings`): a first-round item is
+        never added, changed or asked again. `before`: the ids live before the late look. Returns
+        the ids added. Nothing when the first round's code findings were never made (the finish
+        then makes them all)."""
+        if not self._code_findings_added or not pages:
+            return []
+        from app.review.assistant import late_code_findings
+
+        steps, added = late_code_findings.late_steps(
+            self,
+            pages,
+            before,
+            names=CODE_CHECK_NAMES,
+            ledger=self._ledger_findings,
+            checks={
+                "consistency": add_consistency,
+                "run_fit": add_run_fit,
+                "filler_range": add_filler_range,
+                "sink_offset": add_sink_offset,
+                "splash_views": add_splash_views,
+                "scale_measure": add_scale_measures,
+            },
+        )
+        failed = len(self.code_checks_failed)
+        self._run_code_steps(steps)
+        broken = self.code_checks_failed[failed:]
+        if broken and self.settings.mode == "full_check" and not self._simple:
+            # A late step that crashed took its reds with it: the check is not for sending (S0).
             self.incomplete_note = "; ".join(
-                part
-                for part in (self.incomplete_note, broken_steps_note(self.code_checks_failed))
-                if part
+                part for part in (self.incomplete_note, broken_steps_note(broken)) if part
             )
+        return list(added)
 
     def _code_finish(self) -> None:
         """A stopped full check's finish, by code only: no model call."""

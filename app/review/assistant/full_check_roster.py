@@ -2734,8 +2734,10 @@ class _Run:
         2026-10-28 left 6 pages "out of money" with $1.94 of its $6.55 price unspent, almost all
         of it the devil's advocate's kept need ($1.61; it spent $0.01). Only pages never compared
         yet (`_NOT_COMPARED_YET`): a page never compared comes before extra polishing, so pages
-        left open by their helper are not taken. The items the pass adds get their own proof steps
-        (`_late_proofs`); a page it still does not compare says why, as before."""
+        left open by their helper are not taken. Code's own findings then cover the pages it
+        compared (`ChatEngine.add_late_code_findings`, scoped to its items and pages), and the items
+        both add get their own proof steps (`_late_proofs`); a page it still does not compare says
+        why, as before."""
         engine = self.engine
         if self.plan is None or self._halted() or not self.money_pages:
             return
@@ -2774,6 +2776,14 @@ class _Run:
         left = {page: lines for page, lines in self._still_open().items() if page in taken}
         if left:
             self._left_unchecked(left, f"still not compared after {_MORE_LOOKS}")
+        if taken and not engine.cancel.is_set():
+            # Code's own findings ($0) on the pages the late look compared: they were made before
+            # it, so its items never met them (`late_code_findings`, scoped: never a first-round
+            # item again). What they add takes the late proof steps below with the look's items.
+            try:
+                engine.add_late_code_findings(taken, before)
+            except Exception:  # noqa: BLE001 - the late items stand; the proof steps judge them
+                _log.exception("assistant roster late look: code's own findings failed")
         new = frozenset(str(f.get("id")) for f in engine.book.live()) - before
         if new and not engine.cancel.is_set():
             self._late_proofs(plan, page_map, new)
