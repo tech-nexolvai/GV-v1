@@ -35,17 +35,18 @@ def countertop_results(
     session: Session, project_id: UUID, package_id: UUID, revision_number: int | None = None
 ) -> ResultsResponse:
     """The newest revision's results (or `revision_number`'s), as the route answered them."""
+    # The package is loaded with its revision, as the route did, so its product costs no statement.
     chosen = (
-        select(PackageRevision)
+        select(PackageRevision, Package)
         .join(Package, Package.id == PackageRevision.package_id)
         .where(Package.id == package_id, Package.project_id == project_id)
     )
     if revision_number is not None:
         chosen = chosen.where(PackageRevision.revision_number == revision_number)
-    revision = session.execute(
+    found = session.execute(
         chosen.order_by(PackageRevision.revision_number.desc()).limit(1)
-    ).scalar_one_or_none()
-    if revision is None:
+    ).first()
+    if found is None:
         return ResultsResponse(None)
-    out = _countertop_results_for_revision(session, package_id, revision)
+    out = _countertop_results_for_revision(session, package_id, found[0])
     return ResultsResponse(out.model_dump(mode="json", by_alias=True))

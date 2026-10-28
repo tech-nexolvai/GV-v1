@@ -16,6 +16,10 @@ The only fakes are the two readers: one client answering every question by `(mod
 the two-panel question it reads the blue badges off the picture itself and answers by where they
 are drawn (left to right), so a badge drawn on the wrong span would pair the wrong dimensions.
 No model is called. Every value is invented; no client value appears here.
+
+The chain test itself went with the old review screens' architect-view pick route (2026-10-28); its
+fixtures and helpers stay here because `test_read_unread_wall_hold.py` and `test_budget_stop.py`
+use them (some re-exported, listed in `__all__`).
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ import json
 import re
 import tempfile
 from collections.abc import Iterator, Mapping
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -34,24 +39,49 @@ from sqlalchemy.orm import Session
 
 from alembic import command
 from app.db.session import session_factory
-from app.models import PackageRevision, Page
+from app.models import ObservationCandidate, PackageRevision, Page
 from app.models.runs import TaskRun, WorkflowRun
 from evidence.crop import decode_rgb_png
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
+from tests.extraction.architect import architect_sheet as sheet_parts
+from tests.extraction.architect.combined_sheet import _dashed, _row, _text
 from tests.extraction.slot_reader import sheets
+from tests.extraction.slot_reader.test_arch_pair_question import Rates as PricedRates
+from tests.extraction.test_reader import MISSING_SPACE
+from tests.workflow.test_architect_reader import _stages, _upload
+from tests.workflow.test_markup_route import _SilentOcr
 from tests.workflow.test_slot_reader import (
     BOTH_WALLS,
     FakeReaders,
     claude_crops_to_texts,
+    runtime,
 )
 from workflow.architect_pairing import _ARCHITECT_COLOUR, _GLYPHS, _VENDOR_COLOUR
 from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
+# Names the importing tests read off this module (`chain.<name>`), re-exported helpers included.
+__all__ = [
+    "MISSING_SPACE",
+    "TEXTS",
+    "VENDOR",
+    "PricedRates",
+    "Readers",
+    "_SilentOcr",
+    "_anchor",
+    "_architect_file",
+    "_read_slots",
+    "_stages",
+    "_upload",
+    "runtime",
+]
+
 TEXTS: dict[int | None, str] = {0: '24"', 1: '48"', 2: '24"', None: '96"'}
 VENDOR = sheets.sheet(sheets.text_labels(('24"', '48"', '24"'), '96"'))
+#: The architect's cabinet sides, in the drawing's own space: 36, 72 and 36 pt at 1.5 pt per inch.
+SIDES = (60.0, 96.0, 168.0, 204.0)
 
 
 @pytest.fixture
@@ -73,6 +103,49 @@ def store() -> Iterator[LocalStore]:
 
 
 # --- the architect's own file: two twin views of three cabinets ------------------------------------
+
+
+def _three_cabinets() -> bytes:
+    """Three cabinets on a floor line, their widths dimensioned on one row whose ticks sit on the
+    cabinets' solid sides, dashed extension lines as CAD draws them."""
+    left, *_, right = SIDES
+    parts = [
+        b"0 0 0 RG 0.5 w",
+        f"{left - 10} 60 m {right + 40} 60 l S".encode(),
+        *(f"{x} 60 m {x} 120 l S".encode() for x in SIDES),
+        f"{left} 120 m {right} 120 l S".encode(),
+    ]
+    stream = b"\n".join(parts) + b"\n"
+    for x in SIDES:
+        stream += _dashed(x, 3, 200)
+    stream += _row(40, list(SIDES))
+    for (x0, x1), label in zip(pairwise(SIDES), ("2' - 0\"", "4' - 0\"", "2' - 0\""), strict=True):
+        stream += _text((x0 + x1) / 2 - 8, 43, label)
+    return stream
+
+
+def _architect_file() -> bytes:
+    """One sheet, two twin views clearly apart, each with its bubble, title and scale note."""
+    width = 1200
+    body = sheet_parts._placed(_three_cabinets(), sheet_parts.DRAWING_ORIGIN)
+    body += sheet_parts._label_block(60, "3", "SYNTHETIC ELEVATION", '1/4" = 1\'-0"')
+    body += sheet_parts._placed(_three_cabinets(), sheet_parts.SECOND_ORIGIN)
+    body += sheet_parts._label_block(
+        sheet_parts.SECOND_ORIGIN[0] + 10, "4", "SECOND SYNTHETIC ELEVATION", '1/4" = 1\'-0"'
+    )
+    content = sheet_parts._frame(width) + body
+    return sheet_parts._pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            (
+                f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {sheet_parts.PAGE_HEIGHT}] "
+                "/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
+            ).encode(),
+            sheet_parts._stream(content),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        ]
+    )
 
 
 # --- the two readers ---------------------------------------------------------------------------------
@@ -217,4 +290,14 @@ def _vendor_version(session: Session, revision: PackageRevision) -> Any:
         select(PackageRevisionDocument.document_version_id)
         .join(Document, Document.id == PackageRevisionDocument.document_id)
         .where(PackageRevisionDocument.package_revision_id == revision.id, Document.kind == "shop")
+    ).one()
+
+
+def _anchor(session: Session) -> ObservationCandidate:
+    """The newest slot-reader row's first piece."""
+    return session.scalars(
+        select(ObservationCandidate)
+        .where(ObservationCandidate.ambiguity_flags.contains(["slot-reader", "slot:0"]))
+        .order_by(ObservationCandidate.created_at.desc())
+        .limit(1)
     ).one()

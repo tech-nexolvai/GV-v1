@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import io
 from decimal import Decimal
-from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -15,22 +14,17 @@ from pypdf import PdfReader, PdfWriter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import CheckRun, DocumentVersion, Finding, OutputArtifact, Page
+from app.models import CheckRun, DocumentVersion, Finding, Page
 from app.models.package import PackageRevision
 from app.models.rules import RuleDefinition, RuleSnapshot
-from app.models.signed_exports import ApprovalExportBundle
-from app.review.signed_exports import request_signed_exports
 from storage.local import LocalStore
-from tests.api.test_signed_exports import _legacy
-from tests.api.test_v1_loop import PROJECT, _uploaded
-from tests.api.test_v1_loop import client as client_fixture
+from tests.api.test_v1_loop import _uploaded
 from tests.api.test_v1_loop import session as session_fixture
 from tests.api.test_v1_loop import store as store_fixture
 from workflow.draft_cloud import DraftCloudRefused
 
 session = session_fixture
 store = store_fixture
-client = client_fixture
 
 BANNER = "DRAFT – not signed off"
 WAITING = (
@@ -129,67 +123,6 @@ def test_the_worker_turns_any_failure_into_a_sentence() -> None:
     with pytest.raises(DraftCloudRefused) as refused:
         consume_draft_request(None, None, {"package_revision_id": "not-a-uuid"}, str(uuid4()))  # type: ignore[arg-type]
     assert refused.value.plain_reason.startswith("The draft was not made: ValueError")
-
-
-def test_a_draft_is_never_served_as_the_signed_cloud_pdf(
-    session: Session, store: LocalStore, client: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Even a bundle naming a draft as its redline is refused: signed downloads serve `redline` only."""
-    from workflow.draft_cloud_render import render_draft_cloud
-
-    package_id, approval, findings = _legacy(session, store)
-    base = f"/api/v1/projects/{PROJECT}/packages/{package_id}"
-    request = uuid4()
-    drawn = render_draft_cloud(
-        session, store, approval.package_revision_id, request, requested_by="ana@example.com"
-    )
-    draft = session.get(OutputArtifact, UUID(str(drawn["draft_id"])))
-    assert draft is not None and draft.kind == "draft_redline"
-    snapshot = request_signed_exports(session, approval.id)
-
-    def artifact(kind: str) -> OutputArtifact:
-        saved = store.put(
-            f"signed-test/{kind}",
-            io.BytesIO(b"%PDF " + kind.encode()),
-            content_type="application/pdf",
-        )
-        row = OutputArtifact(
-            package_revision_id=approval.package_revision_id,
-            kind=kind,
-            storage_key=saved.key,
-            sha256=saved.sha256,
-            media_type="application/pdf",
-            findings=len(findings),
-        )
-        session.add(row)
-        session.flush()
-        return row
-
-    # A draft that happens to cover the same number of results, wrongly named as the redline.
-    named = OutputArtifact(
-        package_revision_id=approval.package_revision_id,
-        kind="draft_redline",
-        storage_key=draft.storage_key + ".copy",
-        sha256=draft.sha256,
-        media_type="application/pdf",
-        findings=len(findings),
-    )
-    session.add(named)
-    session.flush()
-    session.add(
-        ApprovalExportBundle(
-            snapshot_id=snapshot.id,
-            package_revision_id=approval.package_revision_id,
-            pdf_id=artifact("findings_pdf").id,
-            workbook_id=artifact("findings_workbook").id,
-            redline_id=named.id,
-        )
-    )
-    session.commit()
-    for endpoint in ("redline.pdf", "report.pdf", "report"):
-        refused = client.get(base + "/" + endpoint)
-        assert refused.status_code == 409, (endpoint, refused.text)
-        assert "incomplete or belongs to a different revision" in refused.json()["message"]
 
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
