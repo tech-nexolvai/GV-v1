@@ -242,3 +242,36 @@ def test_an_empty_identifier_is_refused() -> None:
 def test_the_identifier_kind_comes_from_the_vocabulary() -> None:
     with pytest.raises(TypeError, match="IdentifierKind"):
         PrintedIdentifier(kind="mark", value_as_printed="C-3")  # type: ignore[arg-type]
+
+
+def test_no_two_modules_in_the_drawing_model_define_the_same_type_name() -> None:
+    """The guard for the mistake #164's rename fixed (moved here from the removed `test_views.py`).
+
+    #164 added a second `ViewIdentity` to `extraction/model/`, alongside the one `items.py` already had —
+    two same-named types meaning different things in one package. A reader cannot tell which a signature
+    refers to, and swapping the import would type-check. It reached `main` before I noticed.
+
+    So the package's public type names are checked for collisions. This is the same argument
+    `vocabulary/page_types.py` makes about `app/models/document.py` declaring its own identical copy:
+    *"there is exactly one definition rather than two that happen to agree."*
+    """
+    import ast
+    from collections import defaultdict
+    from pathlib import Path
+
+    import extraction.model as package
+
+    directory = Path(package.__file__).parent
+    defined: dict[str, list[str]] = defaultdict(list)
+
+    for source in sorted(directory.glob("*.py")):
+        tree = ast.parse(source.read_text())
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
+                defined[node.name].append(source.name)
+
+    collisions = {name: files for name, files in defined.items() if len(files) > 1}
+    assert not collisions, (
+        "these type names are defined in more than one module of extraction/model/, so a signature "
+        f"naming one is ambiguous: {collisions}"
+    )
