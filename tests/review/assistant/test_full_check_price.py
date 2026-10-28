@@ -195,6 +195,41 @@ def test_continue_prices_the_pages_left_plus_the_finishing_steps(
     assert continued(tmp_path / "b", 37_500_000) == "2.50"
 
 
+def test_continue_charges_what_is_left_of_the_earlier_price_plus_the_finishing_steps(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anant, 2026-10-28: a Continue costs what is left of the earlier answer's own price (its
+    price minus what it spent) plus what the finishing steps need, never a fresh price; with no
+    page left and no earlier price known, never the minimum ($5 on a real upload)."""
+    _clean_ink(monkeypatch)
+    needs = {"advocate": 600_000, "escalation": 400_000}
+    monkeypatch.setattr(full_check_roster._Run, "finish_needs", lambda self: dict(needs))
+    rule = PriceRule(base=1_000_000, per_page=500_000, minimum=5_000_000)
+
+    def continued(folder: Any, left: int | None, open_pages: int) -> str:
+        folder.mkdir()
+        harness = _roster(folder, _Roster(), price=40 * DOLLARS)
+        _priced(harness, rule)
+        pages = [
+            (
+                {"page": p, "status": "same", "note": None}
+                if p > 1 + open_pages
+                else {"page": p, "status": "not_opened", "note": "not compared: out of money"}
+            )
+            for p in (2, 3, 4, 5)
+        ]
+        harness.engine.carry_over([], {"pages": pages})
+        harness.engine.continuing = True
+        harness.engine.continue_left = left
+        return _price_said(harness.run().text)
+
+    # The earlier answer's price $6.55, $3.92 spent: $2.63 left, plus the $1 the steps need.
+    assert continued(tmp_path / "a", 2_630_000, 0) == "3.63"
+    assert continued(tmp_path / "b", 2_630_000, 2) == "3.63"  # its pages were in that price
+    # No earlier price known and no page left: only the finishing steps' need, no minimum.
+    assert continued(tmp_path / "c", None, 0) == "1"
+
+
 # ---- the numbers helpers' settings -----------------------------------------------------------------
 
 

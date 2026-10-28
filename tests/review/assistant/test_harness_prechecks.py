@@ -414,3 +414,44 @@ def test_a_402_after_all_the_work_is_done_is_not_a_stop(
         "**AI calls stopped:** The AI service account needs attention (payment), so the AI did "
         "not answer. Tell your admin."
     )
+
+
+def _unreachable() -> ProviderFailure:
+    return ProviderFailure(
+        "The AI service could not be reached.", status=None, retryable=False, kind="unreachable"
+    )
+
+
+def test_an_outage_part_way_is_stored_as_an_outage_never_as_out_of_money(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-10-28: an outage cut a real check during its devil's advocate; it was stored as
+    "out of money" (`cost_cap`) with most of its price left. It is stored as what it was: not a
+    money stop, the reason said, and Continue finishes it."""
+    from app.review.assistant.full_check_roster import ADVOCATE_SYSTEM
+
+    _clean_ink(monkeypatch)
+    script = _Roster()
+
+    def answer(params: Mapping[str, Any]) -> Any:
+        if params["system"][0]["text"] == ADVOCATE_SYSTEM:
+            return _unreachable()
+        return script(params)
+
+    provider = _Account(lead=[], helper_answer=answer, credit_found=Credit("ok", Decimal(40)))
+
+    harness, outcome = _run(tmp_path, provider)
+
+    assert provider.breaker.kind == "unreachable"
+    assert not harness.engine.out_of_credit()
+    assert outcome.stopped is None and outcome.cap_hit is None  # never "cost_cap"
+    assert "Not finished (the AI service could not be reached)" in outcome.text
+    assert "Check incomplete: the AI service could not be reached" in outcome.text
+    assert "out of money" not in outcome.text
+    assert "within the fixed price" not in outcome.text
+    assert "step did not finish" not in outcome.text
+    problems = _block(outcome, "trust")["problems"]
+    assert problems[0].startswith("Stopped part way: the AI service could not be reached.")
+    assert not any("fixed price" in line for line in problems)
+    resume = _block(outcome, "resume")
+    assert resume["redo"].startswith("Stopped: the AI service could not be reached.")

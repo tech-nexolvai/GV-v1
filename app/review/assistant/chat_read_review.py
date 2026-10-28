@@ -282,11 +282,32 @@ def third_read_job(
     def job() -> None:
         if engine.cancel.is_set():
             return
-        drawing = import_module("app.review.assistant.chat_drawing")
-        with drawing._PDFIUM_LOCK:
-            crops = _adjudication_crops(module, finding, pdf_paths)
+        centred, overall = True, False
+        pictures = getattr(engine, "reading_pictures", None)
+        crops: dict[str, read_adjudication.SideCrops] = {}
+        if callable(pictures):
+            # The readings' own pictures (`read_spots`): GV's markup removed, the item's label at
+            # the centre, a vendor string's overall; the centre is said only for one value.
+            drawn = pictures(finding)
+            crops = dict(drawn.crops)
+            centred, overall = drawn.centred, drawn.overall
+        if not crops:
+            drawing = import_module("app.review.assistant.chat_drawing")
+            with drawing._PDFIUM_LOCK:
+                crops = _adjudication_crops(module, finding, pdf_paths)
+            centred, overall = False, False
         if crops:
-            _third_read_job(engine, module, finding, crops, read_call, model, update)()
+            _third_read_job(
+                engine,
+                module,
+                finding,
+                crops,
+                read_call,
+                model,
+                update,
+                centred=centred,
+                overall=overall,
+            )()
 
     return job
 
@@ -383,13 +404,22 @@ def _third_read_job(
     call: Callable[[list[dict[str, Any]]], str],
     model: str,
     update: Callable[[str, Callable[[dict[str, Any]], dict[str, Any]]], None],
+    *,
+    centred: bool = False,
+    overall: bool = False,
 ) -> Callable[[], None]:
     def job() -> None:
         if engine.cancel.is_set():
             return
         try:
             result = adjudication_module.adjudicate(
-                finding, crops, call, model=model, second_model=_SECOND_READ_MODEL
+                finding,
+                crops,
+                call,
+                model=model,
+                second_model=_SECOND_READ_MODEL,
+                centred=centred,
+                overall=overall,
             )
         except Exception as failed:  # noqa: BLE001 - not run: no room, cancelled or a failure
             if not isinstance(failed, NoRoom):
