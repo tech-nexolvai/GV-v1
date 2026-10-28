@@ -221,3 +221,87 @@ def test_the_look_writes_the_pieces_spot_on_the_drawing_that_has_it() -> None:
     assert whole_look._piece_of(look, None) == {}
     assert whole_look._piece_of(look, {"picture": 3, "x0": 0, "y0": 0, "x1": 1, "y1": 1}) == {}
     assert whole_look._piece_of(look, {"picture": 1, "x0": 50, "y0": 0, "x1": 10, "y1": 9}) == {}
+
+
+# ---- 5. a size the look worked out (2026-10-28) ---------------------------------------------------
+
+
+def _sized(fid: str, vendor: str, architect: str, *, labels: tuple[str, ...]) -> dict[str, Any]:
+    """A size claim the look tied to fewer than two labels: a Likely problem until code says more.
+    `labels`: the sides with a printed label code found."""
+    claim = _claim(fid, "Kitchenette: counter height", "size", (40, 300, 60, 420))
+    claim.update(vendor=vendor, architect=architect)
+    claim["dims"] = {
+        side: {"id": f"D{n}", "page": 4 if side == "vendor" else 9, "text": "x"}
+        for n, side in enumerate(labels, start=1)
+    }
+    return claim
+
+
+def test_a_height_the_look_added_up_itself_is_not_compared_through_the_escalation() -> None:
+    # The real case, with made-up values: the look adds a vendor chain that runs past the counter
+    # to the splash's top and sets the total against the architect's floor-to-counter height.
+    summed = _sized(
+        "F1",
+        'about 42 1/2" (chain 127 [5] + 775 [30 1/2] + 25 [1] + 152 [6], floor to top of splash)',
+        "3' - 1\"",
+        labels=("architect",),
+    )
+    assert proof_group(summed) == "likely_problem"  # before the rules: a please-check
+    result = escalate([summed], EscalationContext(main_file=VENDOR))
+    held = next(f for f in result.changed if f["id"] == "F1")
+    assert held[claim_rules.FIELD]["rule"] == "look_own_sum"
+    assert proof_group(held) == "not_compared"  # never a please-check, never red
+    why = classified(held)
+    assert "the vendor's value is the whole-drawing look's own sum" in str(why.why)
+    assert "printed on both drawings" in str(why.settle)
+    assert "F1" not in result.absorbed  # still listed: GV can look
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '61" (48 1/2" + 12 1/2" top filler; no overall printed)',
+        '19" plus the toe kick',
+        '42" (the chain of the base, top and splash)',
+        '58" (sum of the three bays)',
+        "the parts add up to 4'-2\"",
+    ],
+)
+def test_sums_on_a_side_with_no_label_are_not_compared(value: str) -> None:
+    assert "F1" in _changes([_sized("F1", value, "2' - 6\"", labels=("architect",))])
+    assert "F2" in _changes([_sized("F2", '30"', value, labels=("vendor",))])  # either side
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '30"',
+        "762 [30]",
+        "2' - 6\"",
+        '30" high, 18" deep',
+        "1'-10 1/2\"",
+        # An estimate or a size by scale where the drawing prints none stays (GV asked for the
+        # scale there, client meeting 2026-10-23; `scale_measure` measures such spots).
+        "about 4'-8\" wide",
+        '~30"',
+        'approx. 18"',
+        '27" by scale',
+        'low splash, about 2" by scale',
+    ],
+)
+def test_a_printed_or_scaled_size_stays_a_likely_problem(value: str) -> None:
+    assert _changes([_sized("F1", value, "2' - 7\"", labels=("architect",))]) == {}
+    assert _changes([_sized("F2", '30"', value, labels=("vendor",))]) == {}
+
+
+def test_a_side_with_a_printed_label_is_not_judged_by_its_words() -> None:
+    # The label prints the look's value (`whole_look._label` checks it): the words do not matter.
+    labelled = _sized("F1", 'about 30"', "2' - 7\"", labels=("vendor",))
+    assert _changes([labelled]) == {}
+
+
+def test_only_a_size_claim_is_judged_for_its_sum() -> None:
+    count = _claim("F1", "Credenza: fronts", "count", (40, 300, 60, 420))
+    count.update(vendor="2 doors + 1 bin", architect="3 doors")
+    assert _changes([count]) == {}
