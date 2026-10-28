@@ -5317,6 +5317,9 @@ class _Run:
         engine = self.engine
         from app.review.assistant.escalation import escalate_answer
 
+        # The items an earlier escalation already gave their look: this one's own sharper look
+        # (below) marks the items it asks about too, and the advocate must still judge those.
+        looked_before = frozenset(self.escalated)
         try:
             escalate_answer(engine)
         except Exception:  # noqa: BLE001 - the deeper look goes on without the free steps
@@ -5345,7 +5348,11 @@ class _Run:
             self._prove_values("look_again", {str(f["id"]) for f in unread})
         self.pick_phase = "escalation"
         try:
-            for finding in self._unproved():
+            # Every item still not proved that no earlier escalation looked at, the ones the
+            # sharper look just gave a spot included (the paid Set 2 run of 2026-10-29: GV's
+            # recorded row for the microwave outlets got its vendor label only here, after the
+            # advocate's turn found none, and was never judged at it).
+            for finding in self._unproved(looked_before):
                 if engine.cancel.is_set():
                     break
                 if not self._read_by_code(finding) or _judged(finding):
@@ -5359,16 +5366,17 @@ class _Run:
         finally:
             self.pick_phase = "advocate"
 
-    def _unproved(self) -> list[dict[str, Any]]:
+    def _unproved(self, looked: Collection[str] | None = None) -> list[dict[str, Any]]:
         """The Wrongs still not proved (Not compared today), the biggest first, not looked at again
-        yet."""
+        yet (`looked`: the items already looked at, by default every item the escalation took)."""
+        skip = self.escalated if looked is None else looked
         live = [judged(f) for f in self.engine.book.live()]
         return [
             dict(f)
             for f in by_impact(live)
             if f.get("status") == "different"
             and proof_rule.proof_group(f) in proof_rule.UNDECIDED
-            and str(f["id"]) not in self.escalated
+            and str(f["id"]) not in skip
             and self._in_scope(f)
         ]
 

@@ -1153,6 +1153,73 @@ def test_the_escalation_reads_the_labels_then_gives_one_deeper_look_within_the_p
     assert script.calls.get("advocate") == 1
 
 
+class _SpotFinder(_Roster):
+    """The escalation's sharper look names code's labels for the items it is asked about."""
+
+    def helper(self, params: Mapping[str, Any], brief: str) -> list[dict[str, Any]]:
+        if not brief.startswith("PROVE:"):
+            return super().helper(params, brief)
+        self._seen("prove", params)
+        ids = [line.split()[1] for line in brief.splitlines() if line.startswith("- F")]
+        proofs = [
+            {"finding_id": i, "vendor_dim": "D1", "architect_dim": "D2", "vendor_box": None,
+             "arch_box": None, "outcome": "inputs_found", "why": "the labels at the spots"}
+            for i in ids
+        ]  # fmt: skip
+        return reply(text(self._json({"proofs": proofs})), model=SONNET)
+
+
+@pytest.mark.usefixtures("read_twice")
+def test_the_advocate_judges_an_item_the_escalations_sharper_look_gave_its_spot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GV's recorded row with no spot (its value printed by two vendor labels, so code placed it
+    nowhere): the devil's advocate's turn found no label to judge ("the vendor's value has no
+    label code read"). The escalation's sharper look then named the label and code read it; the
+    advocate must judge it there, as for any item code now reads on both sides (the paid Set 2 run
+    of 2026-10-29: the microwave outlets' 10" against 8" stayed Not compared, never judged)."""
+    from types import SimpleNamespace
+
+    from app.review.assistant import proof
+
+    _clean_ink(monkeypatch)
+    script = _SpotFinder()
+    harness = _roster(tmp_path, script)
+    engine = harness.engine
+    finding, _notes = engine.book.report(
+        {"page": 3, "item": "Top on page 3", "category": "countertop", "architect": '37"',
+         "vendor": '46"', "status": "different", "verified": False, "source": "architect"},
+        "helper:1",
+    )  # fmt: skip
+    finding_id = str(finding["id"])
+    # Code read nothing at a spot: only the value's own millimetres and inches back it.
+    unplaced = {
+        **finding,
+        "checks": {"printed_architect": "no_box", "printed_vendor": "no_box", "units": "agrees"},
+        "inches": {"architect": "37", "vendor": "46", "difference": "9"},
+    }
+    assert engine.book.replace(unplaced)
+    run = _run(harness)
+
+    run._advocate(None)
+    found = next(f for f in engine.book.live() if f["id"] == finding_id)
+    assert found["pairing"]["checks"][0][:2] == ["labels", "fail"]
+    assert "advocate" not in script.calls
+
+    run._escalate(SimpleNamespace(jobs=[]), None)
+
+    found = next(f for f in engine.book.live() if f["id"] == finding_id)
+    assert script.calls.get("prove") == 1  # the sharper look named the labels
+    assert found["dims"]["vendor"]["id"] == "D1" and found["checks"]["printed_vendor"] == "match"
+    # Judged at the label the sharper look gave it: the blind pick agreed, every check passed.
+    assert script.calls.get("advocate") == 1
+    assert found["pairing"]["vendor"] == "p3.D1" and found["critic"]["result"] == "passed"
+    assert proof.proof_group(found) == "clouded"
+    # One look only: a second escalation asks nothing again.
+    run._escalate(SimpleNamespace(jobs=[]), None)
+    assert script.calls.get("advocate") == 1 and script.calls.get("prove") == 1
+
+
 def test_the_escalation_spends_only_what_is_left_under_the_price(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
