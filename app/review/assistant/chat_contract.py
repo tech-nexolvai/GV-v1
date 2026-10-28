@@ -469,6 +469,11 @@ class ChatSecondReadValuesOut(BaseModel):
 
     architect: str | None = None
     vendor: str | None = None
+    reply: str | None = Field(
+        default=None,
+        description="The reading's reply as the model wrote it, cut to 2000 characters "
+        "(diagnosis only; its values are the two fields above).",
+    )
 
 
 class ChatFindingReadOut(BaseModel):
@@ -484,6 +489,11 @@ class ChatFindingReadOut(BaseModel):
     dpi: int | None = Field(default=None, description="The third read's crop resolution.")
     turned: bool | None = Field(
         default=None, description="Whether a quarter-turned copy was shown (sideways text)."
+    )
+    reply: str | None = Field(
+        default=None,
+        description="A second or third reading's reply as the model wrote it, cut to 2000 "
+        "characters (diagnosis only; its values are value_arch and value_vendor).",
     )
 
 

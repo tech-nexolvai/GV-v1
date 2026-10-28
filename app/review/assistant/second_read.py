@@ -17,7 +17,7 @@ import base64
 import json
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal
 
 from app.review.assistant.colour_rule import COLOUR_RULE
@@ -28,9 +28,11 @@ __all__ = [
     "CENTRE_WORDS",
     "OVERALL_WORDS",
     "READ_SCHEMA",
+    "REPLY_KEPT_CHARS",
     "SIDES",
     "SecondRead",
     "compare_read",
+    "kept_reply",
     "parse_reply",
     "question",
     "second_read",
@@ -47,6 +49,10 @@ _FENCED: Final = re.compile(r"^```(?:json)?\s*(?P<body>.*?)\s*```$", re.DOTALL)
 
 #: An item name longer than this is cut: it is a label for the question, not a description.
 _LONGEST_ITEM: Final = 120
+#: A reading's reply is kept on the finding up to this many characters (a bare answer is about
+#: 60; the wordy third-read replies of 2026-10-28 were up to about 465 tokens, some 1,900).
+REPLY_KEPT_CHARS: Final = 2000
+_KEYS: Final = frozenset({"architect", "vendor", "sure"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +66,9 @@ class SecondRead:
     """Whether the model said it was sure. A read it is not sure of never agrees."""
     asked: tuple[str, ...] = ()
     """The sides it was shown a crop of."""
+    reply: str | None = field(default=None, compare=False)
+    """The reply's own text, cut to `REPLY_KEPT_CHARS` (`kept_reply`): what the reader said, kept
+    so a read of nothing says why. Never compared and never read for values (`parse_reply` is)."""
 
 
 #: The reply's shape (structured outputs: the API returns exactly this JSON). A drawing not shown,
@@ -148,12 +157,65 @@ def second_read(
         {"type": "text", "text": question(item, sides, centred=centred, overall=overall)}
     )
     reply = model_call(content)
-    return replace(parse_reply(reply), asked=sides)
+    return replace(parse_reply(reply), asked=sides, reply=kept_reply(reply))
+
+
+def kept_reply(reply: object) -> str | None:
+    """The reply's text as kept on the finding: cut to `REPLY_KEPT_CHARS`; `None` for no text."""
+    if not isinstance(reply, str):
+        return None
+    text = reply.strip()
+    if not text:
+        return None
+    return text if len(text) <= REPLY_KEPT_CHARS else text[: REPLY_KEPT_CHARS - 1] + "\u2026"
+
+
+def _objects(text: str) -> list[object]:
+    """Every JSON object written in `text`, outermost only, in order: each `{` that starts a whole
+    JSON object is read as one, and the search goes on after its end (an object inside another is
+    part of it, never a second one)."""
+    decoder = json.JSONDecoder()
+    found: list[object] = []
+    start = text.find("{")
+    while start != -1:
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except ValueError:
+            start = text.find("{", start + 1)
+            continue
+        found.append(value)
+        start = text.find("{", end)
+    return found
+
+
+def _answer(value: object) -> SecondRead | None:
+    """`value` as a read when it is exactly the asked-for object (`READ_SCHEMA`), else `None`."""
+    if not isinstance(value, dict) or set(value) != _KEYS:
+        return None
+    architect, vendor, sure = value["architect"], value["vendor"], value["sure"]
+    if not isinstance(sure, bool):
+        return None
+    if not all(side is None or isinstance(side, str) for side in (architect, vendor)):
+        return None
+    return SecondRead(
+        architect=architect.strip() or None if isinstance(architect, str) else None,
+        vendor=vendor.strip() or None if isinstance(vendor, str) else None,
+        sure=sure,
+    )
 
 
 def parse_reply(reply: str) -> SecondRead:
-    """The reply read strictly: one JSON object with `architect` and `vendor` (text or null) and
-    `sure` (true/false), nothing else. Anything else is a read of nothing."""
+    """The reply's read: the asked-for JSON object, `architect` and `vendor` (text or null) and
+    `sure` (true/false) and no other key, values as written (`compare_read` compares them).
+
+    - The reply is that object, bare or in a code fence: it is read. A reply that is all JSON
+      but not that object (a list, other keys) is a read of nothing.
+    - Else, words around it: the JSON objects written in the reply that name any of the three
+      keys are its candidates. Exactly one, and of the asked-for shape: it is read. Two or more
+      (a draft and a final answer, or two that differ): a read of nothing, code never picks one.
+    - Anything else (no object, the wrong keys or types, a list, not text) is a read of nothing.
+
+    A read of nothing is not sure, so it never agrees (`compare_read`)."""
     nothing = SecondRead(architect=None, vendor=None)
     if not isinstance(reply, str):
         return nothing
@@ -162,21 +224,17 @@ def parse_reply(reply: str) -> SecondRead:
     if fenced is not None:
         text = fenced.group("body")
     try:
-        answer = json.loads(text)
+        whole = json.loads(text)
     except ValueError:
+        pass
+    else:
+        return _answer(whole) or nothing  # all JSON: the asked-for object, or nothing
+    candidates = [
+        value for value in _objects(text) if isinstance(value, dict) and _KEYS & set(value)
+    ]
+    if len(candidates) != 1:
         return nothing
-    if not isinstance(answer, dict) or set(answer) != {"architect", "vendor", "sure"}:
-        return nothing
-    architect, vendor, sure = answer["architect"], answer["vendor"], answer["sure"]
-    if not isinstance(sure, bool):
-        return nothing
-    if not all(value is None or isinstance(value, str) for value in (architect, vendor)):
-        return nothing
-    return SecondRead(
-        architect=architect.strip() or None if isinstance(architect, str) else None,
-        vendor=vendor.strip() or None if isinstance(vendor, str) else None,
-        sure=sure,
-    )
+    return _answer(candidates[0]) or nothing
 
 
 def compare_read(read: SecondRead, finding: Mapping[str, Any]) -> SecondRead:

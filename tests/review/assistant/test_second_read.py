@@ -124,7 +124,9 @@ def test_replies_are_parsed(
         json.dumps({"architect": '37"', "vendor": '46"', "sure": "yes"}),
         json.dumps({"architect": 37, "vendor": '46"', "sure": True}),
         json.dumps({"architect": '37"', "vendor": '46"', "sure": True, "note": "x"}),
-        'Here: {"architect": "37", "vendor": "46", "sure": true}',
+        # Words around a JSON object that is not the asked-for shape (2026-10-28: words around
+        # the asked-for object are read, `test_reading_replies.py`).
+        'Here: {"architect": "37", "vendor": "46", "sure": "yes"}',
     ],
 )
 def test_anything_but_the_asked_for_json_is_a_read_of_nothing(reply: str) -> None:

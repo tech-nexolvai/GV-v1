@@ -1618,10 +1618,12 @@ class ChatEngine:
         display: Callable[[], _Display] | None,
         context_management: Mapping[str, Any] | None = None,
         output_format: Mapping[str, Any] | None = None,
+        enforce_format: bool = False,
     ) -> _Reply:
         """One call, streamed, asked once more after a provider failure worth retrying. Raises
         `ProviderFailure` or `_Cancelled`. Under a lead from outside Claude it runs on the lead's
-        model (`run_model`)."""
+        model (`run_model`). `enforce_format`: `output_format` is enforced on OpenRouter too
+        (`call_params`; the readings)."""
         model = self.run_model(model)
         attempts = 0
         busy = 0
@@ -1647,6 +1649,7 @@ class ChatEngine:
                 max_tokens=max_tokens,
                 context_management=context_management,
                 output_format=output_format,
+                enforce_format=enforce_format,
             )
             started = monotonic_ns()
             shown = display() if display is not None else None
@@ -2932,6 +2935,7 @@ class ChatEngine:
                 prompt_id=self.check_prompt_id,
                 display=None,
                 output_format=getattr(load_module(SECOND_READ_MODULE), "READ_SCHEMA", None),
+                enforce_format=True,
             )
         finally:
             self._release(share, estimate or 0)
@@ -3215,6 +3219,10 @@ class ChatEngine:
         if result not in ("agrees", "disagrees", "unsure"):
             result = "unsure"
         values = {"architect": read.architect, "vendor": read.vendor}
+        reply = getattr(read, "reply", None)
+        if isinstance(reply, str):
+            # The reply's own text (cut, `second_read.kept_reply`): a read of nothing says why.
+            values["reply"] = reply
         key = _read_key(finding)
         with self.finding_lock:
             current = next((f for f in self.book.live() if f["id"] == finding["id"]), None)

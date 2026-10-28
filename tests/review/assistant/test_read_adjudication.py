@@ -247,6 +247,8 @@ def test_adjudicate_records_all_three_readings() -> None:
             "sure": True,
             "dpi": 300,
             "turned": True,
+            # The reply's own text is kept on its reading (2026-10-28).
+            "reply": json.dumps({"architect": '37"', "vendor": "3'-10\"", "sure": True}),
         },
     ]
 
