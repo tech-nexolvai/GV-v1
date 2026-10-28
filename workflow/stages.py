@@ -59,9 +59,6 @@ from app.api.documents import storage_key
 from app.db.base import utc_now
 from app.evidence.automatic_typing import AutomaticTypingSettings, qualify_exact_tags_for_revision
 from app.evidence.record import (
-    NOT_A_SINGLE_VALUE_FLAG,
-    UNKNOWN_UNIT_FLAG,
-    UNPARSED_FLAG,
     dual_unit_lane,
     open_extraction_run,
     persist_manifest,
@@ -125,7 +122,7 @@ from app.runs.invocations import (
 from app.runs.invocations import (
     record as record_model_invocation,
 )
-from app.runs.rates import call_cost_micros, rates_from_environment
+from app.runs.rates import call_cost_micros
 from app.runs.reading_activity import ActivityRecorder
 from app.runs.reading_progress import side_engine
 from app.telemetry.tracing import traced
@@ -134,11 +131,10 @@ from app.verdicts.rulebook import snapshot_store
 from evidence.candidate import STACKED_FRACTION_FLAG
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import CorroborationLane, EvidenceStatus
-from evidence.coordinates import ImagePoint, PageTransform, PdfPoint, StoredPoint
+from evidence.coordinates import ImagePoint, PageTransform, StoredPoint
 from evidence.corroborate import (
     corroborate,
     is_consistent_dual_label,
-    one_dual_label_across_agreements,
 )
 from evidence.crop import (
     EVIDENCE_CONTEXT_MARGIN_PT,
@@ -153,26 +149,6 @@ from evidence.crop import (
     generate_crop,
 )
 from evidence.polygon import Polygon
-from extraction.agent.graph import (
-    AbstentionTerminal,
-    BoundedAgentGraph,
-    BoundedRegionContext,
-    CandidateTerminal,
-    GraphLimits,
-    Planner,
-    RetryableToolFailure,
-)
-from extraction.agent.observations import RegionFacts, trigger_reasons
-from extraction.agent.outcomes import abstain as agent_abstain
-from extraction.agent.policy import policy_planner
-from extraction.agent.tools import (
-    AgentToolbox,
-    OcrVerificationArguments,
-    ToolCallRecord,
-    VlmReadingArguments,
-    VlmRole,
-)
-from extraction.agent.trigger import AmbiguityReason, RegionContext, evaluate_trigger
 from extraction.annotations import (
     LINE_DIMENSION_INTENT,
     MarkupNote,
@@ -193,21 +169,13 @@ from extraction.architect.reader import (
 )
 from extraction.architect.sheet_index import read_pages_phrases
 from extraction.form_reader.bedrock import AttemptUsage
-from extraction.fraction_parts import (
-    FRACTION_PARTS_EXTRACTOR,
-    FRACTION_PARTS_VERSION,
-    DrawnPiece,
-    FractionPartsRefusal,
-    PieceDrawing,
-    read_fraction_parts,
-)
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.dimension_lines import DetectedDimensions, detect
 from extraction.geometry.labels import (
     Box,
     LabelGeometry,
+    LabelLengths,
     LabelReach,
-    label_direction,
     label_geometry,
 )
 from extraction.geometry.rows import Box as RowBox
@@ -240,34 +208,13 @@ from extraction.model.part_proposals import (
     ViewOutline,
     propose_parts,
 )
-from extraction.models.context import AssembledContext
 from extraction.models.invocations import InvocationRecord, failure_kind_reason
-from extraction.models.nova import (
-    NovaAdapter,
-    NovaAdapterError,
-    NovaConfig,
-    NovaDigitsRequest,
-    NovaInvocation,
-    NovaInvocationOutcome,
-    NovaPayloadRejectedError,
-    NovaProtocolError,
-    NovaRefusalError,
-    NovaRequest,
-    NovaRetryExhaustedError,
-    NovaTimeoutError,
-    ReaderPicture,
-    digits_prompt_id,
-    vision_config_for_extractor,
-    vision_configs_from_environment,
-)
 from extraction.models.validation import (
-    STACKED_FRACTION_REASON,
-    ValidationRejection,
     stacked_layout_refusal,
 )
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, could_be_a_reading, read_page
 from extraction.panels import PanelLayout, propose_panel_roles, read_panels
-from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page, render_region
+from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page
 from extraction.reader import (
     MissingSpace,
     PageContents,
@@ -306,8 +253,6 @@ from storage.hashing import ArtifactCorrupt, content_key, sha256_stream
 from storage.store import ArtifactStore
 from units.imperial import format_inches
 from units.measurement import Measurement, Unit
-from units.normalise import UnitNormalisationError, drawn_fraction_refusal, normalise_to_inches
-from units.notation import canonical_notation, is_compound
 from verdict.engine import EngineError, execute
 from verdict.finding import Finding
 from verdict.operands import VerdictOperand
@@ -433,15 +378,7 @@ from workflow.part_pictures import (
     unpictured_proposals,
 )
 from workflow.parts import live_part_item_ids, outline_box, record_part_proposal
-from workflow.reader_pictures import (
-    PictureSettings,
-    PrintedRun,
-    label_turn,
-    printed_runs,
-    reader_picture,
-)
 from workflow.reader_reuse import StoredAnswerSource, StoredReaderAnswers
-from workflow.reading_agent import ReadingAgentSettings, RegionCrops
 from workflow.reading_watch import (
     CallLedger,
     PageBatchProgress,
@@ -576,20 +513,6 @@ class _RecordingFindingsLanguageModel(FindingsLanguageModel, Protocol):
         """Return the same model adapter with per-call persistence attached."""
 
 
-class _VisionReader(Protocol):
-    """One bounded model reader route."""
-
-    @property
-    def config(self) -> NovaConfig:
-        """The model identity and extractor name this route records under."""
-
-    def extract(self, request: NovaRequest, recorder: _BufferedVisionRecorder) -> DomainCandidate:
-        """Return one raw model candidate or raise an adapter error."""
-
-    def read_digits(self, request: NovaDigitsRequest, recorder: _BufferedVisionRecorder) -> str:
-        """Return the validated digits of one drawn piece, or raise an adapter error (#865)."""
-
-
 @dataclass(frozen=True, slots=True)
 class _LayoutReaderRoute:
     """One closed-question reader plus the identity persisted with its proposal."""
@@ -597,27 +520,6 @@ class _LayoutReaderRoute:
     reader: LayoutReader
     model_id: str
     prompt_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class BedrockVisionReader:
-    """A Bedrock Converse reader using the existing strict Nova adapter contract."""
-
-    config: NovaConfig
-
-    def extract(self, request: NovaRequest, recorder: _BufferedVisionRecorder) -> DomainCandidate:
-        return NovaAdapter.from_environment(self.config, recorder).extract(request)
-
-    def read_digits(self, request: NovaDigitsRequest, recorder: _BufferedVisionRecorder) -> str:
-        return NovaAdapter.from_environment(self.config, recorder).read_digits(request)
-
-
-def configured_vision_readers_from_environment() -> tuple[BedrockVisionReader, ...]:
-    """Return the two Phase C Bedrock readers when a deployment explicitly enables them."""
-
-    if os.environ.get(VISION_READERS_ENV, "").lower() not in {"1", "true", "yes"}:
-        return ()
-    return tuple(BedrockVisionReader(config) for config in vision_configs_from_environment())
 
 
 def configured_layout_readers_from_environment() -> tuple[_LayoutReaderRoute, ...]:
@@ -644,71 +546,6 @@ def configured_layout_readers_from_environment() -> tuple[_LayoutReaderRoute, ..
     return (
         _LayoutReaderRoute(BedrockClosedQuestionReader(config, client), model_id, config.prompt_id),
     )
-
-
-def _stored_invocation_outcome(outcome: NovaInvocationOutcome) -> str:
-    if outcome is NovaInvocationOutcome.OK:
-        return "ok"
-    if outcome is NovaInvocationOutcome.REFUSED:
-        return "refused"
-    if outcome is NovaInvocationOutcome.REJECTED:
-        return "rejected"
-    if outcome is NovaInvocationOutcome.TIMEOUT:
-        return "timeout"
-    return "failed"
-
-
-def _candidate_evidence_status(row: ObservationCandidate) -> EvidenceStatus:
-    if row.corroboration_status is None:
-        return EvidenceStatus.RAW_CANDIDATE
-    return EvidenceStatus(row.corroboration_status)
-
-
-def _vision_candidate_value(raw_text: str) -> tuple[Measurement | None, str | None]:
-    """The exact value a vision reading is stored with, or the flag saying why it has none.
-
-    **It must agree with the shape check** (`extraction/models/validation.py`). Before #733 this was a
-    bare `normalise_to_inches(raw_text)` while the check canonicalised inch marks first, so the two
-    disagreed: a model's `8'-6''` passed validation and was then stored with no value, unable to take
-    part in any agreement — and `25-1/2"`, `381 [15]` and `2" (VIF)` could not be valued at all. Both
-    now read `units.notation`, and `tests/workflow/test_vision_candidate_value.py` fails if they part.
-
-    The row keeps the characters the model returned; only the value comes from the canonical form.
-    """
-    if is_compound(raw_text):
-        return None, NOT_A_SINGLE_VALUE_FLAG
-    notation = canonical_notation(raw_text)[0]
-    # A fraction no drawing prints has no value, as the shape check refuses it (#1199).
-    if drawn_fraction_refusal(notation) is not None:
-        return None, UNPARSED_FLAG
-    try:
-        return normalise_to_inches(notation), None
-    except UnitNormalisationError:
-        return None, UNPARSED_FLAG
-
-
-def _ambiguity_reasons(
-    row: ObservationCandidate, *, exact_text: bool
-) -> frozenset[AmbiguityReason]:
-    flags = set(row.ambiguity_flags)
-    reasons: set[AmbiguityReason] = set()
-    if UNKNOWN_UNIT_FLAG in flags:
-        reasons.add(AmbiguityReason.UNKNOWN_UNIT)
-    # An exact route's string that does not parse is still exactly what the file says (#792), so no
-    # look at its picture can read it differently. Measured on AI_Set_2, this flag alone sent 999
-    # regions of a pasted drawing's own text to two paid readers. Its unit and its geometry still can.
-    if UNPARSED_FLAG in flags and not exact_text:
-        reasons.add(AmbiguityReason.UNREADABLE_TEXT)
-    # `NOT_A_SINGLE_VALUE_FLAG` is deliberately **not** mapped (#733). These reasons trigger a bounded,
-    # paid agent retry; a compound like `39 1/4"+6"` was read correctly and is genuinely two values, so
-    # no retry can turn it into one. Before #733 a compound was flagged unparsed and retried for nothing.
-    return frozenset(reasons)
-
-
-def _shows_a_numeral(text: str | None) -> bool:
-    """Whether any character of `text` is a numeral — a vulgar fraction such as `½` included."""
-
-    return text is not None and any(character.isnumeric() for character in text)
 
 
 logger = logging.getLogger("gv.workflow.stages")
@@ -765,41 +602,45 @@ def missing_space_from_environment(environ: Mapping[str, str] = os.environ) -> M
         ) from error
 
 
-#: The switch for reading each stacked fraction piece by piece (#848). Off unless a deployment turns
-#: it on, and `scripts/demo.sh` does not.
-FRACTION_PARTS_ENV: Final = "GV_FRACTION_PARTS"
-
-#: How each piece is drawn for the reader (`extraction.fraction_parts.PieceDrawing`). Required once
-#: the route is on, and none has a default: each changes what the reader is shown.
-FRACTION_PARTS_SETTINGS: Final = {
-    "GV_FRACTION_PARTS_HEIGHT_PX": "height_px",
-    "GV_FRACTION_PARTS_STROKE_PX": "stroke_px",
-    "GV_FRACTION_PARTS_BEZIER_STEPS": "bezier_steps",
-    "GV_FRACTION_PARTS_MARGIN_PX": "margin_px",
+#: The two lengths a label is gathered by, for the agreement gate's cut-label guard (#919): how
+#: close a character must be to join a label, and how far one label may run, in PDF points. They
+#: were the reading agent's (`GV_AGENT_LABEL_GAP_PT`, `GV_AGENT_MAX_LABEL_PT`), retired with it on
+#: 2026-10-28; no deployment has stated them since.
+LABEL_LENGTH_SETTINGS: Final = {
+    "GV_LABEL_GAP_PT": "label_gap_pt",
+    "GV_MAX_LABEL_PT": "maximum_label_pt",
 }
 
 
-def fraction_parts_from_environment(environ: Mapping[str, str] = os.environ) -> PieceDrawing | None:
-    """How the deployment draws the pieces of a stacked fraction, or `None` where the route is off.
+def label_lengths_from_environment(
+    environ: Mapping[str, str] = os.environ,
+) -> LabelLengths | None:
+    """The label lengths a deployment states, or `None` where it states neither.
 
-    A switch that is on with a setting missing or not a whole number is refused, not filled in: a
-    guessed size would decide what the reader is shown on every drawing anybody runs.
+    **Both or neither.** One without the other, or a length that is not a number above zero, is
+    refused rather than filled in: a guessed length would decide which labels count as cut.
     """
-    if environ.get(FRACTION_PARTS_ENV, "").strip().lower() not in {"1", "true", "yes"}:
+    stated = {name: environ.get(name, "").strip() for name in LABEL_LENGTH_SETTINGS}
+    if not any(stated.values()):
         return None
-    missing = [name for name in FRACTION_PARTS_SETTINGS if not environ.get(name, "").strip()]
+    missing = [name for name, value in stated.items() if not value]
     if missing:
         raise ValueError(
-            f"{FRACTION_PARTS_ENV} is on and these are not stated: {', '.join(missing)}. None of "
-            "them has a default"
+            f"{', '.join(missing)} is not stated, and the label lengths are stated together or "
+            "not at all; neither has a default"
         )
-    stated: dict[str, int] = {}
-    for name, field_name in FRACTION_PARTS_SETTINGS.items():
-        raw = environ[name].strip()
-        if not raw.isascii() or not raw.isdigit():
-            raise ValueError(f"{name} must be a whole number, not {raw!r}")
-        stated[field_name] = int(raw)
-    return PieceDrawing(**stated)
+    values: dict[str, Decimal] = {}
+    for name, field_name in LABEL_LENGTH_SETTINGS.items():
+        try:
+            values[field_name] = Decimal(stated[name])
+        except InvalidOperation as error:
+            raise ValueError(
+                f"{name} must be a length in PDF points, not {stated[name]!r}"
+            ) from error
+    try:
+        return LabelLengths(**values)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"the label lengths are not usable: {error}") from error
 
 
 @dataclass(slots=True)
@@ -860,76 +701,6 @@ def _micros(amount: Decimal) -> int:
     return int(amount * 1_000_000)
 
 
-@dataclass(slots=True)
-class _BufferedVisionRecorder:
-    """Collect adapter attempt records until the workflow can persist them with run context."""
-
-    session: Session
-    extraction_run_id: UUID
-    request_candidate_id: UUID
-    crop_artifact_id: UUID | None = None
-    meter: _SpendMeter | None = None
-    """The drawing set's spend, which every call persisted here adds to."""
-    _invocations: list[NovaInvocation] = field(init=False, default_factory=list)
-    _rejections: list[ValidationRejection] = field(init=False, default_factory=list)
-
-    def record(self, invocation: NovaInvocation) -> None:
-        self._invocations.append(invocation)
-
-    def record_rejection(self, rejection: ValidationRejection) -> None:
-        self._rejections.append(rejection)
-
-    @property
-    def rejections(self) -> tuple[ValidationRejection, ...]:
-        return tuple(self._rejections)
-
-    def persist(self, *, candidate_id: UUID | None, flush: bool = True) -> int:
-        written = 0
-        for invocation in self._invocations:
-            stored = record_model_invocation(
-                self.session,
-                InvocationRecord(
-                    extraction_run_id=self.extraction_run_id,
-                    model_id=invocation.model_id,
-                    prompt_id=invocation.prompt_id,
-                    template_id=invocation.template_id,
-                    crop_artifact_id=self.crop_artifact_id,
-                    input_tokens=invocation.input_tokens,
-                    output_tokens=(
-                        0
-                        if invocation.outcome
-                        in {NovaInvocationOutcome.REFUSED, NovaInvocationOutcome.TIMEOUT}
-                        else invocation.output_tokens
-                    ),
-                    # From the deployment's stated price file, or unknown — never a literal zero (#700).
-                    cost_micros=call_cost_micros(
-                        rates_from_environment(),
-                        invocation.model_id,
-                        invocation.input_tokens,
-                        (
-                            0
-                            if invocation.outcome
-                            in {NovaInvocationOutcome.REFUSED, NovaInvocationOutcome.TIMEOUT}
-                            else invocation.output_tokens
-                        ),
-                    ),
-                    latency_ms=invocation.latency_ms,
-                    outcome=_stored_invocation_outcome(invocation.outcome),
-                    candidate_id=(
-                        candidate_id if invocation.outcome is NovaInvocationOutcome.OK else None
-                    ),
-                    assembled_context=invocation.context,
-                    bound_pt=invocation.bound_pt,
-                    rejection_reason=invocation.rejection_reason,
-                ),
-                flush=flush,
-            )
-            if self.meter is not None:
-                self.meter.add(stored.cost_micros)
-            written += 1
-        return written
-
-
 def _stored_measurement(row: ObservationCandidate) -> Measurement | None:
     if row.value_numerator is None or row.value_denominator is None or row.unit is None:
         return None
@@ -937,16 +708,6 @@ def _stored_measurement(row: ObservationCandidate) -> Measurement | None:
         Fraction(row.value_numerator, row.value_denominator),
         Unit(row.unit),
         row.raw_text,
-    )
-
-
-def _agreeing(rows: Sequence[ObservationCandidate]) -> tuple[ObservationCandidate, ...]:
-    """The readings that hold an agreement: the second-reader lane, not marked conflicting (#928)."""
-    return tuple(
-        row
-        for row in rows
-        if row.corroboration_lane == CorroborationLane.SECOND_READER.value
-        and row.corroboration_status != EvidenceStatus.CONFLICTING.value
     )
 
 
@@ -987,18 +748,14 @@ MAXIMUM_RENDER_PIXELS = 40_000_000
 #: Defined beside the crop cutter, so the vendor-only view of a crop's region (#952) keeps the same.
 CROP_CONTEXT_MARGIN_PT = EVIDENCE_CONTEXT_MARGIN_PT
 
-#: The bounded crop and context sent to vision readers. It deliberately reuses the evidence crop
-#: margin so the model sees a region, not a full page, and no model chooses its own context.
+#: The crop round a region that the agreement gate's guards judge (#901, #919): the evidence crop
+#: margin. Named for the vision readers it was cut for, which were retired with the label-first
+#: route (2026-10-28); the guards still judge a crop of exactly this size.
 VISION_CROP_CONTEXT_MARGIN_PT = CROP_CONTEXT_MARGIN_PT
-VISION_CONTEXT_BOUND_PT = CROP_CONTEXT_MARGIN_PT
 
 #: The most characters a run's identity holds: `extraction_runs.config_hash` is `String(200)`, and
 #: `tests/scripts/test_drain_outbox_config.py` holds the two equal.
 RUN_IDENTITY_CHARACTERS: Final = 200
-
-#: Explicit opt-in for paid/network vision reads in the local worker path. Tests and local extraction
-#: stay deterministic unless a caller injects readers or a deployment opts in.
-VISION_READERS_ENV = "GV_BEDROCK_VISION_ENABLED"
 
 #: Explicit opt-in for paid/network closed-question layout reads. Without this and a model id, the
 #: stage still records an abstention for each discriminator instead of failing extraction.
@@ -1099,62 +856,9 @@ __all__ = [
     "gv_mark_in_crop",
     "mixed_fraction_refusal",
     "page_transform",
-    "region_facts",
     "stacked_layouts_shown",
     "stored_polygon",
 ]
-
-type _AgentPlannerFactory = Callable[[BoundedRegionContext, RegionFacts, GraphLimits], Planner]
-
-
-def _default_bounded_agent_planner(
-    context: BoundedRegionContext, facts: RegionFacts, limits: GraphLimits
-) -> Planner:
-    """The decision table (#757): each next step chosen from what the checks found, not a script.
-
-    Before #757 this returned a fixed sequence — OCR, OCR, VLM, abstain — played whatever each step
-    returned, so the agent never looked at a result. `extraction/agent/policy.py` looks at every one.
-    """
-    del context
-    return policy_planner(facts, limits)
-
-
-def _agent_readers(
-    settings: ReadingAgentSettings, readers: Sequence[_VisionReader], dpi: int
-) -> dict[VlmRole, _VisionReader]:
-    """The reading agent's primary and escalation readers, found by the extractor each is named by.
-
-    A configured vision reader first; otherwise a defined one (`VISION_READERS`), enabled or not.
-    Settings refuse Mistral Large 3 as an escalation reader; with the demo's zero escalation budget,
-    ambiguous regions go to human review without a substitute reader.
-
-    **Refused, not guessed, when a name matches nothing** — a worker that started with the agent on
-    and quietly asked no reader, or the wrong one, would report readings its settings never chose.
-    """
-    by_name = {reader.config.extractor: reader for reader in readers}
-    chosen: dict[VlmRole, _VisionReader] = {}
-    for role, name in (
-        (VlmRole.PRIMARY, settings.primary_reader),
-        (VlmRole.ESCALATION, settings.escalation_reader),
-    ):
-        if name is None:
-            continue
-        if name in by_name:
-            chosen[role] = by_name[name]
-            continue
-        config = vision_config_for_extractor(name)
-        if config is None:
-            raise ValueError(
-                f"the reading agent's {role.value} reader is {name!r}, which is neither a "
-                f"configured vision reader (configured: {sorted(by_name) or 'none'}) nor a defined "
-                "one with a measured coordinate space"
-            )
-        chosen[role] = BedrockVisionReader(config)
-    if settings.sharper_dpi <= dpi:
-        raise ValueError(
-            f"a sharper look must render above the stage's {dpi} dpi; {settings.sharper_dpi} is not"
-        )
-    return chosen
 
 
 def page_transform(page: Page, dpi: int) -> PageTransform | None:
@@ -1182,182 +886,6 @@ def _pdf_box(transform: PageTransform, corners: Sequence[tuple[int, int]]) -> Bo
     )
 
 
-@dataclass(slots=True)
-class _AgentPageOutcome:
-    """What the agent did on one page, for the page's payload."""
-
-    rows: list[ObservationCandidate] = field(default_factory=list)
-    """Every reading the agent recorded — each look, not only the one it proposed."""
-
-    proposals: int = 0
-    abstentions: int = 0
-    regions: int = 0
-    """Regions the trigger let in — each run once, however many readers' rows it holds."""
-
-    reused: int = 0
-    """Regions an earlier delivery of this stage already ran, whose rows were reused unpaid."""
-
-    without_a_numeral: int = 0
-    """Regions set aside before any geometry because no route read a numeral in them (#792)."""
-
-    invocations: int = 0
-    """Model calls the agent made and recorded, retries included."""
-
-
-@dataclass(slots=True)
-class _AgentCallLog:
-    """Every tool call a region's run attempted, in order (`AgentToolbox` records before it runs).
-
-    Held for the run only. Storing it — so the confirm screen can say what the reader tried — needs
-    a table for it, which is its own change (#757).
-    """
-
-    calls: list[ToolCallRecord] = field(default_factory=list)
-
-    def record(self, call: ToolCallRecord) -> None:
-        self.calls.append(call)
-
-
-def _no_ocr_verification(arguments: OcrVerificationArguments) -> RetryableToolFailure:
-    """No OCR verification route is wired for the reading agent, and its limits permit none."""
-    del arguments
-    return RetryableToolFailure("no OCR verification route is wired for the reading agent")
-
-
-@dataclass(slots=True)
-class _AgentReads:
-    """The reading agent's readers on one region. Every call is recorded under the run it belongs to.
-
-    A reader is asked about the crop the run is now on — the graph refuses a call that names any
-    other — and the request says whether that crop shows a stacked fraction, so the validator
-    refuses a reading of one here exactly as it does on the vision route (#735).
-    """
-
-    session: Session
-    page_index: int
-    crops: RegionCrops
-    readers: Mapping[VlmRole, _VisionReader]
-    open_run: Callable[[_VisionReader], UUID]
-    meter: _SpendMeter | None = None
-    recorders: list[tuple[_BufferedVisionRecorder, list[DomainCandidate]]] = field(
-        default_factory=list
-    )
-    """Each call's recorder, and the reading it returned (empty where it returned none)."""
-
-    def read(self, arguments: VlmReadingArguments) -> DomainCandidate | RetryableToolFailure:
-        reader = self.readers.get(arguments.role)
-        if reader is None:
-            return RetryableToolFailure(f"no {arguments.role.value} reader is configured")
-        if self.meter is not None and self.meter.reached:
-            return RetryableToolFailure(self.meter.reason)
-        request_candidate_id = uuid4()
-        recorder = _BufferedVisionRecorder(
-            session=self.session,
-            extraction_run_id=self.open_run(reader),
-            request_candidate_id=request_candidate_id,
-            meter=self.meter,
-        )
-        produced: list[DomainCandidate] = []
-        self.recorders.append((recorder, produced))
-        request = NovaRequest(
-            candidate_id=str(request_candidate_id),
-            page=self.page_index,
-            crop=self.crops.png(arguments.crop_artifact_id),
-            image_format="png",
-            context=AssembledContext(nearby_text=(), nearby_geometry=()),
-            bound_pt=VISION_CONTEXT_BOUND_PT,
-            stacked_label=self.crops.shows_stacked_fraction,
-            stacked_layouts=self.crops.stacked_layouts,
-        )
-        try:
-            candidate = reader.extract(request, recorder)
-        except NovaAdapterError as error:
-            return RetryableToolFailure(f"{reader.config.extractor} gave no reading: {error}")
-        produced.append(candidate)
-        return candidate
-
-
-def _second_reader_refusal(error: NovaAdapterError) -> str:
-    """Why the second reader gave no digits for a piece, in this module's words (#865).
-
-    One sentence per kind of failure, never one for all of them: a single sentence for every failure
-    once hid that a model had answered, too long for its limit (#712). A refused answer names the
-    validator's reason code and a failed call its AWS error code; neither is the model's text, and
-    the exact error stays in `model_invocations`.
-    """
-    if isinstance(error, NovaPayloadRejectedError):
-        return f"the second reader's answer was refused: {error.rejection.reason}"
-    if isinstance(error, NovaProtocolError):
-        return "the second reader did not answer with exactly one call to its tool"
-    if isinstance(error, NovaRefusalError):
-        return "the second reader's provider stopped the request"
-    if isinstance(error, NovaTimeoutError):
-        return "the second reader did not answer in time"
-    if isinstance(error, NovaRetryExhaustedError):
-        return "the second reader's call failed on every attempt"
-    cause = error.__cause__
-    response = getattr(cause, "response", None)
-    details = response.get("Error") if isinstance(response, Mapping) else None
-    code = details.get("Code") if isinstance(details, Mapping) else None
-    named = code if isinstance(code, str) else type(cause).__name__
-    return f"the second reader's call failed: {named}"
-
-
-@dataclass(slots=True)
-class _PieceReads:
-    """The fraction-parts route's second reader on one page (#865): the vision gate reader, asked for
-    the digits of each drawn piece (`extraction.fraction_parts.SecondReader`).
-
-    **Every call is on the budget and on the record.** Before each one the drawing set's meter is
-    read, and a spent budget is a refusal with the meter's own reason, so no call is made. After each
-    one, every attempt is written to `model_invocations` under the route's run and added to the
-    meter, whether or not it answered, before the next piece is asked about.
-    """
-
-    session: Session
-    run_id: UUID
-    page_index: int
-    reader: _VisionReader
-    meter: _SpendMeter | None
-    invocations: int = 0
-    """Model calls made and recorded on this page, retries included."""
-
-    @property
-    def extractor(self) -> str:
-        return self.reader.config.extractor
-
-    @property
-    def extractor_version(self) -> str:
-        return self.reader.config.model_id
-
-    def read_digits(self, piece: DrawnPiece) -> str | FractionPartsRefusal:
-        if self.meter is not None and self.meter.reached:
-            return FractionPartsRefusal(self.meter.reason)
-        request_id = uuid4()
-        recorder = _BufferedVisionRecorder(
-            session=self.session,
-            extraction_run_id=self.run_id,
-            request_candidate_id=request_id,
-            meter=self.meter,
-        )
-        try:
-            return self.reader.read_digits(
-                NovaDigitsRequest(
-                    request_id=str(request_id),
-                    page=self.page_index,
-                    picture=piece.png,
-                    digit_count=piece.digit_count,
-                ),
-                recorder,
-            )
-        except NovaAdapterError as error:
-            return FractionPartsRefusal(_second_reader_refusal(error))
-        finally:
-            # No call is linked to the row it helped read: the column holds one call per row, and a
-            # row is read from up to three. They belong to the route's run, as the row does.
-            self.invocations += recorder.persist(candidate_id=None, flush=False)
-
-
 @dataclass(frozen=True, slots=True)
 class _LocatedOcrReading:
     """OCR geometry whose orientation was established by its token layout."""
@@ -1366,186 +894,7 @@ class _LocatedOcrReading:
     rotation_degrees: int
 
 
-@dataclass(frozen=True, slots=True)
-class _VisionAssociationLink:
-    """A model reading and the fixed-reader region it was asked to read."""
-
-    row: ObservationCandidate
-    source_candidate_id: UUID
-
-
-@dataclass(frozen=True, slots=True)
-class _VisionRegion:
-    """Where a vision reader is pointed: a recorded reading's box, or an OCR box that read as no number.
-
-    **Not every region is a reading (#703).** On the client's drawing RapidOCR returned 903 boxes on
-    2026-09-29 and not one parsed to a value — line-work read as `一`, `口`, `L`, `/`. But those
-    boxes are also where the vision readers look: 903 of the run's roughly 940 vision regions were
-    OCR boxes, and the vision readers' values were read from crops cut around them. So an OCR box
-    whose text cannot be a reading keeps its place on the vision readers' list, and its text is not
-    recorded as a candidate.
-    """
-
-    id: UUID
-    """What a vision reading is linked back to for association (`_association_source_items`). A
-    recorded reading's own id, or a fresh one for a box nothing recorded. It is never persisted."""
-
-    polygon: list[list[int]]
-    document_version_id: UUID
-
-    @classmethod
-    def of(cls, row: ObservationCandidate) -> _VisionRegion:
-        return cls(id=row.id, polygon=row.polygon, document_version_id=row.document_version_id)
-
-
-#: What an OCR item's geometry is paired with: its recorded row, or the region kept in its place.
-_Source = TypeVar("_Source", ObservationCandidate, _VisionRegion)
 _TimedResult = TypeVar("_TimedResult")
-
-
-def _association_source_items(
-    *groups: tuple[Sequence[ReadItem], Sequence[ObservationCandidate | _VisionRegion]],
-) -> dict[UUID, ReadItem]:
-    """The fixed-reader geometry that a later model crop is allowed to reuse.
-
-    This map is keyed by the row that bounded the model crop, not by text content. The model may
-    read a corrected value from the pixels, but it does not get to supply the page location or text
-    orientation used for association; those come only from readers that already expose deterministic
-    geometry.
-    """
-    sources: dict[UUID, ReadItem] = {}
-    for items, rows in groups:
-        if len(items) != len(rows):
-            # This map is only an extra allowance for source-backed model association. If an
-            # idempotent rerun hands back already-recorded rows that no longer line up exactly with
-            # this pass's in-memory readings, there is no safe source pairing for model rows from
-            # that route. Skipping it preserves the older fixed-reader association path, where
-            # `dimension_texts` still raises before it would silently mispair rows.
-            continue
-        for item, row in zip(items, rows, strict=True):
-            sources[row.id] = item
-    return sources
-
-
-def _vision_association_inputs(
-    links: Sequence[_VisionAssociationLink],
-    sources: Mapping[UUID, ReadItem],
-) -> tuple[tuple[ReadItem, ...], tuple[ObservationCandidate, ...]]:
-    """Make model-read values eligible for association through their source region.
-
-    Before #698, vision rows were recorded but never handed to `associate`, which made a full
-    `demo_pair` run report zero attachments even when the detector had line-work. This does not
-    promote model geometry: a model row is paired only when the fixed-reader candidate that produced
-    its crop already had a deterministic extent and rotation.
-    """
-    items: list[ReadItem] = []
-    rows: list[ObservationCandidate] = []
-    for link in links:
-        source = sources.get(link.source_candidate_id)
-        if source is None:
-            continue
-        items.append(source)
-        rows.append(link.row)
-    return tuple(items), tuple(rows)
-
-
-#: A region by its recorded polygon, in page pixels: the rule cross-route corroboration groups the
-#: readings of one place by. Every AI reading is recorded at the polygon of the region it was shown
-#: — a vision reader's at the box its crop was cut round, the agent's at its source reading's — so
-#: two readings at one polygon are readings of one region.
-type _RegionKey = tuple[tuple[int, int], ...]
-
-
-def _region_key(polygon: Sequence[Sequence[int]]) -> _RegionKey:
-    return tuple((int(point[0]), int(point[1])) for point in polygon)
-
-
-#: How an AI reading was placed, as an attachment records it (#918).
-PLACED_BY_THE_VENDORS_PATHS: Final = (
-    "an AI reader read this region; where it sits is the region it was shown, and which way it "
-    "reads is the way every run of the vendor's own drawn characters there goes ({direction}), "
-    "never the AI reader's"
-)
-
-#: Why an attachment of an AI reading's region was refused after `associate` chose a line (#918).
-#: Each can only take an attachment away, and each is about the line it would have been attached to.
-TOUCHES_ITS_LINE: Final = (
-    "the vendor's characters in this region touch the line it would be attached to: they are drawn "
-    "on it (a tick at its end, say), not printed beside it as its number is, so the line is not "
-    "taken to be the one this region labels"
-)
-BEYOND_ITS_ENDS: Final = (
-    "the region this AI reader was shown is not wholly between the ends of the line it would be "
-    "attached to, so the line may not be the one it labels; a dimension's number is printed along "
-    "its own line"
-)
-
-#: Why an AI reading was not handed to the association step (#918), as the page result counts them.
-UNPLACED_EXACT_TEXT: Final = (
-    "its region is text the file states exactly, whose own reading is attached by its own place; "
-    "an AI reading of the same characters is not attached again"
-)
-UNPLACED_NOT_A_BOX: Final = "its region is not a box on the visible page"
-UNPLACED_NO_REACH: Final = (
-    "which way its label runs is not known: the lengths a label is gathered by "
-    "(GV_AGENT_LABEL_GAP_PT, GV_AGENT_MAX_LABEL_PT) are not stated"
-)
-UNPLACED_NO_PATHS_READ: Final = (
-    "which way its label runs is not known: the vendor's drawn characters on this page were not read"
-)
-UNPLACED_NO_TRANSFORM: Final = (
-    "the page was read before its transform was recorded, so its region cannot be placed"
-)
-UNPLACED_STACKED: Final = (
-    "a stacked fraction lies in its label, whose characters stand on two lines, so which way it "
-    "runs is not settled"
-)
-
-
-@dataclass(frozen=True, slots=True)
-class RegionReading:
-    """An AI reading's region as `associate` takes it (#918): where the region sits and which way
-    the label in it reads, from the vendor's own drawn characters — never from the AI reader.
-
-    **A fact about geometry, not about the value.** It carries no number: the reading's value stays
-    on its own row, exactly as read, and the association records only which line the region labels.
-    """
-
-    extent: Polygon
-    """The region the reader was shown, in stored page space."""
-
-    rotation_degrees: int
-    """0 across the page, 90 up it: `label_direction`'s, never the reader's."""
-
-    drawn: tuple[Decimal, Decimal, Decimal, Decimal]
-    """The box round the vendor's characters lying in the region itself, `(left, top, right,
-    bottom)` in stored page space."""
-
-    signal: str
-    """How the place and the direction were established, in plain English. An attachment made from
-    it records this before `associate`'s own reasons."""
-
-    def refusal(self, line: DimensionExtent) -> str | None:
-        """Why `line`, the one `associate` chose, is not taken to be the one this region labels, or
-        `None` when nothing says so. **Only ever takes an attachment away.**
-
-        Two facts of the drawing, no length: a dimension's number is printed **beside** its line,
-        so a region whose own characters touch the line holds something drawn on it — on `AI_Set_2`
-        the ticks at a dimension's ends, which a gate reader read as `7` and the agent then read a
-        neighbour's number round; and it is printed **between the line's ends**, the rule #913 holds
-        a reading to before it is suggested, here held exactly. A region that holds no number at all
-        — a symbol's squares — is usually beyond any line's ends.
-
-        **The region's own characters, not the whole label gathered from them**: a narrow filler's
-        number stands within a label gap of the ticks at its line's ends, so its gathered label
-        reaches them, and the number itself does not.
-        """
-        low_x, high_x = sorted((line.start.x, line.end.x))
-        low_y, high_y = sorted((line.start.y, line.end.y))
-        left, top, right, bottom = self.drawn
-        if left <= high_x and low_x <= right and top <= high_y and low_y <= bottom:
-            return TOUCHES_ITS_LINE
-        return None if between_its_ends(self.extent, line) else BEYOND_ITS_ENDS
 
 
 def between_its_ends(extent: Polygon, line: DimensionExtent) -> bool:
@@ -1564,45 +913,6 @@ def between_its_ends(extent: Polygon, line: DimensionExtent) -> bool:
     if line.axis == "horizontal":
         return low_x <= min(xs) and max(xs) <= high_x
     return low_y <= min(ys) and max(ys) <= high_y
-
-
-def _exact_text_regions(*routes: Sequence[ObservationCandidate]) -> frozenset[_RegionKey]:
-    """The regions the file's own text is read at exactly: its page text, its pasted drawings' font
-    text and the vendor's CAD notes (#918).
-
-    An AI reading of one of these is a second reading of characters the file already states, and the
-    agent asks about them only when they did not parse. Their own readings are attached, or refused,
-    by their own place; an AI reading is not placed there again, because doing so would only copy
-    that decision — and on `AI_Set_2` that copied a stacked filler label onto the neighbouring
-    cabinet's line, whose own line is too short to be offered at all (the text's own attachment
-    there is refused since #926). **Not the reviewer's markup**:
-    a GV note's box says nothing about the vendor's label under it.
-    """
-    return frozenset(_region_key(row.polygon) for rows in routes for row in rows)
-
-
-def _held_to_their_regions(
-    result: AssociationResult, placements: Mapping[UUID, RegionReading]
-) -> AssociationResult:
-    """`associate`'s result with each AI reading's attachment held to its region (#918).
-
-    An attachment `RegionReading.refusal` speaks against becomes a refusal naming the one line it
-    was between, with the reason; one it does not records how the region was placed before
-    `associate`'s own reasons. Every other reading's decision is left exactly as it was.
-    """
-    attached: list[TextAssociation] = []
-    refused = list(result.unassociated)
-    for association in result.associated:
-        placement = placements.get(association.text.observation_id)
-        if placement is None:
-            attached.append(association)
-            continue
-        reason = placement.refusal(association.line)
-        if reason is not None:
-            refused.append(CannotAssociate(association.text, reason, (association.line,)))
-            continue
-        attached.append(replace(association, signals=(placement.signal, *association.signals)))
-    return AssociationResult(associated=tuple(attached), unassociated=tuple(refused))
 
 
 #: Why an attachment of the text the file states exactly — its page text, its pasted drawings' font
@@ -1705,21 +1015,6 @@ def _own_text_held_to_their_lines(
             continue
         attached.append(association)
     return AssociationResult(associated=tuple(attached), unassociated=tuple(refused))
-
-
-def _held_as_own_text(
-    exact_text: frozenset[UUID], links: Sequence[_VisionAssociationLink]
-) -> frozenset[UUID]:
-    """The readings `_own_text_held_to_their_lines` holds (#926): the file's own text, by row, and
-    every vision reading associated through one of its boxes (`_vision_association_inputs`).
-
-    Such a vision reading is placed by the text's box, not its own, so it is attached to whatever
-    line the text would be: left out, a refusal of the text would leave the same box attached
-    through its second reading.
-    """
-    return exact_text | frozenset(
-        link.row.id for link in links if link.source_candidate_id in exact_text
-    )
 
 
 @dataclass
@@ -1845,19 +1140,13 @@ class DatabaseStages:
         localized_ocr: LocalizedOcrSettings | None = None,
         automatic_typing: AutomaticTypingSettings | None = None,
         findings_composer: FindingsLanguageModel | None = None,
-        vision_readers: Sequence[_VisionReader] | None = None,
         layout_readers: Sequence[LayoutReader] | None = None,
         layout_model_id: str = "injected-layout-reader",
         layout_prompt_id: str = LAYOUT_PROMPT_ID,
-        bounded_agent: BoundedAgentGraph | None = None,
-        bounded_agent_planner: _AgentPlannerFactory | None = None,
         glyph_route: GlyphRoute | None = None,
-        reading_agent: ReadingAgentSettings | None = None,
-        vision_gate: str | None = None,
+        label_lengths: LabelLengths | None = None,
         ai_budget_usd: Decimal | None = None,
         ai_budget: AiBudget | None = None,
-        fraction_parts: PieceDrawing | None = None,
-        reader_pictures: PictureSettings | None = None,
         missing_space: MissingSpace | None = None,
         form_reader: FormReaderRuntime | None = None,
         slot_reader: SlotReaderRuntime | None = None,
@@ -1934,11 +1223,6 @@ class DatabaseStages:
         # ``generate_outputs``; it is unreachable from ``run_checks`` and an error falls back to a
         # complete deterministic summary rather than delaying or changing a verdict.
         self._findings_composer = findings_composer
-        self._vision_readers = (
-            tuple(configured_vision_readers_from_environment())
-            if vision_readers is None
-            else tuple(vision_readers)
-        )
         self._layout_reader_routes = (
             tuple(configured_layout_readers_from_environment())
             if layout_readers is None
@@ -1947,38 +1231,6 @@ class DatabaseStages:
                 for reader in layout_readers
             )
         )
-        # **The gate reader (#787), off unless a deployment names one.** It reads every region
-        # first; every other vision reader reads only where it read a value. Nova 2 Lite's quota is
-        # 20 a minute on this account (#716), and a crop the gate found no value in can never be
-        # confirmed — a confirmation is two readers' values agreeing (#775) — so asking the others
-        # about it buys at most a lone reading for a person to check.
-        if vision_gate is not None and vision_gate not in {
-            reader.config.extractor for reader in self._vision_readers
-        }:
-            raise ValueError(
-                f"the vision gate reader is {vision_gate!r}, which is not a configured vision "
-                "reader"
-            )
-        self._vision_gate = vision_gate
-        # **What each vision reader is shown (#907).** A reader measured on an upright, sharper
-        # picture is shown one, rendered at the deployment's stated dpi; with none stated it could
-        # only be shown a picture nobody measured it on, so the stages refuse to start.
-        sharper = sorted(
-            reader.config.extractor
-            for reader in self._vision_readers
-            if reader.config.picture is ReaderPicture.UPRIGHT_SHARPER
-        )
-        if sharper and reader_pictures is None:
-            raise ValueError(
-                f"the vision reader(s) {sharper} are shown an upright, sharper picture, and the dpi "
-                "it is rendered at (GV_VISION_SHARPER_PICTURE_DPI) is not stated; it has no default"
-            )
-        if reader_pictures is not None and reader_pictures.sharper_dpi <= dpi:
-            raise ValueError(
-                f"a sharper picture must be rendered above the stage's {dpi} dpi; "
-                f"{reader_pictures.sharper_dpi} is not"
-            )
-        self._reader_pictures = reader_pictures
         # **What the AI readers may spend on one drawing set (#757, #1206)**: the page-scaled budget
         # (`ai_budget`, from the admin's settings; the defaults when not given), unless a fixed
         # amount is stated (`ai_budget_usd` or `GV_AI_BUDGET_PER_SET_USD`). Metered per
@@ -2001,42 +1253,16 @@ class DatabaseStages:
                 AI_BUDGET_ENV,
             )
         self._meter: _SpendMeter | None = None
-        if bounded_agent is None and reading_agent is None and bounded_agent_planner is not None:
-            raise ValueError("bounded_agent_planner cannot be supplied without a bounded_agent")
-        if bounded_agent is not None and reading_agent is not None:
-            raise ValueError(
-                "a bounded_agent brings its own tools; the reading agent builds real ones per "
-                "region — supply one or the other"
-            )
-        self._bounded_agent = bounded_agent
-        # **The reading agent (#757), off unless a deployment turns it on.** Its readers are named,
-        # never picked: both must be among the configured vision readers.
-        self._reading_agent = reading_agent
-        self._agent_readers: dict[VlmRole, _VisionReader] = {}
-        if reading_agent is not None:
-            self._agent_readers = _agent_readers(reading_agent, self._vision_readers, dpi)
         # **The shape reader (#756), off unless a deployment points it at a template set.** Its
         # readings are confirmed only by a second witness (#756 D2); see `workflow/glyph_route`.
         self._glyph_route = glyph_route
-        # **Stacked fractions read piece by piece (#848), off unless a deployment turns it on.** It
-        # reads the layouts the stacked-fraction detector draws, and the detector runs only with the
-        # association settings, so without them the route could never read anything: refused here
-        # rather than left on and silent.
-        if fraction_parts is not None and association is None:
-            raise ValueError(
-                "the fraction-parts route reads stacked fractions the detector has laid out, and "
-                "the detector runs only with association settings, which these stages do not have"
-            )
-        # **And it needs its second reader (#865)**: a label is pre-filled only where two readers
-        # of different vendors agree on every piece, and the second is the vision gate reader. On
-        # without one, the route could never pre-fill anything: refused here, for the same reason.
-        if fraction_parts is not None and vision_gate is None:
-            raise ValueError(
-                "the fraction-parts route pre-fills a label only where a second reader agrees on "
-                "every piece, and its second reader is the vision gate reader "
-                "(GV_VISION_GATE_READER), which these stages do not have"
-            )
-        self._fraction_parts = fraction_parts
+        # **How a label is gathered from the drawing's own characters**, for the agreement gate's
+        # cut-label guard (#919): the two lengths a deployment states (`label_lengths_from_environment`),
+        # with no default. They were the reading agent's (#757), which is gone; unstated, as in every
+        # deployment so far, the guard holds every agreement it is asked about for a person.
+        if label_lengths is not None and not isinstance(label_lengths, LabelLengths):
+            raise TypeError("label_lengths must be LabelLengths")
+        self._label_lengths = label_lengths
         # **A picture of every suggested part (#897), cut only where a deployment states how.** The
         # margin and the resolution have no default; without them no picture is cut, which the page
         # result records as not run, and the Measure page says no picture is stored.
@@ -2089,12 +1315,6 @@ class DatabaseStages:
         if not isinstance(job_values_reader, bool):
             raise TypeError("job_values_reader must be a bool")
         self._job_values_reader = job_values_reader
-        self._bounded_agent_planner = (
-            _default_bounded_agent_planner
-            if (bounded_agent is not None or reading_agent is not None)
-            and bounded_agent_planner is None
-            else bounded_agent_planner
-        )
         # Injected so a test can pass a stub: building the real one loads ONNX models, and a suite
         # that loaded them to test row-writing would be paying for a model it is not testing.
         self._ocr_engine = ocr_engine
@@ -2142,18 +1362,15 @@ class DatabaseStages:
         return self._missing_space
 
     def _label_reach(self) -> LabelReach | None:
-        """How a label is gathered from the drawing's own characters: the reading agent's stated
-        label lengths with the association settings' run gap, or `None` where either is not stated.
+        """How a label is gathered from the drawing's own characters: the stated label lengths with
+        the association settings' run gap, or `None` where either is not stated.
 
-        One computation, for the agent's facts (#757), the vision readers' upright turn (#907),
-        the agreement gate's cut-label guard (#919) and which way an AI reading's region reads when
-        it is attached to a line (#918): a second one could judge a label's end differently from the
-        first. Where it is `None` no AI reading is placed by its region: a direction is never
-        defaulted.
+        One computation, for the agreement gate's cut-label guard (#919) and the association run's
+        identity: a second one could judge a label's end differently from the first.
         """
-        if self._reading_agent is None or self._association is None:
+        if self._label_lengths is None or self._association is None:
             return None
-        return self._reading_agent.reach(self._association.glyph_gap_pt)
+        return self._label_lengths.reach(self._association.glyph_gap_pt)
 
     def _text_run_config(self) -> str:
         """The identity of a run that reads the file's own text, the page's or its pasted drawings':
@@ -3585,10 +2802,6 @@ class DatabaseStages:
                 [],
             )
             glyph_abstentions: Counter[str] | None = None
-            vision_rows: list[ObservationCandidate] = []
-            vision_invocations = 0
-            vision_held_back = 0
-            vision_refusals: list[str] = []
             read: PageContents | None = None
             if page.has_vector_text:
                 with traced(
@@ -3714,28 +2927,6 @@ class DatabaseStages:
             if layers is not None and text_stacked:
                 layers = replace(layers, stacked_fractions=layers.stacked_fractions + text_stacked)
             page_stacked = layers.stacked_fractions if layers is not None else text_stacked
-            # **Each laid-out stacked label read piece by piece (#848)**, where a deployment turned the
-            # route on. What it reads pre-fills the form for a person to tick; it is never agreed into
-            # evidence (#726), and the whole label is still never shown to a vision reader (#762).
-            fraction_rows: list[ObservationCandidate] = []
-            fraction_refusals: Counter[str] | None = None
-            fraction_invocations: int | None = None
-            if self._fraction_parts is not None:
-                (
-                    fraction_rows,
-                    fraction_refusals,
-                    fraction_invocations,
-                ) = self._timed_call(
-                    "extraction.page.fraction_parts",
-                    run_id=run_key,
-                    page_index=page.index,
-                    function=self._read_page_by_fraction_parts,
-                    session=session,
-                    version_id=version_id,
-                    page=page,
-                    task_run_id=run.task_run_id,
-                    fractions=page_stacked,
-                )
             # **Which forms this page's text arrived in, and which of them nothing reads yet.** A
             # vendor does not choose how its PDF stores numbers; the page result says, so a page whose
             # text sits in a form no route reads is reported as that, not as a page with no numbers.
@@ -3843,79 +3034,13 @@ class DatabaseStages:
                 tuple(vector_rows),
             )
             ocr_association_inputs = self._ocr_association_inputs(ocr_items, ocr_rows)
-            # **The boxes of OCR text that could not be a reading** (#703). Not candidates, and not
-            # given to `associate` as readings. A vision reading of one is associated under the
-            # rule a recorded row's is — only where the OCR layout established an orientation,
-            # which for a box like these it usually has not — so nothing here attaches more than
-            # the recorded row would have.
-            fragment_regions = tuple(
-                _VisionRegion(
-                    id=uuid4(),
-                    polygon=[[point.x, point.y] for point in item.image_extent],
-                    document_version_id=version_id,
-                )
-                for item in ocr_fragments
-            )
-            association_sources: Mapping[UUID, ReadItem] = {}
-
-            vision_association_links: tuple[_VisionAssociationLink, ...] = ()
-            if self._vision_readers:
-                association_sources = _association_source_items(
-                    vector_association_inputs,
-                    ocr_association_inputs,
-                    self._ocr_association_inputs(ocr_fragments, fragment_regions),
-                )
-                (
-                    vision_rows,
-                    vision_invocations,
-                    vision_refusals,
-                    vision_association_links,
-                    vision_held_back,
-                ) = self._timed_call(
-                    "extraction.page.vision",
-                    run_id=run_key,
-                    page_index=page.index,
-                    function=self._read_page_by_vision,
-                    session=session,
-                    version_id=version_id,
-                    data=data,
-                    page=page,
-                    task_run_id=run.task_run_id,
-                    regions=(
-                        tuple(_VisionRegion.of(row) for row in vector_rows + ocr_rows + glyph_rows)
-                        + fragment_regions
-                    ),
-                    stacked_fractions=page_stacked,
-                    printed=printed_runs((read.texts if read is not None else ()) + stamp_texts),
-                    layers=layers,
-                )
-            elif self._timings is not None:
-                self._timings.record(
-                    operation="extraction.page.vision",
-                    run_id=run_key,
-                    page_index=page.index,
-                    document_version_id=str(version_id),
-                    started_at=datetime.now(UTC).isoformat(),
-                    elapsed_ms=0.0,
-                    status="disabled",
-                )
-
-            # **The agreement gate's guards**, one each per page and asked by both passes below: an
+            # **The agreement gate's guards**, one each per page: an
             # agreement whose crop shows markup drawn in colour (#901), or cuts the label off at its
             # edge (#919), stays a pre-fill a person ticks. Nothing is read or rendered for either
             # unless some region's readers agree, and the page is rendered for them once at most.
             vendor_render = cache(partial(self._vendor_render, data, page, version_id))
-            gv_mark = _GvMarkGuard(
-                markup=partial(self._coloured_markup, data, page, version_id, layers),
-                render=vendor_render,
-            )
-            cut_label = _CutLabelGuard(
-                reach=self._label_reach(),
-                transform=page_transform(page, self._dpi),
-                # `None` where the page's drawing could not be read at all: nothing rules a cut out.
-                glyphs=None if layers is None else layers.glyph_paths,
-                render=vendor_render,
-            )
+            gv_mark = self._gv_mark_guard(data, page, version_id, layers, vendor_render)
+            cut_label = self._cut_label_guard(page, layers, vendor_render)
             # **And a whole number and a fraction (#924)**, the kind two readers have agreed on wrongly
             # twice: purely textual, so it reads and renders nothing.
             mixed_fraction = _MixedFractionGuard()
@@ -3933,57 +3058,13 @@ class DatabaseStages:
                         + markup_rows
                         + cad_text_rows
                         + stamp_text_rows
-                        + vision_rows
                         + glyph_rows
-                        + fraction_rows
                     ),
                     gv_mark=gv_mark,
                     cut_label=cut_label,
                     mixed_fraction=mixed_fraction,
                 ),
             )
-            agent = self._timed_call(
-                "extraction.page.bounded_agent",
-                run_id=run_key,
-                page_index=page.index,
-                function=self._run_bounded_agent_for_ambiguous_regions,
-                session=session,
-                version_id=version_id,
-                data=data,
-                page=page,
-                task_run_id=run.task_run_id,
-                candidates=tuple(
-                    vector_rows
-                    + ocr_rows
-                    + markup_rows
-                    + cad_text_rows
-                    + stamp_text_rows
-                    + vision_rows
-                ),
-                layers=layers,
-            )
-            agent_rows = agent.rows
-            if agent_rows:
-                page_rows = tuple(
-                    vector_rows
-                    + ocr_rows
-                    + markup_rows
-                    + cad_text_rows
-                    + stamp_text_rows
-                    + vision_rows
-                    + agent_rows
-                )
-                self._apply_cross_route_corroboration(
-                    session,
-                    page_index=page.index,
-                    candidates=page_rows,
-                    gv_mark=gv_mark,
-                    cut_label=cut_label,
-                    mixed_fraction=mixed_fraction,
-                )
-                self._mark_regions_the_agent_contradicted(
-                    session, page_index=page.index, candidates=page_rows, agent_rows=agent_rows
-                )
             with self._measure(
                 "extraction.page.layout_detection",
                 run_id=run_key,
@@ -4005,26 +3086,6 @@ class DatabaseStages:
                 function=session.flush,
             )
 
-            vision_association_inputs = _vision_association_inputs(
-                vision_association_links, association_sources
-            )
-            # **Every other AI reading by the region it was shown (#918).** A vision reader's crop
-            # was cut round a box another route recorded, and the agent's round its source reading,
-            # so where the number sits is known without the reader; which way it reads comes from
-            # the vendor's own drawn characters there. Until this, an AI reading attached only
-            # through an OCR box whose layout settled a direction, which on `AI_Set_2` none did. A
-            # region the file's own text is read at keeps that reading's attachment alone. The value
-            # is never touched: an attachment says which line the region labels, and the number
-            # stays the reader's.
-            region_items, region_rows, region_refusals = self._ai_region_inputs(
-                page=page,
-                rows=tuple(vision_rows + agent_rows),
-                associated=frozenset(row.id for row in vision_association_inputs[1]),
-                exact_text=_exact_text_regions(vector_rows, cad_text_rows, stamp_text_rows),
-                layers=layers,
-                stacked_fractions=page_stacked,
-            )
-
             # **Both routes' readings against all of the page's lines, in one pass.** A reviewer's
             # correction labels a line the vendor drew, so judging the two layers against separate
             # sets of geometry would refuse exactly the associations that matter most.
@@ -4039,29 +3100,21 @@ class DatabaseStages:
                 readings=(
                     vector_association_inputs,
                     ocr_association_inputs,
-                    vision_association_inputs,
                     ((layers.markup if layers is not None else ()), markup_rows),
                     ((layers.vendor_text if layers is not None else ()), cad_text_rows),
                     (stamp_texts, stamp_text_rows),
                     # Glyph readings attach to the line they label like any reading — the reader
                     # established which way each label runs, which is what `associate` needs.
                     glyph_association,
-                    (region_items, region_rows),
                 ),
                 lines=(
                     (read.segments if read is not None else ())
                     + (layers.drawing_segments if layers is not None else ())
                 ),
-                placements={
-                    row.id: item for item, row in zip(region_items, region_rows, strict=True)
-                },
-                # The text the file states exactly, held to the line it is attached to (#926): the
-                # same three routes whose regions an AI reading is not placed at again — and a
-                # vision reading attached through one of their boxes, which takes that box's place
-                # and so is held to the same line.
-                own_text=_held_as_own_text(
-                    frozenset(row.id for row in (*vector_rows, *cad_text_rows, *stamp_text_rows)),
-                    vision_association_links,
+                # The text the file states exactly, held to the line it is attached to (#926): its
+                # page text, its pasted drawings' font text and the vendor's CAD notes.
+                own_text=frozenset(
+                    row.id for row in (*vector_rows, *cad_text_rows, *stamp_text_rows)
                 ),
             )
             if self._timings is not None:
@@ -4086,7 +3139,6 @@ class DatabaseStages:
                 readings=(
                     vector_association_inputs,
                     ocr_association_inputs,
-                    vision_association_inputs,
                     ((layers.vendor_text if layers is not None else ()), cad_text_rows),
                     (stamp_texts, stamp_text_rows),
                     glyph_association,
@@ -4129,11 +3181,7 @@ class DatabaseStages:
                 PageResult(
                     index=page.index,
                     payload={
-                        "candidates": written
-                        + len(vision_rows)
-                        + len(agent_rows)
-                        + len(glyph_rows)
-                        + len(fraction_rows),
+                        "candidates": written + len(glyph_rows),
                         "markup_candidates": len(markup_rows),
                         # The reviewer's measurement lines (#805): read as markup when they carry
                         # text, set aside when they carry none. `None` when the annotations could
@@ -4166,10 +3214,8 @@ class DatabaseStages:
                         # Stacked fractions read whole and recorded as a reviewer's suggestion.
                         "stacked_fractions_read": len(stacked_read),
                         "text_sources": text_sources,
-                        "vision_candidates": len(vision_rows),
                         # OCR text that could not be a reading (#703): counted here because it is
                         # not a candidate, so without this the page would simply look smaller.
-                        # Each box was still offered to the vision readers.
                         "ocr_fragments": len(ocr_fragments),
                         # OCR readings a stacked label's layout ruled out, refused with no row, by
                         # either OCR route (#846, #896): `None` where no OCR route read the page.
@@ -4196,28 +3242,6 @@ class DatabaseStages:
                                 STACKED_FRACTION_FLAG in row.ambiguity_flags for row in glyph_rows
                             )
                         ),
-                        # Stacked fractions read piece by piece (#848), each pre-filled for a
-                        # person: `None` when the route is off, which is not the same fact as its
-                        # having read nothing. The reasons are this route's own sentences.
-                        "fraction_parts_readings": (
-                            None if fraction_refusals is None else len(fraction_rows)
-                        ),
-                        "fraction_parts_refusals": (
-                            None if fraction_refusals is None else sum(fraction_refusals.values())
-                        ),
-                        "fraction_parts_refusal_reasons": (
-                            None
-                            if fraction_refusals is None
-                            else [
-                                f"{count} × {reason}"
-                                for reason, count in fraction_refusals.most_common(
-                                    REPORTED_REFUSALS
-                                )
-                            ]
-                        ),
-                        # The second reader's calls for those pieces (#865), each in
-                        # `model_invocations` and on the drawing set's budget.
-                        "fraction_parts_invocations": fraction_invocations,
                         # What the AI readers have spent on this drawing set so far, against its
                         # cap (#757): once reached, labels go to a reviewer without a model reading.
                         "ai_budget": None if self._meter is None else self._meter.as_payload(),
@@ -4235,29 +3259,10 @@ class DatabaseStages:
                             ]
                         ),
                         "ocr_fragment_texts": _fragment_texts(ocr_fragments),
-                        "agent_candidates": len(agent_rows),
-                        "agent_proposals": agent.proposals,
-                        "agent_abstentions": agent.abstentions,
-                        # `None` where no agent is configured: not run, which is not zero regions.
-                        "agent_regions": (
-                            None
-                            if self._bounded_agent is None and self._reading_agent is None
-                            else agent.regions
-                        ),
-                        "agent_invocations": agent.invocations,
-                        "agent_regions_reused": agent.reused,
-                        "agent_regions_without_a_numeral": agent.without_a_numeral,
                         "layout_proposals": layout_written,
                         # `None` when the page's annotations could not be read at all.
                         "panels": panels,
                         "layout_refusals": layout_refusals[:REPORTED_REFUSALS],
-                        "vision_invocations": vision_invocations,
-                        # Regions a gated reader was not asked about, the gate having read no value
-                        # in them (#787). `None` where no gate is configured.
-                        "vision_gate_held_back": (
-                            None if self._vision_gate is None else vision_held_back
-                        ),
-                        "vision_refusals": vision_refusals[:REPORTED_REFUSALS],
                         # Regions whose readers agreed and were not confirmed: the crop shows markup
                         # drawn in colour, a GV mark baked into the vendor's drawing (#901); or it
                         # cuts the label off at its edge (#919); or it could not be checked for one
@@ -4275,23 +3280,6 @@ class DatabaseStages:
                         # `None` when no thresholds were configured: the step did not run, which is
                         # not the same fact as its having found nothing.
                         "associations": associated,
-                        # AI readings with a value handed to that step by the region they were
-                        # shown (#918), and those that were not, by why: a reading is never placed
-                        # by the AI reader's own word. `None` where the step did not run.
-                        "ai_readings_placed_by_region": (
-                            None if associated is None else len(region_rows)
-                        ),
-                        "ai_readings_not_placed": (
-                            None if associated is None else sum(region_refusals.values())
-                        ),
-                        "ai_readings_not_placed_reasons": (
-                            None
-                            if associated is None
-                            else [
-                                f"{count} × {reason}"
-                                for reason, count in region_refusals.most_common(REPORTED_REFUSALS)
-                            ]
-                        ),
                         # The parts suggested in this page's vendor drawings (#868), counted; `None`
                         # when no association settings were stated, which is not the same as none.
                         "part_proposals": parts,
@@ -4450,8 +3438,8 @@ class DatabaseStages:
 
     @staticmethod
     def _ocr_association_inputs(
-        items: tuple[OcrItem, ...], rows: Sequence[_Source]
-    ) -> tuple[tuple[_LocatedOcrReading, ...], tuple[_Source, ...]]:
+        items: tuple[OcrItem, ...], rows: Sequence[ObservationCandidate]
+    ) -> tuple[tuple[_LocatedOcrReading, ...], tuple[ObservationCandidate, ...]]:
         """Keep only OCR readings whose layout states an axis; retain row pairing exactly.
 
         Arbitrary OCR boxes carry no declared rotation, and production association deliberately
@@ -4460,7 +3448,7 @@ class DatabaseStages:
         and markup text. Everything else remains recorded but unassociated.
         """
         located: list[_LocatedOcrReading] = []
-        located_rows: list[_Source] = []
+        located_rows: list[ObservationCandidate] = []
         for item, row in zip(items, rows, strict=True):
             if item.extent is None or item.rotation_degrees is None:
                 continue
@@ -4533,8 +3521,7 @@ class DatabaseStages:
         never make one.
 
         **A reading with no value abstains (#924)**: `corroborate` judges a region among the readings
-        that have one, and only those that agreed are given the lane. One that abstained keeps none,
-        and is grouped again with the reading agent's looks.
+        that have one, and only those that agreed are given the lane. One that abstained keeps none.
         """
 
         pending_ids = {row.id for row in candidates if inspect(row).pending}
@@ -4569,7 +3556,7 @@ class DatabaseStages:
                 continue
             # **A reading with no value abstains (#924)**: an agreement is marked on the readings that
             # agreed, never on one that had nothing to agree with, which keeps no lane. A conflict is
-            # the whole region's, as `_mark_regions_the_agent_contradicted` marks it.
+            # the whole region's.
             agreed = set(result.supported_by)
             if result.lane is CorroborationLane.SECOND_READER and (
                 result.status is not EvidenceStatus.CONFLICTING
@@ -4776,6 +3763,33 @@ class DatabaseStages:
             return None
         return read_panels(layers.vendor_stamps, layers.markup)
 
+    def _gv_mark_guard(
+        self,
+        data: bytes,
+        page: Page,
+        version_id: UUID,
+        layers: PageLayers | None,
+        render: Callable[[], RenderedPage | None],
+    ) -> _GvMarkGuard:
+        """The page's GV-mark guard (#901), as the agreement gate asks it: the page's markup in
+        colour, read only when an agreement needs checking, and the page as `render` draws it."""
+        return _GvMarkGuard(
+            markup=partial(self._coloured_markup, data, page, version_id, layers), render=render
+        )
+
+    def _cut_label_guard(
+        self, page: Page, layers: PageLayers | None, render: Callable[[], RenderedPage | None]
+    ) -> _CutLabelGuard:
+        """The page's cut-label guard (#919), as the agreement gate asks it: the stated reach, the
+        page's transform at the stage's dpi, and its glyph paths."""
+        return _CutLabelGuard(
+            reach=self._label_reach(),
+            transform=page_transform(page, self._dpi),
+            # `None` where the page's drawing could not be read at all: nothing rules a cut out.
+            glyphs=None if layers is None else layers.glyph_paths,
+            render=render,
+        )
+
     def _vendor_render(self, data: bytes, page: Page, version_id: UUID) -> RenderedPage | None:
         """The page as the vision readers are shown it, or `None` where it cannot be rendered."""
         try:
@@ -4791,508 +3805,17 @@ class DatabaseStages:
         except (PageTooLarge, UnreadablePdf, ValueError):
             return None
 
-    @staticmethod
-    def _mark_regions_the_agent_contradicted(
-        session: Session,
-        *,
-        page_index: int,
-        candidates: Sequence[ObservationCandidate],
-        agent_rows: Sequence[ObservationCandidate],
-    ) -> None:
-        """Mark a whole region conflicting where the agent's new readings disagree with its old ones.
-
-        **The second pass cannot see this on its own.** `_apply_cross_route_corroboration` groups
-        only rows with no lane yet, so an agent reading lands in a group of its own when the
-        region's first readers had already agreed. In the #641 case — both readers shown a crop
-        that cut `10192"` agree on `92"`, and the agent, shown the whole label, reads `10192"` twice
-        — the region would end holding two different values, each marked as two readers agreeing,
-        and automatic typing (`app/evidence/automatic_typing.py`) could seal either.
-
-        **Only ever towards a reviewer.** Every row of the region with a value is judged together,
-        by `evidence/corroborate.py`, whatever lane it already has; where that judgement is
-        `CONFLICTING`, every row of the region is marked so. Any other judgement changes nothing,
-        so this can take an agreement away and can never make one.
-
-        **Nor two agreements on one dual label's inches with different millimetres (#928).** The
-        first pass's pair agrees on `914 [36]`, the agent's pair on `915 [36]`: each pair agreed, so
-        `corroborate` over the region finds no conflict in the inches, and the region would hold two
-        agreements on 36" — sealable — though one group misread the millimetres. Where the region's
-        agreeing readings do not state one dual label (`one_dual_label_across_agreements`), it is a
-        conflict for a reviewer, marked as above.
-
-        Only regions holding an agent row written by this delivery are judged. A redelivered stage
-        reuses its agent rows rather than writing them, and leaves what the first delivery decided.
-        """
-        new_agent_regions = {
-            (row.page_id, tuple((int(x), int(y)) for x, y in row.polygon))
-            for row in agent_rows
-            if inspect(row).pending
-        }
-        by_region: dict[tuple[UUID, tuple[tuple[int, int], ...]], list[ObservationCandidate]] = {}
-        for row in candidates:
-            key = (row.page_id, tuple((int(x), int(y)) for x, y in row.polygon))
-            if key in new_agent_regions:
-                by_region.setdefault(key, []).append(row)
-        run_ids = {row.extraction_run_id for rows in by_region.values() for row in rows}
-        with session.no_autoflush:
-            runs = {
-                run.id: run
-                for run in session.execute(
-                    select(ExtractionRun).where(ExtractionRun.id.in_(run_ids))
-                ).scalars()
-            }
-        for rows in by_region.values():
-            valued = [row for row in rows if row.value_numerator is not None]
-            if len(valued) < 2:
-                continue
-            result = corroborate(
-                tuple(
-                    _domain_candidate_from_row(row, runs[row.extraction_run_id], page_index)
-                    for row in valued
-                )
-            )
-            status: EvidenceStatus
-            lane: CorroborationLane
-            if result.status is EvidenceStatus.CONFLICTING and result.lane is not None:
-                status, lane = result.status, result.lane
-            elif not one_dual_label_across_agreements(
-                tuple((_stored_measurement(row), row.raw_text) for row in _agreeing(valued))
-            ):
-                # **Two groups, one dual label's inches, different millimetres (#928).**
-                status, lane = EvidenceStatus.CONFLICTING, CorroborationLane.SECOND_READER
-            else:
-                continue
-            # **Only readings not yet saved (#790).** A reading is append-only once it is in the
-            # database, and the page's panel step saves earlier routes' readings before the vision
-            # readers run. A saved reading in the region keeps its status; the region still counts
-            # as conflicting, because automatic typing refuses any region that holds one
-            # (`app/evidence/automatic_typing._second_reader_candidate_ids`), and these readings —
-            # the agent's own among them — are marked so.
-            for row in rows:
-                if not inspect(row).pending:
-                    continue
-                row.corroboration_status = status.value
-                row.corroboration_lane = lane.value
-
-    def _run_bounded_agent_for_ambiguous_regions(
-        self,
-        session: Session,
-        *,
-        version_id: UUID,
-        data: bytes,
-        page: Page,
-        task_run_id: UUID,
-        candidates: Sequence[ObservationCandidate],
-        layers: PageLayers | None = None,
-    ) -> _AgentPageOutcome:
-        """Run the bounded agent only for regions the deterministic trigger permits, once each.
-
-        **One run per region, not per row** (#757). A region read by three routes holds three rows
-        at one polygon — the rule cross-route corroboration groups by — and the geometry that can
-        trigger the agent is the region's, so without this one label would be read three times.
-
-        **The trigger's reasons now include the file's geometry** — cut off at the crop's edge,
-        sideways, a stacked fraction — each from `RegionFacts`, which holds no reading's text.
-
-        **Only a region some route read a numeral in is looked at, and an exact route's unparsed
-        string is no reason** (#792): what is left out is words, whose only "value" a model can find
-        is a neighbouring label's.
-
-        **The shape reader's readings are not handed to the agent.** The admin's #756 D2
-        (2026-10-01) decided what confirms one — a second witness, through corroboration — not what
-        the agent may do with it. The decision table can take one as a witness —
-        `RegionFacts.shape_reading`, which can turn a proposal into an abstention and never the
-        reverse — and it stays `None` here until that is built and measured on its own.
-        """
-        outcome = _AgentPageOutcome()
-        if (
-            (self._bounded_agent is None and self._reading_agent is None)
-            or self._bounded_agent_planner is None
-            or self._store is None
-            or not candidates
-        ):
-            return outcome
-
-        renders: dict[int, RenderedPage | str] = {}
-
-        def render(dpi: int) -> RenderedPage | str:
-            if dpi not in renders:
-                try:
-                    renders[dpi] = render_page(
-                        data,
-                        page.index,
-                        document_version_id=version_id,
-                        page_content_hash=page.content_hash,
-                        dpi=dpi,
-                        maximum_pixels=MAXIMUM_RENDER_PIXELS,
-                        # The bounded agent asks a model about these crops: vendor's drawing only
-                        # (#742).
-                        vendor_only=True,
-                    )
-                except (PageTooLarge, UnreadablePdf, ValueError) as error:
-                    renders[dpi] = str(error) or type(error).__name__
-            return renders[dpi]
-
-        rendered = render(self._dpi)
-        if isinstance(rendered, str):
-            return outcome
-
-        settings = self._reading_agent
-        transform = page_transform(page, self._dpi)
-        reach = self._label_reach()
-        fractions = () if layers is None else layers.stacked_fractions
-        page_glyphs = () if layers is None else layers.glyph_paths
-
-        def stacked(polygon: Polygon) -> bool:
-            return crop_shows_a_stacked_fraction(
-                crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT), fractions
-            )
-
-        def layouts(polygon: Polygon) -> tuple[FractionLayout, ...]:
-            return stacked_layouts_shown(
-                crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT), fractions
-            )
-
-        def region_of(row: ObservationCandidate) -> tuple[tuple[int, ...], ...]:
-            return tuple(tuple(int(value) for value in point) for point in row.polygon)
-
-        # **A region no route read a numeral in is not the agent's** (#792). Every route's text
-        # counts — the file's own, OCR's, the gate reader's — so a label any of them saw a digit of is
-        # still looked at. What is left is words and marks. On AI_Set_2 the agent's readers returned a
-        # value in 148 such regions — 92 words, 23 single letters, 33 marks like `"` — and what they
-        # read was a label elsewhere in the crop (`Vendor` read as `24"`): a value pinned to a place
-        # that does not hold it, which two readers of different vendors could agree on. Set aside
-        # here, before any geometry is computed or any model is asked.
-        with_a_numeral = {region_of(row) for row in candidates if _shows_a_numeral(row.raw_text)}
-        without_a_numeral: set[tuple[tuple[int, ...], ...]] = set()
-        run_ids = {row.extraction_run_id for row in candidates}
-        with session.no_autoflush:
-            extractor_of = {
-                run_id: extractor
-                for run_id, extractor in session.execute(
-                    select(ExtractionRun.id, ExtractionRun.extractor).where(
-                        ExtractionRun.id.in_(run_ids)
-                    )
-                ).tuples()
-            }
-
-        handled: set[tuple[tuple[int, ...], ...]] = set()
-        for candidate in candidates:
-            region = region_of(candidate)
-            if region in handled:
-                continue
-            if region not in with_a_numeral:
-                without_a_numeral.add(region)
-                continue
-            status = _candidate_evidence_status(candidate)
-            if status is not EvidenceStatus.RAW_CANDIDATE:
-                continue
-            polygon = stored_polygon(candidate, rendered)
-            facts, whole_run = region_facts(
-                candidate,
-                candidates,
-                version_id=version_id,
-                page=page,
-                rendered=rendered,
-                polygon=polygon,
-                transform=transform,
-                reach=reach,
-                page_glyphs=page_glyphs,
-                stacked=stacked,
-            )
-            reasons = _ambiguity_reasons(
-                candidate,
-                exact_text=extractor_of[candidate.extraction_run_id] in EXACT_TEXT_EXTRACTORS,
-            ) | trigger_reasons(facts)
-            if not reasons:
-                continue
-
-            crops = (
-                None
-                if polygon is None
-                else RegionCrops(
-                    store=self._store,
-                    render=render,
-                    base=rendered,
-                    polygon=polygon,
-                    margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
-                    sharper_dpi=(settings.sharper_dpi if settings is not None else self._dpi),
-                    whole_run=whole_run,
-                    rotation_degrees=facts.rotation_degrees,
-                    stacked=stacked,
-                    layouts=layouts,
-                )
-            )
-            crop_artifact_id = None if crops is None else crops.first()
-            trigger_context = RegionContext(
-                region_id=str(candidate.id),
-                fixed_extraction_complete=True,
-                crop_available=crop_artifact_id is not None,
-                ambiguity_reasons=reasons,
-            )
-            decision = evaluate_trigger(status, trigger_context)
-            if not decision.triggered:
-                continue
-            if crop_artifact_id is None or crops is None:
-                raise AssertionError("triggered agent region without a crop artifact")
-            handled.add(region)
-            outcome.regions += 1
-
-            graph_context = BoundedRegionContext(
-                region_id=decision.region_id,
-                crop_artifact_id=crop_artifact_id,
-                nearby_text=(),
-                nearby_geometry_refs=(),
-            )
-            reads: _AgentReads | None = None
-            if settings is None:
-                assert self._bounded_agent is not None
-                graph = self._bounded_agent
-            else:
-                # **A region already run in this task run is not paid for again.** A redelivered stage
-                # finds the run it opened and the rows it recorded; one with no row abstained.
-                recorded = self._recorded_agent_rows(session, task_run_id, candidate.id)
-                if recorded is not None:
-                    outcome.rows.extend(recorded)
-                    outcome.reused += 1
-                    continue
-                source_candidate_id = candidate.id
-
-                def open_run(reader: _VisionReader, source: UUID = source_candidate_id) -> UUID:
-                    return self._agent_run(
-                        session,
-                        task_run_id=task_run_id,
-                        extractor=reader.config.extractor,
-                        extractor_version=reader.config.model_id,
-                        source_candidate_id=source,
-                    ).id
-
-                if self._meter is not None:
-                    # The page goes to an AI reader: a page-scaled budget grows by it (#1206).
-                    self._meter.send(page.id)
-                reads = _AgentReads(
-                    session=session,
-                    page_index=page.index,
-                    crops=crops,
-                    readers=self._agent_readers,
-                    open_run=open_run,
-                    meter=self._meter,
-                )
-                graph = BoundedAgentGraph(
-                    limits=settings.limits,
-                    toolbox=AgentToolbox(
-                        refine_crop=crops.refine,
-                        request_ocr_verification=_no_ocr_verification,
-                        request_vlm_reading=reads.read,
-                        abstain=agent_abstain,
-                        recorder=_AgentCallLog(),
-                    ),
-                )
-            terminal = graph.run(
-                graph_context,
-                self._bounded_agent_planner(graph_context, facts, graph.limits),
-            )
-            if isinstance(terminal, CandidateTerminal):
-                outcome.proposals += 1
-            elif isinstance(terminal, AbstentionTerminal):
-                outcome.abstentions += 1
-            else:
-                raise TypeError("bounded agent returned an unknown terminal")
-            if reads is None:
-                # An injected graph brings its own tools, so only what it proposed is known here.
-                if isinstance(terminal, CandidateTerminal):
-                    outcome.rows.append(
-                        self._record_agent_candidate(
-                            session,
-                            terminal.candidate,
-                            document_version_id=version_id,
-                            page_id=page.id,
-                            task_run_id=task_run_id,
-                            source_candidate=candidate,
-                            flush=False,
-                        )
-                    )
-                continue
-            # **Every look is a candidate, and every paid call is recorded with it** (DESIGN_AI
-            # §3.2: a new look adds a new candidate; corroboration decides). A proposal is one of
-            # these — the graph refuses any other — and an abstention keeps them too: where the
-            # agent read the whole label and the region's other readers read the part a crop cut,
-            # it hands the region over *with* the whole reading, for the reviewer to see.
-            for recorder, produced in reads.recorders:
-                row = None
-                if produced:
-                    row = self._record_agent_candidate(
-                        session,
-                        produced[0],
-                        document_version_id=version_id,
-                        page_id=page.id,
-                        task_run_id=task_run_id,
-                        source_candidate=candidate,
-                        flush=False,
-                    )
-                    outcome.rows.append(row)
-                outcome.invocations += recorder.persist(
-                    candidate_id=None if row is None else row.id, flush=False
-                )
-        outcome.without_a_numeral = len(without_a_numeral)
-        return outcome
-
-    def _agent_config_hash(self, source_candidate_id: UUID) -> str:
-        """An agent run's identity: the region it read, and every setting it was read under."""
-        return (
-            f"dpi={self._dpi};route=bounded_agent;layers=vendor;"
-            f"source_candidate_id={source_candidate_id}"
-            + ("" if self._reading_agent is None else f";{self._reading_agent.config_hash}")
-        )
-
-    def _agent_run(
-        self,
-        session: Session,
-        *,
-        task_run_id: UUID,
-        extractor: str,
-        extractor_version: str,
-        source_candidate_id: UUID,
-    ) -> ExtractionRun:
-        """The run one reader's agent readings of one region are recorded under.
-
-        **Under the reader's own extractor**, never an agent-wide one: `evidence/corroborate.py`
-        counts independence by extractor, and the same model reading the same label a second time
-        is not a second witness.
-        """
-        return open_extraction_run(
-            session,
-            task_run_id=task_run_id,
-            extractor=extractor,
-            extractor_version=extractor_version,
-            config_hash=self._agent_config_hash(source_candidate_id),
-            dpi=self._dpi,
-        )
-
-    def _recorded_agent_rows(
-        self, session: Session, task_run_id: UUID, source_candidate_id: UUID
-    ) -> list[ObservationCandidate] | None:
-        """The rows an earlier delivery of this stage recorded for this region, or `None` if none ran."""
-        with session.no_autoflush:
-            runs = list(
-                session.execute(
-                    select(ExtractionRun.id).where(
-                        ExtractionRun.task_run_id == task_run_id,
-                        ExtractionRun.config_hash == self._agent_config_hash(source_candidate_id),
-                    )
-                ).scalars()
-            )
-            if not runs:
-                return None
-            return list(
-                session.execute(
-                    select(ObservationCandidate).where(
-                        ObservationCandidate.extraction_run_id.in_(runs)
-                    )
-                ).scalars()
-            )
-
-    def _record_agent_candidate(
-        self,
-        session: Session,
-        candidate: DomainCandidate,
-        *,
-        document_version_id: UUID,
-        page_id: UUID,
-        task_run_id: UUID,
-        source_candidate: ObservationCandidate,
-        flush: bool = True,
-    ) -> ObservationCandidate:
-        run = self._agent_run(
-            session,
-            task_run_id=task_run_id,
-            extractor=candidate.extractor,
-            extractor_version=candidate.extractor_version,
-            source_candidate_id=source_candidate.id,
-        )
-        return self._record_vision_candidate(
-            session,
-            candidate,
-            document_version_id=document_version_id,
-            page_id=page_id,
-            extraction_run_id=run.id,
-            page_polygon=source_candidate.polygon,
-            flush=flush,
-        )
-
     def _association_config(self) -> str:
-        """The association run's identity: the dpi, the association's own nine lengths, and — where
-        stated — the two a label is gathered by, which decide which AI readings are placed by the
-        vendor's paths and so which are attached (#918). A re-association under other lengths is
-        another run, not this one reused (#487)."""
+        """The association run's identity: the dpi and the association's own nine lengths. A
+        re-association under other lengths is another run, not this one reused (#487).
+
+        Until 2026-10-28 it also named the two lengths a label is gathered by, where stated: they
+        decided which AI readings were placed by the vendor's paths (#918). The AI readings placed
+        by their regions went with the label-first route, so they decide nothing here now; unstated,
+        as in every deployment, the identity was this all along."""
         settings = self._association
         assert settings is not None
-        written = f"dpi={self._dpi};{settings.config_hash}"
-        reach = self._label_reach()
-        if reach is None:
-            return written
-        written += f";label_gap<={reach.label_gap_pt};label<={reach.maximum_label_pt}"
-        if len(written) <= RUN_IDENTITY_CHARACTERS:
-            return written
-        # As `_text_run_config` does: written out past the column, a fingerprint of all of it.
-        return f"dpi={self._dpi};run={hashlib.sha256(written.encode()).hexdigest()[:16]}"
-
-    def _ai_region_inputs(
-        self,
-        *,
-        page: Page,
-        rows: Sequence[ObservationCandidate],
-        associated: frozenset[UUID],
-        exact_text: frozenset[_RegionKey],
-        layers: PageLayers | None,
-        stacked_fractions: Sequence[StackedFraction],
-    ) -> tuple[tuple[RegionReading, ...], tuple[ObservationCandidate, ...], Counter[str]]:
-        """Each AI reading's region as the association step takes it, and why the rest are not (#918).
-
-        `rows` are the page's AI readings — the vision readers' and the agent's. Only those with a
-        value are placed: an AI reader that read no number says nothing a line could label. One
-        already handed to the association through its source region (`_vision_association_inputs`)
-        is not handed twice, and nor is one of a region the file's own text is read at exactly
-        (`_exact_text_regions`).
-
-        **Placed by the vendor's drawn characters in the region** (`region_placement`), or not at
-        all, and the page result says why: a reading is never placed by the AI reader's own word.
-        """
-        items: list[RegionReading] = []
-        placed: list[ObservationCandidate] = []
-        refused: Counter[str] = Counter()
-        transform = page_transform(page, self._dpi)
-        reach = self._label_reach()
-        seen: set[UUID] = set()
-        for row in rows:
-            if row.value_numerator is None or row.id in associated or row.id in seen:
-                continue
-            seen.add(row.id)
-            placement: RegionReading | str
-            if _region_key(row.polygon) in exact_text:
-                placement = UNPLACED_EXACT_TEXT
-            elif reach is None:
-                placement = UNPLACED_NO_REACH
-            elif layers is None or not layers.geometry_read:
-                placement = UNPLACED_NO_PATHS_READ
-            elif transform is None:
-                placement = UNPLACED_NO_TRANSFORM
-            else:
-                placement = region_placement(
-                    row.polygon,
-                    transform=transform,
-                    document_version_id=page.document_version_id,
-                    page_index=page.index,
-                    page_glyphs=layers.glyph_paths,
-                    stacked_fractions=stacked_fractions,
-                    reach=reach,
-                )
-            if isinstance(placement, str):
-                refused[placement] += 1
-                continue
-            items.append(placement)
-            placed.append(row)
-        return tuple(items), tuple(placed), refused
+        return f"dpi={self._dpi};{settings.config_hash}"
 
     def _associate_page(
         self,
@@ -5302,7 +3825,6 @@ class DatabaseStages:
         task_run_id: UUID,
         readings: Sequence[tuple[Sequence[ReadItem], Sequence[ObservationCandidate]]],
         lines: tuple[DimensionExtent, ...],
-        placements: Mapping[UUID, RegionReading] | None = None,
         own_text: frozenset[UUID] = frozenset(),
     ) -> int | None:
         """Attach each of a page's readings to the line it annotates, or record why not.
@@ -5320,12 +3842,6 @@ class DatabaseStages:
         one goes missing from both halves, and the refusals are the half that matters today: two
         lines equally close to one number is the ordinary case on a dimensioned elevation, and an
         unattached number is what a reviewer has to look at.
-
-        **`placements` are the AI readings placed by their regions** (#918), by row. The line
-        `associate` chose for one is held to `RegionReading.refusal` — beside it, between its ends —
-        and refused with the reason where it fails, which can only take an attachment away. One
-        that holds records how its place was found first, then `associate`'s own reasons, so the row
-        says the AI reader supplied neither where the number sits nor which way it reads.
 
         **`own_text` are the readings of text the file states exactly** (#926), by row: its page
         text, its pasted drawings' font text, the vendor's CAD notes. The line `associate` chose for
@@ -5374,8 +3890,6 @@ class DatabaseStages:
                 proximity_limit=settings.proximity_limit,
                 ambiguity_margin=settings.ambiguity_margin,
             )
-            if placements:
-                result = _held_to_their_regions(result, placements)
             if any(entry.text.observation_id in own_text for entry in result.associated):
                 # **The strokes too short to be offered (#926)**: the detector's own lines with its
                 # floor taken away, bounded at both ends exactly as an offered line is. No new
@@ -6291,9 +4805,8 @@ class DatabaseStages:
         mislabelled template would repeat its mistake on every sheet, and a witness that did not
         use the templates is what catches it. So a reading is never confirmed alone: the label's
         own millimetres agreeing with its inches (the dual lane, set here), or another reader
-        agreeing on the same box (the page asks the vision readers about each reading's box, and
-        cross-route corroboration decides). Otherwise it is a value a reviewer confirms, pre-filled.
-        Its rows are not given to the bounded agent.
+        agreeing on the same box (cross-route corroboration decides). Otherwise it is a value a
+        reviewer confirms, pre-filled.
 
         **A stacked fraction is flagged** (#756 D3): read and pre-filled, never confirmed by any
         number of readers (#726). That is a reading the reader composed across a bar, or one lying
@@ -6379,506 +4892,6 @@ class DatabaseStages:
             rows.append(row)
             items.append(_LocatedOcrReading(extent, reading.rotation_degrees))
         return rows, (tuple(items), rows), abstentions
-
-    def _fraction_parts_config_hash(
-        self, drawing: PieceDrawing, engine: OcrEngine, second: _VisionReader
-    ) -> str:
-        """The fraction-parts run's identity: every setting its readings depend on.
-
-        The resolution, how a piece is drawn and the second reader's model are kept readable; the
-        rest — both readers' names and versions, the digits prompt, the detector's settings — goes
-        into a fingerprint beside them, because a run's identity column holds 200 characters and
-        all of it written out runs past that, as the reading agent's did (`ReadingAgentSettings`).
-        """
-        everything = (
-            f"dpi={self._dpi};{drawing.config_hash};engine={engine.name}/{engine.version}"
-            f";second={second.config.extractor}/{second.config.model_id}"
-            f";prompt={digits_prompt_id(second.config)}"
-            + (
-                ""
-                if self._association is None
-                else f";fraction_bar={self._association.fraction_bar.config_hash}"
-            )
-        )
-        digest = hashlib.sha256(everything.encode()).hexdigest()[:16]
-        written = (
-            f"dpi={self._dpi};{drawing.config_hash};second={second.config.model_id};"
-            f"readers={digest}"
-        )
-        if len(written) <= RUN_IDENTITY_CHARACTERS:
-            return written
-        # A second reader's model id long enough to run past the column (#1173): it is already in
-        # the fingerprint, so it is left out of the words rather than cut short.
-        return f"dpi={self._dpi};{drawing.config_hash};readers={digest}"
-
-    def _read_page_by_fraction_parts(
-        self,
-        session: Session,
-        *,
-        version_id: UUID,
-        page: Page,
-        task_run_id: UUID,
-        fractions: Sequence[StackedFraction],
-    ) -> tuple[list[ObservationCandidate], Counter[str], int]:
-        """Read each laid-out stacked label piece by piece; record each reading; count the rest.
-
-        `extraction/fraction_parts.py` draws the whole number, numerator and denominator from their
-        own paths, reads each with the OCR engine, and puts the value together in code. A label set
-        in text has no paths and no layout, and is not looked at.
-
-        **A row only where two readers agree on every piece (#865).** The second reader is the vision
-        gate reader, asked for each piece's digits once the OCR engine has read them all
-        (`_PieceReads`); a piece they read differently, or that it does not read, leaves no row and
-        a counted reason, and a person types the value. Its calls are on the drawing set's budget:
-        once that is spent it is asked nothing more, and a label it has not seconded gets no row.
-
-        **Every row carries `STACKED_FRACTION_FLAG`** (#726): however exactly it was read, a stacked
-        fraction goes to a person. `corroborate` keeps any group it is in a raw candidate with no
-        lane, automatic typing refuses it, and the form shows it filled in for a person to tick. Its
-        rows are not handed to the vision readers or the agent.
-
-        **Its own extraction run**, keyed on how the pieces are drawn, which engine and which second
-        reader read them, the second reader's prompt, and the detector's settings, so a reading made
-        under other numbers is another run. A re-run finds its rows and reads nothing; a page where
-        no label was read has no rows to find, so a re-run reads it again and pays the second reader
-        again, under the same budget. A page with no laid-out label opens no run.
-
-        Returns the rows, why each label that was not read was not, and how many calls the second
-        reader made.
-        """
-        drawing = self._fraction_parts
-        assert drawing is not None
-        refusals: Counter[str] = Counter()
-        laid_out = [fraction for fraction in fractions if fraction.layout is not None]
-        if not laid_out:
-            return [], refusals, 0
-        engine = self._ocr()
-        second = next(
-            reader
-            for reader in self._vision_readers
-            if reader.config.extractor == self._vision_gate
-        )
-        run = open_extraction_run(
-            session,
-            task_run_id=task_run_id,
-            extractor=FRACTION_PARTS_EXTRACTOR,
-            extractor_version=FRACTION_PARTS_VERSION,
-            config_hash=self._fraction_parts_config_hash(drawing, engine, second),
-            dpi=self._dpi,
-        )
-        with session.no_autoflush:
-            existing = list(
-                session.execute(
-                    select(ObservationCandidate).where(
-                        ObservationCandidate.extraction_run_id == run.id,
-                        ObservationCandidate.page_id == page.id,
-                    )
-                ).scalars()
-            )
-        if existing:
-            return existing, refusals, 0
-        if page.media_box is None or page.crop_box is None:
-            refusals["the page has no recorded transform, so no reading could be placed"] += len(
-                laid_out
-            )
-            return [], refusals, 0
-        media = tuple(Decimal(value) for value in page.media_box)
-        crop = tuple(Decimal(value) for value in page.crop_box)
-        transform = PageTransform(
-            dpi=self._dpi,
-            rotation=page.rotation,
-            media_box=(media[0], media[1], media[2], media[3]),
-            crop_box=(crop[0], crop[1], crop[2], crop[3]),
-        )
-        rows: list[ObservationCandidate] = []
-        if self._meter is not None:
-            # The page goes to an AI reader: a page-scaled budget grows by it (#1206).
-            self._meter.send(page.id)
-        reads = _PieceReads(
-            session=session, run_id=run.id, page_index=page.index, reader=second, meter=self._meter
-        )
-        with traced(
-            "extraction.page.fraction_parts",
-            document_version_id=str(version_id),
-            page_index=page.index,
-            extractor_version=FRACTION_PARTS_VERSION,
-        ):
-            for fraction in laid_out:
-                result = read_fraction_parts(fraction, engine=engine, drawing=drawing, second=reads)
-                if isinstance(result, FractionPartsRefusal):
-                    refusals[result.reason] += 1
-                    continue
-                try:
-                    _extent, corners = page_box_polygon(
-                        result.box, transform, version_id, page.index
-                    )
-                except (TypeError, ValueError):
-                    refusals["the label lies outside the visible page"] += 1
-                    continue
-                row = ObservationCandidate(
-                    document_version_id=version_id,
-                    page_id=page.id,
-                    extraction_run_id=run.id,
-                    raw_text=result.text,
-                    value_numerator=result.value.exact.numerator,
-                    value_denominator=result.value.exact.denominator,
-                    unit=result.value.unit.value,
-                    unit_guess=result.value.unit.value,
-                    semantic_guess=None,
-                    polygon=[[corner.x, corner.y] for corner in corners],
-                    coordinate_space="image",
-                    # Put together in code from the pieces' readings: it has no confidence of its own.
-                    confidence=None,
-                    ambiguity_flags=[STACKED_FRACTION_FLAG],
-                )
-                session.add(row)
-                rows.append(row)
-        return rows, refusals, reads.invocations
-
-    def _read_page_by_vision(
-        self,
-        session: Session,
-        *,
-        version_id: UUID,
-        data: bytes,
-        page: Page,
-        task_run_id: UUID,
-        regions: Sequence[_VisionRegion],
-        stacked_fractions: Sequence[StackedFraction],
-        printed: Sequence[PrintedRun],
-        layers: PageLayers | None,
-    ) -> tuple[list[ObservationCandidate], int, list[str], tuple[_VisionAssociationLink, ...], int]:
-        """Read each region with every configured vision reader.
-
-        **A region is a recorded reading's box or an OCR box whose text was not a reading** (#703).
-        Both are read the same way; see `_VisionRegion` for why the second kind stays on the list.
-
-        **Each request says whether its crop shows a stacked fraction** (#735), found on the vendor's
-        layer by `extraction/glyph_bands.py` when the page's geometry was read. The validator then
-        abstains on any reading of that crop: a stacked fraction always goes to a reviewer (#726).
-        Where the geometry was not read — no association settings — `stacked_fractions` is empty and
-        nothing is flagged; so is a label the vendor drew as font text rather than paths, which the
-        geometry reader does not see (#738).
-
-        This route is additive: a model output is another raw candidate, never a fact, and a failed
-        model call leaves the fixed readers' candidates untouched. The crop bound and one-call-per
-        reader-per-region loop live here rather than in the prompt.
-
-        The returned association links are deliberately source-backed. A vision reader reports a
-        string, not a trusted page location or text orientation. When association later considers a
-        model row, it may reuse only the fixed-reader region that caused this exact crop to be sent.
-        Before #698 the vision rows were left out of association entirely, so a real run could have
-        model-read numbers and detected line-work but zero `observation_associations` rows.
-
-        **Each reader is shown its own measured picture (#907)**: the crop as cut, or the same page
-        area rendered at the stated sharper dpi and turned upright where the drawing's own facts
-        say the label runs sideways — the text the file prints there (`printed`), else its glyph
-        paths (`layers`), by `workflow.reader_pictures.label_turn`. Every check of what a crop
-        shows is made on the crop as cut, whose page area the sharper picture covers.
-        """
-        if not regions or self._store is None:
-            return [], 0, [], (), 0
-
-        try:
-            rendered = render_page(
-                data,
-                page.index,
-                document_version_id=version_id,
-                page_content_hash=page.content_hash,
-                dpi=self._dpi,
-                maximum_pixels=MAXIMUM_RENDER_PIXELS,
-                # **Vendor's drawing only (#742).** A reviewer's note painted into a crop is a number
-                # a model can return as the vendor's, and two readers doing so would seal it as one.
-                vendor_only=True,
-            )
-        except (PageTooLarge, UnreadablePdf, ValueError) as error:
-            return [], 0, [f"page {page.index}: {error}"], (), 0
-
-        rows: list[ObservationCandidate] = []
-        association_links: list[_VisionAssociationLink] = []
-        invocations = 0
-        refusals: list[str] = []
-        gate = self._vision_gate
-        # The gate first, so the others know where it read a value; otherwise configured order.
-        readers = sorted(self._vision_readers, key=lambda reader: reader.config.extractor != gate)
-        gate_valued: set[tuple[tuple[int, ...], ...]] = set()
-        held_back = 0
-
-        def place(polygon: Sequence[Sequence[int]]) -> tuple[tuple[int, ...], ...]:
-            return tuple(tuple(int(value) for value in point) for point in polygon)
-
-        transform = page_transform(page, self._dpi)
-        reach = self._label_reach()
-        page_glyphs = () if layers is None else layers.glyph_paths
-        turns: dict[UUID, int] = {}
-
-        def turn_of(region: _VisionRegion) -> int:
-            """Which way the region's label runs, from the drawing's own facts."""
-            if region.id not in turns:
-                found = region_label_geometry(
-                    region.polygon,
-                    rendered=rendered,
-                    polygon=stored_polygon(region, rendered),
-                    transform=transform,
-                    reach=reach,
-                    page_glyphs=page_glyphs,
-                )
-                xs = [int(point[0]) for point in region.polygon]
-                ys = [int(point[1]) for point in region.polygon]
-                turns[region.id] = label_turn(
-                    (min(xs), min(ys), max(xs), max(ys)),
-                    printed,
-                    geometry_degrees=0 if found is None else found[0].rotation_degrees,
-                )
-            return turns[region.id]
-
-        def render(box: tuple[int, int, int, int], dpi: int) -> bytes:
-            return render_region(
-                data,
-                page.index,
-                box_px=box,
-                dpi=dpi,
-                maximum_pixels=MAXIMUM_RENDER_PIXELS,
-                vendor_only=True,
-            )
-
-        for reader in readers:
-            gated = gate is not None and reader.config.extractor != gate
-            run = open_extraction_run(
-                session,
-                task_run_id=task_run_id,
-                extractor=reader.config.extractor,
-                extractor_version=reader.config.model_id,
-                config_hash=self._vision_run_config(reader, gate=gate if gated else None),
-                dpi=self._dpi,
-            )
-            with session.no_autoflush:
-                existing = list(
-                    session.execute(
-                        select(ObservationCandidate).where(
-                            ObservationCandidate.extraction_run_id == run.id,
-                            ObservationCandidate.page_id == page.id,
-                        )
-                    ).scalars()
-                )
-            if existing:
-                rows.extend(existing)
-                if not gated and gate is not None:
-                    gate_valued = {
-                        place(row.polygon) for row in existing if row.value_numerator is not None
-                    }
-                continue
-
-            targets = regions
-            if gated:
-                targets = [region for region in regions if place(region.polygon) in gate_valued]
-                held_back += len(regions) - len(targets)
-            for region in targets:
-                cropped = self._vision_crop(rendered, region)
-                if cropped is None:
-                    refusals.append(
-                        f"page {page.index}: a candidate's polygon could not be cropped for vision"
-                    )
-                    continue
-                crop, crop_box = cropped
-                pre_call_refusal = _vision_pre_call_refusal(crop_box, stacked_fractions)
-                if pre_call_refusal is not None:
-                    refusals.append(
-                        f"page {page.index}: {reader.config.extractor}: "
-                        f"{pre_call_refusal}: crop skipped before model call"
-                    )
-                    continue
-                if self._meter is not None:
-                    # The page goes to an AI reader: a page-scaled budget grows by it (#1206).
-                    self._meter.send(page.id)
-                if self._meter is not None and self._meter.reached:
-                    refusals.append(
-                        f"page {page.index}: {reader.config.extractor}: {self._meter.reason}"
-                    )
-                    continue
-                try:
-                    shown = reader_picture(
-                        reader.config.picture,
-                        as_cut=crop,
-                        crop_box=crop_box,
-                        base_dpi=self._dpi,
-                        settings=self._reader_pictures,
-                        turn=(
-                            turn_of(region)
-                            if reader.config.picture is ReaderPicture.UPRIGHT_SHARPER
-                            else 0
-                        ),
-                        render=render,
-                    )
-                except (PageTooLarge, UnreadablePdf, ValueError) as error:
-                    refusals.append(
-                        f"page {page.index}: {reader.config.extractor}: its picture could not "
-                        f"be made, so it was not asked: {error}"
-                    )
-                    continue
-                request_candidate_id = uuid4()
-                recorder = _BufferedVisionRecorder(
-                    session=session,
-                    extraction_run_id=run.id,
-                    request_candidate_id=request_candidate_id,
-                    meter=self._meter,
-                )
-                request = NovaRequest(
-                    candidate_id=str(request_candidate_id),
-                    page=page.index,
-                    crop=shown,
-                    image_format="png",
-                    context=AssembledContext(nearby_text=(), nearby_geometry=()),
-                    bound_pt=VISION_CONTEXT_BOUND_PT,
-                    # Both still computed, though `_vision_pre_call_refusal` has already kept every
-                    # crop that shows one from this call: the validator's guards stay behind it.
-                    stacked_label=crop_shows_a_stacked_fraction(crop_box, stacked_fractions),
-                    stacked_layouts=stacked_layouts_shown(crop_box, stacked_fractions),
-                )
-                try:
-                    candidate = reader.extract(request, recorder)
-                except NovaAdapterError as error:
-                    invocations += recorder.persist(candidate_id=None, flush=False)
-                    refusals.append(f"page {page.index}: {reader.config.extractor}: {error}")
-                    continue
-                row = self._record_vision_candidate(
-                    session,
-                    candidate,
-                    document_version_id=version_id,
-                    page_id=page.id,
-                    extraction_run_id=run.id,
-                    page_polygon=region.polygon,
-                    flush=False,
-                )
-                invocations += recorder.persist(candidate_id=row.id, flush=False)
-                rows.append(row)
-                if gate is not None and not gated and row.value_numerator is not None:
-                    gate_valued.add(place(region.polygon))
-                association_links.append(
-                    _VisionAssociationLink(row=row, source_candidate_id=region.id)
-                )
-        return rows, invocations, refusals, tuple(association_links), held_back
-
-    def _vision_run_config(self, reader: _VisionReader, *, gate: str | None) -> str:
-        """A vision reader's run identity on a page: every setting its readings depend on.
-
-        `gate` is the gate reader's name where this reader read only what the gate found a value in
-        — another run (#787). **A reader shown the crop as cut keeps the identity it always had**,
-        written out, so a re-run of an unchanged deployment finds its runs — unless written out it
-        would not fit the column's 200 characters, which a long gate reader's name can now make it
-        do, and then the same fingerprint stands for it. **A reader shown an upright, sharper
-        picture (#907)** depends on more — the dpi, the reach the turn reads glyph paths by, and the
-        reader's missing-space setting, which decides which labels' text the turn reads (#912) —
-        and written out that runs past the column on the demo's settings (262 characters), so its
-        identity names the picture and the dpi readably and the rest by a fingerprint of all of it,
-        as the reading agent's does (`ReadingAgentSettings.config_hash`).
-        """
-        written = (
-            f"dpi={self._dpi};route=vision;layers=vendor;"
-            f"crop_margin_pt={VISION_CROP_CONTEXT_MARGIN_PT};"
-            f"context_bound_pt={VISION_CONTEXT_BOUND_PT}"
-            # Which readings are accepted depends on it, so a run under other numbers is another
-            # run, not this one reused.
-            + (
-                ""
-                if self._association is None
-                else f";fraction_bar={self._association.fraction_bar.config_hash}"
-            )
-            + (f";gate={gate}" if gate is not None else "")
-        )
-        if reader.config.picture is ReaderPicture.AS_CUT:
-            if len(written) <= RUN_IDENTITY_CHARACTERS:
-                return written
-            digest = hashlib.sha256(written.encode()).hexdigest()[:16]
-            return f"dpi={self._dpi};route=vision;run={digest}"
-        settings = self._reader_pictures
-        assert settings is not None  # the constructor refuses a sharper reader without them
-        # The turn reads the glyph paths by the agent's reach where it is configured.
-        stated = self._label_reach()
-        reach = "-" if stated is None else stated.config_hash
-        # The turn reads which way a label's text runs from the file's own readings, which the
-        # missing-space setting decides (#912): a label it sets aside is turned by its paths alone.
-        everything = (
-            f"{written};picture={reader.config.picture.value};{settings.config_text};"
-            f"turn=text+paths;reach={reach};{self._stated_missing_space().config_hash}"
-        )
-        digest = hashlib.sha256(everything.encode()).hexdigest()[:16]
-        return (
-            f"dpi={self._dpi};route=vision;picture={reader.config.picture.value};"
-            f"{settings.config_text};run={digest}"
-        )
-
-    def _vision_crop(
-        self, rendered: RenderedPage, candidate: _VisionRegion
-    ) -> tuple[bytes, tuple[int, int, int, int]] | None:
-        """The crop a vision reader is shown, and the page pixels it was cut from.
-
-        The pixels come back with it because what the crop *shows* is what decides whether a
-        reading of it may be accepted (#735), and `crop_pixel_box` is the one computation of that
-        rectangle — the same one `generate_crop` cuts by.
-        """
-        if self._store is None:
-            return None
-        polygon = stored_polygon(candidate, rendered)
-        if polygon is None:
-            return None
-        spec = CropSpec(
-            polygon=polygon,
-            context_margin_pt=VISION_CROP_CONTEXT_MARGIN_PT,
-            dpi=self._dpi,
-        )
-        result = generate_crop(rendered, spec, self._store)
-        if result.status is not CropStatus.AVAILABLE or result.artifact is None:
-            return None
-        with self._store.get(result.artifact.key) as stored:
-            return stored.read(), crop_pixel_box(rendered, spec)
-
-    @staticmethod
-    def _record_vision_candidate(
-        session: Session,
-        candidate: DomainCandidate,
-        *,
-        document_version_id: UUID,
-        page_id: UUID,
-        extraction_run_id: UUID,
-        page_polygon: list[list[int]],
-        flush: bool = True,
-    ) -> ObservationCandidate:
-        try:
-            row_id = UUID(candidate.candidate_id)
-        except ValueError as error:
-            raise ValueError("vision candidate ids must be UUID strings") from error
-
-        with session.no_autoflush:
-            existing = session.get(ObservationCandidate, row_id)
-        if existing is not None:
-            return existing
-
-        flags = list(candidate.ambiguity_flags)
-        measurement, flag = _vision_candidate_value(candidate.raw_text)
-        if flag is not None:
-            flags.append(flag)
-
-        row = ObservationCandidate(
-            id=row_id,
-            document_version_id=document_version_id,
-            page_id=page_id,
-            extraction_run_id=extraction_run_id,
-            raw_text=candidate.raw_text,
-            value_numerator=None if measurement is None else measurement.exact.numerator,
-            value_denominator=None if measurement is None else measurement.exact.denominator,
-            unit=None if measurement is None else measurement.unit.value,
-            unit_guess=None if candidate.unit_guess is None else candidate.unit_guess.value,
-            semantic_guess=None,
-            polygon=[list(point) for point in page_polygon],
-            coordinate_space="image",
-            confidence=candidate.confidence,
-            ambiguity_flags=flags,
-        )
-        session.add(row)
-        if flush:
-            session.flush()
-        return row
 
     def _ocr(self) -> OcrEngine:
         """The OCR engine, built once and only when a page actually needs it.
@@ -9984,77 +7997,6 @@ def _view_role(session: Session, view: DrawingView) -> str | None:
     ).scalar_one_or_none()
 
 
-def region_facts(
-    candidate: ObservationCandidate,
-    candidates: Sequence[ObservationCandidate],
-    *,
-    version_id: UUID,
-    page: Page,
-    rendered: RenderedPage,
-    polygon: Polygon | None,
-    transform: PageTransform | None,
-    reach: LabelReach | None,
-    page_glyphs: Sequence[VectorPath],
-    stacked: Callable[[Polygon], bool],
-) -> tuple[RegionFacts, Polygon | None]:
-    """What the file established about one region, and the region widened to its whole label.
-
-    One computation, never a copy of it: a second computation of what the geometry says is a
-    second answer.
-
-    **Geometry only.** The cut and the direction come from the vendor's paths
-    (`extraction/geometry/labels.py`), the stacked fraction from the bar detector, the witnesses
-    from other routes' recorded values. Where the paths were not read — no reading agent, no
-    association settings, no recorded page transform — the geometry says nothing, and the
-    region is read as it stands, as before #757.
-    """
-    # **What the region's other readers read**, as independent witnesses. Same region means the
-    # same recorded polygon, the rule cross-route corroboration groups by.
-    witnesses = tuple(
-        value
-        for other in candidates
-        if other is not candidate
-        and other.polygon == candidate.polygon
-        and (value := _stored_measurement(other)) is not None
-    )
-    cut_at_edge = False
-    rotation_degrees = 0
-    whole_run: Polygon | None = None
-    found = region_label_geometry(
-        candidate.polygon,
-        rendered=rendered,
-        polygon=polygon,
-        transform=transform,
-        reach=reach,
-        page_glyphs=page_glyphs,
-    )
-    if found is not None and transform is not None:
-        geometry, region_box = found
-        cut_at_edge = geometry.cut_at_edge
-        rotation_degrees = geometry.rotation_degrees
-        if geometry.label_box is not None and geometry.closed:
-            label = geometry.label_box
-            widened: Box = (
-                min(label[0], region_box[0]),
-                min(label[1], region_box[1]),
-                max(label[2], region_box[2]),
-                max(label[3], region_box[3]),
-            )
-            try:
-                whole_run = page_box_polygon(widened, transform, version_id, page.index)[0]
-            except (TypeError, ValueError):
-                whole_run = None
-    facts = RegionFacts(
-        cut_at_edge=cut_at_edge,
-        rotation_degrees=rotation_degrees,
-        stacked_fraction=polygon is not None and stacked(polygon),
-        # Not handed to the agent; see the caller's docstring.
-        shape_reading=None,
-        other_route_values=witnesses,
-    )
-    return facts, whole_run
-
-
 def region_label_geometry(
     polygon_px: Sequence[Sequence[int]],
     *,
@@ -10068,8 +8010,8 @@ def region_label_geometry(
 
     The region is `polygon_px`, page pixels at `rendered`'s dpi; `polygon` is the same region as a
     crop is cut round it. `None` where the paths were not read — no reach, no recorded transform,
-    no polygon — which is where the geometry says nothing (`region_facts`). One computation, for the
-    reading agent's facts and the vision readers' upright turn (#907) alike.
+    no polygon — which is where the geometry says nothing. One computation, for the cut-label
+    guard (#919).
     """
     if reach is None or transform is None or polygon is None:
         return None
@@ -10077,89 +8019,6 @@ def region_label_geometry(
     left, top, right, bottom = crop_box_px(rendered, polygon, VISION_CROP_CONTEXT_MARGIN_PT)
     crop_box = _pdf_box(transform, [(left, top), (right, bottom)])
     return label_geometry(region_box, crop_box, page_glyphs, reach), region_box
-
-
-def region_placement(
-    polygon_px: Sequence[Sequence[int]],
-    *,
-    transform: PageTransform,
-    document_version_id: UUID,
-    page_index: int,
-    page_glyphs: Sequence[VectorPath],
-    stacked_fractions: Sequence[StackedFraction],
-    reach: LabelReach,
-) -> RegionReading | str:
-    """An AI reading's region placed by the vendor's own drawn characters in it, or why not (#918).
-
-    `polygon_px` is the region the reader was shown, in page pixels at `transform`'s dpi. **Where it
-    sits** is that region, carried into stored page space by the page's transform — the step every
-    reader's box takes. **Which way it reads** is `label_direction`'s: the label in the region,
-    gathered from the vendor's paths, settled, and with every run of its characters going one way.
-    Nothing the AI reader said is used: not its value, not a box of its own.
-
-    **The vendor's ink only** (`VectorPath.drawing_ink`): a mark GV drew in colour inside the pasted
-    drawing is not one of the vendor's characters, so it neither joins a label nor gives one a
-    direction.
-
-    **A stacked fraction in the label settles nothing**, wherever the bar detector found one in the
-    label or the region (`crop_shows_a_stacked_fraction`, the rule a vision crop is held to): its
-    numerator stands above its denominator, so its runs say nothing about which way the label reads.
-
-    Public so a measurement places a stored reading by this code, not a copy of it.
-    """
-    corners = [(int(point[0]), int(point[1])) for point in polygon_px]
-    if not corners:
-        return UNPLACED_NOT_A_BOX
-    try:
-        extent = Polygon(
-            points=tuple(transform.to_stored(ImagePoint(x=x, y=y)) for x, y in corners),
-            space="stored",
-            document_version_id=document_version_id,
-            page=page_index,
-        )
-    except (ArithmeticError, TypeError, ValueError):
-        return UNPLACED_NOT_A_BOX
-    found = label_direction(
-        _pdf_box(transform, corners),
-        [path for path in page_glyphs if path.drawing_ink],
-        reach,
-    )
-    if found.degrees is None or found.label_box is None or found.in_region is None:
-        return found.unsettled or UNPLACED_NOT_A_BOX
-    label = _pixel_box(transform, found.label_box)
-    shown = (
-        min(label[0], *(x for x, _ in corners)),
-        min(label[1], *(y for _, y in corners)),
-        max(label[2], *(x for x, _ in corners)),
-        max(label[3], *(y for _, y in corners)),
-    )
-    if crop_shows_a_stacked_fraction(shown, stacked_fractions):
-        return UNPLACED_STACKED
-    drawn = _pixel_box(transform, found.in_region)
-    top_left = transform.to_stored(ImagePoint(x=drawn[0], y=drawn[1]))
-    bottom_right = transform.to_stored(ImagePoint(x=drawn[2], y=drawn[3]))
-    return RegionReading(
-        extent=extent,
-        rotation_degrees=found.degrees,
-        drawn=(top_left.x, top_left.y, bottom_right.x, bottom_right.y),
-        signal=PLACED_BY_THE_VENDORS_PATHS.format(
-            direction="across the page" if found.degrees == 0 else "up the page"
-        ),
-    )
-
-
-def _pixel_box(transform: PageTransform, box: Box) -> tuple[int, int, int, int]:
-    """A PDF-point box as `(left, top, right, bottom)` page pixels at the transform's dpi."""
-    low_x, low_y, high_x, high_y = box
-    corners = [
-        transform.to_image(PdfPoint(x=x, y=y)) for x in (low_x, high_x) for y in (low_y, high_y)
-    ]
-    return (
-        min(point.x for point in corners),
-        min(point.y for point in corners),
-        max(point.x for point in corners),
-        max(point.y for point in corners),
-    )
 
 
 def _shows(crop_box: tuple[int, int, int, int], fraction: StackedFraction) -> bool:
@@ -10431,9 +8290,8 @@ def gv_mark_in_crop(
 class _AgreementGuard:
     """One check of the agreement gate on one page, and the agreements it refused.
 
-    Asked about a region only once its readers agree (`_apply_cross_route_corroboration`), and
-    asked again about the same region once the reading agent has looked: **each region is refused
-    once**, and its reason is kept for the page result.
+    Asked about a region only once its readers agree (`_apply_cross_route_corroboration`): **each
+    region is refused once**, and its reason is kept for the page result.
     """
 
     def __init__(self) -> None:
@@ -10524,8 +8382,8 @@ CUT_LABEL_UNCHECKED_REASON: Final = (
 )
 CUT_LABEL_UNSTATED_REASON: Final = (
     "two readers agreed, but whether the crop cuts the label off cannot be checked without the "
-    "reading agent's label lengths and the association settings, which are not stated, so a person "
-    "confirms the reading"
+    "label lengths and the association settings, which are not stated, so a person confirms the "
+    "reading"
 )
 
 
@@ -10543,8 +8401,7 @@ def cut_label_refusal(
 
     **The test the gate replay measured** ("held back where the crop cuts the label", #851), moved
     here so the replay and the gate are one function and cannot disagree. The cut is
-    `region_label_geometry`'s, the one computation the reading agent's facts and the vision readers'
-    upright turn use: the label's characters gathered from the vendor's glyph paths, and the vision
+    `region_label_geometry`'s: the label's characters gathered from the vendor's glyph paths, and the
     readers' crop (`VISION_CROP_CONTEXT_MARGIN_PT` round the region) cutting it where the label is
     not wholly inside the crop — touching its edge counts. Its arguments are
     `region_label_geometry`'s.
@@ -10690,23 +8547,13 @@ class _MixedFractionGuard(_AgreementGuard):
         return mixed_fraction_refusal(_stored_measurement(region), region.raw_text)
 
 
-def _vision_pre_call_refusal(
-    crop_box: tuple[int, int, int, int], fractions: Sequence[StackedFraction]
-) -> str | None:
-    """Why a crop should not be sent to a vision reader, before spending a model call."""
-
-    if crop_shows_a_stacked_fraction(crop_box, fractions):
-        return STACKED_FRACTION_REASON
-    return None
-
-
 def stacked_reading_check(
     corners: Sequence[ImagePoint], reading: str, fractions: Sequence[StackedFraction]
 ) -> tuple[bool, str | None]:
     """Whether a reading lies over a stacked fraction, and why the drawing rules it out, if it does.
 
-    For the readers that say where they read — localized OCR and the shape reader (#846) — what
-    `_vision_pre_call_refusal` is for a model's crop. **The same rule, not a copy of it**: the box
+    For the readers that say where they read — localized OCR and the shape reader (#846). **The
+    same rule a crop is held to, not a copy of it**: the box
     round `corners` is held to `crop_shows_a_stacked_fraction`, so this finds a stacked fraction in
     exactly the boxes that check would refuse as a crop, edges included. `corners` are page pixels
     at the stage's dpi, as a fraction's `image_extent` is.
@@ -10745,9 +8592,7 @@ def _held_to_stacked_fractions(
     return tuple(held), refusals
 
 
-def stored_polygon(
-    candidate: ObservationCandidate | _VisionRegion, rendered: RenderedPage
-) -> Polygon | None:
+def stored_polygon(candidate: ObservationCandidate, rendered: RenderedPage) -> Polygon | None:
     """A candidate's image-pixel polygon as the normalised one a `CropSpec` takes.
 
     Returns `None` rather than raising, and rather than clamping. A point outside the rendering means

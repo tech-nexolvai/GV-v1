@@ -62,16 +62,14 @@ SYNTHETIC_ENVIRONMENT: dict[str, str] = {
     "GV_PART_PICTURE_MARGIN_PT": "40",
     "GV_PART_PICTURE_DPI": "120",
     "GV_AUTOMATIC_TYPES": "CT001, CT002",
-    "GV_VISION_GATE_READER": "synthetic-gate",
-    "GV_VISION_SHARPER_PICTURE_DPI": "600",
+    "GV_LABEL_GAP_PT": "3",
+    "GV_MAX_LABEL_PT": "30",
     "GV_ARCHITECT_READER_ENABLED": "true",
     "GV_AI_BUDGET_PER_PAGE_USD": "0.20",
     "GV_AI_BUDGET_MARGIN_USD": "2.00",
     "GV_AI_BUDGET_MINIMUM_USD": "4.00",
     "GV_AI_BUDGET_MAXIMUM_USD": "30.00",
     "GV_BEDROCK_CHAT_ENABLED": "false",
-    "GV_FRACTION_PARTS": "0",
-    "GV_READING_AGENT": "0",
 }
 
 #: The fewest settings a worker starts with: everything optional left off.
@@ -120,13 +118,13 @@ def _expected_synthetic_arguments() -> dict[str, object]:
     """What main's local worker gave `DatabaseStages` for `SYNTHETIC_ENVIRONMENT` (written first)."""
     from app.evidence.automatic_typing import AutomaticTypingSettings
     from extraction.architect.reader import MEASURED_ARCHITECT_SETTINGS
+    from extraction.geometry.labels import LabelLengths
     from extraction.glyph_bands import FractionBarGeometry
     from extraction.reader import MissingSpace
     from vocabulary.semantic_types import SemanticType
     from workflow.ai_budget import AiBudget
     from workflow.association import AssociationSettings, LocalizedOcrSettings
     from workflow.part_pictures import PartPictureSettings
-    from workflow.reader_pictures import PictureSettings
 
     return {
         "operands": None,
@@ -161,11 +159,8 @@ def _expected_synthetic_arguments() -> dict[str, object]:
         ),
         "findings_composer": None,
         "glyph_route": None,
-        "reading_agent": None,
-        "vision_gate": "synthetic-gate",
-        "fraction_parts": None,
+        "label_lengths": LabelLengths(Decimal(3), Decimal(30)),
         "timings": None,
-        "reader_pictures": PictureSettings(sharper_dpi=600),
         "missing_space": MissingSpace(gap_heights=Decimal("0.15")),
         "form_reader": None,
         "slot_reader": None,
@@ -209,11 +204,8 @@ def _expected_minimal_arguments() -> dict[str, object]:
         "automatic_typing": None,
         "findings_composer": None,
         "glyph_route": None,
-        "reading_agent": None,
-        "vision_gate": None,
-        "fraction_parts": None,
+        "label_lengths": None,
         "timings": None,
-        "reader_pictures": None,
         "missing_space": MissingSpace(gap_heights=Decimal("0.15")),
         "form_reader": None,
         "slot_reader": None,

@@ -14,7 +14,6 @@ import hashlib
 from collections.abc import Iterator
 from dataclasses import replace
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -178,47 +177,6 @@ def test_the_form_reader_label_fits_with_very_long_reader_ids() -> None:
     assert len(long) <= COLUMN and len(absurd) <= COLUMN
     assert long.startswith("dpi=300;readers=")
     assert "prompt=form-reader-v5+product=cabinet" in long
-    assert long != other
-
-
-# ---------------------------------------------------------------------------------------------
-# The fraction-parts route's label names its second reader's model id
-# ---------------------------------------------------------------------------------------------
-
-
-def test_the_fraction_parts_label_fits_with_a_very_long_second_reader(tmp_path: Path) -> None:
-    from storage.local import LocalStore
-    from tests.extraction.test_reader import MISSING_SPACE
-    from tests.workflow.test_fraction_parts_route import (
-        ASSOCIATION,
-        DRAWING,
-        SECOND_EXTRACTOR,
-        _Engine,
-        _Gate,
-    )
-    from workflow.stages import DatabaseStages
-
-    store = LocalStore(root=tmp_path, ticket_secret=b"a secret only this test knows")
-    gate = _Gate()
-    stages = DatabaseStages(
-        store,
-        association=ASSOCIATION,
-        fraction_parts=DRAWING,
-        vision_readers=(gate,),
-        vision_gate=SECOND_EXTRACTOR,
-        missing_space=MISSING_SPACE,
-    )
-    short = stages._fraction_parts_config_hash(DRAWING, _Engine([]), gate)
-    long_gate = _Gate()
-    long_gate.config = replace(gate.config, model_id=LONG_FIRST)
-    other_gate = _Gate()
-    other_gate.config = replace(gate.config, model_id=LONG_FIRST[:-1] + "z")
-
-    long = stages._fraction_parts_config_hash(DRAWING, _Engine([]), long_gate)
-    other = stages._fraction_parts_config_hash(DRAWING, _Engine([]), other_gate)
-
-    assert f";second={gate.config.model_id};readers=" in short, "unchanged where it fits"
-    assert len(long) <= COLUMN
     assert long != other
 
 

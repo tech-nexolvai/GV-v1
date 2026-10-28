@@ -3,6 +3,12 @@
 Companion to `DESIGN.md`. Owns **E1** (the bounded LangGraph extraction agent), **E2** (the Nova 2
 Lite adapter and model-invocation records), and the post-verdict findings narration seam.
 
+> **Retired 2026-10-28:** E1, the bounded reading agent (`extraction/agent/`, `workflow/reading_agent.py`),
+> was removed with the rest of the label-first reading route: the Bedrock vision readers in the upload
+> worker, the piece-by-piece fraction reads and the sharper pictures. It had been switched off since
+> 6 Oct and the Phase 6 plan retired it. The label geometry the agreement gate still uses moved to
+> `extraction/geometry/labels.py`. Section 3 is kept as the record of what it was.
+
 Everything here is built so that a fully compromised model response still cannot change a verdict.
 The findings narrator is presentation after deterministic checking, never another decision path.
 
@@ -11,7 +17,6 @@ The findings narrator is presentation after deterministic checking, never anothe
 ## 1. Package layout
 
 ```
-extraction/agent/   trigger.py graph.py tools.py outcomes.py checkpoints.py
 extraction/models/  nova.py validation.py invocations.py context.py sanitisation.py
 workflow/            findings_composer.py findings_bedrock.py
 ```

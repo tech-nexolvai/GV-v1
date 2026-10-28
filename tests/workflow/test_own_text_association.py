@@ -47,10 +47,8 @@ from extraction.geometry.text_association import (
 from storage.local import LocalStore
 from tests.extraction.test_glyph_bands import GEOMETRY as FRACTION_BAR
 from tests.extraction.test_reader import MISSING_SPACE
-from tests.extraction.test_reader import _pdf as _content_pdf
 from tests.extraction.test_stamp_text import _drawing
-from tests.workflow.test_association import SETTINGS as ASSOCIATION_SETTINGS
-from tests.workflow.test_association import _association_vision_reader, _revision
+from tests.workflow.test_association import _revision
 from tests.workflow.test_markup_route import _SilentOcr
 from workflow.association import AssociationSettings
 from workflow.stages import (
@@ -429,7 +427,6 @@ def test_the_stage_holds_the_pasted_drawings_text_to_its_lines(
         dpi=150,
         association=SETTINGS,
         ocr_engine=_SilentOcr(),
-        vision_readers=(),
         missing_space=MISSING_SPACE,
     ).extract_pages(session, revision.id)
     session.commit()
@@ -455,63 +452,3 @@ def test_the_stage_holds_the_pasted_drawings_text_to_its_lines(
         (ASSOCIATION_EXTRACTOR, ASSOCIATION_EXTRACTOR_VERSION)
     }
     assert ASSOCIATION_EXTRACTOR_VERSION.endswith("/2")
-
-
-#: **The page's own text, in its content stream**, on a 300-point page: a dimension at page y=200
-#: from x=100 to x=200, its witness lines crossing it 30 points either side; `12` over its middle and
-#: `7` standing just past its end. Read by a vision reader too, whose readings take those boxes.
-PAGE_TEXT = _content_pdf(
-    b"1 w 100 200 m 200 200 l S\n"
-    b"1 w 100 170 m 100 230 l S\n"
-    b"1 w 200 170 m 200 230 l S\n"
-    b"BT /F1 10 Tf 1 0 0 1 140 203 Tm (12) Tj ET\n"
-    b"BT /F1 10 Tf 1 0 0 1 204 203 Tm (7) Tj ET\n",
-    box=b"[0 0 300 300]",
-)
-
-
-def test_a_vision_reading_of_the_pages_own_text_is_held_to_the_same_line(
-    session: Session, store: LocalStore
-) -> None:
-    """**A second reading of the same box is held with it.** Input: `PAGE_TEXT`, with a vision
-    reader reading each text box; each vision reading is associated through the box it was shown
-    (`_vision_association_inputs`). Outcome: `12` and its vision reading are attached to the
-    dimension; `7` and its vision reading are both refused, so the box refused for the text is not
-    left attached through its second reading."""
-    revision = _revision(session, store, data=PAGE_TEXT)
-    session.commit()
-    DatabaseStages(
-        store,
-        dpi=150,
-        association=ASSOCIATION_SETTINGS,
-        ocr_engine=_SilentOcr(),
-        vision_readers=(_association_vision_reader(),),
-        missing_space=MISSING_SPACE,
-    ).extract_pages(session, revision.id)
-    session.commit()
-
-    rows = session.execute(
-        select(ObservationCandidate, ExtractionRun.extractor, ObservationAssociation)
-        .join(ExtractionRun, ExtractionRun.id == ObservationCandidate.extraction_run_id)
-        .join(
-            ObservationAssociation,
-            ObservationAssociation.candidate_id == ObservationCandidate.id,
-        )
-        .where(ExtractionRun.extractor != ASSOCIATION_EXTRACTOR)
-    ).all()
-    by_box: dict[tuple[tuple[int, int], ...], list[tuple[str, ObservationAssociation]]] = {}
-    for candidate, extractor, decision in rows:
-        box = tuple((int(x), int(y)) for x, y in candidate.polygon)
-        by_box.setdefault(box, []).append((extractor, decision))
-    texts = {
-        candidate.raw_text: tuple((int(x), int(y)) for x, y in candidate.polygon)
-        for candidate, extractor, _ in rows
-        if extractor != "association-vision-test"
-    }
-
-    assert set(texts) == {"12", "7"}
-    kept, refused = by_box[texts["12"]], by_box[texts["7"]]
-    assert {extractor for extractor, _ in kept} == {"pdfplumber", "association-vision-test"}
-    assert all(decision.refusal_reason is None for _, decision in kept)
-    assert {extractor for extractor, _ in refused} == {"pdfplumber", "association-vision-test"}
-    assert all(decision.refusal_reason == OWN_TEXT_BEYOND_ITS_ENDS for _, decision in refused)

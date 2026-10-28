@@ -13,6 +13,11 @@ the crop, and a coloured fill or a stamp pasted onto the drawing, are GV marks t
 in the vendor's black or grey is not.
 
 The drawings are made up here. No model is called and no client drawing is read.
+
+**Since 2026-10-28** the two readers agreeing in the stage tests are two readings recorded beside
+the drawing's own, as the gate receives a page's readings, judged by the guard the stage builds for
+the page (`DatabaseStages._gv_mark_guard`); before, they were scripted vision readers inside
+`extract_pages`, which were retired with the label-first route.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ import io
 import tempfile
 from collections.abc import Callable, Iterator
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -32,6 +38,7 @@ from sqlalchemy.orm import Session
 from alembic import command
 from app.api.documents import storage_key
 from app.db.session import session_factory
+from app.evidence.record import open_extraction_run
 from app.models import (
     Document,
     DocumentVersion,
@@ -41,6 +48,7 @@ from app.models import (
     PackageRevision,
     PackageRevisionDocument,
     PackageState,
+    Page,
     Project,
     SourceArtifact,
 )
@@ -53,8 +61,6 @@ from extraction.stamp_text import ColouredPath
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import MISSING_SPACE
-from tests.workflow.test_cross_route_corroboration import _Reader, _reader
-from tests.workflow.test_cut_label_guard import stated_geometry
 from workflow import stages as stages_module
 from workflow.config import READER_RASTER_DPI
 from workflow.idempotency import stage_idempotency_key
@@ -64,7 +70,10 @@ from workflow.stages import (
     GV_MARK_UNCHECKED_REASON,
     ColouredMarkup,
     DatabaseStages,
+    _AgreementGuard,
     _GvMarkGuard,
+    _MixedFractionGuard,
+    agreement_refusal_reasons,
     coloured_markup,
     crop_shows_a_gv_mark,
     gv_mark_in_crop,
@@ -599,11 +608,19 @@ def _revision(session: Session, store: LocalStore, data: bytes) -> PackageRevisi
     return revision
 
 
-#: The reader pair as production runs it: two vendors (#775).
+#: A pair of readers of two vendors (#775), as two routes of a page's readings.
 PAIR = (
-    _reader("bedrock-nova-2-lite", "amazon.nova-2-lite-v1:0"),
-    _reader("bedrock-ministral-3-3b", "mistral.ministral-3-3b-instruct"),
+    ("bedrock-nova-2-lite", "amazon.nova-2-lite-v1:0"),
+    ("bedrock-ministral-3-3b", "mistral.ministral-3-3b-instruct"),
 )
+
+
+class _HoldsNothingBack(_AgreementGuard):
+    """The cut-label guard on a page with nothing cut, so the GV-mark guard alone decides here."""
+
+    def _reason(self, region: ObservationCandidate) -> str | None:
+        del region
+        return None
 
 
 def _extract(
@@ -614,41 +631,94 @@ def _extract(
     reading: str = '24"',
     pasted: tuple[bytes, bytes] | None = None,
 ) -> tuple[list[tuple[ObservationCandidate, str]], dict[str, object]]:
-    """The page's `24"` readings with what read each, and the page result."""
-    revision = _revision(session, store, _sheet(mark, pasted=pasted))
-    readers = tuple(
-        _reader(reader.config.extractor, reader.config.model_id, reading=reading) for reader in PAIR
-    )
-    (result,) = DatabaseStages(
-        store,
-        vision_readers=readers,
-        missing_space=MISSING_SPACE,
-        # The drawing's geometry stated, as in the demo: without it the cut-label guard (#919)
-        # cannot rule a cut out, and no agreement is confirmed whatever the crop shows.
-        **stated_geometry(PAIR[0].config.extractor),  # type: ignore[arg-type]
-    ).extract_pages(session, revision.id)
-    rows = [
-        (row, extractor)
-        for row, extractor in session.execute(
-            select(ObservationCandidate, ExtractionRun.extractor).join(
-                ExtractionRun, ObservationCandidate.extraction_run_id == ExtractionRun.id
+    """The sheet read; the drawing's own `24"` and the pair's `reading` of the same region, judged
+    by the agreement gate with the page's own GV-mark guard. The pair's readings with what read
+    each, and the refusals as the page result counts them."""
+    data = _sheet(mark, pasted=pasted)
+    revision = _revision(session, store, data)
+    stages = DatabaseStages(store, missing_space=MISSING_SPACE)
+    stages.extract_pages(session, revision.id)
+    read = session.execute(
+        select(ObservationCandidate).where(ObservationCandidate.raw_text == '24"')
+    ).scalar_one()
+    page = session.get(Page, read.page_id)
+    first = session.get(ExtractionRun, read.extraction_run_id)
+    assert page is not None and first is not None
+    inches = int(reading.rstrip('"'))
+    rows = []
+    for extractor, model_id in PAIR:
+        run = open_extraction_run(
+            session,
+            task_run_id=first.task_run_id,
+            extractor=extractor,
+            extractor_version=model_id,
+            config_hash="test",
+            dpi=first.dpi,
+        )
+        rows.append(
+            (
+                ObservationCandidate(
+                    document_version_id=read.document_version_id,
+                    page_id=read.page_id,
+                    extraction_run_id=run.id,
+                    raw_text=reading,
+                    value_numerator=inches,
+                    value_denominator=1,
+                    unit="in",
+                    unit_guess="in",
+                    semantic_guess=None,
+                    polygon=[list(point) for point in read.polygon],
+                    coordinate_space="image",
+                    confidence=None,
+                    ambiguity_flags=[],
+                ),
+                extractor,
             )
-        ).all()
-        if row.raw_text != '38"'
-    ]
-    return rows, dict(result.payload)
+        )
+    own = ObservationCandidate(
+        document_version_id=read.document_version_id,
+        page_id=read.page_id,
+        extraction_run_id=first.id,
+        raw_text=read.raw_text,
+        value_numerator=read.value_numerator,
+        value_denominator=read.value_denominator,
+        unit=read.unit,
+        unit_guess=read.unit_guess,
+        semantic_guess=None,
+        polygon=[list(point) for point in read.polygon],
+        coordinate_space="image",
+        confidence=read.confidence,
+        ambiguity_flags=list(read.ambiguity_flags),
+    )
+    session.add_all([own, *(row for row, _ in rows)])
+    version_id = read.document_version_id
+    gv_mark = stages._gv_mark_guard(
+        data, page, version_id, None, partial(stages._vendor_render, data, page, version_id)
+    )
+    DatabaseStages._apply_cross_route_corroboration(
+        session,
+        page_index=page.index,
+        candidates=[own, *(row for row, _ in rows)],
+        gv_mark=gv_mark,
+        cut_label=_HoldsNothingBack(),  # type: ignore[arg-type]
+        mixed_fraction=_MixedFractionGuard(),
+    )
+    payload: dict[str, object] = {
+        "agreement_refusals": len(gv_mark.refused),
+        "agreement_refusal_reasons": agreement_refusal_reasons((gv_mark,), 20),
+    }
+    return rows, payload
 
 
 def test_two_readers_agreeing_on_a_reading_whose_crop_shows_a_gv_mark_do_not_confirm_it(
     session: Session, store: LocalStore
 ) -> None:
-    """**Done when, first line.** The file's text and both model readers say `24"`, and GV's red
-    `38"` is written over it: no reading takes the second-reader lane, so none can be sealed; each
-    is a pre-fill a person ticks. The page result counts the refusal and says why."""
+    """**Done when, first line.** Both readers say `24"`, and GV's red `38"` is written over it: no
+    reading takes the second-reader lane, so none can be sealed; each is a pre-fill a person ticks.
+    The page result counts the refusal and says why."""
     rows, payload = _extract(session, store, OVER_THE_LABEL)
 
     assert {extractor for _, extractor in rows} == {
-        "pdfplumber",
         "bedrock-nova-2-lite",
         "bedrock-ministral-3-3b",
     }
@@ -670,10 +740,7 @@ def test_the_same_pair_with_no_gv_mark_in_the_crop_confirms_it(
     lanes = {
         extractor: (row.corroboration_status, row.corroboration_lane) for row, extractor in rows
     }
-    # The file's own reading was saved with the page's drawings, before the readers ran, and a
-    # saved reading keeps its status (#790); the two readings written beside it take the lane.
     assert lanes == {
-        "pdfplumber": (None, None),
         "bedrock-nova-2-lite": ("RAW_CANDIDATE", "SECOND_READER"),
         "bedrock-ministral-3-3b": ("RAW_CANDIDATE", "SECOND_READER"),
     }
@@ -696,9 +763,8 @@ def test_a_disagreement_in_a_marked_crop_is_still_a_conflict(
     lanes = {
         extractor: (row.corroboration_status, row.corroboration_lane) for row, extractor in rows
     }
-    assert {row.raw_text for row, _ in rows} == {'24"', '25"'}
+    assert {row.raw_text for row, _ in rows} == {'25"'}
     assert lanes == {
-        "pdfplumber": (None, None),
         "bedrock-nova-2-lite": ("CONFLICTING", "SECOND_READER"),
         "bedrock-ministral-3-3b": ("CONFLICTING", "SECOND_READER"),
     }
@@ -795,66 +861,3 @@ def test_the_stage_gathers_the_markup_by_the_one_production_function(
 
     assert calls == [READER_RASTER_DPI]
     assert payload["agreement_refusals"] == 0
-
-
-# ---------------------------------------------------------------------------
-# The new pair, Qwen3-VL + Nova 2 Lite (#907)
-# ---------------------------------------------------------------------------
-
-
-def _new_pair(reading: str) -> tuple[_Reader, _Reader]:
-    """The two readers #907 makes the pair, as they are configured: Qwen on the crop as cut, Nova 2
-    Lite on the label upright and sharper."""
-    from extraction.models.nova import (
-        NOVA_2_LITE_TAUGHT_EXTRACTOR,
-        QWEN3_VL_235B_EXTRACTOR,
-        vision_config_for_extractor,
-    )
-
-    configs = [
-        vision_config_for_extractor(extractor)
-        for extractor in (QWEN3_VL_235B_EXTRACTOR, NOVA_2_LITE_TAUGHT_EXTRACTOR)
-    ]
-    assert all(config is not None for config in configs)
-    return _Reader(configs[0], reading=reading), _Reader(configs[1], reading=reading)  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize(
-    ("mark", "confirmed"),
-    [(OVER_THE_LABEL, False), (BLACK_OVER_THE_LABEL, True), (FAR_AWAY, True)],
-    ids=["gv-mark-over-the-label", "black-over-the-label", "gv-mark-far-away"],
-)
-def test_the_new_pair_agreeing_on_a_gv_mark_s_number_is_held_back(
-    session: Session, store: LocalStore, mark: bytes, confirmed: bool
-) -> None:
-    """**#901 holds for the new pair.** In the trial Qwen3-VL and Nova 2 Lite agreed on GV's own
-    red number in three crops whose vendor number was hidden (#728, 2026-10-04). The same agreement
-    here — both readers say what GV wrote — confirms nothing where the crop shows GV's mark, and is
-    confirmed as before where the mark is the vendor's black or lies outside the crop. Two vendors,
-    so without the mark the pair would confirm it (#775)."""
-    from workflow.reader_pictures import PictureSettings
-
-    revision = _revision(session, store, _sheet(mark))
-    readers = _new_pair('24"')
-    stages = DatabaseStages(
-        store,
-        vision_readers=readers,
-        reader_pictures=PictureSettings(sharper_dpi=900),
-        missing_space=MISSING_SPACE,
-        **stated_geometry(readers[0].config.extractor),  # type: ignore[arg-type]
-    )
-
-    (result,) = stages.extract_pages(session, revision.id)
-
-    lanes = {
-        extractor: (row.corroboration_status, row.corroboration_lane)
-        for row, extractor in session.execute(
-            select(ObservationCandidate, ExtractionRun.extractor).join(
-                ExtractionRun, ObservationCandidate.extraction_run_id == ExtractionRun.id
-            )
-        ).all()
-        if row.raw_text == '24"' and extractor != "pdfplumber"
-    }
-    lane = ("RAW_CANDIDATE", "SECOND_READER") if confirmed else (None, None)
-    assert lanes == {"bedrock-qwen3-vl-235b": lane, "bedrock-nova-2-lite-taught": lane}
-    assert result.payload["agreement_refusals"] == (0 if confirmed else 1)

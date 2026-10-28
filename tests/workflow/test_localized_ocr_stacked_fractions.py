@@ -46,7 +46,6 @@ from tests.extraction.models.test_validation import THIRTY_SEVEN_AND_A_HALF_LAYO
 from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
 from tests.workflow.test_cut_label_guard import whole_labels
-from tests.workflow.test_fraction_parts_route import _copy, _second_reader
 from tests.workflow.test_glyph_route import _glyph_rows, _settings, _templates
 from tests.workflow.test_gv_mark_guard import unmarked_page
 from tests.workflow.test_markup_route import _SilentOcr
@@ -55,9 +54,42 @@ from tests.workflow.test_stacked_fraction_route import PLAIN_SHEET, STACKED_SHEE
 from units.normalise import normalise_to_inches
 from units.notation import canonical_notation
 from workflow.glyph_route import GlyphRoute
-from workflow.stages import DatabaseStages, _vision_pre_call_refusal, stacked_reading_check
+from workflow.stages import DatabaseStages, crop_shows_a_stacked_fraction, stacked_reading_check
 
 pytest_plugins = ("tests.app.postgres_fixture",)
+
+
+def _copy(row: ObservationCandidate, *, run_id: object, flags: list[str]) -> ObservationCandidate:
+    """The same reading, recorded again under `run_id` with `flags`: a second reader of one box."""
+    return ObservationCandidate(
+        document_version_id=row.document_version_id,
+        page_id=row.page_id,
+        extraction_run_id=run_id,
+        raw_text=row.raw_text,
+        value_numerator=row.value_numerator,
+        value_denominator=row.value_denominator,
+        unit=row.unit,
+        unit_guess=row.unit_guess,
+        semantic_guess=None,
+        polygon=row.polygon,
+        coordinate_space="image",
+        confidence=None,
+        ambiguity_flags=flags,
+    )
+
+
+def _second_reader(session: Session, row: ObservationCandidate) -> ExtractionRun:
+    first = session.get(ExtractionRun, row.extraction_run_id)
+    assert first is not None
+    return open_extraction_run(
+        session,
+        task_run_id=first.task_run_id,
+        extractor="a-second-reader",
+        extractor_version="test/1",
+        config_hash="test",
+        dpi=first.dpi,
+    )
+
 
 ASSOCIATION = replace(SETTINGS, proximity_limit=Decimal("0.9"))
 
@@ -337,16 +369,17 @@ def test_the_localized_run_names_the_detector_it_was_held_to(
         (0, 0, 99, 99),  # elsewhere on the page
     ],
 )
-def test_a_reading_is_over_a_fraction_exactly_where_a_vision_crop_would_be_refused(
+def test_a_reading_is_over_a_fraction_exactly_where_a_crop_would_show_one(
     box: tuple[int, int, int, int],
 ) -> None:
     """**So the two cannot disagree** (#846): for any box, edges included, the reading check finds
-    a stacked fraction exactly where the vision readers' pre-call check refuses a crop."""
+    a stacked fraction exactly where a crop of that box shows one (`crop_shows_a_stacked_fraction`,
+    the rule the retired vision readers' pre-call check refused a crop by)."""
     fractions = [_fraction(190, 150, 230, 190)]
 
     stacked, _ = stacked_reading_check(_corners(box), '28 3/4"', fractions)
 
-    assert stacked == (_vision_pre_call_refusal(box, fractions) is not None)
+    assert stacked == crop_shows_a_stacked_fraction(box, fractions)
 
 
 def test_over_a_laid_out_label_a_reading_is_held_to_its_digit_counts() -> None:

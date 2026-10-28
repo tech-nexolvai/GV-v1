@@ -41,6 +41,7 @@ from app.evidence.automatic_typing import (
     qualify_exact_tags_for_revision,
 )
 from app.evidence.confirm import ConfirmationRefused, RefusalReason, confirm_candidate_type
+from app.evidence.record import open_extraction_run
 from app.models import (
     CanonicalObservation,
     Document,
@@ -59,23 +60,18 @@ from app.models import (
     ViewRole,
 )
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
-from evidence.candidate import ObservationCandidate as DomainCandidate
-from evidence.coordinates import ImagePoint
-from extraction.models.nova import NovaConfig, NovaRequest
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import MISSING_SPACE, _pdf
-from tests.workflow.test_cut_label_guard import stated_geometry
 from tests.workflow.test_stages import (
     _outcome_for,
     _project_depth_parameters,
     _publish_rulebook,
 )
-from units.measurement import Unit
 from vocabulary.semantic_types import SemanticType
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
-from workflow.stages import DatabaseStages
+from workflow.stages import DatabaseStages, _AgreementGuard, _MixedFractionGuard
 from workflow.view_roles import confirm_view_role, record_panel_view
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -104,44 +100,6 @@ EXACT_DEPTH_SINGLE_UNIT = '25.5"'
 #: two readers of different vendors have agreed on wrongly — so it would leave this lane nothing to type.
 AGREED_DEPTH = '26"'
 AGREED_OVERHANG = Fraction(2)
-
-
-class _AgreeingVisionReader:
-    """A scripted independent reader for the automatic two-read path."""
-
-    config = NovaConfig(
-        model_id="test-vision-reader",
-        prompt_id="dimension-reader-v1",
-        template_id="bounded-crop-v1",
-        connect_timeout_seconds=1,
-        read_timeout_seconds=1,
-        max_attempts=1,
-        extractor="test-vision-reader",
-    )
-
-    def __init__(self, reading: str) -> None:
-        self._reading = reading
-
-    def extract(self, request: NovaRequest, recorder: object) -> DomainCandidate:
-        del recorder
-        return DomainCandidate(
-            candidate_id=request.candidate_id,
-            extractor=self.config.extractor,
-            extractor_version=self.config.model_id,
-            raw_text=self._reading,
-            parsed_value=None,
-            unit_guess=Unit.INCH,
-            semantic_guess=None,
-            page=request.page,
-            polygon=(
-                ImagePoint(0, 0),
-                ImagePoint(10, 0),
-                ImagePoint(10, 5),
-                ImagePoint(0, 5),
-            ),
-            confidence=None,
-            ambiguity_flags=("scripted second reader",),
-        )
 
 
 def _upgrade(engine: Engine) -> None:
@@ -226,26 +184,92 @@ def _revision(session: Session, store: LocalStore, *, token: str) -> PackageRevi
     return revision
 
 
+class _HoldsNothingBack(_AgreementGuard):
+    """A guard that lets every agreement through: the guards have tests of their own."""
+
+    def _reason(self, region: ObservationCandidate) -> str | None:
+        del region
+        return None
+
+
+def _agreed_by_a_second_reader(session: Session, token: str, version_id: UUID) -> None:
+    """The drawing's reading and an independent second reader agreeing on it, in its region.
+
+    **As the agreement gate records two routes agreeing** (`_apply_cross_route_corroboration`): both
+    readings are new, the file's own under the vector reader's run and the other under a second
+    reader's, and the gate gives both the second-reader lane. Before 2026-10-28 the second reader
+    was a scripted vision reader inside `extract_pages`; the vision readers are retired, so the
+    agreement is made here, by the gate itself.
+    """
+    read = (
+        session.execute(
+            select(ObservationCandidate)
+            .where(
+                ObservationCandidate.document_version_id == version_id,
+                ObservationCandidate.raw_text == token,
+            )
+            .order_by(ObservationCandidate.created_at, ObservationCandidate.id)
+        )
+        .scalars()
+        .first()
+    )
+    assert read is not None
+    first = session.get(ExtractionRun, read.extraction_run_id)
+    assert first is not None
+    second = open_extraction_run(
+        session,
+        task_run_id=first.task_run_id,
+        extractor="test-second-reader",
+        extractor_version="test-second-reader/1",
+        config_hash="test",
+        dpi=first.dpi,
+    )
+    rows = [
+        ObservationCandidate(
+            document_version_id=read.document_version_id,
+            page_id=read.page_id,
+            extraction_run_id=run.id,
+            raw_text=read.raw_text,
+            value_numerator=read.value_numerator,
+            value_denominator=read.value_denominator,
+            unit=read.unit,
+            unit_guess=read.unit_guess,
+            semantic_guess=None,
+            polygon=[list(point) for point in read.polygon],
+            coordinate_space="image",
+            confidence=read.confidence,
+            ambiguity_flags=list(read.ambiguity_flags),
+        )
+        for run in (first, second)
+    ]
+    session.add_all(rows)
+    DatabaseStages._apply_cross_route_corroboration(
+        session,
+        page_index=0,
+        candidates=rows,
+        gv_mark=_HoldsNothingBack(),  # type: ignore[arg-type]
+        cut_label=_HoldsNothingBack(),  # type: ignore[arg-type]
+        mixed_fraction=_MixedFractionGuard(),
+    )
+    session.flush()
+
+
 def _extract(
     session: Session, store: LocalStore, *, token: str, second_reader: bool = False
 ) -> tuple[PackageRevision, UUID]:
-    """Read the drawing and return the revision with the candidate carrying its dimension."""
+    """Read the drawing and return the revision with the candidate carrying its dimension.
+
+    With `second_reader`, the candidate is the drawing's reading that an independent second reader
+    agreed on (`_agreed_by_a_second_reader`)."""
     revision = _revision(session, store, token=token)
-    readers = (_AgreeingVisionReader(token),) if second_reader else ()
-    # A second reader's agreement is confirmed only where the gate can see that the reader's crop
-    # holds the whole label, so the drawing's geometry is stated, as in the demo (#919).
-    geometry = stated_geometry(_AgreeingVisionReader.config.extractor) if second_reader else {}
-    DatabaseStages(
-        store,
-        vision_readers=readers,
-        missing_space=MISSING_SPACE,
-        **geometry,  # type: ignore[arg-type]
-    ).extract_pages(session, revision.id)
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
     version_id = session.execute(
         select(PackageRevisionDocument.document_version_id).where(
             PackageRevisionDocument.package_revision_id == revision.id
         )
     ).scalar_one()
+    if second_reader:
+        _agreed_by_a_second_reader(session, token, version_id)
     candidate = (
         session.execute(
             select(ObservationCandidate)
@@ -253,6 +277,11 @@ def _extract(
                 ObservationCandidate.document_version_id == version_id,
                 ObservationCandidate.value_numerator.is_not(None),
                 ObservationCandidate.raw_text == token,
+                *(
+                    (ObservationCandidate.corroboration_lane == "SECOND_READER",)
+                    if second_reader
+                    else ()
+                ),
             )
             .order_by(ObservationCandidate.created_at, ObservationCandidate.id)
         )

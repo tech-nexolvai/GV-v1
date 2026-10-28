@@ -454,7 +454,7 @@ def build_stages(
     from workflow.stages import (
         DatabaseStages,
         configured_architect_reader,
-        fraction_parts_from_environment,
+        label_lengths_from_environment,
         missing_space_from_environment,
     )
 
@@ -471,8 +471,6 @@ def build_stages(
     from app.config import Settings
     from workflow.form_reader import configured_form_reader
     from workflow.glyph_route import glyph_route_from_environment
-    from workflow.reader_pictures import picture_settings_from_environment
-    from workflow.reading_agent import reading_agent_from_environment
     from workflow.slot_reader import configured_slot_reader
 
     if settings is None:
@@ -489,18 +487,10 @@ def build_stages(
         findings_composer=configured_findings_composer(settings),
         # Off unless GV_GLYPH_TEMPLATES names a template set a person labelled (#756).
         glyph_route=glyph_route_from_environment(),
-        # Off unless GV_READING_AGENT is on, and then every one of its settings is required (#757).
-        reading_agent=reading_agent_from_environment(),
-        # Off unless named: the vision reader that goes first, the others reading only where it
-        # read a value (#787). An unknown name is refused when the stages are built.
-        vision_gate=os.environ.get("GV_VISION_GATE_READER", "").strip() or None,
-        # Off unless GV_FRACTION_PARTS is on, and then every drawing setting is required (#848),
-        # and so is the gate reader above: it is the route's second reader (#865).
-        fraction_parts=fraction_parts_from_environment(),
+        # Unstated unless both are set: the lengths the agreement gate's cut-label guard gathers a
+        # label by (#919). With them unstated the guard holds every agreement for a person.
+        label_lengths=label_lengths_from_environment(),
         timings=timings,
-        # The dpi an upright, sharper picture is rendered at (#907). No default: a stage with a
-        # reader shown one refuses to start without it.
-        reader_pictures=picture_settings_from_environment(),
         # Always required: how wide a gap inside the inches is a space the file left out (#912).
         # Unstated, building the stages fails with an error naming the variable, so no page is
         # read without it.

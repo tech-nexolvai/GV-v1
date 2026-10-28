@@ -192,57 +192,12 @@ API_PID=$!
 # half the narrowest space. Every value from 0.023 to below 1 reads both drawings exactly as before;
 # at 0.02, thirteen labels on `AI_Set_1` go blank.
 #
-# **The two Bedrock vision readers, and what turning them on costs (#651).** They were built in
-# #622/#623 and PC.3 and this flag is the only thing that starts them; until it was set here the
-# whole reading rebuild had never executed, and the demo ran the vector+OCR path alone. They are
-# what makes the cross-route SECOND_READER lane possible: a number read by two *different*
-# extractors that agree exactly is the only reading this system will seal without a human.
-#
-# It is a paid call per candidate region, so the cost is real and belongs next to the switch rather
-# than in a runbook.
-#
-# **The reading agent (#757), on in the demo only** — the admin's decision of 2026-10-01, taken once
-# the 51-crop human key showed it confirms no wrong value (#775 made agreement count only across
-# vendors). Where a label is hard to read it widens the crop to the whole label, turns it upright or
-# looks sharper, asks Nova 2 Lite, then mistral-large-3 (D-A2). What it reads is a candidate like any
-# other: a person confirms it, and a disagreement goes to a reviewer. On that key it also proposed
-# two wrong values for a person to catch, and read nothing the pair had missed — so it is on here to
-# be tried on real drawings, and nowhere else. About 40% more model cost per crop. Every setting is
-# required; `workflow/reading_agent.py` says what each one is.
-# **The reader pair is Qwen3-VL + Nova 2 Lite (#907)** — the admin's decision of 2026-10-04, after
-# the trial on both new answer keys (#728). Qwen3-VL (a third vendor) refuses forced tool use with a
-# picture, so it answers one JSON object that Bedrock holds to a schema, taught how these drawings
-# write a dimension, on the crop as cut. Nova 2 Lite is read the way the trial measured it: taught,
-# answering JSON in words, and shown the label turned upright where the drawing's own text, or the
-# way its drawn characters run, says it is sideways, and rendered from the vector page at 900 dpi —
-# the size the trial measured (300 dpi × 3), drawn rather than enlarged. Measured through the production path before this was switched on: of the
-# 47 labels a person read on the two keys, the pair agreed right on 25 — 24 that can be confirmed,
-# one stacked fraction that stays a pre-fill — and wrong on none; today's Nova 2 Lite + Ministral 3B,
-# measured the same way, agreed on 2. All three agreements on GV's own red number were held back by
-# the GV-mark guard (#901). Ministral 3B leaves the pair and stays defined. The pair cost about
-# $0.0005 a label there.
-#
-# **Qwen reads first (#787).** Nova 2 Lite is held to 20 requests a minute on this account and AWS
-# declined to raise it (#716), so Nova reads only the crops the gate reader found a value in.
-# Nothing that could be confirmed is lost: a confirmation is two readers' values agreeing (#775).
-#
 # **The phrase index is on (#849).** After extraction the worker joins each line's words into
 # passages (#836), which is what `workflow/parameter_proposals.py` searches when it looks for the
 # passage that states a setting. Words join when the space between them is at most 0.34 of the
 # line's height. Measured on both client drawings in #840: the space between two words of one note
 # is at most 0.333 line heights, and the narrowest space between two separate items is 0.372 on
 # AI_Set_2 and 0.421 on AI_Set_1. The admin's decision of 2026-10-03, on #798. No model is called.
-#
-# **Stacked fractions are read piece by piece (#848, #865), on in the demo only** — the admin's decision
-# of 2026-10-03, on #756. Each laid-out stacked label's whole number, numerator and denominator are
-# drawn alone from the vendor's own strokes and read twice: by local OCR and by the gate reader above,
-# a different vendor's model asked for the digits alone. Only where the two agree on every piece is
-# the value written, and only as a pre-fill a person ticks: it keeps the stacked-fraction flag, so no
-# agreement ever seals it (#726). On `AI_Set 2` it pre-filled 11 labels, all right, and refused 2;
-# 28 Ministral calls, $0.0007. Since #907 the gate reader is Qwen3-VL, so Qwen reads the digits, in
-# plain JSON. The four drawing sizes were measured in #848: every piece read at a
-# height of 30–56 px, a stroke of 2–8 px and a margin of 16–96 px; the vendor's labels have no
-# curves, so the Bezier step count changes nothing. The route refuses to start without a gate reader.
 #
 # **Every suggested part has its own picture (#897)** — the admin's decision of 2026-10-04. The worker
 # cuts one per suggestion from the vendor's page (the reviewer's markup left out, as for every
@@ -254,21 +209,17 @@ API_PID=$!
 # shows the cabinet's doors and drawers too. At 150 dpi the vendor's 5.4 pt digits are about 11 px
 # tall and readable, with a quarter of the pixels 300 dpi would cost. A picture is for a person to
 # look at; nothing reads a value from it.
-GV_BEDROCK_VISION_READERS=qwen3-vl-235b,nova-2-lite-taught \
-GV_VISION_GATE_READER=bedrock-qwen3-vl-235b \
-GV_VISION_SHARPER_PICTURE_DPI=900 \
-GV_READING_AGENT=1 \
-GV_AGENT_MAX_STEPS=6 \
-GV_AGENT_MAX_ESCALATIONS=0 \
-GV_AGENT_SHARPER_DPI=450 \
-GV_AGENT_PRIMARY_READER=bedrock-nova-2-lite \
-GV_AGENT_LABEL_GAP_PT=4 \
-GV_AGENT_MAX_LABEL_PT=40 \
+#
+# **The label lengths the agreement gate's cut-label guard gathers a label by (#919).** They were the
+# reading agent's (`GV_AGENT_LABEL_GAP_PT`, `GV_AGENT_MAX_LABEL_PT`), at the same 4 and 40 pt; the
+# agent, the Bedrock vision readers and the piece-by-piece fraction reads were retired with the
+# label-first route on 2026-10-28, so the demo no longer turns them on.
+GV_LABEL_GAP_PT=4 \
+GV_MAX_LABEL_PT=40 \
 GV_DATABASE_URL="$BARE_URL" \
 GV_DEV_STORAGE=".dev-storage" \
 GV_MODEL_RATES_FILE="deploy/model_rates.us-east-1.json" \
 GV_LOCALIZED_OCR_ENABLED=1 \
-GV_BEDROCK_VISION_ENABLED=1 \
 GV_READER_LINE_MINIMUM_PT=6 \
 GV_READER_GLYPH_MAXIMUM_PT=6 \
 GV_READER_GLYPH_GAP_PT=4 \
@@ -291,11 +242,6 @@ GV_READER_FRACTION_CHARACTER_GAP_PT=4 \
 GV_READER_FRACTION_TURNED_ASPECT_MIN=1.1 \
 GV_READER_MISSING_SPACE_HEIGHTS=0.1 \
 GV_PHRASE_GAP_LINE_HEIGHTS=0.34 \
-GV_FRACTION_PARTS=1 \
-GV_FRACTION_PARTS_HEIGHT_PX=40 \
-GV_FRACTION_PARTS_STROKE_PX=4 \
-GV_FRACTION_PARTS_MARGIN_PX=32 \
-GV_FRACTION_PARTS_BEZIER_STEPS=8 \
 GV_PART_PICTURE_MARGIN_PT=72 \
 GV_PART_PICTURE_DPI=150 \
   "$PYTHON" scripts/drain_outbox.py --watch &

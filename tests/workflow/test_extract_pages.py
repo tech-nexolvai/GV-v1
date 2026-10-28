@@ -972,52 +972,6 @@ def test_a_real_number_among_line_work_keeps_its_value(session: Session, store: 
     assert (row.value_numerator, row.value_denominator) == (3620, 127)
 
 
-class _RecordingVisionReader:
-    """A vision reader double that answers every crop and remembers which crops it was sent."""
-
-    def __init__(self) -> None:
-        from tests.workflow.test_association import _association_vision_reader
-
-        self._inner = _association_vision_reader()
-        self.config = self._inner.config
-        self.requests: list[object] = []
-
-    def extract(self, request: object, recorder: object) -> object:
-        self.requests.append(request)
-        return self._inner.extract(request, recorder)  # type: ignore[arg-type]
-
-
-def test_a_box_whose_text_was_not_recorded_is_still_read_by_the_vision_readers(
-    session: Session, store: LocalStore
-) -> None:
-    """**The constraint that shaped the fix.** Outcome: every OCR box is still a vision crop.
-
-    The vision readers read the regions OCR found, and on the client's drawing nearly every one of
-    them was an OCR box whose text was line-work. Dropping the box with the text would have dropped
-    the readings the vision readers make there. So the text goes and the box stays.
-    """
-    revision = _revision(session, store, data=SCANNED)
-    reader = _RecordingVisionReader()
-
-    results = DatabaseStages(
-        store,
-        ocr_engine=_line_work_ocr(),
-        vision_readers=(reader,),  # type: ignore[arg-type]
-        missing_space=MISSING_SPACE,
-    ).extract_pages(session, revision.id)
-
-    assert len(reader.requests) == 7
-    (payload,) = [result.payload for result in results]
-    assert payload["vision_invocations"] == 7
-    assert payload["vision_candidates"] == 7
-    vision = [
-        row
-        for row in session.execute(select(ObservationCandidate)).scalars()
-        if row.raw_text == '24"'
-    ]
-    assert len(vision) == 7
-
-
 def test_a_rerun_does_not_reuse_an_ocr_run_recorded_under_the_old_rule(
     session: Session, store: LocalStore
 ) -> None:

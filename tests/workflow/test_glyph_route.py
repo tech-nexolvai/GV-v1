@@ -2,10 +2,10 @@
 
 Verification for: `workflow/glyph_route.py`, and its wiring in `workflow/stages.py`.
 
-The one that matters most is that a glyph reading **never seals**: until the admin decides what it
-may seal (#756 D2), it is a candidate a reviewer confirms, and it never reaches cross-route
-corroboration or the bounded agent — checked by watching what those two steps are handed, not by
-trusting that the rows happen to sit in different regions.
+The one that matters most is that a glyph reading **never seals alone** (#756 D2): it is a
+candidate a reviewer confirms unless another reader agrees on its own box. Its second witness was
+the vision readers, retired with the label-first route on 2026-10-28; the agreement gate is shown
+here judging a second reading of the box as it would any other route's.
 
 The drawing is a real one-page PDF with a stamp, drawn in the made-up font of
 `tests/extraction/test_glyph_reader.py`. No client drawing is read and no model is called.
@@ -26,7 +26,8 @@ import pytest
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
-from app.models import ObservationCandidate
+from app.evidence.record import open_extraction_run
+from app.models import ObservationCandidate, Page
 from app.models.runs import ExtractionRun
 from extraction.annotations import read_annotation_layers
 from extraction.glyph_reader import ReaderSettings, TemplateSet, described
@@ -42,8 +43,7 @@ from workflow.glyph_route import (
     GlyphRoute,
     glyph_route_from_environment,
 )
-from workflow.reading_agent import ReadingAgentSettings
-from workflow.stages import DatabaseStages
+from workflow.stages import DatabaseStages, _MixedFractionGuard
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -124,22 +124,20 @@ def store() -> Iterator[LocalStore]:
         yield LocalStore(root=Path(directory), ticket_secret=b"a secret only this test knows")
 
 
-def _stages(
-    store: LocalStore,
-    route: GlyphRoute | None,
-    vision_readers: tuple[object, ...] = (),
-    reading_agent: ReadingAgentSettings | None = None,
-) -> DatabaseStages:
+def _stages(store: LocalStore, route: GlyphRoute | None) -> DatabaseStages:
+    from tests.workflow.test_cut_label_guard import LABEL_LENGTHS
+
     return DatabaseStages(
         store,
         dpi=150,
         association=ASSOCIATION,
         ocr_engine=_SilentOcr(),  # type: ignore[arg-type]
         localized_ocr=LOCALIZED,
-        vision_readers=vision_readers,  # type: ignore[arg-type]
         glyph_route=route,
         missing_space=MISSING_SPACE,
-        reading_agent=reading_agent,
+        # Stated, so the gate can see whether a crop of the glyph reading's box holds the whole
+        # label (#919).
+        label_lengths=LABEL_LENGTHS,
     )
 
 
@@ -181,79 +179,112 @@ def test_a_label_is_read_from_its_shapes_and_recorded_under_its_own_reader(
     assert payload["glyph_abstentions"] == 0
 
 
-def _watch_agent(monkeypatch: pytest.MonkeyPatch) -> list[ObservationCandidate]:
-    """Record every candidate handed to the bounded agent."""
-    agent: list[ObservationCandidate] = []
-    original_agent = DatabaseStages._run_bounded_agent_for_ambiguous_regions
-
-    def watching_agent(self: DatabaseStages, session: Session, **kwargs: object) -> object:
-        agent.extend(kwargs["candidates"])  # type: ignore[call-overload]
-        return original_agent(self, session, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(DatabaseStages, "_run_bounded_agent_for_ambiguous_regions", watching_agent)
-    return agent
-
-
-def _read_with_vision(
-    session: Session,
-    store: LocalStore,
-    readers: tuple[object, ...],
-    reading_agent: ReadingAgentSettings | None = None,
-) -> ObservationCandidate:
+def _read_glyph(session: Session, store: LocalStore) -> tuple[DatabaseStages, ObservationCandidate]:
     revision = _revision(session, store, data=SHEET)
     session.commit()
-    _stages(store, GlyphRoute(_templates(), _settings()), readers, reading_agent).extract_pages(
-        session, revision.id
-    )
+    stages = _stages(store, GlyphRoute(_templates(), _settings()))
+    stages.extract_pages(session, revision.id)
     session.commit()
     (row,) = _glyph_rows(session)
-    return row
+    return stages, row
 
 
-def test_a_glyph_reading_alone_is_not_confirmed(
-    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _witnessed(
+    session: Session, store: LocalStore, reading: str, inches: int
+) -> list[ObservationCandidate]:
+    """The glyph reading and a second reader's `reading` of its own box, through the agreement gate
+    with the page's own guards (#901, #919, #924), as the gate receives a page's readings: both new.
+    Returns the glyph reading's copy, then the second reader's."""
+    stages, glyph = _read_glyph(session, store)
+    page = session.get(Page, glyph.page_id)
+    run = session.get(ExtractionRun, glyph.extraction_run_id)
+    assert page is not None and run is not None
+    second = open_extraction_run(
+        session,
+        task_run_id=run.task_run_id,
+        extractor="a-second-reader",
+        extractor_version="test/1",
+        config_hash="test",
+        dpi=run.dpi,
+    )
+    rows = [
+        ObservationCandidate(
+            document_version_id=glyph.document_version_id,
+            page_id=glyph.page_id,
+            extraction_run_id=extraction_run_id,
+            raw_text=text,
+            value_numerator=value,
+            value_denominator=1,
+            unit="in",
+            unit_guess="in",
+            semantic_guess=None,
+            polygon=[list(point) for point in glyph.polygon],
+            coordinate_space="image",
+            confidence=None,
+            ambiguity_flags=[],
+        )
+        for extraction_run_id, text, value in (
+            (run.id, glyph.raw_text, glyph.value_numerator),
+            (second.id, reading, inches),
+        )
+    ]
+    session.add_all(rows)
+    layers = read_annotation_layers(
+        SHEET,
+        page.index,
+        document_version_id=page.document_version_id,
+        dpi=150,
+        line_minimum_pt=ASSOCIATION.line_minimum_pt,
+        glyph_maximum_pt=ASSOCIATION.glyph_maximum_pt,
+        glyph_gap_pt=ASSOCIATION.glyph_gap_pt,
+        fraction_bar=ASSOCIATION.fraction_bar,
+    )
+
+    def render() -> object:
+        return stages._vendor_render(SHEET, page, page.document_version_id)
+
+    DatabaseStages._apply_cross_route_corroboration(
+        session,
+        page_index=page.index,
+        candidates=rows,
+        gv_mark=stages._gv_mark_guard(SHEET, page, page.document_version_id, layers, render),  # type: ignore[arg-type]
+        cut_label=stages._cut_label_guard(page, layers, render),  # type: ignore[arg-type]
+        mixed_fraction=_MixedFractionGuard(),
+    )
+    return rows
+
+
+def test_a_glyph_reading_alone_is_not_confirmed(session: Session, store: LocalStore) -> None:
     """**#756 D2, decided 2026-10-01: never confirmed alone.** Outcome: with no other reader, the
-    reading is a value for a person to confirm — no agreement lane — and the bounded agent is never
-    handed it."""
-    agent = _watch_agent(monkeypatch)
-
-    row = _read_with_vision(session, store, ())
+    reading is a value for a person to confirm — no agreement lane."""
+    _, row = _read_glyph(session, store)
 
     assert row.corroboration_lane is None
     assert row.corroboration_status != "CORROBORATED"
-    assert all(candidate.id != row.id for candidate in agent)
 
 
 def test_a_glyph_reading_is_confirmed_by_another_reader_agreeing_on_its_box(
     session: Session, store: LocalStore
 ) -> None:
-    """**The second witness (#756 D2).** The page asks the vision readers about the glyph
-    reading's own box; one that did not use the templates agreeing on `12"` is what confirms it —
-    with the reading agent's label lengths stated, so the gate can see the box's crop holds the
-    whole label (#919)."""
+    """**The second witness (#756 D2).** A reader that did not use the templates agreeing on `12"`
+    in the glyph reading's own box is what confirms it — with the label lengths stated, so the gate
+    can see the box's crop holds the whole label (#919)."""
     from evidence.canonical import CorroborationLane
-    from tests.evidence.test_bridge import _AgreeingVisionReader
-    from tests.workflow.test_cut_label_guard import label_lengths
 
-    reader = _AgreeingVisionReader('12"')
-    row = _read_with_vision(
-        session, store, (reader,), label_lengths(reader.config.extractor, sharper_dpi=300)
-    )
+    glyph, _second = _witnessed(session, store, '12"', 12)
 
-    assert row.corroboration_lane == CorroborationLane.SECOND_READER.value
-    assert row.corroboration_status != "CONFLICTING"
+    assert glyph.corroboration_lane == CorroborationLane.SECOND_READER.value
+    assert glyph.corroboration_status != "CONFLICTING"
 
 
 def test_a_glyph_reading_another_reader_disagrees_with_goes_to_a_person(
     session: Session, store: LocalStore
 ) -> None:
     from evidence.canonical import EvidenceStatus
-    from tests.evidence.test_bridge import _AgreeingVisionReader
 
-    row = _read_with_vision(session, store, (_AgreeingVisionReader('13"'),))
+    glyph, _second = _witnessed(session, store, '13"', 13)
 
-    assert row.corroboration_status == EvidenceStatus.CONFLICTING.value
+    assert glyph.corroboration_status == EvidenceStatus.CONFLICTING.value
 
 
 def test_a_glyph_reading_attaches_to_the_line_it_labels(
