@@ -72,10 +72,10 @@ def _paired_by(pairing: Pairing) -> str:
 def more_pairs(
     session: Session, page: ComparePage, pairings: tuple[Pairing, ...]
 ) -> tuple[Pairing, ...]:
-    """**The hook for a second pairing pass** over the dimensions geometry left unpaired: the AI
-    pair check (`GV_ARCH_COMPARE_AI_PAIR`, off by default, built separately) plugs in here and
-    returns the same dimensions, each exactly once, a pair it made marked `how="two AIs"`. Until it
-    exists this returns the geometry pass unchanged."""
+    """**The hook for a second pairing pass** over the dimensions geometry left unpaired. A second
+    pass returns the same dimensions, each exactly once. The AI pair check that was built for it
+    stayed off (decision 2026-10-16: 5 of 10 test pairs wrong) and was removed on 2026-10-28, so
+    this returns the geometry pass unchanged."""
     return pairings
 
 

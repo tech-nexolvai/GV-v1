@@ -60,7 +60,7 @@ BARE_URL := postgresql+psycopg://gv:gv@localhost:5433/$(DEMO_DB)
 TEST_URL := postgresql+psycopg://gv:gv@localhost:5433/$(TEST_DB)
 
 .PHONY: check check-fast db db-stop install up down token migrate serve worker dispatch \
-	demo demo-env worktree where testdb model-smoke bedrock-smoke
+	demo demo-env worktree where testdb bedrock-smoke
 
 install:            ## install exactly what CI installs
 	python -m pip install -e ".[ai,dev,extraction,rules,platform,reports]"
@@ -141,30 +141,11 @@ testdb:             ## create this checkout's test database if it does not exist
 		|| { echo "  could not create $(TEST_DB) — is the stack up? try 'make up'"; exit 1; }
 	@echo "  test database: $(TEST_DB)"
 
-# Proves the model seam carries a real call. Plumbing only: it makes no claim about how often a
-# model reads a dimension correctly, because there is no gold set to measure that against (#188).
-#
-# Defaults to minicpm-v, which is validated: it reads `24 1/2"` off a crop correctly and reports
-# `capabilities: ['completion', 'vision']` — vision without tools. The adapter sees that and answers
-# with the JSON-schema route, so this RUNS rather than skipping.
-#
-#   ollama pull minicpm-v && make model-smoke
-#
-# Override GV_OPENMODEL_ID for another model; a free-tier API works the same way through
-# GV_OPENMODEL_BASE_URL and GV_OPENMODEL_API_KEY. It skips only when nothing is reachable, and for a
-# model that supports neither tools nor schema output — the skip quotes the endpoint's own words.
-model-smoke:        ## send one test image through the model adapter (skips if none is reachable)
-	@GV_OPENMODEL_ID="$${GV_OPENMODEL_ID:-minicpm-v:latest}" \
-	 GV_OPENMODEL_READ_TIMEOUT="$${GV_OPENMODEL_READ_TIMEOUT:-600}" \
-	 python -m pytest tests/extraction/models/test_openmodel.py -v -rs \
-		-k "configured_model or scripted_endpoint or same_seam or strategy"
-
-# The same proof for the production provider, against Amazon Bedrock. Two live calls, each printing
+# Proves the model seam carries a real call, against Amazon Bedrock. Two live calls, each printing
 # its token usage, because this one costs real money.
 #
-# **Skips cleanly with no credentials**, the way `model-smoke` skips with nothing reachable: the gate
-# asks boto3's provider chain, so `~/.aws/credentials` counts and not only environment variables. It
-# needs a database as well — the acceptance is that the call lands in `model_invocations`, and that
+# **Skips cleanly with no credentials**: the gate asks boto3's provider chain, so
+# `~/.aws/credentials` counts and not only environment variables. It needs a database as well — the acceptance is that the call lands in `model_invocations`, and that
 # is a row rather than an assertion about memory.
 #
 # Model and region are configuration:
