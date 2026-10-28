@@ -52,6 +52,7 @@ __all__ = [
     "around",
     "crop_hash",
     "draw",
+    "sideways",
     "source_pdf",
     "spots",
     "values_in",
@@ -84,7 +85,8 @@ class ReadSpot:
     overall: bool = False
     """A vendor string's printed overall: the question asks for the overall."""
     tall: bool = False
-    """Written sideways (a vertical dimension, or a box taller than wide): a turned copy helps."""
+    """Written sideways: a turned copy helps. The label's own direction decides (`sideways`); only
+    a box whose direction code does not know is judged by its shape (taller than wide)."""
 
     @property
     def centred(self) -> bool:
@@ -172,6 +174,18 @@ def _same_value(label: Mapping[str, Any], value: object) -> bool:
     return a is not None and a == b
 
 
+def sideways(label: Mapping[str, Any], box: Box) -> bool:
+    """Whether a label's value is written sideways: its own direction when code read one
+    (`orientation`: `h` along the page, `v` up it), whatever its box's shape (2026-10-28: a short
+    `9"` and a stacked `254 [10]` are taller than wide, and their turned copies showed the
+    horizontal text on its side); else, a direction code does not know (none, or turned at an
+    angle), the box's shape: taller than wide."""
+    orientation = label.get("orientation")
+    if orientation in ("h", "v"):
+        return bool(orientation == "v")
+    return (box[3] - box[1]) > (box[2] - box[0])
+
+
 def spots(finding: Mapping[str, Any], labels_of: LabelsOf | None = None) -> dict[str, ReadSpot]:
     """Each side a reading of `finding` looks at (see the module), by side; a side with no box is
     left out, and so is a vendor string's architect side (code's sum, printed nowhere)."""
@@ -218,7 +232,7 @@ def spots(finding: Mapping[str, Any], labels_of: LabelsOf | None = None) -> dict
                 region=around(own, _ends(label)),
                 values=1,
                 overall=string,
-                tall=label.get("orientation") == "v" or (own[3] - own[1]) > (own[2] - own[0]),
+                tall=sideways(label, own),
             )
             continue
         x0, y0, x1, y1 = box
