@@ -25,7 +25,6 @@
   "include": [
     "tests/**/*.ts",
     "tests/**/*.tsx",
-    "src/components/chat/findingsTable.ts",
     "src/components/measure/FillerDistributionPanel.tsx",
     "src/components/measure/fillerDistribution.ts",
     "src/pages/layoutChoices.ts",
@@ -33,8 +32,6 @@
     "src/data/types.ts",
     "src/components/output/elevation.ts",
     "src/components/output/ElevationDiagram.tsx",
-    "src/components/output/FindingsTable.tsx",
-    "src/components/output/findingsOrder.ts",
     "src/api/sse.ts",
     "src/components/measure/DrawingRolesList.tsx",
     "src/components/measure/drawingRoleChoices.ts",

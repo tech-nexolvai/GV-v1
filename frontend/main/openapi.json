@@ -14234,56 +14234,6 @@
         "title": "ExceptionScope",
         "type": "string"
       },
-      "ExportSummary": {
-        "description": "Counts, so a consumer that ignores every flag still cannot report a clean package.\n\nThe per-finding label can be filtered out of a view. A total sitting at the top of the payload is\nharder to lose, and \"42 findings, 39 of which abstained\" is a sentence that stops somebody saying the\ndrawings passed.",
-        "properties": {
-          "abstentions": {
-            "title": "Abstentions",
-            "type": "integer"
-          },
-          "by_outcome": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "By Outcome",
-            "type": "object"
-          },
-          "decisions": {
-            "title": "Decisions",
-            "type": "integer"
-          },
-          "findings": {
-            "title": "Findings",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "findings",
-          "decisions",
-          "abstentions",
-          "by_outcome"
-        ],
-        "title": "ExportSummary",
-        "type": "object"
-      },
-      "ExportedFinding": {
-        "description": "One finding's full chain, with whether the engine actually decided anything.",
-        "properties": {
-          "abstained": {
-            "title": "Abstained",
-            "type": "boolean"
-          },
-          "chain": {
-            "$ref": "#/components/schemas/FindingChain"
-          }
-        },
-        "required": [
-          "chain",
-          "abstained"
-        ],
-        "title": "ExportedFinding",
-        "type": "object"
-      },
       "ExtractionRequestOut": {
         "description": "The durable request to read a completed two-drawing package.\n\nUpload confirmation proves that one file landed. It must not start a package review while its\ncounterpart may still be arriving; this handle exists only after the architectural and shop pair\nhave both been confirmed.",
         "properties": {
@@ -14830,45 +14780,6 @@
           "critical_failed"
         ],
         "title": "FindingCounts",
-        "type": "object"
-      },
-      "FindingExportV2": {
-        "description": "The export envelope. Version first, so a consumer can check before it parses.",
-        "properties": {
-          "findings": {
-            "items": {
-              "$ref": "#/components/schemas/ExportedFinding"
-            },
-            "title": "Findings",
-            "type": "array"
-          },
-          "package_id": {
-            "format": "uuid",
-            "title": "Package Id",
-            "type": "string"
-          },
-          "project_id": {
-            "format": "uuid",
-            "title": "Project Id",
-            "type": "string"
-          },
-          "schema_version": {
-            "const": "2",
-            "title": "Schema Version",
-            "type": "string"
-          },
-          "summary": {
-            "$ref": "#/components/schemas/ExportSummary"
-          }
-        },
-        "required": [
-          "schema_version",
-          "project_id",
-          "package_id",
-          "summary",
-          "findings"
-        ],
-        "title": "FindingExportV2",
         "type": "object"
       },
       "FindingOut": {
@@ -28781,60 +28692,6 @@
           }
         },
         "summary": "List a package's findings, worst first",
-        "tags": [
-          "findings"
-        ]
-      }
-    },
-    "/api/v1/projects/{project_id}/packages/{package_id}/findings/export": {
-      "get": {
-        "description": "Every finding for one package, with its chain, labelled and counted.\n\nThe project boundary is established by the dependency and then again in SQL, the same belt-and-braces\n`finding_chain` uses: the dependency proves the caller may see the project, and the join proves these\nrows belong to it.\n\nA package with no findings is an empty export, not a 404 \u2014 but it is only reached for a package that\nexists in this project, so \"nothing found\" cannot be confused with \"no such package\".",
-        "operationId": "export_findings_api_v1_projects__project_id__packages__package_id__findings_export_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Project Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "package_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Package Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FindingExportV2"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Export a package's findings in a versioned shape",
         "tags": [
           "findings"
         ]

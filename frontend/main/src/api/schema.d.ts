@@ -1267,33 +1267,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/projects/{project_id}/packages/{package_id}/findings/export": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Export a package's findings in a versioned shape
-         * @description Every finding for one package, with its chain, labelled and counted.
-         *
-         *     The project boundary is established by the dependency and then again in SQL, the same belt-and-braces
-         *     `finding_chain` uses: the dependency proves the caller may see the project, and the join proves these
-         *     rows belong to it.
-         *
-         *     A package with no findings is an empty export, not a 404 — but it is only reached for a package that
-         *     exists in this project, so "nothing found" cannot be confused with "no such package".
-         */
-        get: operations["export_findings_api_v1_projects__project_id__packages__package_id__findings_export_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/projects/{project_id}/packages/{package_id}/findings/summary": {
         parameters: {
             query?: never;
@@ -8980,35 +8953,6 @@ export interface components {
          */
         ExceptionScope: "finding" | "item" | "package";
         /**
-         * ExportSummary
-         * @description Counts, so a consumer that ignores every flag still cannot report a clean package.
-         *
-         *     The per-finding label can be filtered out of a view. A total sitting at the top of the payload is
-         *     harder to lose, and "42 findings, 39 of which abstained" is a sentence that stops somebody saying the
-         *     drawings passed.
-         */
-        ExportSummary: {
-            /** Abstentions */
-            abstentions: number;
-            /** By Outcome */
-            by_outcome: {
-                [key: string]: number;
-            };
-            /** Decisions */
-            decisions: number;
-            /** Findings */
-            findings: number;
-        };
-        /**
-         * ExportedFinding
-         * @description One finding's full chain, with whether the engine actually decided anything.
-         */
-        ExportedFinding: {
-            /** Abstained */
-            abstained: boolean;
-            chain: components["schemas"]["FindingChain"];
-        };
-        /**
          * ExtractionRequestOut
          * @description The durable request to read a completed two-drawing package.
          *
@@ -9213,30 +9157,6 @@ export interface components {
             review_required: number;
             /** Total */
             total: number;
-        };
-        /**
-         * FindingExportV2
-         * @description The export envelope. Version first, so a consumer can check before it parses.
-         */
-        FindingExportV2: {
-            /** Findings */
-            findings: components["schemas"]["ExportedFinding"][];
-            /**
-             * Package Id
-             * Format: uuid
-             */
-            package_id: string;
-            /**
-             * Project Id
-             * Format: uuid
-             */
-            project_id: string;
-            /**
-             * Schema Version
-             * @constant
-             */
-            schema_version: "2";
-            summary: components["schemas"]["ExportSummary"];
         };
         /**
          * FindingOut
@@ -16133,38 +16053,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FindingPage"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    export_findings_api_v1_projects__project_id__packages__package_id__findings_export_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-                package_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FindingExportV2"];
                 };
             };
             /** @description Validation Error */

@@ -297,19 +297,6 @@ export function getFindingChain(projectId: string, packageId: string, findingId:
   );
 }
 
-/**
- * How a package's findings break down, without fetching them.
- *
- * Every outcome is counted and they sum to the total — including the abstentions. Rendering only
- * passes and failures would invite a reader to treat the remainder as passing, and under V1's
- * exact-match rule the abstentions are the expected bulk of a run rather than an edge case.
- */
-export function getFindingCounts(projectId: string, packageId: string) {
-  return request<FindingCounts>(
-    `/projects/${projectId}/packages/${packageId}/findings/summary`,
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Review assistant (#1129; backend #1128). Typed by hand in `assistantTypes.ts` until the routes are
 // in the generated schema.
@@ -761,14 +748,6 @@ export function grantException(
   return send<GrantedException>(
     `/projects/${projectId}/review-sessions/${reviewSessionId}/exceptions`,
     grant,
-  );
-}
-
-/** Close the sitting. Completing twice is refused rather than ignored. */
-export function completeReviewSession(projectId: string, reviewSessionId: string) {
-  return send<ReviewSession>(
-    `/projects/${projectId}/review-sessions/${reviewSessionId}/complete`,
-    {},
   );
 }
 
@@ -1627,34 +1606,6 @@ export async function downloadLayoutProposalCrop(
 
 export type ApprovalOut =
   paths['/api/v1/projects/{project_id}/review-sessions/{review_session_id}/approve']['post']['responses'][201]['content']['application/json'];
-
-export async function downloadDocument(
-  projectId: string,
-  packageId: string,
-  documentVersionId: string,
-): Promise<Blob> {
-  const response = await fetch(
-    `${BASE}/projects/${projectId}/packages/${packageId}/documents/${documentVersionId}/download`,
-    { headers: { Accept: 'application/pdf,*/*;q=0.8' } }
-  );
-
-  if (!response.ok) {
-    const isJson = response.headers.get('content-type')?.includes('application/json');
-    let envelope: ErrorEnvelope;
-    if (isJson) {
-      envelope = await response.json();
-    } else {
-      envelope = {
-        error: 'Download Failed',
-        message: `The document could not be downloaded (HTTP ${response.status}).`,
-        request_id: '',
-      };
-    }
-    throw new ApiError(response.status, envelope);
-  }
-
-  return response.blob();
-}
 
 // ---------------------------------------------------------------------------
 // Revisions of a review (#1180): the vendor's resubmission of the same job.

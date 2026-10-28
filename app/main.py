@@ -170,7 +170,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         drawing_parts,
         drawing_views,
         finding_chain,
-        finding_export,
         findings,
         item_architect,
         job_tracker,
@@ -246,9 +245,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # The vendor-only view of an evidence region (#952): read-only pixels the worker already stored.
     app.include_router(vendor_only_region.router, prefix=API_PREFIX)
     app.include_router(distribution.router, prefix=API_PREFIX)
-    # The versioned export downstream consumers read (#224, D1.3). Same prefix as the rest, so the shape a
-    # report or spreadsheet pins is served from the path the API documents.
-    app.include_router(finding_export.router, prefix=API_PREFIX)
     # The handle for work the API accepted rather than did (#208, C2.6). Mounted under the same prefix,
     # which is what makes the `status_url` handed to a client a path this service actually serves.
     app.include_router(background.router, prefix=API_PREFIX)
