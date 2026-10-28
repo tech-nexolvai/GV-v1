@@ -17,9 +17,16 @@ from workflow.findings_bedrock import (
     TOOL_NAME,
     BedrockFindingsComposer,
     FindingsBedrockError,
+    FindingsBedrockUnavailable,
     configured_findings_composer,
 )
-from workflow.findings_composer import ComposerFinding, NarrationFact, narration_overview_context
+from workflow.findings_composer import (
+    ComposerFinding,
+    CompositionMode,
+    NarrationFact,
+    compose_findings,
+    narration_overview_context,
+)
 
 
 class _Client:
@@ -156,6 +163,8 @@ def test_transport_honours_the_configured_total_attempt_budget(
         return _Client(_response())
 
     monkeypatch.setattr("boto3.client", client_factory)
+    # This test is about the transport, not the credentials: a process that has some.
+    monkeypatch.setattr("workflow.findings_bedrock._missing_aws_credentials", lambda config: None)
     composer = BedrockFindingsComposer.from_environment(replace(_config(), max_attempts=3))
 
     composer.compose((_finding(),))
@@ -163,6 +172,77 @@ def test_transport_honours_the_configured_total_attempt_budget(
     assert captured["service"] == "bedrock-runtime"
     transport = captured["config"]
     assert transport.retries == {"total_max_attempts": 3, "mode": "standard"}  # type: ignore[attr-defined]
+
+
+def _block_aws(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The live upload worker's environment: no credentials anywhere botocore looks."""
+    for name in (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_ROLE_ARN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", "/dev/null")
+    monkeypatch.setenv("AWS_CONFIG_FILE", "/dev/null")
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+
+class _Recorder:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def record(self, **kwargs: object) -> None:
+        self.calls.append(kwargs)
+
+
+def test_no_aws_credentials_skips_the_call_and_records_why(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**Outcome: no call, no failed call row, plain wording with the reason.**
+
+    The live upload worker blocks AWS, and this step talks only to AWS: every upload used to fail
+    with `NoCredentialsError` and leave a failed row in `model_invocations`. Without credentials
+    the step is skipped before any client is built.
+    """
+    _block_aws(monkeypatch)
+
+    def no_client(*args: object, **kwargs: object) -> object:
+        raise AssertionError("no Bedrock client may be built without credentials")
+
+    monkeypatch.setattr("boto3.client", no_client)
+    recorder = _Recorder()
+    composer = BedrockFindingsComposer.from_environment(_config()).with_invocation_recorder(
+        recorder  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(FindingsBedrockUnavailable, match="no AWS credentials"):
+        composer.compose((_finding(),))
+    result = compose_findings((_finding(),), composer)
+
+    assert recorder.calls == []
+    assert result.mode is CompositionMode.FALLBACK
+    assert result.fallback_reason is not None
+    assert result.fallback_reason.startswith("FindingsBedrockUnavailable: skipped: no AWS")
+    assert len(result.narratives) == 1
+
+
+def test_a_supplied_client_is_used_without_looking_for_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client handed in brings its own credentials: the lookup is for the one built here."""
+    _block_aws(monkeypatch)
+    client = _Client(_response())
+
+    result = BedrockFindingsComposer(_config(), client).compose((_finding(),))
+
+    assert len(client.requests) == 1
+    assert len(result.narratives) == 1
 
 
 def test_invalid_optional_timeout_configuration_disables_only_narration(
