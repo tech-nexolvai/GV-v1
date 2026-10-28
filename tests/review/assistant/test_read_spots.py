@@ -290,4 +290,7 @@ def test_a_horizontal_label_is_drawn_without_a_turned_copy(tmp_path: Path) -> No
     pictures = read_spots.draw(
         _one_label(upright, page=1), labels_of=lambda file, page: [upright], pdf_for=lambda _f: pdf
     )
-    assert pictures.crops["vendor"].turned is not None
+    # A vertical label gets its text turned upright: since 2026-10-29 in its close-up, the region
+    # as drawn beside it (was: the region turned).
+    kinds = [kind for kind, _png in pictures.crops["vendor"].pictures()]
+    assert kinds == ["plain", "zoom_upright"]
