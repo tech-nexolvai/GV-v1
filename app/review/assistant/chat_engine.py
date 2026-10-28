@@ -72,6 +72,7 @@ got no reply at all stores no API messages, so an unanswered question never ente
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import random
@@ -93,6 +94,7 @@ from app.review.assistant import (
     likely_problems,
     not_compared,
     one_card,
+    read_spots,
     reading_coverage,
     reference_page,
     same_item_pages,
@@ -1167,6 +1169,8 @@ class ChatEngine:
         #: Each finding's third read, kept like its second read while what it read is unchanged:
         #: (what was read, the outcome, the three readings).
         self._thirds: dict[str, tuple[tuple[Any, ...], str, list[dict[str, Any]]]] = {}
+        #: Each finding's reading pictures (`reading_pictures`), by its id and what it reads.
+        self._read_pictures: dict[tuple[str, tuple[Any, ...]], read_spots.ReadPictures] = {}
         self._third_reads_open = False
         self._third_budget: ThirdReadBudget | None = None
         self._checks_pool: ThreadPoolExecutor | None = None
@@ -3005,24 +3009,67 @@ class ChatEngine:
                 self._read_queued.add(key)
             self._submit_check("second_reads", _bound(self._second_read_one, module, finding))
 
+    def reading_pictures(self, finding: Mapping[str, Any]) -> read_spots.ReadPictures:
+        """The second and third readings' pictures of `finding` (`read_spots`, 2026-10-28): each
+        side's read spot drawn without GV's markup from the set pack's drawings-only copy (else
+        the upload, GV's layers dropped), the item's own label at the centre with both ends of
+        its dimension around it; a vendor string's printed overall. Drawn once per finding and
+        what it reads."""
+        key = (str(finding.get("id")), _read_key(finding))
+        with self._lock:
+            kept = self._read_pictures.get(key)
+        if kept is not None:
+            return kept
+        workspace = self.tools.workspace
+        pack = workspace.set_pack
+        main = self.book.main_file
+        labels = self.book.dim_labels
+
+        def labels_of(file: str, page: int) -> Any:
+            return labels.on_page(file, page, read_now=False)
+
+        def pdf_for(file: str | None) -> Path | None:
+            name = file or main
+            if name is None:
+                return None
+            return read_spots.source_pdf(pack, workspace.uploads, name)
+
+        drawing = import_module("app.review.assistant.chat_drawing")
+        try:
+            with drawing._PDFIUM_LOCK:
+                drawn = read_spots.draw(finding, labels_of=labels_of, pdf_for=pdf_for)
+        except Exception as failed:  # noqa: BLE001 - no clean picture: the evidence crops then
+            _log.warning("assistant chat reading picture failed: %s", type(failed).__name__)
+            drawn = read_spots.ReadPictures(crops={}, spots={})
+        with self._lock:
+            self._read_pictures[key] = drawn
+        return drawn
+
     def _second_read_one(self, module: Any, finding: Mapping[str, Any]) -> None:
         """One finding's second read; kept only when the finding still shows what was read. A
         read that disagrees or is unsure starts its third read: at once on a would-be red, else
         once third reads are open (`_queue_third_read`)."""
         if self.cancel.is_set():
             return
-        crops: dict[str, bytes] = {}
-        for side, picture in (("architect", "arch_picture_id"), ("vendor", "vendor_picture_id")):
-            if finding.get(picture):
-                try:
-                    crops[side] = self.read_picture(str(finding[picture]))
-                except OSError:
-                    continue
+        drawn = self.reading_pictures(finding)
+        crops: dict[str, bytes] = drawn.upright()
+        if not crops:
+            # No clean picture could be drawn (no box on its page, no file): the evidence crops.
+            for side, picture in (
+                ("architect", "arch_picture_id"),
+                ("vendor", "vendor_picture_id"),
+            ):
+                if finding.get(picture):
+                    try:
+                        crops[side] = self.read_picture(str(finding[picture]))
+                    except OSError:
+                        continue
         try:
             read = module.second_read(
                 crops,
                 str(finding.get("item") or ""),
                 lambda content: self._second_read_call(content, self._read_share),
+                **_asked_words(module.second_read, drawn),
             )
             read = module.compare_read(read, finding)
         except (_NoRoom, _Cancelled, ProviderFailure):
@@ -5785,6 +5832,17 @@ def could_go_red(finding: Mapping[str, Any]) -> bool:
 def _reads_first(finding: Mapping[str, Any]) -> tuple[int, int]:
     """The second reads' order: would-be reds, then differences, then the rest."""
     return (0 if could_go_red(finding) else 1, _differences_first(finding))
+
+
+def _asked_words(read: Callable[..., Any], drawn: read_spots.ReadPictures) -> dict[str, bool]:
+    """What the reading's question may say of its pictures (`read_spots`): the centre and the
+    overall, for a reader that takes them (a module loaded by name may be an older one)."""
+    try:
+        named = inspect.signature(read).parameters
+    except (TypeError, ValueError):
+        return {}
+    words = {"centred": drawn.centred, "overall": drawn.overall}
+    return {name: value for name, value in words.items() if name in named}
 
 
 def _read_key(finding: Mapping[str, Any]) -> tuple[Any, ...]:
