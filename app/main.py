@@ -156,95 +156,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # `create_app` — including the isolation tests, whose whole job is to prove what does not import
     # what.
     from app.api import (
-        approvals,
-        architect_matches,
         assistant_chats,
         background,
         company_settings,
-        confirmations,
-        countertop_runs,
-        depth_again,
-        distribution,
         documents,
-        draft_cloud,
-        drawing_parts,
-        drawing_views,
-        finding_chain,
-        findings,
-        item_architect,
         job_tracker,
-        measurements,
         operations,
         packages,
         packages_summary,
-        page_pictures,
         project_sink,
-        reading_again,
-        reading_parts,
         review,
-        review_assistant,
-        review_items,
-        review_pages,
         revisions,
         rules,
-        slot_rows,
         usage,
-        vendor_only_region,
-        visual_countertops,
     )
 
     app.include_router(packages.router, prefix=API_PREFIX)
     app.include_router(documents.router, prefix=API_PREFIX)
-    # Revisions of a review (#1180): start the next one, list them, what changed.
+    # Revisions of a review (#1180): an upload of the vendor's next round starts one.
     app.include_router(revisions.router, prefix=API_PREFIX)
-    # Run the reading again after the AI account or the AI budget stopped it (#1206).
-    app.include_router(reading_again.router, prefix=API_PREFIX)
-    # Read the depths again on a set already read, with the depth and sink reader (#1308).
-    app.include_router(depth_again.router, prefix=API_PREFIX)
-    # Reviewer-entered values and the request to check them. Ordinary control-plane
-    # writes: it enqueues rather than running anything, because it may not import the
-    # code that does — see the module docstring and tests/api/test_no_heavy_work.py.
-    app.include_router(measurements.router, prefix=API_PREFIX)
     app.include_router(company_settings.router, prefix=API_PREFIX)
     app.include_router(project_sink.router, prefix=API_PREFIX)
-    app.include_router(confirmations.router, prefix=API_PREFIX)
-    # Which drawing on a combined sheet is which: listed with a suggestion, set only by a reviewer
-    # (#710).
-    app.include_router(drawing_views.router, prefix=API_PREFIX)
-    # The parts of each vendor drawing: suggested by the computer, each one confirmed, corrected,
-    # withdrawn or added by a person, never all at once (#882).
-    app.include_router(drawing_parts.router, prefix=API_PREFIX)
-    app.include_router(page_pictures.router, prefix=API_PREFIX)
-    # Both drawings' pages and picture readiness, for the side-by-side viewer (#1342). Reads only.
-    app.include_router(review_pages.router, prefix=API_PREFIX)
-    # Which confirmed parts sit beneath each confirmed countertop: suggested by the computer,
-    # confirmed, corrected or withdrawn by a person, one countertop at a time (#893).
-    app.include_router(countertop_runs.router, prefix=API_PREFIX)
-    # A slot-reader wall choice or missing width belongs to one selected row, not the revision.
-    app.include_router(slot_rows.router, prefix=API_PREFIX)
-    # Which of the architect's views a countertop row is matched with, when the architect's drawings
-    # are a separate PDF: chosen by a reviewer with one click when code and both AIs did not agree
-    # (#1166).
-    app.include_router(architect_matches.router, prefix=API_PREFIX)
-    # Which confirmed reading is each confirmed part's width: suggested by the computer, confirmed,
-    # corrected or taken back by a person, one part at a time (#913).
-    app.include_router(reading_parts.router, prefix=API_PREFIX)
-    app.include_router(approvals.router, prefix=API_PREFIX)
-    # The draft cloud PDF any time before sign-off (#1340): queued, never rendered here.
-    app.include_router(draft_cloud.router, prefix=API_PREFIX)
-    app.include_router(findings.router, prefix=API_PREFIX)
-    app.include_router(visual_countertops.router, prefix=API_PREFIX)
-    # The simple review screen's one list (#1338): read-only, over the projections above.
-    app.include_router(review_items.router, prefix=API_PREFIX)
-    # Each confirmed countertop's comparison with the architect, read by countertop (#1273): it
-    # reads only, and no check reads it.
-    app.include_router(item_architect.router, prefix=API_PREFIX)
     app.include_router(packages_summary.router, prefix=API_PREFIX)
     app.include_router(usage.router, prefix=API_PREFIX)
-    app.include_router(finding_chain.router, prefix=API_PREFIX)
-    # The vendor-only view of an evidence region (#952): read-only pixels the worker already stored.
-    app.include_router(vendor_only_region.router, prefix=API_PREFIX)
-    app.include_router(distribution.router, prefix=API_PREFIX)
     # The handle for work the API accepted rather than did (#208, C2.6). Mounted under the same prefix,
     # which is what makes the `status_url` handed to a client a path this service actually serves.
     app.include_router(background.router, prefix=API_PREFIX)
@@ -254,11 +188,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(rules.router, prefix=API_PREFIX)
     app.include_router(operations.router, prefix=API_PREFIX)
 
-    # Review sessions and the actions a reviewer takes (#229). The service has existed since
-    # D4.1; this is what lets the workspace reach it.
+    # A review session is opened for every upload (#229).
     app.include_router(review.router, prefix=API_PREFIX)
-    # The review assistant (#1128): answers from one review's records, guarded; points, never decides.
-    app.include_router(review_assistant.router, prefix=API_PREFIX)
     # The chat-first assistant (#1463): saved chats per drawing set, streamed, read-only on the review.
     app.include_router(assistant_chats.router, prefix=API_PREFIX)
     # The job tracker (#1578): every item found across the project's sets, rounds and checks, and
