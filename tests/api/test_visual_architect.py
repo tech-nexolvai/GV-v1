@@ -22,6 +22,7 @@ from app.auth import Principal, Role, authenticate
 from app.config import Settings
 from app.db.session import session_factory
 from app.main import API_PREFIX, create_app
+from app.review import countertop_results
 from tests.app.postgres_fixture import alembic_config
 from tests.workflow.test_architect_row_evidence import (
     ARCH_RULE,
@@ -178,7 +179,7 @@ def test_a_row_not_compared_names_what_the_architects_dimensions_measure(
     )
     _run(session, package_id, tmp_path, {anchors[0]: pairing})
     monkeypatch.setattr(
-        visual_countertops,
+        countertop_results,
         "effective_architect_pairings",
         lambda _session, rows: {
             anchor: pairing if anchor == anchors[0] else None for anchor in rows
@@ -210,7 +211,7 @@ def test_a_row_with_nothing_compared_says_why_and_needs_no_decision(
     def lookup(_session: Session, rows: Collection[UUID]) -> dict[UUID, EffectivePairing | None]:
         return {anchor: pairing if anchor == anchors[0] else None for anchor in rows}
 
-    monkeypatch.setattr(visual_countertops, "effective_architect_pairings", lookup)
+    monkeypatch.setattr(countertop_results, "effective_architect_pairings", lookup)
     items = _items(session, package_id)
 
     first = items[str(anchors[0])]["architect"]
@@ -235,7 +236,7 @@ def test_a_pairing_made_after_the_last_run_asks_for_a_run(
     _run(session, package_id, tmp_path)
     pairing = _pairing(_overall(overall))
     monkeypatch.setattr(
-        visual_countertops,
+        countertop_results,
         "effective_architect_pairings",
         lambda _session, rows: {
             anchor: pairing if anchor == anchors[0] else None for anchor in rows
