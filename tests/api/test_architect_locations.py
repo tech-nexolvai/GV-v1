@@ -22,7 +22,6 @@ from sqlalchemy import Engine, event, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api import visual_countertops
 from app.api.dependencies import get_session
 from app.api.slot_rows import get_architect_pairing
 from app.auth import Principal, Role, authenticate
@@ -34,6 +33,7 @@ from app.models import ObservationCandidate, Page, ReviewAction
 from app.models.evidence import ArchitectPairingRecord
 from app.models.runs import ExtractionRun
 from app.models.verdicts import Finding, VerdictInput
+from app.review import countertop_results
 from app.review.row_location import (
     ARCHITECT_LABEL_REACH_PT,
     ARCHITECT_LINE_MARGIN_PT,
@@ -692,6 +692,6 @@ def test_placing_the_compared_dimensions_costs_two_statements_whatever_the_rows(
     assert len(placed) == compared_rows and None not in placed
     with_locations = _statements(session, package_id)
 
-    monkeypatch.setattr(visual_countertops, "_architect_positions", lambda _session, _ids: {})
+    monkeypatch.setattr(countertop_results, "_architect_positions", lambda _session, _ids: {})
 
     assert with_locations - _statements(session, package_id) == 2
