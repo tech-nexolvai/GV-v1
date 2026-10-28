@@ -112,6 +112,7 @@ __all__ = [
     "proved_chain",
     "proved_run",
     "read_label",
+    "replaced_by_own",
     "summary_line",
     "unsized_words",
     "warm_line_work",
@@ -2308,6 +2309,22 @@ def _of_overall(finding: Mapping[str, Any], found: UnsizedEnds) -> bool:
         and vendor.get("page") == found.overall.page
         and vendor.get("file") == found.overall.file
     )
+
+
+def replaced_by_own(
+    findings: Sequence[Mapping[str, Any]], result: ConsistencyResult
+) -> dict[str, str]:
+    """A reading's unverified string of an overall past its sized pieces whose please-check code's
+    own item already holds, with why: replaced by it. `add_to_answer` replaces such a string only
+    when it adds code's item; a string read after that (the late look's, 2026-10-28) would
+    otherwise stand beside it as a second item."""
+    replaces = _unsized_replaces(findings, result.unsized)
+    own = [f for f in findings if f.get("created_by") == CREATED_BY]
+    return {
+        finding_id: reason
+        for finding_id, (found, reason) in replaces.items()
+        if any(_of_overall(item, found) for item in own)
+    }
 
 
 def add_to_answer(engine: Any) -> ConsistencyResult | None:
