@@ -29,9 +29,9 @@ class AiSpendHistory(Base, TimestampedUUID, Immutable):
     """One earlier model call, made outside this project's reviews: what it used and cost.
 
     Earlier reading runs, bake-offs and proofs were recorded in `model_invocations` of other local
-    databases, so the Usage page never saw them. `scripts/import_spend_history.py` copies each call
-    once (by its id, which copies of a database keep) and leaves out calls this project's reviews
-    already count. Only the call's id, day, model, route, purpose, tokens and cost: never a prompt,
+    databases, so the Usage page never saw them. A one-time import (2026-10-11; the script was removed
+    on 2026-10-28, git keeps it) copied each call once (by its id, which copies of a database keep)
+    and left out calls this project's reviews already count. Only the call's id, day, model, route, purpose, tokens and cost: never a prompt,
     an answer or anything from a drawing.
 
     **Append-only, one row per call.** Importing again adds the calls not seen before and changes

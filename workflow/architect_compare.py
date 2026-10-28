@@ -9,8 +9,7 @@ stored readings when the review reads the records (`app/review/architect_compare
 **Exactly once.** Every architect dimension `pair_page` returns is written, held or unpaired ones
 too, and a run that already has records is never written again (a redelivered stage).
 
-Called from `DatabaseStages.extract_pages` for each shop document, and by
-`scripts/architect_compare_backfill.py` for revisions read before it existed. $0: no model call.
+Called from `DatabaseStages.extract_pages` for each shop document. $0: no model call.
 """
 
 from __future__ import annotations

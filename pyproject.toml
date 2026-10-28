@@ -146,8 +146,7 @@ strict = true
 # verdict/, rules/, evidence/ must type-check clean before merge.
 
 # **Optional, experiment-only imports.** Neither `easyocr` nor `pytesseract` is a dependency of this
-# project — both are installed by hand for the OCR comparison in `scripts/local_ocr_probe.py` (#551)
-# and both are absent in CI.
+# project — both are installed by hand where they are used (#551) and both are absent in CI.
 #
 # An override rather than a `# type: ignore` on the import line, because the right ignore code
 # depends on whether the package happens to be installed: mypy says `import-not-found` where it is
