@@ -167,9 +167,9 @@ def test_a_label_up_the_page_shows_the_drawing_as_drawn_and_its_close_up_upright
 @pytest.mark.parametrize(
     ("name", "asked"),
     [
-        ('Buffet: heights stack (28 3/4")', "Buffet: heights stack"),
-        ('Buffet: outlet spacing 33"', "Buffet: outlet spacing"),
-        ("Breakfast 2: height 2'-0\"", "Breakfast 2: height"),
+        ('Shelf: heights stack (20 3/4")', "Shelf: heights stack"),
+        ('Desk: outlet spacing 31"', "Desk: outlet spacing"),
+        ("Bar 1: height 2'-6\"", "Bar 1: height"),
         ("Upper 6' - 0\" outlet", "Upper outlet"),
         ("Counter 610 [24] deep", "Counter deep"),
         ("Base B18L: width", "Base B18L: width"),
@@ -234,12 +234,12 @@ def _look(id_: str, architect: str, vendor: str, **more: Any) -> dict[str, Any]:
     [
         ("3 drawers left + 1 door right", "4 fronts left", True),
         ("no outlet in sink base", "1 outlet in sink base", True),
-        ("WT-03.04 tag printed", "arrow with no tag text", True),
+        ("XX-99 tag printed", "arrow with no tag text", True),
         ("2 outlets", "no outlets", True),
-        ("about 4'-0\" scaled", "915 [36] wall to wall", True),
-        ("3' - 0\"", "966 [38]", False),
-        ('1’ − 0"', "177 [7]", False),
-        ("see GV Review's record", "1828 [72]", False),  # the vendor's side is a number
+        ("about 4'-6\" scaled", "813 [32] wall to wall", True),
+        ("3' - 2\"", "940 [37]", False),
+        ('1’ − 1"', "203 [8]", False),
+        ("see GV Review's record", "1219 [48]", False),  # the vendor's side is a number
         ('9"', "3 drawers", False),
         ("96", "no shelves", False),
     ],
@@ -251,9 +251,9 @@ def test_nothing_to_copy_is_words_on_every_side_read(
 
 
 def test_a_vendor_strings_architect_side_is_not_read_so_it_does_not_count() -> None:
-    string = _look("F1", "the parts add up", '39 1/2"', source="vendor_arithmetic")
+    string = _look("F1", "the parts add up", '30 1/2"', source="vendor_arithmetic")
     assert not _nothing_to_copy(string)
-    words = _look("F2", '39 5/8"', "a string", source="vendor_arithmetic")
+    words = _look("F2", '30 5/8"', "a string", source="vendor_arithmetic")
     assert _nothing_to_copy(words)
 
 
