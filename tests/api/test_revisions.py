@@ -528,7 +528,7 @@ def test_the_worker_carries_answers_right_after_reading_the_pages(
     monkeypatch.setattr(
         after_reading,
         "queue_after_reading",
-        lambda *_args: after_reading.AfterReading(False, False, "nothing (stubbed)"),
+        lambda *_args: after_reading.AfterReading(False, "nothing (stubbed)"),
     )
     from app.runs import reading_progress
 

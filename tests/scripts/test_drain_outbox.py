@@ -124,10 +124,13 @@ def _uploaded_revision(session: Session, name: str) -> PackageRevision:
 def test_extraction_builds_the_phrase_index_when_the_gap_is_stated(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The hook runs after the stages and reports counts only (#836)."""
+    """The hook runs after the stages and reports counts only (#836). Since 2026-10-28 it builds
+    only for the value hunter, its one reader, so the hunter is switched on here."""
     import scripts.drain_outbox as worker
+    from workflow.value_hunter import VALUE_HUNTER_ENV
 
     revision = _uploaded_revision(session, "phrase index built")
+    monkeypatch.setenv(VALUE_HUNTER_ENV, "1")
     monkeypatch.setenv(worker.PHRASE_GAP_VARIABLE, "0.3")
     monkeypatch.setattr(worker, "_stages", lambda **_: _NoCandidatesStages())
 
@@ -151,8 +154,10 @@ def test_a_failed_phrase_build_takes_back_its_own_rows_and_nothing_else(
     behind, and the revision still reaches the reviewer exactly as it would have without it."""
     import scripts.drain_outbox as worker
     from retrieval import package_text
+    from workflow.value_hunter import VALUE_HUNTER_ENV
 
     revision = _uploaded_revision(session, "phrase index failed")
+    monkeypatch.setenv(VALUE_HUNTER_ENV, "1")
 
     def _writes_then_fails(build_session: Session, *_: object) -> object:
         build_session.add(Project(name="written by a failing phrase build"))
@@ -188,8 +193,10 @@ def test_a_failed_phrase_build_takes_back_its_own_rows_and_nothing_else(
 def test_the_value_hunter_is_off_unless_switched_on(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Off by default. Outcome: the extraction says so, with the phrase index built all the same."""
+    """Off by default. Outcome: the extraction says so, and the phrase index, which only the
+    value hunter reads, is not built (2026-10-28), with the reason, and no phrase row is written."""
     import scripts.drain_outbox as worker
+    from app.models.package_text import TextPhrase
     from workflow.value_hunter import VALUE_HUNTER_ENV
 
     revision = _uploaded_revision(session, "value hunter off")
@@ -199,8 +206,15 @@ def test_the_value_hunter_is_off_unless_switched_on(
 
     results = worker._extract_package(session, revision.id, str(uuid4()))
 
-    assert results["package_text"]["built"] is True  # type: ignore[index]
+    assert results["package_text"] == {
+        "built": False,
+        "reason": "GV_VALUE_HUNTER is off, and nothing else reads the phrase index",
+    }
     assert results["value_hunter"] == {"ran": False, "reason": "GV_VALUE_HUNTER is off"}
+    assert (
+        session.scalar(select(TextPhrase.id).where(TextPhrase.package_revision_id == revision.id))
+        is None
+    )
 
 
 def test_the_value_hunter_runs_once_the_phrase_index_is_built(
