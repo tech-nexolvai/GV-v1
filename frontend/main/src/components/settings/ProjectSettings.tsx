@@ -20,7 +20,7 @@ import {
   type ProjectSettings as Project,
   type ProjectValueIn,
 } from '@/api/client';
-import { SinkEntryForm, SinkSummary } from '@/components/measure/SinkEntry';
+import { SinkEntryForm, SinkSummary } from '@/components/settings/SinkEntry';
 import { Button } from '@/components/ui/button';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';

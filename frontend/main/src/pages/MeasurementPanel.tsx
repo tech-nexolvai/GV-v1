@@ -88,7 +88,7 @@ import {
 import { candidateCropWarning } from '../components/measure/candidateCropWarning';
 import type { components } from '../api/schema';
 import { InForceNote } from '../components/measure/InForceNote';
-import { SinkEntryCard } from '../components/measure/SinkEntry';
+import { SinkEntryCard } from '../components/settings/SinkEntry';
 import { packageChanged, refreshFailureIsFatal } from './measureRefreshState';
 import {
   citingPointer,

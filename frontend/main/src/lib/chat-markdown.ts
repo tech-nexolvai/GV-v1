@@ -3,13 +3,13 @@
  * tables, code, quotes and inline bold, italic, code and links. This cuts an answer into blocks and
  * a line into inline pieces, without React, so both can be tested alone.
  *
- * Tables are read by the assistant panel's own `answerBlocks` (a "|" header with its "|---|" rule
+ * Tables are read by `answerBlocks` (`lib/answer-blocks.ts`) (a "|" header with its "|---|" rule
  * under it), so the panel and the chat agree on what a table is. While an answer streams in, a
  * half-written block simply shows as words until its end arrives (an unclosed code fence shows as
  * code so far).
  */
 
-import { answerBlocks } from '@/lib/assistant';
+import { answerBlocks } from '@/lib/answer-blocks';
 
 export interface ListItem {
   text: string;

@@ -15,7 +15,7 @@ import { confirmCandidate, downloadCandidateCrop, getProjectSink, getSinkInUse }
 import { NeedsValues } from '@/components/results/needs-values';
 import { OtherChecks } from '@/components/results/other-checks';
 import { LinkedViewChips } from '@/components/measure/LinkedViewChips';
-import { SinkEntryCard } from '@/components/measure/SinkEntry';
+import { SinkEntryCard } from '@/components/settings/SinkEntry';
 import { readingSentence, sinkNoteSentence, type DepthReading } from '@/lib/depth-readings';
 import { SIGNED_OFF_NOTE, SignedOffContext } from '@/lib/signed-off';
 import type { MissingInput } from '@/lib/waiting-values';

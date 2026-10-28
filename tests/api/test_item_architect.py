@@ -15,10 +15,10 @@ import pytest
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
-from app.api import visual_countertops
 from app.db.session import session_factory
 from app.main import API_PREFIX
 from app.models import Finding, Package
+from app.review import countertop_results
 from storage.local import LocalStore
 from tests.api.test_visual_architect import _items
 from tests.api.test_visual_ui import _client
@@ -153,7 +153,7 @@ def test_the_countertop_line_never_contradicts_its_row_on_the_results(
         {} if case == "paired after the run" else {anchors[0]: pairing},
     )
     if case == "paired after the run":
-        for module in (visual_countertops, milan_items):
+        for module in (countertop_results, milan_items):
             monkeypatch.setattr(
                 module,
                 "effective_architect_pairings",

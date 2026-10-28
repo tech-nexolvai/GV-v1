@@ -1,7 +1,7 @@
 """How a stored finding is projected into the facts a model may see.
 
-These are the pure helpers in `app/api/reviewer_chat.py` (the old chat's routes are gone; the review
-assistant's records loader still reads them). They had no tests, which is how the page convention
+These are the pure helpers in `app/review/recorded_results.py`, which the full check's recorded
+results loader reads. They had no tests, which is how the page convention
 drifted away from the rest of the product without anything noticing.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from app.api.reviewer_chat import _evidence_page
+from app.review.recorded_results import _evidence_page
 
 DOCUMENT = "11111111-1111-4111-8111-111111111111"
 

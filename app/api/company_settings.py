@@ -68,10 +68,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
-from app.api.measurements import _parse, _published_rules, _source, _store
 from app.api.project_sink import DEPTH, WIDTH, SinkEntryOut
 from app.api.project_sink import _read as _read_sink
 from app.api.rules import READERS
+from app.api.setting_values import _parse, _published_rules, _source, _store
 from app.audit.events import AuditCategory, emit
 from app.auth import Action, Principal, require_action, require_project_access, require_role
 from app.models import Package, Project

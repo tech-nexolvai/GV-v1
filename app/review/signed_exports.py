@@ -13,7 +13,6 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.visual_countertops import _countertop_results_for_revision
 from app.audit.events import AuditEvent
 from app.lifecycle.carry_forward import CARRIED_CONFIRMATION_TARGET
 from app.models.package import Package, PackageRevision
@@ -35,6 +34,7 @@ from app.models.signed_exports import (
 )
 from app.models.verdicts import CheckRun, Finding, FindingEvidence, VerdictInput
 from app.review.carry_over import decision_records
+from app.review.countertop_results import _countertop_results_for_revision
 from app.review.left_for_person import FrozenLeftForPerson, left_for_person
 from app.review.reviewer_marks import FrozenReviewerMarks, reviewer_marks_for
 from app.review.signed_record import ReviewDisposition, SignedReview, SignedReviewFinding

@@ -27,7 +27,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { SIGNED_OFF_NOTE, useSignedOff } from '@/lib/signed-off';
-import { SinkEntryDialog } from '@/components/measure/SinkEntry';
+import { SinkEntryDialog } from '@/components/settings/SinkEntry';
 import { DepthReadings } from '@/components/results/depth-readings';
 import { ReadDepthsAgain } from '@/components/results/read-depths-again';
 import {
