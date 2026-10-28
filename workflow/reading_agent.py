@@ -15,7 +15,7 @@ the escalation is a second reader and not the first one asked again.
 
 **The refinements.**
 - *Whole run* — the crop widened to the label's whole glyph run, from the file's own paths
-  (`extraction/agent/geometry.py`). Where the file does not settle where the label ends, the
+  (`extraction/geometry/labels.py`). Where the file does not settle where the label ends, the
   refinement fails and says so, and the decision table hands the region to a reviewer.
 - *Upright* — the crop turned by the label's own direction (`extraction.vector_first.upright_png`).
 - *Sharper* — the page rendered again at the stated higher resolution, the same code and the same
@@ -37,11 +37,11 @@ from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from typing import Final
 
-from evidence.crop import CropSpec, CropStatus, RenderedPage, crop_pixel_box, generate_crop
+from evidence.crop import CropSpec, CropStatus, RenderedPage, generate_crop
 from evidence.polygon import Polygon
-from extraction.agent.geometry import LabelReach
 from extraction.agent.graph import GraphLimits, RefinedCrop, RetryableToolFailure
 from extraction.agent.tools import RefineCropArguments, Refinement
+from extraction.geometry.labels import LabelLengths, LabelReach
 from extraction.glyph_bands import FractionLayout
 from extraction.vector_first import upright_png
 from storage.hashing import content_key, sha256_stream
@@ -111,7 +111,7 @@ class ReadingAgentSettings:
         # The graph's own bounds and the gathering lengths, checked now rather than at the first
         # region a worker reaches.
         _ = self.limits
-        LabelReach(self.label_gap_pt, self.maximum_label_pt, Decimal(1))
+        _ = self.labels
 
     @property
     def limits(self) -> GraphLimits:
@@ -125,9 +125,14 @@ class ReadingAgentSettings:
             max_nearby_geometry_items=0,
         )
 
+    @property
+    def labels(self) -> LabelLengths:
+        """The two lengths a label is gathered by, which the agreement gate's guards use too."""
+        return LabelLengths(self.label_gap_pt, self.maximum_label_pt)
+
     def reach(self, glyph_gap_pt: Decimal) -> LabelReach:
         """How a label is gathered here, with the run gap the page's regions were formed by."""
-        return LabelReach(self.label_gap_pt, self.maximum_label_pt, glyph_gap_pt)
+        return self.labels.reach(glyph_gap_pt)
 
     @property
     def config_text(self) -> str:
@@ -307,12 +312,3 @@ class RegionCrops:
         stream.seek(0)
         self.store.put(key, stream, content_type="image/png")
         return key
-
-
-def crop_box_px(
-    rendered: RenderedPage, polygon: Polygon, margin_pt: Decimal
-) -> tuple[int, int, int, int]:
-    """The page pixels a crop of `polygon` is cut from, at `rendered`'s resolution."""
-    return crop_pixel_box(
-        rendered, CropSpec(polygon=polygon, context_margin_pt=margin_pt, dpi=rendered.dpi)
-    )

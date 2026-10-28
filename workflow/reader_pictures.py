@@ -13,7 +13,7 @@ state, `GV_VISION_SHARPER_PICTURE_DPI`, and has no default.
 
 **Upright from the drawing's own facts, never from a key.** Which way a label runs is read from the
 file: the direction its own text is printed in, where the label is text, or the direction its glyph
-paths run, by the reading agent's rule (`extraction.agent.geometry.label_geometry`, #783), where the
+paths run, by the reading agent's rule (`extraction.geometry.labels.label_geometry`, #783), where the
 label is drawn. The trial turned crops by a person's tick on the answer key; production has no key.
 
 **The same page area.** The sharper picture covers the crop the stage cut, scaled out to whole

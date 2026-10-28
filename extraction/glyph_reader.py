@@ -234,7 +234,7 @@ class LabelReach(Protocol):
     """The three lengths a label is gathered by — all `gather_label` reads from its settings.
 
     `ReaderSettings` has all three. So does the reading agent's own geometry
-    (`extraction/agent/geometry`), which finds a label's whole run to tell whether a crop cut it off
+    (`extraction/geometry/labels`), which finds a label's whole run to tell whether a crop cut it off
     (#757) and must gather it by this rule, not a second copy of it.
     """
 

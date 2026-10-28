@@ -38,9 +38,9 @@ from app.models.drawing import ViewRole
 from app.models.runs import ExtractionRun, TaskRun
 from evidence.coordinates import ImagePoint, PdfPoint, StoredPoint
 from evidence.polygon import Polygon
-from extraction.agent.geometry import NO_PATHS
 from extraction.annotations import PageLayers, StackedFraction, read_annotation_layers
 from extraction.geometry.containment import DimensionExtent
+from extraction.geometry.labels import NO_PATHS
 from extraction.geometry.text_association import (
     AssociationResult,
     DimensionText,

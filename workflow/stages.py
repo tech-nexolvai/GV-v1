@@ -146,19 +146,13 @@ from evidence.crop import (
     CropSpec,
     CropStatus,
     RenderedPage,
+    crop_box_px,
     crop_pixel_box,
     crop_png,
     encode_png,
     generate_crop,
 )
 from evidence.polygon import Polygon
-from extraction.agent.geometry import (
-    Box,
-    LabelGeometry,
-    LabelReach,
-    label_direction,
-    label_geometry,
-)
 from extraction.agent.graph import (
     AbstentionTerminal,
     BoundedAgentGraph,
@@ -209,6 +203,13 @@ from extraction.fraction_parts import (
 )
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.dimension_lines import DetectedDimensions, detect
+from extraction.geometry.labels import (
+    Box,
+    LabelGeometry,
+    LabelReach,
+    label_direction,
+    label_geometry,
+)
 from extraction.geometry.rows import Box as RowBox
 from extraction.geometry.rows import StoredBox
 from extraction.geometry.text_association import (
@@ -440,7 +441,7 @@ from workflow.reader_pictures import (
     reader_picture,
 )
 from workflow.reader_reuse import StoredAnswerSource, StoredReaderAnswers
-from workflow.reading_agent import ReadingAgentSettings, RegionCrops, crop_box_px
+from workflow.reading_agent import ReadingAgentSettings, RegionCrops
 from workflow.reading_watch import (
     CallLedger,
     PageBatchProgress,
@@ -10002,7 +10003,7 @@ def region_facts(
     second answer.
 
     **Geometry only.** The cut and the direction come from the vendor's paths
-    (`extraction/agent/geometry.py`), the stacked fraction from the bar detector, the witnesses
+    (`extraction/geometry/labels.py`), the stacked fraction from the bar detector, the witnesses
     from other routes' recorded values. Where the paths were not read — no reading agent, no
     association settings, no recorded page transform — the geometry says nothing, and the
     region is read as it stands, as before #757.

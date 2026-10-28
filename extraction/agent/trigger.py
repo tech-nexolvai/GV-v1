@@ -27,7 +27,7 @@ class AmbiguityReason(StrEnum):
 
     # **From the file's geometry only (#757), never from a reading.** Each is set from
     # `extraction.agent.observations.RegionFacts`, which is built from the vendor's paths
-    # (`extraction/agent/geometry.py`) and the stacked-fraction detector — no field of it holds text a
+    # (`extraction/geometry/labels.py`) and the stacked-fraction detector — no field of it holds text a
     # model returned, so nothing a model says can add one.
     LABEL_CUT_AT_EDGE = "label_cut_at_edge"
     """The crop round the reading cuts the label's whole run (#641)."""
