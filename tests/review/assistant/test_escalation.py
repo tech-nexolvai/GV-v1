@@ -380,3 +380,31 @@ def test_stop_ends_the_ladder_and_counts_each_item_tried() -> None:
     whole = escalate([_wrong(), _wrong(id="F2", page=3)], _ctx())
     assert whole.tried == 2
     assert _by_id(stopped)["F1"] == _by_id(whole)["F1"]
+
+
+def test_a_reading_record_that_settles_an_item_is_never_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-10-28: the first reading pass wrote an item's reading record on the escalation's
+    working copy without listing it as changed; when that record settled the item, the ladder
+    skipped it and the last pass found nothing new, so the record never reached the answer (on a
+    real Continue a vendor string lost its record that way and was held back as "no record of how
+    the string's other numbers were read"). Every record that changed is listed."""
+    from app.review.assistant import escalation, reading_routes
+
+    record = {"values": [{"side": "vendor", "label": "p3.D1"}], "doubts": [], "enough": True}
+
+    def mark(finding: dict[str, Any], *_given: Any) -> bool:
+        before = finding.get(reading_routes.FIELD)
+        finding[reading_routes.FIELD] = record
+        return before != record
+
+    monkeypatch.setattr(reading_routes, "mark", mark)
+    # The record is what settles the item here: the ladder then leaves it alone.
+    monkeypatch.setattr(
+        escalation, "undecided", lambda finding: reading_routes.FIELD not in finding
+    )
+
+    result = escalate([_wrong()], _ctx())
+
+    assert _by_id(result)["F1"][reading_routes.FIELD] == record

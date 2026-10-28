@@ -118,14 +118,19 @@ def problems(
     out_of_money: bool = False,
     price: str | None = None,
     out_of_credit: bool = False,
+    out_of_service: str | None = None,
 ) -> list[str]:
     """The run's problems, one plain sentence each, the most important first. `out_of_credit`:
-    the AI account ran out of credit part way (a 402, change 11), said instead of the price."""
+    the AI account ran out of credit part way (a 402, change 11), said instead of the price;
+    `out_of_service`: why the AI service stopped the calls part way (an outage), said instead of
+    the price too (2026-10-28)."""
     from app.review.assistant.chat_provider import CREDIT_STOP_WORDS
 
     out: list[str] = []
     if out_of_credit:
         out.append(CREDIT_STOP_WORDS)
+    elif out_of_service:
+        out.append(f"Stopped part way: {out_of_service}. Continue finishes the rest.")
     elif out_of_money:
         out.append(
             f"The fixed price{f' (${price})' if price else ''} ran out before the check finished."
@@ -135,6 +140,8 @@ def problems(
             "out of money": "the money ran out",
             "the check was stopped before the end": "the check was stopped",
             "the AI account ran out of credit": "the AI account ran out of credit",
+            "the AI service could not be reached": "the AI service could not be reached",
+            "the AI service refused this server's calls": "the AI service refused the calls",
         }.get(why_left, "they could not be compared in this run")
         out.append(
             f"{_count(len(pages_left), 'page')} not compared ({because}): "
@@ -192,4 +199,9 @@ def for_roster(run: Any, stopped: str | None) -> list[str]:
         out_of_money=stopped == "cost_cap" or bool(getattr(run, "stopped_for_money", False)),
         price=price,
         out_of_credit=bool(getattr(run, "_credit_cut", lambda: False)()),
+        out_of_service=(
+            getattr(run, "service_seen", None)
+            if getattr(run, "_service_cut", lambda: False)()
+            else None
+        ),
     )
