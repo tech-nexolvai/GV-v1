@@ -204,5 +204,3 @@ def open_review_session(
         raise _refuse(error) from error
 
     return ReviewSessionOut.model_validate(opened)
-
-

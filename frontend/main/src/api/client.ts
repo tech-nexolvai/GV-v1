@@ -86,12 +86,11 @@ type Get<P extends keyof paths> = paths[P] extends { get: { responses: { 200: { 
 // ---------------------------------------------------------------------------
 
 export type PackagePage = Get<'/api/v1/projects/{project_id}/packages'>;
-export type FindingCounts =
-  Get<'/api/v1/projects/{project_id}/packages/{package_id}/findings/summary'>;
-export type ReviewSessionPage = Get<'/api/v1/projects/{project_id}/review-sessions'>;
 export type RuleList = Get<'/api/v1/rules'>;
 export type Rule = RuleList[number];
-export type ReviewSession = ReviewSessionPage['items'][number];
+/** The review session an upload opens (the only review-session route left, since 2026-10-28). */
+export type ReviewSession =
+  paths['/api/v1/projects/{project_id}/packages/{package_id}/review-sessions']['post']['responses'][201]['content']['application/json'];
 
 export function listPackages(projectId: string, query?: { cursor?: string; limit?: number }) {
   const search = new URLSearchParams();
@@ -293,9 +292,3 @@ export function saveCompanySettings(values: { name: string; value: string }[]) {
 }
 export type CompanySettings = Get<'/api/v1/company-settings'>;
 
-// ---------------------------------------------------------------------------
-// Revisions of a review (#1180): the vendor's resubmission of the same job.
-// ---------------------------------------------------------------------------
-
-export type RevisionList = Get<'/api/v1/projects/{project_id}/packages/{package_id}/revisions'>;
-export type Revision = RevisionList['items'][number];

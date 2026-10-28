@@ -317,14 +317,14 @@ def test_with_an_architect_file_a_stop_in_the_dimensions_lists_no_page_that_was_
     unasked, and the page was listed as unread although its row and dimensions were read. Now it
     is kept, held with the budget named."""
     from extraction.architect.reader import MEASURED_ARCHITECT_SETTINGS
-    from tests.workflow.test_architect_file_reader import _add_architectural
-    from tests.workflow.test_architect_reader import _upload
-    from tests.workflow.test_separate_architect_production_chain import (
+    from tests.workflow.separate_architect_chain_fixtures import (
         TEXTS,
         VENDOR,
         Readers,
         _architect_file,
     )
+    from tests.workflow.test_architect_file_reader import _add_architectural
+    from tests.workflow.test_architect_reader import _upload
     from tests.workflow.test_slot_reader import claude_crops_to_texts
 
     class Stopping(Readers):

@@ -51,3 +51,17 @@ def test_no_engine_spelling_survives_in_the_frontend_labels() -> None:
         assert label != outcome.replace("_", " ")
         assert label != outcome.replace("_", " ").title()
         assert not label.isupper(), f"{outcome} is still being shown in the engine's voice"
+
+
+def test_the_frontend_outcome_type_is_the_servers_outcome_list() -> None:
+    """**Input: `Outcome` in `data/types.ts` and `verdict.outcomes.Outcome`. Outcome: the same set.**
+
+    The type was an alias into the generated API schema until 2026-10-28, when the routes that
+    published the enum went with the old review screens. Written out now, it is checked here instead.
+    """
+    from verdict.outcomes import Outcome
+
+    types_ts = LABELS_TS.with_name("types.ts").read_text(encoding="utf-8")
+    union = re.search(r"export type Outcome = ([^;]+);", types_ts)
+    assert union is not None, "data/types.ts no longer declares Outcome"
+    assert set(re.findall(r"'([A-Z_]+)'", union.group(1))) == {member.value for member in Outcome}
