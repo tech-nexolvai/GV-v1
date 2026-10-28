@@ -2319,6 +2319,12 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     relinked = {str(f["id"]): judged(f) for f in linked.changed}
     live = [relinked.get(str(f["id"]), f) for f in live if str(f["id"]) not in linked.absorbed]
     result.changed.extend(relinked.values())
+    # Each item's reading record as it came in: the first pass below writes it on the working
+    # copies without listing them as changed, and a record that settles an item takes it off the
+    # ladder, so the last pass found nothing new and the record never reached the answer (on a
+    # real Continue a vendor string lost its record that way: "no record of how the string's
+    # other numbers were read", held back from red). Every record that differs is listed below.
+    recorded = {str(f["id"]): f.get(reading_routes.FIELD) for f in live}
     # How each Wrong's numbers were read, before any step groups them (final plan #2): kept with
     # the items the ladder tries and recorded on every item at the end (a Stop leaves the rest).
     _mark_reading(live, ctx, None)
@@ -2380,6 +2386,14 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     _mark_right_proof(live, ctx, result)
     _mark_drafting_notes(live, ctx, result)
     _mark_reading(live, ctx, result)
+    listed = {str(f["id"]) for f in result.changed}
+    stopped = ctx.stop is not None and ctx.stop()
+    for finding in [] if stopped else live:  # a Stop leaves the rest (a Continue records it)
+        finding_id = str(finding["id"])
+        if finding_id in result.absorbed or finding_id in listed:
+            continue
+        if finding.get(reading_routes.FIELD) != recorded.get(finding_id):
+            result.changed.append(judged(finding))
     # One copy of each changed finding, its last state.
     last = {str(f["id"]): f for f in result.changed}
     result.changed = list(last.values())

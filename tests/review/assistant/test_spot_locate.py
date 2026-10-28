@@ -228,3 +228,15 @@ def test_a_compare_answer_still_merges_onto_a_relocated_row(tmp_path: Path) -> N
     assert seeded is not None and seeded["vendor_box"] is not None
     answer = {"status": "different", "page": 2, "vendor": '27 1/2"', "architect": "3' - 4\""}
     assert _seed_for(answer, book.live()) is not None
+
+
+def test_a_relocated_row_gets_a_picture_of_each_spot_code_found(tmp_path: Path) -> None:
+    """2026-10-28: 8 of 10 placed rows of a real upload came with no picture, so no reading of
+    them was ever made. A spot code finds gets its picture as any other finding's spot does."""
+    book = _book(tmp_path)
+    seeded = book.seed(_record("1022 [40 1/4]"))
+    assert seeded is not None and seeded["vendor_box"] is not None
+    assert seeded["vendor_picture_id"]
+    assert (book.workspace.pictures / f"{seeded['vendor_picture_id']}.png").is_file()
+    unplaced = book.seed(_record('52"'))
+    assert unplaced is not None and unplaced["vendor_picture_id"] is None
