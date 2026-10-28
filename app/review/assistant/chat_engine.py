@@ -6017,7 +6017,7 @@ def _count_only(finding: Mapping[str, Any]) -> bool:
 
 #: A printed number a reading can copy and code can compare: digits with only a dimension's marks
 #: (feet, inches, fractions, millimetres with inches in brackets), never words ("3 drawers", "no
-#: outlet", "WD-01 tag").
+#: outlet", "a finish tag").
 _PRINTED_NUMBER: Final = re.compile(
     r"^[\d\s/.'\"\u2019\u2032\u201d\u2033\-\u2013\u2212\[\]]*\d"
     r"[\d\s/.'\"\u2019\u2032\u201d\u2033\-\u2013\u2212\[\]]*$"
@@ -6026,7 +6026,7 @@ _PRINTED_NUMBER: Final = re.compile(
 
 def _nothing_to_copy(finding: Mapping[str, Any]) -> bool:
     """No side a reading would be shown holds a printed number: every value is words (a look
-    finding: "3 drawers left + 1 door right", "no outlet", "WD-01 tag printed"). A reading of it
+    finding: "2 drawers + 1 door", "no outlet", "a finish tag printed"). A reading of it
     can never agree (`second_read.compare_read` compares numbers only), so it is not asked; only a
     finding no red can come from is skipped (`_queue_second_reads`). 2026-10-29: 30 of the 56
     "unsure" second readings of a real upload were such findings, and they took 30 of the

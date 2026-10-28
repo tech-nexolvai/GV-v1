@@ -125,7 +125,7 @@ TIE_WORDS: Final = (
     "The item's value is the dimension whose line, with the extension lines at its ends, spans "
     "what the item names; the drawing around it shows what those lines reach."
 )
-#: A value printed in two units is copied whole (2026-10-29: "254" and "792" were copied without
+#: A value printed in two units is copied whole (2026-10-29: millimetre values were copied without
 #: their inches in brackets, which can never match).
 UNITS_WORDS: Final = (
     "A value printed in two units (millimetres with inches in brackets, for example 610 [24]) is "
@@ -138,22 +138,20 @@ SURE_WORDS: Final = (
     "that item; if you cannot tell which value is the item's, you are not sure."
 )
 
-#: A dimension written in an item's name ("outlet spacing 33\"", "heights stack (28 3/4\")"):
+#: A dimension written in an item's name ("outlet spacing 31\"", "heights stack (20 3/4\")"):
 #: feet and inches, inches, or millimetres with inches in brackets. Dropped from the name the
 #: readers are asked about, so the question never carries a value (`neutral_item`).
-_VALUE_IN_NAME: Final = re.compile(
-    r"""(?x)
+_VALUE_IN_NAME: Final = re.compile(r"""(?x)
     \d+(?:\s+\d+/\d+|/\d+|\.\d+)?\s*['’′]
         (?:\s*[-–−]?\s*\d+(?:\s+\d+/\d+|/\d+|\.\d+)?\s*["”″])?
     | \d+(?:\s+\d+/\d+|/\d+|\.\d+)?\s*["”″]
     | \d+(?:\.\d+)?\s*\[[^\]]*\]
-    """
-)
+    """)
 
 
 def neutral_item(item: object) -> str:
     """The item's name as the readers are asked about it: one line, and any dimension written in
-    it dropped ("Buffet: heights stack (28 3/4\")" -> "Buffet: heights stack"), so the question
+    it dropped ("Shelf: heights stack (20 3/4\")" -> "Shelf: heights stack"), so the question
     never names a value a reader could copy. Empty when nothing is left."""
     text = " ".join(str(item).split())
     if not _VALUE_IN_NAME.search(text):

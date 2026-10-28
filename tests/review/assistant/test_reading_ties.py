@@ -232,7 +232,7 @@ def _look(id_: str, architect: str, vendor: str, **more: Any) -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("architect", "vendor", "nothing"),
     [
-        ("3 drawers left + 1 door right", "4 fronts left", True),
+        ("2 drawers + 1 door", "4 fronts", True),
         ("no outlet in sink base", "1 outlet in sink base", True),
         ("XX-99 tag printed", "arrow with no tag text", True),
         ("2 outlets", "no outlets", True),
@@ -261,7 +261,7 @@ def test_an_item_with_no_number_is_not_read_and_takes_no_place(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = _engine(monkeypatch)
-    look = _look("F1", "3 drawers left + 1 door right", "4 fronts left")
+    look = _look("F1", "2 drawers + 1 door", "4 fronts")
     size = _finding("F2", "check")
     red = _finding("F3", "different", inches={"vendor": "31", "architect": "30"})
     assert not could_go_red(look) and could_go_red(red)
