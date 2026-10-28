@@ -2,7 +2,7 @@
 
 Same access rule as the reviewer chat (`require_project_access`, and the package must belong to
 the project), and the same refusal shape: a missing package is a real 404 from a dependency, never a
-broken stream. The facts loader in `reviewer_chat.py` is unchanged.
+broken stream. Its records loader now lives in `app/review/recorded_results.py`.
 
 The records are read with the screens' own functions (`_countertop_results_for_revision`,
 `readiness_and_decisions`, the chat's live findings), so an answer can only cite what the
@@ -24,13 +24,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import ARTIFACT_STORE_STATE, get_session
-from app.api.reviewer_chat import _live_run_facts
-from app.api.visual_countertops import _countertop_results_for_revision
 from app.auth import Principal, require_project_access
 from app.config import Settings
 from app.models import Package, PackageRevision
 from app.models.document import Document, DocumentVersion, PackageRevisionDocument
-from app.review.approval import readiness_and_decisions
 from app.review.assistant.agent import AgentFiles, AgentTools
 from app.review.assistant.contract import (
     MODEL_LABEL,
@@ -38,10 +35,9 @@ from app.review.assistant.contract import (
     AssistantRequest,
     model_label,
 )
-from app.review.assistant.full_check_brief import LEAD_RESULTS
 from app.review.assistant.model import OpenRouterAssistantModel
 from app.review.assistant.page_pictures import RevisionPagePictures
-from app.review.assistant.records import ReviewSnapshot, build_snapshot
+from app.review.assistant.records import ReviewSnapshot
 from app.review.assistant.sandbox import SandboxUnavailable, Workspace, open_sandbox
 from app.review.assistant.service import (
     AssistantBudget,
@@ -51,7 +47,12 @@ from app.review.assistant.service import (
     stream_answer,
 )
 from app.review.assistant.starters import starters
-from app.review.review_items import review_items_for_revision
+from app.review.recorded_results import (  # noqa: F401  (moved there; names kept for this module's own users)
+    _live_run_facts,
+    ai_review_and_job_values,
+    ai_review_row_for_model,
+    load_snapshot,
+)
 from app.runs.rates import rates_from_environment
 
 router = APIRouter(tags=["review assistant"])
@@ -69,26 +70,6 @@ def _latest_revision(
         .order_by(PackageRevision.revision_number.desc())
         .limit(1)
     ).scalar_one_or_none()
-
-
-def load_snapshot(
-    session: Session, project_id: UUID, package_id: UUID, revision: PackageRevision
-) -> ReviewSnapshot:
-    """This review's records, from the functions the countertop screen, sign-off and the simple
-    review list (#1352) use."""
-    countertops = _countertop_results_for_revision(session, package_id, revision)
-    readiness, records = readiness_and_decisions(session, revision.id)
-    live = _live_run_facts(session, project_id, package_id)
-    return build_snapshot(
-        countertops,
-        readiness,
-        () if live is None else live.findings,
-        records.decisions,
-        checks_have_run=live is not None and live.checks_have_run,
-        review_items=review_items_for_revision(
-            session, project_id=project_id, package_id=package_id, revision=revision
-        ),
-    )
 
 
 def _key(settings: Settings) -> str | None:
@@ -260,76 +241,8 @@ _KIND_WORDS: Final = {
 }
 
 
-def ai_review_row_for_model(row: dict[str, Any]) -> dict[str, Any]:
-    """An AI page review row as the model reads it: `clouded` is spelled out as what it means,
-    that THIS APP's cloud PDF will cloud the row, so it is never read as GV's own markup
-    (owner, 2026-10-16)."""
-    out = dict(row)
-    if "clouded" in out:
-        out["will_be_clouded_on_our_cloud_pdf"] = out.pop("clouded")
-    return out
-
-
 def _ai_review_and_job_values(context: _AssistantContext, page: int | None) -> dict[str, Any]:
     return ai_review_and_job_values(context.session, context.project_id, context.revision.id, page)
-
-
-def ai_review_and_job_values(
-    session: Session, project_id: UUID, revision_id: UUID, page: int | None
-) -> dict[str, Any]:
-    """The AI page review rows (one page) or its per-page summary (whole package), and the job's
-    values: the ones typed for the project and what the job values reader found."""
-    from app.api.company_settings import _project_set, _text
-    from app.review.ai_review import ai_review_for_revision
-    from app.review.review_items import _job_value_suggestions
-
-    review = ai_review_for_revision(session, revision_id)
-    fields = {
-        "key",
-        "measures",
-        "architect_text",
-        "vendor_text",
-        "result",
-        "why",
-        "status",
-        "clouded",
-        "verified_by",
-        "evaluator_reason",
-    }
-    pages: list[dict[str, Any]] = []
-    for sheet in review.pages:
-        if page is not None and sheet.page != page:
-            continue
-        rows = [
-            ai_review_row_for_model(row.model_dump(mode="json", include=fields))
-            for row in sheet.rows
-        ]
-        if page is None:
-            counts: dict[str, int] = {}
-            for row in sheet.rows:
-                counts[row.result] = counts.get(row.result, 0) + 1
-            summary: dict[str, Any] = {"page": sheet.page, "status": sheet.status, **counts}
-            summary["different"] = [row for row in rows if row["result"] == "different"]
-            # The rows the page review could not settle or saw on one side only: leads a full
-            # check settles on the drawing (#1515), never recorded results.
-            leads = [row for row in rows if row["result"] in LEAD_RESULTS]
-            if leads:
-                summary["leads"] = leads
-            pages.append(summary)
-        else:
-            pages.append({"page": sheet.page, "status": sheet.status, "rows": rows})
-    _version, values, _rows = _project_set(session, project_id)
-    typed = {name: _text(value) for name, value in sorted(values.items())}
-    found = [
-        item.model_dump(mode="json", exclude={"location"})
-        for item in _job_value_suggestions(session, revision_id)
-        if page is None or item.page == page
-    ]
-    return {
-        "ai_page_review": pages,
-        "job_values_typed_for_this_project": typed,
-        "job_values_found_on_the_drawings": found,
-    }
 
 
 def _agent_tools(

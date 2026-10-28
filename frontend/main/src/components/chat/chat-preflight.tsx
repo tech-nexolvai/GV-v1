@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Check, CircleAlert, Info, LoaderCircle, OctagonX } from 'lucide-react';
 
-import { NumText } from '@/components/simple-review/words';
+import { NumText } from '@/components/ui/num-text';
 import type { ChatPreflight, ChatPreflightLine } from '@/lib/chat-api';
 import { preflightMeta, preflightOrder, supervisorWords } from '@/lib/chat-preflight';
 import { cn } from '@/lib/utils';

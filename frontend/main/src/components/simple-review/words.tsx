@@ -1,7 +1,7 @@
 import { Check, Loader2, UserCheck } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
-import { answerWord, decidedWord, pageWord, splitNumbers } from '@/lib/review-items';
+import { answerWord, decidedWord, pageWord } from '@/lib/review-items';
 import type { ReviewStatus } from '@/api/review-items';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 
@@ -75,22 +75,7 @@ export function PageTag({ page, className }: { page: number | null | undefined; 
   return <span className={cn('num shrink-0 text-[13px] text-muted-foreground', className)}>{pageWord(page)}</span>;
 }
 
-/** Plain words with every number in it set in the number face (tabular Plex Mono). */
-export function NumText({ text, className, 'data-slot': slot }: { text: string; className?: string; 'data-slot'?: string }) {
-  return (
-    <span data-slot={slot} className={className}>
-      {splitNumbers(text).map((part, index) =>
-        part.number ? (
-          <span key={index} className="num">
-            {part.text}
-          </span>
-        ) : (
-          part.text
-        ),
-      )}
-    </span>
-  );
-}
+export { NumText } from '@/components/ui/num-text';
 
 /** A key the reviewer can press, shown inside its button from desktop width. */
 export function Kbd({ children }: { children: string }) {

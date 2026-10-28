@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Finding } from '@/data/types';
 import { NeedsValues } from '@/components/results/needs-values';
 import { OtherChecks } from '@/components/results/other-checks';
-import { SinkEntryCard } from '@/components/measure/SinkEntry';
+import { SinkEntryCard } from '@/components/settings/SinkEntry';
 import { InForceNote } from '@/components/measure/InForceNote';
 import { drawingNeeded, saveState, savedSinceResult, typeable, type MissingInput } from '@/lib/waiting-values';
 import { enterMeasurements, getProjectSink, getSinkInUse, saveProjectSink } from '@/api/client';

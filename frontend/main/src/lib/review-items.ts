@@ -348,20 +348,7 @@ export function answerWord(entry: { decided_by?: string | null; checked_wrong_by
   return `Checked by hand: WRONG by ${decidedBy === 'REVIEWER' ? 'you' : decidedBy}`;
 }
 
-/** Splits text so numbers (with fractions and inch marks) can be set in the number face. */
-export function splitNumbers(text: string): { text: string; number: boolean }[] {
-  const parts: { text: string; number: boolean }[] = [];
-  const pattern = /\d+(?:\s\d+\/\d+|\/\d+|\.\d+)?(?:\s?(?:"|in\b))?/g;
-  let last = 0;
-  for (const match of text.matchAll(pattern)) {
-    const at = match.index ?? 0;
-    if (at > last) parts.push({ text: text.slice(last, at), number: false });
-    parts.push({ text: match[0], number: true });
-    last = at + match[0].length;
-  }
-  if (last < text.length) parts.push({ text: text.slice(last), number: false });
-  return parts;
-}
+export { splitNumbers } from './numbers';
 
 /** The element id of an item's opened detail, for `aria-controls`. */
 export function detailId(key: string): string {

@@ -49,7 +49,7 @@ from collections.abc import Callable, Generator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from decimal import ROUND_CEILING, Decimal
+from decimal import Decimal
 from time import monotonic_ns, sleep
 from typing import Any, Final, Literal
 
@@ -66,6 +66,20 @@ from app.review.assistant.contract import (
     SubAgentRun,
 )
 from app.review.assistant.model import ANSWER_SCHEMA, MalformedAnswer, parse_answer
+from app.review.assistant.prompt_budget import (  # noqa: F401  (moved there; names kept for this module's own users)
+    _CACHE_READ,
+    _CACHE_WRITE,
+    _PIXELS_PER_TOKEN,
+    _REQUEST_OVERHEAD_TOKENS,
+    _TEXT_BYTES_PER_TOKEN,
+    HELPER_PICTURE_EDGE_PX,
+    _page_snapshot,
+    _picture_tokens,
+    _strip_images,
+    billed_input_tokens,
+    estimate_micros,
+    prompt_tokens_upper,
+)
 from app.review.assistant.records import CountertopRecord, ReviewSnapshot, prompt_records
 from app.review.assistant.sandbox import (
     SCRATCH,
@@ -121,18 +135,12 @@ MAX_SUB_AGENTS: Final = 4
 MAX_OUTPUT_TOKENS: Final = 4000
 #: A helper's report lists every finding on its pages, so it gets more room.
 SUB_MAX_OUTPUT_TOKENS: Final = 6000
-#: The longest side of a picture a helper is shown (Anthropic's suggested size, about 2,100
-#: tokens for a sheet): helpers look at many pages; the lead's checks keep the full 2576.
-HELPER_PICTURE_EDGE_PX: Final = 1568
 #: How long a helper waits before asking again after the provider failed its call.
 _RETRY_WAIT_SECONDS: Final = 3.0
 AGENT_EFFORT: Final = "medium"
 #: What the screen shows of one tool's output; the model gets up to the sandbox's 20 KB.
 _SHOWN_OUTPUT_CHARS: Final = 4000
 _RESULTS_CHARS: Final = 40_000
-_PIXELS_PER_TOKEN: Final = 750
-_TEXT_BYTES_PER_TOKEN: Final = 2
-_REQUEST_OVERHEAD_TOKENS: Final = 500
 #: The share of the question's money left when it delegates that the helpers of one turn may spend
 #: together; the rest is kept for the lead to check their reports and answer.
 _SUB_SHARE: Final = Decimal("0.75")
@@ -499,22 +507,6 @@ def _arguments(
     return dict(raw)
 
 
-def _page_snapshot(snapshot: ReviewSnapshot, page: int) -> ReviewSnapshot:
-    return snapshot.model_copy(
-        update={
-            "countertops": tuple(c for c in snapshot.countertops if c.page_number == page),
-            "other_checks": tuple(f for f in snapshot.other_checks if page in f.pages),
-            "pages_without_countertop": tuple(
-                p for p in snapshot.pages_without_countertop if p.page_number == page
-            ),
-            "rows_not_checked": tuple(
-                p for p in snapshot.rows_not_checked if p.page_number == page
-            ),
-            "review_items": tuple(i for i in snapshot.review_items if i.page_number == page),
-        }
-    )
-
-
 def _bash(raw: object, tools: AgentTools) -> _Ran:
     try:
         arguments = _arguments(raw, {"command", "description"}, {"command"})
@@ -745,10 +737,6 @@ def _listed(files: Sequence[AgentFiles]) -> str:
 # ---- one turn's request, caching and cost --------------------------------------------------------
 
 _EPHEMERAL: Final[Mapping[str, str]] = {"type": "ephemeral"}
-#: What a cached prompt token costs against an uncached one (Anthropic's prompt caching prices:
-#: a 5-minute cache write is 1.25x, a cache read 0.1x).
-_CACHE_WRITE: Final = Decimal("1.25")
-_CACHE_READ: Final = Decimal("0.1")
 
 
 def _with_breakpoint(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -794,70 +782,6 @@ def request_body(
             "effort": AGENT_EFFORT,
         },
     }
-
-
-def billed_input_tokens(
-    usage: Mapping[str, Any], factors: tuple[Decimal, Decimal] | None = None
-) -> int:
-    """The prompt as uncached-token equivalents: uncached + 1.25 x cache writes + 0.1 x cache
-    reads (or the model's own `factors`, `ModelRate.cache_factors`), so the input price gives what
-    the call cost."""
-    write_factor, read_factor = factors or (_CACHE_WRITE, _CACHE_READ)
-    uncached = int(usage.get("input_tokens") or 0)
-    written = int(usage.get("cache_creation_input_tokens") or 0)
-    read = int(usage.get("cache_read_input_tokens") or 0)
-    # Rounded up: Decimal's `//` rounds toward zero, so `-(-x // 1)` would round down.
-    return (
-        uncached
-        + int((written * write_factor).to_integral_value(rounding=ROUND_CEILING))
-        + int((read * read_factor).to_integral_value(rounding=ROUND_CEILING))
-    )
-
-
-def _picture_tokens(width: int, height: int) -> int:
-    return -(-(width * height) // _PIXELS_PER_TOKEN)
-
-
-def _strip_images(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        if value.get("type") == "image":
-            return None
-        return {key: _strip_images(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_strip_images(item) for item in value]
-    return value
-
-
-def prompt_tokens_upper(body: Mapping[str, Any], pictures: Sequence[tuple[int, int]]) -> int:
-    """An upper bound on a request's prompt tokens: text at one token per 2 bytes, each picture at
-    width x height / 750."""
-    text = json.dumps(_strip_images(dict(body)), ensure_ascii=False, default=str)
-    tokens = _REQUEST_OVERHEAD_TOKENS + -(-len(text.encode("utf-8")) // _TEXT_BYTES_PER_TOKEN)
-    return tokens + sum(_picture_tokens(w, h) for w, h in pictures)
-
-
-def estimate_micros(
-    body: Mapping[str, Any],
-    pictures: Sequence[tuple[int, int]],
-    model_id: str,
-    rates: ModelRates | None,
-    cached_tokens: int = 0,
-    previous_tokens: int = 0,
-) -> int | None:
-    """An upper bound on one turn's cost; `None` when the model has no stated price.
-
-    **Cache-aware.** `cached_tokens` is the previous turn's real prompt length (from its usage),
-    which this turn reads from the cache at 0.1x, pictures included; `previous_tokens` is this
-    estimate's upper bound for that previous prompt, so only what was added since (this bound
-    minus that one) is priced as a cache write (1.25x). Plus the whole output allowance. A missed
-    cache costs more than this estimate; the spend then recorded is the real one, so the next
-    check sees it."""
-    tokens = prompt_tokens_upper(body, pictures)
-    added = max(0, tokens - previous_tokens) if cached_tokens else tokens
-    billed = billed_input_tokens(
-        {"cache_read_input_tokens": cached_tokens, "cache_creation_input_tokens": added}
-    )
-    return call_cost_micros(rates, model_id, billed, int(body.get("max_tokens", 0)))
 
 
 def _converse_usage(payload: Mapping[str, Any] | None) -> dict[str, Any] | None:

@@ -1,10 +1,9 @@
-"""The stored deterministic findings of a package's newest revision, as language-only facts.
+"""GV Review's recorded results for one package: what the upload pipeline found, as the full check reads them.
 
-These helpers were the data side of the old reviewer chat (Bedrock narrator), whose routes were
-removed on 2026-10-28: nothing had called them since the review assistant replaced that chat on
-2026-10-10. They stay because the review assistant's records loader
-(`app.api.review_assistant.load_snapshot`) still reads `_live_run_facts`, and the chat-first full
-check reads that loader for GV Review's recorded results.
+Moved here unchanged on 2026-10-28 from the old review screens' modules: the stored-findings facts
+(from `app/api/reviewer_chat.py`) and the records loader (`load_snapshot`, `ai_review_and_job_values`,
+from `app/api/review_assistant.py`). The chat-first full check reads them through
+`app/api/assistant_chats.py` to cross-check its own findings against GV Review's recorded ones.
 """
 
 from __future__ import annotations
@@ -12,11 +11,13 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.visual_countertops import _countertop_results_for_revision
 from app.models import (
     CheckRun,
     Finding,
@@ -25,6 +26,10 @@ from app.models import (
     RuleDefinition,
     RuleSnapshot,
 )
+from app.review.approval import readiness_and_decisions
+from app.review.assistant.full_check_brief import LEAD_RESULTS
+from app.review.assistant.records import ReviewSnapshot, build_snapshot
+from app.review.review_items import review_items_for_revision
 from workflow.findings_composer import ComposerFinding, ComposerOperand, reviewer_reason
 
 
@@ -190,3 +195,91 @@ def _live_run_facts(session: Session, project_id: UUID, package_id: UUID) -> _Li
             )
         )
     return _LiveRunFacts(revision_id=revision, findings=tuple(result), checks_have_run=checked)
+
+
+def load_snapshot(
+    session: Session, project_id: UUID, package_id: UUID, revision: PackageRevision
+) -> ReviewSnapshot:
+    """This review's records, from the functions the countertop screen, sign-off and the simple
+    review list (#1352) use."""
+    countertops = _countertop_results_for_revision(session, package_id, revision)
+    readiness, records = readiness_and_decisions(session, revision.id)
+    live = _live_run_facts(session, project_id, package_id)
+    return build_snapshot(
+        countertops,
+        readiness,
+        () if live is None else live.findings,
+        records.decisions,
+        checks_have_run=live is not None and live.checks_have_run,
+        review_items=review_items_for_revision(
+            session, project_id=project_id, package_id=package_id, revision=revision
+        ),
+    )
+
+
+def ai_review_row_for_model(row: dict[str, Any]) -> dict[str, Any]:
+    """An AI page review row as the model reads it: `clouded` is spelled out as what it means,
+    that THIS APP's cloud PDF will cloud the row, so it is never read as GV's own markup
+    (owner, 2026-10-16)."""
+    out = dict(row)
+    if "clouded" in out:
+        out["will_be_clouded_on_our_cloud_pdf"] = out.pop("clouded")
+    return out
+
+
+def ai_review_and_job_values(
+    session: Session, project_id: UUID, revision_id: UUID, page: int | None
+) -> dict[str, Any]:
+    """The AI page review rows (one page) or its per-page summary (whole package), and the job's
+    values: the ones typed for the project and what the job values reader found."""
+    from app.api.company_settings import _project_set, _text
+    from app.review.ai_review import ai_review_for_revision
+    from app.review.review_items import _job_value_suggestions
+
+    review = ai_review_for_revision(session, revision_id)
+    fields = {
+        "key",
+        "measures",
+        "architect_text",
+        "vendor_text",
+        "result",
+        "why",
+        "status",
+        "clouded",
+        "verified_by",
+        "evaluator_reason",
+    }
+    pages: list[dict[str, Any]] = []
+    for sheet in review.pages:
+        if page is not None and sheet.page != page:
+            continue
+        rows = [
+            ai_review_row_for_model(row.model_dump(mode="json", include=fields))
+            for row in sheet.rows
+        ]
+        if page is None:
+            counts: dict[str, int] = {}
+            for row in sheet.rows:
+                counts[row.result] = counts.get(row.result, 0) + 1
+            summary: dict[str, Any] = {"page": sheet.page, "status": sheet.status, **counts}
+            summary["different"] = [row for row in rows if row["result"] == "different"]
+            # The rows the page review could not settle or saw on one side only: leads a full
+            # check settles on the drawing (#1515), never recorded results.
+            leads = [row for row in rows if row["result"] in LEAD_RESULTS]
+            if leads:
+                summary["leads"] = leads
+            pages.append(summary)
+        else:
+            pages.append({"page": sheet.page, "status": sheet.status, "rows": rows})
+    _version, values, _rows = _project_set(session, project_id)
+    typed = {name: _text(value) for name, value in sorted(values.items())}
+    found = [
+        item.model_dump(mode="json", exclude={"location"})
+        for item in _job_value_suggestions(session, revision_id)
+        if page is None or item.page == page
+    ]
+    return {
+        "ai_page_review": pages,
+        "job_values_typed_for_this_project": typed,
+        "job_values_found_on_the_drawings": found,
+    }

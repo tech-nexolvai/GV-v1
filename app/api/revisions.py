@@ -41,7 +41,6 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_artifact_store, get_session
 from app.api.documents import _package_revision, _ticket
-from app.api.visual_countertops import _countertop_results_for_revision
 from app.auth import Action, Principal, require_action, require_project_access
 from app.db.base import utc_now
 from app.lifecycle.carry_forward import carry_run_values, known_content
@@ -59,6 +58,7 @@ from app.models import (
     PackageState,
     Page,
 )
+from app.review.countertop_results import _countertop_results_for_revision
 from app.schemas.revisions import (
     CountertopChangeOut,
     CountertopSideOut,

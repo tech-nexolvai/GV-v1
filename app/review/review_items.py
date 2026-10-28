@@ -683,7 +683,7 @@ def _settled_reading_actions(session: Session, readings: Sequence[ReviewedReadin
     (`candidate_is_sealed`) or supports a sealed label. Labels not already loaded are read in one
     statement.
     """
-    from app.api.visual_countertops import _supported_candidate
+    from app.review.countertop_results import _supported_candidate
 
     wanted = {
         supported
@@ -1079,7 +1079,7 @@ def review_items_for_revision(
     """The list for one revision. Read-only; a fixed handful of reads whatever the rows."""
     # Imported here: the projection lives with its route, and importing it at module load would
     # make `app.review` load the API package first (as `app/review/signed_exports.py` does).
-    from app.api.visual_countertops import _countertop_results_for_revision
+    from app.review.countertop_results import _countertop_results_for_revision
 
     projection = _countertop_results_for_revision(session, package_id, revision)
     # Read once: the compare it shows is the one sign-off readiness waits on (#1418).

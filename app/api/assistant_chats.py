@@ -1444,9 +1444,9 @@ def _results_loader(
         return None
 
     def load(page: int | None) -> dict[str, Any]:
-        from app.api.review_assistant import ai_review_and_job_values, load_snapshot
-        from app.review.assistant.agent import _page_snapshot
+        from app.review.assistant.prompt_budget import _page_snapshot
         from app.review.assistant.records import prompt_records
+        from app.review.recorded_results import ai_review_and_job_values, load_snapshot
 
         with factory() as session:
             revision = session.get(PackageRevision, revision_id)

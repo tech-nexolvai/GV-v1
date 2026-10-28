@@ -34,7 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
-from app.api.measurements import _parse, _published_rules, _revision, _source, _store
+from app.api.setting_values import _parse, _published_rules, _revision, _source, _store
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models import Project
 from app.models.parameters import ParameterSet as StoredParameterSet

@@ -3,7 +3,7 @@ import { ChevronRight, CircleAlert } from 'lucide-react';
 
 import { Collapse } from '@/components/chat/chat-motion';
 import { ReadingCoverage } from '@/components/chat/chat-reading';
-import { NumText } from '@/components/simple-review/words';
+import { NumText } from '@/components/ui/num-text';
 import type { ChatCoverage, ChatFinding, ChatTrust, ChatUnknown, TrustLevel } from '@/lib/chat-api';
 import { coverageCounts, coverageWords } from '@/lib/chat-findings';
 import {
