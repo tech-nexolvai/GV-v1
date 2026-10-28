@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 from app.config import Settings
-from app.review.chat_bedrock import configured_reviewer_chat
 from extraction.models.nova import NovaConfig
 from workflow.findings_bedrock import (
     PROMPT_ID,
@@ -174,7 +173,7 @@ def test_invalid_optional_timeout_configuration_disables_only_narration(
     assert configured_findings_composer() is None
 
 
-def test_settings_configure_the_same_model_and_region_as_reviewer_chat() -> None:
+def test_settings_configure_the_model_and_region() -> None:
     settings = Settings(
         database_url="postgresql+psycopg://gv:gv@localhost:5433/gvtest",
         bedrock_model="qwen.qwen3-next-80b-a3b",
@@ -184,18 +183,14 @@ def test_settings_configure_the_same_model_and_region_as_reviewer_chat() -> None
     )
 
     composer = configured_findings_composer(settings)
-    reviewer_chat = configured_reviewer_chat(settings)
 
     assert composer is not None
-    assert reviewer_chat is not None
     assert composer._config.model_id == "qwen.qwen3-next-80b-a3b"
     assert composer._config.region_name == "us-east-1"
     assert composer._config.connect_timeout_seconds == 7
     assert composer._config.read_timeout_seconds == 19
     assert composer._config.prompt_id == PROMPT_ID == "findings-composer-v3"
     assert composer._config.template_id == TEMPLATE_ID == "reviewer-language-v3"
-    assert reviewer_chat._config.model_id == composer._config.model_id
-    assert reviewer_chat._config.region_name == composer._config.region_name
 
 
 def test_blank_model_disables_only_the_optional_bedrock_presentation() -> None:
@@ -205,7 +200,6 @@ def test_blank_model_disables_only_the_optional_bedrock_presentation() -> None:
     )
 
     assert configured_findings_composer(settings) is None
-    assert configured_reviewer_chat(settings) is None
 
 
 def test_whitespace_model_disables_only_the_optional_bedrock_presentation() -> None:
@@ -216,7 +210,6 @@ def test_whitespace_model_disables_only_the_optional_bedrock_presentation() -> N
     )
 
     assert configured_findings_composer(settings) is None
-    assert configured_reviewer_chat(settings) is None
 
 
 def test_prompt_requires_literal_finding_fields_not_placeholder_words() -> None:

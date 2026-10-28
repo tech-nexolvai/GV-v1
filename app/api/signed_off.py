@@ -175,14 +175,6 @@ EXEMPT_WRITES: Final[dict[tuple[str, str], str]] = {
     ): "cuts part pictures from immutable drawings; records no input or decision",
     (
         "POST",
-        "/api/v1/projects/{project_id}/packages/{package_id}/chat",
-    ): "answers a question from the records; writes no input or decision",
-    (
-        "POST",
-        "/api/v1/projects/{project_id}/packages/{package_id}/chat/stream",
-    ): "answers a question from the records; writes no input or decision",
-    (
-        "POST",
         "/api/v1/projects/{project_id}/packages/{package_id}/assistant/stream",
     ): "answers a question from the records; writes no input or decision",
     (

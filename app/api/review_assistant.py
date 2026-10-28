@@ -2,7 +2,7 @@
 
 Same access rule as the reviewer chat (`require_project_access`, and the package must belong to
 the project), and the same refusal shape: a missing package is a real 404 from a dependency, never a
-broken stream. The chat endpoints in `reviewer_chat.py` are unchanged.
+broken stream. The facts loader in `reviewer_chat.py` is unchanged.
 
 The records are read with the screens' own functions (`_countertop_results_for_revision`,
 `readiness_and_decisions`, the chat's live findings), so an answer can only cite what the

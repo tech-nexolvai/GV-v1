@@ -497,10 +497,7 @@ def test_no_adapter_lets_a_provider_supply_the_finding_text() -> None:
     into `ModelComposition.narratives`. Every adapter must route through `ground_explanations`, so
     the facts are the engine's in every path rather than in the one that was remembered.
     """
-    adapters = (
-        Path(__file__).resolve().parents[2] / "app" / "review" / "chat_bedrock.py",
-        Path(__file__).resolve().parents[2] / "workflow" / "findings_bedrock.py",
-    )
+    adapters = (Path(__file__).resolve().parents[2] / "workflow" / "findings_bedrock.py",)
 
     for adapter in adapters:
         source = adapter.read_text(encoding="utf-8")
