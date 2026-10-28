@@ -253,7 +253,7 @@ def test_a_height_the_look_added_up_itself_is_not_compared_through_the_escalatio
     assert held[claim_rules.FIELD]["rule"] == "look_own_sum"
     assert proof_group(held) == "not_compared"  # never a please-check, never red
     why = classified(held)
-    assert "the vendor's value is the whole-drawing look's own sum or estimate" in str(why.why)
+    assert "the vendor's value is the whole-drawing look's own sum" in str(why.why)
     assert "printed on both drawings" in str(why.settle)
     assert "F1" not in result.absorbed  # still listed: GV can look
 
@@ -262,24 +262,37 @@ def test_a_height_the_look_added_up_itself_is_not_compared_through_the_escalatio
     "value",
     [
         '61" (48 1/2" + 12 1/2" top filler; no overall printed)',
-        "about 4'-8\" wide",
-        '~30"',
-        'approx. 18"',
-        '27" by scale',
-        '27" (scaled)',
         '19" plus the toe kick',
+        '42" (the chain of the base, top and splash)',
+        '58" (sum of the three bays)',
+        "the parts add up to 4'-2\"",
     ],
 )
-def test_sums_and_estimates_on_a_side_with_no_label_are_not_compared(value: str) -> None:
+def test_sums_on_a_side_with_no_label_are_not_compared(value: str) -> None:
     assert "F1" in _changes([_sized("F1", value, "2' - 6\"", labels=("architect",))])
     assert "F2" in _changes([_sized("F2", '30"', value, labels=("vendor",))])  # either side
 
 
 @pytest.mark.parametrize(
-    "value", ['30"', "762 [30]", "2' - 6\"", '30" high, 18" deep', "1'-10 1/2\""]
+    "value",
+    [
+        '30"',
+        "762 [30]",
+        "2' - 6\"",
+        '30" high, 18" deep',
+        "1'-10 1/2\"",
+        # An estimate or a size by scale where the drawing prints none stays (GV asked for the
+        # scale there, client meeting 2026-10-23; `scale_measure` measures such spots).
+        "about 4'-8\" wide",
+        '~30"',
+        'approx. 18"',
+        '27" by scale',
+        'low splash, about 2" by scale',
+    ],
 )
-def test_a_printed_size_stays_a_likely_problem(value: str) -> None:
+def test_a_printed_or_scaled_size_stays_a_likely_problem(value: str) -> None:
     assert _changes([_sized("F1", value, "2' - 7\"", labels=("architect",))]) == {}
+    assert _changes([_sized("F2", '30"', value, labels=("vendor",))]) == {}
 
 
 def test_a_side_with_a_printed_label_is_not_judged_by_its_words() -> None:

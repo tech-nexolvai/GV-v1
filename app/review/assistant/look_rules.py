@@ -30,10 +30,12 @@ Likely problem.
    place are left as they were.
 4. **A claim to ask** (`look_question`): the look marked it to ask (`whole_look`: two differences
    in one claim, or a count of different things on the two sides): **Not compared**.
-5. **A size the look worked out** (`look_own_sum`, 2026-10-28): a size claim whose side with no
-   printed label code found gives a value the look added up or estimated itself (numbers joined
-   by "+", a chain or a sum, "about", "approx.", "~", a size by scale), not a size printed on that
-   drawing: **Not compared**. Code cannot check which parts such a sum adds or what it measures.
+5. **A size the look added up** (`look_own_sum`, 2026-10-28): a size claim whose side with no
+   printed label code found gives a value the look added up itself (numbers joined by "+" or
+   "plus", a chain or a sum), not a size printed on that drawing: **Not compared**. Code cannot
+   check which parts such a sum adds. A size the look only estimates or scales where the drawing
+   prints none ("about 2 inches by scale") is left as it is: GV asked for the scale to be used there
+   (client meeting, 2026-10-23), and code measures such spots itself (`scale_measure`).
    A real upload: the look added up a vendor height chain that ran past the counter to the top
    of the splash and set its total against the architect's floor-to-counter height, a Likely
    problem on a height that matches (the vendor prints the same height elsewhere); the look's own
@@ -93,11 +95,10 @@ _OVERLAY_NEEDS: Final = "the vendor's own drawing of {thing} without GV's markup
 _PLACE_NEEDS: Final = "whether {thing} is part of this millwork unit"
 _ASK_NEEDS: Final = "each difference of {thing} checked on its own"
 _SUM_NEEDS: Final = "a size printed on both drawings for {thing}"
-#: A value the look worked out itself instead of reading it: numbers joined by "+" or "plus", a
-#: chain or a sum, or an estimate ("about", "approx.", "~", "roughly", a size by scale).
+#: A value the look added up itself instead of reading it: numbers joined by "+" or "plus", a
+#: chain or a sum. An estimate or a size by scale is not one (see rule 5).
 _OWN_VALUE: Final = re.compile(
-    r"\d[^+]*\+\s*\[?\d|\bplus\b|\bchain\b|\bsum\b|\badds?\s+up\b"
-    r"|\babout\b|\bapprox|~|\broughly\b|\bscal(?:ed|es|ing)\b|\bby\s+scale\b|\bestimat",
+    r"\d[^+]*\+\s*\[?\d|\bplus\b|\bchain\b|\bsum\b|\badds?\s+up\b",
     re.IGNORECASE,
 )
 
@@ -241,7 +242,7 @@ def _place(piece: Mapping[str, Any], phrases: ByPage) -> str | None:
 
 
 def own_sum(finding: Mapping[str, Any]) -> str | None:
-    """Why a size claim's value is the look's own sum or estimate on a side with no printed label
+    """Why a size claim's value is the look's own sum on a side with no printed label
     code found (see the module), else `None`. A side with a label code found prints the look's
     value (`whole_look._label` checks it), so only an unlabelled side is looked at."""
     dims = finding.get("dims")
@@ -255,8 +256,8 @@ def own_sum(finding: Mapping[str, Any]) -> str | None:
         shown = value if len(value) <= 80 else f"{value[:79]}…"
         whose = "vendor's" if side == "vendor" else "architect's"
         return (
-            f"the {whose} value is the whole-drawing look's own sum or estimate ({shown}), not a "
-            f"size printed on the {whose} drawing, so code cannot check what it adds up or measures"
+            f"the {whose} value is the whole-drawing look's own sum ({shown}), not a size printed "
+            f"on the {whose} drawing, so code cannot check which parts it adds up"
         )
     return None
 
