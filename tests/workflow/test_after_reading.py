@@ -1,7 +1,8 @@
-"""A finished reading asks for the page pictures and the check run on its own (Set 3 QA).
+"""A finished reading asks for the check run on its own (Set 3 QA), and no page pictures.
 
-Synthetic values only. Before, a new upload stopped at NEEDS_INPUT with nothing queued: no page
-pictures ("Look" showed nothing) and no check run (the list said "Run the checks first").
+Synthetic values only. Before, a new upload stopped at NEEDS_INPUT with nothing queued: no check run
+(the list said "Run the checks first"). The page pictures it also queued were for the old review
+screens only, which were removed (#1991); since 2026-10-28 the reading no longer asks for them.
 """
 
 from __future__ import annotations
@@ -49,21 +50,20 @@ def _needed(session: Session, revision_id: object) -> str:  # noqa: F811
     return str(reason)
 
 
-def test_a_read_set_queues_its_page_pictures_and_its_checks_once(
+def test_a_read_set_queues_its_checks_once_and_no_page_pictures(
     session: Session, store: LocalStore  # noqa: F811
 ) -> None:
     revision = _read(session, store, kind="shop")
     first = after_reading.queue_after_reading(session, revision.id)
-    assert (first.pictures_queued, first.checks_queued) == (True, True)
-    (pictures,) = _queued(session, RENDER_VENDOR_PAGE_PICTURES_WORKFLOW, revision.id)
+    assert first.checks_queued is True
     (checks,) = _queued(session, after_reading.RUN_CHECKS_WORKFLOW, revision.id)
     assert checks.payload["discriminators"] == {}
-    del pictures
+    assert _queued(session, RENDER_VENDOR_PAGE_PICTURES_WORKFLOW, revision.id) == []
 
     # Asked again (a redelivered reading): nothing is queued twice.
     again = after_reading.queue_after_reading(session, revision.id)
-    assert (again.pictures_queued, again.checks_queued) == (False, False)
-    assert len(_queued(session, RENDER_VENDOR_PAGE_PICTURES_WORKFLOW, revision.id)) == 1
+    assert again.checks_queued is False
+    assert _queued(session, RENDER_VENDOR_PAGE_PICTURES_WORKFLOW, revision.id) == []
     assert len(_queued(session, after_reading.RUN_CHECKS_WORKFLOW, revision.id)) == 1
 
 
@@ -77,7 +77,7 @@ def test_the_reading_end_queues_the_checks_and_says_so(
     results = worker._extract_package(session, revision.id, str(uuid4()))
     session.commit()
 
-    assert results["after_reading"] == {"pictures_queued": False, "checks_queued": True}
+    assert results["after_reading"] == {"checks_queued": True}
     assert len(_queued(session, after_reading.RUN_CHECKS_WORKFLOW, revision.id)) == 1
     state = session.scalar(select(PackageRevision.state).where(PackageRevision.id == revision.id))
     assert state == PackageState.NEEDS_INPUT.value
