@@ -1856,6 +1856,14 @@ class FindingBook:
             # An AI page review's row has a value but no spot (#1738): its printed label, found
             # by code, so code's checks read it there instead of calling it unreadable.
             finding = self._relocated(finding)
+            # Each spot code found gets its picture, as every other finding's spot does (on a
+            # real upload 8 of 10 placed rows came with no picture, so nothing read them again).
+            for box, picture in (
+                ("arch_box", "arch_picture_id"),
+                ("vendor_box", "vendor_picture_id"),
+            ):
+                if isinstance(finding.get(box), Mapping) and not finding.get(picture):
+                    finding[picture], _why = self._picture(finding[box])
         if self.checker is not None:
             finding = self.checker(finding)
         with self._lock:

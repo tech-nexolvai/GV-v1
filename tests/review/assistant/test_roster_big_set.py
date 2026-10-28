@@ -443,3 +443,125 @@ def test_carried_pages_are_done_only_when_compared_and_not_said_unreached() -> N
     assert [(job.number, job.pages) for job in left.jobs] == [(1, (3,))]
     assert left.skipped == ((1, "divider"),)
     assert json.dumps(left.pages) == "1"
+
+
+_LOOK = {
+    "by": "whole_drawing_look",
+    "why": "The vendor adds a row of two drawers that the architect's elevation does not show.",
+    "kind": "extra_piece",
+    "look": 1,
+    "sure": "likely",
+    "piece": {
+        "box": [100.0, 300.0, 200.0, 340.0],
+        "tag": None,
+        "file": FILE,
+        "page": 2,
+        "side": "vendor",
+        "place": "inside",
+    },
+    "proof": "likely_only",
+    "words": "Please check and confirm: this piece: a row of two drawers.",
+}
+
+
+def test_continue_keeps_every_mark_an_earlier_finding_had(tmp_path: Path) -> None:
+    """2026-10-28: Continue rebuilt each finding from a short list of fields, so the whole-drawing
+    look's mark, the claim rules, the reasons, the decision help, `settled`, `also_on` and the
+    scale mark were lost (8 please-checks came back Not compared on a real upload). Every field
+    is kept but what the new answer works out again."""
+    from app.review.assistant.proof import proof_group
+
+    harness = _roster(tmp_path, _Roster(), price=5 * DOLLARS)
+    marks: dict[str, Any] = {
+        "whole_look": _LOOK,
+        "claim_rule": {"rule": "piece_place", "outcome": "not_compared", "why": "asked"},
+        "check_reason": "pairing_not_certain",
+        "decision_help": {
+            "likely": "can't tell",
+            "confirm": "ask",
+            "estimate": None,
+            "measures": "architect gives plan only",
+        },
+        "settled": {"how": "code read both", "was": "check", "method": "x", "outcome": "right"},
+        "also_on": [{"finding_id": "F110", "page": 3, "item": "x", "vendor": '33"'}],
+        "measured_by_scale": {"text": '58"'},
+        "keep_reason": "kept",
+        "question": "Which is right?",
+    }
+    look = {
+        **_top(2, item="Area 1: drawers", status="check", architect="not shown",
+               vendor="2 drawers drawn"),
+        "id": "F58", "created_by": "whole_look", "whole_look": _LOOK,
+    }  # fmt: skip
+    other = {**_top(3, item="Area 1: top"), "id": "F61", "created_by": "helper:1", **marks}
+    before = proof_group(harness.engine._checked(dict(look)))
+    assert before == "likely_problem"
+
+    harness.engine.carry_over([look, other], None)
+
+    kept_look, kept_other = harness.engine.book.live()
+    assert (kept_look["id"], kept_other["id"]) == ("F1", "F2")
+    assert kept_look["whole_look"] == _LOOK and kept_look["created_by"] == "whole_look"
+    assert proof_group(kept_look) == before  # still a please-check, never Not compared
+    for key, value in marks.items():
+        assert kept_other[key] == value, key
+
+
+def test_continue_keeps_the_readings_an_earlier_answer_paid_for(tmp_path: Path) -> None:
+    """A carried finding keeps its second and third reads while what they read is unchanged, so
+    Continue never reads it again; one whose second read never ran is read again."""
+    harness = _roster(tmp_path, _Roster(), price=5 * DOLLARS)
+    engine = harness.engine
+    reads = [
+        {"role": "first", "model": "helper:1", "value_arch": '37"', "value_vendor": '46"'},
+        {"role": "second", "model": "haiku", "value_arch": '37"', "value_vendor": None},
+        {"role": "third", "model": "sonnet", "value_arch": '37"', "value_vendor": '46"',
+         "sure": True},
+    ]  # fmt: skip
+    read = {
+        **_top(2, item="Area 1: top read"), "id": "F3", "created_by": "helper:1",
+        "checks": {"second_read": "unsure", "adjudication": "agrees_after_adjudication"},
+        "second_read_values": {"architect": '37"', "vendor": None}, "reads": reads,
+    }  # fmt: skip
+    unread = {
+        **_top(3, item="Area 1: top not read"), "id": "F4", "created_by": "helper:1",
+        "checks": {"second_read": "not_run"},
+    }  # fmt: skip
+
+    engine.carry_over([read, unread], None)
+
+    first, second = engine.book.live()
+    assert first["checks"]["second_read"] == "unsure"
+    assert first["checks"]["adjudication"] == "agrees_after_adjudication"
+    assert first["second_read_values"] == {"architect": '37"', "vendor": None}
+    assert first["reads"] == reads
+    assert second["checks"]["second_read"] == "not_run"
+    queued: list[str] = []
+    engine._submit_check = lambda name, job: queued.append(name)  # type: ignore[method-assign]
+    engine._queue_second_reads(engine.book.live(), final=True)
+    assert queued == ["second_reads"]  # only the one never read
+
+
+def test_continue_keeps_gvs_recorded_items_as_placed_and_seeds_only_the_rest(
+    tmp_path: Path,
+) -> None:
+    """2026-10-28: Continue left GV's recorded items out and seeded them again with no spot, so
+    two were dropped as internal notes. They come as placed (spots, pictures, `record_id`), and
+    seeding matches them by `record_id`."""
+    harness = _roster(tmp_path, _Roster(), price=5 * DOLLARS)
+    engine = harness.engine
+    placed = {
+        **_top(2, item="Vanity top", architect='37"', vendor="3'-10\""),
+        "id": "F1", "created_by": "gv_review", "source": "rules", "record_id": "c1",
+        "rule_check_id": "c1",
+    }  # fmt: skip
+
+    engine.carry_over([placed], None)
+    engine._seed_recorded()
+
+    held = [f for f in engine.book.live() if f.get("record_id") == "c1"]
+    assert len(held) == 1  # never seeded again
+    assert held[0]["vendor_box"] == placed["vendor_box"]
+    assert held[0]["arch_box"] == placed["arch_box"]
+    assert held[0]["vendor_picture_id"] and held[0]["arch_picture_id"]
+    assert held[0]["architect"] == '37"'
