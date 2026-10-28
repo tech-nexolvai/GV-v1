@@ -24,6 +24,7 @@ from eval.experiments.model_bakeoff import (
     key_frame,
     key_polygon_dpi,
     load_crops,
+    load_keys,
     load_model_specs,
     parse_dimension_reading,
     render_crop,
@@ -99,6 +100,7 @@ def _write_answer_key(
     *,
     annotator: str = "human reviewer",
     metadata: dict[str, object] | None = None,
+    case_id: str = "synthetic-bakeoff",
 ) -> None:
     case_dir.mkdir(parents=True)
     (case_dir / "shop.pdf").write_bytes(_pdf_with_red_box())
@@ -106,7 +108,7 @@ def _write_answer_key(
     (case_dir / "answer_key.json").write_text(
         json.dumps(
             {
-                "id": "synthetic-bakeoff",
+                "id": case_id,
                 "product_type": "countertop",
                 "arch": "arch.pdf",
                 "shop": "shop.pdf",
@@ -339,6 +341,35 @@ def test_gold_case_directory_renders_human_key_and_refuses_self_verified(tmp_pat
     )
     with pytest.raises(ModelBakeoffError, match="human-read answer key"):
         load_crops(self_verified, polygon_dpi=72)
+
+
+def test_several_keys_load_together_and_a_shared_crop_id_is_refused(tmp_path: Path) -> None:
+    """Several keys, one per drawing, load as one list in order (#867); a crop id two keys share is
+    refused, because the scorecard is kept by crop id. (Moved here on 2026-10-28 from the removed
+    answer-key authoring tests, which built their keys with the removed authoring script.)"""
+    first = tmp_path / "one"
+    second = tmp_path / "two"
+    clash = tmp_path / "three"
+    _write_answer_key(first, case_id="key-one")
+    _write_answer_key(second, case_id="key-two")
+    _write_answer_key(clash, case_id="key-one")
+
+    crops = load_keys([first, second], polygon_dpi=72)
+
+    assert len(crops) == len(load_crops(first, polygon_dpi=72)) + len(
+        load_crops(second, polygon_dpi=72)
+    )
+    assert len({crop.crop_id for crop in crops}) == len(crops)
+    with pytest.raises(ModelBakeoffError, match="is in both"):
+        load_keys([first, clash], polygon_dpi=72)
+
+
+def test_the_bakeoff_script_takes_several_keys() -> None:
+    from scripts.model_bakeoff import build_parser
+
+    parsed = build_parser().parse_args(["models.json", "--key", "a", "--key", "b"])
+
+    assert parsed.key == [Path("a"), Path("b")]
 
 
 # --- #835: a key says what frame its polygons are in, and a loader believes the key -------------

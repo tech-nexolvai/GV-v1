@@ -519,17 +519,6 @@ def test_the_whole_stacked_crop_is_still_never_sent_to_a_vision_reader(
     assert any("stacked_fraction_requires_review" in str(refusal) for refusal in refusals)
 
 
-def test_the_reading_funnel_counts_it_on_its_own_line(
-    session: Session, store: LocalStore, postgres_engine: Engine
-) -> None:
-    """`scripts/reading_funnel.py` counts the route's rows by the name they are recorded under."""
-    from scripts.reading_funnel import collect
-
-    _the_reading(session, store)
-
-    assert collect(postgres_engine)["funnel"]["read_in_parts"] == 1
-
-
 # ---------------------------------------------------------------------------
 # No row where a piece does not bear it out
 # ---------------------------------------------------------------------------

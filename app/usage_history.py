@@ -1,7 +1,7 @@
 """What a recorded AI call was for, which way it went, and what it cost (#1165).
 
 The Usage page's "Spend so far" counts this project's own calls and earlier calls recorded in other
-local databases (`ai_spend_history`, filled by `scripts/import_spend_history.py`). Both are classified
+local databases (`ai_spend_history`, filled once by a one-time import on 2026-10-11). Both are classified
 and priced here, so the two can never disagree.
 
 **Route: only what the record says.** A call row holds its model id and prompt id, not the provider

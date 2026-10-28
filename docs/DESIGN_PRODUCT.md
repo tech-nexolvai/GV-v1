@@ -14,7 +14,7 @@ a reviewer sees a finding and how the vendor receives it. That raises the stakes
 app/api/      findings.py finding_chain.py
 app/review/   session.py evidence_actions.py approval.py ledger.py exceptions.py proposal.py
 reports/      redline.py publication.py spreadsheet.py certificate.py
-              vendor_patterns.py revision_delta.py
+              vendor_patterns.py
 rules/governance/  proposal.py regression.py publish.py
 ```
 

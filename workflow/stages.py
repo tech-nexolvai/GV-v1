@@ -9998,8 +9998,8 @@ def region_facts(
 ) -> tuple[RegionFacts, Polygon | None]:
     """What the file established about one region, and the region widened to its whole label.
 
-    Public so the agent's scorecard (`eval/experiments/agent_scorecard.py`) judges a crop by this
-    code, not a copy of it: a second computation of what the geometry says is a second answer.
+    One computation, never a copy of it: a second computation of what the geometry says is a
+    second answer.
 
     **Geometry only.** The cut and the direction come from the vendor's paths
     (`extraction/agent/geometry.py`), the stacked fraction from the bar detector, the witnesses
@@ -10267,9 +10267,9 @@ def coloured_markup(
     """The page's markup drawn in colour and the stamps pasted onto its drawings, in its pixels at
     `dpi` (#901, #929). Raises `UnreadablePdf` where its pasted drawings cannot be read for them.
 
-    **The one place they are gathered**: the agreement gate (`DatabaseStages._coloured_markup`), the
-    part pictures it is asked about at their own resolution (#921), and the gate replay
-    (`scripts/gate_replay.py`) all call this, so none of them can look for less than the others.
+    **The one place they are gathered**: the agreement gate (`DatabaseStages._coloured_markup`) and
+    the part pictures it is asked about at their own resolution (#921) both call this, so neither
+    can look for less than the other.
     `missing_space` is the text reader's own setting (#912). `transform` and `glyph_paths` are the
     page's, as its layers were read: `None` and empty where they were not.
     """

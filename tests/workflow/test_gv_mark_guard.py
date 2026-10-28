@@ -778,8 +778,7 @@ def test_the_stage_gathers_the_markup_by_the_one_production_function(
     session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """**One function, not three (#929).** The gate's markup is `coloured_markup`'s, asked at the
-    stage's dpi with the stage's own missing-space setting; the gate replay calls the same function
-    (`tests/scripts/test_gate_replay.py`), and so do the part pictures
+    stage's dpi with the stage's own missing-space setting; the part pictures call the same function
     (`tests/workflow/test_part_pictures.py`). Made to find nothing here, the long red line through
     the crop holds nothing back."""
     calls: list[int] = []

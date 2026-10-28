@@ -199,8 +199,7 @@ API_PID=$!
 # extractors that agree exactly is the only reading this system will seal without a human.
 #
 # It is a paid call per candidate region, so the cost is real and belongs next to the switch rather
-# than in a runbook. `scripts/reading_funnel.py` reports `model_invocations` alongside the reading
-# counts for exactly that reason — the benefit and the bill are read off the same table.
+# than in a runbook.
 #
 # **The reading agent (#757), on in the demo only** — the admin's decision of 2026-10-01, taken once
 # the 51-crop human key showed it confirms no wrong value (#775 made agreement count only across
