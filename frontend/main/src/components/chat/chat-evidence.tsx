@@ -7,7 +7,7 @@ import { OutcomeGlyph, type DrawingsRequest } from '@/components/chat/chat-resul
 import { RoundChip } from '@/components/chat/chat-trust';
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 import type { ChatFile, ChatFinding, FindingBox, FindingDecision, FindingDecisionExtra, FindingDecisionValue, PagePicture, PageWhere } from '@/lib/chat-api';
-import { architectOnVendorPage, copyLines, drawerChips, drawerKind, howWeKnow, KIND_WORDS, noArchitectPictureWords, overallSpot, referenceSide, ringInCrop, ringOnCrop, ringOnPage, vendorOnly, vendorSide, type DrawerKind, type Ring } from '@/lib/chat-drawer';
+import { architectOnVendorPage, copyLines, drawerChips, drawerKind, howWeKnow, KIND_WORDS, noArchitectPictureWords, overallSpot, pageReviewed, referenceSide, ringInCrop, ringOnCrop, ringOnPage, vendorOnly, vendorSide, type DrawerKind, type Ring } from '@/lib/chat-drawer';
 import { architectPage, decisionHelpRows, pageWords, referenceWhere, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
 import { isInternal, proofGroup, ruleNoteWords, type RuleNoteWords } from '@/lib/chat-proof';
 import { boxOnPicture, decisionsWords, ENDS_NOT_PROVED_WORDS, endsNotProved, isDrawingNeededItem, isPairingUnsureItem, isRefusedString, itemParts, pageHeading, pagesWords, pairingUnsureWords, shortValue, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultCard, type ResultTab } from '@/lib/chat-result';
@@ -517,7 +517,8 @@ function whereOf(box: FindingBox | null, own: boolean): PageWhere {
  */
 function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, note, decision, onOpen }: { finding: ChatFinding; kind: DrawerKind; results: ResultsDrawer; number: string | null; pictureUrl: (pictureId: string) => string; pagePicture: PagePicture | null; note: RuleNoteWords | null; decision: FindingDecision | null; onOpen: (findingId: string) => void }) {
   const [whole, setWhole] = useState(false);
-  const [wholeReference, setWholeReference] = useState(false);
+  // The page reviewer's please-check: the right-hand card opens on the vendor's whole page, its spot ringed.
+  const [wholeReference, setWholeReference] = useState(pageReviewed(finding) && finding.source !== 'vendor_arithmetic');
   const parts = itemParts(finding.item);
   const heading = pageHeading(finding.page, results.pageTitles, [finding]);
   const noDrawing = results.neededPages.has(finding.page);
@@ -581,11 +582,12 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
       : archBox ? { src: pagePicture(archBox.page, whereOf(archBox, onVendorPage)), ring: (w, h) => ringOnPage(archBox, w, h), focus: false }
         : null;
   const referencePlan = wholeReference && referencePagePlan ? referencePagePlan : referenceSpot;
-  const referenceTone: RingTone = kind === 'clouded' || kind === 'right' || kind === 'dismissed' || kind === 'likely_problem' ? 'right' : 'neutral';
+  const referenceTone: RingTone = pageReviewed(finding) ? 'neutral' : kind === 'clouded' || kind === 'right' || kind === 'dismissed' || kind === 'likely_problem' ? 'right' : 'neutral';
   const referenceName = stamped && !archBox && reference?.file ? ` (${reference.file.replace(/\.pdf$/i, '')})` : '';
   const architectPageWords = archPageNumber !== null ? ` page ${archPageNumber}${referenceName}` : '';
   const noReference = stamped && reference === null && !own && !rules ? finding.reference_page?.why ?? 'no architect page is paired with this page' : null;
   const referenceCaption = kind === 'drawing_needed' ? null
+    : pageReviewed(finding) && finding.source !== 'vendor_arithmetic' ? 'The vendor’s page, the spot ringed'
     : own && part?.drawn ? `Measured on the vendor’s own drawing: this line is drawn ${part.drawn} long`
     : own ? `Measured on the vendor’s own drawing${noDrawing ? ' (no architect drawing of this unit)' : ''}`
       : rules && !archBox ? 'GV’s rule'

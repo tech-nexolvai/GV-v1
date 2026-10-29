@@ -592,18 +592,19 @@ export interface FindingDim {
 export type ProofGroup = 'clouded' | 'right' | 'rule_note' | 'likely_problem' | 'not_compared' | 'dismissed';
 
 /**
- * The whole-drawing look's claim (`likely_problems.py`): a design difference code could not prove.
- * Shown dashed, never solid red; the letter says "Please check and confirm". Its spots are the
- * finding's own boxes.
+ * The whole-drawing look's or the page reviewer's claim (`likely_problems.py`): something code could
+ * not prove. Shown dashed, never solid red; the letter says "Please check and confirm". Its spots are
+ * the finding's own boxes. The page reviewer's construction, completeness, material, scope and label
+ * items are never red.
  */
 export interface FindingLikelyProblem {
-  kind: 'missing_piece' | 'extra_piece' | 'count' | 'size' | 'layout';
+  kind: 'missing_piece' | 'extra_piece' | 'count' | 'size' | 'layout' | 'construction' | 'completeness' | 'finish' | 'scope' | 'labels';
   /** "Please check and confirm: …" */
   words: string;
   /** The AI's reason, one line. */
   reason?: string | null;
   sure: 'sure' | 'likely';
-  by?: 'whole_drawing_look';
+  by?: 'whole_drawing_look' | 'page_reviewer';
 }
 
 /**
