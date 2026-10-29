@@ -100,6 +100,7 @@ from app.review.assistant import (
     same_item_pages,
     set_proofs,
 )
+from app.review.assistant.account_credit import ACCOUNT_CREDIT
 from app.review.assistant.agent import (
     HELPER_PICTURE_EDGE_PX,
     billed_input_tokens,
@@ -1113,6 +1114,8 @@ class ChatEngine:
         #: fixed price's other shares, whose checks read `counted_spent` (Anant 2026-10-29: the
         #: reviewer's money is its own share).
         self._own_spent = 0
+        #: The account's credit read for this answer (`AccountCredit.start`, at its first call).
+        self._credit_read = False
         #: The money kept for the calls on their own share (millionths of $): the message cap less
         #: this is what every other step may reach. 0 when no step has its own share.
         self.own_share_micros = 0
@@ -1689,11 +1692,31 @@ class ChatEngine:
             usage: dict[str, Any] = {}
             # The model's limiter (#1874): a place at once (unless a specialist on this thread
             # holds one) and room in the provider's minute; a busy answer slows it down.
+            # The account's credit (`AccountCredit`): held at this call's worst case until it
+            # ends, so the calls running together never ask for more than the balance covers.
+            ACCOUNT_CREDIT.start(self.provider, force=not self._credit_read)
+            self._credit_read = True
+            body = self._body(
+                model=model,
+                thinking=thinking,
+                system=system,
+                tools=tools,
+                messages=messages,
+                final=final,
+                max_tokens=max_tokens,
+            )
             limiter = self._limiter(model)
             own = limiter.call_slot()
             if not limiter.acquire(self.cancel, slot=own):
                 self._cancelled_call(model, prompt_id, started, usage)
                 raise _Cancelled
+            # Held once it has its place (one waiting for a place holds no money, #1874); the
+            # calls holding the credit are running, so they end and let it go.
+            try:
+                credit_held = ACCOUNT_CREDIT.hold(self._estimate(model, body, 0, 0), self.cancel)
+            except BaseException:
+                limiter.release(slot=own, fresh_input=0, output=0, busy=False, answered=False)
+                raise
             busy_answer = False
             try:
                 stream = self.provider.open_stream(params)
@@ -1723,6 +1746,7 @@ class ChatEngine:
                     busy=busy_answer,
                     answered=bool(usage) and not busy_answer,
                 )
+                ACCOUNT_CREDIT.done(credit_held, self._cost(model, usage) if usage else 0)
             if failure is not None and usage:
                 # It broke after its stream started: its prompt is billed already (harness
                 # audit 2026-10-19: such calls were recorded as $0 and the guard missed them).
