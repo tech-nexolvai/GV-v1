@@ -347,6 +347,22 @@ def test_check_math_adds_exactly_in_inches_and_millimetres() -> None:
         check_math({"values": ["two by four"]})
 
 
+def test_line_listing_names_each_piece_that_meets_the_area_longest_first() -> None:
+    pieces = [
+        ((100.0, 300.0), (400.0, 300.0)),
+        ((150.0, 290.0), (150.0, 310.0)),
+        ((900.0, 50.0), (950.0, 50.0)),
+    ]
+    listed = page_reviewer.line_listing(pieces, (90.0, 280.0, 420.0, 320.0))
+    assert listed.splitlines()[0] == "2 line pieces (ends in page points):"
+    assert listed.splitlines()[1] == "100.0,300.0 to 400.0,300.0  horizontal  300.0 pt"
+    assert listed.splitlines()[2] == "150.0,290.0 to 150.0,310.0  vertical  20.0 pt"
+    assert (
+        page_reviewer.line_listing(pieces, (0.0, 600.0, 10.0, 610.0))
+        == "No line work in that area."
+    )
+
+
 def test_the_money_is_the_rate_per_page_within_what_the_budget_leaves() -> None:
     options = Options(per_page_micros=900_000)
     assert review_money(options, 4, 10_000_000) == 3_600_000
@@ -529,7 +545,15 @@ def test_every_call_is_opus_at_high_effort_with_thinking_and_fixed_tools(tmp_pat
     assert {c.effort for c in calls} == {"high"}
     assert all(c.thinking == {"type": "adaptive", "display": "summarized"} for c in calls)
     assert {tuple(c.tools) for c in calls} == {
-        ("view_page", "zoom", "page_text", "check_math", "report_issue", "resolve_finding")
+        (
+            "view_page",
+            "zoom",
+            "page_text",
+            "page_lines",
+            "check_math",
+            "report_issue",
+            "resolve_finding",
+        )
     }
     assert len({c.system for c in calls}) == 1
     assert calls[0].max_tokens == MAX_TOKENS
@@ -740,3 +764,48 @@ def test_a_full_check_with_the_reviewer_off_is_as_before(
     )
     assert harness.engine.own_share_micros == 0
     assert harness.engine.counted_spent == harness.engine.spent
+
+
+def test_page_lines_reads_the_pages_own_vector_lines(tmp_path: Path) -> None:
+    engine, *_ = _review(
+        tmp_path,
+        [[_tool("page_lines", box={"x0": 90, "y0": 680, "x1": 420, "y1": 700})], [_text("ok")]],
+        cap=600_000,
+        cost=200_000,
+    )
+    (result,) = _results(engine.script.calls[1].messages)
+    assert "100.0,692.0 to 400.0,692.0  horizontal  300.0 pt" in result
+
+
+@pytest.mark.parametrize(
+    ("read", "why"),
+    [
+        ('the overall looks short (about 30")', "quotes the two printed numbers"),
+        ('24" in plan, 25" in elevation', "does not find two of the numbers"),
+    ],
+)
+def test_a_size_issue_must_quote_two_numbers_printed_on_the_page(
+    tmp_path: Path, read: str, why: str
+) -> None:
+    size = _tool(
+        "report_issue", kind="A", claim="please_check", item="Elevation: width",
+        wrong="The width differs between views.", read=read, confidence="medium",
+        box={"x0": 190, "y0": 285, "x1": 370, "y1": 340},
+    )  # fmt: skip
+    printed = _tool(
+        "report_issue", kind="A", claim="please_check", item="Elevation: overall",
+        wrong="The overall and the parts disagree.", read='36 1/4" overall; parts 12" + 12"',
+        confidence="medium", box={"x0": 190, "y0": 285, "x1": 370, "y1": 340},
+    )  # fmt: skip
+    engine, review, *_ = _review(
+        tmp_path,
+        [[_tiles(1, 2, 3, 4, 5, 6)], [_tiles(7, 8, 9), size, printed], [_text("ok")]],
+        cap=600_000,
+        cost=200_000,
+    )
+    results = _results(engine.script.calls[2].messages)
+    assert any(why in r for r in results)
+    assert [d.item for d in review.drafts] == ["Elevation: overall"]
+    (found,) = [f for f in engine.book.live() if f["created_by"] == "page_reviewer"]
+    assert found[likely_problems.FIELD]["kind"] == "size"
+    assert proof.proof_group(found) == "likely_problem"

@@ -83,8 +83,11 @@ __all__ = [
     "PageReview",
     "Reviews",
     "check_math",
+    "cited_sizes",
     "coverage_targets",
+    "line_listing",
     "phrases",
+    "printed_sizes",
     "review_money",
     "roster_agents",
     "system_prompt",
@@ -135,8 +138,11 @@ REVIEW_SHARE: Final = 0.72
 MAX_TOKENS: Final = 64_000
 MIN_TOKENS: Final = 12_000
 MIN_REFLECT_TOKENS: Final = 6_000
-#: The proposed rate (Anant tunes it: `GV_ASSISTANT_PAGE_REVIEWER_PER_PAGE_USD`).
-DEFAULT_PER_PAGE_MICROS: Final = 900_000
+#: The proposed rate (Anant tunes it: `GV_ASSISTANT_PAGE_REVIEWER_PER_PAGE_USD`): the fair re-test
+#: of 2026-10-29 spent about $2 a page at xhigh with one funded reviewer; high effort spends less.
+DEFAULT_PER_PAGE_MICROS: Final = 1_500_000
+#: Line pieces one page_lines call lists at most.
+MAX_LINES: Final = 150
 
 #: GV's reviewer's kinds, as the reviewer reports them, and the Likely problem's kind for each.
 KIND_OF: Final[Mapping[str, str]] = {
@@ -179,18 +185,17 @@ which line a number dimensions, arrows, grain marks, supports, hatching, and wha
 with tile 1-9), then zoom tight (under about 300 points a side) on every dimension string, \
 callout and tag. Boxes are in page points, \
 origin top-left; each picture says the box it shows.
-- Review each view in turn (plan, elevations, sections and details, the material table, the \
-title block), then compare them: the same item has the same size in every view; the top \
-matches the cabinets below it; tags are in the material table; item numbers agree with the \
-title block.
-- Use check_math for every sum or unit conversion.
+- Review each view in turn, then compare them: the same item has the same size in every view; \
+the top matches the cabinets below it; tags are in the material table; item numbers agree with \
+the title block.
+- page_lines lists the drawing's vector lines in an area (dimension, extension and edge \
+lines): use it to see what a dimension spans. Use check_math for every sum.
 - Report each issue with report_issue as soon as you have confirmed it, rather than saving them \
 for the end, after a tight zoom on its evidence.
 
 What GV's reviewer checks
 - Sizes (kind A): overall and part dimensions present and consistent; strings add up to the \
-overall; plan matches elevation and section; the top's length matches the cabinet run; a size \
-that looks wrong for the piece drawn.
+overall; plan matches elevation and section; the top's length matches the cabinet run.
 - Construction (kind B): supports or brackets where a top spans or overhangs, placed sensibly \
 (for example centred on a seam); fillers where cabinets meet walls, ends or appliances; end and \
 finished panels only where a side is exposed; seams shown.
@@ -207,15 +212,16 @@ project, description, item number and size, and they agree with the rest of the 
 
 What is not your job
 You do not decide whether something is a confirmed error; code does that by checking the numbers \
-you report against GV's rules. Your job is to see accurately and report clearly. "Nothing to \
+you report against GV's rules. "Nothing to \
 report" is a good outcome when true.
 
 Reporting
 One report per issue: the kind, a box around the evidence, a short item name, what is wrong, \
 what it should be when you can tell, the exact text or numbers you read, and your confidence. \
-claim = "wrong" only when the page itself shows a contradiction you quoted (two different \
-numbers for the same thing, a string that does not add up); for a string, also give its parts \
-and printed total exactly as printed. claim = "please_check" for everything else, including \
+A size issue (kind A) quotes the two printed numbers it rests on, exactly as printed. claim = \
+"wrong" only when the page itself shows a contradiction you quoted (two different numbers for \
+the same thing, a string that does not add up); for a string, also give its parts and printed \
+total. claim = "please_check" for everything else, including \
 anything missing, unclear, or shown by a symbol such as a grain arrow or a support mark.
 
 Examples
@@ -370,6 +376,21 @@ CHECK_MATH: Final[Mapping[str, Any]] = {
         },
     },
 }
+PAGE_LINES: Final[Mapping[str, Any]] = {
+    "name": "page_lines",
+    "description": (
+        "The drawing's vector line work in an area: each straight piece (dimension lines, "
+        "extension lines, edges; a rectangle comes as its four sides) with its two ends in page "
+        "points, its direction and its length in points. Read from the PDF itself, exact. Use it "
+        "to see what a dimension spans and whether a string's pieces meet end to end."
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["box"],
+        "properties": {"box": _box_schema("The area (about 300 points a side or less).")},
+    },
+}
 REPORT_ISSUE: Final[Mapping[str, Any]] = {
     "name": "report_issue",
     "description": "Report one issue on this page, as soon as it is confirmed. One call per issue.",
@@ -401,7 +422,15 @@ RESOLVE_FINDING: Final[Mapping[str, Any]] = {
     },
 }
 #: Fixed for the whole page, so the prompt cache holds and earlier thinking stays valid.
-TOOLS: Final = (VIEW_PAGE, ZOOM, PAGE_TEXT, CHECK_MATH, REPORT_ISSUE, RESOLVE_FINDING)
+TOOLS: Final = (
+    VIEW_PAGE,
+    ZOOM,
+    PAGE_TEXT,
+    PAGE_LINES,
+    CHECK_MATH,
+    REPORT_ISSUE,
+    RESOLVE_FINDING,
+)
 
 # ---- the page's geometry (pure code) --------------------------------------------------------------
 
@@ -584,6 +613,53 @@ def _parts_sum(parts: Sequence[str]) -> Decimal | None:
             return None
         total += value
     return total
+
+
+def _sizes_in(text: object) -> list[Decimal]:
+    from app.review.assistant.finding_checks import dimension_tokens, to_inches
+
+    out: list[Decimal] = []
+    for token in dimension_tokens(str(text or "")):
+        value = to_inches(token)
+        if value is not None:
+            out.append(value)
+    return out
+
+
+def cited_sizes(given: Mapping[str, Any]) -> list[Decimal]:
+    """The sizes a size issue quotes: in what it read, and a string's parts and printed total."""
+    found = _sizes_in(given.get("read"))
+    parts = given.get("parts")
+    for part in parts if isinstance(parts, list) else []:
+        found += _sizes_in(part)
+    found += _sizes_in(given.get("printed_total"))
+    return found
+
+
+def printed_sizes(found: Sequence[Mapping[str, Any]]) -> set[Decimal]:
+    """Every size printed in the page's text layer (its phrases)."""
+    return {value for phrase in found for value in _sizes_in(phrase.get("text"))}
+
+
+def line_listing(segments: Sequence[Any], area: Sequence[float]) -> str:
+    """The straight pieces that meet `area`, longest first, at most `MAX_LINES`."""
+    rows = []
+    for (ax, ay), (bx, by) in segments:
+        x0, x1 = sorted((float(ax), float(bx)))
+        y0, y1 = sorted((float(ay), float(by)))
+        if x1 < area[0] or x0 > area[2] or y1 < area[1] or y0 > area[3]:
+            continue
+        length = math.hypot(bx - ax, by - ay)
+        if length < 1.0:
+            continue
+        way = "horizontal" if abs(by - ay) < 0.5 else "vertical" if abs(bx - ax) < 0.5 else "sloped"
+        rows.append((length, f"{ax:.1f},{ay:.1f} to {bx:.1f},{by:.1f}  {way}  {length:.1f} pt"))
+    if not rows:
+        return "No line work in that area."
+    rows.sort(key=lambda row: -row[0])
+    shown = [line for _length, line in rows[:MAX_LINES]]
+    more = f"\n... and {len(rows) - MAX_LINES} shorter pieces" if len(rows) > MAX_LINES else ""
+    return f"{len(rows)} line pieces (ends in page points):\n" + "\n".join(shown) + more
 
 
 # ---- one page's review ------------------------------------------------------------------------------
@@ -775,6 +851,7 @@ class _Run:
         self.step_index = step_index
         self.cap = int(agent.cap_micros or 0)
         self.system = system_prompt(review.options.house_rules)
+        self._line_work: Any = None
 
     # -- money --
 
@@ -1082,6 +1159,8 @@ class _Run:
         if name == "page_text":
             area = given.get("box")
             return _listing(review.found, self._box(area) if area else None)
+        if name == "page_lines":
+            return self._lines(self._box(given.get("box")))
         if name == "check_math":
             return check_math(given)
         if name == "report_issue":
@@ -1127,6 +1206,17 @@ class _Run:
             return self.review.tile_boxes[tile - 1], label or f"tile {tile}"
         return self._box(raw.get("box")), label or "crop"
 
+    def _lines(self, area: Box) -> str:
+        """The page's straight line pieces that meet `area` (GV's own line reading, `LineWork`)."""
+        if self._line_work is None:
+            consistency = import_module("app.review.assistant.vendor_consistency")
+            workspace = self.engine.tools.workspace
+            self._line_work = consistency.LineWork(workspace.uploads, workspace.set_pack)
+        found = self._line_work(self.review.file, self.review.page)
+        if found is None:
+            return "The line work of this page could not be read."
+        return line_listing(found, area)
+
     # -- findings --
 
     def _report(self, given: Mapping[str, Any]) -> str:
@@ -1138,11 +1228,30 @@ class _Run:
         if sum(1 for d in review.drafts if d.status != "dropped") >= MAX_ISSUES:
             raise _Refused(f"at most {MAX_ISSUES} issues on one page; keep the most important")
         draft = self._draft(given, len(review.drafts) + 1)
+        if draft.kind == "A":
+            self._cited(given)
         self._record(draft, given)
         review.drafts.append(draft)
         if draft.joined is not None:
             return f"Issue {draft.n}: already recorded as {draft.joined}; it is counted once."
         return f"Recorded issue {draft.n}."
+
+    def _cited(self, given: Mapping[str, Any]) -> None:
+        """A size issue rests on two numbers printed on the page (the fair re-test of 2026-10-29: a
+        reviewer free to script called 7 of 20 checked sizes wrong): refused unless it quotes at
+        least two sizes and, on a page with a text layer, two of them are printed there."""
+        quoted = cited_sizes(given)
+        if len(quoted) < 2:
+            raise _Refused(
+                "a size issue quotes the two printed numbers it rests on (in read, or a string's "
+                "parts and printed total), exactly as printed"
+            )
+        printed = printed_sizes(self.review.found)
+        if printed and sum(1 for value in set(quoted) if value in printed) < 2:
+            raise _Refused(
+                "code does not find two of the numbers you quoted printed on this page's text "
+                "layer: quote them exactly as printed (page_text lists them)"
+            )
 
     def _draft(self, given: Mapping[str, Any], n: int) -> Draft:
         letter = str(given.get("kind") or "")

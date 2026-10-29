@@ -252,11 +252,11 @@ class Settings(BaseSettings):
     # completeness, material, scope and label items are please-checks, never red; a size claim
     # goes through code's existing proof. OFF by default: live is switched on deliberately. Its
     # money is its own share, added to the fixed price per vendor page it reviews (the rate below,
-    # proposed $0.90 a page); every other share and cap is unchanged. The house rules file (off by
+    # proposed $1.50 a page); every other share and cap is unchanged. The house rules file (off by
     # default) adds GV's conventions to its brief.
     assistant_page_reviewer: bool = False
     assistant_page_reviewer_per_page_usd: Decimal = Field(
-        default=Decimal("0.90"), ge=0, allow_inf_nan=False
+        default=Decimal("1.50"), ge=0, allow_inf_nan=False
     )
     assistant_page_reviewer_effort: Literal["medium", "high", "xhigh", "max"] = "high"
     assistant_page_reviewer_house_rules: Path | None = None
