@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from app.review.assistant import proof
 from app.review.assistant.chat_findings import make_proof_file
 from app.review.assistant.chat_store import message_out
 from app.review.assistant.chat_summary import code_summary
@@ -286,3 +287,41 @@ def test_the_summary_says_a_person_decides_before_approval() -> None:
         stopped=None,
     )
     assert "Next: look over the report before signing off." in approved
+
+
+def test_the_next_step_names_the_likely_problems_and_never_zero_items() -> None:
+    """La Quinta re-run, 2026-10-29: 0 not compared and 63 likely problems said "a person decides
+    the 0 Not compared items"."""
+    likely = [
+        {
+            **_right(id=f"L{n}"),
+            "status": "check",
+            "whole_look": {
+                "by": "page_reviewer",
+                "proof": "likely_only",
+                "kind": "construction",
+                "why": "A support may be missing.",
+            },
+        }
+        for n in range(5)
+    ]
+    assert {proof.proof_group(f) for f in likely} == {"likely_problem"}
+    text = code_summary(
+        [*likely, _right()],
+        coverage={"total": 3, "same": 3, "different": 0},
+        page_count=3,
+        products=["cabinet"],
+        stopped=None,
+    )
+    assert "Next: a person decides the 5 likely problems before this can be approved." in text
+    both = code_summary(
+        [*likely, *_unproved(2)],
+        coverage={"total": 3, "same": 3, "different": 0},
+        page_count=3,
+        products=["cabinet"],
+        stopped=None,
+    )
+    assert (
+        "Next: a person decides the 2 Not compared items and the 5 likely problems before this "
+        "can be approved." in both
+    )
