@@ -708,6 +708,9 @@ class EngineSettings:
     set_index_model: str | None = None
     """The set index's model (`set_index.py`, `assistant_set_index_model`): each page of a
     two-file set read once for its project, set and views; `None`: off (no project is known)."""
+    page_reviewer: Any = None
+    """The roster's page reviewer per vendor page (`page_reviewer.Options`,
+    `GV_ASSISTANT_PAGE_REVIEWER`, Anant 2026-10-29); `None`: off (the default)."""
 
 
 @dataclass(slots=True)
@@ -1043,6 +1046,9 @@ class _Agent:
     skip: bool = False
     """Nothing to do (a whole-drawing look whose page no architect drawing is paired with): it
     reports at once, with no call."""
+    loop: Callable[..., tuple[str, bool, str | None]] | None = None
+    """Its own loop instead of the helpers' (the page reviewer, `page_reviewer.review`): called
+    as `loop(engine, agent, step_index, entry, share)`, returning (report, ok, stopped)."""
 
 
 @dataclass(slots=True)
@@ -1102,6 +1108,14 @@ class ChatEngine:
         self._progress: FullCheckProgress | None = None
         self._progress_index: int | None = None
         self._spent = 0
+        #: What the calls on their own share cost (the page reviewer, `page_reviewer`): counted in
+        #: `spent` (the message cap and the set's budget hold every call) but never against the
+        #: fixed price's other shares, whose checks read `counted_spent` (Anant 2026-10-29: the
+        #: reviewer's money is its own share).
+        self._own_spent = 0
+        #: The money kept for the calls on their own share (millionths of $): the message cap less
+        #: this is what every other step may reach. 0 when no step has its own share.
+        self.own_share_micros = 0
         self._attempt_blocks: list[int] = []
         self._streams: set[Any] = set()
         self.task_list = TaskList()
@@ -1395,6 +1409,18 @@ class ChatEngine:
         with self._lock:
             return self._spent
 
+    @property
+    def counted_spent(self) -> int:
+        """What the fixed price's shares have spent: everything but the calls on their own share
+        (`own_share_micros`); `spent` when there are none."""
+        with self._lock:
+            return self._spent - self._own_spent
+
+    @property
+    def counted_cap(self) -> int:
+        """The message cap less the money kept for the calls on their own share."""
+        return max(0, self.settings.message_cap_micros - self.own_share_micros)
+
     def run_model(self, model: ChatModel) -> ChatModel:
         """The model a call asked of `model` runs on: `model`, except under a lead from outside
         Claude (`ChatModel.extra`, a comparison test): then every call of the answer, the helpers',
@@ -1553,10 +1579,11 @@ class ChatEngine:
             # the wait below (`_release` notifies under it): no wake-up is missed.
             with self._holds_changed:
                 with self._lock:
-                    if self._spent + share.held + estimate <= share.limit:
+                    counted = self._spent - self._own_spent
+                    if counted + share.held + estimate <= share.limit:
                         share.held += estimate
                         return True
-                    if share.held <= 0 or self._spent + estimate > share.limit:
+                    if share.held <= 0 or counted + estimate > share.limit:
                         return False
                 if self.cancel.is_set() or monotonic() >= deadline:
                     return False
@@ -1569,10 +1596,12 @@ class ChatEngine:
             with self._holds_changed:
                 self._holds_changed.notify_all()
 
-    def _charge(self, model: ChatModel, usage: Mapping[str, Any]) -> None:
+    def _charge(self, model: ChatModel, usage: Mapping[str, Any], own_share: bool = False) -> None:
         cost = self._cost(model, usage)
         with self._lock:
             self._spent += cost
+            if own_share:
+                self._own_spent += cost
             total = self._spent
         self.timings.charge(cost)
         for _key, attempt in self._attempts(model, usage):
@@ -1619,11 +1648,13 @@ class ChatEngine:
         context_management: Mapping[str, Any] | None = None,
         output_format: Mapping[str, Any] | None = None,
         enforce_format: bool = False,
+        own_share: bool = False,
     ) -> _Reply:
         """One call, streamed, asked once more after a provider failure worth retrying. Raises
         `ProviderFailure` or `_Cancelled`. Under a lead from outside Claude it runs on the lead's
         model (`run_model`). `enforce_format`: `output_format` is enforced on OpenRouter too
-        (`call_params`; the readings)."""
+        (`call_params`; the readings). `own_share`: charged to a step's own share (the page
+        reviewer), never to the fixed price's other shares (`counted_spent`)."""
         model = self.run_model(model)
         attempts = 0
         busy = 0
@@ -1697,7 +1728,7 @@ class ChatEngine:
                 # audit 2026-10-19: such calls were recorded as $0 and the guard missed them).
                 partial = _Reply([], None, None, usage, None)
                 self._record(model, prompt_id, started, partial, failure)
-                self._charge(model, usage)
+                self._charge(model, usage, own_share)
                 if shown is not None:
                     self._discard_attempt()
                 if failure.retryable and attempts == 0:
@@ -1728,7 +1759,7 @@ class ChatEngine:
                 reply.content = _without_unsigned_thinking(reply.content)
             self._record(model, prompt_id, started, reply, failure)
             if reply is not None:
-                self._charge(model, reply.usage)
+                self._charge(model, reply.usage, own_share)
                 self._note_transformations(reply, prompt_id)
             if failure is None and reply is not None:
                 if shown is not None:
@@ -4266,11 +4297,14 @@ class ChatEngine:
         has reported (a full check starts its second reads there). `ceiling`: the spend these
         helpers may reach (a roster band's own, #1874); by default `helper_ceiling`."""
         with self._lock:
-            left = max(0, self.settings.message_cap_micros - self._spent)
-            limit = self._spent + left * self.helper_share_percent // 100
+            # In what the fixed price's shares count: a step on its own share (the page
+            # reviewer) never takes these helpers' money, nor they its (`counted_spent`).
+            counted = self._spent - self._own_spent
+            left = max(0, self.counted_cap - counted)
+            limit = counted + left * self.helper_share_percent // 100
             top = self.helper_ceiling if ceiling is _OWN_CEILING else ceiling
             if isinstance(top, int):
-                limit = min(limit, max(self._spent, top))
+                limit = min(limit, max(counted, top))
             share = _Share(limit=limit)
             for agent in agents:
                 self._helpers_started += 1
@@ -5024,6 +5058,9 @@ class ChatEngine:
         """One helper's loop. Always returns a report: (report, ok, stopped). In a full check
         (#1512) it runs at low effort with a smaller output allowance, and wraps up after
         `FULL_CHECK_HELPER_CALLS` reading tool calls."""
+        if agent.loop is not None:
+            # A specialist with its own loop (the page reviewer): its own gates and money.
+            return agent.loop(self, agent, step_index, entry, share)
         model = agent.model
         full_check = self.settings.mode == "full_check"
         effort = agent.effort or (

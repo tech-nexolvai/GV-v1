@@ -246,6 +246,20 @@ class Settings(BaseSettings):
         "claude-opus-5-5"
     )
     assistant_whole_look_effort: Literal["low", "medium", "high"] = "medium"
+    # The page reviewer (Anant, 2026-10-29, `page_reviewer`): one careful reviewer per vendor page
+    # beside the roster's helpers, Opus 5.5 at high effort with a short brief, the text layer first,
+    # the whole page, every tile, tight zooms, a coverage check and a self-check. Its construction,
+    # completeness, material, scope and label items are please-checks, never red; a size claim
+    # goes through code's existing proof. OFF by default: live is switched on deliberately. Its
+    # money is its own share, added to the fixed price per vendor page it reviews (the rate below,
+    # proposed $1.50 a page); every other share and cap is unchanged. The house rules file (off by
+    # default) adds GV's conventions to its brief.
+    assistant_page_reviewer: bool = False
+    assistant_page_reviewer_per_page_usd: Decimal = Field(
+        default=Decimal("1.50"), ge=0, allow_inf_nan=False
+    )
+    assistant_page_reviewer_effort: Literal["medium", "high", "xhigh", "max"] = "high"
+    assistant_page_reviewer_house_rules: Path | None = None
     # The set index (two-file uploads): each page read once by a cheap call (project, set, views),
     # every string checked by code, kept in the set pack; the vendor's drawings are then paired
     # only within their own project, never with a brand prototype. About $0.01-0.02 a page.

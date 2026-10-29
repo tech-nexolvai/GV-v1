@@ -488,6 +488,7 @@ def for_full_check(engine: ChatEngine, plan: Any, matching: Any) -> Gate | None:
     Run anyway from the engine's settings, the price the check will hold, the printed words of
     the set's pages (kept in the pack). Never stops the check by failing: `None` then."""
     from app.review.assistant.full_check_roster import price_bound
+    from app.review.assistant.page_reviewer import review_money
     from app.review.assistant.vendor_consistency import page_texts
 
     settings = engine.settings
@@ -499,6 +500,12 @@ def for_full_check(engine: ChatEngine, plan: Any, matching: Any) -> Gate | None:
         files = [str(name) for name in (page_map or {}).get("files") or [] if name]
         bound = price_bound(engine)
         price = settings.price_rule.price(getattr(plan, "pages", 0), bound)
+        # The page reviewer's own money on top, when it is on (`page_reviewer`, 2026-10-29).
+        price += review_money(
+            getattr(settings, "page_reviewer", None),
+            int(getattr(plan, "pages", 0) or 0),
+            max(0, bound - price),
+        )
         return gate(
             engine,
             plan,

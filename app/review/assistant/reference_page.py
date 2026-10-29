@@ -56,7 +56,9 @@ type Pairs = Mapping[int, Sequence[tuple[str, int]]]
 
 #: Items compared within the vendor's own drawings: no architect page.
 _VENDOR_ONLY_SOURCES: Final = frozenset({"vendor_arithmetic", "cross_view"})
-_VENDOR_ONLY_MAKERS: Final = frozenset({"consistency"})
+#: The page reviewer (`page_reviewer`) reviews one vendor page on its own: its items are the
+#: vendor's page's, never compared with an architect page.
+_VENDOR_ONLY_MAKERS: Final = frozenset({"consistency", "page_reviewer"})
 _BLOCK: Final = 1000
 
 
