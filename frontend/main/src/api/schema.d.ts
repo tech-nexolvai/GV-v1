@@ -2033,10 +2033,10 @@ export interface components {
             by: "whole_drawing_look" | "page_reviewer";
             /**
              * Kind
-             * @description What differs: a missing or extra piece, a count, a size, the layout; or, from the page reviewer, construction (supports, fillers, panels), drawing completeness, a material, finish or grain callout, scope (by GV, GC or owner), or item numbers and the title block.
+             * @description What differs: a missing or extra piece, a count, a size, the layout; or, from the page reviewer, construction (supports, fillers, panels), drawing completeness, finish (a material, finish or grain callout), scope (by GV, GC or owner), or item numbers and the title block.
              * @enum {string}
              */
-            kind: "missing_piece" | "extra_piece" | "count" | "size" | "layout" | "construction" | "completeness" | "material" | "scope" | "labels";
+            kind: "missing_piece" | "extra_piece" | "count" | "size" | "layout" | "construction" | "completeness" | "finish" | "scope" | "labels";
             /**
              * Reason
              * @description The AI's reason, one line.
