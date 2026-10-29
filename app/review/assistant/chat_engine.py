@@ -100,6 +100,7 @@ from app.review.assistant import (
     same_item_pages,
     set_proofs,
 )
+from app.review.assistant.account_credit import ACCOUNT_CREDIT
 from app.review.assistant.agent import (
     HELPER_PICTURE_EDGE_PX,
     billed_input_tokens,
@@ -414,87 +415,6 @@ HELPER_SHARE_PERCENT: Final = 70
 _HOLD_WAIT_S: Final = 2.0
 _HOLD_WAIT_MOST_S: Final = 900.0
 _TOP_UP_LOCK: Final = threading.Lock()
-#: Kept free of the account's credit while calls run (millionths of $): the provider's balance
-#: trails its spend (`plan_supervisor.CREDIT_SPARE_MICROS`'s reason).
-CREDIT_HOLD_SPARE_MICROS: Final = 1_000_000
-
-
-class AccountCredit:
-    """The AI account's credit, shared by every answer this process runs, with each running
-    call held at its worst case (`ChatEngine._call`). OpenRouter refuses a call (402) when the
-    balance cannot cover the worst cases of the calls running: the La Quinta run of 2026-10-29
-    started its 9 page reviewers and helpers together with about $16 of credit and was refused at
-    $5.45 spent, every call of the answer stopped. A call that does not fit next to the calls
-    running now waits for one to end (as `ChatEngine._wait_for_holds` for a share); one that would
-    not fit even alone goes ahead (the provider then says so, as before). A provider with no
-    balance to read (Anthropic's own API, a test's fake) is never held."""
-
-    def __init__(self) -> None:
-        self._changed = threading.Condition()
-        self._left: int | None = None
-        self._held = 0
-
-    def start(self, provider: Any) -> None:
-        """Read the balance (free, read-only) when no call is running; else keep the count."""
-        check = getattr(provider, "credit", None)
-        with self._changed:
-            if self._held > 0:
-                return
-            if not callable(check):
-                self._left = None  # no balance to read: never held
-                return
-        try:
-            credit = check()
-        except Exception:  # noqa: BLE001 - no balance read: calls run as before
-            _log.warning("assistant chat: the AI account's credit could not be read")
-            return
-        usd = getattr(credit, "usd", None)
-        with self._changed:
-            if self._held > 0:
-                return
-            ok = getattr(credit, "state", None) == "ok" and usd is not None
-            self._left = int(Decimal(str(usd)) * 1_000_000) if ok else None
-
-    def hold(self, worst: int | None, cancel: threading.Event) -> int:
-        """Hold `worst` (a call's worst case) once it fits next to the calls running now;
-        returns what is held (0: nothing held, no balance known)."""
-        if not worst or worst <= 0:
-            return 0
-        deadline = monotonic() + _HOLD_WAIT_MOST_S
-        with self._changed:
-            if self._left is None:
-                return 0
-            waited = False
-            while (
-                self._held > 0
-                and self._held + worst > self._left - CREDIT_HOLD_SPARE_MICROS
-                and not cancel.is_set()
-                and monotonic() < deadline
-            ):
-                if not waited:
-                    waited = True
-                    _log.warning(
-                        "assistant chat: a call waits for the account's credit (left $%.2f, "
-                        "held $%.2f, this call up to $%.2f)",
-                        self._left / 1_000_000,
-                        self._held / 1_000_000,
-                        worst / 1_000_000,
-                    )
-                self._changed.wait(_HOLD_WAIT_S)
-            self._held += worst
-            return worst
-
-    def done(self, held: int, cost: int) -> None:
-        """A call ended: its hold let go and what it cost taken off the balance."""
-        with self._changed:
-            self._held = max(0, self._held - held)
-            if self._left is not None:
-                self._left -= max(0, cost)
-            self._changed.notify_all()
-
-
-#: One per process: every answer the worker runs spends the same account.
-ACCOUNT_CREDIT: Final = AccountCredit()
 #: A helper's model when the lead names none, by the lead's: Fable or Opus leads, Sonnet helps.
 HELPER_DEFAULT_MODEL: Final[Mapping[str, str]] = {
     "fable": "sonnet",
@@ -1774,9 +1694,8 @@ class ChatEngine:
             # holds one) and room in the provider's minute; a busy answer slows it down.
             # The account's credit (`AccountCredit`): held at this call's worst case until it
             # ends, so the calls running together never ask for more than the balance covers.
-            if not self._credit_read:
-                self._credit_read = True
-                ACCOUNT_CREDIT.start(self.provider)
+            ACCOUNT_CREDIT.start(self.provider, force=not self._credit_read)
+            self._credit_read = True
             body = self._body(
                 model=model,
                 thinking=thinking,
@@ -1786,13 +1705,18 @@ class ChatEngine:
                 final=final,
                 max_tokens=max_tokens,
             )
-            credit_held = ACCOUNT_CREDIT.hold(self._estimate(model, body, 0, 0), self.cancel)
             limiter = self._limiter(model)
             own = limiter.call_slot()
             if not limiter.acquire(self.cancel, slot=own):
-                ACCOUNT_CREDIT.done(credit_held, 0)
                 self._cancelled_call(model, prompt_id, started, usage)
                 raise _Cancelled
+            # Held once it has its place (one waiting for a place holds no money, #1874); the
+            # calls holding the credit are running, so they end and let it go.
+            try:
+                credit_held = ACCOUNT_CREDIT.hold(self._estimate(model, body, 0, 0), self.cancel)
+            except BaseException:
+                limiter.release(slot=own, fresh_input=0, output=0, busy=False, answered=False)
+                raise
             busy_answer = False
             try:
                 stream = self.provider.open_stream(params)

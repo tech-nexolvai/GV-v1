@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Final, Literal, Protocol
 
+from app.review.assistant.account_credit import ACCOUNT_CREDIT
 from app.review.assistant.chat_request import OPENROUTER_BASE_URL, Provider
 
 __all__ = [
@@ -248,10 +249,11 @@ class ServiceBreaker:
 
 #: A refusal that is a spending limit, not a bad key (OpenRouter: "Key limit exceeded").
 _SPEND_LIMIT: Final = re.compile(r"\blimit\b|\bcredits?\b", re.IGNORECASE)
-#: OpenRouter's 402 for one call whose worst case the balance cannot cover with the calls
-#: running now ("requires more credits, or fewer max_tokens ... can only afford"): the account
-#: has credit, so the call is asked again later (`busy`), never every call of the answer stopped
-#: (the La Quinta run of 2026-10-29 stopped 9 page reviewers at once with about $11 left).
+#: OpenRouter's 402 for one call whose worst case the balance cannot cover ("requires more
+#: credits, or fewer max_tokens ... can only afford"): while other calls run, their worst cases
+#: were in the way, so it is asked again later (`busy`), never every call of the answer stopped
+#: (the La Quinta run of 2026-10-29 stopped 9 page reviewers at once with about $11 left); with
+#: none running, the account is out of credit (`payment`, `account_credit`).
 _AFFORD: Final = re.compile(r"can only afford|fewer max_tokens", re.IGNORECASE)
 
 
@@ -353,7 +355,7 @@ def failure_from(error: BaseException) -> ProviderFailure:
         words = str(getattr(error, "message", "") or error)
         # The provider's words in the server log only (never shown): what it asked for.
         _log.warning("assistant chat: the AI service answered 402: %s", words[:300])
-        if _AFFORD.search(words):
+        if _AFFORD.search(words) and ACCOUNT_CREDIT.others_running():
             return ProviderFailure(
                 "The AI is busy right now (too many requests). Please ask again in a minute.",
                 status=status,
