@@ -118,7 +118,7 @@ def test_the_clearing_boundary_is_a_turn_start_and_holds_while_an_answer_works()
     assert clear_thinking["keep"] == {"type": "thinking_turns", "value": 7}
 
 
-def test_the_lead_call_carries_the_context_beta_on_anthropic_only() -> None:
+def test_the_lead_call_carries_the_context_beta_on_anthropic_and_openrouter() -> None:
     edits = context_edits([_question("q")], threshold=400_000, keep_turns=2, near=False)
     common: dict[str, Any] = {
         "model": MODELS["claude-opus-5-5"],
@@ -144,8 +144,14 @@ def test_the_lead_call_carries_the_context_beta_on_anthropic_only() -> None:
         provider="anthropic",
         **{**common, "model": MODELS["claude-haiku-5-5"], "thinking": {"type": "disabled"}},
     )
+    # OpenRouter passes Claude's context editing through (checked 2026-10-29: the answer carries
+    # `applied_edits`), so the page reviewer's old pictures are cleared there too; the other betas
+    # (binding, fallbacks) stay Anthropic-only.
     openrouter = call_params(provider="openrouter", context_management=edits, **common)
-    assert "context_management" not in openrouter and "betas" not in openrouter
+    assert openrouter["betas"] == [CONTEXT_BETA] and openrouter["context_management"] == edits
+    assert "fallbacks" not in openrouter
+    plain = call_params(provider="openrouter", **common)
+    assert "context_management" not in plain and "betas" not in plain
 
 
 def _big_history(turns: int = 2) -> list[dict[str, Any]]:

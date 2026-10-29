@@ -194,7 +194,7 @@ def test_argon_gets_the_highest_effort_it_takes_and_a_final_answer_uses_no_tool(
 
 #: Every Claude request shape below, as made by origin/main e0c48201 before these models existed.
 _CLAUDE_SHAPES = 1504
-_CLAUDE_SHA256 = "8cdaf912d6ac8b8206740c023e08a412c2337dd996de48511ca0b9cf6366f681"
+_CLAUDE_SHA256 = "3729a555ba9eaaa7b750c43f9abf5d33a53e72b0333af0ffee6b5154a1b173ff"  # 2026-10-29: OpenRouter + context editing carries the beta and the edits
 
 
 def test_every_claude_request_is_byte_for_byte_unchanged() -> None:
