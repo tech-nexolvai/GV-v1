@@ -657,14 +657,17 @@ def fold_repeats(engine: Any, context: SetContext) -> int:
                 continue
             also = list(keeper.get("also_on") or [])
             for other in others:
+                # Its own id, as every other fold names it (`one_card`, the resolver): the screen
+                # keys each line by it.
                 also.append(
                     {
-                        "finding_id": str(keeper["id"]),
+                        "finding_id": str(other["id"]),
                         "page": other["page"],
                         "vendor": other.get("vendor"),
                         "vendor_box": dict(other["vendor_box"]),
                     }
                 )
+                also += [dict(o) for o in other.get("also_on") or [] if isinstance(o, Mapping)]
             kept = {**keeper, "also_on": also}
             if not book.replace(kept):
                 continue
@@ -706,12 +709,6 @@ def add_to_answer(engine: Any) -> int:
     except Exception:  # noqa: BLE001 - the set's pages not read: nothing to check, as before
         _log.warning("set check: the set's pages could not be read")
         return 0
-    try:
-        folded = fold_repeats(engine, context)
-        if folded:
-            _log.warning("set check: %d repeated please-checks folded into one card each", folded)
-    except Exception:  # noqa: BLE001 - the cards stay as the reviewers left them
-        _log.exception("set check: the repeated please-checks were not folded")
     plan = getattr(engine, "_plan", None)
     pages = sorted({int(p) for job in getattr(plan, "jobs", ()) for p in job.pages}) or list(
         range(1, context.page_count + 1)
@@ -734,4 +731,11 @@ def add_to_answer(engine: Any) -> int:
                     engine._show_finding(marked)
                     live.append(marked)
                     added += 1
+    # After code's own checks: their duplicate test (`_already`) sees every reviewer card first.
+    try:
+        folded = fold_repeats(engine, context)
+        if folded:
+            _log.warning("set check: %d repeated please-checks folded into one card each", folded)
+    except Exception:  # noqa: BLE001 - the cards stay as the reviewers left them
+        _log.exception("set check: the repeated please-checks were not folded")
     return added

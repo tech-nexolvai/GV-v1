@@ -402,6 +402,6 @@ def test_the_same_note_flagged_on_several_sheets_is_one_card_with_the_others_und
     live = {f["id"]: f for f in book.live()}
     assert second not in live and dropped == [second]
     kept = live[first]
-    assert [(o["page"], o["finding_id"]) for o in kept["also_on"]] == [(4, first)]
+    assert [(o["page"], o["finding_id"]) for o in kept["also_on"]] == [(4, second)]  # its own id
     assert other_kind in live and alone in live and different in live
     assert proof.proof_group(kept) == "likely_problem"
