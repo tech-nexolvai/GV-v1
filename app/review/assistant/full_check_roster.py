@@ -1526,6 +1526,12 @@ class _Run:
     #: Unpaired pages the page matcher had no answer for (a failed call, the money, a stop): not
     #: compared this time either, but Continue asks the matcher again.
     retry: dict[int, str] = field(default_factory=dict)
+    #: The vendor pages with no architect drawing anywhere in the set (`own_check_pages`): checked
+    #: only within the vendor's own drawings, as the pre-flight says (2026-10-29).
+    own_check: frozenset[int] = frozenset()
+    #: Those of them checked (`_settle_own_check`): never a page left, never sent on again, said
+    #: apart in the summary ("only within the vendor's own drawings").
+    own_checked: set[int] = field(default_factory=set)
     pairs: dict[str, str] = field(default_factory=dict)
     #: The pre-flight gate's report and the supervisor's look (`plan_supervisor.Gate`), for the
     #: "what went wrong" list at the end (`check_problems`).
@@ -1975,6 +1981,7 @@ class _Run:
             return []
         # A page with no vendor drawing has nothing to compare (#1837): never a page left.
         skipped = {int(page) for page, _why in getattr(plan, "skipped", ())} | set(self.no_vendor)
+        skipped |= self.own_checked  # checked within the vendor's own drawings: done
         if for_continue:
             skipped |= set(self.unpaired)
         coverage = self.engine.book.coverage_map()
@@ -2022,6 +2029,55 @@ class _Run:
         """The pages no architect drawing is paired with this time (#1885): never sent to a gap
         closer, the lead review or a look-again to compare with an architect."""
         return frozenset((*self.unpaired, *self.retry))
+
+    def _not_sent_on(self) -> frozenset[int]:
+        """The pages no gap closer, lead review or look-again takes: the unpaired ones (#1885)
+        and the vendor-only pages already checked within the vendor's own drawings."""
+        return self._not_pairable() | frozenset(self.own_checked)
+
+    def _settle_own_check(self) -> None:
+        """Each vendor-only page (`own_check`) its page reviewer reviewed to the end (every tile
+        zoomed, no error) or a helper opened and checked (any status, not "not reached") is
+        checked: its coverage says so (`OWN_CHECK_NOTE`, a helper's same or different stays) and
+        it is never a page left. The pre-flight promised these pages "checked only against the
+        vendor's own drawings and GV's rules"; the La Quinta run of 2026-10-29 sent 3 such pages,
+        reviewed and checked, on for two more looks and called the check incomplete."""
+        from app.review.assistant.full_check_plan import OWN_CHECK_NOTE
+
+        engine = self.engine
+        if not self.own_check or not engine.book.coverage_used:
+            return
+        coverage = engine.book.coverage_map()
+        open_ = unfinished_pages(sorted(self.own_check), coverage)
+        reviewed = {
+            review.page
+            for review in self.reviews.pages.values()
+            if review.calls > 0
+            and review.stop not in ("error", "cancelled")
+            and not review.tiles_left()
+        }
+        pages = []
+        for entry in coverage["pages"]:
+            page = int(entry["page"])
+            if page not in self.own_check:
+                continue
+            by_helper = str(entry.get("by") or "").startswith("helper")
+            opened = by_helper and entry.get("status") != "not_opened" and page not in open_
+            if page not in reviewed and not opened:
+                continue
+            self.own_checked.add(page)
+            if entry.get("status") in ("same", "different"):
+                continue
+            note = "; ".join(str(n) for n in (OWN_CHECK_NOTE, entry.get("note")) if n)
+            pages.append({"page": page, "status": "not_comparable", "note": note[:300]})
+        if pages:
+            engine.book.set_coverage({"pages": pages}, "code")
+            engine._show_coverage()
+        _log.warning(
+            "assistant roster: %d of %d vendor-only pages checked within the vendor's own drawings",
+            len(self.own_checked),
+            len(self.own_check),
+        )
 
     def _settle_unpaired(self, matching: Any) -> None:
         """The pages the final cross-file pairs leave unpaired (#1885), each said on its
@@ -2254,6 +2310,7 @@ class _Run:
         settings = engine.settings
         from app.review.assistant.full_check_plan import (
             no_vendor_pages,
+            own_check_pages,
             pack_ready,
             wait_for_page_map,
             with_lenses,
@@ -2348,6 +2405,7 @@ class _Run:
         _say_usual_time(engine, plan.pages, 0 if matching is None else matching.total)
         self.no_vendor = no_vendor_pages(page_map, engine.book.main_file)
         self.vendor_pages = whole_plan - self.no_vendor
+        self.own_check = own_check_pages(page_map, engine.book.main_file, self.vendor_pages)
         # A vendor round after the first: the cheap picks' money is kept from the start (#1861).
         self.later_rounds = _later_rounds(page_map)
         # The page groups: the drawn-things helpers' (the plan's own), never the numbers'.
@@ -2517,6 +2575,10 @@ class _Run:
                 self._apply_tags(tag_reports)
             if reviews:
                 _log.warning("assistant page reviews: %s", self.reviews.block())
+            try:
+                self._settle_own_check()
+            except Exception:  # noqa: BLE001 - the pages stay as their helpers left them
+                _log.exception("assistant roster could not settle the vendor-only pages")
             if looked:
                 # Each look's claims, by code: proved pairs take the normal path, the rest are
                 # Likely problems, and what names a wrong label or drawing is dropped.
@@ -3299,8 +3361,9 @@ class _Run:
         assert self.plan is not None
         mine = self.agents if band is None else band.agents
         numbers = {agent.number for agent in mine if agent.lens not in ("drawn", "tags")}
-        # A page no architect drawing is paired with is never sent on to compare (#1885).
-        alone = self._not_pairable()
+        # A page no architect drawing is paired with is never sent on to compare (#1885), nor a
+        # vendor-only page already checked within the vendor's own drawings.
+        alone = self._not_sent_on()
         with engine._lock:
             any_open = {page for gaps in engine._checklist_gaps.values() for page in gaps} - alone
             open_gaps = {
@@ -3539,7 +3602,7 @@ class _Run:
         planned = sorted(
             {page for job in (engine._plan.jobs if engine._plan else ()) for page in job.pages}
             - set(self.no_vendor)  # nothing to compare there (#1837): never sent on again
-            - self._not_pairable()  # no architect drawing paired with it (#1885): the same
+            - self._not_sent_on()  # no architect drawing paired with it (#1885): the same
         )
         if band is not None:  # a big set's band (#1874): only its own pages
             planned = [page for page in planned if band.holds(page)]
@@ -4149,8 +4212,9 @@ class _Run:
             key=lambda page: (-self._architect_weight(page, page_map), page),
         )
         order: list[int] = []
-        # A page no architect drawing is paired with is not the lead's to compare (#1885).
-        alone = self._not_pairable()
+        # A page no architect drawing is paired with is not the lead's to compare (#1885), nor a
+        # vendor-only page already checked within the vendor's own drawings.
+        alone = self._not_sent_on()
 
         def take(page: int) -> None:
             if page not in order and page not in alone and (not planned or page in planned):
@@ -5532,6 +5596,7 @@ class _Run:
             reasons=[row.reason for row in engine.not_compared] or None,
             compared_pages=self._compared_pages(),
             left_kinds=self._left_kinds(stopped),
+            own_pages=sorted(self.own_checked),
         )
         # Code's summary is the roster's own, not a fallback: its "AI did not finish" note goes.
         text = "\n".join(

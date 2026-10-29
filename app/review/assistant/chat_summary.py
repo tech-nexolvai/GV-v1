@@ -136,11 +136,15 @@ def _stop_words(
 
 
 def _own_only_pages(
-    findings: Sequence[Mapping[str, Any]], compared: Collection[int] | None, checked: int
+    findings: Sequence[Mapping[str, Any]],
+    compared: Collection[int] | None,
+    checked: int,
+    also: Collection[int] = (),
 ) -> int:
     """How many pages have a result code decided (Wrong or Right) but were not compared with
-    the architect: the vendor's own checks only (#1885). Without the compared pages, only when no
-    page was compared (else they cannot be told apart)."""
+    the architect: the vendor's own checks only (#1885), and the `also` pages (checked within the
+    vendor's own drawings, no architect drawing in the set). Without the compared pages, only when
+    no page was compared (else they cannot be told apart)."""
     if compared is None and checked:
         return 0
     seen = set(compared or ())
@@ -152,6 +156,7 @@ def _own_only_pages(
             and int(f["page"]) not in seen
             and proof_group(f) in ("clouded", "right")
         }
+        | (set(also) - seen)
     )
 
 
@@ -163,6 +168,7 @@ def _left_words(
     findings: Sequence[Mapping[str, Any]],
     compared: Collection[int] | None,
     kinds: Mapping[int, str] | None,
+    also: Collection[int] = (),
 ) -> str:
     """Why the pages not compared were not (`code_summary`'s `left_kinds`), each reason once in
     page order, leaving out the pages said apart as checked by code's own checks; the general
@@ -180,6 +186,7 @@ def _left_words(
             and int(f["page"]) not in seen
             and proof_group(f) in ("clouded", "right")
         }
+        | set(also)
     )
     words = list(dict.fromkeys(kinds[page] for page in sorted(kinds) if page not in own))
     return "; ".join(words) if words else LEFT_DEFAULT
@@ -205,6 +212,7 @@ def code_summary(
     reasons: Sequence[str] | None = None,
     compared_pages: Collection[int] | None = None,
     left_kinds: Mapping[int, str] | None = None,
+    own_pages: Collection[int] = (),
 ) -> str:
     """The 5-6 line summary: what was checked, the verdict, the biggest issues, the one line on
     what could not be compared (#1619), why it stopped (if it did) and the next step; then the
@@ -216,7 +224,9 @@ def code_summary(
     compared. `left_kinds`: each page not compared and why, in a few words ("no drawing to
     compare with", "not finished: out of money"): the first line then names only the reasons
     that are true (2026-10-25: a check stopped by its price said "title or divider sheets, pages
-    with no drawing to compare, or not reached" though every page had its drawing)."""
+    with no drawing to compare, or not reached" though every page had its drawing). `own_pages`:
+    the pages checked within the vendor's own drawings with no architect drawing in the set
+    (2026-10-29): said apart, never "compared with the architect" whatever their coverage says."""
     # The cloud drawing's own counts (#1581, #1619): Wrong = proved by code (clouded), Right, and
     # what could not be compared; the screen and the files count the same final list.
     counts = proof_counts(findings)
@@ -236,17 +246,20 @@ def code_summary(
         # open is said apart, never counted as checked.
         total = int(coverage.get("total") or 0)
         checked = int(coverage.get("same") or 0) + int(coverage.get("different") or 0)
+        if own_pages and compared_pages is not None:
+            compared_pages = [page for page in compared_pages if page not in set(own_pages)]
+            checked = len(compared_pages)
         rest = max(0, total - checked)
-        own = _own_only_pages(findings, compared_pages, checked)
-        why_left = _left_words(findings, compared_pages, left_kinds)
+        own = _own_only_pages(findings, compared_pages, checked, own_pages)
+        why_left = _left_words(findings, compared_pages, left_kinds, own_pages)
         if own:
             # #1885: "Checked 0 of 109 pages ... 8 wrong" said two things at once; the pages with
             # only the vendor's own checks are counted apart from those compared.
             rest = max(0, rest - own)
             first = (
                 f"Checked {checked + own} of {total} pages ({scope}): {checked} compared with "
-                f"the architect, {own} only by code's checks of the vendor's own drawing (its "
-                "dimension strings, GV's rules)"
+                f"the architect, {own} only within the vendor's own drawings (no architect "
+                "drawing for them: dimension strings, views, notes, GV's rules)"
                 + (
                     f"; the other {rest} {'page was' if rest == 1 else 'pages were'} not "
                     f"compared ({why_left})."
