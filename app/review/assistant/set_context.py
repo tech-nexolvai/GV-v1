@@ -589,8 +589,11 @@ def _phrases_under(context: SetContext, page: int, box: Mapping[str, Any]) -> li
         return []
     out: dict[str, None] = {}
     for phrase in context.pages.get(page, []):
-        b = phrase.get("box") or ()
-        if len(b) != 4 or not (b[0] < x1 + 4 and b[2] > x0 - 4 and b[1] < y1 + 4 and b[3] > y0 - 4):
+        raw = phrase.get("box")
+        if not isinstance(raw, Sequence) or len(raw) != 4:
+            continue
+        b = [float(v) for v in raw]
+        if not (b[0] < x1 + 4 and b[2] > x0 - 4 and b[1] < y1 + 4 and b[3] > y0 - 4):
             continue
         text = _norm(str(phrase.get("text") or ""))
         if len(text.split()) >= _NOTE_WORDS:
