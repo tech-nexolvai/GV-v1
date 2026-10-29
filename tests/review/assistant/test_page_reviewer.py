@@ -295,7 +295,9 @@ def _settle_all(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def test_the_brief_is_short_names_every_kind_and_never_money() -> None:
     brief = system_prompt()
-    assert len(brief.split()) < 700
+    # Short (the experiments: a short brief beat the long rulebook); 800 since the finish and
+    # scope kinds were spelled out (2026-10-29).
+    assert len(brief.split()) < 800
     for kind in ("kind A", "kind B", "kind C", "kind D", "kind E", "kind F"):
         assert kind in brief
     assert "budget" not in brief.lower() and "$" not in brief
