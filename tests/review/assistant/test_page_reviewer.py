@@ -497,9 +497,8 @@ def test_the_self_check_needs_a_fresh_tight_zoom_and_can_drop_or_fix(tmp_path: P
 
 
 def test_a_money_stop_runs_the_coverage_check_then_a_final_report_turn(tmp_path: Path) -> None:
-    """Cap $1: each call costs $0.32 (the worst case is held: $0.01 + 20 micros a token). Its own
-    pass ends at $0.50, the review at $0.85 (at $0.64 the $0.21 left buys fewer than 12k tokens);
-    the final turn and the self-check have the rest."""
+    """Cap $1: each call costs $0.30 (the worst case is held: $0.01 + 20 micros a token). Its own
+    pass ends at $0.50, the review at $0.72; the final turn and the self-check have the rest."""
 
     def final(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         assert "Time is up for the review itself" in _notes(messages)[-1]
@@ -509,7 +508,7 @@ def test_a_money_stop_runs_the_coverage_check_then_a_final_report_turn(tmp_path:
         tmp_path,
         [[_tiles(1, 2, 3)], [_tiles(4, 5, 6)], final, [_text("never asked")]],
         cap=1_000_000,
-        cost=320_000,
+        cost=300_000,
     )
     calls = engine.script.calls
     assert len(calls) == 3
