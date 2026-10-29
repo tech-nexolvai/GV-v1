@@ -67,6 +67,14 @@ TEXTS = [
 ]
 
 
+#: Page 1, another sheet of the same set: the top's tag there, a "who supplies it" note, a size.
+OTHER_PAGE = [
+    ("ST-02 Quartz top", 700.0, 420.0),
+    ("BIN BY GC/OWNER", 300.0, 500.0),
+    ('36"', 260.0, 330.0),
+]
+
+
 def _pdf() -> bytes:
     out = io.BytesIO()
     c = canvas.Canvas(out, pagesize=(WIDTH, HEIGHT), invariant=1)
@@ -74,6 +82,9 @@ def _pdf() -> bytes:
         c.setFont("Helvetica", 9)
         if page == 2:
             for words, x, y in TEXTS:
+                c.drawString(x, HEIGHT - y, words)
+        else:  # the rest of the set: another sheet of the same job (`set_context`)
+            for words, x, y in OTHER_PAGE:
                 c.drawString(x, HEIGHT - y, words)
         c.line(100, 100, 400, 100)
         c.showPage()
@@ -551,6 +562,7 @@ def test_every_call_is_opus_at_high_effort_with_thinking_and_fixed_tools(tmp_pat
             "view_page",
             "zoom",
             "page_text",
+            "set_page_text",
             "page_lines",
             "check_math",
             "report_issue",
@@ -811,3 +823,81 @@ def test_a_size_issue_must_quote_two_numbers_printed_on_the_page(
     (found,) = [f for f in engine.book.live() if f["created_by"] == "page_reviewer"]
     assert found[likely_problems.FIELD]["kind"] == "size"
     assert proof.proof_group(found) == "likely_problem"
+
+
+# ---- the rest of the set (2026-10-29) --------------------------------------------------------------
+
+
+def _size_issue(read: str) -> dict[str, Any]:
+    return _tool(
+        "report_issue",
+        kind="A",
+        claim="please_check",
+        item="Top length vs the countertop drawing",
+        wrong='The elevation prints 36 1/4"; the countertop drawing (p1) prints 36".',
+        read=read,
+        box={"x0": 250, "y0": 320, "x1": 300, "y1": 340},
+        confidence="medium",
+    )
+
+
+def test_the_first_message_lists_what_the_rest_of_the_set_prints(tmp_path: Path) -> None:
+    engine, *_ = _review(tmp_path, [[_text("Nothing to report.")]], cap=600_000, cost=200_000)
+    first = " ".join(
+        b.get("text", "") for b in engine.script.calls[0].messages[0]["content"] if "text" in b
+    )
+    assert "The rest of this drawing set" in first
+    assert "ST-02: p1" in first and "ST-01: p2" in first
+    assert '"BIN BY GC/OWNER": p1' in first
+
+
+def test_another_page_can_be_read_and_zoomed_but_never_counts_for_this_pages_coverage(
+    tmp_path: Path,
+) -> None:
+    engine, review, *_ = _review(
+        tmp_path,
+        [
+            [
+                _tool("set_page_text", page=1),
+                _tool("set_page_text", page=7),
+                _tool("zoom", crops=[{"page": 1, "box": {"x0": 250, "y0": 300, "x1": 450, "y1": 520}}]),
+            ],
+            [_text("ok")],
+        ],
+        cap=600_000,
+        cost=200_000,
+    )  # fmt: skip
+    text, missing, *_ = _results(engine.script.calls[1].messages)
+    assert "BIN BY GC/OWNER" in text and "ST-02 Quartz top" in text
+    assert "Refused" in missing and "no page 7" in missing
+    assert review.zooms == []  # p1's picture is not this page's coverage
+    assert review.pictures == 2  # the whole page in the first message, then p1's area
+
+
+def test_a_size_issue_may_rest_on_a_number_another_page_prints_once_read(
+    tmp_path: Path,
+) -> None:
+    unread, *_ = _review(
+        tmp_path,
+        [
+            [_tiles(1, 2, 3, 4, 5, 6)],
+            [_tiles(7, 8, 9)],
+            [_size_issue('36 1/4" ; 36"')],
+            [_text("ok")],
+        ],
+        cap=900_000,
+        cost=100_000,
+    )
+    assert any("two of the numbers" in r for r in _results(unread.script.calls[3].messages))
+    _read, review, *_ = _review(
+        tmp_path / "read",
+        [
+            [_tiles(1, 2, 3, 4, 5, 6), _tool("set_page_text", page=1)],
+            [_tiles(7, 8, 9)],
+            [_size_issue('36 1/4" ; 36"')],
+            [_text("ok")],
+        ],
+        cap=900_000,
+        cost=100_000,
+    )
+    assert [d.kind for d in review.drafts] == ["A"]
