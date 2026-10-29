@@ -112,7 +112,12 @@ export function ringOnPage(box: FindingBox | null | undefined, naturalWidth: num
 /** The vendor's own drawing is the reference: its parts added up, or the same span measured on another view. */
 export function vendorOnly(finding: Pick<ChatFinding, 'source' | 'created_by' | 'arch_picture_id' | 'arch_box' | 'parts'>): boolean {
   if (finding.arch_picture_id) return false;
-  return finding.source === 'vendor_arithmetic' || finding.source === 'cross_view' || finding.created_by === 'consistency' || Boolean(finding.parts?.length);
+  return finding.source === 'vendor_arithmetic' || finding.source === 'cross_view' || finding.created_by === 'consistency' || pageReviewed(finding) || Boolean(finding.parts?.length);
+}
+
+/** 2026-10-29: the page reviewer's please-check (one vendor page reviewed on its own): no architect side, never red. */
+export function pageReviewed(finding: Pick<ChatFinding, 'created_by'>): boolean {
+  return finding.created_by === 'page_reviewer';
 }
 
 /** The architect page it was compared on, for words: with a reference page (stream V) its spot's, else that page; an older answer: vs_page. */
@@ -140,7 +145,7 @@ export interface SideWords {
 /** "Vendor shows 14″" (red when proven wrong). */
 export function vendorSide(finding: ChatFinding, kind: DrawerKind): SideWords {
   if (kind === 'drawing_needed') return { label: 'Vendor page', value: `p.${finding.page}`, tone: null };
-  const value = vendorValue(finding).main || '—';
+  const value = pageReviewed(finding) && finding.source !== 'vendor_arithmetic' ? `p.${finding.page}` : vendorValue(finding).main || '—';
   return { label: 'Vendor shows', value, tone: kind === 'clouded' ? 'wrong' : kind === 'likely_problem' ? 'likely' : kind === 'right' || kind === 'dismissed' ? 'right' : null };
 }
 
@@ -158,6 +163,8 @@ export function referenceSide(finding: ChatFinding, kind: DrawerKind, decision: 
   if (conflict.length > 1) return { label: 'Architect: copies disagree', value: conflict.map((size) => size.replace(/"/g, '″')).join(' or '), tone: null };
   if (kind === 'rule_note') return { label: 'Architect shows', value: architect, tone: null };
   if (finding.source === 'rules' || finding.rule_check_id) return { label: 'GV’s rule', value: architect, tone: kind === 'right' ? 'right' : null };
+  // The page reviewer's please-check has no architect side: the right-hand card is where it is on the vendor's page.
+  if (pageReviewed(finding) && finding.source !== 'vendor_arithmetic') return { label: 'Where on the vendor’s page', value: `p.${finding.page}`, tone: null };
   return { label: vendorOnly(finding) ? 'Vendor’s own drawing' : 'Architect shows', value: architect, tone: kind === 'right' || kind === 'dismissed' ? 'right' : null };
 }
 
