@@ -29,7 +29,7 @@ AI cannot prove a missing support or a wrong title, and code has no rule that co
 `proof.likely_problem`:
 
     {"kind": "missing_piece" | "extra_piece" | "count" | "size" | "layout"
-             | "construction" | "completeness" | "material" | "scope" | "labels",
+             | "construction" | "completeness" | "finish" | "scope" | "labels",
      "words": "Please check and confirm: <what differs>",
      "reason": "<the AI's reason, one line>",
      "sure": "sure" | "likely",
@@ -84,12 +84,12 @@ LETTER_LEAD: Final = "Please check and confirm"
 KINDS: Final = ("missing_piece", "extra_piece", "count", "size", "layout")
 #: What the page reviewer's please-checks can be about besides a size (`page_reviewer`): GV's
 #: reviewer's kinds B to F.
-REVIEW_KINDS: Final = ("construction", "completeness", "material", "scope", "labels")
+REVIEW_KINDS: Final = ("construction", "completeness", "finish", "scope", "labels")
 #: Every kind's words, as the screen's group heading and the card say them.
 KIND_WORDS: Final[Mapping[str, str]] = {
     "construction": "Construction: a support, filler or panel to check",
     "completeness": "Drawing completeness: a view, size or mark to add or remove",
-    "material": "Material, finish or grain callout to check",
+    "finish": "Material, finish or grain callout to check",
     "scope": "Scope: who supplies it (GV, the GC or the owner) to make clear",
     "labels": "Item number, label or title block to check",
 }
