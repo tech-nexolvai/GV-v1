@@ -149,7 +149,7 @@ KIND_OF: Final[Mapping[str, str]] = {
     "A": "size",
     "B": "construction",
     "C": "completeness",
-    "D": "material",
+    "D": "finish",
     "E": "scope",
     "F": "labels",
 }

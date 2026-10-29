@@ -488,7 +488,7 @@ def test_the_self_check_needs_a_fresh_tight_zoom_and_can_drop_or_fix(tmp_path: P
     assert [d.status for d in review.drafts] == ["dropped", "fixed"]
     live = [f for f in engine.book.live() if f["created_by"] == "page_reviewer"]
     assert len(live) == 1
-    assert live[0][likely_problems.FIELD]["kind"] == "material"
+    assert live[0][likely_problems.FIELD]["kind"] == "finish"
     assert "no finish tag" in live[0][likely_problems.FIELD]["words"]
     assert len(engine.dropped) == 2  # the dropped one, and the fixed one's first version
 
