@@ -108,6 +108,7 @@ class _Call:
     tools: list[str]
     max_tokens: int
     messages: list[dict[str, Any]]
+    context_management: Mapping[str, Any] | None = None
 
 
 class _Script:
@@ -183,6 +184,7 @@ class _Engine:
                 tools=[t["name"] for t in given["tools"]],
                 max_tokens=given["max_tokens"],
                 messages=messages,
+                context_management=given.get("context_management"),
             )
         )
         content, stop = self.script(messages)
@@ -847,9 +849,10 @@ def test_the_first_message_lists_what_the_rest_of_the_set_prints(tmp_path: Path)
     first = " ".join(
         b.get("text", "") for b in engine.script.calls[0].messages[0]["content"] if "text" in b
     )
-    assert "The rest of this drawing set" in first
-    assert "ST-02: p1" in first and "ST-01: p2" in first
+    assert "Facts from the rest of this drawing set" in first
+    assert "ST-01: no other page" in first  # this page's tags, with the other pages that print them
     assert '"BIN BY GC/OWNER": p1' in first
+    assert "set_page_text" not in first.split("drawing_set>")[-1][:40]
 
 
 def test_another_page_can_be_read_and_zoomed_but_never_counts_for_this_pages_coverage(
@@ -918,3 +921,24 @@ def test_a_size_issue_never_rests_only_on_numbers_other_pages_print(tmp_path: Pa
     )
     assert any("printed on this page" in r for r in _results(engine.script.calls[3].messages))
     assert review.drafts == []
+
+
+def test_every_reviewer_call_clears_old_zoom_pictures_once_the_prompt_is_long(
+    tmp_path: Path,
+) -> None:
+    """2026-10-29: each turn re-sent every picture (most of a page's money); old tool results are
+    cleared server-side past `CONTEXT_CLEAR_TOKENS`, the last `CONTEXT_KEEP_TURNS` turns kept,
+    the same shape on every call so the prompt cache holds."""
+    from app.review.assistant.page_reviewer import CONTEXT_CLEAR_TOKENS
+
+    engine, *_ = _review(
+        tmp_path,
+        [[_tiles(1, 2, 3, 4, 5, 6)], [_tiles(7, 8, 9)], [_support_issue()], [_text("ok")]],
+        cap=900_000,
+        cost=100_000,
+    )
+    for call in engine.script.calls:
+        (edit,) = call.context_management["edits"]
+        assert edit["type"] == "clear_tool_uses_20250919"
+        assert edit["trigger"] == {"type": "input_tokens", "value": CONTEXT_CLEAR_TOKENS}
+        assert edit["keep"]["type"] == "tool_uses" and edit["keep"]["value"] >= 1

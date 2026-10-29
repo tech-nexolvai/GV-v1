@@ -2119,10 +2119,11 @@
         "properties": {
           "by": {
             "default": "whole_drawing_look",
-            "description": "Who found it: the whole-drawing look (or a code step that lays the same mark), or the page reviewer.",
+            "description": "Who found it: the whole-drawing look (or a code step that lays the same mark), the page reviewer, or code's cross-sheet tag check (`set_check`: a tag only one sheet prints, or tagged differently on the item's other drawing).",
             "enum": [
               "whole_drawing_look",
-              "page_reviewer"
+              "page_reviewer",
+              "set_check"
             ],
             "title": "By",
             "type": "string"

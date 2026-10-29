@@ -604,7 +604,7 @@ export interface FindingLikelyProblem {
   /** The AI's reason, one line. */
   reason?: string | null;
   sure: 'sure' | 'likely';
-  by?: 'whole_drawing_look' | 'page_reviewer';
+  by?: 'whole_drawing_look' | 'page_reviewer' | 'set_check';
 }
 
 /**

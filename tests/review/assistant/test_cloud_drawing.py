@@ -549,3 +549,30 @@ def test_every_wrong_status_is_a_red_cloud_with_its_trust_words(tmp_path: Path) 
         "1 not compared (amber numbers, not clouded), 0 right (listed, not marked)."
     ) in notes
     assert "On the drawing (3)" in notes
+
+
+def test_a_tag_at_several_spots_of_one_page_is_marked_at_each_and_listed_once() -> None:
+    """2026-10-29 (`set_context`): GV's reviewer marks the same wrong tag at every place it is
+    printed; code lists the other spots under `also_on` on the same page."""
+    from pathlib import Path
+
+    from app.review.assistant.chat_drawing import also_marks, settled_lines
+
+    own = {"page": 3, "x0": 10.0, "y0": 34.0, "x1": 200.0, "y1": 44.0}
+    finding = {
+        "id": "F9",
+        "page": 3,
+        "vendor": "ST-03",
+        "vendor_box": own,
+        "also_on": [
+            {"page": 3, "vendor": "ST-03", "vendor_box": own},  # its own spot again: skipped
+            {"page": 3, "vendor": "ST-03", "vendor_box": {**own, "y0": 70.0, "y1": 80.0}},
+            {"page": 5, "vendor": "ST-03", "vendor_box": {**own, "page": 5}},
+        ],
+    }
+    marks = also_marks(9, finding, "check", False, Path("Vendor set.pdf"), pages=6)
+    assert [(m.page, m.box[1]) for m in marks] == [(3, 70.0), (5, 34.0)]
+    lines = settled_lines(finding)
+    assert "Also on p.5: vendor ST-03" in lines
+    assert "Also at 1 more spot on this page" in lines
+    assert not any(line.startswith("Also on p.3") for line in lines)

@@ -893,10 +893,11 @@ class ChatFindingLikelyOut(BaseModel):
     words: str = Field(description='The letter\'s line: "Please check and confirm: ...".')
     reason: str | None = Field(default=None, description="The AI's reason, one line.")
     sure: Literal["sure", "likely"] = Field(description="How sure the look was.")
-    by: Literal["whole_drawing_look", "page_reviewer"] = Field(
+    by: Literal["whole_drawing_look", "page_reviewer", "set_check"] = Field(
         default="whole_drawing_look",
         description="Who found it: the whole-drawing look (or a code step that lays the same "
-        "mark), or the page reviewer.",
+        "mark), the page reviewer, or code's cross-sheet tag check (`set_check`: a tag only one "
+        "sheet prints, or tagged differently on the item's other drawing).",
     )
 
 

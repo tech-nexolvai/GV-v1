@@ -2026,11 +2026,11 @@ export interface components {
         ChatFindingLikelyOut: {
             /**
              * By
-             * @description Who found it: the whole-drawing look (or a code step that lays the same mark), or the page reviewer.
+             * @description Who found it: the whole-drawing look (or a code step that lays the same mark), the page reviewer, or code's cross-sheet tag check (`set_check`: a tag only one sheet prints, or tagged differently on the item's other drawing).
              * @default whole_drawing_look
              * @enum {string}
              */
-            by: "whole_drawing_look" | "page_reviewer";
+            by: "whole_drawing_look" | "page_reviewer" | "set_check";
             /**
              * Kind
              * @description What differs: a missing or extra piece, a count, a size, the layout; or, from the page reviewer, construction (supports, fillers, panels), drawing completeness, finish (a material, finish or grain callout), scope (by GV, GC or owner), or item numbers and the title block.

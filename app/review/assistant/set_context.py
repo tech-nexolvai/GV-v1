@@ -27,7 +27,20 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
-__all__ = ["MAX_NOTES", "MAX_TAGS", "SCOPE", "TAG", "SetContext", "scope_notes", "tags_in"]
+__all__ = [
+    "CREATED_BY",
+    "MAX_NOTES",
+    "MAX_TAGS",
+    "MIN_FAMILY_PAGES",
+    "SCOPE",
+    "TAG",
+    "FinishDifference",
+    "Outlier",
+    "SetContext",
+    "add_to_answer",
+    "scope_notes",
+    "tags_in",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -46,6 +59,18 @@ SCOPE: Final = re.compile(
 MAX_TAGS: Final = 60
 MAX_NOTES: Final = 30
 _MAX_PAGES_LISTED: Final = 12
+#: A tag family (its letters: ST, WD, LA) is a finish family of the set when one of its codes is
+#: printed on at least this many pages: the set uses it throughout. Item numbers (BOH-801.C: its
+#: own sheet and its countertop drawing) never reach it.
+MIN_FAMILY_PAGES: Final = 3
+#: Who made the cross-sheet findings (the chat finding's `created_by`; a please-check maker).
+CREATED_BY: Final = "set_check"
+#: A tag's family, number, letter and suffix (`MT-001.C`: MT, 001, "", .C; `GRT-801T`: GRT, 801, T).
+_PARTS: Final = re.compile(r"^([A-Z]{1,5})-?(\d{2,3})([A-Z]?)(\.[A-Z]{1,3})?$")
+#: The printed sizes listed for an item's other drawing, at most.
+_MAX_SIZES: Final = 24
+#: A printed inch size: `36"`, `23 1/4"`, `5'-2 1/2"`.
+_INCHES: Final = re.compile(r"(?:\d+'-?\s?)?\d+(?:[ -]\d+/\d+)?\s?\"")
 
 
 def tags_in(text: str) -> list[str]:
@@ -60,6 +85,42 @@ def scope_notes(phrases: Sequence[Mapping[str, Any]]) -> list[str]:
         if text and SCOPE.search(text) and text[:80] not in out:
             out.append(text[:80])
     return out
+
+
+def family_of(tag: str) -> str | None:
+    found = _PARTS.match(tag)
+    return found.group(1) if found else None
+
+
+def item_key(tag: str) -> str | None:
+    """What makes an item's drawings one item: family and number (`BOH-802.C` and `BOH-802.CT`,
+    `GRT-801` and `GRT-801T`, `ML-018.C` and `ML-018T.C`: the same key)."""
+    found = _PARTS.match(tag)
+    return f"{found.group(1)}-{int(found.group(2))}" if found else None
+
+
+@dataclass(frozen=True, slots=True)
+class Outlier:
+    """A tag printed only on one page, in a family the set prints throughout (Kingsland p518 of
+    2026-10-29: MT-002 here, MT-001.C on 14 other sheets): likely the wrong code."""
+
+    tag: str
+    family: str
+    others: dict[str, list[int]]
+    """The family's other codes, with the pages that print them."""
+
+
+@dataclass(frozen=True, slots=True)
+class FinishDifference:
+    """A finish family tagged differently on an item's two drawings (La Quinta sheet 449 of
+    2026-10-29: its cabinet sheet tags the top ST-03 / GVQZ-16, its countertop drawing ST-02 /
+    GVQZ-19, which is what GV's reviewer wrote in)."""
+
+    family: str
+    here: list[str]
+    there: list[str]
+    other_page: int
+    other_item: str
 
 
 def _pages(pages: Sequence[int]) -> str:
@@ -151,6 +212,154 @@ class SetContext:
             )
         return self.pages[page]
 
+    # -- what the set prints, by family --
+
+    def families(self) -> dict[str, dict[str, list[int]]]:
+        """Every family's codes with their pages."""
+        self.build()
+        out: dict[str, dict[str, list[int]]] = defaultdict(dict)
+        for tag, pages in self.tags.items():
+            family = family_of(tag)
+            if family is not None:
+                out[family][tag] = pages
+        return dict(out)
+
+    def finish_families(self) -> set[str]:
+        """The families the set prints throughout (`MIN_FAMILY_PAGES`), other trades' left out."""
+        from app.review.assistant.decision_resolver import OTHER_TRADE_FAMILIES
+
+        return {
+            family
+            for family, codes in self.families().items()
+            if family not in OTHER_TRADE_FAMILIES
+            and max(len(pages) for pages in codes.values()) >= MIN_FAMILY_PAGES
+        }
+
+    def tags_on(self, page: int) -> list[str]:
+        self.build()
+        seen: dict[str, None] = {}
+        for phrase in self.pages.get(page, []):
+            for tag in tags_in(str(phrase.get("text") or "")):
+                seen.setdefault(tag, None)
+        return list(seen)
+
+    def occurrences(self, page: int, tag: str) -> list[list[float]]:
+        """The boxes of the phrases on `page` that print `tag`, in reading order."""
+        self.build()
+        return [
+            [float(v) for v in phrase["box"]]
+            for phrase in self.pages.get(page, [])
+            if tag in tags_in(str(phrase.get("text") or ""))
+        ]
+
+    def outliers(self, page: int) -> list[Outlier]:
+        """The tags only `page` prints, in a finish family of the set (`Outlier`)."""
+        families, finish = self.families(), self.finish_families()
+        out: list[Outlier] = []
+        for tag in self.tags_on(page):
+            family = family_of(tag)
+            if family in finish and self.tags.get(tag) == [page]:
+                others = {t: p for t, p in families[family].items() if t != tag}
+                out.append(Outlier(tag, family, others))
+        return out
+
+    def item_tags(self, page: int) -> list[str]:
+        """The item numbers `page` prints: tags outside the finish families, printed on at most
+        two pages of the set (the item's own sheet and its other drawing)."""
+        finish = self.finish_families()
+        return [
+            tag
+            for tag in self.tags_on(page)
+            if family_of(tag) is not None
+            and family_of(tag) not in finish
+            and len(self.tags.get(tag, [])) <= 2
+        ]
+
+    def pair_pages(self, page: int) -> list[tuple[int, str, str]]:
+        """The other drawings of `page`'s item (`item_key`): (page, its tag, this page's tag)."""
+        out: list[tuple[int, str, str]] = []
+        for mine in self.item_tags(page):
+            key = item_key(mine)
+            for other, pages in self.tags.items():
+                if other == mine or item_key(other) != key or family_of(other) != family_of(mine):
+                    continue
+                for number in pages:
+                    if number != page and (number, other, mine) not in out:
+                        out.append((number, other, mine))
+        return sorted(out)
+
+    def finish_differences(self, page: int) -> list[FinishDifference]:
+        """The finish families `page` and its item's other drawing tag differently."""
+        finish = self.finish_families()
+        here = self.tags_on(page)
+        out: list[FinishDifference] = []
+        for other_page, other_tag, _mine in self.pair_pages(page):
+            there = self.tags_on(other_page)
+            for family in sorted(finish):
+                a = sorted(t for t in here if family_of(t) == family)
+                b = sorted(t for t in there if family_of(t) == family)
+                if a and b and a != b:
+                    out.append(FinishDifference(family, a, b, other_page, other_tag))
+        return out
+
+    def printed_sizes(self, page: int) -> list[str]:
+        """The inch sizes `page` prints, as printed (for an item's other drawing), at most
+        `_MAX_SIZES`, each once."""
+        self.build()
+        sizes: dict[str, None] = {}
+        for phrase in self.pages.get(page, []):
+            for found in _INCHES.finditer(str(phrase.get("text") or "")):
+                sizes.setdefault(found.group(0).strip(), None)
+        return list(sizes)[:_MAX_SIZES]
+
+    def facts_for(self, page: int) -> str:
+        """The facts of the rest of the set that bear on `page`, for its reviewer: its tags with
+        the pages that print them, the tags only it prints, its item's other drawing (tags and
+        sizes), the finish tags that differ between the two, and the "who supplies it" notes
+        elsewhere (bounded). Pre-computed, so the reviewer spends no turn reading other pages (the
+        run of 2026-10-29: given the pages as tools, reviewers read them and finished their own page
+        less)."""
+        self.build()
+        lines = [f"{self.file} has {self.page_count} pages; you are reviewing p{page}."]
+        if self.page_count <= 1:
+            return lines[0] + " It is the only page."
+        tags = self.tags_on(page)
+        if tags:
+            lines.append("Tags this page prints, with the other pages that print them:")
+            for tag in tags[:MAX_TAGS]:
+                others = [p for p in self.tags.get(tag, []) if p != page]
+                lines.append(f"  {tag}: {_pages(others) if others else 'no other page'}")
+        for found in self.outliers(page):
+            family_codes = ", ".join(
+                f"{t} ({len(p)} pages)"
+                for t, p in sorted(found.others.items(), key=lambda i: -len(i[1]))
+            )
+            lines.append(
+                f"Only this page prints {found.tag}; the set's other sheets print "
+                f"{family_codes} in that family. A wrong code is likely (please check)."
+            )
+        for other_page, other_tag, mine in self.pair_pages(page):
+            tags_there = ", ".join(self.tags_on(other_page)[:MAX_TAGS]) or "none"
+            sizes = ", ".join(self.printed_sizes(other_page)) or "none"
+            lines.append(
+                f"This item's other drawing: p{other_page} ({other_tag}, for {mine}) prints tags "
+                f"{tags_there}; sizes {sizes}."
+            )
+        for diff in self.finish_differences(page):
+            lines.append(
+                f"Finish {diff.family}: this page tags {', '.join(diff.here)}; its other drawing "
+                f"p{diff.other_page} ({diff.other_item}) tags {', '.join(diff.there)}. One of them "
+                "is wrong (please check)."
+            )
+        if self.notes:
+            lines.append('"Who supplies it" notes the set prints, with their pages:')
+            ordered = sorted(self.notes.items(), key=lambda item: (-len(item[1]), item[0]))
+            for note, pages in ordered[:MAX_NOTES]:
+                lines.append(f'  "{note}": {_pages(pages)}')
+        if self.unread:
+            lines.append(f"Pages not read: {_pages(self.unread)}.")
+        return "\n".join(lines)
+
     def summary(self, page: int) -> str:
         """What the set's pages print, for page `page`'s reviewer (`page_reviewer`)."""
         self.build()
@@ -182,3 +391,163 @@ class SetContext:
         if self.unread:
             lines.append(f"Pages not read: {_pages(self.unread)}.")
         return "\n".join(lines)
+
+
+# ---- code's own cross-sheet please-checks ----------------------------------------------------------
+
+
+def _box_dict(box: Sequence[float], page: int, file: str) -> dict[str, Any]:
+    return {
+        "page": page,
+        "file": file,
+        "x0": round(float(box[0]), 1),
+        "y0": round(float(box[1]), 1),
+        "x1": round(float(box[2]), 1),
+        "y1": round(float(box[3]), 1),
+    }
+
+
+def _please_check(
+    context: SetContext, page: int, tag: str, item: str, wrong: str, should_be: str | None
+) -> dict[str, Any] | None:
+    """One cross-sheet please-check (kind finish, never red), at the tag's first spot on the
+    page, every other spot on the page listed under `also_on` (GV's reviewer marks each one)."""
+    from app.review.assistant import likely_problems
+
+    spots = context.occurrences(page, tag)
+    if not spots:
+        return None
+    words = f"{likely_problems.LETTER_LEAD}: {item}: {wrong}"
+    if should_be:
+        words = f"{words.rstrip('.')}. It should be: {should_be}."
+    mark = {
+        "by": CREATED_BY,
+        "proof": "likely_only",
+        "kind": "finish",
+        "letter": "D",
+        "claim": "please_check",
+        "sure": "likely",
+        "why": wrong[:400],
+        "words": words[:600],
+    }
+    return {
+        "page": page,
+        "item": item[:160],
+        "category": "other",
+        # Checked within the vendor's own set: no architect side (as the page reviewer's items).
+        "architect": "n/a",
+        "vendor": tag,
+        "status": "check",
+        "check_reason": "pairing_not_certain",
+        "verified": False,
+        "source": "architect",
+        "why": wrong[:300],
+        "vendor_box": _box_dict(spots[0], page, context.file),
+        "also_on": [
+            {"page": page, "vendor": tag, "vendor_box": _box_dict(spot, page, context.file)}
+            for spot in spots[1:12]
+        ],
+        likely_problems.FIELD: mark,
+    }
+
+
+def check_page(context: SetContext, page: int) -> list[dict[str, Any]]:
+    """Code's please-checks for one page: a tag only it prints in a family the set uses
+    throughout (`Outlier`), and a finish family its item's other drawing tags differently
+    (`FinishDifference`). Each names the tag, the other sheets and the likely right code; none
+    can be red (no proof rule, no witness: `likely_only`)."""
+    out: list[dict[str, Any]] = []
+    for found in context.outliers(page):
+        ranked = sorted(found.others.items(), key=lambda item: (-len(item[1]), item[0]))
+        others = ", ".join(f"{t} ({len(p)} pages)" for t, p in ranked)
+        finding = _please_check(
+            context,
+            page,
+            found.tag,
+            f"Tag {found.tag}: only this sheet prints it",
+            f"{found.tag} is printed on this sheet only; the set's other sheets tag that family "
+            f"{others}. A wrong code is likely.",
+            (
+                f"{ranked[0][0]}, as the other sheets print (or the finish schedule's code)"
+                if ranked
+                else None
+            ),
+        )
+        if finding is not None:
+            out.append(finding)
+    for diff in context.finish_differences(page):
+        odd = [t for t in diff.here if t not in diff.there]
+        for tag in odd or diff.here[:1]:
+            finding = _please_check(
+                context,
+                page,
+                tag,
+                f"Finish {diff.family}: this sheet and the item's other drawing differ",
+                f"This sheet tags {', '.join(diff.here)}; the same item's other drawing "
+                f"(p{diff.other_page}, {diff.other_item}) tags {', '.join(diff.there)}.",
+                f"{', '.join(diff.there)} on both, or the schedule's code",
+            )
+            if finding is not None:
+                out.append(finding)
+    return out
+
+
+def _already(finding: Mapping[str, Any], live: Sequence[Mapping[str, Any]]) -> bool:
+    """The answer already raises this tag on this page (the page reviewer's finish item naming
+    it): code's copy would be a second card."""
+    from app.review.assistant import likely_problems
+
+    tag = str(finding.get("vendor") or "")
+    page = finding.get("page")
+    for other in live:
+        if other.get("page") != page or other.get("created_by") == CREATED_BY:
+            continue
+        mark = other.get(likely_problems.FIELD)
+        kind = mark.get("kind") if isinstance(mark, Mapping) else None
+        words = " ".join(str(other.get(k) or "") for k in ("item", "why", "vendor"))
+        if kind == "finish" and tag and tag in tags_in(words):
+            return True
+    return False
+
+
+def add_to_answer(engine: Any) -> int:
+    """The engine's hook (a full check, at its finish, $0): code's cross-sheet please-checks for
+    every vendor page the check planned, added unless the answer already raises the tag; the
+    look's mark laid on each (never red). Returns how many were added."""
+    if getattr(engine.settings, "mode", None) != "full_check":
+        return 0
+    from app.review.assistant import likely_problems
+    from app.review.assistant.page_reviewer import set_context_of
+
+    book = engine.book
+    main = book.main_file
+    if not main:
+        return 0
+    reviews = getattr(engine, "_page_reviews", None)
+    context = set_context_of(engine, reviews, str(main)) if reviews is not None else None
+    if context is None:
+        return 0
+    if not context.ready(0):
+        context.build()
+    plan = getattr(engine, "_plan", None)
+    pages = sorted({int(p) for job in getattr(plan, "jobs", ()) for p in job.pages}) or list(
+        range(1, context.page_count + 1)
+    )
+    added = 0
+    with engine.finding_lock:
+        live = book.live()
+        for page in pages:
+            for finding in check_page(context, page):
+                if _already(finding, live):
+                    continue
+                mark = finding.pop(likely_problems.FIELD)
+                also = finding.pop("also_on", [])
+                stored = book.add_code_finding(finding, created_by=CREATED_BY)
+                if stored is None:
+                    continue
+                marked = {**stored, likely_problems.FIELD: mark, "also_on": also}
+                if book.replace(marked):
+                    engine._show_finding(marked)
+                    live.append(marked)
+                    added += 1
+    return added

@@ -115,6 +115,12 @@ MAX_NUDGES: Final = 3
 MAX_REFLECT_NUDGES: Final = 2
 #: Calls one reviewer makes at most (a guard: money and coverage end it first).
 MAX_CALLS: Final = 60
+#: Old zoom pictures are cleared from the conversation server-side once the prompt passes this
+#: many tokens, the last `CONTEXT_KEEP_TURNS` turns kept (`chat_context.context_edits`): each
+#: turn re-sent every picture (the La Quinta runs of 2026-10-29: about 10 million cached tokens
+#: read per check), which is most of a page's money. The self-check re-zooms each draft anyway.
+CONTEXT_CLEAR_TOKENS: Final = 60_000
+CONTEXT_KEEP_TURNS: Final = 4
 #: How long a reviewer waits for the rest of the set to be read (`set_context`), seconds; then
 #: it reviews its page on its own.
 SET_CONTEXT_WAIT_S: Final = 120.0
@@ -189,17 +195,17 @@ How to work
 - Your first message has the page's text layer (phrases with boxes in page points) and the whole \
 page. Numbers come from the text layer, not pixels; pictures show what text cannot: which line a \
 number dimensions, arrows, grain marks, supports, and what is missing.
-- zoom draws any area sharp from the PDF. Look at each of the nine tiles once (zoom \
-with tile 1-9), then zoom tight (under about 300 points a side) on every dimension string, \
+- zoom draws any area sharp from the PDF. Look at each of the nine tiles once (tile 1-9), then \
+zoom tight (under about 300 points a side) on every dimension string, \
 callout and tag. Boxes are in page points, origin top-left.
 - Review each view, then compare them: the same item has the same size in every view; the top \
 matches the cabinets below it.
 - page_lines lists the drawing's vector lines in an area (dimension, extension and edge \
 lines): use it to see what a dimension spans. Use check_math for every sum.
-- Compare with the rest of the set (listed in your first message; set_page_text and zoom with a \
-page read other pages): a part tagged differently than on other sheets (D), something other \
-sheets mark by the GC, owner or others left unsaid here (E), a size that differs from the same \
-item's countertop drawing (A). Name the other page.
+- Compare with the rest of the set from the facts in your first message (read another page only \
+when a fact points there): a part tagged differently than on other sheets (D), something other \
+sheets mark by the GC, owner or others left unsaid here (E), a size that differs from the item's \
+countertop drawing (A). Name the other page.
 - Report each issue with report_issue as soon as you have confirmed it, rather than saving them \
 for the end, after a tight zoom on its evidence.
 
@@ -999,6 +1005,7 @@ class _Run:
                     max_tokens=tokens,
                     prompt_id=prompt_id,
                     display=None,
+                    context_management=review_context(messages),
                     own_share=True,
                 )
             except _Cancelled:
@@ -1087,7 +1094,8 @@ class _Run:
             content.append(
                 {
                     "type": "text",
-                    "text": "The rest of this drawing set (code's reading of every page's text):\n"
+                    "text": "Facts from the rest of this drawing set (code read every page's "
+                    "text; use them, and read another page only when a fact points to it):\n"
                     + fence(rest, "drawing_set"),
                 }
             )
@@ -1110,7 +1118,7 @@ class _Run:
             if not context.ready(SET_CONTEXT_WAIT_S, self.engine.cancel):
                 _log.warning("page reviewer p%s: the set was not read in time", self.review.page)
                 return None
-            return context.summary(self.review.page)
+            return context.facts_for(self.review.page)
         except Exception:  # noqa: BLE001 - the page is reviewed on its own, as before
             _log.warning("page reviewer p%s: the rest of the set was not read", self.review.page)
             return None
@@ -1729,6 +1737,17 @@ def review_money(options: Options | None, pages: int, room: int) -> int:
     return max(0, min(int(options.per_page_micros) * pages, room))
 
 
+def review_context(messages: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The reviewer call's `context_management`: old tool results (the zoom pictures) cleared
+    once the prompt is long, the last turns kept; the same shape call to call, so the prompt cache
+    holds."""
+    from app.review.assistant.chat_context import context_edits
+
+    return context_edits(
+        messages, threshold=CONTEXT_CLEAR_TOKENS, keep_turns=CONTEXT_KEEP_TURNS, near=False
+    )
+
+
 def set_context_of(engine: Any, reviews: Reviews, file: str) -> SetContext:
     """The set's context for `file` (`set_context`), shared by the check's reviewers: its page
     count from that file itself (another upload may be longer), its pages read from the
@@ -1757,6 +1776,7 @@ def roster_agents(run: Any, pages: Sequence[int], money: int, reviews: Reviews) 
     if model is None or not main:
         return []
     cap = money // len(pages)
+    engine._page_reviews = reviews  # the finish's cross-sheet check reads the same context
     try:
         # The rest of the set read in the background from now, before any reviewer needs it.
         set_context_of(engine, reviews, str(main)).start()
