@@ -327,7 +327,17 @@ def code_summary(
     action = review_action(findings)
     if action.action == "review_needed":
         # Anant 2026-10-22: never approved because the system could not look; a person decides.
-        things = _plural(action.not_compared, "Not compared item", "Not compared items")
+        # The likely problems count toward it too (`review_action`): named, never "the 0 Not
+        # compared items" (the La Quinta re-run of 2026-10-29: 0 not compared, 63 likely).
+        parts = [
+            _plural(count, one, many)
+            for count, one, many in (
+                (action.not_compared, "Not compared item", "Not compared items"),
+                (likely, "likely problem", "likely problems"),
+            )
+            if count
+        ]
+        things = " and the ".join(parts) or "open items"
         steps.append(f"a person decides the {things} before this can be approved")
     elif wrong and drawing:
         steps.append("send the cloud drawing to the vendor")
