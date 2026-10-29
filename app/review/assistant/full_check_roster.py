@@ -2063,10 +2063,16 @@ class _Run:
                 continue
             by_helper = str(entry.get("by") or "").startswith("helper")
             opened = by_helper and entry.get("status") != "not_opened" and page not in open_
-            if page not in reviewed and not opened:
+            # A Continue keeps the earlier answer's pages (`CARRIED_BY`): one it had checked
+            # stays checked (no reviewer or helper looks at it again).
+            carried = entry.get("by") == CARRIED_BY and (
+                entry.get("status") in ("same", "different")
+                or str(entry.get("note") or "").startswith(OWN_CHECK_NOTE)
+            )
+            if page not in reviewed and not opened and not carried:
                 continue
             self.own_checked.add(page)
-            if entry.get("status") in ("same", "different"):
+            if entry.get("status") in ("same", "different") or carried:
                 continue
             note = "; ".join(str(n) for n in (OWN_CHECK_NOTE, entry.get("note")) if n)
             pages.append({"page": page, "status": "not_comparable", "note": note[:300]})

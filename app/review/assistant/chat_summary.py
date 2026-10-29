@@ -141,23 +141,29 @@ def _own_only_pages(
     checked: int,
     also: Collection[int] = (),
 ) -> int:
+    return len(_own_only_set(findings, compared, checked, also))
+
+
+def _own_only_set(
+    findings: Sequence[Mapping[str, Any]],
+    compared: Collection[int] | None,
+    checked: int,
+    also: Collection[int] = (),
+) -> set[int]:
     """How many pages have a result code decided (Wrong or Right) but were not compared with
     the architect: the vendor's own checks only (#1885), and the `also` pages (checked within the
     vendor's own drawings, no architect drawing in the set). Without the compared pages, only when
     no page was compared (else they cannot be told apart)."""
     if compared is None and checked:
-        return 0
+        return set()
     seen = set(compared or ())
-    return len(
-        {
-            int(f["page"])
-            for f in findings
-            if isinstance(f.get("page"), int)
-            and int(f["page"]) not in seen
-            and proof_group(f) in ("clouded", "right")
-        }
-        | (set(also) - seen)
-    )
+    return {
+        int(f["page"])
+        for f in findings
+        if isinstance(f.get("page"), int)
+        and int(f["page"]) not in seen
+        and proof_group(f) in ("clouded", "right")
+    } | (set(also) - seen)
 
 
 #: The first line's reasons for the pages not compared, when the caller does not say them.
@@ -250,16 +256,24 @@ def code_summary(
             compared_pages = [page for page in compared_pages if page not in set(own_pages)]
             checked = len(compared_pages)
         rest = max(0, total - checked)
-        own = _own_only_pages(findings, compared_pages, checked, own_pages)
+        own_set = _own_only_set(findings, compared_pages, checked, own_pages)
+        own = len(own_set)
         why_left = _left_words(findings, compared_pages, left_kinds, own_pages)
         if own:
             # #1885: "Checked 0 of 109 pages ... 8 wrong" said two things at once; the pages with
             # only the vendor's own checks are counted apart from those compared.
             rest = max(0, rest - own)
+            # Every one of them has no architect drawing in the set (2026-10-29), or not.
+            how = (
+                "only within the vendor's own drawings (no architect drawing for them: "
+                "dimension strings, views, notes, GV's rules)"
+                if own_pages and own_set <= set(own_pages)
+                else "only by code's checks of the vendor's own drawing (its dimension strings, "
+                "GV's rules)"
+            )
             first = (
                 f"Checked {checked + own} of {total} pages ({scope}): {checked} compared with "
-                f"the architect, {own} only within the vendor's own drawings (no architect "
-                "drawing for them: dimension strings, views, notes, GV's rules)"
+                f"the architect, {own} {how}"
                 + (
                     f"; the other {rest} {'page was' if rest == 1 else 'pages were'} not "
                     f"compared ({why_left})."

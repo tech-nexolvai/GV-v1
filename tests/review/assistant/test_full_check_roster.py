@@ -1944,3 +1944,35 @@ def test_a_combined_sheet_page_not_compared_is_still_a_page_left(
     assert "Check incomplete: 1 vendor page was not compared (p3)" in outcome.text
     note = next(e for e in harness.engine.book.coverage_map()["pages"] if e["page"] == 3)["note"]
     assert not str(note or "").startswith("Checked within the vendor's own drawings")
+
+
+def test_a_continue_keeps_a_vendor_only_page_its_earlier_answer_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Continue's carried pages (`CARRIED_BY`) are not reviewed again: one the earlier answer
+    checked within the vendor's own drawings stays checked, never a page left again."""
+    from app.review.assistant.full_check_plan import OWN_CHECK_NOTE
+
+    harness = _roster(tmp_path, _Roster())
+    engine = harness.engine
+    engine.book.page_count = 4
+    engine.book.set_coverage(
+        {
+            "pages": [
+                {
+                    "page": 2,
+                    "status": "not_comparable",
+                    "note": f"{OWN_CHECK_NOTE}; strings add up",
+                },
+                {"page": 3, "status": "different", "note": None},
+                {"page": 4, "status": "not_comparable", "note": "not reached"},
+            ]
+        },
+        full_check_roster.CARRIED_BY,
+    )
+    run = full_check_roster._Run(engine)
+    run.own_check = frozenset({2, 3, 4})
+    run._settle_own_check()
+    assert run.own_checked == {2, 3}
+    entry = next(e for e in engine.book.coverage_map()["pages"] if e["page"] == 2)
+    assert entry["by"] == full_check_roster.CARRIED_BY  # kept as it was

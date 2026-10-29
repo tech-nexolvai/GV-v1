@@ -526,3 +526,39 @@ def test_the_first_line_names_only_the_true_reasons_pages_were_not_compared() ->
     assert first.endswith(
         "(title, divider or skipped pages; no drawing to compare with; pairing unsure)."
     ), first
+
+
+def test_vendor_only_pages_are_said_apart_and_only_they_say_no_architect_drawing() -> None:
+    """2026-10-29: pages checked within the vendor's own drawings with no architect drawing in the
+    set (`own_pages`) are never "compared with the architect", whatever their coverage says; the
+    words "no architect drawing for them" only when every page said apart is one of them."""
+    counts = {"total": 4, "same": 1, "different": 1, "not_comparable": 2, "not_opened": 0}
+    summary = code_summary(
+        [],
+        coverage=counts,
+        page_count=4,
+        products=("countertop",),
+        stopped=None,
+        compared_pages=[1, 2],
+        own_pages=[1, 2, 3, 4],
+    )
+    first = summary.split("\n")[0]
+    assert first.startswith(
+        "Checked 4 of 4 pages (countertops, 1 round): 0 compared with the"
+    ), first
+    assert "4 only within the vendor's own drawings (no architect drawing for them" in first
+    # A page said apart by a code result, not one of them: the older, true words.
+    own = {"page": 4, "status": "same", "source": "vendor_arithmetic", "verdict": "right"}
+    counts = {"total": 4, "same": 2, "different": 0, "not_comparable": 2, "not_opened": 0}
+    mixed = code_summary(
+        [own],
+        coverage=counts,
+        page_count=4,
+        products=("countertop",),
+        stopped=None,
+        compared_pages=[1, 2],
+        own_pages=[3],
+    )
+    first = mixed.split("\n")[0]
+    assert "2 compared with the architect, 2 only by code's checks" in first, first
+    assert "no architect drawing for them" not in first
