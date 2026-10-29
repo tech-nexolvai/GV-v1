@@ -980,10 +980,21 @@ def settled_lines(finding: Mapping[str, Any]) -> list[str]:
     for other in finding.get("also_on") or []:
         if not isinstance(other, Mapping):
             continue
+        if other.get("page") == finding.get("page"):
+            continue  # the same tag at another spot of this page: marked, not listed again
         where = f"p.{other.get('page')}"
         if other.get("round"):
             where += f" (round {other.get('round')})"
         lines.append(f"Also on {where}: vendor {other.get('vendor')}")
+    same = sum(
+        1
+        for o in finding.get("also_on") or []
+        if isinstance(o, Mapping)
+        and o.get("page") == finding.get("page")
+        and _same_page_spot(finding, o)
+    )
+    if same:
+        lines.append(f"Also at {same} more {'spot' if same == 1 else 'spots'} on this page")
     return lines
 
 
@@ -1021,6 +1032,31 @@ def counts_line(findings: Sequence[Mapping[str, Any]], *, clouded_decisions: boo
     )
 
 
+def _same_page_spot(finding: Mapping[str, Any], other: Mapping[str, Any]) -> bool:
+    """An `also_on` entry at another spot of the finding's own page (never its own spot)."""
+    box = other.get("vendor_box") or other.get("arch_box")
+    if not isinstance(box, Mapping):
+        return False
+    try:
+        coords = (float(box["x0"]), float(box["y0"]), float(box["x1"]), float(box["y1"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    return _other_spot(finding, coords)
+
+
+def _other_spot(finding: Mapping[str, Any], coords: tuple[float, float, float, float]) -> bool:
+    """Whether `coords` is a spot other than the finding's own on its page (the same tag printed
+    at several places on one sheet, 2026-10-29: GV's reviewer marks each)."""
+    own = finding.get("vendor_box")
+    if not isinstance(own, Mapping):
+        return True
+    try:
+        mine = tuple(float(own[k]) for k in ("x0", "y0", "x1", "y1"))
+    except (KeyError, TypeError, ValueError):
+        return True
+    return any(abs(a - b) > 1.0 for a, b in zip(mine, coords, strict=True))
+
+
 def also_marks(
     number: int,
     finding: Mapping[str, Any],
@@ -1044,8 +1080,10 @@ def also_marks(
             coords = (float(box["x0"]), float(box["y0"]), float(box["x1"]), float(box["y1"]))
         except (KeyError, TypeError, ValueError):
             continue
-        if page < 1 or (pages is not None and page > pages) or page == finding.get("page"):
+        if page < 1 or (pages is not None and page > pages):
             continue
+        if page == finding.get("page") and not _other_spot(finding, coords):
+            continue  # its own spot, listed again
         value = str(other.get("vendor") or finding.get("vendor") or "")
         shown = {**finding, "page": page, "vendor": other.get("vendor") or finding.get("vendor")}
         out.append(Mark(number, shown, page, coords, kind, cloud, value, extra=True))

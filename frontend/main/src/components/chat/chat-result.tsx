@@ -845,7 +845,8 @@ function WrongRow({ finding, number, pictureUrl, onOpen, noDrawing = false, like
 /** A Likely problem's line: what to check and confirm, and the two values when there are any (never red). */
 function LikelyLine({ finding, claim }: { finding: ChatFinding; claim: string | null }) {
   // The page reviewer's please-check (2026-10-29) has no values to set side by side: its claim says it.
-  const reviewed = finding.proof?.likely_problem?.by === 'page_reviewer' && finding.source !== 'vendor_arithmetic';
+  const by = finding.proof?.likely_problem?.by;
+  const reviewed = (by === 'page_reviewer' || by === 'set_check') && finding.source !== 'vendor_arithmetic';
   const vendor = reviewed ? null : vendorValue(finding).main;
   const architect = !reviewed && finding.architect?.trim() ? finding.architect.replace(/"/g, '″').replace(/'/g, '′') : null;
   return (

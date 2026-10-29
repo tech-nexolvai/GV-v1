@@ -878,3 +878,28 @@ def test_a_spending_limit_is_not_called_a_bad_key() -> None:
     assert "reached its spending limit" in str(limit) and "limit exceeded" not in str(limit)
     assert limit.kind == "key" and not limit.retryable
     assert "refused this server's key" in str(failure_from(denied("Forbidden")))
+
+
+def test_openrouter_passes_context_editing_through_for_claude(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-10-29: OpenRouter accepts Claude's context editing (the answer carries
+    `applied_edits`), so the page reviewer's old zoom pictures are cleared there too."""
+    from app.review.assistant.chat_request import CONTEXT_BETA
+
+    edits = {"edits": [{"type": "clear_tool_uses_20250919", "trigger": {"type": "input_tokens", "value": 60000}, "keep": {"type": "tool_uses", "value": 3}}]}  # fmt: skip
+    chosen = check_choice("claude-opus-5-5", "high", True)
+    params = call_params(
+        provider="openrouter",
+        model=chosen,
+        effort="high",
+        thinking=thinking_config(chosen, True),
+        system="SYSTEM",
+        tools=[],
+        messages=MESSAGES,
+        final=False,
+        max_tokens=1000,
+        context_management=edits,
+    )
+    assert params["betas"] == [CONTEXT_BETA] and params["context_management"] == edits
+    assert "fallbacks" not in params  # the rest of the OpenRouter shape is unchanged

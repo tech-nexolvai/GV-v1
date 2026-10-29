@@ -115,9 +115,9 @@ export function vendorOnly(finding: Pick<ChatFinding, 'source' | 'created_by' | 
   return finding.source === 'vendor_arithmetic' || finding.source === 'cross_view' || finding.created_by === 'consistency' || pageReviewed(finding) || Boolean(finding.parts?.length);
 }
 
-/** 2026-10-29: the page reviewer's please-check (one vendor page reviewed on its own): no architect side, never red. */
+/** 2026-10-29: the page reviewer's please-check (one vendor page reviewed on its own), or code's cross-sheet tag check: no architect side, never red. */
 export function pageReviewed(finding: Pick<ChatFinding, 'created_by'>): boolean {
-  return finding.created_by === 'page_reviewer';
+  return finding.created_by === 'page_reviewer' || finding.created_by === 'set_check';
 }
 
 /** The architect page it was compared on, for words: with a reference page (stream V) its spot's, else that page; an older answer: vs_page. */

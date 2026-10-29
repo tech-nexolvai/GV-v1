@@ -95,7 +95,7 @@ KIND_WORDS: Final[Mapping[str, str]] = {
 }
 #: Who made a likely problem, as the screen reads it: the whole-drawing look (and the other code
 #: steps that lay the same mark), or the page reviewer.
-BY: Final = ("whole_drawing_look", "page_reviewer")
+BY: Final = ("whole_drawing_look", "page_reviewer", "set_check")
 #: How a claim joined the check: code proved the pair it names (the normal path), it joined an item
 #: a helper had already listed, or it is a likely problem only (never clouded).
 PROOFS: Final = ("labels", "joined", "likely_only")

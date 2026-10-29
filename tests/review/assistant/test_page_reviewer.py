@@ -108,6 +108,7 @@ class _Call:
     tools: list[str]
     max_tokens: int
     messages: list[dict[str, Any]]
+    context_management: Mapping[str, Any] | None = None
 
 
 class _Script:
@@ -183,6 +184,7 @@ class _Engine:
                 tools=[t["name"] for t in given["tools"]],
                 max_tokens=given["max_tokens"],
                 messages=messages,
+                context_management=given.get("context_management"),
             )
         )
         content, stop = self.script(messages)
@@ -847,9 +849,10 @@ def test_the_first_message_lists_what_the_rest_of_the_set_prints(tmp_path: Path)
     first = " ".join(
         b.get("text", "") for b in engine.script.calls[0].messages[0]["content"] if "text" in b
     )
-    assert "The rest of this drawing set" in first
-    assert "ST-02: p1" in first and "ST-01: p2" in first
+    assert "Facts from the rest of this drawing set" in first
+    assert "ST-01: no other page" in first  # this page's tags, with the other pages that print them
     assert '"BIN BY GC/OWNER": p1' in first
+    assert "set_page_text" not in first.split("drawing_set>")[-1][:40]
 
 
 def test_another_page_can_be_read_and_zoomed_but_never_counts_for_this_pages_coverage(
@@ -918,3 +921,143 @@ def test_a_size_issue_never_rests_only_on_numbers_other_pages_print(tmp_path: Pa
     )
     assert any("printed on this page" in r for r in _results(engine.script.calls[3].messages))
     assert review.drafts == []
+
+
+def test_every_reviewer_call_clears_old_zoom_pictures_once_the_prompt_is_long(
+    tmp_path: Path,
+) -> None:
+    """2026-10-29: each turn re-sent every picture (most of a page's money); old tool results are
+    cleared server-side past `CONTEXT_CLEAR_TOKENS`, the last `CONTEXT_KEEP_TURNS` turns kept,
+    the same shape on every call so the prompt cache holds."""
+    from app.review.assistant.page_reviewer import CONTEXT_CLEAR_TOKENS
+
+    engine, *_ = _review(
+        tmp_path,
+        [[_tiles(1, 2, 3, 4, 5, 6)], [_tiles(7, 8, 9)], [_support_issue()], [_text("ok")]],
+        cap=900_000,
+        cost=100_000,
+    )
+    for call in engine.script.calls:
+        (edit,) = call.context_management["edits"]
+        assert edit["type"] == "clear_tool_uses_20250919"
+        assert edit["trigger"] == {"type": "input_tokens", "value": CONTEXT_CLEAR_TOKENS}
+        assert edit["keep"]["type"] == "tool_uses" and edit["keep"]["value"] >= 1
+
+
+# ---- tight boxes and the kind by words (2026-10-29) --------------------------------------------------
+
+
+def _issue(**more: Any) -> dict[str, Any]:
+    given = {
+        "kind": "C", "claim": "please_check", "item": "Elevation: a callout", "confidence": "medium",
+        "wrong": "The elevation prints a dimension with no extension line.",
+        "box": {"x0": 300, "y0": 300, "x1": 420, "y1": 340},
+        **more,
+    }  # fmt: skip
+    return _tool("report_issue", **given)
+
+
+def _after_tiles(tmp_path: Path, *issues: dict[str, Any]) -> tuple[_Engine, PageReview]:
+    engine, review, *_ = _review(
+        tmp_path,
+        [[_tiles(1, 2, 3, 4, 5, 6)], [_tiles(7, 8, 9)], list(issues), [_text("ok")]],
+        cap=900_000,
+        cost=100_000,
+    )
+    return engine, review
+
+
+def test_a_broad_box_is_refused_with_the_way_to_box_the_callout(tmp_path: Path) -> None:
+    engine, review = _after_tiles(
+        tmp_path,
+        _issue(box={"x0": 100, "y0": 100, "x1": 700, "y1": 500}),  # a whole view, no whole_view
+        _issue(box={"x0": 100, "y0": 100, "x1": 450, "y1": 180}),  # 350 across: still broad
+        _issue(),  # tight: recorded
+    )
+    refused = [r for r in _results(engine.script.calls[3].messages) if r.startswith("Refused")]
+    assert len(refused) == 2 and all(
+        "box the callout, dimension or tag itself" in r for r in refused
+    )
+    assert "600 points across" in refused[0] and "350 points across" in refused[1]
+    assert [round(d.box[2] - d.box[0]) for d in review.drafts] == [120]
+
+
+def test_a_whole_view_issue_may_box_its_view_but_not_the_page(tmp_path: Path) -> None:
+    engine, review = _after_tiles(
+        tmp_path,
+        _issue(kind="B", wrong="The top overhangs 14 in; no support is drawn under it.", whole_view=True,
+               box={"x0": 100, "y0": 100, "x1": 650, "y1": 500}),  # 550: a view
+        _issue(kind="B", wrong="No support anywhere.", whole_view=True,
+               box={"x0": 0, "y0": 0, "x1": 1200, "y1": 700}),  # the page
+    )  # fmt: skip
+    (refused,) = [r for r in _results(engine.script.calls[3].messages) if r.startswith("Refused")]
+    assert "even an issue about a whole view boxes just that view" in refused
+    assert [d.kind for d in review.drafts] == ["B"]
+
+
+def test_a_dimension_string_may_span_its_run(tmp_path: Path) -> None:
+    long_string = _tool(
+        "report_issue",
+        kind="A", claim="wrong", item="Elevation: overall width", confidence="high",
+        wrong='The parts 12 + 12 + 11 3/4 add up to 35 3/4", the overall says 36 1/4".',
+        read='12" + 12" + 11 3/4" ; 36 1/4"', parts=['12"', '12"', '11 3/4"'], printed_total='36 1/4"',
+        box={"x0": 100, "y0": 285, "x1": 450, "y1": 340},  # 350 across: a string
+    )  # fmt: skip
+    _engine, review = _after_tiles(tmp_path, long_string)
+    assert [d.kind for d in review.drafts] == ["A"]
+
+
+def test_a_completeness_issue_naming_a_finish_tag_or_a_supplier_is_filed_by_code(
+    tmp_path: Path,
+) -> None:
+    _engine, review = _after_tiles(
+        tmp_path,
+        _issue(wrong="The toe kick is tagged ST-03 but the table lists no ST-03."),
+        _issue(wrong="The bin is drawn; nothing says it is by GC/Owner or by GV.",
+               box={"x0": 500, "y0": 300, "x1": 620, "y1": 340}),
+        _issue(wrong="The sink cut-out has no width.", box={"x0": 700, "y0": 300, "x1": 820, "y1": 340}),
+    )  # fmt: skip
+    assert [d.kind for d in review.drafts] == ["D", "E", "C"]
+    kinds = [
+        likely_problems.payload(f)["kind"]
+        for f in _engine.book.live()
+        if f["created_by"] == "page_reviewer"
+    ]
+    assert kinds == ["finish", "scope", "completeness"]
+
+
+def test_a_sheet_reference_or_a_size_gap_is_never_refiled(tmp_path: Path) -> None:
+    _engine, review = _after_tiles(
+        tmp_path,
+        _issue(wrong="Detail 3/MW-501 is referenced but no such detail is on the set."),
+        _issue(wrong="The refrigerator (N.I.C.) opening has no width dimension.",
+               box={"x0": 500, "y0": 300, "x1": 620, "y1": 340}),
+        _issue(wrong="The sink is drawn; nothing says who supplies it, by GV or by others.",
+               box={"x0": 700, "y0": 300, "x1": 820, "y1": 340}),
+    )  # fmt: skip
+    assert [d.kind for d in review.drafts] == ["C", "C", "E"]
+
+
+def test_a_fix_keeps_the_whole_view_allowance_it_was_accepted_with(tmp_path: Path) -> None:
+    def settle(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            _tool("zoom", crops=[{"box": {"x0": 110, "y0": 110, "x1": 300, "y1": 250}}]),
+            _tool("resolve_finding", n=1, decision="fix", why="better words",
+                  wrong="The top overhangs 14 in at the seating side; no support is drawn."),
+        ]  # fmt: skip
+
+    engine, review, *_ = _review(
+        tmp_path,
+        [
+            [_tiles(1, 2, 3, 4, 5, 6)],
+            [_tiles(7, 8, 9), _issue(kind="B", wrong="Overhang with no support.", whole_view=True,
+                                     box={"x0": 100, "y0": 100, "x1": 650, "y1": 500})],
+            [_tight_on_text(), _tight_last()],
+            [_text("Done.")],
+            settle,
+            [_text("Settled.")],
+        ],
+    )  # fmt: skip
+    (draft,) = review.drafts
+    assert draft.status == "fixed" and draft.whole_view and "no support is drawn" in draft.wrong
+    assert not any("points across" in r for r in _results(engine.script.calls[-1].messages))

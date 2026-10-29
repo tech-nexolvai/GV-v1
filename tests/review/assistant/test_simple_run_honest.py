@@ -37,6 +37,7 @@ _BREAK = {
     "sink_centre": "add_sink_centre",
     "splash_views": "add_splash_views",
     "scale_measure": "add_scale_measures",
+    "set_check": "add_set_check",
 }
 
 

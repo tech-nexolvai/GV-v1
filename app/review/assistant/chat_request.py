@@ -579,6 +579,11 @@ def call_params(
             # reasoning effort; `display` (and every other thinking form) is Claude's.
             params["thinking"] = {"type": "adaptive"}
             params["output_config"]["effort"] = model.effort_for(effort)
+        elif context_management:
+            # OpenRouter passes Claude's context editing through (checked 2026-10-29: the
+            # answer carries `applied_edits`): old zoom pictures cleared there too.
+            params["betas"] = [CONTEXT_BETA]
+            params["context_management"] = json.loads(json.dumps(context_management))
         routing = _openrouter_routing()
         if model.hosts:
             # Only the model's own keep-no-data hosts (the rest of the block unchanged).

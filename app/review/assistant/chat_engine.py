@@ -291,6 +291,7 @@ from app.review.assistant.send_package import (
     make_package_file,
     package_context,
 )
+from app.review.assistant.set_context import add_to_answer as add_set_check
 from app.review.assistant.sharpen import helper_lines
 from app.review.assistant.sink_centre import add_to_answer as add_sink_centre
 from app.review.assistant.sink_offset import add_to_answer as add_sink_offset
@@ -577,6 +578,7 @@ CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
     "sink_centre": "the sink centre on the sink base",
     "splash_views": "the splash sizes on the architect's other views",
     "scale_measure": "the measuring by scale where the architect prints no size",
+    "set_check": "the cross-sheet tag check",
 }
 
 
@@ -3464,6 +3466,9 @@ class ChatEngine:
             # Where the architect prints no size: measured by its own scale (2026-10-23), last,
             # on every item the steps above left open.
             (CODE_CHECK_NAMES["scale_measure"], lambda: add_scale_measures(self)),
+            # A tag only one sheet prints, or tagged differently on the item's other drawing
+            # (2026-10-29, `set_context`): please-checks, never red.
+            (CODE_CHECK_NAMES["set_check"], lambda: add_set_check(self)),
         )
         # The pack's state before the checks read its labels counts too: it may turn `ready` while
         # they run on partial labels (#1768 review).
