@@ -75,6 +75,8 @@ CREATED_BY: Final = "set_check"
 _PARTS: Final = re.compile(r"^([A-Z]{1,5})-?(\d{2,3})([A-Z]?)(\.[A-Z]{1,3})?$")
 #: The printed sizes listed for an item's other drawing, at most.
 _MAX_SIZES: Final = 24
+#: A seam as drafters print it on a countertop drawing.
+_SEAM: Final = re.compile(r"\b(?:joint|seam)s?\b", re.IGNORECASE)
 #: A printed inch size: `36"`, `23 1/4"`, `5'-2 1/2"`.
 _INCHES: Final = re.compile(r"(?:\d+'-?\s?)?\d+(?:[ -]\d+/\d+)?\s?\"")
 
@@ -320,6 +322,15 @@ class SetContext:
                     out.append(FinishDifference(family, a, b, other_page, other_tag))
         return out
 
+    def seams(self, page: int) -> int:
+        """How many seams (JOINT, SEAM) `page` prints: the countertop drawing marks where the top is
+        joined, which is where a support or leg belongs (GV's reviewer, La Quinta 449 of
+        2026-10-29: "move the support so its centre aligns with the seam line")."""
+        self.build()
+        return sum(
+            1 for phrase in self.pages.get(page, []) if _SEAM.search(str(phrase.get("text") or ""))
+        )
+
     def printed_sizes(self, page: int) -> list[str]:
         """The inch sizes `page` prints, as printed (for an item's other drawing), at most
         `_MAX_SIZES`, each once."""
@@ -363,6 +374,14 @@ class SetContext:
                 f"This item's other drawing: p{other_page} ({other_tag}, for {mine}) prints tags "
                 f"{tags_there}; sizes {sizes}."
             )
+            joints = self.seams(other_page)
+            if joints:
+                here = self.seams(page)
+                lines.append(
+                    f"p{other_page} marks {joints} {'seam' if joints == 1 else 'seams'} (JOINT) in "
+                    f"the top; this page marks {here or 'none'}. Read p{other_page} for where, and "
+                    "check a support or leg sits under each."
+                )
         for diff in self.finish_differences(page):
             lines.append(
                 f"Finish {diff.family}: this page tags {', '.join(diff.here)}; its other drawing "

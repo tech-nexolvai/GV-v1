@@ -405,3 +405,16 @@ def test_the_same_note_flagged_on_several_sheets_is_one_card_with_the_others_und
     assert [(o["page"], o["finding_id"]) for o in kept["also_on"]] == [(4, second)]  # its own id
     assert other_kind in live and alone in live and different in live
     assert proof.proof_group(kept) == "likely_problem"
+
+
+def test_the_facts_name_the_seams_the_items_countertop_drawing_marks() -> None:
+    pages = _set_pages()
+    pages[13] = _phrases("BOH-802.CT", "ST-02", "GVQZ-19", "JOINT", "JOINT")
+    context = _context(pages, 14)
+    assert context.seams(13) == 2 and context.seams(3) == 0
+    facts = context.facts_for(3)
+    assert (
+        "p13 marks 2 seams (JOINT) in the top; this page marks none. Read p13 for where, and "
+        "check a support or leg sits under each." in facts
+    )
+    assert "seam" not in context.facts_for(2)  # its countertop drawing marks none
