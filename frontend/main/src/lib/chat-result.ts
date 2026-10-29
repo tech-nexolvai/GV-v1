@@ -174,7 +174,7 @@ const LOOK_WORDS: Record<string, string> = {
   // 2026-10-29: the page reviewer's please-checks (`likely_problems.KIND_WORDS`, the same words).
   construction: 'Construction: a support, filler or panel to check',
   completeness: 'Drawing completeness: a view, size or mark to add or remove',
-  material: 'Material, finish or grain callout to check',
+  finish: 'Material, finish or grain callout to check',
   scope: 'Scope: who supplies it (GV, the GC or the owner) to make clear',
   labels: 'Item number, label or title block to check',
 };

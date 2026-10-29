@@ -598,7 +598,7 @@ export type ProofGroup = 'clouded' | 'right' | 'rule_note' | 'likely_problem' | 
  * items are never red.
  */
 export interface FindingLikelyProblem {
-  kind: 'missing_piece' | 'extra_piece' | 'count' | 'size' | 'layout' | 'construction' | 'completeness' | 'material' | 'scope' | 'labels';
+  kind: 'missing_piece' | 'extra_piece' | 'count' | 'size' | 'layout' | 'construction' | 'completeness' | 'finish' | 'scope' | 'labels';
   /** "Please check and confirm: …" */
   words: string;
   /** The AI's reason, one line. */

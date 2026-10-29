@@ -31,7 +31,7 @@ describe('the page reviewer kinds', () => {
   it.each([
     ['construction', 'Construction: a support, filler or panel to check'],
     ['completeness', 'Drawing completeness: a view, size or mark to add or remove'],
-    ['material', 'Material, finish or grain callout to check'],
+    ['finish', 'Material, finish or grain callout to check'],
     ['scope', 'Scope: who supplies it (GV, the GC or the owner) to make clear'],
     ['labels', 'Item number, label or title block to check'],
   ] as const)('%s is named in words', (kind, words) => {
