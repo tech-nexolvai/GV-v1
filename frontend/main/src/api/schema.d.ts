@@ -2019,22 +2019,24 @@ export interface components {
         };
         /**
          * ChatFindingLikelyOut
-         * @description What the whole-drawing look claimed (`likely_problems.payload`): never red by itself; a
-         *     Likely problem until code proves it.
+         * @description What the whole-drawing look or the page reviewer claimed (`likely_problems.payload`): never
+         *     red by itself; a Likely problem until code proves it (the page reviewer's construction,
+         *     completeness, material, scope and label items never are).
          */
         ChatFindingLikelyOut: {
             /**
              * By
+             * @description Who found it: the whole-drawing look (or a code step that lays the same mark), or the page reviewer.
              * @default whole_drawing_look
-             * @constant
-             */
-            by: "whole_drawing_look";
-            /**
-             * Kind
-             * @description What differs: a missing or extra piece, a count, a size, the layout.
              * @enum {string}
              */
-            kind: "missing_piece" | "extra_piece" | "count" | "size" | "layout";
+            by: "whole_drawing_look" | "page_reviewer";
+            /**
+             * Kind
+             * @description What differs: a missing or extra piece, a count, a size, the layout; or, from the page reviewer, construction (supports, fillers, panels), drawing completeness, finish (a material, finish or grain callout), scope (by GV, GC or owner), or item numbers and the title block.
+             * @enum {string}
+             */
+            kind: "missing_piece" | "extra_piece" | "count" | "size" | "layout" | "construction" | "completeness" | "finish" | "scope" | "labels";
             /**
              * Reason
              * @description The AI's reason, one line.

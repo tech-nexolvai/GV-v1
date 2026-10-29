@@ -94,6 +94,8 @@ _LOOK_WORDS: Final[Mapping[str, str]] = {
     "count": "The counts differ",
     "size": "A size differs, found by the whole-drawing look",
     "layout": "The layout differs",
+    # The page reviewer's please-checks (`page_reviewer`): GV's reviewer's kinds B to F.
+    **likely_problems.KIND_WORDS,
 }
 _ENDS_WORDS: Final = (
     "The AI pairs these sizes, but code could not confirm both measure the same thing"

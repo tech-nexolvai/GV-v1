@@ -867,18 +867,37 @@ class ChatFindingRuleNoteOut(BaseModel):
 
 
 class ChatFindingLikelyOut(BaseModel):
-    """What the whole-drawing look claimed (`likely_problems.payload`): never red by itself; a
-    Likely problem until code proves it."""
+    """What the whole-drawing look or the page reviewer claimed (`likely_problems.payload`): never
+    red by itself; a Likely problem until code proves it (the page reviewer's construction,
+    completeness, material, scope and label items never are)."""
 
     model_config = ConfigDict(frozen=True)
 
-    kind: Literal["missing_piece", "extra_piece", "count", "size", "layout"] = Field(
-        description="What differs: a missing or extra piece, a count, a size, the layout."
+    kind: Literal[
+        "missing_piece",
+        "extra_piece",
+        "count",
+        "size",
+        "layout",
+        "construction",
+        "completeness",
+        "finish",
+        "scope",
+        "labels",
+    ] = Field(
+        description="What differs: a missing or extra piece, a count, a size, the layout; or, "
+        "from the page reviewer, construction (supports, fillers, panels), drawing completeness, "
+        "finish (a material, finish or grain callout), scope (by GV, GC or owner), or item numbers and the "
+        "title block."
     )
     words: str = Field(description='The letter\'s line: "Please check and confirm: ...".')
     reason: str | None = Field(default=None, description="The AI's reason, one line.")
     sure: Literal["sure", "likely"] = Field(description="How sure the look was.")
-    by: Literal["whole_drawing_look"] = "whole_drawing_look"
+    by: Literal["whole_drawing_look", "page_reviewer"] = Field(
+        default="whole_drawing_look",
+        description="Who found it: the whole-drawing look (or a code step that lays the same "
+        "mark), or the page reviewer.",
+    )
 
 
 class ChatFindingWrongPartOut(BaseModel):
