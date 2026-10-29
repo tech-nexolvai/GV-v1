@@ -1081,6 +1081,8 @@ class MessageJob:
     whole_look_model: str | None = None
     """The whole-drawing look's model (`whole_look`); `None`: off."""
     whole_look_effort: str = "medium"
+    page_reviewer: Any = None
+    """The page reviewer's options (`page_reviewer.Options`); `None`: off."""
     set_index_model: str | None = None
     """The set index's model for separate uploads (`set_index.py`); `None`: off."""
     plan_answers: Mapping[str, str] | None = None
@@ -1533,6 +1535,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             run_anyway=job.run_anyway,
             whole_look_model=job.whole_look_model,
             whole_look_effort=job.whole_look_effort,
+            page_reviewer=job.page_reviewer,
             set_index_model=job.set_index_model,
             identity=job.identity,
             numbering=numbering(job.factory, job.package_id, job.chat_id, run.message_id),

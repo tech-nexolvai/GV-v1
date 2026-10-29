@@ -104,6 +104,7 @@ from app.review.assistant import (
     dim_anchors,
     dim_ends,
     ends_proof,
+    page_reviewer,
     pick_cache,
     round_picks,
     spot_pool,
@@ -1591,6 +1592,10 @@ class _Run:
     proof_reads_lock: threading.Lock = field(default_factory=threading.Lock)
     #: The whole-drawing looks of this run and what code did with their claims (`whole_look`).
     looked: whole_look.WholeLooks = field(default_factory=whole_look.WholeLooks)
+    #: The page reviews of this run (`page_reviewer`, Anant 2026-10-29) and their own money
+    #: (millionths of $): added to the fixed price, never any other step's (`counted_spent`).
+    reviews: page_reviewer.Reviews = field(default_factory=page_reviewer.Reviews)
+    review_money: int = 0
     #: The proving reads made ahead while the AI steps run (`_read_ahead`), and how to stop them.
     _ahead: threading.Thread | None = None
     _ahead_stop: threading.Event = field(default_factory=threading.Event)
@@ -1633,9 +1638,11 @@ class _Run:
     def _left(self) -> int:
         """What is left under the fixed price (millionths of $): the message's cap, and the price
         for the products in scope when that is less."""
-        left = self.engine.settings.message_cap_micros - self.engine.spent
+        # What the fixed price's shares count, the page reviewer's own share apart
+        # (`ChatEngine.counted_spent`); with no reviewer, the message cap and its whole spend.
+        left = _counted_cap(self.engine) - _counted(self.engine)
         if self.plan is not None:
-            left = min(left, self.plan.price - (self.engine.spent - self.started_at))
+            left = min(left, self.plan.price - (_counted(self.engine) - self.started_at))
         return max(0, left)
 
     def _room(self, phase: str) -> int:
@@ -1777,7 +1784,7 @@ class _Run:
                 for other in self.p1_agents
                 if other is agent or not (other.done or getattr(other, "skip", False))
             )
-            return max(0, int(ceiling) - int(self.engine.spent) - own - wraps)
+            return max(0, int(ceiling) - int(_counted(self.engine)) - own - wraps)
 
     def _p1_pools(self, agents: Sequence[Any], ceiling: int) -> tuple[_Pool, ...]:
         """The first phase's money (#1805, 2026-10-24): the page helpers and the tag readers share
@@ -1785,6 +1792,9 @@ class _Run:
         helpers' when no look runs); a specialist at its cap first takes what its pool's others
         left, then the price's spare money under `ceiling` (`_spare`)."""
         assert self.plan is not None
+        # The page reviewers have their own money (`page_reviewer`): never in a pool, never kept
+        # a wrap-up under the first phase's ceiling.
+        agents = [agent for agent in agents if agent.lens != page_reviewer.LENS]
         looks = [agent for agent in agents if agent.lens == whole_look.LENS]
         pool = _Pool(sum(self.plan.budgets[name] for name in ("numbers", "drawn", "tags")))
         pools = [pool]
@@ -2368,14 +2378,23 @@ class _Run:
                 plan.pages,
                 price / _MICROS,
             )
-        set_price(engine, price)
-        self.started_at = engine.spent
+        # The page reviewer (Anant, 2026-10-29): its own money on top of the fixed price, the
+        # rate per vendor page it reviews, never above what the set's budget leaves; every other
+        # share is the price's as before (`ChatEngine.counted_spent`).
+        review_pages = sorted(self.vendor_pages - carried)
+        self.review_money = page_reviewer.review_money(
+            getattr(settings, "page_reviewer", None), len(review_pages), max(0, bound - price)
+        )
+        set_price(engine, price, own=self.review_money)
+        self.started_at = _counted(engine)
         if engine._progress is not None:
             # The plan's expected time (#1874): the live line's time left.
             minutes = expected_minutes(plan.pages, engine.settings.calls_at_once)
             engine._progress.set_expected(engine._progress.elapsed() + minutes * 60)
         for timing, names in TIMINGS_PHASES.items():
             engine.timings.set_budget(timing, sum(self.plan.budgets[n] for n in names))
+        if self.review_money:
+            engine.timings.set_budget(page_reviewer.LENS, self.review_money)
         engine._started_scope = engine.scope()
         engine.emit(
             "scope", {"index": None, "scope": json.loads(json.dumps(engine._started_scope))}
@@ -2437,6 +2456,10 @@ class _Run:
             self, sorted(whole_plan), page_map, matching, self.looked, done=carried
         )
         agents += looks
+        # One page reviewer per vendor page (Anant, 2026-10-29), first: its money is its own, and
+        # a step that starts late gets nothing done.
+        reviews = page_reviewer.roster_agents(self, review_pages, self.review_money, self.reviews)
+        agents = [*reviews, *agents]
         # The helpers that wait for the page matcher start after those that can start now (the
         # tag readers, the pages code or a saved answer paired): none holds a place idle.
         agents.sort(key=lambda agent: self._waits(agent))
@@ -2447,7 +2470,7 @@ class _Run:
         protected = sum(max(self.plan.budgets[name], self.needs.get(name, 0)) for name in PROTECTED)
         # The cheap round picks have no share of the price: what they need is kept too (#1861).
         protected += self.needs.get(ROUND_PHASE, 0)
-        ceiling = engine.spent + max(0, price - protected)
+        ceiling = _counted(engine) + max(0, price - protected)
         # One pool for the page helpers and tag readers, one for the looks; at its cap a
         # specialist takes its pool's leftovers, then the price's spare money (2026-10-24).
         self._p1_pools(agents, ceiling)
@@ -2457,7 +2480,7 @@ class _Run:
             # only the set-wide steps below wait for all. `by_job` was taken before the sort
             # above (the agents that wait for the page matcher last), so each job keeps its agent.
             tags = [a for a in agents if a.lens == "tags"]
-            self._run_bands(by_job, tags, ceiling, page_map, matching, looks=looks)
+            self._run_bands(by_job, tags, ceiling, page_map, matching, looks=looks, reviews=reviews)
             self._finish_bands(plan, page_map)
             return self._finish("cancelled" if engine.cancel.is_set() else None)
         engine.helper_ceiling = ceiling
@@ -2485,11 +2508,15 @@ class _Run:
                 if agent.lens == whole_look.LENS:
                     looked.append((agent, entry))
                     continue
+                if agent.lens == page_reviewer.LENS:
+                    continue  # it recorded its items as it found them
                 self._salvage(agent, entry)
                 if entry.get("stopped") == "cost_cap":
                     self._capped(agent.description, "; the pages it left are listed")
             if tag_reports:
                 self._apply_tags(tag_reports)
+            if reviews:
+                _log.warning("assistant page reviews: %s", self.reviews.block())
             if looked:
                 # Each look's claims, by code: proved pairs take the normal path, the rest are
                 # Likely problems, and what names a wrong label or drawing is dropped.
@@ -2543,6 +2570,7 @@ class _Run:
         matching: Any = None,
         *,
         looks: Sequence[Any] = (),
+        reviews: Sequence[Any] = (),
     ) -> None:
         """Each band's chain on its own thread (`full_check_schedule.run_chains`): its page
         helpers, then its gap closers, verifier, lead review and look-again passes, each as soon
@@ -2556,12 +2584,13 @@ class _Run:
         The whole-drawing looks (`whole_look`) run beside their band's page helpers, as beside
         the helpers in one chain, each in the band holding its first vendor page (one no band
         holds runs beside the tag reader); their claims are applied by code before that band's
-        gap closers, one band at a time. Their money stays their own share (not the band's)."""
+        gap closers, one band at a time. Their money stays their own share (not the band's). The
+        page reviewers (`page_reviewer`) run the same way, on their own money."""
         engine = self.engine
         looks_lock = threading.Lock()
         band_looks: dict[int, list[Any]] = {index: [] for index in range(len(self.bands))}
         loose: list[Any] = []
-        for agent in looks:
+        for agent in [*reviews, *looks]:
             first = min(agent.pages or (0,))
             home = next((n for n, band in enumerate(self.bands) if band.holds(first)), None)
             (loose if home is None else band_looks[home]).append(agent)
@@ -2621,7 +2650,7 @@ class _Run:
             finally:
                 final_pairs()
             for agent, entry in done:
-                if agent.lens == whole_look.LENS:
+                if agent.lens in (whole_look.LENS, page_reviewer.LENS):
                     continue
                 self._salvage(agent, entry)
                 if entry.get("stopped") == "cost_cap":
@@ -2809,7 +2838,7 @@ class _Run:
         self._forget_money_marks(pages, still_open)
         before = {str(f.get("id")) for f in engine.book.live()}
         self._step("look_again")
-        engine.helper_ceiling = engine.spent + budget
+        engine.helper_ceiling = _counted(engine) + budget
         try:
             with engine.timings.phase("gap_closers"):
                 taken = self._close(pages, budget, (), page_map, again=True, late=True)
@@ -3471,7 +3500,7 @@ class _Run:
                 if any(line.startswith(_NOT_COMPARED_YET) for line in lines)
             }
             if band is None:
-                engine.helper_ceiling = engine.spent + budget
+                engine.helper_ceiling = _counted(engine) + budget
                 try:
                     with engine.timings.phase("gap_closers"):
                         taken = self._close(pages, budget, (), page_map, again=True, first=first)
@@ -3487,7 +3516,7 @@ class _Run:
                         page_map,
                         again=True,
                         band=band,
-                        ceiling=engine.spent + budget,
+                        ceiling=_counted(engine) + budget,
                         first=first,
                     )
             # A page a closer took is not "left open, not compared again": its closer said what it
@@ -4257,6 +4286,8 @@ class _Run:
             agent = by_id.get(str(report.get("id")))
             if agent is None or not wanted & set(agent.pages or ()):
                 continue
+            if agent.lens == page_reviewer.LENS:
+                continue  # its items are recorded; the lead review keeps its own question
             text = " ".join(str(report.get("report")).split())[:_NOTE_CHARS]
             if used + len(text) > _NOTES_CHARS:
                 break
@@ -4588,7 +4619,7 @@ class _Run:
             return {"chains": [], "note": "the crop could not be made"}
         from app.review.assistant.chat_engine import HARNESS_ID
 
-        before = engine.spent
+        before = _counted(engine)
         try:
             reply = engine._call(
                 model=model,
@@ -4614,7 +4645,7 @@ class _Run:
             _log.warning("assistant roster string reading failed: %s", type(failed).__name__)
             return {"chains": [], "note": "the reading failed"}
         finally:
-            self._charge(self.pick_phase, max(0, engine.spent - before))
+            self._charge(self.pick_phase, max(0, _counted(engine) - before))
         text = reply.text()
         try:
             answer = json_of_reply(text)
@@ -5216,7 +5247,7 @@ class _Run:
             return None
         from app.review.assistant.chat_engine import HARNESS_ID
 
-        before = engine.spent
+        before = _counted(engine)
         try:
             # A judgement (do the two measure the same points?): adaptive thinking at a lower
             # effort, never thinking off (#1775, C4).
@@ -5239,7 +5270,7 @@ class _Run:
             _log.warning("assistant roster advocate call failed: %s", type(failed).__name__)
             return None
         finally:
-            self._charge(self.pick_phase, max(0, engine.spent - before))
+            self._charge(self.pick_phase, max(0, _counted(engine) - before))
         self._log_pick(kind, vendor, architect, model, effort, reply)
         text = reply.text()
         try:
@@ -5531,7 +5562,11 @@ class _Run:
         if unsendable:
             lines.append(f"**Check incomplete: {unsendable}. Not for sending until it is.**")
         # The price for the content pages in scope (`PriceRule`, #1823), else the message's cap.
-        price = cap_text(self.plan.price if self.plan is not None else settings.message_cap_micros)
+        price = cap_text(
+            self.plan.price + self.review_money
+            if self.plan is not None
+            else settings.message_cap_micros
+        )
         lines.append(f"Fixed price ${price}: this check used {_dollars(engine.spent)}.")
         if self.not_done:
             lines.append(self._not_done_line(stopped))
@@ -5623,7 +5658,7 @@ class _Run:
             return None
         from app.review.assistant.chat_engine import HARNESS_ID
 
-        before = engine.spent
+        before = _counted(engine)
         try:
             reply = engine._call(
                 model=model,
@@ -5645,7 +5680,7 @@ class _Run:
             _log.info("assistant roster summary kept code's words: %s", type(failed).__name__)
             return None
         finally:
-            self._charge("summary", max(0, engine.spent - before))
+            self._charge("summary", max(0, _counted(engine) - before))
         reworded = "\n".join(str(line).strip() for line in lines if str(line).strip())
         if not 3 <= len(reworded.splitlines()) <= 7 or not keeps_numbers(text, reworded):
             return None
@@ -5836,10 +5871,26 @@ def price_bound(engine: ChatEngine) -> int:
     return max(0, min(settings.message_cap_micros, settings.package_cap_micros - package))
 
 
-def set_price(engine: ChatEngine, price: int) -> None:
+def _counted(engine: Any) -> int:
+    """What the fixed price's shares have spent (`ChatEngine.counted_spent`: the page reviewer's
+    own share apart); the whole spend for an engine without one."""
+    counted = getattr(engine, "counted_spent", None)
+    return int(engine.spent if counted is None else counted)
+
+
+def _counted_cap(engine: Any) -> int:
+    """The message cap less the page reviewer's own share (`ChatEngine.counted_cap`)."""
+    cap = getattr(engine, "counted_cap", None)
+    return int(engine.settings.message_cap_micros if cap is None else cap)
+
+
+def set_price(engine: ChatEngine, price: int, own: int = 0) -> None:
     """The full check's fixed price made the message's whole cap (#1823): every call's runaway
-    guard and the second reads' share then hold it, as a chat question's hold the message cap."""
-    engine.settings = replace(engine.settings, message_cap_micros=max(0, price))
+    guard and the second reads' share then hold it, as a chat question's hold the message cap.
+    `own`: the page reviewer's own money on top (`page_reviewer`): in the message cap, kept from
+    every other share (`ChatEngine.own_share_micros`)."""
+    engine.settings = replace(engine.settings, message_cap_micros=max(0, price) + max(0, own))
+    engine.own_share_micros = max(0, own)
     engine._read_share.limit = min(engine._read_share.limit, max(0, price))
 
 

@@ -188,6 +188,8 @@ from app.review.assistant.job_board import (
 from app.review.assistant.not_compared import XLSX_MIME
 from app.review.assistant.package_store import identity as package_identity
 from app.review.assistant.package_store import stored_numbers
+from app.review.assistant.page_reviewer import Options as PageReviewerOptions
+from app.review.assistant.page_reviewer import house_rules_text
 from app.review.assistant.product_scope import PriceRule, ProductScope
 from app.review.assistant.proof import reviewer_value_refusal
 from app.review.assistant.review_action import CheckState
@@ -1529,6 +1531,18 @@ def _simple_options(settings: Settings, body: ChatMessageIn) -> dict[str, Any] |
     }
 
 
+def page_reviewer_options(settings: Settings) -> PageReviewerOptions | None:
+    """The page reviewer's options (`page_reviewer`, Anant 2026-10-29), or `None` when it is off
+    (the default, `GV_ASSISTANT_PAGE_REVIEWER`)."""
+    if not settings.assistant_page_reviewer:
+        return None
+    return PageReviewerOptions(
+        per_page_micros=int(settings.assistant_page_reviewer_per_page_usd * _MICROS),
+        effort=settings.assistant_page_reviewer_effort,
+        house_rules=house_rules_text(settings.assistant_page_reviewer_house_rules),
+    )
+
+
 def price_rule(settings: Settings) -> PriceRule:
     """The full check's fixed price from the settings (#1823): base + per page, at least a
     minimum."""
@@ -1712,6 +1726,7 @@ def _message(
                 else settings.assistant_whole_look_model
             ),
             whole_look_effort=settings.assistant_whole_look_effort,
+            page_reviewer=page_reviewer_options(settings),
             set_index_model=(
                 None
                 if settings.assistant_set_index_model == "off"

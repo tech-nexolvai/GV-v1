@@ -46,7 +46,7 @@ from extraction.pdfium_guard import pdfium
 from extraction.reader import pixel_placement
 from extraction.stamp_text import carries_drawing
 
-__all__ = ["UnderMarkup", "read_under_markup"]
+__all__ = ["UnderMarkup", "page_words", "read_under_markup"]
 
 _log = logging.getLogger(__name__)
 
@@ -481,6 +481,21 @@ def read_under_markup(pdf: Path, page_number: int, box: Box, dpi: int | None = N
         drawings=drawings,
         words=words,
     )
+
+
+def page_words(pdf: Path, page_number: int) -> list[dict[str, Any]]:
+    """Every word of page `page_number` (from 1) of `pdf` as the page shows it: its text and its box
+    in shown points (origin top-left, the page's rotation applied), the pasted drawings' own text
+    included (their appearance drawn into the page). For the page reviewer (`page_reviewer`), read
+    from the drawings-only copy, so GV's own notes are not in it. Raises `ValueError` for a page
+    that is not in the file."""
+    data = pdf.read_bytes()
+    with pikepdf.open(io.BytesIO(data)) as source:
+        count = len(source.pages)
+    if not 1 <= page_number <= count:
+        raise ValueError(f"there is no page {page_number} (the file has {count})")
+    everything = (-1e6, -1e6, 1e6, 1e6)
+    return _words(_flat(data, page_number - 1), everything, combined=False)
 
 
 def _flat(data: bytes, index: int) -> bytes:
