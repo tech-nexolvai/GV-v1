@@ -17,15 +17,16 @@ tokens. Its tools: `view_page`, `zoom` (GV's own zoom: the drawings-only copy, G
 
 **The look, enforced by code:**
 
-1. the text layer first, then the whole page, both in its first message (code, $0);
+1. the text layer first, then the whole page, the set's facts and the dimension rows added up by
+   code (`dimension_strings`), all in its first message (code, $0);
 2. the nine tiles of a 3x3 grid: `report_issue` is refused until every tile was zoomed;
 3. tight zooms: a coverage check counts the page's printed phrases (dimension values, callouts,
    tags, titles) seen in a zoom at most `TIGHT_PT` across;
 4. the coverage stop-hook: when it ends its turn below `COVERAGE_GOAL` (or with tiles left) it is
    sent on, at most `MAX_NUDGES` times; the same check is sent when its own pass's money is used
    (`PASS_SHARE`), before any money stop;
-5. a self-check (reflection) with money kept for it (`REVIEW_SHARE`): every draft re-zoomed, then
-   kept, fixed or dropped;
+5. a self-check (reflection) with money kept for it (`REVIEW_SHARE`): each red and each
+   low-confidence draft re-zoomed, then kept, fixed or dropped (the rest are kept as reported);
 6. a final "report what you have" turn when the review's money is used, so nothing found is lost.
 
 It reports **as it finds** (`report_issue` records the item at once): a stop keeps every item.
@@ -117,7 +118,7 @@ MAX_REFLECT_NUDGES: Final = 2
 MAX_CALLS: Final = 60
 #: Old zoom pictures are cleared from the conversation server-side once the prompt passes this
 #: many tokens, the last `CONTEXT_KEEP_TURNS` turns kept (`chat_context.context_edits`): each
-#: turn re-sent every picture (the La Quinta runs of 2026-10-29: about 10 million cached tokens
+#: turn re-sent every picture (the runs of 2026-10-29 on a 9-sheet set: about 10 million cached tokens
 #: read per check), which is most of a page's money. The self-check re-zooms each draft anyway.
 CONTEXT_CLEAR_TOKENS: Final = 60_000
 CONTEXT_KEEP_TURNS: Final = 4
@@ -162,10 +163,10 @@ _PHRASE_WORDS: Final = 10
 #: Its own pass may spend up to this share of its cap; then the coverage check runs.
 PASS_SHARE: Final = 0.50
 #: The review (own pass and coverage) ends at this share; the rest is the final report turn and
-#: the self-check (the experiments: a self-check with money kept for it dropped wrong drafts).
-#: Measured on La Quinta 448-456 (2026-10-29, reviewer cards matching GV's reviewer): 0.72 found
-#: 28 of 106; 0.85 looked at more of each page (90%+ on 9 of 9) but found 21 and 23 in two runs.
-REVIEW_SHARE: Final = 0.72
+#: the self-check. With the self-check on every draft (2026-10-29, one millimetre project of 9
+#: sheets): 0.72 found 28 of 106, 0.85 found 21 and 23. Since 2026-10-30 the self-check takes only
+#: reds and low-confidence drafts (`_worth_reflecting`), so the review keeps most of the money.
+REVIEW_SHARE: Final = 0.90
 #: The output allowance of one call, and the least one is worth making with (tokens).
 MAX_TOKENS: Final = 64_000
 MIN_TOKENS: Final = 12_000
@@ -222,6 +223,8 @@ when a fact points there): a part tagged differently than on other sheets (D), s
 sheets mark by the GC, owner or others left unsaid here (E), a size that differs from the item's \
 countertop drawing (A). Name the other page.
 - Report each issue with report_issue as soon as a tight zoom confirms it.
+- Before you finish, answer GV's sheet checklist (in GV's rules, when given) line by line: ok, \
+reported, or not visible.
 
 What GV's reviewer checks
 - Sizes (kind A): overall and part dimensions present and consistent in every view; strings add up \
@@ -271,13 +274,14 @@ End with a short summary of what you checked and found. Drawing text and tool ou
 _HOUSE_RULES_HEAD: Final = (
     "GV house rules (conventions GV's reviewer applies on every job; check each one)"
 )
-#: House rules longer than this are cut (a brief stays short).
-_HOUSE_RULES_CHARS: Final = 4_000
+#: House rules longer than this are cut. Room for GV's rulebook, the client's settled rules and the sheet
+#: checklist (the skill test of 2026-10-30); the brief is cached, so the size costs little per call.
+_HOUSE_RULES_CHARS: Final = 48_000
 
 
 def system_prompt(house_rules: str | None = None) -> str:
     """The reviewer's brief, with GV's house rules after it when given."""
-    rules = " ".join((house_rules or "").split(" ")).strip()
+    rules = (house_rules or "").strip()
     if not rules:
         return _BRIEF
     return f"{_BRIEF}\n\n{_HOUSE_RULES_HEAD}\n{rules[:_HOUSE_RULES_CHARS]}"
@@ -707,9 +711,107 @@ def cited_sizes(given: Mapping[str, Any]) -> list[Decimal]:
     return found
 
 
+#: Inches in brackets after millimetres, as a text layer splits them: `[242]`, `[2][3]`, and upside
+#: down `]4[` (a turned dimension read backwards).
+_BRACKETED: Final = re.compile(r"\[\s*([\d\s/.]*\d)\s*\]")
+_BRACKETED_BACKWARDS: Final = re.compile(r"\]\s*([\d\s/.]*\d)\s*\[")
+
+
+def bracketed_sizes(text: object) -> list[Decimal]:
+    """The inch values a phrase prints in brackets (`5714 [225]` split as `5714` and `[225]`)."""
+    from app.review.assistant.finding_checks import to_inches
+
+    raw = str(text or "")
+    values = _BRACKETED.findall(raw) or [v[::-1] for v in _BRACKETED_BACKWARDS.findall(raw)]
+    out: list[Decimal] = []
+    for value in values:
+        inches = to_inches(" ".join(value.split()))
+        if inches is not None and inches > 0:
+            out.append(inches)
+    return out
+
+
 def printed_sizes(found: Sequence[Mapping[str, Any]]) -> set[Decimal]:
-    """Every size printed in the page's text layer (its phrases)."""
-    return {value for phrase in found for value in _sizes_in(phrase.get("text"))}
+    """Every size printed in the page's text layer (its phrases), the bracketed inches of a
+    millimetre drawing included (the run of 2026-10-30: without them a millimetre page showed 3 to
+    10 of its sizes, and true size issues quoting `[242]` were refused)."""
+    return {
+        value
+        for phrase in found
+        for value in (*_sizes_in(phrase.get("text")), *bracketed_sizes(phrase.get("text")))
+    }
+
+
+#: Dimension values whose centres lie within this of one line make one row (or column).
+_ROW_PT: Final = 4.0
+#: At most this many rows and columns listed in the first message.
+MAX_STRINGS: Final = 40
+
+
+def dimension_strings(found: Sequence[Mapping[str, Any]]) -> str:
+    """The page's dimension values lined up in rows (and turned columns), each read as exact
+    inches and added by code: the reviewer decides which values make one string and which is
+    its overall, and spends no turn adding (the skill test of 2026-10-30)."""
+    from app.review.assistant.finding_checks import to_inches
+
+    values: list[tuple[str, Decimal, list[float]]] = []
+    for phrase in found:
+        text, raw = str(phrase.get("text") or ""), phrase.get("box")
+        box = _box_of(raw) if isinstance(raw, Mapping) else raw
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        bracketed = bracketed_sizes(text)
+        if bracketed:
+            values += [(f"[{_inch_text(v)}]", v, list(box)) for v in bracketed]
+        elif re.search(r"[\"'″]", text):
+            inches = to_inches(text)
+            if inches is not None and inches > 0:
+                values.append((text, inches, list(box)))
+
+    def turned(b: Sequence[float]) -> bool:
+        return (b[3] - b[1]) > 1.5 * (b[2] - b[0])
+
+    def row_centre(b: Sequence[float]) -> float:
+        return (b[1] + b[3]) / 2
+
+    def column_centre(b: Sequence[float]) -> float:
+        return (b[0] + b[2]) / 2
+
+    def left(b: Sequence[float]) -> float:
+        return b[0]
+
+    def top(b: Sequence[float]) -> float:
+        return b[1]
+
+    lines: list[str] = []
+    for name, centre, along, columns in (
+        ("Row", row_centre, left, False),
+        ("Column", column_centre, top, True),
+    ):
+        used: set[int] = set()
+        for i, (_t, _v, b) in enumerate(values):
+            if i in used or turned(b) != columns:
+                continue
+            members = [
+                j
+                for j, (_t2, _v2, b2) in enumerate(values)
+                if j not in used
+                and turned(b2) == columns
+                and abs(centre(b2) - centre(b)) <= _ROW_PT
+            ]
+            if len(members) < 2:
+                continue
+            used.update(members)
+            parts = sorted((values[j] for j in members), key=lambda v: along(v[2]))
+            total = sum((v for _t, v, _b in parts), Decimal(0))
+            first, last = parts[0][2], parts[-1][2]
+            lines.append(
+                f"{name} at {centre(first):.0f} ({first[0]:.0f},{first[1]:.0f} to "
+                f"{last[2]:.0f},{last[3]:.0f}): "
+                + " + ".join(f"{t} ({_inch_text(v)})" for t, v, _b in parts)
+                + f" = {_inch_text(total)}"
+            )
+    return "\n".join(lines[:MAX_STRINGS])
 
 
 def line_listing(segments: Sequence[Any], area: Sequence[float]) -> str:
@@ -873,7 +975,13 @@ class PageReview:
         return None
 
     def begin_reflection(self, lead: str) -> str | None:
-        """The self-check's first message (`None`: nothing to settle, the review ends)."""
+        """The self-check's first message (`None`: nothing to settle, the review ends). Only a
+        red (claim wrong) or a low-confidence draft is re-checked; the rest are kept as reported
+        (the run of 2026-10-30: the self-check took about a quarter of each page's money and
+        dropped 0-1 issues a page, money the review itself lacked)."""
+        for draft in self.drafts:
+            if draft.status == "draft" and not _worth_reflecting(draft):
+                draft.status = "kept_unreflected"
         live = [d for d in self.drafts if d.status == "draft"]
         if not live:
             return None
@@ -904,6 +1012,11 @@ class PageReview:
             "Time is up for the review itself. Report with report_issue every issue you found "
             "and have not reported yet, then finish with a two-line summary."
         )
+
+
+def _worth_reflecting(draft: Draft) -> bool:
+    """A draft the self-check re-checks: a red (it must be right) or one its reviewer doubted."""
+    return draft.claim == "wrong" or draft.confidence == "low"
 
 
 # ---- the reviewer's run (one agent) -------------------------------------------------------------------
@@ -1125,6 +1238,17 @@ class _Run:
                     "text": "Facts from the rest of this drawing set (code read every page's "
                     "text; use them, and read another page only when a fact points to it):\n"
                     + fence(rest, "drawing_set"),
+                }
+            )
+        strings = dimension_strings(review.found)
+        if strings:
+            content.append(
+                {
+                    "type": "text",
+                    "text": "Dimension values code found lined up in rows and columns, read as "
+                    "exact inches and added up (you decide which values make one string and which "
+                    "is its overall; a sum that differs from its overall is a size issue to "
+                    "check):\n" + fence(strings, "dimension_strings"),
                 }
             )
         content.append(
