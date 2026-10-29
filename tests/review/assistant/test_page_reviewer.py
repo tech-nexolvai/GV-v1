@@ -46,6 +46,7 @@ from app.review.assistant.page_reviewer import (
     check_math,
     coverage_targets,
     dimension_strings,
+    finish_facts,
     phrases,
     printed_sizes,
     review_money,
@@ -330,6 +331,28 @@ def test_dimension_strings_are_added_up_by_code_row_by_row() -> None:
     ]
     (row,) = dimension_strings(found).splitlines()
     assert row.startswith("Row at 207") and row.endswith('= 243"')
+
+
+def test_finish_facts_read_the_table_and_find_a_part_with_no_tag() -> None:
+    def at(text: str, x: float, y: float, w: float = 30) -> dict[str, object]:
+        return {"text": text, "box": [x, y, x + w, y + 8]}
+
+    found = [
+        at("WD-02", 950, 50), at("Brand - Oak woodgrain laminate", 990, 50, 150),
+        at("WD-04", 950, 75), at("Brand - Slate Grey", 990, 75, 100),
+        at("ST-03", 950, 100), at("White Quartz by GV", 990, 100, 150),
+        at("COUNTER TOP & SPLASH", 218, 392, 90),  # no tag near: GV writes the tag in
+        at("TOEKICK- WD-04", 415, 592, 64),
+        at("TOP PLAN", 250, 280, 50),  # a view title, not a part
+        at("WD-02", 260, 513), at("ST-03", 790, 384), at("ABC-801.C", 680, 746),  # item number
+    ]  # fmt: skip
+    facts = finish_facts(found)
+    assert "WD-02: Brand - Oak woodgrain laminate [grain]" in facts
+    assert "WD-04: Brand - Slate Grey [plain]" in facts
+    assert "'COUNTER TOP & SPLASH': NONE" in facts
+    assert "'TOEKICK- WD-04': WD-04" in facts
+    assert "TOP PLAN" not in facts and "ABC-801" not in facts
+    assert finish_facts([at('12"', 10, 10)]) == ""
 
 
 def test_the_brief_is_short_names_every_kind_and_never_money() -> None:
