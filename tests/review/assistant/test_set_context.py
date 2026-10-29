@@ -78,3 +78,22 @@ def test_a_large_set_stays_short_and_a_single_page_says_so(monkeypatch: pytest.M
     assert "ST-02: p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12 (+8 more)" in text
     assert "(+19 more tags printed on fewer pages)" in text
     assert _context({1: PAGES[1]}, 1).summary(1).endswith("(this is the only page).")
+
+
+def test_the_set_is_read_in_the_background_and_a_reviewer_waits_only_so_long() -> None:
+    import threading
+
+    gate = threading.Event()
+
+    def slow(page: int) -> list[dict[str, Any]]:
+        gate.wait(5)
+        return PAGES[page]
+
+    context = SetContext("Vendor set.pdf", slow, 3)
+    assert context.ready(0.1) is False  # still reading: the reviewer goes on without it
+    stop = threading.Event()
+    stop.set()
+    assert context.ready(30, stop) is False  # a cancel never leaves it waiting
+    gate.set()
+    assert context.ready(5) is True
+    assert "WD-04: p1, p2" in context.summary(1)

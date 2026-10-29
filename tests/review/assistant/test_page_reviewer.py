@@ -72,6 +72,7 @@ OTHER_PAGE = [
     ("ST-02 Quartz top", 700.0, 420.0),
     ("BIN BY GC/OWNER", 300.0, 500.0),
     ('36"', 260.0, 330.0),
+    ('40"', 260.0, 360.0),
 ]
 
 
@@ -901,3 +902,19 @@ def test_a_size_issue_may_rest_on_a_number_another_page_prints_once_read(
         cost=100_000,
     )
     assert [d.kind for d in review.drafts] == ["A"]
+
+
+def test_a_size_issue_never_rests_only_on_numbers_other_pages_print(tmp_path: Path) -> None:
+    engine, review, *_ = _review(
+        tmp_path,
+        [
+            [_tiles(1, 2, 3, 4, 5, 6), _tool("set_page_text", page=1)],
+            [_tiles(7, 8, 9)],
+            [_size_issue('36" ; 40"')],
+            [_text("ok")],
+        ],
+        cap=900_000,
+        cost=100_000,
+    )
+    assert any("printed on this page" in r for r in _results(engine.script.calls[3].messages))
+    assert review.drafts == []

@@ -115,6 +115,11 @@ MAX_NUDGES: Final = 3
 MAX_REFLECT_NUDGES: Final = 2
 #: Calls one reviewer makes at most (a guard: money and coverage end it first).
 MAX_CALLS: Final = 60
+#: How long a reviewer waits for the rest of the set to be read (`set_context`), seconds; then
+#: it reviews its page on its own.
+SET_CONTEXT_WAIT_S: Final = 120.0
+#: Lines of another page's text one `set_page_text` call returns at most (a box gives the rest).
+MAX_OTHER_LINES: Final = 200
 #: Pictures one page's conversation holds at most (the API's limit on one request).
 MAX_PICTURES: Final = 90
 #: Crops one zoom call takes, and every picture's longest side (pixels): many pictures in one
@@ -425,7 +430,10 @@ PAGE_LINES: Final[Mapping[str, Any]] = {
 }
 REPORT_ISSUE: Final[Mapping[str, Any]] = {
     "name": "report_issue",
-    "description": "Report one issue on this page, as soon as it is confirmed. One call per issue.",
+    "description": (
+        "Report one issue on this page, as soon as it is confirmed. One call per issue. The box is "
+        "on this page (where the problem shows here); name another page in the words."
+    ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
@@ -1094,20 +1102,15 @@ class _Run:
 
     def _context(self) -> SetContext:
         """What every page of this file prints (`set_context`), read once per check."""
-        pdf = self._pdf()
-        pages = self.engine.tools.page_count or 0
-        if not pages:
-            pack = import_module("app.review.assistant.set_pack")
-            cache = import_module("app.review.assistant.page_cache")
-            pages = len(cache.page_sizes(self._folder() / pack.HIRES, pdf))
-        reader = import_module("app.review.assistant.under_markup")
-        return self.reviews.context_for(
-            self.review.file, int(pages), lambda page: phrases(reader.page_words(pdf, page))
-        )
+        return set_context_of(self.engine, self.reviews, self.review.file)
 
     def _set_summary(self) -> str | None:
         try:
-            return self._context().summary(self.review.page)
+            context = self._context()
+            if not context.ready(SET_CONTEXT_WAIT_S, self.engine.cancel):
+                _log.warning("page reviewer p%s: the set was not read in time", self.review.page)
+                return None
+            return context.summary(self.review.page)
         except Exception:  # noqa: BLE001 - the page is reviewed on its own, as before
             _log.warning("page reviewer p%s: the rest of the set was not read", self.review.page)
             return None
@@ -1249,10 +1252,20 @@ class _Run:
             return _listing(review.found, self._box(area) if area else None)
         if name == "set_page_text":
             other = self._other_page(given.get("page"))
-            found = self._context().phrases(other)
+            context = self._context()
+            if not context.ready(SET_CONTEXT_WAIT_S, self.engine.cancel):
+                raise _Refused("the set's other pages are not read yet; review this page")
+            found = context.phrases(other)
             review.other_text[other] = found
             area = given.get("box")
-            return _listing(found, self._box(area, page=other) if area else None)
+            shown = _listing(found, self._box(area, page=other) if area else None)
+            lines = shown.splitlines()
+            if len(lines) > MAX_OTHER_LINES:
+                # A dense sheet whole: the first lines, and the way to the rest (each turn sends
+                # the conversation again).
+                more = len(lines) - MAX_OTHER_LINES
+                shown = "\n".join(lines[:MAX_OTHER_LINES]) + f"\n({more} more: give a box)"
+            return shown
         if name == "page_lines":
             return self._lines(self._box(given.get("box")))
         if name == "check_math":
@@ -1340,14 +1353,21 @@ class _Run:
                 "a size issue quotes the two printed numbers it rests on (in read, or a string's "
                 "parts and printed total), exactly as printed"
             )
-        printed = printed_sizes(self.review.found)
+        here = printed_sizes(self.review.found)
+        printed = set(here)
         for found in self.review.other_text.values():
-            # A size the countertop drawing of the same item prints (read with set_page_text).
+            # A size the countertop drawing of the same item prints (read with set_page_text);
+            # at least one of the two is this page's own.
             printed |= printed_sizes(found)
         if printed and sum(1 for value in set(quoted) if value in printed) < 2:
             raise _Refused(
                 "code does not find two of the numbers you quoted printed on this page's text "
                 "layer: quote them exactly as printed (page_text lists them)"
+            )
+        if here and not any(value in here for value in set(quoted)):
+            raise _Refused(
+                "a size issue on this page quotes at least one number printed on this page "
+                "(page_text lists them)"
             )
 
     def _draft(self, given: Mapping[str, Any], n: int) -> Draft:
@@ -1709,6 +1729,20 @@ def review_money(options: Options | None, pages: int, room: int) -> int:
     return max(0, min(int(options.per_page_micros) * pages, room))
 
 
+def set_context_of(engine: Any, reviews: Reviews, file: str) -> SetContext:
+    """The set's context for `file` (`set_context`), shared by the check's reviewers: its page
+    count from that file itself (another upload may be longer), its pages read from the
+    drawings-only copy (GV's markup never)."""
+    workspace = engine.tools.workspace
+    folder = workspace.set_pack or workspace.root / "set-local"
+    pack = import_module("app.review.assistant.set_pack")
+    cache = import_module("app.review.assistant.page_cache")
+    reader = import_module("app.review.assistant.under_markup")
+    pdf = Path(pack.drawings_only(folder, workspace.uploads, file))
+    pages = len(cache.page_sizes(folder / pack.HIRES, pdf))
+    return reviews.context_for(file, pages, lambda page: phrases(reader.page_words(pdf, page)))
+
+
 def roster_agents(run: Any, pages: Sequence[int], money: int, reviews: Reviews) -> list[Any]:
     """One reviewer per vendor page (`chat_engine._Agent` with its own loop), each with its
     share of `money` as its cap (the rate per page, or less when the set's budget is short)."""
@@ -1723,6 +1757,11 @@ def roster_agents(run: Any, pages: Sequence[int], money: int, reviews: Reviews) 
     if model is None or not main:
         return []
     cap = money // len(pages)
+    try:
+        # The rest of the set read in the background from now, before any reviewer needs it.
+        set_context_of(engine, reviews, str(main)).start()
+    except Exception:  # noqa: BLE001 - each reviewer tries again, or reviews its page alone
+        _log.warning("page reviewer: the set's pages could not be read")
     agents: list[Any] = []
     for page in pages:
         review = PageReview(page=int(page), file=str(main), options=options)

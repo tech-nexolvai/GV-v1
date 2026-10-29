@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -81,6 +82,40 @@ class SetContext:
     unread: list[int] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
     built: bool = False
+    _ready: threading.Event = field(default_factory=threading.Event)
+    _started: bool = False
+    #: Only for `_started`: `lock` is held for the whole read, and a reviewer asking whether the
+    #: read began must never wait for it to end.
+    _start_lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def start(self) -> None:
+        """Read the set in the background (once), so no reviewer waits for all of it: each one
+        waits at most a bound (`ready`) and is reviewed on its own page when the set is slow."""
+        with self._start_lock:
+            if self._started or self.built:
+                return
+            self._started = True
+        threading.Thread(target=self._read_all, name="set-context", daemon=True).start()
+
+    def _read_all(self) -> None:
+        try:
+            self.build()
+        except Exception:  # noqa: BLE001 - the pages are reviewed on their own
+            _log.exception("set context: %s not read", self.file)
+        finally:
+            self._ready.set()
+
+    def ready(self, wait: float, cancel: threading.Event | None = None) -> bool:
+        """Whether the set was read within `wait` seconds (looks at `cancel` every 2 seconds)."""
+        self.start()
+        deadline = time.monotonic() + max(0.0, wait)
+        while not self.built:
+            if self._ready.is_set():  # the read ended and failed: never waited on again
+                return False
+            if (cancel is not None and cancel.is_set()) or time.monotonic() >= deadline:
+                return self.built
+            self._ready.wait(min(2.0, max(0.0, deadline - time.monotonic())))
+        return True
 
     def build(self) -> None:
         """Read every page (once; a page that cannot be read is listed, never fatal)."""
