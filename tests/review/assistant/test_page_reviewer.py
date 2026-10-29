@@ -23,6 +23,7 @@ import json
 import re
 import threading
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -44,7 +45,9 @@ from app.review.assistant.page_reviewer import (
     Reviews,
     check_math,
     coverage_targets,
+    dimension_strings,
     phrases,
+    printed_sizes,
     review_money,
     system_prompt,
     tiles,
@@ -307,11 +310,33 @@ def _settle_all(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # ---- pure code -----------------------------------------------------------------------------------
 
 
+def test_bracketed_inches_of_a_millimetre_drawing_count_as_printed_sizes() -> None:
+    # A text layer splits `5714 [225]` into `5714` and `[225]`, runs two together (`[2][3]`) and
+    # reads a turned one backwards (`]4[`): each bracketed value is a printed size.
+    found = [
+        {"text": t, "box": [0, 0, 10, 5]} for t in ("5714", "[225]", "[2][3]", "201 ]4[", '24"')
+    ]
+    assert printed_sizes(found) == {Decimal(225), Decimal(2), Decimal(3), Decimal(4), Decimal(24)}
+
+
+def test_dimension_strings_are_added_up_by_code_row_by_row() -> None:
+    found = [
+        {"text": "[11]", "box": [127, 204, 136, 210]},
+        {"text": "[2]", "box": [147, 204, 153, 210]},
+        {"text": "[225]", "box": [467, 204, 479, 210]},
+        {"text": "[2][3]", "box": [796, 204, 809, 210]},
+        {"text": "6147", "box": [457, 211, 468, 216]},  # millimetres alone: not read
+        {"text": '24"', "box": [900, 400, 910, 404]},  # alone on its row: not a string
+    ]
+    (row,) = dimension_strings(found).splitlines()
+    assert row.startswith("Row at 207") and row.endswith('= 243"')
+
+
 def test_the_brief_is_short_names_every_kind_and_never_money() -> None:
     brief = system_prompt()
     # Short (the experiments: a short brief beat the long rulebook); 800 since the finish and
-    # scope kinds were spelled out (2026-10-29).
-    assert len(brief.split()) < 800
+    # scope kinds were spelled out (2026-10-29), 850 with the sheet checklist line (2026-10-30).
+    assert len(brief.split()) < 850
     for kind in ("kind A", "kind B", "kind C", "kind D", "kind E", "kind F"):
         assert kind in brief
     assert "budget" not in brief.lower() and "$" not in brief
@@ -490,8 +515,9 @@ def test_the_self_check_needs_a_fresh_tight_zoom_and_can_drop_or_fix(tmp_path: P
         tmp_path,
         [
             [_tiles(1, 2, 3, 4, 5, 6)],
-            [_tiles(7, 8, 9), _support_issue(), _support_issue(item="Base: end panel", kind="C",
-                                                              box={"x0": 605, "y0": 382, "x1": 755, "y1": 438})],
+            [_tiles(7, 8, 9), _support_issue(confidence="low"),
+             _support_issue(item="Base: end panel", kind="C", confidence="low",
+                            box={"x0": 605, "y0": 382, "x1": 755, "y1": 438})],
             [_tight_on_text(), _tight_last()],
             [_text("Done.")],
             early,
@@ -513,8 +539,8 @@ def test_the_self_check_needs_a_fresh_tight_zoom_and_can_drop_or_fix(tmp_path: P
 
 
 def test_a_money_stop_runs_the_coverage_check_then_a_final_report_turn(tmp_path: Path) -> None:
-    """Cap $1: each call costs $0.30 (the worst case is held: $0.01 + 20 micros a token). Its own
-    pass ends at $0.50, the review at $0.72; the final turn and the self-check have the rest."""
+    """Cap $1: each call costs $0.25 (the worst case is held: $0.01 + 20 micros a token). Its own
+    pass ends at $0.50, the review at $0.90; the final turn and the self-check have the rest."""
 
     def final(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         assert "Time is up for the review itself" in _notes(messages)[-1]
@@ -522,13 +548,13 @@ def test_a_money_stop_runs_the_coverage_check_then_a_final_report_turn(tmp_path:
 
     engine, review, ended, reviews = _review(
         tmp_path,
-        [[_tiles(1, 2, 3)], [_tiles(4, 5, 6)], final, [_text("never asked")]],
+        [[_tiles(1, 2, 3)], [_tiles(4, 5, 6)], [_tiles(7, 8, 9)], final, [_text("never asked")]],
         cap=1_000_000,
-        cost=300_000,
+        cost=250_000,
     )
     calls = engine.script.calls
-    assert len(calls) == 3
-    notes = _notes(calls[1].messages)
+    assert len(calls) == 4
+    notes = _notes(calls[2].messages)
     assert any(n.startswith("Coverage check:") for n in notes)  # before the money stop
     assert [d.status for d in review.drafts] == ["kept_unreflected"]
     assert ended[2] == "cost_cap" and ended[1] is True
@@ -744,7 +770,9 @@ def test_a_full_check_with_the_reviewer_on_reviews_each_vendor_page_on_its_own_m
     asked = script.params["page_review"]
     pages = sorted(
         {
-            int(re.search(r"reviewing page (\d+) ", p["messages"][0]["content"][0]["text"]).group(1))  # type: ignore[union-attr]
+            int(
+                re.search(r"reviewing page (\d+) ", p["messages"][0]["content"][0]["text"]).group(1)
+            )  # type: ignore[union-attr]
             for p in asked
         }
     )
@@ -1051,7 +1079,7 @@ def test_a_fix_keeps_the_whole_view_allowance_it_was_accepted_with(tmp_path: Pat
         [
             [_tiles(1, 2, 3, 4, 5, 6)],
             [_tiles(7, 8, 9), _issue(kind="B", wrong="Overhang with no support.", whole_view=True,
-                                     box={"x0": 100, "y0": 100, "x1": 650, "y1": 500})],
+                                     confidence="low", box={"x0": 100, "y0": 100, "x1": 650, "y1": 500})],
             [_tight_on_text(), _tight_last()],
             [_text("Done.")],
             settle,
