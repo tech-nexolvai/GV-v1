@@ -38,6 +38,7 @@ __all__ = [
     "Outlier",
     "SetContext",
     "add_to_answer",
+    "fold_repeats",
     "scope_notes",
     "tags_in",
 ]
@@ -526,6 +527,157 @@ def _already(finding: Mapping[str, Any], live: Sequence[Mapping[str, Any]]) -> b
     return False
 
 
+#: A phrase names the same note on several sheets when it has at least this many words.
+_NOTE_WORDS: Final = 3
+#: Two cards on the same note are the same please-check only when their item names share at least
+#: this share of their words (Jaccard): the dry run of 2026-10-29 folded different issues that
+#: happened to point at the same material-table line (an edge, an MT-02 tag, the real ST-03 vs
+#: ST-02 finding: 0.00-0.43) and the same "by Vendor" note's cards (0.50-1.00).
+SAME_WORDS: Final = 0.5
+_STOP: Final = frozenset(
+    [
+        "the",
+        "a",
+        "an",
+        "of",
+        "and",
+        "to",
+        "in",
+        "on",
+        "is",
+        "it",
+        "its",
+        "this",
+        "page",
+        "no",
+        "not",
+        "by",
+        "for",
+        "with",
+        "as",
+        "at",
+        "or",
+        "be",
+        "are",
+        "any",
+    ]
+)
+
+
+def _item_words(finding: Mapping[str, Any]) -> set[str]:
+    return {
+        w
+        for w in _norm(str(finding.get("item") or "")).split()
+        if w not in _STOP and not w.isdigit()
+    }
+
+
+def _alike(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    x, y = _item_words(a), _item_words(b)
+    return bool(x and y) and len(x & y) / len(x | y) >= SAME_WORDS
+
+
+def _norm(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9 ]", " ", text.lower()).split())
+
+
+def _phrases_under(context: SetContext, page: int, box: Mapping[str, Any]) -> list[str]:
+    """The notes (phrases of `_NOTE_WORDS` words or more) a finding's box sits on, longest first."""
+    try:
+        x0, y0, x1, y1 = (float(box[k]) for k in ("x0", "y0", "x1", "y1"))
+    except (KeyError, TypeError, ValueError):
+        return []
+    out: dict[str, None] = {}
+    for phrase in context.pages.get(page, []):
+        b = phrase.get("box") or ()
+        if len(b) != 4 or not (b[0] < x1 + 4 and b[2] > x0 - 4 and b[1] < y1 + 4 and b[3] > y0 - 4):
+            continue
+        text = _norm(str(phrase.get("text") or ""))
+        if len(text.split()) >= _NOTE_WORDS:
+            out.setdefault(text, None)
+    return sorted(out, key=len, reverse=True)
+
+
+def fold_repeats(engine: Any, context: SetContext) -> int:
+    """The page reviewer's please-checks of one kind that sit on the same printed note on several
+    sheets (a standard note on every millwork sheet: the $2/page run of 2026-10-29 raised
+    "mounting cleats ... provided by Vendor" on 6 sheets, GV's reviewer on none) folded into one
+    card: the lowest page's keeps them under `also_on` (each sheet's spot, so the drawing still
+    marks every sheet), the others leave the list. Never a red: only `likely_only` please-checks
+    made by the page reviewer. Returns how many were folded away."""
+    from app.review.assistant import likely_problems
+
+    book = engine.book
+    notes: dict[str, set[int]] = defaultdict(set)
+    for page, found in context.pages.items():
+        for phrase in found:
+            text = _norm(str(phrase.get("text") or ""))
+            if len(text.split()) >= _NOTE_WORDS:
+                notes[text].add(page)
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    with engine.finding_lock:
+        for finding in book.live():
+            mark = finding.get(likely_problems.FIELD)
+            if (
+                not isinstance(mark, Mapping)
+                or mark.get("by") != "page_reviewer"
+                or mark.get("proof") != "likely_only"
+                or finding.get("status") != "check"
+                or not isinstance(finding.get("page"), int)
+                or not isinstance(finding.get("vendor_box"), Mapping)
+            ):
+                continue
+            for note in _phrases_under(context, int(finding["page"]), finding["vendor_box"]):
+                if len(notes.get(note, ())) >= 2:
+                    groups[(str(mark.get("kind")), note)].append(finding)
+                    break
+        folded = 0
+        taken: set[str] = set()
+        clusters: list[list[dict[str, Any]]] = []
+        for group in groups.values():
+            members = sorted(
+                (m for m in group if str(m["id"]) not in taken),
+                key=lambda m: (int(m["page"]), str(m["id"])),
+            )
+            # The same wording too: cards on one note that say different things stay apart.
+            mine: list[list[dict[str, Any]]] = []
+            for member in members:
+                home = next((c for c in mine if _alike(c[0], member)), None)
+                if home is None:
+                    mine.append([member])
+                else:
+                    home.append(member)
+            clusters += [c for c in mine if len({m["page"] for m in c}) >= 2]
+        for cluster in clusters:
+            keeper, others = cluster[0], [m for m in cluster[1:] if m["page"] != cluster[0]["page"]]
+            if not others:
+                continue
+            also = list(keeper.get("also_on") or [])
+            for other in others:
+                also.append(
+                    {
+                        "finding_id": str(keeper["id"]),
+                        "page": other["page"],
+                        "vendor": other.get("vendor"),
+                        "vendor_box": dict(other["vendor_box"]),
+                    }
+                )
+            kept = {**keeper, "also_on": also}
+            if not book.replace(kept):
+                continue
+            engine._show_finding(kept)
+            taken.add(str(keeper["id"]))
+            for other in others:
+                taken.add(str(other["id"]))
+                if book.absorb(str(other["id"])):
+                    engine._show_dropped(
+                        str(other["id"]),
+                        f"the same note on another sheet: listed under {keeper['id']}",
+                    )
+                    folded += 1
+    return folded
+
+
 def add_to_answer(engine: Any) -> int:
     """The engine's hook (a full check, at its finish, $0): code's cross-sheet please-checks for
     every vendor page the check planned, added unless the answer already raises the tag; the
@@ -551,6 +703,12 @@ def add_to_answer(engine: Any) -> int:
     except Exception:  # noqa: BLE001 - the set's pages not read: nothing to check, as before
         _log.warning("set check: the set's pages could not be read")
         return 0
+    try:
+        folded = fold_repeats(engine, context)
+        if folded:
+            _log.warning("set check: %d repeated please-checks folded into one card each", folded)
+    except Exception:  # noqa: BLE001 - the cards stay as the reviewers left them
+        _log.exception("set check: the repeated please-checks were not folded")
     plan = getattr(engine, "_plan", None)
     pages = sorted({int(p) for job in getattr(plan, "jobs", ()) for p in job.pages}) or list(
         range(1, context.page_count + 1)

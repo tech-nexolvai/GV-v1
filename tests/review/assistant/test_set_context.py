@@ -332,3 +332,76 @@ def test_one_letter_cabinet_codes_are_never_a_finish_family_and_spelling_is_one_
     context = _context(pages, 12)
     assert context.finish_families() == {"ST"}  # D and W: one letter; ST03 and ST-03 one code
     assert context.outliers(3) == []
+
+
+def test_the_same_note_flagged_on_several_sheets_is_one_card_with_the_others_under_it(
+    tmp_path: Path,
+) -> None:
+    """The $2/page run of 2026-10-29: "mounting cleats ... provided by Vendor" on 6 sheets."""
+    import threading
+    from types import SimpleNamespace
+
+    from app.review.assistant import likely_problems, proof, set_context
+    from app.review.assistant.chat_findings import FindingBook
+    from app.review.assistant.sandbox import ChatWorkspace
+    from tests.review.assistant.test_page_reviewer import FILE, _pdf
+
+    note = "NOTE: MOUNTING CLEATS AND ACCESSORIES BY VENDOR"
+    pages = {
+        3: _phrases("BOH-802.C", note, "WD-02"),
+        4: _phrases("BOH-803.C", note, "WD-02"),
+        5: _phrases("REG-802.C", "A NOTE ONLY HERE ONCE", "WD-02"),
+    }
+    context = _context(pages, 5)
+    context.build()
+    workspace = ChatWorkspace.open(tmp_path / "chat")
+    (workspace.uploads / FILE).write_bytes(_pdf())
+    listing = [{"name": FILE, "pages": 2, "kind": "the vendor's shop drawings"}]
+    (workspace.root / "uploads.json").write_text(json.dumps(listing), encoding="utf-8")
+    book = FindingBook(workspace=workspace, listing=listing, page_count=5)
+    shown: list[dict[str, Any]] = []
+    dropped: list[str] = []
+    engine = SimpleNamespace(
+        book=book, finding_lock=threading.RLock(), _show_finding=shown.append,
+        _show_dropped=lambda fid, why: dropped.append(fid),
+    )  # fmt: skip
+
+    def reviewer_item(
+        page: int, y: float, kind: str = "scope", item: str = "Note: who supplies the cleats"
+    ) -> str:
+        book.report(
+            {
+                "page": page, "item": item, "category": "other",
+                "architect": "n/a", "vendor": "see the drawing", "status": "check",
+                "check_reason": "pairing_not_certain", "verified": False, "source": "architect",
+                "why": "The note says by Vendor without naming the party.",
+                "vendor_box": {"page": page, "x0": 12, "y0": y, "x1": 120, "y1": y + 8, "file": FILE},
+            },
+            "page_reviewer",
+        )  # fmt: skip
+        found = book.live()[-1]
+        book.replace(
+            {
+                **found,
+                likely_problems.FIELD: {
+                    "by": "page_reviewer",
+                    "proof": "likely_only",
+                    "kind": kind,
+                    "words": "x",
+                },
+            }
+        )
+        return str(found["id"])
+
+    first = reviewer_item(3, 23)  # on the note (the second phrase: y 22-32)
+    second = reviewer_item(4, 23)
+    other_kind = reviewer_item(4, 23, kind="labels")  # the same note, another kind: its own card
+    alone = reviewer_item(5, 23)  # a note printed on one sheet only
+    different = reviewer_item(4, 23, item="Stone top: edge profile not stated")  # other words
+    assert set_context.fold_repeats(engine, context) == 1
+    live = {f["id"]: f for f in book.live()}
+    assert second not in live and dropped == [second]
+    kept = live[first]
+    assert [(o["page"], o["finding_id"]) for o in kept["also_on"]] == [(4, first)]
+    assert other_kind in live and alone in live and different in live
+    assert proof.proof_group(kept) == "likely_problem"
