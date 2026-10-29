@@ -887,13 +887,11 @@ def finish_facts(found: Sequence[Mapping[str, Any]]) -> str:
             w for w in words if not (len(w) <= 10 and any(family_of(t) for t in tags_in(w)))
         )
         if len(description) >= 8 and tag not in rows:
-            grain = (
-                "grain"
-                if _GRAIN_WORDS.search(description)
-                else "plain"
-                if _PLAIN_WORDS.search(description)
-                else "?"
-            )
+            grain = "?"
+            if _GRAIN_WORDS.search(description):
+                grain = "grain"
+            elif _PLAIN_WORDS.search(description):
+                grain = "plain"
             rows[tag] = (description[:110], grain, box)
     lines = ["Material table rows (tag: description [grain, plain or ?]):"]
     lines += [f"  {tag}: {d} [{g}] at {b[0]:.0f},{b[1]:.0f}" for tag, (d, g, b) in rows.items()]
