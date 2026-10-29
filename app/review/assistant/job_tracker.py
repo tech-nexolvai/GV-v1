@@ -297,8 +297,8 @@ def _sightings(answers: Sequence[TrackerAnswer]) -> list[_Sighting]:
                 )
             )
             for entry in finding.get("also_on") or []:
-                if not isinstance(entry, Mapping):
-                    continue
+                if not isinstance(entry, Mapping) or entry.get("page") == finding.get("page"):
+                    continue  # the same tag at another spot of the same page: one sighting
                 shown = {
                     **finding,
                     "id": entry.get("finding_id") or finding_id,

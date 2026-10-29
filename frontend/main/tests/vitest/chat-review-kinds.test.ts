@@ -61,3 +61,18 @@ describe('the page reviewer item in the drawer', () => {
     expect(referenceSide(helper, 'not_compared').label).toBe('Architect shows');
   });
 });
+
+describe('the same tag at other spots of its own page (2026-10-29)', () => {
+  it('says "more spots on this page"; other pages stay "Also on"', async () => {
+    const { alsoOnWords } = await import('@/lib/chat-findings');
+    const box = { page: 3, x0: 10, y0: 34, x1: 200, y1: 44 };
+    const alsoOn = [
+      { finding_id: 'F9', page: 3, vendor: 'ST-03', vendor_box: box },
+      { finding_id: 'F9', page: 3, vendor: 'ST-03', vendor_box: { ...box, y0: 70, y1: 80 } },
+      { finding_id: 'F9', page: 5, vendor: 'ST-03', vendor_box: { ...box, page: 5 } },
+    ];
+    expect(alsoOnWords({ page: 3, also_on: alsoOn })).toBe('Also on p.5 and 2 more spots on this page');
+    expect(alsoOnWords({ page: 3, also_on: alsoOn.slice(0, 1) })).toBe('1 more spot on this page');
+    expect(alsoOnWords({ page: 3, also_on: [] })).toBe('');
+  });
+});

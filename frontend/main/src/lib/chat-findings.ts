@@ -764,8 +764,13 @@ export function isShortAnswer(message: Pick<ViewMessage, 'status' | 'stopped' | 
   return lines.length <= SHORT_LINES && text.length <= SHORT_CHARACTERS;
 }
 
-/** "Also on p.9, p.12": the other pages of the same item, folded into this one (#1554). */
-export function alsoOnWords(finding: Pick<ChatFinding, 'also_on'>): string {
-  const pages = [...new Set((finding.also_on ?? []).map((other) => other.page).filter((page): page is number => typeof page === 'number'))];
-  return pages.length ? `Also on ${pages.map((page) => `p.${page}`).join(', ')}` : '';
+/** "Also on p.9, p.12": the other pages of the same item, folded into this one (#1554); the same tag at other spots of its own page (2026-10-29) is "and 2 more spots on this page". */
+export function alsoOnWords(finding: Pick<ChatFinding, 'also_on'> & { page?: number | null }): string {
+  const others = finding.also_on ?? [];
+  const pages = [...new Set(others.map((other) => other.page).filter((page): page is number => typeof page === 'number' && page !== finding.page))];
+  const same = others.filter((other) => other.page === finding.page).length;
+  const parts = [];
+  if (pages.length) parts.push(`Also on ${pages.map((page) => `p.${page}`).join(', ')}`);
+  if (same) parts.push(`${pages.length ? 'and ' : ''}${same} more ${same === 1 ? 'spot' : 'spots'} on this page`);
+  return parts.join(' ');
 }

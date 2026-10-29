@@ -349,11 +349,11 @@ export function FindingCard({ finding, pictureUrl, onOpen }: {
           )}
           {words.tell && <div><dt className="text-xs font-medium text-muted-foreground">What to tell the vendor</dt><dd data-slot="chat-finding-tell" className="font-medium break-words">{words.tell}</dd></div>}
           {finding.settled?.how && <div><dt className="text-xs font-medium text-muted-foreground">Settled by GV Review</dt><dd data-slot="chat-finding-card-settled" className="break-words">{finding.settled.how}</dd></div>}
-          {(finding.also_on?.length ?? 0) > 0 && (
+          {(finding.also_on ?? []).some((other) => other.page !== finding.page) && (
             <div>
               <dt className="text-xs font-medium text-muted-foreground">Same item elsewhere</dt>
               <dd data-slot="chat-finding-card-also" className="break-words">
-                {(finding.also_on ?? []).map((other) => (
+                {(finding.also_on ?? []).filter((other) => other.page !== finding.page).map((other) => (
                   <span key={other.finding_id} className="block tabular-nums">
                     p.{other.page}{other.round ? ` (round ${other.round})` : ''}: vendor {other.vendor ?? '–'}
                   </span>

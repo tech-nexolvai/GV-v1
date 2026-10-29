@@ -60,9 +60,14 @@ MAX_TAGS: Final = 60
 MAX_NOTES: Final = 30
 _MAX_PAGES_LISTED: Final = 12
 #: A tag family (its letters: ST, WD, LA) is a finish family of the set when one of its codes is
-#: printed on at least this many pages: the set uses it throughout. Item numbers (BOH-801.C: its
-#: own sheet and its countertop drawing) never reach it.
+#: printed on at least this many pages AND on at least `FAMILY_PAGE_SHARE` of the pages that print
+#: any tag, with at most `MAX_FAMILY_CODES` codes in all: the set uses it throughout. Item numbers
+#: (BOH-801.C: its own sheet and its countertop drawing), sheet numbers (MW-101 to MW-150: many
+#: codes, one page each) and cross-references never reach it (the review of 2026-10-29: a looser
+#: rule would have made every sheet's own number an "outlier").
 MIN_FAMILY_PAGES: Final = 3
+FAMILY_PAGE_SHARE: Final = 0.2
+MAX_FAMILY_CODES: Final = 6
 #: Who made the cross-sheet findings (the chat finding's `created_by`; a please-check maker).
 CREATED_BY: Final = "set_check"
 #: A tag's family, number, letter and suffix (`MT-001.C`: MT, 001, "", .C; `GRT-801T`: GRT, 801, T).
@@ -225,14 +230,18 @@ class SetContext:
         return dict(out)
 
     def finish_families(self) -> set[str]:
-        """The families the set prints throughout (`MIN_FAMILY_PAGES`), other trades' left out."""
+        """The families the set prints throughout (`MIN_FAMILY_PAGES`, `FAMILY_PAGE_SHARE`,
+        `MAX_FAMILY_CODES`), other trades' left out."""
         from app.review.assistant.decision_resolver import OTHER_TRADE_FAMILIES
 
+        tagged = len({page for pages in self.tags.values() for page in pages})
+        least = max(MIN_FAMILY_PAGES, int(FAMILY_PAGE_SHARE * tagged + 0.999))
         return {
             family
             for family, codes in self.families().items()
             if family not in OTHER_TRADE_FAMILIES
-            and max(len(pages) for pages in codes.values()) >= MIN_FAMILY_PAGES
+            and len(codes) <= MAX_FAMILY_CODES
+            and max(len(pages) for pages in codes.values()) >= least
         }
 
     def tags_on(self, page: int) -> list[str]:
@@ -298,7 +307,9 @@ class SetContext:
             for family in sorted(finish):
                 a = sorted(t for t in here if family_of(t) == family)
                 b = sorted(t for t in there if family_of(t) == family)
-                if a and b and a != b:
+                # Only against a drawing that tags the family once (a sheet of several tops tags
+                # several, and differs from every cabinet sheet), and only this page's odd codes.
+                if a and len(b) == 1 and any(t not in b for t in a):
                     out.append(FinishDifference(family, a, b, other_page, other_tag))
         return out
 
@@ -476,8 +487,7 @@ def check_page(context: SetContext, page: int) -> list[dict[str, Any]]:
         if finding is not None:
             out.append(finding)
     for diff in context.finish_differences(page):
-        odd = [t for t in diff.here if t not in diff.there]
-        for tag in odd or diff.here[:1]:
+        for tag in [t for t in diff.here if t not in diff.there]:
             finding = _please_check(
                 context,
                 page,
@@ -524,11 +534,17 @@ def add_to_answer(engine: Any) -> int:
     if not main:
         return 0
     reviews = getattr(engine, "_page_reviews", None)
-    context = set_context_of(engine, reviews, str(main)) if reviews is not None else None
-    if context is None:
+    if reviews is None:
+        return 0  # the page reviewer is off: no set was read
+    try:
+        context = set_context_of(engine, reviews, str(main))
+        if not context.ready(0):
+            context.build()
+        if not context.built:
+            return 0
+    except Exception:  # noqa: BLE001 - the set's pages not read: nothing to check, as before
+        _log.warning("set check: the set's pages could not be read")
         return 0
-    if not context.ready(0):
-        context.build()
     plan = getattr(engine, "_plan", None)
     pages = sorted({int(p) for job in getattr(plan, "jobs", ()) for p in job.pages}) or list(
         range(1, context.page_count + 1)
@@ -545,6 +561,7 @@ def add_to_answer(engine: Any) -> int:
                 stored = book.add_code_finding(finding, created_by=CREATED_BY)
                 if stored is None:
                     continue
+                also = [{**entry, "finding_id": stored["id"]} for entry in also]
                 marked = {**stored, likely_problems.FIELD: mark, "also_on": also}
                 if book.replace(marked):
                     engine._show_finding(marked)

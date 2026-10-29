@@ -251,3 +251,75 @@ def test_the_finish_hook_adds_through_the_real_book_unless_the_reviewer_raised_t
         assert likely_problems.payload(finding)["by"] == "set_check"
         assert likely_problems.payload(finding)["kind"] == "finish"
     assert len(shown) == 2
+
+
+def test_sheet_numbers_and_item_families_never_count_as_finish_families() -> None:
+    """The review of 2026-10-29: a looser rule made every sheet's own number an outlier."""
+    pages = {
+        n: _phrases(f"MW-{100 + n}", "SEE 3/MW-501" if n in (1, 2, 3) else "", "ST-03")
+        for n in range(1, 13)
+    }
+    pages[1].append({"text": "LA-007 toe kick", "box": [10.0, 90.0, 200.0, 100.0]})
+    pages[7].append({"text": "BOH-801.C", "box": [10.0, 90.0, 200.0, 100.0]})
+    pages[8].append({"text": "BOH-801.C", "box": [10.0, 90.0, 200.0, 100.0]})
+    pages[9].append({"text": "BOH-801.CT", "box": [10.0, 90.0, 200.0, 100.0]})
+    context = _context(pages, 12)
+    assert context.finish_families() == {"ST"}  # MW: 13 codes; LA: one page; BOH: item numbers
+    assert context.outliers(5) == [] and context.outliers(1) == []
+    # A sheet number pairs with nothing; the item number pairs with its countertop drawing.
+    assert context.pair_pages(5) == [] and context.pair_pages(7) == [(9, "BOH-801.CT", "BOH-801.C")]
+
+
+def test_a_countertop_sheet_of_several_tops_gives_no_difference() -> None:
+    pages = _set_pages()
+    pages[13] = _phrases("BOH-802.CT", "ST-02", "ST-03", "GVQZ-19", "GVQZ-16")  # two tops drawn
+    context = _context(pages, 14)
+    assert context.finish_differences(3) == []
+    # One code on the other drawing, this page's odd code named: still found.
+    pages[13] = _phrases("BOH-802.CT", "ST-02", "GVQZ-19")
+    diffs = _context(pages, 14).finish_differences(3)
+    assert [(d.family, d.here, d.there) for d in diffs] == [
+        ("GVQZ", ["GVQZ-16"], ["GVQZ-19"]),
+        ("ST", ["ST-03"], ["ST-02"]),
+    ]
+
+
+def test_every_same_page_spot_names_its_finding_for_the_api(tmp_path: Path) -> None:
+    import threading
+    from types import SimpleNamespace
+
+    import app.review.assistant.page_reviewer as reviewer_module
+    from app.review.assistant import set_context
+    from app.review.assistant.chat_contract import ChatFindingAlsoOnOut
+    from app.review.assistant.chat_findings import FindingBook
+    from app.review.assistant.page_reviewer import Reviews
+    from app.review.assistant.sandbox import ChatWorkspace
+    from tests.review.assistant.test_page_reviewer import FILE, _pdf
+
+    workspace = ChatWorkspace.open(tmp_path / "chat")
+    (workspace.uploads / FILE).write_bytes(_pdf())
+    listing = [{"name": FILE, "pages": 2, "kind": "the vendor's shop drawings"}]
+    (workspace.root / "uploads.json").write_text(json.dumps(listing), encoding="utf-8")
+    book = FindingBook(workspace=workspace, listing=listing, page_count=14)
+    reviews = Reviews()
+    reviews.context[FILE] = _context(_set_pages(), 14)
+    engine = SimpleNamespace(
+        settings=SimpleNamespace(mode="full_check"), book=book,
+        tools=SimpleNamespace(workspace=workspace), finding_lock=threading.RLock(),
+        _show_finding=lambda f: None, _page_reviews=reviews,
+        _plan=SimpleNamespace(jobs=[SimpleNamespace(pages=(3,))]),
+    )  # fmt: skip
+    original = reviewer_module.set_context_of
+    reviewer_module.set_context_of = lambda eng, revs, file: revs.context[file]  # type: ignore[assignment]
+    try:
+        assert set_context.add_to_answer(engine) == 2
+        stone = next(f for f in book.live() if f["vendor"] == "ST-03")
+        assert stone["also_on"] and all(
+            ChatFindingAlsoOnOut.model_validate(entry).finding_id == stone["id"]
+            for entry in stone["also_on"]
+        )
+        # The set unreadable at the finish: nothing added, the check goes on.
+        reviewer_module.set_context_of = lambda eng, revs, file: (_ for _ in ()).throw(FileNotFoundError("gone"))  # type: ignore[assignment]
+        assert set_context.add_to_answer(engine) == 0
+    finally:
+        reviewer_module.set_context_of = original  # type: ignore[assignment]
