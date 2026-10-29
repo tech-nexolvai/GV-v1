@@ -54,6 +54,7 @@ def test_the_summary_lists_each_tag_and_note_with_its_pages_once_read() -> None:
     assert "has 3 pages; you are reviewing p2" in text
     assert "WD-04: p1, p2" in text and "ST-02: p1, p3" in text and "ST-03: p2" in text
     assert '"BIN BY GC/OWNER": p1' in text
+    assert "Printed only on this page (p2): MT-001.C, ST-03" in text
     assert '"COUNTER TOP & SPLASH PROVIDED BY GV": p3' in text
     context.summary(1)
     assert context.reads == [1, 2, 3]  # type: ignore[attr-defined] - every page read once

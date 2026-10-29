@@ -128,6 +128,11 @@ class SetContext:
         if self.page_count <= 1:
             return lines[0] + " (this is the only page)."
         ranked = sorted(self.tags.items(), key=lambda item: (-len(item[1]), item[0]))
+        alone = sorted(tag for tag, pages in self.tags.items() if pages == [page])
+        if alone:
+            # A tag no other sheet prints: where a drafter used the wrong code (Kingsland p518 of
+            # 2026-10-29: PLAM-007 and MT-002 here, LA-007 and MT-001.C on every other sheet).
+            lines.append(f"Printed only on this page (p{page}): {', '.join(alone[:MAX_TAGS])}")
         if ranked:
             lines.append("Tags and item numbers, with the pages that print them:")
             for tag, pages in ranked[:MAX_TAGS]:
