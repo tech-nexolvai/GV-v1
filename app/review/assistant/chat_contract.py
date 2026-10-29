@@ -881,13 +881,13 @@ class ChatFindingLikelyOut(BaseModel):
         "layout",
         "construction",
         "completeness",
-        "material",
+        "finish",
         "scope",
         "labels",
     ] = Field(
         description="What differs: a missing or extra piece, a count, a size, the layout; or, "
         "from the page reviewer, construction (supports, fillers, panels), drawing completeness, "
-        "a material, finish or grain callout, scope (by GV, GC or owner), or item numbers and the "
+        "finish (a material, finish or grain callout), scope (by GV, GC or owner), or item numbers and the "
         "title block."
     )
     words: str = Field(description='The letter\'s line: "Please check and confirm: ...".')
