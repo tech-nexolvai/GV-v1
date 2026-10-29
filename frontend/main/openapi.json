@@ -2115,22 +2115,31 @@
         "type": "object"
       },
       "ChatFindingLikelyOut": {
-        "description": "What the whole-drawing look claimed (`likely_problems.payload`): never red by itself; a\nLikely problem until code proves it.",
+        "description": "What the whole-drawing look or the page reviewer claimed (`likely_problems.payload`): never\nred by itself; a Likely problem until code proves it (the page reviewer's construction,\ncompleteness, material, scope and label items never are).",
         "properties": {
           "by": {
-            "const": "whole_drawing_look",
             "default": "whole_drawing_look",
+            "description": "Who found it: the whole-drawing look (or a code step that lays the same mark), or the page reviewer.",
+            "enum": [
+              "whole_drawing_look",
+              "page_reviewer"
+            ],
             "title": "By",
             "type": "string"
           },
           "kind": {
-            "description": "What differs: a missing or extra piece, a count, a size, the layout.",
+            "description": "What differs: a missing or extra piece, a count, a size, the layout; or, from the page reviewer, construction (supports, fillers, panels), drawing completeness, a material, finish or grain callout, scope (by GV, GC or owner), or item numbers and the title block.",
             "enum": [
               "missing_piece",
               "extra_piece",
               "count",
               "size",
-              "layout"
+              "layout",
+              "construction",
+              "completeness",
+              "material",
+              "scope",
+              "labels"
             ],
             "title": "Kind",
             "type": "string"

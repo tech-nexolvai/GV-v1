@@ -17,15 +17,23 @@ A claim that names a label code cannot find where the AI says, or that takes GV'
 prototype or the vendor's own earlier round as the architect, is dropped by `whole_look` (the run's
 log says why) and never reaches the reviewer.
 
+**The page reviewer's please-checks** (`page_reviewer`, Anant 2026-10-29): one reviewer per vendor
+page finds what GV's reviewer flags beyond sizes: construction (supports, fillers, panels), drawing
+completeness (a missing view, cut-out size, EQ marks, stray dimensions), material, finish and grain
+callouts, scope (by GV, GC or owner) and item numbers and the title block. Each is a Likely problem
+with its kind in words (`REVIEW_KINDS`, `KIND_WORDS`), `by: "page_reviewer"`, and never red: the
+AI cannot prove a missing support or a wrong title, and code has no rule that could.
+
 **The data the screen reads** (`proof.proof_of`): `proof.group == "likely_problem"`,
 `proof.label == "Likely problem"`, `proof.reason` (the AI's reason in one line), and
 `proof.likely_problem`:
 
-    {"kind": "missing_piece" | "extra_piece" | "count" | "size" | "layout",
+    {"kind": "missing_piece" | "extra_piece" | "count" | "size" | "layout"
+             | "construction" | "completeness" | "material" | "scope" | "labels",
      "words": "Please check and confirm: <what differs>",
      "reason": "<the AI's reason, one line>",
      "sure": "sure" | "likely",
-     "by": "whole_drawing_look"}
+     "by": "whole_drawing_look" | "page_reviewer"}
 
 The spots are the finding's own `vendor_box` / `arch_box` (with their pictures), as for any item.
 
@@ -38,13 +46,16 @@ from collections.abc import Mapping
 from typing import Any, Final
 
 __all__ = [
+    "BY",
     "COUNT_WORDS",
     "FIELD",
     "GROUP",
     "GROUP_WORDS",
     "HEADING",
     "KINDS",
+    "KIND_WORDS",
     "LETTER_LEAD",
+    "REVIEW_KINDS",
     "SHORT_WORDS",
     "UNSIZED_ENDS",
     "likely",
@@ -71,6 +82,20 @@ HEADING: Final = "Please check and confirm"
 LETTER_LEAD: Final = "Please check and confirm"
 #: What a claim can be about.
 KINDS: Final = ("missing_piece", "extra_piece", "count", "size", "layout")
+#: What the page reviewer's please-checks can be about besides a size (`page_reviewer`): GV's
+#: reviewer's kinds B to F.
+REVIEW_KINDS: Final = ("construction", "completeness", "material", "scope", "labels")
+#: Every kind's words, as the screen's group heading and the card say them.
+KIND_WORDS: Final[Mapping[str, str]] = {
+    "construction": "Construction: a support, filler or panel to check",
+    "completeness": "Drawing completeness: a view, size or mark to add or remove",
+    "material": "Material, finish or grain callout to check",
+    "scope": "Scope: who supplies it (GV, the GC or the owner) to make clear",
+    "labels": "Item number, label or title block to check",
+}
+#: Who made a likely problem, as the screen reads it: the whole-drawing look (and the other code
+#: steps that lay the same mark), or the page reviewer.
+BY: Final = ("whole_drawing_look", "page_reviewer")
 #: How a claim joined the check: code proved the pair it names (the normal path), it joined an item
 #: a helper had already listed, or it is a likely problem only (never clouded).
 PROOFS: Final = ("labels", "joined", "likely_only")
@@ -146,10 +171,11 @@ def payload(finding: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
     kind = str(mark.get("kind") or "size")
     sure = str(mark.get("sure") or "likely")
+    by = str(mark.get("by") or "")
     return {
-        "kind": kind if kind in KINDS else "size",
+        "kind": kind if kind in (*KINDS, *REVIEW_KINDS) else "size",
         "words": please_check(finding),
         "reason": " ".join(str(mark.get("why") or "").split()) or None,
         "sure": sure if sure in ("sure", "likely") else "likely",
-        "by": "whole_drawing_look",
+        "by": by if by in BY else "whole_drawing_look",
     }
