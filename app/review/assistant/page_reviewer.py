@@ -17,7 +17,8 @@ tokens. Its tools: `view_page`, `zoom` (GV's own zoom: the drawings-only copy, G
 
 **The look, enforced by code:**
 
-1. the text layer first, then the whole page, the set's facts and the dimension rows added up by
+1. the text layer first, then the whole page, the set's facts, the finish facts (`finish_facts`) and
+   the dimension rows added up by
    code (`dimension_strings`), all in its first message (code, $0);
 2. the nine tiles of a 3x3 grid: `report_issue` is refused until every tile was zoomed;
 3. tight zooms: a coverage check counts the page's printed phrases (dimension values, callouts,
@@ -70,7 +71,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from app.review.assistant import likely_problems
-from app.review.assistant.set_context import SetContext
+from app.review.assistant.set_context import SetContext, family_of, tags_in
 from app.review.assistant.untrusted import fence
 
 if TYPE_CHECKING:
@@ -748,6 +749,15 @@ _ROW_PT: Final = 4.0
 MAX_STRINGS: Final = 40
 
 
+def _phrase_box(phrase: Mapping[str, Any]) -> list[float] | None:
+    """A phrase's box as `[x0, y0, x1, y1]`, from either a list or an `{x0, ...}` mapping."""
+    raw = phrase.get("box")
+    box = _box_of(raw) if isinstance(raw, Mapping) else raw
+    if not isinstance(box, (list, tuple)) or len(box) != 4:
+        return None
+    return [float(v) for v in box]
+
+
 def dimension_strings(found: Sequence[Mapping[str, Any]]) -> str:
     """The page's dimension values lined up in rows (and turned columns), each read as exact
     inches and added by code: the reviewer decides which values make one string and which is
@@ -756,9 +766,8 @@ def dimension_strings(found: Sequence[Mapping[str, Any]]) -> str:
 
     values: list[tuple[str, Decimal, list[float]]] = []
     for phrase in found:
-        text, raw = str(phrase.get("text") or ""), phrase.get("box")
-        box = _box_of(raw) if isinstance(raw, Mapping) else raw
-        if not isinstance(box, (list, tuple)) or len(box) != 4:
+        text, box = str(phrase.get("text") or ""), _phrase_box(phrase)
+        if box is None:
             continue
         bracketed = bracketed_sizes(text)
         if bracketed:
@@ -812,6 +821,106 @@ def dimension_strings(found: Sequence[Mapping[str, Any]]) -> str:
                 + f" = {_inch_text(total)}"
             )
     return "\n".join(lines[:MAX_STRINGS])
+
+
+#: Words that name a part a finish belongs to (a view title is not one).
+_FINISH_PART: Final = re.compile(
+    r"\b(COUNTER\s*TOP|STONE\s*TOP|TOP|SPLASH|BACKSPLASH|TOE\s*KICK|END\s*PANEL|FINISHED\s*END|"
+    r"FILLER|SCRIBE|VALANCE|SHELF|SHELVES|DOOR|DRAWER|PANEL|FASCIA|APRON|BASE)\b",
+    re.IGNORECASE,
+)
+_FINISH_VIEW_TITLE: Final = re.compile(r"\b(PLAN|VIEW|ELEVATION|SECTION|DETAIL)\b", re.IGNORECASE)
+#: Description words of a finish that shows a grain (grain arrows belong), or of a plain one.
+_GRAIN_WORDS: Final = re.compile(
+    r"\b(walnut|oak|maple|cherry|elm|ash|teak|wood\s*grain|woodgrain|veneer|grain)\b", re.IGNORECASE
+)
+_PLAIN_WORDS: Final = re.compile(
+    r"gr[ae]y|white|black|solid|paint|quartz|stone|metal|steel|bronze|ral\s*\d|matte", re.IGNORECASE
+)
+_FINISH_ITEM_NUMBER: Final = re.compile(r"^[A-Z]{2,5}-\d{3}")
+#: A part callout's finish tag is the nearest one within this (points, edge to edge).
+FINISH_NEAR_PT: Final = 60.0
+#: Lines of finish facts in the first message, at most.
+MAX_FINISH_LINES: Final = 60
+
+
+def _gap(a: Sequence[float], b: Sequence[float]) -> float:
+    return max(0.0, max(a[0], b[0]) - min(a[2], b[2])) + max(0.0, max(a[1], b[1]) - min(a[3], b[3]))
+
+
+def finish_facts(found: Sequence[Mapping[str, Any]]) -> str:
+    """What code reads about finishes on a page: the material table (tag, description, grain or
+    plain), the tags printed against the tags listed, and each part callout (top, splash, toe
+    kick, end panel...) with its nearest finish tag or NONE. GV's reviewer marks a part with no tag
+    (it writes the tag in), a tag the table lacks, and grain arrows on a plain finish or missing on
+    a grain one (the skill test of 2026-10-30; grain arrows are drawn, so the reviewer looks)."""
+    tagged: list[tuple[str, Mapping[str, Any], list[float]]] = []
+    boxed: list[tuple[Mapping[str, Any], list[float]]] = []
+    for phrase in found:
+        box = _phrase_box(phrase)
+        if box is None:
+            continue
+        boxed.append((phrase, box))
+        for tag in tags_in(str(phrase.get("text") or "")):
+            # A finish code: letters, a hyphen, digits (WD-02, ST-03, MT-001.C); not W136, YDH426
+            # or an item number (ABC-801.C).
+            if "-" in tag and len(family_of(tag) or "") >= 2 and not _FINISH_ITEM_NUMBER.match(tag):
+                tagged.append((tag, phrase, box))
+    if not tagged:
+        return ""
+    rows: dict[str, tuple[str, str, list[float]]] = {}
+    for tag, phrase, box in tagged:
+        middle = (box[1] + box[3]) / 2
+        words = [
+            str(other.get("text") or "")
+            for other, b in boxed
+            if other is not phrase
+            and abs((b[1] + b[3]) / 2 - middle) <= 5
+            and 0 <= b[0] - box[2] <= 320
+        ]
+        words += [
+            str(other.get("text") or "")
+            for other, b in boxed
+            if other is not phrase and 0 < b[1] - box[3] <= 14 and abs(b[0] - box[0]) <= 40
+        ][:2]
+        description = " ".join(
+            w for w in words if not (len(w) <= 10 and any(family_of(t) for t in tags_in(w)))
+        )
+        if len(description) >= 8 and tag not in rows:
+            grain = (
+                "grain"
+                if _GRAIN_WORDS.search(description)
+                else "plain"
+                if _PLAIN_WORDS.search(description)
+                else "?"
+            )
+            rows[tag] = (description[:110], grain, box)
+    lines = ["Material table rows (tag: description [grain, plain or ?]):"]
+    lines += [f"  {tag}: {d} [{g}] at {b[0]:.0f},{b[1]:.0f}" for tag, (d, g, b) in rows.items()]
+    used: dict[str, list[list[float]]] = {}
+    for tag, _phrase, box in tagged:
+        used.setdefault(tag, []).append(box)
+    lines.append("Tags printed (count, first boxes):")
+    for tag, boxes in sorted(used.items()):
+        where = "; ".join(f"{b[0]:.0f},{b[1]:.0f},{b[2]:.0f},{b[3]:.0f}" for b in boxes[:3])
+        lacking = "" if tag in rows else "  <- not in the material table"
+        lines.append(f"  {tag} x{len(boxes)}: {where}{lacking}")
+    for tag in sorted(t for t in rows if len(used.get(t, [])) <= 1):
+        lines.append(f"  {tag} is in the table but printed nowhere else on the page")
+    lines.append("Part callouts with their nearest finish tag (NONE: no tag within 60 points):")
+    for phrase, box in boxed:
+        text = str(phrase.get("text") or "")
+        if not _FINISH_PART.search(text) or _FINISH_VIEW_TITLE.search(text):
+            continue
+        near = [t for t, p, _b in tagged if p is phrase]
+        if not near:
+            close = [(_gap(box, b), t) for t, _p, b in tagged if _gap(box, b) <= FINISH_NEAR_PT]
+            near = [min(close)[1]] if close else []
+        lines.append(
+            f"  {box[0]:.0f},{box[1]:.0f},{box[2]:.0f},{box[3]:.0f} {text[:60]!r}: "
+            + (", ".join(near) or "NONE")
+        )
+    return "\n".join(lines[:MAX_FINISH_LINES])
 
 
 def line_listing(segments: Sequence[Any], area: Sequence[float]) -> str:
@@ -1238,6 +1347,16 @@ class _Run:
                     "text": "Facts from the rest of this drawing set (code read every page's "
                     "text; use them, and read another page only when a fact points to it):\n"
                     + fence(rest, "drawing_set"),
+                }
+            )
+        finishes = finish_facts(review.found)
+        if finishes:
+            content.append(
+                {
+                    "type": "text",
+                    "text": "Finish facts code read from the text layer (check them against the "
+                    "picture; grain arrows are drawn, so look for them):\n"
+                    + fence(finishes, "finish_facts"),
                 }
             )
         strings = dimension_strings(review.found)
