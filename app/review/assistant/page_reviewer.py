@@ -133,10 +133,9 @@ _PHRASE_WORDS: Final = 10
 PASS_SHARE: Final = 0.50
 #: The review (own pass and coverage) ends at this share; the rest is the final report turn and
 #: the self-check (the experiments: a self-check with money kept for it dropped wrong drafts).
-#: 0.72 at first: the paid La Quinta run of 2026-10-29 cut 4 of 9 pages' coverage check at it
-#: (60-79% of the page seen close up, goal 90%) and their self-checks then spent about 5% of the
-#: cap, leaving about $0.45 a page unused.
-REVIEW_SHARE: Final = 0.85
+#: Measured on La Quinta 448-456 (2026-10-29, reviewer cards matching GV's reviewer): 0.72 found
+#: 28 of 106; 0.85 looked at more of each page (90%+ on 9 of 9) but found 21 and 23 in two runs.
+REVIEW_SHARE: Final = 0.72
 #: The output allowance of one call, and the least one is worth making with (tokens).
 MAX_TOKENS: Final = 64_000
 MIN_TOKENS: Final = 12_000
