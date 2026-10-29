@@ -1024,3 +1024,40 @@ def test_a_completeness_issue_naming_a_finish_tag_or_a_supplier_is_filed_by_code
         if f["created_by"] == "page_reviewer"
     ]
     assert kinds == ["finish", "scope", "completeness"]
+
+
+def test_a_sheet_reference_or_a_size_gap_is_never_refiled(tmp_path: Path) -> None:
+    _engine, review = _after_tiles(
+        tmp_path,
+        _issue(wrong="Detail 3/MW-501 is referenced but no such detail is on the set."),
+        _issue(wrong="The refrigerator (N.I.C.) opening has no width dimension.",
+               box={"x0": 500, "y0": 300, "x1": 620, "y1": 340}),
+        _issue(wrong="The sink is drawn; nothing says who supplies it, by GV or by others.",
+               box={"x0": 700, "y0": 300, "x1": 820, "y1": 340}),
+    )  # fmt: skip
+    assert [d.kind for d in review.drafts] == ["C", "C", "E"]
+
+
+def test_a_fix_keeps_the_whole_view_allowance_it_was_accepted_with(tmp_path: Path) -> None:
+    def settle(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            _tool("zoom", crops=[{"box": {"x0": 110, "y0": 110, "x1": 300, "y1": 250}}]),
+            _tool("resolve_finding", n=1, decision="fix", why="better words",
+                  wrong="The top overhangs 14 in at the seating side; no support is drawn."),
+        ]  # fmt: skip
+
+    engine, review, *_ = _review(
+        tmp_path,
+        [
+            [_tiles(1, 2, 3, 4, 5, 6)],
+            [_tiles(7, 8, 9), _issue(kind="B", wrong="Overhang with no support.", whole_view=True,
+                                     box={"x0": 100, "y0": 100, "x1": 650, "y1": 500})],
+            [_tight_on_text(), _tight_last()],
+            [_text("Done.")],
+            settle,
+            [_text("Settled.")],
+        ],
+    )  # fmt: skip
+    (draft,) = review.drafts
+    assert draft.status == "fixed" and draft.whole_view and "no support is drawn" in draft.wrong
+    assert not any("points across" in r for r in _results(engine.script.calls[-1].messages))

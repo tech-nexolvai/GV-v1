@@ -323,3 +323,12 @@ def test_every_same_page_spot_names_its_finding_for_the_api(tmp_path: Path) -> N
         assert set_context.add_to_answer(engine) == 0
     finally:
         reviewer_module.set_context_of = original  # type: ignore[assignment]
+
+
+def test_one_letter_cabinet_codes_are_never_a_finish_family_and_spelling_is_one_code() -> None:
+    pages = {
+        n: _phrases("D22 base", "W70 wall", "ST-03" if n % 2 else "ST03") for n in range(1, 13)
+    }
+    context = _context(pages, 12)
+    assert context.finish_families() == {"ST"}  # D and W: one letter; ST03 and ST-03 one code
+    assert context.outliers(3) == []

@@ -134,6 +134,16 @@ MAX_CROPS: Final = 6
 PICTURE_EDGE_PX: Final = 1600
 #: Issues one page may hold at most (a flood is never a review).
 MAX_ISSUES: Final = 25
+#: Finish families a kind-C issue's words may name to be filed as finish (`_kind_by_words`): the
+#: millwork ones (`decision_resolver._MILLWORK`) without MW and L, which also spell sheet and
+#: detail references (MW-501, L-2).
+FINISH_WORD_FAMILIES: Final = frozenset({"ST", "LA", "WD", "PL", "PLAM", "SS", "QZ", "CT", "WV"})
+#: Words that make an issue a size or completeness one whatever else it mentions.
+_SIZE_WORDS: Final = re.compile(
+    r"\b(?:dimension|dimensioned|width|depth|height|length|size|sized|cut-?out|overall|string|"
+    r"spacing|clearance|offset)\b|\d\s?(?:\"|''|in\b|mm\b)",
+    re.IGNORECASE,
+)
 #: An issue's box points at its evidence: the callout, dimension or tag itself, at most this long
 #: on a side (GV's reviewer's marks are mostly under 60 points; the breaking map of 2026-10-29:
 #: half the reviewer's boxes were over 150 points, a whole view, so the cloud landed on an area
@@ -751,6 +761,10 @@ class Draft:
     status: str = "draft"
     """draft, kept, fixed, dropped, or kept_unreflected (the self-check never reached it)."""
     why: str | None = None
+    whole_view: bool = False
+    """Reported as an issue about a whole view (`_tight`): a fix keeps the allowance."""
+    parts: list[str] | None = None
+    """A string's parts as reported (kind A): a fix keeps the string's allowance."""
 
     def line(self) -> str:
         box = [round(v) for v in self.box]
@@ -1410,12 +1424,15 @@ class _Run:
             confidence = "medium"
         box = self._box(given.get("box"))
         self._tight(box, letter, given)
-        letter = self._kind_by_words(letter, " ".join(filter(None, (item, wrong))))
+        letter = self._kind_by_words(letter, wrong)
+        parts = given.get("parts")
         return Draft(
             n=n,
             kind=letter,
             claim=claim,
             box=box,
+            whole_view=given.get("whole_view") is True,
+            parts=[str(p) for p in parts] if isinstance(parts, list) and parts else None,
             item=item,
             wrong=wrong,
             should_be=_words(given.get("should_be"), 160) or None,
@@ -1446,23 +1463,30 @@ class _Run:
             "true and box that view."
         )
 
-    def _kind_by_words(self, letter: str, words: str) -> str:
-        """A completeness issue whose words name a finish tag or who supplies a part is filed as
-        finish or scope by code (the breaking map of 2026-10-29: wrong kind filed about 13 times a
-        run, mostly C for D and E); every other kind stays as the reviewer said."""
+    def _kind_by_words(self, letter: str, wrong: str) -> str:
+        """A completeness issue whose words (what is wrong) name a finish tag, or say the issue is
+        who supplies a part, is filed as finish or scope by code (the breaking map of 2026-10-29:
+        wrong kind filed about 13 times a run, mostly C for D and E); every other kind stays as
+        the reviewer said. A sheet reference (MW-501, 3/L-2) is never a finish tag; a size gap that
+        happens to mention "N.I.C." stays a size gap; the set's own families count only once the
+        set is read (never waited for here)."""
         if letter != "C":
             return letter
-        from app.review.assistant.decision_resolver import _MILLWORK
         from app.review.assistant.set_context import SCOPE, family_of, tags_in
 
-        if SCOPE.search(words):
+        if SCOPE.search(wrong) and not _SIZE_WORDS.search(wrong):
             return "E"
+        families = set(FINISH_WORD_FAMILIES)
         try:
-            families = set(_MILLWORK) | self._context().finish_families()
-        except Exception:  # noqa: BLE001 - the set's families unknown: the millwork ones
-            families = set(_MILLWORK)
-        if any(family_of(tag) in families for tag in tags_in(words)):
-            return "D"
+            context = self._context()
+            if context.built:
+                families |= context.finish_families()
+        except Exception:  # noqa: BLE001 - the set's families unknown: the fixed ones
+            _log.debug("page reviewer p%s: the set's families not read", self.review.page)
+        for tag in tags_in(wrong):
+            family = family_of(tag)
+            if family is not None and len(family) >= 2 and family in families:
+                return "D"
         return letter
 
     def _record(self, draft: Draft, given: Mapping[str, Any], skip: str | None = None) -> None:
@@ -1682,6 +1706,9 @@ class _Run:
             "read": draft.read,
             "confidence": draft.confidence,
             "box": {"x0": draft.box[0], "y0": draft.box[1], "x1": draft.box[2], "y1": draft.box[3]},
+            # What the reported issue was accepted with (its box allowance), unless resent.
+            "whole_view": draft.whole_view,
+            "parts": draft.parts,
             **{k: v for k, v in given.items() if k in _ISSUE_FIELDS and v is not None},
         }
         fixed = self._draft(merged, draft.n)

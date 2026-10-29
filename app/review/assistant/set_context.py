@@ -236,13 +236,19 @@ class SetContext:
 
         tagged = len({page for pages in self.tags.values() for page in pages})
         least = max(MIN_FAMILY_PAGES, int(FAMILY_PAGE_SHARE * tagged + 0.999))
-        return {
-            family
-            for family, codes in self.families().items()
-            if family not in OTHER_TRADE_FAMILIES
-            and len(codes) <= MAX_FAMILY_CODES
-            and max(len(pages) for pages in codes.values()) >= least
-        }
+        out: set[str] = set()
+        for family, codes in self.families().items():
+            # One letter spells cabinet codes (D22, W70, H34), never a finish; a code is one
+            # code however it is spelled (ST03, ST-03).
+            spelled = {re.sub(r"[-\s]", "", tag) for tag in codes}
+            if (
+                len(family) >= 2
+                and family not in OTHER_TRADE_FAMILIES
+                and len(spelled) <= MAX_FAMILY_CODES
+                and max(len(pages) for pages in codes.values()) >= least
+            ):
+                out.add(family)
+        return out
 
     def tags_on(self, page: int) -> list[str]:
         self.build()
