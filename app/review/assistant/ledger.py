@@ -545,10 +545,33 @@ def _labels_box(labels: Sequence[Mapping[str, Any]], page: int) -> Box | None:
     )
 
 
+#: A value written with no unit mark and no bracketed inches: `914`, `3122`.
+_BARE_NUMBER: Final = re.compile(r"^\s*\d+(?:\.\d+)?\s*$")
+#: Bare numbers this big are millimetres, never inches: no millwork string totals 1000 inches (83
+#: feet) and no single part is 400 inches (33 feet).
+_MM_TOTAL_AT_LEAST: Final = Decimal(1000)
+_MM_PART_AT_LEAST: Final = Decimal(400)
+
+
+def bare_millimetres(parts: Sequence[str], printed_total: str) -> bool:
+    """Whether a string was written as bare millimetres (`7 + 914 + 914 + 914 + 330 + 7` against
+    `3122`): every value a plain number and the sizes only millimetres can be. GV ignores metric,
+    so code does not add it as inches (the run of 2026-10-30: two such strings were flagged, one
+    with its two 18 mm parts missed, one off by a millimetre of rounding)."""
+    values = [*parts, printed_total]
+    if not all(_BARE_NUMBER.match(str(value)) for value in values):
+        return False
+    numbers = [Decimal(str(value).strip()) for value in values]
+    return numbers[-1] >= _MM_TOTAL_AT_LEAST or any(n >= _MM_PART_AT_LEAST for n in numbers[:-1])
+
+
 def _add_up(
     parts: Sequence[str], printed_total: str
 ) -> tuple[StringResult, Decimal | None, Decimal | None]:
-    """The repo's exact chain check (`extraction/chains.py`) over the parts read as inches."""
+    """The repo's exact chain check (`extraction/chains.py`) over the parts read as inches; a
+    string of bare millimetres (`bare_millimetres`) is not a number code reads."""
+    if bare_millimetres(parts, printed_total):
+        return "not_a_number", None, None
     values = [to_inches(part) for part in parts]
     total = to_inches(printed_total)
     if total is None or any(value is None for value in values):
@@ -950,7 +973,11 @@ class ReadingLedger:
                     "error."
                 )
         elif entry.result == "not_a_number":
-            tail = ' Write each part as printed (3\'-1", 15 1/2"); metric alone is not read.'
+            tail = (
+                ' Write each part as printed (3\'-1", 15 1/2"); metric alone is not read: on a '
+                "drawing printed in millimetres with inches in brackets, write the inches "
+                '("914 [36]").'
+            )
         else:
             tail = ""
         return f"{head}{tail}\n{self.ledger_summary()}"

@@ -85,6 +85,27 @@ def test_a_string_code_cannot_read_is_not_a_number_and_never_a_finding() -> None
     assert ledger.ledger_report()["strings"]["not_a_number"] == 1
 
 
+def test_bare_millimetres_are_not_added_as_inches_and_never_a_finding() -> None:
+    # A millimetre drawing typed without its bracketed inches: the two 18 mm parts missed, and a
+    # one-millimetre rounding. GV ignores metric; neither is a vendor finding.
+    ledger = ReadingLedger()
+    text, _ = string(ledger, parts=["7", "914", "914", "914", "330", "7"], printed_total="3122")
+    string(ledger, parts=["976", "1768"], printed_total="2743")
+
+    assert [entry.result for entry in ledger.strings] == ["not_a_number", "not_a_number"]
+    assert ledger.ledger_findings() == []
+    assert "write the inches" in text
+
+
+def test_bracketed_inches_and_bare_inches_are_still_added() -> None:
+    ledger = ReadingLedger()
+    string(ledger, parts=["36 [1 3/8]", "1668 [65 5/8]", "20 [3/4]"], printed_total="1740 [68]")
+    string(ledger, parts=["11", "2", "225", "2", "3"], printed_total="242")  # inches, no marks
+
+    assert [entry.result for entry in ledger.strings] == ["does_not_add_up", "does_not_add_up"]
+    assert len(by_source(ledger.ledger_findings(), "vendor_arithmetic")) == 2
+
+
 def test_a_re_read_replaces_the_entry_and_counts_as_checked() -> None:
     ledger = ReadingLedger()
     string(ledger, parts=["12", "12"], printed_total="24 1/8")
