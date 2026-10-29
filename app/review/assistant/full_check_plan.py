@@ -36,7 +36,7 @@ import logging
 import math
 import re
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
@@ -58,6 +58,7 @@ __all__ = [
     "MAX_JOB_PAGES",
     "MIN_JOB_PAGES",
     "NO_VENDOR_NOTE",
+    "OWN_CHECK_NOTE",
     "PAGE_MAP_WAIT_SECONDS",
     "UNPAIRED_NEEDS",
     "UNPAIRED_NOTE",
@@ -72,6 +73,7 @@ __all__ = [
     "drawn_job_cap",
     "mostly_unpaired",
     "no_vendor_pages",
+    "own_check_pages",
     "pack_ready",
     "pair_lines",
     "plan_assumptions",
@@ -712,6 +714,42 @@ def pair_lines(
             "overall) as usual."
         )
     return lines
+
+
+# ---- pages checked only within the vendor's own drawings (2026-10-29) ----------------------------
+
+#: A vendor-only page's coverage note once it was checked (`own_check_pages`): final, never "open".
+OWN_CHECK_NOTE: Final = (
+    "Checked within the vendor's own drawings (strings, views, notes and GV's rules): no "
+    "architect drawing in this set"
+)
+
+
+def own_check_pages(
+    page_map: Mapping[str, Any] | None, main_file: str | None, pages: Collection[int]
+) -> frozenset[int]:
+    """The vendor `pages` that can only be checked within the vendor's own drawings: the set has
+    no other upload with a drawing (no architect's file to pair across, #1885's case) and no
+    architect drawing is on the page, in its area or paired by hand (`plan_check.architect_paired`).
+    The pre-flight says these pages are "checked only against the vendor's own drawings and GV's
+    rules"; the paid run of 2026-10-29 (La Quinta, vendor only) still sent 3 of them on for two
+    more looks and called the check incomplete, because its helpers marked them not comparable."""
+    from app.review.assistant.plan_check import architect_paired
+
+    if not page_map:
+        return frozenset()
+    entries = [e for e in page_map.get("pages") or [] if isinstance(e, Mapping)]
+    main = main_file
+    if main is None:
+        files = {str(e.get("file")) for e in entries}
+        if len(files) != 1:
+            return frozenset()
+        main = next(iter(files))
+    if any(str(e.get("file")) != main and e.get("halves") for e in entries):
+        return frozenset()
+    return frozenset(
+        int(page) for page in pages if architect_paired(page_map, main, int(page)) is False
+    )
 
 
 # ---- pages no architect drawing could be paired with (#1885) --------------------------------------

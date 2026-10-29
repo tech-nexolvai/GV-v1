@@ -848,3 +848,23 @@ def test_a_full_check_of_a_product_added_only_to_the_registry(
         "Vendor set - Not compared.xlsx",
         "Vendor set - GV review package.zip",
     ]
+
+
+def test_own_check_pages_are_the_vendor_pages_with_no_architect_drawing_in_the_set() -> None:
+    from app.review.assistant.full_check_plan import own_check_pages
+
+    page_map = _set_map(areas=2)  # pages 2-5 vendor: 2 and 4 hold the architect's drawing too
+    assert own_check_pages(page_map, FILE, {2, 3, 4, 5}) == frozenset()  # in their areas
+    alone = {
+        **page_map,
+        "pages": [
+            {**e, "halves": [h for h in e["halves"] if h["role"] != "architect"]}
+            for e in page_map["pages"]
+        ],
+    }
+    assert own_check_pages(alone, FILE, {2, 3, 4, 5}) == {2, 3, 4, 5}
+    assert own_check_pages(alone, None, {2, 3}) == {2, 3}  # one file: it is the vendor's
+    # Another upload with a drawing: the pages are paired across the uploads (#1885), not here.
+    other = {**alone, "pages": [*alone["pages"], {**_paired(1, "1. Area 1"), "file": "Arch.pdf"}]}
+    assert own_check_pages(other, FILE, {2, 3}) == frozenset()
+    assert own_check_pages(None, FILE, {2}) == frozenset()
