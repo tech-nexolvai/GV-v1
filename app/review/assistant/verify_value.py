@@ -89,6 +89,7 @@ import pikepdf
 
 from app.review.assistant import ink_labels
 from app.review.assistant.finding_checks import claim_value, dimension_tokens, to_inches
+from app.review.assistant.symbol_font import decoded
 from extraction.gv_marks import gv_combined, without_gv_marks
 from extraction.reader import pixel_placement
 from extraction.stamp_text import carries_drawing, drawing_ink, path_ink
@@ -218,8 +219,9 @@ _MARKS: Final = (
 
 def _plain(text: str) -> str:
     """Symbol-font characters (U+F020 to U+F07E, a font that stores `4'-3"` as private-use
-    characters) as the ASCII they stand for, and a drawing's marks in their plain spelling."""
-    text = "".join(chr(ord(ch) - 0xF000) if 0xF020 <= ord(ch) <= 0xF07E else ch for ch in text)
+    characters, `symbol_font`) as the ASCII they stand for, and a drawing's marks in their plain
+    spelling."""
+    text = decoded(text)
     for spelling, plain in _MARKS:
         text = text.replace(spelling, plain)
     return text

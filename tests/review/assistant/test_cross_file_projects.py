@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from app.review.assistant import set_index
-from app.review.assistant.simple_check import pairing, projects, views
+from app.review.assistant.simple_check import pairing, projects, views, worklist
 from app.review.assistant.simple_check.pairing import (
     Facts,
     MatchAnswer,
@@ -625,6 +625,146 @@ def test_the_tag_is_matched_exactly() -> None:
         assert pairing.printed_item_tag([text], "XX801") == "XX-801"
     for text in ("XX-8010", "XX-801A", "XX-801-1", "XXX-801", "XX 801", "XX-80"):
         assert pairing.printed_item_tag([text], "XX801") is None
+
+
+# ---- pairing through the tag's room (2026-10-31) -----------------------------------------------
+
+#: The tag's room on the plan (SB-202 is printed at 1000-1040 x 100-110), its name on two lines.
+LOUNGE = [_phrase("STAFF", [1000, 130, 1040, 140]), _phrase("LOUNGE", [998, 142, 1046, 152])]
+
+
+def _rooms(
+    plan_words: list[dict[str, Any]],
+    title: str = "STAFF LOUNGE ELEVATION",
+    sheet_title: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The synthetic set with the elevation sheet's second view titled `title` (the set index's
+    read and the printed title), more words on the key plan, and `sheet_title`: a third
+    architect page of NORTH, an elevation sheet of one view so titled."""
+    found = _set()
+    for entry in found["dims"]["pages"]:
+        if entry["file"] == ARCH and entry["page"] == 4:
+            entry["phrases"] = [
+                _phrase(title, p["box"]) if p["text"] == "LOBBY BENCH ELEVATION" else p
+                for p in entry["phrases"]
+            ]
+        if entry["file"] == ARCH and entry["page"] == 5:
+            entry["phrases"] = [*entry["phrases"], *plan_words]
+    index = _index()
+    index["pages"][f"{ARCH}#4"]["views"][1]["title"] = title
+    if sheet_title is not None:
+        found["page_map"]["pages"].append(_entry(ARCH, 6, "architect"))
+        labels = [
+            _label(1, "6'-0\"", 72, [250, 200, 270, 210], "architect", "h"),
+            _label(2, "3'-0\"", 36, [130, 280, 140, 300], "architect", "v"),
+        ]
+        words = [
+            _phrase("1", [110, 380, 120, 395]),
+            _phrase(sheet_title, [140, 380, 400, 395]),
+            _phrase("A6.0", [105, 398, 125, 406]),
+            _phrase("A6.0", [1100, 740, 1180, 790]),
+        ]
+        found["dims"]["pages"].append({"file": ARCH, "page": 6, "labels": labels, "phrases": words})
+        index["pages"][f"{ARCH}#6"] = _read(ARCH, 6)
+    return found, index
+
+
+def test_an_item_shown_only_as_a_tag_pairs_with_the_one_elevation_of_its_room() -> None:
+    """The plan prints SB-202 in the STAFF LOUNGE (its name the nearest room name, on two lines);
+    one view of the architect's file is titled "STAFF LOUNGE ELEVATION": that view is the item's
+    drawing, through the room. The paid matcher is still asked (a page it is sure of is held
+    against the room's); one it is not sure of changes nothing."""
+    found, index = _rooms(LOUNGE, sheet_title="COPY ROOM ELEVATION")
+    for matches in (None, _answers(["p1004", "p1006"], ["p1006"], False, "p6.v0")):
+        bench = _across(_work_with(found, index, matches), 6)
+        assert bench.chosen == ("p1004",) and bench.views == ("p1004.a1.view2",)
+        assert not bench.code_paired and bench.unsure == () and not bench.needed
+        assert "through its room" in bench.why and "STAFF LOUNGE" in bench.why
+        assert "SB-202" in bench.why
+    # The title prints the room's name with no space ("STAFFLOUNGE"): the same room.
+    found, index = _rooms(LOUNGE, title="STAFFLOUNGE ELEVATION")
+    assert _across(_work_with(found, index), 6).views == ("p1004.a1.view2",)
+
+
+def test_a_page_the_matcher_is_sure_of_keeps_the_room_pair_unsure() -> None:
+    """The matcher is sure of another architect page (owner's rule, 25 Oct: never a guessed
+    pair): "pairing unsure" naming the room's sheet and that page, never paired."""
+    found, index = _rooms(LOUNGE, sheet_title="COPY ROOM ELEVATION")
+    sure = _answers(["p1004", "p1006"], ["p1006"], True, "p6.v0")
+    bench = _across(_work_with(found, index, sure), 6)
+    assert bench.chosen == () and not bench.needed
+    assert set(bench.unsure) == {"p1004", "p1006"}
+    assert pairing.PAIRING_UNSURE in bench.why and "STAFF LOUNGE" in bench.why
+
+
+def test_a_room_with_no_or_several_elevation_sheets_stays_a_tag_on_a_plan() -> None:
+    """No view titled with the room's elevation ("TYPICAL STAFF LOUNGE ELEVATION" is another
+    title, "STAFF LOUNGE DETAIL" no elevation), or two sheets titling it: no pair, "only as a tag
+    on a plan" as before, the room and the sheets named in the reason."""
+    for title in ("TYPICAL STAFF LOUNGE ELEVATION", "STAFF LOUNGE DETAIL"):
+        found, index = _rooms(LOUNGE, title=title)
+        bench = _across(_work_with(found, index), 6)
+        assert bench.chosen == () and bench.needed
+        assert "only as a tag on a plan (SB-202 on its page 5" in bench.why
+        assert "STAFF LOUNGE; no sheet of the architect's titles an elevation of it" in bench.why
+    found, index = _rooms(LOUNGE, sheet_title="STAFF LOUNGE ELEVATION")
+    bench = _across(_work_with(found, index), 6)
+    assert bench.chosen == () and bench.needed
+    assert "only as a tag on a plan (SB-202 on its page 5" in bench.why
+    assert "elevations of it are titled on architect page 4 and architect page 6" in bench.why
+
+
+def test_a_tag_between_two_rooms_is_not_paired_by_either() -> None:
+    """Another room name is nearly as near the tag (less than `ROOM_CLEAR` times as far): which
+    room the item is in is not clear, so it stays "only as a tag on a plan", both named."""
+    between = [*LOUNGE, _phrase("STORE ROOM", [1070, 95, 1130, 105])]
+    found, index = _rooms(between)
+    bench = _across(_work_with(found, index), 6)
+    assert bench.chosen == () and bench.needed
+    assert "between the rooms STAFF LOUNGE and STORE ROOM" in bench.why
+    # A room name further than `ROOM_REACH_PT` from the tag is no room of it.
+    far = [_phrase("STAFF LOUNGE", [400, 600, 480, 610])]
+    found, index = _rooms(far)
+    bench = _across(_work_with(found, index), 6)
+    assert bench.chosen == () and bench.needed and "STAFF LOUNGE" not in bench.why
+
+
+def test_the_plans_callout_beside_the_tag_must_point_to_the_rooms_elevation() -> None:
+    """A callout beside the tag to view 2 of sheet A5.0 (the room's elevation) settles a room
+    that is not clear by its name alone; a callout to view 1 (another room's elevation) pairs
+    nothing through the room, and the pairing goes on as before (not "only as a tag")."""
+    between = [*LOUNGE, _phrase("STORE ROOM", [1070, 95, 1130, 105])]
+
+    def callout(view: str) -> list[dict[str, Any]]:
+        return [_phrase(view, [1006, 78, 1012, 86]), _phrase("A5.0", [1000, 88, 1020, 96])]
+
+    found, index = _rooms([*between, *callout("2")])
+    bench = _across(_work_with(found, index), 6)
+    assert bench.chosen == ("p1004",) and bench.views == ("p1004.a1.view2",)
+    assert "callout beside the tag points to them" in bench.why
+    found, index = _rooms([*LOUNGE, *callout("1")])
+    bench = _across(_work_with(found, index), 6)
+    assert bench.chosen != ("p1004",) or bench.views != ("p1004.a1.view2",)
+    assert "through its room" not in bench.why and "only as a tag on a plan" not in bench.why
+
+
+def test_room_names_are_read_from_a_plans_words() -> None:
+    """A room name: capital letters, no digit, a word of three letters or more; two lines are one
+    name; a drawing's title, an item tag, a size and a callout's doubled "IIDD" are none."""
+    labels = worklist._room_labels(
+        [
+            ("COPY", (100.0, 100.0, 140.0, 112.0)),
+            ("ROOM", (102.0, 114.0, 138.0, 126.0)),
+            ("GIFT SHOP", (300.0, 100.0, 380.0, 112.0)),
+            ("FLOOR PLAN", (100.0, 700.0, 200.0, 712.0)),
+            ("ABC-101", (500.0, 100.0, 540.0, 112.0)),
+            ("3'-6\"", (600.0, 100.0, 620.0, 112.0)),
+            ("IIDD", (700.0, 100.0, 710.0, 108.0)),
+            ("EQ", (720.0, 100.0, 730.0, 108.0)),
+        ]
+    )
+    assert [text for text, _box in labels] == ["COPY ROOM", "GIFT SHOP"]
+    assert worklist._room_key("STAFF LOUNGE") == worklist._room_key("STAFFLOUNGE")
 
 
 def test_a_view_that_prints_no_sizes_is_a_drawing_needed() -> None:

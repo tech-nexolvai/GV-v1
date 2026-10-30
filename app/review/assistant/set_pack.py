@@ -112,6 +112,7 @@ from pypdf.generic import ArrayObject, NameObject
 from app.review.assistant import page_cache
 from app.review.assistant.chat_drawing import PDFIUM_LOCK
 from app.review.assistant.page_pictures import fitting_dpi
+from app.review.assistant.symbol_font import decoded
 from extraction.pdfium_guard import pdfium
 from vocabulary.panel_headings import HeadingMeaning, heading_meaning, page_title_role
 
@@ -134,7 +135,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 21
+PACK_VERSION: Final = 22
 #: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
@@ -1006,7 +1007,9 @@ def _note(folder: Path, step: str, name: str) -> Progress:
 def _texts(pdf: Path, progress: Progress | None = None) -> tuple[list[str], list[str]]:
     """Each page's text, the pasted drawings' own text included (flattened in memory), and each
     page's own text: its content alone, without its pasted drawings (#1772: whether a page of a
-    separate upload is a drawing by itself, whatever is pasted on it)."""
+    separate upload is a drawing by itself, whatever is pasted on it). A symbol font's characters
+    are read as the letters they draw (`symbol_font`): the room names and titles of a set printed
+    in one are read like any other words."""
     texts: list[str] = []
     own: list[str] = []
     with PDFIUM_LOCK:
@@ -1018,7 +1021,7 @@ def _texts(pdf: Path, progress: Progress | None = None) -> tuple[list[str], list
                 page = document[index]
                 try:
                     textpage = page.get_textpage()
-                    own.append(textpage.get_text_range())
+                    own.append(decoded(textpage.get_text_range()))
                     textpage.close()
                 except Exception:  # noqa: BLE001 - a page with no readable text has none
                     own.append("")
@@ -1027,7 +1030,7 @@ def _texts(pdf: Path, progress: Progress | None = None) -> tuple[list[str], list
                     page.close()
                     page = document[index]
                     textpage = page.get_textpage()
-                    texts.append(textpage.get_text_range())
+                    texts.append(decoded(textpage.get_text_range()))
                     textpage.close()
                 except Exception:  # noqa: BLE001 - a page with no readable text has none
                     texts.append("")

@@ -71,6 +71,7 @@ from app.review.assistant.finding_checks import (
     dimension_tokens,
     to_inches,
 )
+from app.review.assistant.symbol_font import decoded
 from app.review.assistant.witness import disagreement, witnesses
 
 __all__ = [
@@ -1483,7 +1484,7 @@ def _legend_reader(pdf_paths: Mapping[str, Path]) -> Legend:
                 with pdfplumber.open(io.BytesIO(flattened)) as document:
                     if not 0 < page <= len(document.pages):
                         continue
-                    text = document.pages[page - 1].extract_text() or ""
+                    text = decoded(document.pages[page - 1].extract_text() or "")
                 for line in text.splitlines():
                     if all(tag in line for tag in tags):
                         return line

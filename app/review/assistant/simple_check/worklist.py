@@ -103,6 +103,8 @@ __all__ = [
     "MIN_PAGE_DIMS",
     "NO_DRAWING_NOTE",
     "NUMBERS_UNREAD",
+    "ROOM_CLEAR",
+    "ROOM_REACH_PT",
     "TAG_PAGES_MAX",
     "RankMemo",
     "architect_views_findings",
@@ -166,6 +168,12 @@ CALLOUT_CLEAR: Final = 1.5
 #: item's architect page (`_tag_page`); printed on more, it is a finish or a type code (every
 #: room's plan, a legend, a schedule): no evidence of which page shows the piece.
 TAG_PAGES_MAX: Final = 3
+#: The room of an item the architect shows only as its tag on a plan (`_room_page`): the room name
+#: printed nearest the tag, within this reach (points; about 17 feet at 1/4" = 1'-0") ...
+ROOM_REACH_PT: Final = 300.0
+#: ... when the next other room name is at least this many times as far (else the plan's
+#: elevation callout beside the tag must point to the room's elevations).
+ROOM_CLEAR: Final = 2.0
 #: A naming word the vendor prints on more than this share of its drawings (and more than
 #: `COMMON_WORD_MIN` of them) is its title block's or its brand's, never evidence of a piece.
 COMMON_WORD_SHARE: Final = 0.25
@@ -2044,7 +2052,30 @@ def _pair_across(
             tag_pair = None
     # The tag's page and another page code and the matcher agreed on: a person confirms.
     rivals: tuple[str, ...] = ()
-    if tag_pair is not None:
+    if tag_pair is not None and tag_pair.room is not None:
+        # Through the tag's room (not the architect's own tag on the drawing): a page the AI page
+        # matcher is sure of, or code's own clear pick, is held against it (owner's rule, 25 Oct:
+        # never a guessed pair), as is a page code and the matcher agreed on.
+        held_room = (
+            _held_page(ranked, code_pick, answer or (saved[1] if saved is not None else None))
+            if not chosen
+            else None
+        )
+        others = tuple(c for c in (*chosen, held_room) if c is not None and c != tag_pair.item)
+        if not others:
+            # The paid matcher is still asked (a page it is sure of is held against the room's).
+            chosen, code_pick = (tag_pair.item,), tag_pair.item
+            why = f"paired with {tag_pair.item} through its room: {_room_words(tag_pair)}"
+        else:
+            rivals = (tag_pair.item, *others)
+            why = (
+                f"{pairing_module.UNPAIRED}: {tag_pair.item} through its room "
+                f"({_room_words(tag_pair)}), but {' and '.join(others)} "
+                f"{'is' if len(others) == 1 else 'are'} held for it "
+                f"({why.removeprefix(f'{pairing_module.UNPAIRED}: ')})"
+            )
+            chosen = ()
+    elif tag_pair is not None:
         if chosen in ((), (tag_pair.item,)):
             # The architect's own printed tag decides: the paid matcher is not asked about it.
             chosen, code_pick, code_paired = (tag_pair.item,), tag_pair.item, True
@@ -2075,11 +2106,17 @@ def _pair_across(
                 kept.append(item_id)
                 continue
             if tag_pair is not None and item_id == tag_pair.item:
-                # The views of the sheet that print the vendor's item tag.
+                # The views of the sheet that print the vendor's item tag, or that are titled as
+                # elevations of the room the plan prints its tag in.
                 kept.append(item_id)
                 picked_views.extend(tag_pair.views)
+                what = (
+                    f"printing {tag_pair.printed}"
+                    if tag_pair.room is None
+                    else f"of the room {tag_pair.room}"
+                )
                 shown.append(
-                    f"its views printing {tag_pair.printed} on {item_id}: "
+                    f"its views {what} on {item_id}: "
                     + ", ".join(
                         f'"{v.titles[0]}"' if v.titles else v.ref
                         for v in item.views
@@ -2729,7 +2766,17 @@ class _TagPage:
     plan: bool
     """The page is a plan that shows the item only as its tag (a key or furniture plan)."""
     views: tuple[str, ...] = ()
-    """A sheet of several views: the views that print the tag (an elevation, a section)."""
+    """A sheet of several views: the views that print the tag (an elevation, a section), or the
+    views titled as elevations of the tag's room (`room`)."""
+    room: str | None = None
+    """Paired through the tag's room (`_room_page`): the room's name as the plan prints it, the
+    page being the one sheet titling elevations of that room."""
+    plan_page: int | None = None
+    """Paired through the room: the page of the plan printing the tag."""
+    callout: bool = False
+    """Paired through the room: the plan's elevation callout beside the tag points to it too."""
+    room_words: str | None = None
+    """Only a tag on a plan: what code found of the tag's room (`_room_page`), for the reason."""
 
 
 def _same_project(item: AcrossCandidate, project: str) -> bool:
@@ -2758,9 +2805,14 @@ def _tag_page(
     - exactly one of them is not a plan of tags (an elevation, a section, an item's sheet), code
       does not rule it out (`pool`: another variant or section is never paired), and on a sheet
       of several views one or more of its views print the tag: that page (those views);
-    - all of them are key or furniture plans, and nothing points from the tag to an elevation
-      (no callout within `CALLOUT_REACH_PT` of it, the reach `_linked` follows; a room's
-      elevation marker further off is the room's): the first plan, "only as a tag on a plan".
+    - all of them are key or furniture plans, and the room the first plan prints the tag in has
+      its elevations titled on exactly one sheet of the project (`_room_page`, owner,
+      2026-10-31): that sheet, its views of the room (any callout beside the tag must point to
+      them);
+    - all of them are key or furniture plans, no room pairs it, and nothing points from the tag
+      to an elevation (no callout within `CALLOUT_REACH_PT` of it, the reach `_linked` follows; a
+      room's elevation marker further off is the room's): the first plan, "only as a tag on a
+      plan", with what code found of its room.
 
     Several of the vendor's item tags must name the same page. Else `None`: the tag does not
     decide, and the pairing goes on as before."""
@@ -2819,17 +2871,214 @@ def _tag_page(
             if pairing_module.printed_item_tag([text], tag) is not None
         ]
         marks = [m for p in context.plans if p.item == plan.id for m in p.marks]
-        if any(views_module.gap(box, m.box) <= CALLOUT_REACH_PT for box in spots for m in marks):
-            # The plan's elevation callout beside the tag points from it to the elevations that
-            # may draw it (`_linked`'s reach): not "only as a tag", the pairing goes on as before.
-            return None
+        near = [
+            m
+            for m in marks
+            if any(views_module.gap(box, m.box) <= CALLOUT_REACH_PT for box in spots)
+        ]
         printed = pairing_module.printed_item_tag(
             [text for text, _box in context.printed.get(plan.id, ())], tag
         )
-        found.append(_TagPage(plan.id, plan.page, printed or tag, True))
+        room, room_words = _room_page(spots, plan, open_, near, context)
+        if room is not None:
+            # The one sheet titling elevations of the tag's room (owner, 2026-10-31).
+            found.append(dataclasses.replace(room, printed=printed or tag))
+            continue
+        if near:
+            # The plan's elevation callout beside the tag points from it to the elevations that
+            # may draw it (`_linked`'s reach): not "only as a tag", the pairing goes on as before.
+            return None
+        found.append(_TagPage(plan.id, plan.page, printed or tag, True, room_words=room_words))
     if not found or len({(f.item, f.plan, f.views) for f in found}) != 1:
         return None
     return found[0]
+
+
+#: Words that name a drawing, a note or a title block's field, never a room (`_room_labels`).
+_NOT_ROOM: Final = frozenset(
+    {
+        "CHECKED",
+        "DATE",
+        "DETAIL",
+        "DETAILS",
+        "DRAWN",
+        "ELEVATION",
+        "ELEVATIONS",
+        "ISSUE",
+        "LEGEND",
+        "NOTE",
+        "NOTES",
+        "PLAN",
+        "PLANS",
+        "REMARKS",
+        "REV",
+        "REVISION",
+        "SCALE",
+        "SCHEDULE",
+        "SECTION",
+        "SECTIONS",
+        "SHEET",
+        "TITLE",
+        "TYP",
+    }
+)
+#: A room's name as a plan prints it: capital letters and the signs of a name, never a digit (an
+#: item tag, a size, a sheet number) nor a colon (a title block's field).
+_ROOM_NAME: Final = re.compile(r"[A-Z][A-Z'&/. -]*")
+#: A view's title naming a room's elevation, signs and spaces dropped (`_room_key`):
+#: `STAFFLOUNGEELEVATION`.
+_ROOM_ELEVATION: Final = re.compile(r"(?P<room>[A-Z]+?)ELEVATIONS?")
+
+
+def _room_key(text: str) -> str:
+    """A room's name for comparing: its letters only, so `STAFF LOUNGE` and `STAFFLOUNGE` (a plan's
+    label and an elevation's title) are one room."""
+    return re.sub(r"[^A-Z]", "", text.upper())
+
+
+def _overprinted(word: str) -> bool:
+    """Whether a word is a shorter one with each letter read twice (`IIDD`): text printed twice
+    over itself, as a callout's `ID` is, never a room's name."""
+    return len(word) % 2 == 0 and word[::2] == word[1::2]
+
+
+def _room_labels(phrases: Sequence[views_module.Phrase]) -> list[views_module.Phrase]:
+    """The room names a plan prints, with where: a phrase of capital letters (`_ROOM_NAME`) with a
+    word of three letters or more, none of them `_NOT_ROOM`, left of the sheet's title block. A
+    name printed on two lines ("COPY" over "ROOM", each line its own phrase) is one name."""
+    edge = views_module.title_block_left(phrases)
+    names: list[views_module.Phrase] = []
+    for text, box in phrases:
+        plain = " ".join(str(text).split())
+        words = set(re.findall(r"[A-Z]+", plain))
+        if (
+            _ROOM_NAME.fullmatch(plain)
+            and any(len(word) >= 3 and not _overprinted(word) for word in words)
+            and not words & _NOT_ROOM
+            and (edge is None or _centre(box)[0] < edge)
+        ):
+            names.append((plain, box))
+    merged: list[views_module.Phrase] = []
+    for text, box in sorted(names, key=lambda one: (one[1][1], one[1][0])):
+        for n, (above, over) in enumerate(merged):
+            line = max(over[3] - over[1], box[3] - box[1])
+            overlap = min(over[2], box[2]) - max(over[0], box[0])
+            narrower = min(over[2] - over[0], box[2] - box[0])
+            if 0 <= box[1] - over[3] <= line / 2 and overlap >= narrower / 2:
+                merged[n] = (f"{above} {text}", _union([over, box]))
+                break
+        else:
+            merged.append((text, box))
+    return merged
+
+
+def _room_elevations(
+    room: str, pool: Mapping[str, AcrossCandidate], context: _Across
+) -> dict[str, tuple[str, ...]]:
+    """The sheets of `pool` titling elevations of the room `room` (`_room_key`): a view's title
+    is the room's name and ELEVATION, nothing else ("STAFF LOUNGE ELEVATION"; "TYPICAL STAFF
+    LOUNGE ELEVATION" or "STAFF LOUNGE DETAIL" is not). Each sheet with its views so titled (none: a
+    sheet of one view so titled, `views.find_views` on what it prints)."""
+
+    def names_room(title: str) -> bool:
+        found = _ROOM_ELEVATION.fullmatch(_room_key(title))
+        return found is not None and found.group("room") == room
+
+    out: dict[str, tuple[str, ...]] = {}
+    for item in pool.values():
+        if item.views:
+            views = tuple(v.ref for v in item.views if any(names_room(t) for t in v.titles))
+            if views:
+                out[item.id] = views
+        elif any(
+            names_room(view.title)
+            for view in views_module.find_views(context.printed.get(item.id, ()))
+        ):
+            out[item.id] = ()
+    return out
+
+
+def _room_page(
+    spots: Sequence[Box],
+    plan: AcrossCandidate,
+    pool: Mapping[str, AcrossCandidate],
+    near: Sequence[views_module.Callout],
+    context: _Across,
+) -> tuple[_TagPage | None, str | None]:
+    """The architect's sheet of an item it shows only as its tag on a plan, through the tag's
+    room (owner, 2026-10-31): a design set titles its elevations by room ("STAFF LOUNGE
+    ELEVATION"), never by item tag, and prints the tags only on its furniture plans.
+
+    The tag's room is the room name printed nearest the tag on the plan (`_room_labels`), within
+    `ROOM_REACH_PT`. Exactly one sheet of the vendor's project (`pool`) titles elevations of that
+    room (`_room_elevations`), and either the next other room name is `ROOM_CLEAR` times as far
+    or more, or the plan's elevation callout beside the tag (`near`) points to the room's
+    elevations: that sheet, its views of the room. A callout beside the tag pointing anywhere else
+    pairs nothing. Else `None`, and what code found of the room, for the reason (`None`: no room
+    name near the tag)."""
+    if not spots:
+        return None, None
+    ranked = sorted(
+        (min(views_module.gap(spot, box) for spot in spots), text)
+        for text, box in _room_labels(context.printed.get(plan.id, ()))
+    )
+    if not ranked or ranked[0][0] > ROOM_REACH_PT:
+        return None, None
+    distance, name = ranked[0]
+    room = _room_key(name)
+    rival = next(((d, t) for d, t in ranked[1:] if _room_key(t) != room), None)
+    clear = rival is None or rival[0] >= ROOM_CLEAR * max(distance, 1.0)
+    sheets = _room_elevations(room, pool, context)
+    if len(sheets) != 1:
+        where = (
+            "no sheet of the architect's titles an elevation of it"
+            if not sheets
+            else f"elevations of it are titled on {' and '.join(sorted(sheets))}"
+        )
+        return None, f"the room name printed nearest its tag on that plan is {name}; {where}"
+    ((item_id, views),) = sheets.items()
+    item = pool[item_id]
+    # The plan's project when the set index read one on it, else the room's sheet's (a plan whose
+    # page names no project: its callouts are read in the project of the sheet they point to).
+    own = context.places.get((item.file, item.page)) or projects_module.Place()
+    keys = (next((p.project for p in context.plans if p.item == plan.id), None), own.project)
+
+    def view_of(sheet: str, number: str) -> str | None:
+        return next(
+            (ref for key in keys if (ref := context.sheets.get((key, sheet, number))) is not None),
+            None,
+        )
+
+    def points_here(mark: views_module.Callout) -> bool:
+        refs = [view_of(mark.sheet, number) for number in mark.numbers]
+        return bool(refs) and all(
+            ref is not None
+            and context.view_page.get(ref) == item_id
+            and (not views or ref in views)
+            for ref in refs
+        )
+
+    if any(not points_here(mark) for mark in near):
+        return None, None
+    if not clear and not near:
+        other = rival[1] if rival is not None else ""
+        return None, (
+            f"its tag is printed between the rooms {name} and {other} on that plan: which room "
+            "it is in is not clear"
+        )
+    return (
+        _TagPage(
+            item_id,
+            item.page,
+            "",
+            False,
+            views,
+            room=name,
+            plan_page=plan.page,
+            callout=bool(near),
+        ),
+        None,
+    )
 
 
 def _held_page(
@@ -2848,10 +3097,26 @@ def _held_page(
 
 def _tag_only_words(tagged: _TagPage) -> str:
     """Why an item whose architect page is a plan of tags is not compared: the plan's page and
-    the tag, in the words the result screen keys on (`full_check_plan.tag_only_words`)."""
+    the tag, in the words the result screen keys on (`full_check_plan.tag_only_words`), and what
+    code found of the tag's room (`_room_page`: no sheet titles its elevations, several do, or
+    the room is not clear)."""
+    room = "" if tagged.room_words is None else f"; {tagged.room_words}"
     return (
         f"the architect shows this item only as a tag on a plan ({tagged.printed} on its page "
-        f"{tagged.page}; no elevation or section of the architect's prints it), with no sizes"
+        f"{tagged.page}; no elevation or section of the architect's prints it), with no "
+        f"sizes{room}"
+    )
+
+
+def _room_words(paired: _TagPage) -> str:
+    """How an item was paired through its room (`_room_page`), in words."""
+    callout = (
+        ", and the plan's elevation callout beside the tag points to them" if paired.callout else ""
+    )
+    return (
+        f"the architect's plan (page {paired.plan_page}) prints the vendor's item tag "
+        f"{paired.printed} in the room {paired.room}, and {paired.item} is the one sheet titling "
+        f"elevations of that room{callout}"
     )
 
 

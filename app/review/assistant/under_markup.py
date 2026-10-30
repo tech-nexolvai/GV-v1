@@ -42,6 +42,7 @@ from PIL import Image
 
 from app.review.assistant.chat_drawing import PDFIUM_LOCK
 from app.review.assistant.page_pictures import fitting_dpi
+from app.review.assistant.symbol_font import decoded
 from extraction.pdfium_guard import pdfium
 from extraction.reader import pixel_placement
 from extraction.stamp_text import carries_drawing
@@ -352,8 +353,9 @@ def _png(picture: Image.Image) -> bytes:
 
 def _words(document: bytes, box: Box, combined: bool = True) -> list[dict[str, Any]]:
     """The text in `box` (shown points) of the one-page `document`, as pdftotext -bbox would list
-    it, with its colour. `combined`: the file is one of GV's combined sheets, the only file where
-    text in colour may be GV's (on an ordinary upload nothing is marked coloured)."""
+    it (a symbol font's characters as the letters they draw, `symbol_font`), with its colour.
+    `combined`: the file is one of GV's combined sheets, the only file where text in colour may be
+    GV's (on an ordinary upload nothing is marked coloured)."""
     found: list[dict[str, Any]] = []
     with pdfplumber.open(io.BytesIO(document)) as opened:
         page = opened.pages[0]
@@ -386,7 +388,7 @@ def _words(document: bytes, box: Box, combined: bool = True) -> list[dict[str, A
             values = list(colour) if isinstance(colour, list | tuple) else []
             found.append(
                 {
-                    "text": str(word["text"]),
+                    "text": decoded(str(word["text"])),
                     "box": tuple(round(v, 1) for v in spot),
                     "coloured": combined and _coloured(values),
                 }
