@@ -1544,6 +1544,7 @@ def page_reviewer_options(settings: Settings) -> PageReviewerOptions | None:
         per_page_micros=int(settings.assistant_page_reviewer_per_page_usd * _MICROS),
         effort=settings.assistant_page_reviewer_effort,
         house_rules=house_rules_text(settings.assistant_page_reviewer_house_rules),
+        reference_pictures=settings.assistant_page_reviewer_pictures,
     )
 
 

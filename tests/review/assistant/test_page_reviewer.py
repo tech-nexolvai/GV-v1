@@ -1166,3 +1166,215 @@ def test_the_design_sets_plan_around_the_items_tag_is_in_the_first_message(
     assert "SUNDRY SHOP" in words and "GFI" in words
     at = next(i for i, b in enumerate(first) if "design_reference" in b.get("text", ""))
     assert first[at + 1]["type"] == "text" and first[at + 2]["type"] == "image"
+
+
+# ---- more context in the first message (2026-10-31) -----------------------------------------------
+
+
+def _first_message(
+    tmp_path: Path,
+    uploads: Mapping[str, bytes],
+    listing: list[dict[str, Any]],
+    *,
+    page: int = 2,
+    options: Options | None = None,
+    reviews: Reviews | None = None,
+) -> tuple[_Engine, list[dict[str, Any]]]:
+    """One review's first message, with `uploads` (name to PDF bytes) and `listing` as the chat's
+    files (the vendor's file is `FILE`)."""
+    engine = _Engine(tmp_path, _Script([[_text("Nothing to report.")]], 200_000))
+    for name, data in uploads.items():
+        (engine.workspace.uploads / name).write_bytes(data)
+    (engine.workspace.root / "uploads.json").write_text(json.dumps(listing), encoding="utf-8")
+    engine.tools = ChatTools(
+        workspace=engine.workspace,
+        sandbox=FakeSandbox(engine.workspace, lambda command, _w: ("ok", 0)),
+        page_count=2,
+        uploads=listing,
+    )
+    review = PageReview(page=page, file=FILE, options=options or Options())
+    agent = SimpleNamespace(
+        model=MODELS["claude-opus-5-5"], cap_micros=600_000, spent=0, last_call=0
+    )
+    run = page_reviewer._Run(engine, agent, review, reviews or Reviews(), {"steps": []}, 0)  # type: ignore[arg-type]
+    run.run()
+    return engine, engine.script.calls[0].messages[0]["content"]
+
+
+def _png_file(path: Path) -> None:
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (60, 40), "white").save(out, format="PNG")
+    path.write_bytes(out.getvalue())
+
+
+def _picture_folder(tmp_path: Path) -> Path:
+    folder = tmp_path / "gv-pictures"
+    folder.mkdir()
+    for name in ("rule.png", "example.png", "this-job.png"):
+        _png_file(folder / name)
+    manifest = [
+        {"file": "rule.png", "caption": "Overall: outside to outside.", "group": "rule"},
+        {"file": "example.png", "caption": "GV asks for the filler's size.", "group": "example"},
+        {
+            "file": "this-job.png",
+            "caption": "An example from this very job.",
+            "group": "example",
+            "exclude_projects": ["VENDOR SET"],
+        },
+    ]
+    (folder / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return folder
+
+
+def test_gvs_reference_pictures_open_every_pages_first_message_cached_once(
+    tmp_path: Path,
+) -> None:
+    folder = _picture_folder(tmp_path)
+    listing = [{"name": FILE, "pages": 2, "kind": "the vendor's shop drawings"}]
+    reviews = Reviews()
+    options = Options(reference_pictures=folder)
+    engine, first = _first_message(tmp_path, {}, listing, options=options, reviews=reviews)
+    kinds = [block["type"] for block in first[:6]]
+    assert kinds == ["text", "image", "text", "text", "image", "text"]
+    assert first[0]["text"].startswith("GV's rule pictures")
+    assert first[2]["text"] == "Overall: outside to outside."
+    assert first[3]["text"].startswith("Examples of what GV's reviewer marks")
+    assert first[5]["text"] == "GV asks for the filler's size."
+    # This job's own example is left out (its name is part of the upload's).
+    assert "this very job" not in json.dumps(first)
+    # The prompt-cache breakpoint sits after the last picture's caption, before the page itself.
+    assert first[5]["cache_control"] == {"type": "ephemeral"}
+    assert not any("cache_control" in block for block in first[:5])
+    assert first[6]["text"].startswith("You are reviewing page 2")
+    picture = first[1]["source"]["picture_id"]
+    assert (engine.workspace.pictures / f"{picture}.png").exists()
+    # Another page of the same check starts with the very same blocks (one cache entry).
+    agent = SimpleNamespace(model=MODELS["claude-opus-5-5"], cap_micros=1, spent=0, last_call=0)
+    other = PageReview(page=1, file=FILE, options=options)
+    run = page_reviewer._Run(engine, agent, other, reviews, {"steps": []}, 0)  # type: ignore[arg-type]
+    again = run.reference_blocks()
+    assert again == first[:6]
+
+
+def test_a_missing_picture_folder_is_no_picture_and_the_review_goes_on(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    listing = [{"name": FILE, "pages": 2, "kind": "the vendor's shop drawings"}]
+    options = Options(reference_pictures=tmp_path / "nowhere")
+    with caplog.at_level("WARNING"):
+        engine, first = _first_message(tmp_path, {}, listing, options=options)
+    assert first[0]["text"].startswith("You are reviewing page 2")
+    assert "reference pictures could not be read" in caplog.text
+    assert engine.script.calls  # the review ran
+
+
+def _room_design_pdf() -> bytes:
+    """A made-up design set: page 1 an enlarged plan (the item's top tag in its room, an outlet,
+    a window wall 450 points away, another item in the pantry, the issue date), page 2 an
+    elevation of the same item, pages 3 to 5 a finish code only."""
+    out = io.BytesIO()
+    c = canvas.Canvas(out, pagesize=(WIDTH, HEIGHT), invariant=1)
+    pages: dict[int, list[tuple[str, float, float]]] = {
+        1: [
+            ("XYZ-301T", 300.0, 300.0),
+            ("LOUNGE", 300.0, 340.0),
+            ("GFI", 360.0, 310.0),
+            ("WINDOW WALL", 300.0, 700.0),
+            ("XYZ-302T", 900.0, 300.0),
+            ("PANTRY", 900.0, 340.0),
+            ("ISSUED 2026/04/14", 1050.0, 760.0),
+        ],
+        2: [("XYZ-301T", 500.0, 300.0), ("ELEVATION 4", 480.0, 420.0)],
+    }
+    for page in range(1, 6):
+        c.setFont("Helvetica", 9)
+        for words, x, y in pages.get(page, [("ST-01 QUARTZ", 100.0, 700.0)]):
+            c.drawString(x, HEIGHT - y, words)
+        c.showPage()
+    c.save()
+    return out.getvalue()
+
+
+def _joined_vendor_pdf() -> bytes:
+    """A made-up joined shop file: page 1 the vendor's cabinet sheet (its title names the pantry,
+    dated before the design's issue), page 2 GV's stone-top sheet of the same item."""
+    out = io.BytesIO()
+    c = canvas.Canvas(out, pagesize=(WIDTH, HEIGHT), invariant=1)
+    pages = {
+        1: [
+            ("XYZ-301", 300.0, 300.0),
+            ('36"', 300.0, 330.0),
+            ("PANTRY A", 1000.0, 700.0),
+            ("DATE 03/01/2026", 1000.0, 720.0),
+        ],
+        2: [
+            ("XYZ-301T", 300.0, 300.0),
+            ('97 1/2"', 300.0, 330.0),
+            ("SINK ABC-UM-12", 300.0, 360.0),
+            ("JOINT", 420.0, 360.0),
+            ("STONE TOP", 1000.0, 700.0),
+        ],
+    }
+    for page in (1, 2):
+        c.setFont("Helvetica", 9)
+        for words, x, y in pages[page]:
+            c.drawString(x, HEIGHT - y, words)
+        c.showPage()
+    c.save()
+    return out.getvalue()
+
+
+def test_the_design_room_its_views_and_the_cross_checks_are_in_the_first_message(
+    tmp_path: Path,
+) -> None:
+    design = "Design set.pdf"
+    joined = [
+        {"name": "Cabinets.pdf", "first_page": 1, "pages": 1},
+        {"name": "Tops.pdf", "first_page": 2, "pages": 1},
+    ]
+    listing = [
+        {"name": FILE, "pages": 2, "kind": "the vendor's shop drawings", "joined_from": joined},
+        {"name": design, "pages": 5, "kind": "the architect's drawings"},
+    ]
+    uploads = {FILE: _joined_vendor_pdf(), design: _room_design_pdf()}
+    _engine, first = _first_message(tmp_path, uploads, listing, page=1)
+    words = " ".join(b.get("text", "") for b in first if "text" in b)
+    # The plan's room (a wall 400 points off the tag is listed now) and the elevation sheet.
+    assert f"XYZ-301: design page 1 of {design} (a plan)" in words
+    assert "WINDOW WALL" in words and "GFI" in words
+    assert f"XYZ-301: design page 2 of {design} (an elevation, section or detail sheet)" in words
+    at = next(i for i, b in enumerate(first) if "design_reference" in b.get("text", ""))
+    design_pictures = [
+        b for b in first[at + 1 :] if b["type"] == "image"
+    ]  # the room, then the elevation
+    assert len(design_pictures) == 2
+    # The item number against the rooms, the stone-top sheet of the same item, the dates: each
+    # fenced as drawing data.
+    blocks = {
+        source: next(b["text"] for b in first if f'source="{source}"' in b.get("text", ""))
+        for source in ("item_room", "other_shop_file", "sheet_dates")
+    }
+    assert (
+        "This sheet is XYZ-301 'PANTRY A'. On the design plan p1, XYZ-301 is in LOUNGE; the "
+        "design's PANTRY holds XYZ-302T (p1)." in blocks["item_room"]
+    )
+    other = blocks["other_shop_file"]
+    assert "p2 (from Tops.pdf) prints XYZ-301T (this page: XYZ-301)" in other
+    assert '97 1/2"' in other and "ABC-UM-12" in other and "Seams (JOINT) marked: 1" in other
+    assert "STONE TOP" in other
+    assert (
+        "This sheet is dated 03/01/2026; the design set's latest revision is dated 2026/04/14"
+        in blocks["sheet_dates"]
+    )
+    # The dimension rows and the start note still close the message.
+    assert first[-1]["text"].startswith("Start with the nine tiles")
+
+
+def test_a_single_file_upload_with_no_design_adds_no_cross_check(tmp_path: Path) -> None:
+    listing = [{"name": FILE, "pages": 2, "kind": "the vendor's shop drawings"}]
+    _engine, first = _first_message(tmp_path, {}, listing)
+    text = json.dumps(first)
+    for source in ("item_room", "other_shop_file", "sheet_dates", "design_reference"):
+        assert f'source=\\"{source}\\"' not in text
