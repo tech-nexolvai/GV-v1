@@ -117,6 +117,7 @@ from app.review.assistant.proof import (
     vendor_value,
 )
 from app.review.assistant.rule_notes import HEADING as RULE_NOTE_HEADING
+from app.review.assistant.symbol_font import decoded
 from app.review.assistant.vendor_text import internal, item_name, reviewer_right, vendor_text
 from extraction.pdfium_guard import pdfium
 
@@ -437,7 +438,7 @@ def number_boxes(document: Any, index: int) -> list[Box]:
             try:
                 for n in range(text.count_rects()):
                     left, bottom, right, top = text.get_rect(n)
-                    words = text.get_text_bounded(left, bottom, right, top)
+                    words = decoded(text.get_text_bounded(left, bottom, right, top))
                     if any(ch.isdigit() for ch in words):
                         out.append((left, height - top, right, height - bottom))
             finally:
