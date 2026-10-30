@@ -1362,10 +1362,9 @@ def test_the_design_room_its_views_and_the_cross_checks_are_in_the_first_message
         source: next(b["text"] for b in first if f'source="{source}"' in b.get("text", ""))
         for source in ("item_room", "other_shop_file", "sheet_dates")
     }
-    assert (
-        "This sheet is XYZ-301 'PANTRY A'. On the design plan p1, XYZ-301 is in LOUNGE; the "
-        "design's PANTRY holds XYZ-302T (p1)." in blocks["item_room"]
-    )
+    room = blocks["item_room"]
+    assert "The design prints XYZ-301 in LOUNGE (design p1); the room the sheet names" in room
+    assert "The design's PANTRY holds XYZ-302T." in room
     other = blocks["other_shop_file"]
     assert "p2 (from Tops.pdf) prints XYZ-301T (this page: XYZ-301)" in other
     assert '97 1/2"' in other and "ABC-UM-12" in other and "Seams (JOINT) marked: 1" in other

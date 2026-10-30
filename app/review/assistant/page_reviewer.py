@@ -1790,15 +1790,18 @@ class _Run:
 
     def _room_facts(self, spots: Sequence[DesignSpot]) -> str:
         design = self._design()
-        plans = [(spot.tag, spot.page, spot.box) for spot in spots if not spot.view]
-        if design is None or not plans:
+        if design is None:
             return ""
-        title = [
-            str(p.get("text") or "")
-            for p in reviewer_context.title_block(self.review.found, self.review.size)
-        ]
-        items = {tag for tag, pages in design.tags.items() if len(pages) <= MAX_DESIGN_PAGES}
-        return "\n".join(reviewer_context.item_room_facts(title, plans, design.pages, items))
+        tags, described = reviewer_context.sheet_description(self.review.found)
+        if not described:
+            described = "; ".join(
+                str(p.get("text") or "")
+                for p in reviewer_context.title_block(self.review.found, self.review.size)
+            )
+        tags = tags or [spot.tag for spot in spots if not spot.view]
+        return "\n".join(
+            reviewer_context.room_facts(tags, described, design.pages, MAX_DESIGN_PAGES)
+        )
 
     def _other_file_facts(self) -> str:
         item = next(
@@ -1819,7 +1822,9 @@ class _Run:
 
         parts = [p for p in parts if isinstance(p, Mapping)]
         return "\n".join(
-            reviewer_context.other_file_facts(context, self.review.page, parts, size_of)
+            reviewer_context.other_file_facts(
+                context, self.review.page, parts, size_of, self._labels_on
+            )
         )
 
     def _date_facts(self) -> str:
