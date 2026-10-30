@@ -943,10 +943,10 @@ function MarkLegend() {
   );
 }
 
-/** A close-up's padding round its label (points), its height on screen and its widest (pixels). */
-const CLOSE_UP_PAD_PT = 3;
-const CLOSE_UP_HEIGHT = 40;
-const CLOSE_UP_MAX_WIDTH = 150;
+/** A close-up's padding round its label (points: a stacked fraction's bar and a foot mark reach past the label's box), its height on screen and its widest (pixels). */
+const CLOSE_UP_PAD_PT = 7;
+const CLOSE_UP_HEIGHT = 46;
+const CLOSE_UP_MAX_WIDTH = 170;
 
 /**
  * One printed number, close up: the vendor's page picture (100 dpi, the same one the left card
