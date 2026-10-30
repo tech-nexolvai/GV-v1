@@ -260,6 +260,10 @@ class Settings(BaseSettings):
     )
     assistant_page_reviewer_effort: Literal["medium", "high", "xhigh", "max"] = "high"
     assistant_page_reviewer_house_rules: Path | None = None
+    # GV's reference pictures for the page reviewer (off by default): a folder with a
+    # `manifest.json` (file, caption, group rule/example, exclude_projects), put first in every
+    # page's first message and cached once per check (`reviewer_context.reference_pictures`).
+    assistant_page_reviewer_pictures: Path | None = None
     # The set index (two-file uploads): each page read once by a cheap call (project, set, views),
     # every string checked by code, kept in the set pack; the vendor's drawings are then paired
     # only within their own project, never with a brand prototype. About $0.01-0.02 a page.
