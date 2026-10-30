@@ -53,6 +53,24 @@ def test_set_pack_page_pictures_are_found(workspace: ChatWorkspace, asked: str) 
     assert workspace.resolve(asked) == real.resolve()
 
 
+@pytest.mark.parametrize(
+    "asked",
+    [
+        f"{SET_PACK}/pages/Made-up shop (2 files joined)/p-3.png",
+        f"{SET_PACK}/pages/Made-up shop (2 files joined).pdf/p-003.png",
+    ],
+)
+def test_a_page_folder_written_as_the_uploads_own_name_is_found(
+    workspace: ChatWorkspace, asked: str
+) -> None:
+    """2026-10-31: a helper asked for `pages/<the upload's name, spaces kept>/`; the pack's folder
+    spells it with underscores (`page_folder`)."""
+    real = workspace.set_folder / "pages" / "Made-up_shop_2_files_joined" / "p-003.png"
+    real.parent.mkdir(parents=True)
+    real.write_bytes(b"x")
+    assert workspace.resolve(asked) == real.resolve()
+
+
 def test_a_page_folder_with_the_pdf_ending_lists_the_real_folder(workspace: ChatWorkspace) -> None:
     real = (workspace.set_folder / "pages" / "Made-up set").resolve()
     assert workspace.resolve(f"{SET_PACK}/pages/Made-up set.pdf") == real

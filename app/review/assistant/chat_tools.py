@@ -1080,6 +1080,35 @@ class ToolResult:
     is_error: bool = False
 
 
+def _same_upload(given: str, names: Sequence[str]) -> str | None:
+    """The one upload a file name means when it is spelled as the set pack spells it: its page
+    folder's name (`Shop_drawings_2_files_joined`, spaces and brackets as underscores), with or
+    without `.pdf`, `_drawings_only` or the set pack's folder in front; `None` when none or two
+    match (2026-10-31: helpers named the joined upload by its folder's spelling and were
+    refused)."""
+    name = given.strip().removeprefix(SET_PACK + "/").removeprefix("pages/")
+    name = name.rsplit("/", 1)[-1]
+    for ending in (".pdf", ".PDF", "_drawings_only"):
+        name = name.removesuffix(ending)
+    key = page_folder(f"{name}.pdf")
+    found = [n for n in names if page_folder(n) == key]
+    return found[0] if len(found) == 1 else None
+
+
+def _joined_pages(item: Mapping[str, Any]) -> str:
+    """`; joined from 2 files: pages 1-7 and 8-18` for an upload joined from several files: its
+    page numbers run on across them, so a part's own page is not the upload's."""
+    parts = [p for p in item.get("joined_from") or [] if isinstance(p, Mapping)]
+    spans = []
+    for part in parts:
+        first, count = part.get("first_page"), part.get("pages")
+        if isinstance(first, int) and isinstance(count, int) and count > 0:
+            spans.append(f"{first}-{first + count - 1}" if count > 1 else str(first))
+    if len(parts) < 2 or len(spans) != len(parts):
+        return ""
+    return f"; joined from {len(parts)} files: pages {', '.join(spans[:-1])} and {spans[-1]}"
+
+
 def _page_folders(listing: Sequence[Mapping[str, Any]]) -> str:
     """Where each upload's page pictures are (its own folder name, `sandbox.page_folder`)."""
     names = [str(item.get("name") or "") for item in listing if item.get("name")]
@@ -1734,14 +1763,16 @@ class ChatTools:
             if len(own) == 1:
                 return str(own[0]["name"])
         listed = "; ".join(
-            f"{item['name']!r} ({item.get('kind') or 'a file'}"
+            f"{json.dumps({'file': str(item['name'])}, ensure_ascii=False)[1:-1]} "
+            f"({item.get('kind') or 'a file'}"
             + (f", {item['pages']} pages" if isinstance(item.get("pages"), int) else "")
+            + _joined_pages(item)
             + ")"
             for item in self.uploads
         )
         raise SandboxRefused(
             f"{where}.file is needed: the set has {len(self.uploads)} PDFs, and a page number "
-            f"alone does not say which. Name one with file: {listed}."
+            f"alone does not say which. Give one exactly as written here: {listed}."
         )
 
     def _crop_request(
@@ -1771,6 +1802,8 @@ class ChatTools:
             chosen = self._file_of_side(where, side)
         elif isinstance(file_name, str):
             chosen = file_name.strip().removeprefix(UPLOADS + "/")
+            if chosen not in names:
+                chosen = _same_upload(chosen, names) or chosen
             if chosen not in names:
                 raise SandboxRefused(
                     f"{where}.file: there is no upload {chosen!r}. {self.workspace.where_hint()}"

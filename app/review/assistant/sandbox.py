@@ -304,16 +304,21 @@ def _near_miss(candidate: Path, root: Path) -> Path | None:
 
 
 def _near_folder(folder: Path, root: Path) -> Path | None:
-    """`folder` with an ending the model added taken off, when that folder exists inside `root`."""
+    """`folder` with an ending the model added taken off, or spelled as the set pack spells an
+    upload's page folder (`page_folder`: "A B (2).pdf" -> "A_B_2"; 2026-10-31, a helper asked for
+    `pages/<the upload's name, spaces kept>/`), when that folder exists inside `root`."""
     name = folder.name
     for _ in _FOLDER_ENDINGS:
         for ending in _FOLDER_ENDINGS:
             if name.lower().endswith(ending.lower()):
                 name = name[: -len(ending)]
-    if not name or name == folder.name:
-        return None
-    found = (folder.parent / name).resolve()
-    return found if found.is_dir() and root in found.parents else None
+    for candidate in dict.fromkeys((name, page_folder(f"{name}.pdf") if name else "")):
+        if not candidate or candidate == folder.name:
+            continue
+        found = (folder.parent / candidate).resolve()
+        if found.is_dir() and root in found.parents:
+            return found
+    return None
 
 
 def _similar(candidate: Path, root: Path) -> str:
