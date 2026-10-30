@@ -365,6 +365,40 @@ def test_a_side_picks_its_only_file_and_refuses_when_that_side_has_two(tmp_path:
     assert one._crop_request({"page": 2, "box": box}, 0)[0] == VENDOR
 
 
+def test_a_joined_upload_is_named_exactly_with_the_pages_of_each_file(tmp_path: Path) -> None:
+    joined = "Made up shop set (2 files joined).pdf"
+    parts = [
+        {"name": "Made up stone.pdf", "pages": 2, "first_page": 1},
+        {"name": "Made up cabinets.pdf", "pages": 4, "first_page": 3},
+    ]
+    listing = [{**_listing()[0], "name": joined, "joined_from": parts}, _listing()[1]]
+    tools = _tools(tmp_path, listing)
+    with pytest.raises(SandboxRefused) as refused:
+        tools._crop_request({"page": 2, "box": {"x0": 0, "y0": 0, "x1": 1, "y1": 1}}, 0)
+    words = str(refused.value)
+    assert f'"file": "{joined}"' in words and f'"file": "{ARCH_A}"' in words
+    assert "joined from 2 files: pages 1-2 and 3-6" in words
+
+
+@pytest.mark.parametrize(
+    "spelled",
+    [
+        "Made_up_vendor_set",
+        "Made_up_vendor_set.pdf",
+        "/mnt/user-data/set/Made_up_vendor_set_drawings_only.pdf",
+        "/mnt/user-data/set/pages/Made_up_vendor_set",
+    ],
+)
+def test_a_file_spelled_as_its_page_folder_is_that_upload(tmp_path: Path, spelled: str) -> None:
+    """2026-10-31: helpers named the joined upload as the set pack spells its folder (spaces and
+    brackets as underscores) and were refused."""
+    tools = _tools(tmp_path, _listing())
+    box = {"x0": 0, "y0": 0, "x1": 1, "y1": 1}
+    assert tools._crop_request({"page": 2, "box": box, "file": spelled}, 0)[0] == VENDOR
+    with pytest.raises(SandboxRefused, match="there is no upload"):
+        tools._crop_request({"page": 2, "box": box, "file": "Made_up_other_set"}, 0)
+
+
 # ---- the pack README and the drawer's page pictures ------------------------------------------------
 
 

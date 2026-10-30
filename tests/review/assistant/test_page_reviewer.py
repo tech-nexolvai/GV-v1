@@ -790,7 +790,13 @@ def test_a_full_check_with_the_reviewer_on_reviews_each_vendor_page_on_its_own_m
 
     outcome = harness.run()
 
-    asked = script.params["page_review"]
+    called = script.params["page_review"]
+    # One cache warm-up before the reviewers, with their exact brief, tools, thinking and effort.
+    (warm,) = [p for p in called if p["max_tokens"] == page_reviewer.WARM_TOKENS]
+    asked = [p for p in called if p is not warm]
+    assert warm["messages"][0]["content"][-1]["text"] == "Reply with OK."
+    for key in ("system", "tools", "thinking", "output_config", "tool_choice"):
+        assert all(p[key] == warm[key] for p in asked), key
     pages = sorted(
         {
             int(
@@ -1378,3 +1384,160 @@ def test_a_single_file_upload_with_no_design_adds_no_cross_check(tmp_path: Path)
     text = json.dumps(first)
     for source in ("item_room", "other_shop_file", "sheet_dates", "design_reference"):
         assert f'source=\\"{source}\\"' not in text
+
+
+# ---- code's own sizes on a hand-drawn page, the size gate, the warm-up (2026-10-31) ---------------
+
+
+def _stone_and_pen_pdf() -> bytes:
+    """A made-up joined shop file: page 1 GV's typed stone-top sheet (its top 50 1/4"), page 2 the
+    vendor's cabinet sheet drawn in pen strokes: no size on its text layer, only words."""
+    out = io.BytesIO()
+    c = canvas.Canvas(out, pagesize=(WIDTH, HEIGHT), invariant=1)
+    pages = {
+        1: [("STONE TOP", 1000.0, 700.0), ('50 1/4"', 300.0, 330.0)],
+        2: [("CABINET ELEVATION", 900.0, 200.0), ("ITEM 101", 1100.0, 760.0)],
+    }
+    for page in (1, 2):
+        c.setFont("Helvetica", 9)
+        for words, x, y in pages[page]:
+            c.drawString(x, HEIGHT - y, words)
+        c.line(100, 400, 600, 400)
+        c.showPage()
+    c.save()
+    return out.getvalue()
+
+
+#: Code's labels of page 2 (`dims.json`): two pen-stroke sizes on one row, one read by OCR at its
+#: spot, one of the text layer's own and one code worked out (an equal part: not printed).
+PEN_LABELS: list[dict[str, Any]] = [
+    {"id": "D1", "text": '49 1/2"', "inches": "49.5", "box": [300, 320, 330, 332],
+     "orientation": "h", "route": "drawn"},
+    {"id": "D2", "text": '12"', "inches": "12", "box": [400, 321, 415, 333],
+     "orientation": "h", "route": "drawn"},
+    {"id": "D3", "text": '4"', "inches": "4", "box": [100, 500, 108, 512],
+     "orientation": "v", "route": "drawn", "origin": "ocr"},
+    {"id": "D4", "text": '7"', "inches": "7", "box": [700, 600, 710, 610],
+     "orientation": "h", "route": "text"},
+    {"id": "D5", "text": "EQ", "inches": "6", "box": [800, 600, 815, 610],
+     "orientation": "h", "route": "drawn", "derived": {"from": "D2"}},
+]  # fmt: skip
+
+
+def _pen_review(
+    tmp_path: Path, turns: Sequence[Any], labels: list[dict[str, Any]] = PEN_LABELS
+) -> tuple[_Engine, PageReview, Reviews]:
+    """Page 2 of the made-up joined file reviewed with `labels` in its set pack's `dims.json`."""
+    engine = _Engine(tmp_path, _Script(turns, 100_000))
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    entry = {"file": FILE, "page": 2, "labels": labels}
+    (pack / "dims.json").write_text(json.dumps({"pages": [entry]}), encoding="utf-8")
+    engine.workspace = ChatWorkspace.open(tmp_path / "chat", set_pack=pack)
+    (engine.workspace.uploads / FILE).write_bytes(_stone_and_pen_pdf())
+    listing = [{"name": FILE, "pages": 2, "kind": "the vendor's shop drawings"}]
+    engine.tools = ChatTools(
+        workspace=engine.workspace,
+        sandbox=FakeSandbox(engine.workspace, lambda command, _w: ("ok", 0)),
+        page_count=2,
+        uploads=listing,
+    )
+    review = PageReview(page=2, file=FILE, options=Options())
+    reviews = Reviews()
+    reviews.pages["page-review-p2"] = review
+    agent = SimpleNamespace(
+        model=MODELS["claude-opus-5-5"], cap_micros=900_000, spent=0, last_call=0
+    )
+    page_reviewer._Run(engine, agent, review, reviews, {"steps": []}, 0).run()  # type: ignore[arg-type]
+    return engine, review, reviews
+
+
+def _pen_issue(read: str) -> dict[str, Any]:
+    return _tool(
+        "report_issue", kind="A", claim="please_check", item="Cabinet top vs the stone top",
+        wrong="The cabinet top and GV's stone top (p1) differ.", read=read,
+        box={"x0": 290, "y0": 310, "x1": 340, "y1": 340}, confidence="medium",
+    )  # fmt: skip
+
+
+def test_a_hand_drawn_page_gets_the_sizes_code_read_with_their_ids_and_rows(
+    tmp_path: Path,
+) -> None:
+    engine, review, _reviews = _pen_review(tmp_path, [[_text("Nothing to report.")]])
+    first = engine.script.calls[0].messages[0]["content"]
+    (labels,) = [b["text"] for b in first if 'source="code_labels"' in b.get("text", "")]
+    assert 'D1  300,320,330,332  49 1/2"  (pen strokes)' in labels
+    assert 'D3  100,500,108,512  4"  (read at its spot, two OCR engines)' in labels
+    # The text layer's own label is listed with the text layer; a worked-out one is not printed.
+    assert "D4" not in labels and "D5" not in labels
+    assert [label["id"] for label in review.labels] == ["D1", "D2", "D3"]
+    (rows,) = [b["text"] for b in first if 'source="dimension_strings"' in b.get("text", "")]
+    assert 'D1 49 1/2" + D2 12" = 61 1/2"' in rows
+    # A typed page (no label off its drawing) has no such block: its opening is as before.
+    typed, *_ = _review(tmp_path / "typed", [[_text("Nothing to report.")]])
+    assert "code_labels" not in json.dumps(typed.script.calls[0].messages[0])
+
+
+def test_reading_another_page_never_turns_an_accepted_size_issue_into_a_refused_one(
+    tmp_path: Path,
+) -> None:
+    """2026-10-31: on a hand-drawn page, 'vendor top vs GV stone top' was accepted while no other
+    page was read and refused once the stone page was read (its number was printed there, the
+    vendor's only in pen strokes). Reading a page now only adds sizes."""
+    quote = '49 1/2" ; stone top 50 1/4" (p1)'
+    tiles_then = [[_tiles(1, 2, 3, 4, 5, 6)], [_tiles(7, 8, 9)], [_pen_issue(quote)], [_text("ok")]]
+    _engine, unread, _ = _pen_review(tmp_path / "unread", tiles_then)
+    read_first = [[_tiles(1, 2, 3, 4, 5, 6), _tool("set_page_text", page=1)], *tiles_then[1:]]
+    _engine, read, reviews = _pen_review(tmp_path / "read", read_first)
+    assert [d.kind for d in unread.drafts] == ["A"]
+    assert [d.kind for d in read.drafts] == ["A"]
+    assert read.refusals == {}
+    assert reviews.block()["pages"][0]["code_labels"] == 3
+
+
+def test_a_size_issue_on_a_hand_drawn_page_still_needs_a_number_code_read(
+    tmp_path: Path,
+) -> None:
+    turns = [
+        [_tiles(1, 2, 3, 4, 5, 6)],
+        [_tiles(7, 8, 9)],
+        [_pen_issue('10" ; 11"')],
+        [_text("ok")],
+    ]
+    engine, review, reviews = _pen_review(tmp_path, turns)
+    assert review.drafts == []
+    assert any(
+        "does not find any of the numbers" in r for r in _results(engine.script.calls[3].messages)
+    )
+    # Each refusal is counted by its reason in the run's log.
+    (row,) = reviews.block()["pages"]
+    assert row["refused"] == {"report_issue: size: no quoted number read by code": 1}
+
+
+def test_the_cache_warm_up_sends_the_reviewers_exact_prefix_once(tmp_path: Path) -> None:
+    import contextlib
+
+    options = Options(reference_pictures=_picture_folder(tmp_path))
+    engine = _Engine(tmp_path, _Script([[_text("OK")], [_text("Nothing to report.")]], 1_000))
+    engine._fits = lambda _estimate: True  # type: ignore[attr-defined]
+    engine.timings = SimpleNamespace(phase=lambda _name: contextlib.nullcontext())  # type: ignore[attr-defined]
+    reviews = Reviews()
+    model = MODELS["claude-opus-5-5"]
+    page_reviewer.prewarm(engine, reviews, model, options)
+    review = PageReview(page=2, file=FILE, options=options)
+    agent = SimpleNamespace(model=model, cap_micros=600_000, spent=0, last_call=0)
+    page_reviewer._Run(engine, agent, review, reviews, {"steps": []}, 0).run()  # type: ignore[arg-type]
+    warm, first = engine.script.calls[:2]
+    assert warm.max_tokens == page_reviewer.WARM_TOKENS
+    for name in ("effort", "thinking", "system", "tools", "context_management"):
+        assert getattr(warm, name) == getattr(first, name), name
+    # GV's pictures, the same ids, then the breakpoint: the page's own blocks follow it.
+    shared = warm.messages[0]["content"][:-1]
+    assert shared and any(b["type"] == "image" for b in shared)
+    assert first.messages[0]["content"][: len(shared)] == shared
+    assert shared[-1]["cache_control"] == {"type": "ephemeral"}
+    # Only on Anthropic's own API.
+    made = len(engine.script.calls)
+    engine.provider = SimpleNamespace(name="openrouter")
+    page_reviewer.prewarm(engine, reviews, model, options)
+    assert len(engine.script.calls) == made

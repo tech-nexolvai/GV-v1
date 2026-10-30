@@ -22,7 +22,10 @@ tokens. Its tools: `view_page`, `zoom` (GV's own zoom: the drawings-only copy, G
    room and views of the item, code's cross-checks (`reviewer_context`: the item number against
    the design's rooms, the same item on the joined upload's other file, the sheet's date against
    the design's latest revision) and the dimension rows added up by code (`dimension_strings`),
-   all in its first message (code, $0);
+   all in its first message (code, $0); on a page drawn in pen strokes (no text layer for its
+   sizes), the sizes code read itself (`code_labels`: the set pack's `dims.json`, its id, value,
+   box and how it was read) are listed and lined up in rows too (2026-10-31: a hand-drawn cabinet
+   page got no size and no row, and spent 26-35 zooms reading them again);
 2. the nine tiles of a 3x3 grid: `report_issue` is refused until every tile was zoomed;
 3. tight zooms: a coverage check counts the page's printed phrases (dimension values, callouts,
    tags, titles) seen in a zoom at most `TIGHT_PT` across;
@@ -34,12 +37,22 @@ tokens. Its tools: `view_page`, `zoom` (GV's own zoom: the drawings-only copy, G
 6. a final "report what you have" turn when the review's money is used, so nothing found is lost.
 
 It reports **as it finds** (`report_issue` records the item at once): a stop keeps every item.
+Each refused tool call is counted by its reason, per page, in the run's log (`Reviews.block`).
+
+**The prompt cache is warmed once** (`prewarm`) before the reviewers start together: one tiny call
+with their exact model, thinking, tools, brief and GV's reference pictures, so every page reads
+that prefix from the cache instead of each writing it (Anthropic's own API only; a failure is only
+logged).
 
 **Findings** (the AI never decides red):
 
 - kinds B to F (construction, completeness, material, scope, labels) and every "please check" are
   Likely problems (`likely_problems`, `by: page_reviewer`, `proof: likely_only`), never red, their
   kind in words on the card;
+- a kind A issue quotes two sizes code finds printed (`_cited`): on this page's text layer or
+  among the sizes code read off its pen strokes, on another page it read, or in the facts code
+  gave it; reading another page only ever adds sizes, so it never turns an accepted issue into a
+  refused one (2026-10-31: it did, on a hand-drawn page once the stone page was read);
 - a kind A size claim that a dimension string does not add up (its parts and printed total) is
   checked by code first (a sum that adds up is sent back as a misread) and then recorded as the
   vendor's own string (`source: vendor_arithmetic`): it takes the existing proof path (code's
@@ -90,9 +103,13 @@ __all__ = [
     "Reviews",
     "check_math",
     "cited_sizes",
+    "code_labels",
     "coverage_targets",
+    "label_listing",
+    "label_sizes",
     "line_listing",
     "phrases",
+    "prewarm",
     "printed_sizes",
     "review_money",
     "roster_agents",
@@ -180,6 +197,10 @@ MIN_REFLECT_TOKENS: Final = 6_000
 DEFAULT_PER_PAGE_MICROS: Final = 1_500_000
 #: Line pieces one page_lines call lists at most.
 MAX_LINES: Final = 150
+#: The cache warm-up's output allowance (`prewarm`, as `ChatEngine._prewarm`'s), and how long a
+#: reviewer waits for it before its first call (seconds); then it starts anyway.
+WARM_TOKENS: Final = 16
+WARM_WAIT_S: Final = 60.0
 
 #: GV's reviewer's kinds, as the reviewer reports them, and the Likely problem's kind for each.
 KIND_OF: Final[Mapping[str, str]] = {
@@ -219,7 +240,8 @@ money on site. Review it as GV's senior reviewer does, and report only what you 
 
 How to work
 - Your first message has the page's text layer (phrases with boxes in page points) and the whole \
-page. Numbers come from the text layer; pictures show what text cannot: what a number dimensions, \
+page. Numbers come from the text layer (on a hand-drawn page, from the sizes code read off the \
+drawing, listed with ids); pictures show what text cannot: what a number dimensions, \
 arrows, grain marks, supports, what is missing.
 - zoom draws any area sharp from the PDF. Look at each of the nine tiles once (tile 1-9), then \
 zoom tight (under about 300 points a side) on every dimension string, \
@@ -753,10 +775,72 @@ def printed_sizes(found: Sequence[Mapping[str, Any]]) -> set[Decimal]:
     }
 
 
+def _label_inches(label: Mapping[str, Any]) -> Decimal | None:
+    try:
+        value = Decimal(str(label.get("inches")))
+    except (ArithmeticError, ValueError):
+        return None
+    return value if value.is_finite() and value > 0 else None
+
+
+def code_labels(labels: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The page's sizes code read where its text layer has none (the set pack's `dims.json`: pen
+    strokes, a pasted picture, OCR at a spot), each with its id, value as printed and box. The
+    text route's labels are the text layer's own (listed with it); a derived label (an equal part
+    code worked out) is not printed, so it is left out."""
+    out: list[dict[str, Any]] = []
+    for label in labels:
+        box = label.get("box")
+        if (
+            (label.get("route") == "text" and not label.get("origin"))
+            or isinstance(label.get("derived"), Mapping)
+            or not isinstance(box, Sequence)
+            or len(box) != 4
+            or _label_inches(label) is None
+        ):
+            continue
+        out.append({**label, "box": [float(v) for v in box]})
+    return out
+
+
+def label_sizes(labels: Sequence[Mapping[str, Any]]) -> set[Decimal]:
+    """The sizes in inches of printed labels (`dims.json`); a derived label's is not printed."""
+    return {
+        value
+        for label in labels
+        if not isinstance(label.get("derived"), Mapping)
+        and (value := _label_inches(label)) is not None
+    }
+
+
+def label_listing(labels: Sequence[Mapping[str, Any]]) -> str:
+    """Code's own sizes (`code_labels`), one a line: id, box, value as read, and how."""
+    lines = []
+    for label in labels[:MAX_CODE_LABELS]:
+        b = label["box"]
+        how = str(label.get("origin") or label.get("route") or "")
+        lines.append(
+            f"{label.get('id')}  {b[0]:.0f},{b[1]:.0f},{b[2]:.0f},{b[3]:.0f}  "
+            f"{label.get('text')}  ({CODE_LABEL_HOW.get(how, how)})"
+        )
+    more = len(labels) - MAX_CODE_LABELS
+    tail = f"\n... and {more} more" if more > 0 else ""
+    return "id  x0,y0,x1,y1  value  (how code read it)\n" + "\n".join(lines) + tail
+
+
 #: Dimension values whose centres lie within this of one line make one row (or column).
 _ROW_PT: Final = 4.0
 #: At most this many rows and columns listed in the first message.
 MAX_STRINGS: Final = 40
+#: The sizes code read off a page's drawing where its text layer has none (`code_labels`), at most
+#: this many in the first message (the hand-drawn cabinet pages of 2026-10-31 had 21 to 44).
+MAX_CODE_LABELS: Final = 80
+#: How code read a size the text layer lacks (`dims.json`: its `origin`, else its `route`).
+CODE_LABEL_HOW: Final[Mapping[str, str]] = {
+    "drawn": "pen strokes",
+    "ocr": "read at its spot, two OCR engines",
+    "picture": "pasted picture, two OCR engines",
+}
 #: The design reference (`_Run.design_spots`): an item tag the design set prints on at most this
 #: many pages is the item's own (a finish code is printed everywhere), at most this many tags and
 #: pictures. On a plan the room around the tag is pictured and its words listed (this far from the
@@ -822,13 +906,17 @@ def _phrase_box(phrase: Mapping[str, Any]) -> list[float] | None:
     return [float(v) for v in box]
 
 
-def dimension_strings(found: Sequence[Mapping[str, Any]]) -> str:
+def dimension_strings(
+    found: Sequence[Mapping[str, Any]], labels: Sequence[Mapping[str, Any]] = ()
+) -> str:
     """The page's dimension values lined up in rows (and turned columns), each read as exact
     inches and added by code: the reviewer decides which values make one string and which is
-    its overall, and spends no turn adding (the skill test of 2026-10-30)."""
+    its overall, and spends no turn adding (the skill test of 2026-10-30). `labels`: the sizes
+    code read off the drawing itself (`code_labels`), named by their id."""
     from app.review.assistant.finding_checks import to_inches
 
     values: list[tuple[str, Decimal, list[float]]] = []
+    side: dict[int, bool] = {}
     for phrase in found:
         text, box = str(phrase.get("text") or ""), _phrase_box(phrase)
         if box is None:
@@ -840,8 +928,20 @@ def dimension_strings(found: Sequence[Mapping[str, Any]]) -> str:
             inches = to_inches(text)
             if inches is not None and inches > 0:
                 values.append((text, inches, list(box)))
+    for label in labels:
+        value = _label_inches(label)
+        if value is None:
+            continue
+        # A label knows its own way (a short turned value's box is about square).
+        side[len(values)] = label.get("orientation") == "v"
+        text, exact = str(label.get("text") or "").strip(), _inch_text(value)
+        shown = f"{label.get('id')} {text}" + ("" if text == exact else f" ({exact})")
+        values.append((shown, value, list(label["box"])))
 
-    def turned(b: Sequence[float]) -> bool:
+    def is_turned(n: int) -> bool:
+        if n in side:
+            return side[n]
+        b = values[n][2]
         return (b[3] - b[1]) > 1.5 * (b[2] - b[0])
 
     def row_centre(b: Sequence[float]) -> float:
@@ -863,25 +963,29 @@ def dimension_strings(found: Sequence[Mapping[str, Any]]) -> str:
     ):
         used: set[int] = set()
         for i, (_t, _v, b) in enumerate(values):
-            if i in used or turned(b) != columns:
+            if i in used or is_turned(i) != columns:
                 continue
             members = [
                 j
                 for j, (_t2, _v2, b2) in enumerate(values)
                 if j not in used
-                and turned(b2) == columns
+                and is_turned(j) == columns
                 and abs(centre(b2) - centre(b)) <= _ROW_PT
             ]
             if len(members) < 2:
                 continue
             used.update(members)
-            parts = sorted((values[j] for j in members), key=lambda v: along(v[2]))
-            total = sum((v for _t, v, _b in parts), Decimal(0))
-            first, last = parts[0][2], parts[-1][2]
+            members.sort(key=lambda j: along(values[j][2]))
+            total = sum((values[j][1] for j in members), Decimal(0))
+            first, last = values[members[0]][2], values[members[-1]][2]
             lines.append(
                 f"{name} at {centre(first):.0f} ({first[0]:.0f},{first[1]:.0f} to "
                 f"{last[2]:.0f},{last[3]:.0f}): "
-                + " + ".join(f"{t} ({_inch_text(v)})" for t, v, _b in parts)
+                + " + ".join(
+                    # A label says its inches already (`shown`), once.
+                    values[j][0] if j in side else f"{values[j][0]} ({_inch_text(values[j][1])})"
+                    for j in members
+                )
                 + f" = {_inch_text(total)}"
             )
     return "\n".join(lines[:MAX_STRINGS])
@@ -1010,7 +1114,22 @@ def line_listing(segments: Sequence[Any], area: Sequence[float]) -> str:
 
 
 class _Refused(Exception):
-    """A tool call refused, with the plain reason sent back to the reviewer."""
+    """A tool call refused, with the plain reason sent back to the reviewer; `reason`: a short name
+    for the run's log (`PageReview.refusals`), else the words' start."""
+
+    def __init__(self, words: str, reason: str | None = None) -> None:
+        super().__init__(words)
+        self.reason = reason or _short(words)
+
+
+def _short(words: str) -> str:
+    """A refusal's words cut to a log key: the first clause, at most `_REASON_CHARS`."""
+    first = re.split(r"[:;(]", words, maxsplit=1)[0].strip()
+    return first[:_REASON_CHARS] or "refused"
+
+
+#: A refusal's log key is at most this long (`_short`).
+_REASON_CHARS: Final = 60
 
 
 @dataclass(slots=True)
@@ -1078,6 +1197,16 @@ class PageReview:
     #: Other pages of the set whose text it read (`set_page_text`): their printed sizes count
     #: toward a size issue's two printed numbers.
     other_text: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    #: The sizes code read off the page's drawing where its text layer has none (`code_labels`),
+    #: listed in its first message and counted as printed.
+    labels: list[dict[str, Any]] = field(default_factory=list)
+    #: Code's labels of the other pages it read or zoomed on (`dims.json`), by page: their sizes
+    #: count as printed too.
+    other_labels: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    #: The sizes the facts code gave it print (the rest of the set, the design, the other file).
+    shown_sizes: set[Decimal] = field(default_factory=set)
+    #: Its refused tool calls, by tool and reason (`_Refused.reason`), for the run's log.
+    refusals: dict[str, int] = field(default_factory=dict)
 
     # -- coverage --
 
@@ -1278,6 +1407,9 @@ class _Run:
         except Exception:  # noqa: BLE001 - the other pages' reviews go on
             _log.exception("page reviewer p%s: the page could not be read", review.page)
             return f"Page {review.page} could not be read for the page review.", False, "error"
+        if self.reviews.warm is not None:
+            # Its first call reads the brief, tools and GV's pictures from the warmed cache.
+            self.reviews.warm.wait(WARM_WAIT_S)
         messages: list[dict[str, Any]] = [{"role": "user", "content": opening}]
         cached = previous = 0
         stopped: str | None = None
@@ -1405,8 +1537,19 @@ class _Run:
             },
             *self.picture((0.0, 0.0, width, height), "The whole page", zoomed=False),
         ]
+        if review.labels:
+            content.append(
+                {
+                    "type": "text",
+                    "text": "Sizes code read off the drawing itself where the text layer has "
+                    "none (pen strokes or a pasted picture; code's reading can be wrong, so "
+                    "confirm a number in a zoom before an issue rests on it):\n"
+                    + fence(label_listing(review.labels), "code_labels"),
+                }
+            )
         rest = self._set_summary()
         if rest:
+            review.shown_sizes |= set(_sizes_in(rest))
             content.append(
                 {
                     "type": "text",
@@ -1428,6 +1571,7 @@ class _Run:
         spots = self.design_spots()
         if spots:
             text, pictures = self.design_reference(spots)
+            review.shown_sizes |= set(_sizes_in(text))
             content.append(
                 {
                     "type": "text",
@@ -1441,8 +1585,9 @@ class _Run:
             )
             content += pictures
         for lead, text, source in self.cross_checks(spots):
+            review.shown_sizes |= set(_sizes_in(text))
             content.append({"type": "text", "text": f"{lead}\n" + fence(text, source)})
-        strings = dimension_strings(review.found)
+        strings = dimension_strings(review.found, review.labels)
         if strings:
             content.append(
                 {
@@ -1465,69 +1610,15 @@ class _Run:
     # -- GV's reference pictures (the same blocks for every page of a check) --
 
     def reference_blocks(self) -> list[dict[str, Any]]:
-        """GV's reference pictures as the first message's opening blocks: a heading per group,
-        each picture followed by its caption, a prompt-cache breakpoint after the last one (tools,
-        brief and pictures are the same for every page, so they are paid once per check). Made
-        once per check (`Reviews.reference`); none when no folder is set or it cannot be read."""
-        folder = self.review.options.reference_pictures
-        if folder is None:
-            return []
-        with self.reviews.lock:
-            if self.reviews.reference is None:
-                try:
-                    self.reviews.reference = self._reference_blocks(Path(folder))
-                except Exception:  # noqa: BLE001 - the review goes on without them
-                    _log.warning("page reviewer: GV's reference pictures were not added")
-                    self.reviews.reference = []
-            blocks = [dict(block) for block in self.reviews.reference]
+        """GV's reference pictures as the first message's opening blocks (`shared_reference`: the
+        same blocks for every page of a check, and for the cache warm-up)."""
+        blocks = shared_reference(self.engine, self.reviews, self.review.options.reference_pictures)
         self.review.pictures += sum(1 for block in blocks if block.get("type") == "image")
-        return blocks
-
-    def _reference_blocks(self, folder: Path) -> list[dict[str, Any]]:
-        from uuid import uuid4
-
-        from app.review.assistant.chat_request import _EPHEMERAL
-
-        pictures = reviewer_context.reference_pictures(folder, self._upload_names())
-        store = self.engine.tools.workspace.pictures
-        blocks: list[dict[str, Any]] = []
-        for group, heading in REFERENCE_HEADINGS.items():
-            chosen = [picture for picture in pictures if picture.group == group]
-            if not chosen:
-                continue
-            blocks.append({"type": "text", "text": heading})
-            for picture in chosen:
-                picture_id = str(uuid4())
-                store.mkdir(parents=True, exist_ok=True)
-                (store / f"{picture_id}.png").write_bytes(picture.png)
-                source = {
-                    "type": "gv_picture",
-                    "picture_id": picture_id,
-                    "width": picture.width,
-                    "height": picture.height,
-                }
-                blocks.append({"type": "image", "source": source})
-                blocks.append({"type": "text", "text": picture.caption})
-        if blocks:
-            blocks[-1] = {**blocks[-1], "cache_control": dict(_EPHEMERAL)}
         return blocks
 
     def _listing_items(self) -> list[dict[str, Any]]:
         """The chat's uploads (`uploads.json`)."""
-        read: Callable[[Any], list[dict[str, Any]]] = import_module(
-            "app.review.assistant.chat_findings"
-        ).read_listing
-        return read(self.engine.tools.workspace)
-
-    def _upload_names(self) -> list[str]:
-        """Every upload's name, and the names of the files a joined upload was made from."""
-        names: list[str] = []
-        for item in self._listing_items():
-            names.append(str(item.get("name") or ""))
-            parts = item.get("joined_from")
-            if isinstance(parts, list):
-                names += [str(p.get("name") or "") for p in parts if isinstance(p, Mapping)]
-        return [name for name in names if name]
+        return _listing_of(self.engine)
 
     def _context(self) -> SetContext:
         """What every page of this file prints (`set_context`), read once per check."""
@@ -1769,7 +1860,31 @@ class _Run:
         review.words = list(words)
         review.found = phrases(review.words)
         review.targets = coverage_targets(review.found)
+        review.labels = code_labels(self._labels_on(review.page))
         review.tile_boxes = tiles(*review.size)
+
+    # -- code's own sizes (the set pack's `dims.json`) --
+
+    def _labels_on(self, page: int) -> list[dict[str, Any]]:
+        """Code's numbered labels of `page` of this file (`dim_index`, the same labels the helpers
+        name), never read now: a page the pack has not read yet has none."""
+        workspace = self.engine.tools.workspace
+        try:
+            found = (
+                import_module("app.review.assistant.dim_index")
+                .labels_for(workspace.set_pack, workspace.uploads)
+                .on_page(self.review.file, page, read_now=False)
+            )
+        except Exception:  # noqa: BLE001 - the page is reviewed on its text layer, as before
+            _log.warning("page reviewer p%s: code's labels of p%s not read", self.review.page, page)
+            return []
+        return [dict(label) for label in found or []]
+
+    def _refresh_labels(self) -> list[dict[str, Any]]:
+        """This page's own labels, looked up again when none were there at the start (the set pack
+        was still reading its drawing)."""
+        self.review.labels = code_labels(self._labels_on(self.review.page))
+        return self.review.labels
 
     def _folder(self) -> Path:
         workspace = self.engine.tools.workspace
@@ -1861,13 +1976,20 @@ class _Run:
                 raise _Refused("its input was cut off; send it again")
             content = self._tool(name, given or {})
         except _Refused as refused:
+            self._count_refusal(name, refused.reason)
             return _result(call, f"Refused: {refused}", error=True)
         except ValueError as wrong:
+            self._count_refusal(name, _short(str(wrong)))
             return _result(call, f"Refused: {wrong}", error=True)
         except Exception:  # noqa: BLE001 - told plainly; the review goes on
             _log.exception("page reviewer p%s: tool %s failed", review.page, name)
+            self._count_refusal(name, "the tool failed")
             return _result(call, "Refused: the tool could not run just now.", error=True)
         return _result(call, content)
+
+    def _count_refusal(self, name: str, reason: str) -> None:
+        key = f"{name}: {reason}"
+        self.review.refusals[key] = self.review.refusals.get(key, 0) + 1
 
     def _tool(self, name: str, given: Mapping[str, Any]) -> str | list[dict[str, Any]]:
         review = self.review
@@ -1887,6 +2009,8 @@ class _Run:
                 if other is not None and other != review.page:
                     page = self._other_page(other)
                     box = self._box(raw.get("box"), page=page)
+                    # Its sizes count as printed once it looked there (`_cited`).
+                    review.other_labels.setdefault(page, self._labels_on(page))
                     label = str(raw.get("label") or "").strip() or f"page {page}"
                     content += self.picture(box, f"p{page}: {label}", zoomed=False, page=page)
                     continue
@@ -1903,6 +2027,7 @@ class _Run:
                 raise _Refused("the set's other pages are not read yet; review this page")
             found = context.phrases(other)
             review.other_text[other] = found
+            review.other_labels.setdefault(other, self._labels_on(other))
             area = given.get("box")
             shown = _listing(found, self._box(area, page=other) if area else None)
             lines = shown.splitlines()
@@ -1992,28 +2117,56 @@ class _Run:
     def _cited(self, given: Mapping[str, Any]) -> None:
         """A size issue rests on two numbers printed on the page (the fair re-test of 2026-10-29: a
         reviewer free to script called 7 of 20 checked sizes wrong): refused unless it quotes at
-        least two sizes and, on a page with a text layer, two of them are printed there."""
-        quoted = cited_sizes(given)
-        if len(quoted) < 2:
+        least two sizes and code finds them printed.
+
+        Printed: on this page's text layer, among the sizes code read off its drawing
+        (`code_labels`), on another page it read (`set_page_text`, or a zoom there), or in the facts
+        code gave it. How strict depends only on this page, never on what else it read (a page read
+        only adds sizes): with sizes on its text layer, two of the quoted ones are printed and at
+        least one of them here; on a page whose sizes code read off pen strokes or a picture (its
+        reading may miss one), one is enough; a page where code found no size at all is not checked.
+        Before 2026-10-31 a hand-drawn page's issue was accepted until the reviewer read the stone
+        page, then refused: reading more made the gate stricter."""
+        cited = cited_sizes(given)
+        quoted = set(cited)
+        if len(cited) < 2:
             raise _Refused(
                 "a size issue quotes the two printed numbers it rests on (in read, or a string's "
-                "parts and printed total), exactly as printed"
+                "parts and printed total), exactly as printed",
+                "size: fewer than two numbers quoted",
             )
-        here = printed_sizes(self.review.found)
-        printed = set(here)
-        for found in self.review.other_text.values():
-            # A size the countertop drawing of the same item prints (read with set_page_text);
-            # at least one of the two is this page's own.
+        review = self.review
+        text = printed_sizes(review.found)
+        drawn = review.labels or self._refresh_labels()
+        here = text | label_sizes(drawn)
+        printed = here | review.shown_sizes
+        for found in review.other_text.values():
+            # A size the countertop drawing of the same item prints (read with set_page_text).
             printed |= printed_sizes(found)
-        if printed and sum(1 for value in set(quoted) if value in printed) < 2:
+        for labels in review.other_labels.values():
+            printed |= label_sizes(labels)
+        if drawn:
+            if not quoted & printed:
+                raise _Refused(
+                    "code does not find any of the numbers you quoted on this page (its sizes "
+                    "code read are in your first message) or on a page you read: quote them "
+                    "exactly as drawn",
+                    "size: no quoted number read by code",
+                )
+            return
+        if not text:
+            return
+        if len(quoted & printed) < 2:
             raise _Refused(
                 "code does not find two of the numbers you quoted printed on this page's text "
-                "layer: quote them exactly as printed (page_text lists them)"
+                "layer: quote them exactly as printed (page_text lists them)",
+                "size: two quoted numbers not printed",
             )
-        if here and not any(value in here for value in set(quoted)):
+        if not quoted & here:
             raise _Refused(
                 "a size issue on this page quotes at least one number printed on this page "
-                "(page_text lists them)"
+                "(page_text lists them)",
+                "size: no quoted number on this page",
             )
 
     def _draft(self, given: Mapping[str, Any], n: int) -> Draft:
@@ -2369,6 +2522,124 @@ def _box_of(value: object) -> Box | None:
         return None
 
 
+# ---- GV's reference pictures and the cache warm-up ------------------------------------------------
+
+
+def _listing_of(engine: Any) -> list[dict[str, Any]]:
+    """The chat's uploads (`uploads.json`)."""
+    read: Callable[[Any], list[dict[str, Any]]] = import_module(
+        "app.review.assistant.chat_findings"
+    ).read_listing
+    return read(engine.tools.workspace)
+
+
+def _upload_names(engine: Any) -> list[str]:
+    """Every upload's name, and the names of the files a joined upload was made from."""
+    names: list[str] = []
+    for item in _listing_of(engine):
+        names.append(str(item.get("name") or ""))
+        parts = item.get("joined_from")
+        if isinstance(parts, list):
+            names += [str(p.get("name") or "") for p in parts if isinstance(p, Mapping)]
+    return [name for name in names if name]
+
+
+def shared_reference(engine: Any, reviews: Reviews, folder: Path | None) -> list[dict[str, Any]]:
+    """GV's reference pictures as the first message's opening blocks: a heading per group, each
+    picture followed by its caption, a prompt-cache breakpoint after the last one (tools, brief and
+    pictures are the same for every page, so they are paid once per check). Made once per check
+    (`Reviews.reference`): every page and the warm-up (`prewarm`) send the very same blocks, the
+    same picture ids. None when no folder is set or it cannot be read."""
+    if folder is None:
+        return []
+    with reviews.lock:
+        if reviews.reference is None:
+            try:
+                reviews.reference = _reference_blocks(engine, Path(folder))
+            except Exception:  # noqa: BLE001 - the review goes on without them
+                _log.warning("page reviewer: GV's reference pictures were not added")
+                reviews.reference = []
+        return [dict(block) for block in reviews.reference]
+
+
+def _reference_blocks(engine: Any, folder: Path) -> list[dict[str, Any]]:
+    from uuid import uuid4
+
+    from app.review.assistant.chat_request import _EPHEMERAL
+
+    pictures = reviewer_context.reference_pictures(folder, _upload_names(engine))
+    store = engine.tools.workspace.pictures
+    blocks: list[dict[str, Any]] = []
+    for group, heading in REFERENCE_HEADINGS.items():
+        chosen = [picture for picture in pictures if picture.group == group]
+        if not chosen:
+            continue
+        blocks.append({"type": "text", "text": heading})
+        for picture in chosen:
+            picture_id = str(uuid4())
+            store.mkdir(parents=True, exist_ok=True)
+            (store / f"{picture_id}.png").write_bytes(picture.png)
+            source = {
+                "type": "gv_picture",
+                "picture_id": picture_id,
+                "width": picture.width,
+                "height": picture.height,
+            }
+            blocks.append({"type": "image", "source": source})
+            blocks.append({"type": "text", "text": picture.caption})
+    if blocks:
+        blocks[-1] = {**blocks[-1], "cache_control": dict(_EPHEMERAL)}
+    return blocks
+
+
+def prewarm(engine: Any, reviews: Reviews, model: Any, options: Options) -> None:
+    """One tiny call with the page reviewers' exact model, thinking, effort, tools, brief and GV's
+    reference pictures (their first message's opening blocks, the same picture ids), before they
+    start together: each then reads that prefix from the prompt cache instead of all of them
+    writing it at once (2026-10-31: 18 pages started together, each turn re-reading about 30,000
+    tokens of that prefix). Charged to the reviewers' own money. Only on Anthropic's own API (as
+    `ChatEngine._prewarm`); a failure is only logged."""
+    from app.review.assistant.chat_engine import HARNESS_ID, _Cancelled
+    from app.review.assistant.chat_provider import ProviderFailure
+    from app.review.assistant.chat_request import thinking_config
+
+    if getattr(engine.provider, "name", None) != "anthropic" or engine.cancel.is_set():
+        return
+    system = system_prompt(options.house_rules)
+    blocks = shared_reference(engine, reviews, options.reference_pictures)
+    messages = [{"role": "user", "content": [*blocks, {"type": "text", "text": "Reply with OK."}]}]
+    thinking = thinking_config(model, True)
+    body = engine._body(
+        model=model,
+        thinking=thinking,
+        system=system,
+        tools=TOOLS,
+        messages=messages,
+        final=False,
+        max_tokens=WARM_TOKENS,
+    )
+    if not engine._fits(engine._estimate(model, body, 0, 0)):
+        return
+    with engine.timings.phase("prewarm"):
+        try:
+            engine._call(
+                model=model,
+                effort=options.effort,
+                thinking=thinking,
+                system=system,
+                tools=TOOLS,
+                messages=messages,
+                final=False,
+                max_tokens=WARM_TOKENS,
+                prompt_id=PROMPT_ID.format(provider=engine.provider.name, harness=HARNESS_ID),
+                display=None,
+                context_management=review_context(messages),
+                own_share=True,
+            )
+        except (_Cancelled, ProviderFailure) as failed:
+            _log.info("page reviewer: prompt cache not warmed: %s", type(failed).__name__)
+
+
 # ---- the roster -------------------------------------------------------------------------------------
 
 
@@ -2385,6 +2656,8 @@ class Reviews:
     #: GV's reference pictures as message blocks (`_Run.reference_blocks`), made once per check so
     #: every page's first message starts with the same blocks (the prompt cache pays for them once).
     reference: list[dict[str, Any]] | None = None
+    #: Set when the cache warm-up's call has ended (`prewarm`); `None`: no warm-up this check.
+    warm: threading.Event | None = None
 
     def context_for(
         self, file: str, page_count: int, read: Callable[[int], list[dict[str, Any]]]
@@ -2422,6 +2695,8 @@ class Reviews:
                     "stop": review.stop,
                     "spent_usd": round(self.spent.get(review.page, 0) / 1_000_000, 4),
                     "tools": dict(review.counts),
+                    "refused": dict(review.refusals),
+                    "code_labels": len(review.labels),
                 }
             )
         return {"pages": rows, "cut_by_money": list(self.cut_by_money)}
@@ -2497,6 +2772,19 @@ def roster_agents(run: Any, pages: Sequence[int], money: int, reviews: Reviews) 
         )
         agent.loop = partial(_loop, review, reviews)
         agents.append(agent)
+    if agents and reviews.warm is None:
+        # The shared prefix written to the prompt cache once, while the reviewers read their pages.
+        warm = reviews.warm = threading.Event()
+
+        def warm_up() -> None:
+            try:
+                prewarm(engine, reviews, model, options)
+            except Exception:  # noqa: BLE001 - the reviewers start all the same
+                _log.exception("page reviewer: the cache warm-up failed")
+            finally:
+                warm.set()
+
+        threading.Thread(target=warm_up, name="gv-page-review-warm", daemon=True).start()
     return agents
 
 
