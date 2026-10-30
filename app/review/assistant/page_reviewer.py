@@ -2613,7 +2613,9 @@ def prewarm(engine: Any, reviews: Reviews, model: Any, options: Options) -> None
     writing it at once (2026-10-31: 18 pages started together, each turn re-reading about 30,000
     tokens of that prefix). Charged to the reviewers' own money. Only where the calls share one
     cache (`chat_request.cache_shared`: Anthropic's own API, or OpenRouter's one pinned host, the
-    live route since 2026-10-29); a failure is only logged."""
+    live route since 2026-10-29). It starts with the reviewers, after the credit pre-check (the
+    helpers' warm-up, which runs before it, stays on Anthropic's own API: a paused check spends
+    nothing). A failure is only logged."""
     from app.review.assistant.chat_engine import HARNESS_ID, _Cancelled
     from app.review.assistant.chat_provider import ProviderFailure
     from app.review.assistant.chat_request import cache_shared, thinking_config

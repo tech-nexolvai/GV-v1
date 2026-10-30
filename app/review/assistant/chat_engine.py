@@ -162,7 +162,6 @@ from app.review.assistant.chat_request import (
     LEAD_MAX_TOKENS,
     MODELS,
     ChatModel,
-    cache_shared,
     call_params,
     full_check_helper_effort,
     helper_effort,
@@ -4463,15 +4462,12 @@ class ChatEngine:
     def _prewarm(self) -> None:
         """One tiny call per helper kind with its exact system prompt and tools, so the helpers
         that start together read that prefix from the prompt cache instead of each writing it.
-        Only where the calls share one cache (`cache_shared`: Anthropic's own API, or OpenRouter's
-        one pinned host); a failure is only logged."""
+        Only on Anthropic's own API; a failure is only logged."""
         kinds = ("numbers", "drawn") if self.settings.drawn_helpers else ("both",)
         for kind in kinds:
-            if self.cancel.is_set():
+            if self.provider.name != "anthropic" or self.cancel.is_set():
                 return
             model = BY_SHORT["sonnet"] if kind == "drawn" else self._helper_model()
-            if not cache_shared(self.provider.name, model):
-                continue
             self._prewarm_one(model, self._kind_system(kind))
 
     def _prewarm_one(self, model: ChatModel, system: str) -> None:
