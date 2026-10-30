@@ -314,3 +314,37 @@ def test_settling_counts_every_route_but_never_a_derived_part_or_a_pasted_drawin
     dims["pages"][0]["metric"] = []
     assert set_pack.settle_candidates(page_map, dims) == ([("shop.pdf", 1)], [])
     assert page_map["pages"][0]["halves"] == [stamp] and "candidate" not in page_map["pages"][0]
+
+
+def _scan_dims(words: list[str], box: list[float]) -> dict[str, Any]:
+    return {
+        "pages": [
+            {
+                "file": "shop.pdf",
+                "page": 1,
+                "labels": [_value(300), _value(350), _value(400)],
+                "pictures": {"status": "done", "boxes": [box], "words": words},
+            }
+        ]
+    }
+
+
+def test_a_scanned_sheet_whose_title_block_names_the_architect_is_the_architect_s() -> None:
+    page_map = _candidate_map([])
+    words = ["REGISTERED ARCHITECT", "RECEPTION", "A101"]
+    decided, promoted = set_pack.settle_candidates(page_map, _scan_dims(words, [0, 0, 600, 400]))
+    assert decided == promoted == [("shop.pdf", 1)]
+    entry = page_map["pages"][0]
+    assert entry["role"] == "architect" and entry["rounds"] == []
+    assert entry["halves"][0]["role"] == "architect" and entry["halves"][0]["round"] is None
+
+
+def test_a_scan_naming_both_or_neither_and_a_small_snapshot_keep_the_upload_s_role() -> None:
+    for words, box in (
+        (["ARCHITECT", "SHOP DRAWING"], [0, 0, 600, 400]),  # names both: the upload decides
+        (["RECEPTION"], [0, 0, 600, 400]),  # names neither
+        (["REGISTERED ARCHITECT"], [0, 0, 300, 200]),  # a snapshot on the vendor's sheet
+    ):
+        page_map = _candidate_map([])
+        set_pack.settle_candidates(page_map, _scan_dims(words, box))
+        assert page_map["pages"][0]["role"] == "vendor", words

@@ -173,7 +173,10 @@ MAX_LABELS: Final = 400
 #: pages' time over the workers): the picture route (#1830), the OCR route (#1848: a few seconds a
 #: page) and `read_number` at pack time (#1860). The drawn route's is the set pack's
 #: (`set_pack.DIMS_DRAWN_BUDGET_S`).
-PICTURES_BUDGET_S: Final = 60.0
+#: The picture route's is longer: a scanned 42" x 30" sheet is read in 12 tiles
+#: (`picture_labels.tiles`), 80 to 140 seconds on a laptop, more while other pages read beside it
+#: (2026-10-30: five such pages at once ran out of 180 seconds).
+PICTURES_BUDGET_S: Final = 300.0
 OCR_BUDGET_S: Final = 60.0
 OCR_PAGE_S: Final = 60.0
 SWEEP_BUDGET_S: Final = 30.0
@@ -2349,6 +2352,9 @@ def _add_pictures(
         "status": read.status,
         "boxes": [[round(v, 2) for v in box] for box in read.boxes],
         "unconfirmed": unconfirmed,
+        # The pictures' upright text (a scanned sheet's title block): whose drawing the page is
+        # (`set_pack.settle_candidates`).
+        "words": list(read.words),
     }
 
 

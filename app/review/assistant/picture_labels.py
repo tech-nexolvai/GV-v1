@@ -101,6 +101,10 @@ type Quad = Sequence[Sequence[float]]
 ORIGIN: Final = "picture"
 #: Why a number read from a picture is not a label (and an item at its spot is Not compared).
 UNCONFIRMED: Final = "number read from a picture: not confirmed"
+#: Why a reading with more text right beside it on its line is not confirmed (`_goes_on`).
+GOES_ON: Final = "the line of text goes on beside it: only part of it may be read"
+#: `_goes_on`: the share of dark pixels beside a label that means more text.
+_GOES_ON_SHARE: Final = 0.04
 #: The smallest picture read: points a side, and square points.
 MIN_SIDE_PT: Final = 72.0
 MIN_AREA_PT2: Final = 10_000.0
@@ -109,6 +113,15 @@ _MIN_IMAGE_PX: Final = 200
 #: The picture is drawn at this many pixels a point, at most this many pixels a side.
 SCALE: Final = 4.0
 MAX_SIDE_PX: Final = 4000
+#: A picture bigger than `MAX_SIDE_PX / SCALE` points a side (a scanned 42" x 30" sheet) is read in
+#: tiles of `TILE_PT` points overlapping by `TILE_OVERLAP_PT`, each at `SCALE`: shrunk to
+#: `MAX_SIDE_PX` whole, a scanned sheet's dimension text is about 7 pixels tall and no engine reads
+#: it (2026-10-30, a scanned architect sheet: 0 sizes confirmed whole, 15 in 1000-point tiles, 20 in
+#: 800-point tiles).
+TILE_PT: Final = 800.0
+TILE_OVERLAP_PT: Final = 40.0
+#: The most words a page's pictures keep for its title (`PictureRead.words`).
+MAX_WORDS: Final = 600
 #: The text heights (pixels) each line is read at.
 HEIGHTS_PX: Final = (40, 60)
 #: The most lines read in one picture (a picture full of words is mostly not dimensions).
@@ -226,6 +239,9 @@ class PictureRead:
 
     boxes: list[Box] = field(default_factory=list)
     labels: list[PictureLabel] = field(default_factory=list)
+    words: list[str] = field(default_factory=list)
+    """The upright lines of text the detector read in the pictures (a scanned sheet's title block:
+    whose drawing the page is, `set_pack.settle_candidates`), at most `MAX_WORDS`."""
     status: str = "none"
     """`none` (no picture), `done`, `partial` (out of time), `no_engine` or `failed`."""
 
@@ -420,9 +436,12 @@ class _Line:
     """What the detector read in it, in each turn that found it."""
 
 
-def _lines(grey: np.ndarray, detector: Detector) -> tuple[list[_Line], list[Box]]:
+def _lines(
+    grey: np.ndarray, detector: Detector, words: list[str] | None = None
+) -> tuple[list[_Line], list[Box]]:
     """Every line of text with a digit, found in the three turns (merged when two turns find the
-    same line the same way), and every line's box (pixels) for masking the line work."""
+    same line the same way), and every line's box (pixels) for masking the line work. The text of
+    every upright line is added to `words`, when given."""
     lines: list[_Line] = []
     every: list[Box] = []
     for turn in (0, 90, 270):
@@ -432,6 +451,8 @@ def _lines(grey: np.ndarray, detector: Detector) -> tuple[list[_Line], list[Box]
             wide = max(xs) - min(xs) >= max(ys) - min(ys)
             box = _unturned(quad, turn, grey.shape[:2])
             every.append(box)
+            if words is not None and turn == 0 and wide and text.strip():
+                words.append(text.strip())
             if not wide or not any(ch.isdigit() for ch in text):
                 continue
             same = next(
@@ -493,6 +514,33 @@ def _sized(picture: np.ndarray, text_px: float, height: int) -> np.ndarray:
     resized = cv2.resize(picture, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
     framed: np.ndarray = cv2.copyMakeBorder(resized, 16, 16, 16, 16, cv2.BORDER_CONSTANT, value=255)
     return framed
+
+
+def _goes_on(grey: np.ndarray, ink: Box, lines: np.ndarray, turn: int) -> bool:
+    """Whether more text ink lies right beside the label along its line, within one letter height
+    (`_GOES_ON_SHARE` of a strip that wide, line work left out): the detector cut a longer line
+    and the label may be only part of it (`1/4"` of `4 1/4"`, `1 1/2"` of `1 1/2" = 1'-0"`)."""
+    x0, y0, x1, y1 = (round(v) for v in ink)
+    h, w = grey.shape[:2]
+    across = (y1 - y0) if turn in (0, 180) else (x1 - x0)
+    reach = max(2, across)
+    if turn in (0, 180):
+        strips = [
+            (max(0, x0 - reach), y0, max(0, x0 - 1), y1),
+            (min(w, x1 + 1), y0, min(w, x1 + reach), y1),
+        ]
+    else:
+        strips = [
+            (x0, max(0, y0 - reach), x1, max(0, y0 - 1)),
+            (x0, min(h, y1 + 1), x1, min(h, y1 + reach)),
+        ]
+    for a0, b0, a1, b1 in strips:
+        if a1 - a0 < 1 or b1 - b0 < 1:
+            continue
+        dark = (grey[b0:b1, a0:a1] < _INK) & (lines[b0:b1, a0:a1] == 0)
+        if dark.mean() > _GOES_ON_SHARE:
+            return True
+    return False
 
 
 def _ink_box(grey: np.ndarray, box: tuple[float, float, float, float], lines: np.ndarray) -> Box:
@@ -590,11 +638,12 @@ def read_picture(
     *,
     deadline: float | None = None,
     clock: Callable[[], float] = monotonic,
+    words: list[str] | None = None,
 ) -> tuple[list[PictureLabel], bool]:
     """The labels read in one grey picture (dark ink on white) whose top-left corner is at `origin`
     (shown points) at `scale` pixels a point, and whether it was read to the end (`False`:
-    `deadline` passed)."""
-    found, every = _lines(grey, detector)
+    `deadline` passed). The upright lines of text it holds are added to `words`, when given."""
+    found, every = _lines(grey, detector, words)
     mask = np.zeros(grey.shape[:2], np.uint8)
     for x0, y0, x1, y1 in every:
         cv2.rectangle(mask, (int(x0), int(y0)), (int(x1), int(y1)), 255, -1)
@@ -615,6 +664,8 @@ def read_picture(
         if turn is None or (why and kinds == {"bare"}):
             continue  # nothing read as a dimension (a word, a tag, a note), or a lone number
         ink = _ink_box(grey, line.box, line_px)
+        if not why and _goes_on(grey, ink, line_px, turn):
+            why = GOES_ON
         box = (
             origin[0] + ink[0] / scale,
             origin[1] + ink[1] / scale,
@@ -711,22 +762,67 @@ def read_page(
         result.status = "no_engine"
         return result
     result.status = "done"
+    words: list[str] = []
     for box in boxes:
-        if clock() - started > budget_s:
-            result.status = "partial"
+        found: list[PictureLabel] = []
+        parts = tiles(box)
+        for tile in parts:
+            if clock() - started > budget_s:
+                result.status = "partial"
+                break
+            grey, scale = _render(page_pdf, tile, size)
+            labels, whole = read_picture(
+                grey,
+                (tile[0], tile[1]),
+                scale,
+                readers,
+                detector,
+                deadline=started + budget_s,
+                clock=clock,
+                words=words,
+            )
+            found += labels
+            if not whole:
+                result.status = "partial"
+                break
+        result.labels += found if len(parts) == 1 else _once(found)
+        if result.status == "partial":
             break
-        grey, scale = _render(page_pdf, box, size)
-        labels, whole = read_picture(
-            grey,
-            (box[0], box[1]),
-            scale,
-            readers,
-            detector,
-            deadline=started + budget_s,
-            clock=clock,
-        )
-        result.labels += labels
-        if not whole:
-            result.status = "partial"
-            break
+    result.words = words[:MAX_WORDS]
     return result
+
+
+def tiles(box: Box) -> list[Box]:
+    """The tiles a picture is read in: the picture itself when `SCALE` draws it within
+    `MAX_SIDE_PX` a side, else tiles of `TILE_PT` points overlapping by `TILE_OVERLAP_PT`, row by
+    row from the top-left, so every line of text lies whole in one."""
+    x0, y0, x1, y1 = box
+    if max(x1 - x0, y1 - y0) <= MAX_SIDE_PX / SCALE:
+        return [box]
+    side = TILE_PT
+    step = side - TILE_OVERLAP_PT
+    out: list[Box] = []
+    y = y0
+    while True:
+        x = x0
+        while True:
+            out.append((x, y, min(x + side, x1), min(y + side, y1)))
+            if x + side >= x1:
+                break
+            x += step
+        if y + side >= y1:
+            break
+        y += step
+    return out
+
+
+def _once(found: Sequence[PictureLabel]) -> list[PictureLabel]:
+    """One label for each spot two overlapping tiles both read: a confirmed one first, then the
+    first read; a label whose centre lies in a kept one's box is the same label."""
+    kept: list[PictureLabel] = []
+    for label in sorted(found, key=lambda one: not one.confirmed):
+        cx, cy = (label.box[0] + label.box[2]) / 2, (label.box[1] + label.box[3]) / 2
+        if any(k.box[0] <= cx <= k.box[2] and k.box[1] <= cy <= k.box[3] for k in kept):
+            continue
+        kept.append(label)
+    return kept

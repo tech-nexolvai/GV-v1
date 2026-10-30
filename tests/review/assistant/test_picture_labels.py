@@ -542,3 +542,57 @@ def test_real_engines_never_confirm_a_blurry_label(tmp_path: Path) -> None:
     assert found.labels == []
     assert found.pictures is not None
     assert all(pl.UNCONFIRMED in item["why"] for item in found.pictures["unconfirmed"])
+
+
+def test_a_scanned_sheet_is_read_in_overlapping_tiles_a_small_picture_whole() -> None:
+    small = (60.0, 60.0, 510.0, 270.0)
+    assert pl.tiles(small) == [small]
+    sheet = (0.0, 0.75, 3024.0, 2160.0)  # a scanned 42" x 30" sheet
+    parts = pl.tiles(sheet)
+    side = pl.TILE_PT
+    assert all(x1 - x0 <= side and y1 - y0 <= side for x0, y0, x1, y1 in parts)
+    assert parts[0][:2] == sheet[:2] and max(p[2] for p in parts) == sheet[2]
+    assert max(p[3] for p in parts) == sheet[3]
+    # Neighbours overlap, so a line of text lies whole in one of them.
+    assert parts[1][0] == pytest.approx(parts[0][2] - pl.TILE_OVERLAP_PT)
+    assert len(parts) == 4 * 3
+
+
+def _label(text: str, box: tuple[float, float, float, float], confirmed: bool) -> pl.PictureLabel:
+    return pl.PictureLabel(text, Decimal(1), box, 0, 4.0, "dimension", confirmed, ())
+
+
+def test_a_label_two_tiles_both_read_is_kept_once_confirmed_first() -> None:
+    once = pl._once(
+        [
+            _label('9"', (100, 100, 120, 108), False),
+            _label('9"', (100.5, 100, 120.5, 108), True),
+            _label('4"', (300, 100, 320, 108), False),
+        ]
+    )
+    assert [(label.box[0], label.confirmed) for label in once] == [(100.5, True), (300, False)]
+
+
+def test_the_upright_lines_of_text_are_kept_as_the_picture_s_words() -> None:
+    words: list[str] = []
+    pl.read_picture(
+        _grey(_marked(0)),
+        (60.0, 60.0),
+        2.0,
+        _engines("7'-3\"", "7'-3\""),
+        _Detector("7'-3\""),
+        words=words,
+    )
+    assert words == ["7'-3\""]
+
+
+def test_a_reading_with_more_text_beside_it_on_its_line_is_not_confirmed() -> None:
+    grey = np.full((60, 200), 255, np.uint8)
+    lines = np.zeros_like(grey)
+    grey[20:40, 60:70] = 0  # a `4` ...
+    grey[20:40, 80:120] = 0  # ... and the `1/4"` the detector cut out of `4 1/4"`
+    assert pl._goes_on(grey, (80, 20, 120, 40), lines, 0)
+    assert not pl._goes_on(grey, (60, 20, 120, 40), lines, 0)  # the whole line: nothing beside
+    # Line work beside it (a dimension line's run) is not text.
+    lines[20:40, 60:70] = 255
+    assert not pl._goes_on(grey, (80, 20, 120, 40), lines, 0)
