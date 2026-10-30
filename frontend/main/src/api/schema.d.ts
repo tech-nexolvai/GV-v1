@@ -1715,6 +1715,11 @@ export interface components {
              */
             ledger?: string | null;
             /**
+             * Parts Read
+             * @description code | ai: who read a vendor string's parts and overall; code's sum is a witness only of parts code read (2026-10-31); null: not a vendor string.
+             */
+            parts_read?: string | null;
+            /**
              * Printed Architect
              * @description match | not_found | no_text | no_box | not_a_number | not_run
              */

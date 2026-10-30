@@ -48,6 +48,14 @@ a field-cut overall) explains them, nothing is reported, as before. When the rea
 same overall over the same pieces as a string that does not add up (never verified, Not compared),
 code's please-check replaces it (`judge_unsized`) instead of being hidden as its duplicate.
 
+A string a reading grouped (the reading ledger's, a page reviewer's) is a "parts don't add up" card
+only when code reads it as one whole row (`judge_rows`, 2026-10-31): code's own string of that
+overall with the same parts, or a row of code's labels printing exactly those parts that fills the
+overall's line end to end (filler notes at its ends counted). Its parts are then code's
+(`parts_read: code`), so code's sum is a witness (`witness.py`). A string code cannot confirm (a
+gap, a part only the AI read, no label of the overall at its spot) is dropped with the reason: an
+AI-typed list that leaves a part out makes a row that adds up look wrong.
+
 Every finding is in the chat finding shape (CONTRACT2, `created_by: "consistency"`) with its code
 witnesses: a string carries its parts and printed overall (code's `arithmetic` check) and the
 overall's label (`dims`, the `printed` check); a contradiction carries both labels (`printed` on
@@ -73,7 +81,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
@@ -85,7 +93,8 @@ from typing import Any, Final, Literal
 from uuid import uuid4
 
 from app.review.assistant import field_cut, likely_problems, reading_routes, scale_fit
-from app.review.assistant.finding_checks import WRONG_PART
+from app.review.assistant.finding_checks import PARTS_READ, WRONG_PART
+from app.review.assistant.full_check_advocate import string_chain, string_extras
 from app.review.assistant.ledger import add_up, format_inches
 
 __all__ = [
@@ -95,16 +104,19 @@ __all__ = [
     "LINE_WORK_DIR",
     "MIN_SCALE_SUPPORT",
     "ROW_APART_PT",
+    "STRING_PAD_PT",
     "TOLERANCE",
     "UNSIZED_ENDS",
     "ConsistencyResult",
     "Label",
+    "RowJudgement",
     "StringCheck",
     "UnsizedEnds",
     "check_pack",
     "check_set",
     "end_allowance",
     "find_unsized_ends",
+    "judge_rows",
     "judge_string",
     "judge_unsized",
     "label_rows",
@@ -1626,6 +1638,11 @@ class ConsistencyResult:
     checks: list[StringCheck] = field(default_factory=list, repr=False)
     unsized: list[UnsizedEnds] = field(default_factory=list, repr=False)
     """Overalls past their sized pieces at both ends (`find_unsized_ends`): please-check items."""
+    page_labels: dict[tuple[str, int], list[Mapping[str, Any]]] = field(
+        default_factory=dict, repr=False
+    )
+    """Each page's vendor labels as `dims.json` holds them, by (file, page): what a reading's
+    string is judged against (`judge_rows`)."""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -1730,6 +1747,14 @@ def check_set(
             if made is not None:
                 labels.append(made)
     result = ConsistencyResult()
+    for entry in (dims or {}).get("pages") or []:
+        if isinstance(entry, Mapping) and isinstance(entry.get("labels"), list):
+            at = (str(entry.get("file")), int(entry.get("page") or 0))
+            result.page_labels[at] = [
+                raw
+                for raw in entry["labels"]
+                if isinstance(raw, Mapping) and raw.get("side") == "vendor"
+            ]
     result.vendor_labels = sum(vendor_pages.values())
     result.vendor_pages_without_labels = sorted(
         page
@@ -2183,7 +2208,8 @@ def judge_strings(
       that part with what it should be, replaces it);
     - code's string adds up: dropped (the reading grouped dimensions of another chain);
     - code's string does not add up with other parts: dropped (code's own finding replaces it);
-    - no string of code's, or a doubt: left as it is (never red: Not compared)."""
+    - no string of code's, or a doubt: left to `judge_rows` (a card only as a whole row code
+      reads)."""
     to_inches = import_module("app.review.assistant.finding_checks").to_inches
     verified: list[str] = []
     dropped: dict[str, str] = {}
@@ -2226,6 +2252,185 @@ def judge_strings(
                 "own finding replaces the reading's."
             )
     return StringJudgement(tuple(verified), dropped)
+
+
+# ---- a reading's string is a card only when it is a whole row code reads (2026-10-31) -------------
+
+#: A reading's string spot is padded by this many points (or a tenth of its size, the larger) to
+#: find its overall, as the full check's string steps pad it (`full_check_roster`).
+STRING_PAD_PT: Final = 24.0
+#: The end of a reading's dropped string's reason: what a vendor's sum needs to be shown.
+_WHOLE_ROW: Final = (
+    "A vendor's sum is shown only when code reads its parts on the drawing as one whole row "
+    "(touching end to end between the overall's own extension lines)."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RowJudgement:
+    """Whether code reads each string a reading grouped as one whole row (`judge_rows`)."""
+
+    complete: tuple[str, ...] = ()
+    """Findings whose parts and overall are code's own labels of one whole row."""
+    dropped: Mapping[str, str] = field(default_factory=dict)
+    """Findings code could not confirm as a whole row, with the plain reason: never a card."""
+
+
+def _padded(box: object) -> tuple[float, float, float, float] | None:
+    if not isinstance(box, Mapping):
+        return None
+    try:
+        x0, y0, x1, y1 = (float(box[k]) for k in ("x0", "y0", "x1", "y1"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    pad = max(STRING_PAD_PT, 0.1 * max(x1 - x0, y1 - y0))
+    return x0 - pad, y0 - pad, x1 + pad, y1 + pad
+
+
+def _where(finding: Mapping[str, Any]) -> tuple[str | None, object]:
+    """The (file, page) of a reading's string: its spot's, else its page (any vendor file)."""
+    box = finding.get("vendor_box")
+    if not isinstance(box, Mapping):
+        return None, finding.get("page")
+    file = box.get("file")
+    return (str(file) if file else None), box.get("page") or finding.get("page")
+
+
+def _codes_own_row(
+    finding: Mapping[str, Any],
+    checks: Sequence[StringCheck],
+    printed: Fraction,
+    parts: list[Fraction],
+) -> bool:
+    """Code's own string of that overall (`find_strings`, any verdict: a doubt is a whole row too)
+    at the string's spot, with these very parts."""
+    file, page = _where(finding)
+    box = finding.get("vendor_box")
+    for check in checks:
+        overall = check.overall
+        if overall.page != page or file not in (None, overall.file) or overall.inches != printed:
+            continue
+        if isinstance(box, Mapping) and not _overlaps(box, overall):
+            continue
+        if sorted(p.inches for p in check.parts) == parts:
+            return True
+    return False
+
+
+def _not_seen(
+    printed_text: str,
+    printed: Fraction,
+    parts: Sequence[str],
+    labels: Sequence[Mapping[str, Any]],
+    box: tuple[float, float, float, float] | None,
+) -> str:
+    """Why code cannot read a string as a row when no row of its labels prints its parts."""
+    overalls = []
+    for raw in labels:
+        made = _label(raw, "", 0, ())
+        if made is None or made.inches != printed:
+            continue
+        x0, y0, x1, y1 = made.box
+        if box is None or (box[0] <= (x0 + x1) / 2 <= box[2] and box[1] <= (y0 + y1) / 2 <= box[3]):
+            overalls.append(raw)
+    if not overalls:
+        return (
+            f"code found no label of the {printed_text} overall with its own dimension line at "
+            "the string's spot, so it cannot see the row"
+        )
+    words = (
+        f"code found no row of its own labels printing exactly these parts along the "
+        f"{printed_text} overall's line"
+    )
+    extras = string_extras(parts, overalls[0], labels)
+    if extras:
+        words += f" (the drawing also prints {', '.join(extras[:4])} along that run)"
+    return words
+
+
+def judge_rows(
+    findings: Sequence[Mapping[str, Any]],
+    result: ConsistencyResult,
+    keep: Collection[str] = (),
+) -> RowJudgement:
+    """Each vendor string a reading grouped (`source: vendor_arithmetic` with status `different`,
+    not the consistency check's own): a "parts don't add up" card only when code reads it as one
+    whole row (2026-10-31). The AI types a string's parts, and a part it leaves out (a stacked
+    label above the line, a middle part it did not read) makes a row that adds up look wrong (a
+    real job's row typed as its two end parts only). Code reads the row itself, from the set
+    pack's labels:
+
+    - complete: code's geometry already verified it, or code's own string of that overall at the
+      string's spot has these very parts (`find_strings`), or a row of code's labels printing
+      exactly these parts fills the overall's line end to end, its end gaps filled by filler notes
+      at most (`string_chain`, the full check's string step #1802). The parts are then code's
+      (`PARTS_READ`), and code's sum is a witness;
+    - otherwise dropped, with the plain reason: the parts leave a gap or stop short of the
+      overall's ends, or code finds no such row (no label of the overall at the spot, a part only
+      the AI read). Never shown, never asked: the user does not want such leads at all.
+
+    `keep`: findings another rule of this module judges (the unsized ends' please-check)."""
+    to_inches = import_module("app.review.assistant.finding_checks").to_inches
+    complete: list[str] = []
+    dropped: dict[str, str] = {}
+    for finding in findings:
+        if finding.get("source") != "vendor_arithmetic" or finding.get("created_by") == CREATED_BY:
+            continue
+        finding_id = str(finding.get("id") or "")
+        if finding.get("status") != "different" or not finding_id or finding_id in keep:
+            continue
+        if finding.get("string_geometry") == "verified" or finding.get(PARTS_READ) == "code":
+            complete.append(finding_id)
+            continue
+        printed_text = str(finding.get("printed_total") or finding.get("vendor") or "")
+        texts = [str(p) for p in finding.get("parts") or []]
+        total = to_inches(printed_text)
+        read = [to_inches(p) for p in texts]
+        if total is None or not read or None in read:
+            shown = " + ".join(texts) or "no parts"
+            dropped[finding_id] = (
+                f"The reading's sum ({shown} against the {printed_text} printed) is not shown: a "
+                f"part or the overall is not one size code reads. {_WHOLE_ROW}"
+            )
+            continue
+        printed = Fraction(total)
+        parts = sorted(Fraction(v) for v in read if v is not None)
+        shown = " + ".join(format_inches(Fraction(v)) for v in read if v is not None)
+        lead = (
+            f"The reading's sum ({shown} against the {format_inches(printed)} printed) is not "
+            "shown: "
+        )
+        if _codes_own_row(finding, result.checks, printed, parts):
+            complete.append(finding_id)
+            continue
+        file, page = _where(finding)
+        labels = [
+            raw
+            for (on_file, on_page), found in result.page_labels.items()
+            if on_page == page and file in (None, on_file)
+            for raw in found
+        ]
+        box = _padded(finding.get("vendor_box"))
+        chain = string_chain(texts, printed_text, labels, box)
+        if chain.outcome in ("tiles", "fillers"):
+            complete.append(finding_id)
+            continue
+        why = (
+            chain.why
+            if chain.outcome == "gap"
+            else _not_seen(format_inches(printed), printed, texts, labels, box)
+        )
+        dropped[finding_id] = f"{lead}{why}. {_WHOLE_ROW}"
+    return RowJudgement(tuple(complete), dropped)
+
+
+def _read_by_code(finding: Mapping[str, Any]) -> dict[str, Any]:
+    """A reading's string code reads as a whole row: its parts are code's (`PARTS_READ`), on the
+    finding and its checks, and its trust worked out again (code's sum is now a witness)."""
+    judged = import_module("app.review.assistant.chat_trust").judged
+    checks = {**(finding.get("checks") or {}), PARTS_READ: "code"}
+    out: dict[str, Any] = judged({**finding, PARTS_READ: "code", "checks": checks})
+    return out
 
 
 def judge_unsized(
@@ -2359,6 +2564,17 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
         # string of the same overall, which would otherwise hide it as a duplicate (`_already`).
         # The reading's string goes only once code's own item is in the answer.
         replaces = _unsized_replaces(book.live(), result.unsized, judged.verified)
+        # Every other reading's string is a card only as a whole row code reads (2026-10-31):
+        # its parts are then code's; one code cannot confirm is dropped with the reason.
+        rows = judge_rows(book.live(), result, keep=set(replaces))
+        for finding in book.live():
+            if str(finding.get("id")) in rows.complete and finding.get(PARTS_READ) != "code":
+                read = _read_by_code(finding)
+                if book.replace(read):
+                    engine._show_finding(read)
+        for finding_id, reason in rows.dropped.items():
+            if book.absorb(finding_id):
+                engine._show_dropped(finding_id, reason)
         live = book.live()
         for finding in result.findings:
             # Only the please-check of that very overall looks past the reading's string; for

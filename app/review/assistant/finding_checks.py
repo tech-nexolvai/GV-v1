@@ -50,6 +50,7 @@ from units.normalise import (
 from units.notation import canonical_notation, is_compound
 
 __all__ = [
+    "PARTS_READ",
     "VERIFY_MODULE",
     "WRONG_PART",
     "Checks",
@@ -63,6 +64,7 @@ __all__ = [
     "dimension_tokens",
     "drawn_checks",
     "inch_first_mm",
+    "parts_read",
     "printed_at_spot",
     "printed_from",
     "printed_mm",
@@ -79,6 +81,7 @@ type PrintedResult = Literal["match", "not_found", "no_text", "no_box", "not_a_n
 type ArithmeticResult = Literal["adds_up", "does_not_add_up", "not_a_number"]
 type TrustLevel = Literal["confirmed", "likely", "to_check"]
 type UnitsResult = Literal["agrees", "disagrees"]
+type PartsRead = Literal["code", "ai"]
 
 # ---- inches by code ------------------------------------------------------------------------------
 
@@ -444,6 +447,30 @@ def wrong_part(finding: Mapping[str, Any]) -> tuple[str, Decimal] | None:
     return (str(part["text"]), should) if should.is_finite() and should > 0 else None
 
 
+#: A vendor string's parts and overall are code's own labels of one whole row (the finding's field,
+#: and its checks' key: `witness.PARTS_READ`, 2026-10-31).
+PARTS_READ: Final = witness.PARTS_READ
+#: The code checks that make vendor strings from code's own labels: the consistency check
+#: (`vendor_consistency`) and GV's site-fit rule (`run_fit`, through the same check).
+_CODE_STRING_MAKERS: Final = frozenset({"consistency", "run_fit"})
+
+
+def parts_read(finding: Mapping[str, Any]) -> PartsRead | None:
+    """Who read a vendor string's parts and overall: `code` when they are code's own labels of one
+    whole row (a code check made the string, code's geometry verified a reading's string, or code
+    found the reading's parts as its own row: `PARTS_READ`), else `ai` (the AI typed
+    them: code's sum is then no witness, `witness.py`). `None` for any other finding."""
+    if finding.get("source") != "vendor_arithmetic":
+        return None
+    if (
+        finding.get("created_by") in _CODE_STRING_MAKERS
+        or finding.get("string_geometry") == "verified"
+        or finding.get(PARTS_READ) == "code"
+    ):
+        return "code"
+    return "ai"
+
+
 def arithmetic_check(parts: Sequence[str], printed_total: str) -> ArithmeticResult:
     """`adds_up` when the parts sum exactly to the printed total, else `does_not_add_up`."""
     off_by = arithmetic_off_by(parts, printed_total)
@@ -470,12 +497,15 @@ class Checks:
     """Code's reading of the architect's value at its spot (`verify_at_spot`); `None` when the
     side has no number or no box."""
     verify_vendor: Mapping[str, Any] | None = None
+    parts_read: PartsRead | None = None
+    """Who read a vendor string's parts (`parts_read`); `None` for any other finding."""
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "printed_architect": self.printed_architect,
             "printed_vendor": self.printed_vendor,
             "arithmetic": self.arithmetic,
+            PARTS_READ: self.parts_read,
             "units": self.units,
             "verify_architect": (
                 None if self.verify_architect is None else dict(self.verify_architect)
@@ -514,6 +544,7 @@ def check_finding(finding: Mapping[str, Any], pdf_paths: Mapping[str, Path]) -> 
         units=_both_units(finding, {"architect": architect, "vendor": vendor}),
         verify_architect=verify_architect,
         verify_vendor=verify_vendor,
+        parts_read=parts_read(finding),
     )
 
 

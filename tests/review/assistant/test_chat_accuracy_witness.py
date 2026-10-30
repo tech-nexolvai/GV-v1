@@ -96,6 +96,24 @@ def test_any_disagreement_is_to_check(changes: dict[str, Any]) -> None:
     assert witness.disagreement(checks, "different")
 
 
+def test_codes_sum_of_parts_the_ai_typed_is_no_witness() -> None:
+    """2026-10-31, a paid run: the AI typed a row's two end parts and left its middle part out,
+    and code's sum of those parts stood as a non-AI witness (Confirmed). The sum backs a finding
+    only when code read the parts (`parts_read: code`); typed parts back nothing, but a sum that
+    contradicts the finding still does. A check stored before the key counts as before."""
+    typed = _checks(arithmetic="does_not_add_up", parts_read="ai", critic="passed")
+    assert witness.witnesses(typed, "different") == []
+    assert witness.trust_level(typed, "different") == "to_check"  # the critic alone
+    assert witness.trust_level({**typed, "second_read": "agrees"}, "different") == "likely"
+    read = {**typed, "parts_read": "code"}
+    assert witness.witnesses(read, "different") == ["arithmetic"]
+    assert witness.trust_level(read, "different") == "confirmed"
+    stored = {k: v for k, v in typed.items() if k != "parts_read"}
+    assert witness.witnesses(stored, "different") == ["arithmetic"]
+    # Typed parts that do not add up still contradict a "same".
+    assert witness.disagreement(typed, "same") == "code's arithmetic disagrees"
+
+
 def test_pen_strokes_are_neutral() -> None:
     """`no_text` neither backs nor contradicts: two AI reads stay likely, a rule still confirms."""
     pen = {"printed_architect": "no_text", "printed_vendor": "no_text"}

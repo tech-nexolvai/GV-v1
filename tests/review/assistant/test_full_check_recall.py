@@ -492,8 +492,15 @@ def test_a_string_two_blind_readings_agree_on_is_red(tmp_path: Path) -> None:
     assert "11 3/8" not in seen and "38 7/8" not in seen  # blind to the first reading
     found = next(f for f in harness.engine.book.live() if f["id"] == finding_id)
     assert found["string_geometry"] == "two_reads"
-    assert proof.proof_group(found) == "clouded"
-    assert "a second reading, blind to the first" in proof.proof_line(found)
+    # Two readings still typed the parts (2026-10-31): code's sum of them is no witness, so never
+    # red. A full check reaches this step only with a row code read whole (`judge_rows`): the
+    # parts are then code's, and the two readings make it red.
+    assert proof.proof_group(found) == "not_compared"
+    from app.review.assistant.vendor_consistency import _read_by_code
+
+    read = _read_by_code(found)
+    assert proof.proof_group(read) == "clouded"
+    assert "a second reading, blind to the first" in proof.proof_line(read)
 
 
 def test_a_string_the_blind_reading_reads_as_another_run_is_dropped(tmp_path: Path) -> None:
