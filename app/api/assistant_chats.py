@@ -144,6 +144,7 @@ from app.review.assistant.chat_service import (
     continuable,
     default_skill_builder,
     full_check_plan,
+    pack_labels,
     package_spent_micros,
     plan_page_picture,
     recover_interrupted,
@@ -630,6 +631,8 @@ def read_chat(
     decisions = latest_decisions(session, chat_id)
     counts = decision_counts(session, chat_id)
     corrections = corrections_by_answer(messages)
+    # 2026-10-31: the set pack's labels, so the drawer boxes each number of a vendor string.
+    labels_of = pack_labels(_chat_root(request.app), package.id)
     return ChatOut(
         id=chat.id,
         package_id=package.id,
@@ -643,6 +646,7 @@ def read_chat(
                 decisions.get(message.id),
                 corrections.get(str(message.id)),
                 decisions_count=counts.get(message.id),
+                labels_of=labels_of,
             )
             for message in messages
         ],

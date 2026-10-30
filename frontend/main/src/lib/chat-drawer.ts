@@ -6,7 +6,7 @@
  * its own. No internal names reach the reviewer.
  */
 
-import type { ChatFinding, FindingBox, FindingDecision, ProofGroup } from '@/lib/chat-api';
+import type { ChatCoverage, ChatFinding, CoveragePage, FindingBox, FindingDecision, FindingSpot, ProofGroup } from '@/lib/chat-api';
 import { ruleNoteWords } from '@/lib/chat-proof';
 import { isDrawingNeededItem, isRefusedString, shouldBeValue, vendorValue, wrongPartWords } from '@/lib/chat-result';
 import { inchNumber, inchWords } from '@/lib/chat-trust';
@@ -186,12 +186,14 @@ function sentence(text: string | null | undefined): string | null {
  * Two or three plain numbered steps saying how the outcome is known, from the finding's own proof
  * and checks (never an internal name). Drawing needed: why, what still ran, what to do.
  */
-export function howWeKnow(finding: ChatFinding, kind: DrawerKind, options: { noArchitectDrawing?: boolean } = {}): string[] {
+export function howWeKnow(finding: ChatFinding, kind: DrawerKind, options: { noArchitectDrawing?: boolean; designFile?: boolean } = {}): string[] {
   const steps: (string | null)[] = [];
   const architect = inchNumber(finding.inches?.architect);
   const vendor = inchNumber(finding.inches?.vendor);
   if (kind === 'drawing_needed') {
-    steps.push(sentence(finding.why ? `No architect drawing of this page is in the upload: ${finding.why}` : 'No architect drawing of this page is in the upload'));
+    // 2026-10-31: the design set is in the upload; only this page's drawing was not found in it.
+    if (options.designFile) steps.push(sentence(finding.why ? `The design set is uploaded, but ${finding.why}` : 'No drawing of this page was found in the design set'));
+    else steps.push(sentence(finding.why ? `No architect drawing of this page is in the upload: ${finding.why}` : 'No architect drawing of this page is in the upload'));
     steps.push('The vendor’s own drawing was still checked: its strings that must add up and its sizes printed twice.');
     steps.push('Ask GV for the architect’s drawing, then run the check again to compare it.');
   } else if (kind === 'likely_problem') {
@@ -364,4 +366,183 @@ export function drawerChips(finding: ChatFinding, options: { number?: string | n
   if (options.number) chips.push(`In the comment letter as ${options.number}`);
   if (options.noArchitectDrawing) chips.push(`Architect drawing: not in the upload · ${options.inRequest === false ? 'left out of the GV request' : 'in the GV request'}`);
   return chips;
+}
+
+// ── The vendor's own numbers (2026-10-31) ─────────────────
+
+/**
+ * A card that checks the vendor's OWN numbers (a row of parts against its printed overall), with no
+ * architect side to show: its right-hand card adds the numbers up instead of showing the vendor's
+ * picture a second time. A cross-view (the same span on another view) or anything with an
+ * architect spot keeps its two pictures.
+ */
+export function ownNumbers(finding: Pick<ChatFinding, 'source' | 'created_by' | 'arch_picture_id' | 'arch_box' | 'parts' | 'printed_total'>): boolean {
+  if (finding.arch_picture_id || finding.arch_box || finding.source === 'cross_view') return false;
+  if (finding.source === 'vendor_arithmetic' || finding.created_by === 'consistency' || finding.created_by === 'ledger') return true;
+  return pageReviewed(finding) && Boolean(finding.parts?.length && finding.printed_total?.trim());
+}
+
+/**
+ * A printed size in inches, for the screen's sum only: "2 1/2″", "70 1/2", "3/4", "73″", "6′-0″",
+ * "3' - 1 1/2"". Null for anything else (never guessed).
+ */
+export function printedInches(text: string | null | undefined): number | null {
+  const words = (text ?? '').replace(/[″”]/g, '"').replace(/[′’]/g, "'").trim();
+  const inches = (rest: string): number | null => {
+    const value = rest.replace(/"\s*$/, '').trim();
+    if (!value) return 0;
+    const mixed = /^(\d+(?:\.\d+)?)(?:\s+(\d+)\/(\d+))?$/.exec(value);
+    if (mixed) return Number(mixed[1]) + (mixed[2] && Number(mixed[3]) > 0 ? Number(mixed[2]) / Number(mixed[3]) : 0);
+    const fraction = /^(\d+)\/(\d+)$/.exec(value);
+    if (fraction && Number(fraction[2]) > 0) return Number(fraction[1]) / Number(fraction[2]);
+    return null;
+  };
+  if (!words) return null;
+  const feet = /^(\d+)\s*'\s*(?:-\s*)?(.*)$/.exec(words);
+  if (feet) {
+    const rest = inches(feet[2]);
+    return rest === null ? null : Number(feet[1]) * 12 + rest;
+  }
+  return inches(words);
+}
+
+/** One number of the sum: as printed (inch marks), and its own spot when code placed it. */
+export interface SumNumber {
+  value: string;
+  box: FindingBox | null;
+  turned: boolean;
+}
+
+/** The right-hand card's sum: each part, the parts' total, the printed overall, how far off. */
+export interface OwnSum {
+  parts: SumNumber[];
+  /** Code's sum of the parts ("75 1/2″"), when known. */
+  sum: string | null;
+  total: SumNumber;
+  /** The parts' sum less the printed overall, in inches; null when either is unknown. */
+  difference: number | null;
+}
+
+function spotOf(spot: FindingSpot | null | undefined, text: string): SumNumber {
+  const box = spot?.box ?? null;
+  return { value: marks(text.trim()).replace(/(\d)$/, '$1″'), box, turned: Boolean(box && spot?.turned) };
+}
+
+/**
+ * The sum a vendor string's card shows, from the finding alone (its parts, code's sum, its printed
+ * overall) and each number's spot (`part_boxes`, `total_box`); null when it has no parts.
+ */
+export function ownSum(finding: Pick<ChatFinding, 'parts' | 'parts_sum' | 'printed_total' | 'part_boxes' | 'total_box'>): OwnSum | null {
+  const parts = (finding.parts ?? []).filter((part) => part.trim());
+  const printed = finding.printed_total?.trim();
+  if (!parts.length || !printed) return null;
+  const spots = finding.part_boxes?.length === parts.length ? finding.part_boxes : null;
+  const values = parts.map((part) => printedInches(part));
+  const added = inchNumber(finding.parts_sum) ?? (values.every((value) => value !== null) ? values.reduce<number>((sum, value) => sum + (value ?? 0), 0) : null);
+  const overall = inchNumber(finding.total_box?.inches) ?? printedInches(printed);
+  return {
+    parts: parts.map((part, at) => spotOf(spots?.[at], part)),
+    sum: added === null ? null : `${inchWords(added)}″`,
+    total: spotOf(finding.total_box, printed),
+    difference: added === null || overall === null ? null : Math.round((added - overall) * 16_000) / 16_000,
+  };
+}
+
+/** One box round every spot given (all on one page of one file), to open the page onto them. */
+export function unionBox(boxes: readonly (FindingBox | null | undefined)[]): FindingBox | null {
+  const known = boxes.filter((box): box is FindingBox => Boolean(box));
+  if (!known.length || known.some((box) => box.page !== known[0].page || (box.file ?? null) !== (known[0].file ?? null))) return null;
+  return {
+    page: known[0].page,
+    file: known[0].file ?? null,
+    x0: Math.min(...known.map((box) => Math.min(box.x0, box.x1))),
+    y0: Math.min(...known.map((box) => Math.min(box.y0, box.y1))),
+    x1: Math.max(...known.map((box) => Math.max(box.x0, box.x1))),
+    y1: Math.max(...known.map((box) => Math.max(box.y0, box.y1))),
+  };
+}
+
+// ── Why there is no design picture (2026-10-31) ───────────
+
+export type ReasonKey = 'no_design_file' | 'not_confirmed' | 'tag_only' | 'no_size' | 'not_in_design';
+
+/** The line a card with no design picture beside it shows: a short tag, the reason (bold), the rest, what happens next. */
+export interface ReasonLine {
+  key: ReasonKey;
+  tag: string;
+  lead: string;
+  rest: string | null;
+  act: string | null;
+}
+
+const REASON_TAGS: Record<ReasonKey, string> = {
+  no_design_file: 'NO DESIGN FILE',
+  not_confirmed: 'NOT CONFIRMED',
+  tag_only: 'TAG ONLY',
+  no_size: 'NO SIZE',
+  not_in_design: 'NOT IN DESIGN',
+};
+
+const straight = (text: string | null | undefined) => (text ?? '').replace(/[’‘]/g, "'");
+
+/** The pairing's plain words that say the architect's file IS in the upload (`full_check_plan._UNPAIRED_PLAIN`). */
+const FILE_IS_THERE = /architect's file has no drawings of its project|the architect shows (?:it|this item)|no drawing of the same item was found in the architect's file|no architect drawing prints its dimensions|two architect drawings match it equally/i;
+
+/**
+ * Whether the upload holds a design (architect's) file, from what the result already says: a page
+ * paired with an architect page, a page whose pairing was unsure (its candidates are in that file),
+ * an item compared on an architect page, or a "no drawing" reason that names the architect's file.
+ * False when none says so (every page unpaired with no architect drawing to pair it with).
+ */
+export function designFileInUpload(coverage: ChatCoverage | null | undefined, findings: readonly Pick<ChatFinding, 'arch_box' | 'arch_picture_id' | 'reference_page'>[] = []): boolean {
+  const pages = coverage?.pages ?? [];
+  if (pages.some((page) => page.pairing_unsure || typeof page.pair_page === 'number' || FILE_IS_THERE.test(straight(page.drawing_needed_why)))) return true;
+  return findings.some((finding) => Boolean(finding.arch_box || finding.arch_picture_id || finding.reference_page?.page || finding.reference_page?.pair?.length));
+}
+
+/** "design page 23 or 27?" (the candidate pages, in their order). */
+function candidateWords(pages: readonly { page: number }[]): string | null {
+  const numbers = [...new Set(pages.map((one) => one.page))];
+  if (!numbers.length) return null;
+  const list = numbers.length > 1 ? `${numbers.slice(0, -1).join(', ')} or ${numbers[numbers.length - 1]}` : `${numbers[0]}`;
+  return `design page ${list}?`;
+}
+
+/** "U-7 on its page 19" in code's tag-only reason (`worklist`): the tag and its plan page. */
+const TAG_ON_PLAN = /only as a tag on a plan \(([^()]+?) on its page (\d+)/i;
+
+/**
+ * Why a card has no design picture beside it, from the check's own coverage notes and the item's
+ * reasons (never guessed): no design file in the upload; the design page not confirmed (with its
+ * candidate pages); the design shows it only as a tag on a plan; the design shows it without a
+ * size; no drawing of it in the design set. Null when none applies (a card that simply checks the
+ * vendor's own numbers on a page whose design page is known).
+ */
+export function reasonLine(
+  finding: Pick<ChatFinding, 'why' | 'proof' | 'reference_page' | 'vs_page'>,
+  context: { designFile?: boolean; page?: CoveragePage | null; inRequest?: boolean | null },
+): ReasonLine | null {
+  const line = (key: ReasonKey, lead: string, rest: string | null = null, act: string | null = null): ReasonLine => ({ key, tag: REASON_TAGS[key], lead, rest, act });
+  const page = context.page ?? null;
+  const request = context.inRequest === true ? 'This page is in the drawings request to GV.' : context.inRequest === false ? 'This page is left out of the drawings request to GV.' : null;
+  if (context.designFile === false) return line('no_design_file', 'No design drawings in this upload.', request, 'Send the architect’s or designer’s drawings of this item.');
+  if (page?.pairing_unsure) {
+    const which = candidateWords(page.pairing_unsure_pages ?? []);
+    return line('not_confirmed', `The design set is uploaded, but the page for this item wasn’t confirmed${which ? '' : '.'}`, which ? `(${which}).` : null, 'A person confirms which design page shows it.');
+  }
+  const said = [page?.drawing_needed_why, finding.why, finding.proof?.reason].map(straight).join(' ');
+  if (/only as a tag on a plan/i.test(said)) {
+    const tag = TAG_ON_PLAN.exec(said);
+    return line('tag_only', tag ? `The design shows ${tag[1].trim()} only as a tag on plan p${tag[2]}` : 'The design shows this item only as a tag on a plan', ': no elevation and no sizes to compare.');
+  }
+  const designPage = finding.reference_page?.page ?? finding.vs_page ?? null;
+  const noSize = /without sizes|prints? no sizes?|no architect drawing prints its dimensions/i.test(said);
+  if (page?.drawing_needed) {
+    if (noSize) return line('no_size', designPage ? `Design page ${designPage} shows this item but prints no size here` : 'The design shows this item but prints no size here', ', so it is not compared (drawings are never scaled).');
+    return line('not_in_design', 'No drawing of this item was found in the design set.', request);
+  }
+  if (designPage && (noSize || finding.proof?.not_compared === 'nothing_to_compare')) {
+    return line('no_size', `Design page ${designPage} shows this item but prints no size here`, ', so it is not compared (drawings are never scaled).');
+  }
+  return null;
 }

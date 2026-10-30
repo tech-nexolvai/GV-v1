@@ -44,6 +44,7 @@ __all__ = [
     "ChatFindingLaterOut",
     "ChatFindingOut",
     "ChatFindingSettledOut",
+    "ChatFindingSpotOut",
     "ChatFindingUpdateBlock",
     "ChatFindingUpdateOut",
     "ChatFindingWrongPartOut",
@@ -833,6 +834,22 @@ class ChatFindingDimOut(BaseModel):
         return data
 
 
+class ChatFindingSpotOut(BaseModel):
+    """One printed number of a vendor string and its own spot (`string_spots`, worked out on
+    read from the set pack's dimension labels; nothing stored)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str = Field(description="The value as the finding prints it.")
+    inches: str | None = Field(default=None, description="Its value in inches, by code.")
+    box: ChatBoxOut | None = Field(
+        default=None, description="Its label's box; null: code could not place it for sure."
+    )
+    turned: bool = Field(
+        default=False, description="The label is written up the page (its text reads sideways)."
+    )
+
+
 class ChatFindingImpactOut(BaseModel):
     """How much a Wrong item matters (#1569), by code: ordering only, never a status or colour."""
 
@@ -1245,6 +1262,16 @@ class ChatFindingOut(BaseModel):
         description="Information only (2026-10-22): the item was compared with the vendor's own "
         "drawing (an earlier round), never counted as right; whether code compared it with the "
         "architect instead.",
+    )
+    part_boxes: list[ChatFindingSpotOut] | None = Field(
+        default=None,
+        description="A vendor string (parts and a printed overall): each part's own spot, in the "
+        "parts' order (2026-10-31, worked out on read; present only when code places at least one "
+        "of its numbers).",
+    )
+    total_box: ChatFindingSpotOut | None = Field(
+        default=None,
+        description="A vendor string: the printed overall's own spot, when code places it.",
     )
     string_reads: ChatFindingStringReadsOut | None = Field(
         default=None,

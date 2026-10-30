@@ -58,6 +58,7 @@ from app.review.assistant.chat_trust import rescored
 from app.review.assistant.code_version import code_version
 from app.review.assistant.impact import blocks_with_impacts
 from app.review.assistant.review_action import CheckState, review_action
+from app.review.assistant.string_spots import LabelsOf, blocks_with_spots
 
 __all__ = [
     "TITLE_CHARS",
@@ -480,13 +481,16 @@ def message_out(
     decisions: Mapping[str, Mapping[str, Any]] | None = None,
     corrections: Mapping[str, Mapping[str, Any]] | None = None,
     decisions_count: int | None = None,
+    labels_of: LabelsOf | None = None,
 ) -> ChatMessageOut:
     """A stored message for the screen. An answer's accuracy is scored again from its stored
     findings with today's calibration (#1513; nothing is written). `decisions`: the answer's
     latest decision per finding id (#1521), added to its findings. `corrections`: later messages'
     newest correction per finding id (#1548, `chat_corrections`): each such finding is shown at its
     newest version, marked as updated (or dropped) in a later message. `decisions_count`: how
-    many decision rows the answer has (#1803): a package made from fewer is out of date."""
+    many decision rows the answer has (#1803): a package made from fewer is out of date.
+    `labels_of`: the set pack's dimension labels, so each vendor string's numbers get their own
+    spots (`string_spots`, 2026-10-31); none: the findings as stored."""
     if message.role == "user":
         return ChatMessageOut.model_validate(
             {
@@ -498,7 +502,9 @@ def message_out(
                 "products": message.products,
             }
         )
-    payload = _assistant_payload(message, files, decisions, corrections, decisions_count)
+    payload = _assistant_payload(
+        message, files, decisions, corrections, decisions_count, labels_of=labels_of
+    )
     try:
         return ChatMessageOut.model_validate(payload)
     except ValidationError as failed:
@@ -511,11 +517,16 @@ def _assistant_payload(
     decisions: Mapping[str, Mapping[str, Any]] | None = None,
     corrections: Mapping[str, Mapping[str, Any]] | None = None,
     decisions_count: int | None = None,
+    *,
+    labels_of: LabelsOf | None = None,
 ) -> dict[str, Any]:
     """What `message_out` validates for an answer."""
     blocks = blocks_with_impacts(
         with_decisions(with_corrections(message.blocks, corrections), decisions) or []
     )
+    if labels_of is not None:
+        # The drawer's "vendor's own numbers": each printed number's own spot (read only).
+        blocks = blocks_with_spots(blocks, labels_of)
     if message.mode == "full_check":
         # Final plan change #8: the copies of one question are one card (worked out on read).
         blocks = blocks_with_cards(blocks)

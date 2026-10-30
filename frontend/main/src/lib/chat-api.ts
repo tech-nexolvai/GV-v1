@@ -574,6 +574,25 @@ export interface ChatFinding {
   paired_by?: string | null;
   /** #1558: the numbered dimension label each side was built from, by side (architect, vendor). */
   dims?: Partial<Record<string, FindingDim>> | null;
+  /**
+   * 2026-10-31, a vendor string (`parts` and `printed_total`): each part's own printed spot, in the
+   * parts' order, worked out on read from the set pack's labels. A part code could not place has
+   * no `box`. Absent when code placed none of the string's numbers.
+   */
+  part_boxes?: FindingSpot[] | null;
+  /** 2026-10-31, a vendor string: its printed overall's own spot, when code places it. */
+  total_box?: FindingSpot | null;
+}
+
+/** One printed number of a vendor string and its spot (`string_spots`). */
+export interface FindingSpot {
+  /** As the finding prints it. */
+  text: string;
+  /** Its value in inches, by code ("2.5"). */
+  inches?: string | null;
+  box?: FindingBox | null;
+  /** Written up the page: its close-up is turned so it reads upright. */
+  turned?: boolean;
 }
 
 /** #1558: a numbered dimension label a finding's side was built from; `box` is x0, y0, x1, y1 in PDF points. */

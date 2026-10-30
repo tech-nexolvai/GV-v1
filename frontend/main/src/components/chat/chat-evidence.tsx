@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, ImageOff, Mail, Minus, Plus, RotateCcw, X } from 'lucide-react';
 
 import { StatusMark, type DecisionProps } from '@/components/chat/chat-findings';
@@ -6,12 +6,12 @@ import { Spinner } from '@/components/chat/chat-motion';
 import { OutcomeGlyph, type DrawingsRequest } from '@/components/chat/chat-result';
 import { RoundChip } from '@/components/chat/chat-trust';
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
-import type { ChatFile, ChatFinding, FindingBox, FindingDecision, FindingDecisionExtra, FindingDecisionValue, PagePicture, PageWhere } from '@/lib/chat-api';
-import { architectOnVendorPage, copyLines, drawerChips, drawerKind, howWeKnow, KIND_WORDS, noArchitectPictureWords, overallSpot, pageReviewed, referenceSide, ringInCrop, ringOnCrop, ringOnPage, vendorOnly, vendorSide, type DrawerKind, type Ring } from '@/lib/chat-drawer';
+import type { ChatFile, ChatFinding, CoveragePage, FindingBox, FindingDecision, FindingDecisionExtra, FindingDecisionValue, PagePicture, PageWhere } from '@/lib/chat-api';
+import { architectOnVendorPage, copyLines, drawerChips, drawerKind, howWeKnow, KIND_WORDS, noArchitectPictureWords, overallSpot, ownNumbers, ownSum, pageReviewed, reasonLine, referenceSide, ringInCrop, ringOnCrop, ringOnPage, unionBox, vendorOnly, vendorSide, type DrawerKind, type OwnSum, type ReasonLine, type Ring, type SideWords, type SumNumber } from '@/lib/chat-drawer';
 import { architectPage, decisionHelpRows, pageWords, referenceWhere, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
 import { isInternal, proofGroup, ruleNoteWords, type RuleNoteWords } from '@/lib/chat-proof';
 import { boxOnPicture, decisionsWords, ENDS_NOT_PROVED_WORDS, endsNotProved, isDrawingNeededItem, isPairingUnsureItem, isRefusedString, itemParts, pageHeading, pagesWords, pairingUnsureWords, shortValue, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultCard, type ResultTab } from '@/lib/chat-result';
-import { plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
+import { inchWords, plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
 import { useReducedMotion } from '@/lib/chat-motion';
 import { cn } from '@/lib/utils';
 
@@ -39,11 +39,26 @@ const RING_TONE: Record<RingTone, string> = {
   neutral: 'border-outcome-missing',
 };
 
+/** 2026-10-31: a vendor string's numbers boxed apart on its page: each part amber, the printed overall red. */
+export type MarkTone = 'part' | 'total';
+
+const MARK_TONE: Record<MarkTone, string> = {
+  part: 'border-outcome-review',
+  total: 'border-outcome-fail',
+};
+
+export interface PictureMark {
+  ring: (width: number, height: number) => Ring | null;
+  tone: MarkTone;
+}
+
 /**
  * One picture, large, with zoom and pan; with `ring` (worked out once the picture's own size is
  * known) the spot is ringed, and with `focus` the picture opens zoomed onto it (a whole page).
+ * With `marks` each number is boxed on its own; `hideRing` then keeps the ring only to open onto
+ * (`focusShare`: how much of the frame it fills).
  */
-export function ZoomPane({ src, label, frameClassName, ring = null, inner = null, tone = 'neutral', focus = false }: { src: string; label: string; frameClassName?: string; ring?: ((width: number, height: number) => Ring | null) | null; inner?: ((width: number, height: number) => Ring | null) | null; tone?: RingTone; focus?: boolean }) {
+export function ZoomPane({ src, label, frameClassName, ring = null, inner = null, tone = 'neutral', focus = false, marks = null, hideRing = false, focusShare = 0.32 }: { src: string; label: string; frameClassName?: string; ring?: ((width: number, height: number) => Ring | null) | null; inner?: ((width: number, height: number) => Ring | null) | null; tone?: RingTone; focus?: boolean; marks?: readonly PictureMark[] | null; hideRing?: boolean; focusShare?: number }) {
   const reduced = useReducedMotion();
   const frame = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
@@ -93,6 +108,11 @@ export function ZoomPane({ src, label, frameClassName, ring = null, inner = null
   // A second, smaller spot inside the first (a refused string's printed overall), dashed.
   const innerSpot = natural && inner ? inner(natural.width, natural.height) : null;
   const innerBox = placed && innerSpot ? { left: placed.x + innerSpot.left * placed.width, top: placed.y + innerSpot.top * placed.height, width: innerSpot.width * placed.width, height: innerSpot.height * placed.height } : null;
+  // Each number of a vendor string, boxed on its own.
+  const markBoxes = placed && natural && marks ? marks.flatMap((mark) => {
+    const spot = mark.ring(natural.width, natural.height);
+    return spot ? [{ tone: mark.tone, left: placed.x + spot.left * placed.width, top: placed.y + spot.top * placed.height, width: spot.width * placed.width, height: spot.height * placed.height }] : [];
+  }) : [];
 
   // A whole page opens zoomed onto its spot, once (the effect waits for the picture and the frame).
   const ringKey = ringBox && size ? [ringBox.left, ringBox.top, ringBox.width, ringBox.height, size.width, size.height].map((value) => value.toFixed(1)).join(',') : null;
@@ -101,9 +121,9 @@ export function ZoomPane({ src, label, frameClassName, ring = null, inner = null
     const [left, top, width, height, frameWidth, frameHeight] = ringKey.split(',').map(Number);
     focused.current = true;
     // At most 4x: a whole page is a 100 dpi picture, and more only blurs it.
-    const zoom = Math.min(4, clampZoom(Math.min((frameWidth * 0.32) / Math.max(width, 1), (frameHeight * 0.32) / Math.max(height, 1))));
+    const zoom = Math.min(4, clampZoom(Math.min((frameWidth * focusShare) / Math.max(width, 1), (frameHeight * focusShare) / Math.max(height, 1))));
     setView({ zoom, x: -(left + width / 2 - frameWidth / 2) * zoom, y: -(top + height / 2 - frameHeight / 2) * zoom });
-  }, [focus, ringKey]);
+  }, [focus, ringKey, focusShare]);
 
   if (broken) return <NoPicture />;
 
@@ -114,7 +134,7 @@ export function ZoomPane({ src, label, frameClassName, ring = null, inner = null
         ref={frame}
         data-slot="chat-evidence-frame"
         data-zoom={view.zoom.toFixed(2)}
-        data-ringed={ringBox ? 'true' : undefined}
+        data-ringed={ringBox || markBoxes.length ? 'true' : undefined}
         onDoubleClick={() => zoomTo(view.zoom > 1 ? 1 : 2.5)}
         onPointerDown={(event) => {
           if (view.zoom <= 1) return;
@@ -146,7 +166,7 @@ export function ZoomPane({ src, label, frameClassName, ring = null, inner = null
             onLoad={(event) => setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
             className="block h-full w-full object-contain"
           />
-          {ringBox && (
+          {ringBox && !hideRing && (
             <span
               aria-hidden="true"
               data-slot="chat-evidence-ring"
@@ -163,6 +183,16 @@ export function ZoomPane({ src, label, frameClassName, ring = null, inner = null
               style={{ left: innerBox.left - pad / 2, top: innerBox.top - pad / 2, width: innerBox.width + pad, height: innerBox.height + pad, borderWidth: 2 / view.zoom, borderStyle: 'dashed' }}
             />
           )}
+          {markBoxes.map((mark, at) => (
+            <span
+              key={`${mark.tone}-${at}`}
+              aria-hidden="true"
+              data-slot="chat-evidence-mark"
+              data-tone={mark.tone}
+              className={cn('pointer-events-none absolute rounded-[3px] border-solid shadow-[0_0_0_1.5px_rgb(255_255_255/0.85)]', MARK_TONE[mark.tone])}
+              style={{ left: mark.left - pad / 2, top: mark.top - pad / 2, width: mark.width + pad, height: mark.height + pad, borderWidth: 2 / view.zoom }}
+            />
+          ))}
         </div>
       </div>
       <div className="flex items-center justify-end gap-0.5" role="group" aria-label={`Zoom: ${label}`}>
@@ -272,6 +302,13 @@ export interface ResultsDrawer {
   pageTitles: PageTitles | null;
   /** Plan change #8: the card a finding is on (a lead's or a copy's), to list and open the other copies. */
   cardOf?: ((findingId: string) => ResultCard | null) | null;
+  /**
+   * 2026-10-31: whether the upload holds a design (architect's) file (`designFileInUpload`); absent:
+   * not known, and the drawer says what it said before.
+   */
+  designFile?: boolean;
+  /** 2026-10-31: each vendor page's coverage (pairing unsure with its candidates, no drawing found, and why). */
+  coverage?: ReadonlyMap<number, CoveragePage> | null;
 }
 
 /** #1803: the draft (cloud drawing, letter, register, Not-compared list, package) after the reviewer's decisions. */
@@ -501,6 +538,8 @@ interface PicturePlan {
   /** A second, smaller spot inside the ring (a refused string's printed overall), dashed. */
   inner?: ((width: number, height: number) => Ring | null) | null;
   focus: boolean;
+  /** 2026-10-31: a vendor string's numbers, each boxed on its own (the ring then only opens the page onto them). */
+  marks?: readonly PictureMark[] | null;
 }
 
 /** Whose page picture a box is on: its own file when it names one; else the vendor's (own) or the architect's file. */
@@ -529,8 +568,21 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
   const own = kind !== 'drawing_needed' && vendorOnly(finding);
   const refused = kind === 'not_compared' && isRefusedString(finding, 'not_compared');
   const overall = refused ? overallSpot(finding) : null;
-  const steps = howWeKnow(finding, kind, { noArchitectDrawing: noDrawing });
-  const chips = kind === 'drawing_needed' ? [] : drawerChips(finding, { number, noArchitectDrawing: noDrawing, inRequest });
+  // 2026-10-31: "not in the upload" only when the upload truly has no design file; a design set
+  // that is uploaded but not paired with this page says why on the reason line instead.
+  const designFile = results.designFile;
+  const noUpload = noDrawing && designFile !== true;
+  const steps = howWeKnow(finding, kind, { noArchitectDrawing: noUpload, designFile: designFile === true });
+  const chips = kind === 'drawing_needed' ? [] : drawerChips(finding, { number, noArchitectDrawing: noUpload, inRequest });
+  // The vendor's own numbers: the right-hand card adds them up (no second copy of the vendor's
+  // picture), and the left boxes each number apart when code placed it.
+  const sum = kind !== 'drawing_needed' && !refused && ownNumbers(finding) ? ownSum(finding) : null;
+  const ownWords = kind !== 'drawing_needed' && !refused && !sum && ownNumbers(finding) && !pageReviewed(finding) && finding.source !== 'cross_view';
+  const marksBox = sum && pagePicture ? unionBox([...sum.parts.map((one) => one.box), sum.total.box]) : null;
+  const marks: PictureMark[] | null = sum && marksBox ? [
+    ...sum.parts.flatMap((one): PictureMark[] => (one.box ? [{ ring: (w, h) => ringOnPage(one.box, w, h), tone: 'part' }] : [])),
+    ...(sum.total.box ? [{ ring: (w: number, h: number) => ringOnPage(sum.total.box, w, h), tone: 'total' as const }] : []),
+  ] : null;
   const copies = copyLines(finding);
   const part = kind === 'clouded' ? wrongPartWords(finding) : null;
   const tell = part ? `Change the ${part.part} part to ${part.should}${part.overall ? `: the ${part.overall} overall is right` : ''}.` : kind === 'clouded' ? reviewerWords(finding).tell : null;
@@ -540,12 +592,15 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
   const vendorWhere = whereOf(vendorBox, true);
 
   // The vendor's side: the evidence crop ringed; else (or "Whole page") the vendor's page picture.
-  const vendorSpot: PicturePlan | null = finding.vendor_picture_id
+  const vendorSpot: PicturePlan | null = pagePicture && marksBox && marks?.length ? { src: pagePicture(marksBox.page, whereOf(marksBox, true)), ring: (w, h) => ringOnPage(marksBox, w, h), focus: true, marks }
+    : finding.vendor_picture_id
     ? { src: pictureUrl(finding.vendor_picture_id), ring: (w, h) => ringOnCrop(vendorBox, w, h), inner: overall ? (w, h) => ringInCrop(vendorBox, overall, w, h) : null, focus: false }
     : pagePicture && vendorBox ? { src: pagePicture(vendorBox.page, vendorWhere), ring: (w, h) => ringOnPage(vendorBox, w, h), inner: overall ? (w, h) => ringOnPage(overall, w, h) : null, focus: true }
       : pagePicture && kind === 'drawing_needed' ? { src: pagePicture(finding.page), ring: null, focus: false }
         : null;
-  const vendorPagePlan: PicturePlan | null = pagePicture ? { src: pagePicture(page, vendorWhere), ring: vendorBox ? (w, h) => ringOnPage(vendorBox, w, h) : null, inner: overall ? (w, h) => ringOnPage(overall, w, h) : null, focus: false } : null;
+  const vendorPagePlan: PicturePlan | null = !pagePicture ? null
+    : marksBox && marks?.length ? { src: pagePicture(marksBox.page, whereOf(marksBox, true)), ring: null, focus: false, marks }
+      : { src: pagePicture(page, vendorWhere), ring: vendorBox ? (w, h) => ringOnPage(vendorBox, w, h) : null, inner: overall ? (w, h) => ringOnPage(overall, w, h) : null, focus: false };
   const vendorPlan = whole && vendorPagePlan ? vendorPagePlan : vendorSpot;
 
   // The reference: the architect's crop ringed green; the architect's spot on the same sheet; the
@@ -595,6 +650,14 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
         : !archPicture && !archBox && archPageNumber !== null ? `Architect${architectPageWords} · the spot is not marked`
           : `Architect${architectPageWords}`;
   const referenceToggle = referencePagePlan !== null && referenceSpot !== null;
+  // 2026-10-31: a card with no design picture beside it says why (never on a card that compares
+  // two drawings, GV's rule or a row code did not compare).
+  const comparesDesign = Boolean(archPicture || archBox) || (!own && !rules && archPageNumber !== null);
+  const reasonContext = { designFile, page: results.coverage?.get(finding.page) ?? null, inRequest: noDrawing && results.request ? inRequest : null };
+  const reason = kind === 'drawing_needed' || comparesDesign || rules || refused ? null : reasonLine(finding, reasonContext);
+  // A Drawing-needed page in a set whose design file IS uploaded: say what was not found, not "not in the upload".
+  const needed = kind === 'drawing_needed' && designFile === true ? reasonLine(finding, reasonContext) : null;
+  const neededWords = needed ? `${needed.lead}${needed.rest && /^[:,]/.test(needed.rest) ? needed.rest : ''}` : 'No architect drawing of this item in the upload.';
 
   return (
     <div data-slot="chat-evidence-results" className="grid min-h-0 flex-1 content-start gap-5 overflow-y-auto px-6 py-5 max-md:px-4">
@@ -605,7 +668,7 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
           {heading.project && <span>· {heading.project}</span>}
         </p>
         <SheetTitle className="text-[21px] leading-[28px] font-semibold tracking-[-0.01em] break-words max-md:text-[19px] max-md:leading-[26px]">
-          {kind === 'drawing_needed' ? `No architect drawing of page ${finding.page} in the upload` : parts.area ? parts.thing : finding.item}
+          {kind === 'drawing_needed' ? (needed ? `No design drawing of page ${finding.page} to compare` : `No architect drawing of page ${finding.page} in the upload`) : parts.area ? parts.thing : finding.item}
           <span className="sr-only"> · page {pageWords(finding)}</span>
         </SheetTitle>
       </div>
@@ -637,9 +700,10 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
           tone={TONE_OF[kind]}
           label={`Vendor page ${page}`}
           footer={
-            <span className="flex min-w-0 items-center gap-2">
+            <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <span>Vendor page <span className="num">{page}</span></span>
               {vendorPagePlan && kind !== 'drawing_needed' && <WholeButton whole={whole} onToggle={() => setWhole(!whole)} />}
+              {vendorPlan?.marks?.length ? <MarkLegend /> : null}
             </span>
           }
         />
@@ -647,16 +711,20 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
           <figure data-slot="chat-evidence-side" data-side="architect" className="grid min-w-0 content-start overflow-hidden rounded-xl border">
             <figcaption className="flex min-w-0 items-baseline justify-between gap-2 border-b px-3.5 py-2.5">
               <span className="text-[13px] text-muted-foreground">{referenceWords.label}</span>
-              <span className="text-[15px] font-semibold">{referenceWords.value}</span>
+              <span className="text-[15px] font-semibold">{needed ? 'Not found' : referenceWords.value}</span>
             </figcaption>
             <div className="grid h-[300px] content-center justify-items-center gap-3 px-6 text-center max-md:h-auto max-md:py-8">
               <OutcomeGlyph kind="drawing_needed" className="size-7 [&>span]:size-6" />
-              <p className="max-w-[34ch] text-sm text-foreground">No architect drawing of this item in the upload.</p>
-              {finding.why && <p className="max-w-[40ch] text-[13px] text-muted-foreground">{finding.why.charAt(0).toUpperCase() + finding.why.slice(1)}.</p>}
+              <p data-slot="chat-evidence-needed-words" data-reason={needed?.key} className="max-w-[34ch] text-sm text-foreground">{neededWords}</p>
+              {finding.why && !needed && <p className="max-w-[40ch] text-[13px] text-muted-foreground">{finding.why.charAt(0).toUpperCase() + finding.why.slice(1)}.</p>}
               {results.request && <RequestButton page={finding.page} request={results.request} />}
             </div>
             <p className="border-t px-3.5 py-2 text-xs text-muted-foreground">Ask GV for it, then run the check again</p>
           </figure>
+        ) : sum ? (
+          <OwnNumbersSide sum={sum} kind={kind} words={referenceWords} area={parts.area} pagePicture={pagePicture} drawn={part?.drawn ?? null} />
+        ) : ownWords ? (
+          <OwnWordsSide finding={finding} />
         ) : (
           <SideCard
             side="architect"
@@ -670,11 +738,13 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
                 {referenceToggle && <WholeButton whole={wholeReference} onToggle={() => setWholeReference(!wholeReference)} />}
               </span>
             ) : null}
-            emptyWords={noReference ? `No architect picture: ${noReference.charAt(0).toLowerCase()}${noReference.slice(1).replace(/\.$/, '')}` : noArchitectPictureWords(finding, noDrawing)}
+            emptyWords={noReference ? `No architect picture: ${noReference.charAt(0).toLowerCase()}${noReference.slice(1).replace(/\.$/, '')}` : noArchitectPictureWords(finding, noUpload)}
           />
         )}
       </div>
       )}
+
+      {reason && <ReasonLineBox reason={reason} />}
 
       {steps.length > 0 && (
         <section aria-label="How we know" data-slot="chat-evidence-how" className="grid min-w-0 gap-2 rounded-xl bg-muted/60 px-4 py-3.5">
@@ -848,11 +918,159 @@ function SideCard({ side, words, plan, tone, label, footer, emptyWords, tall = f
         </p>
       )}
       <div className="p-2">
-        {plan ? <ZoomPane key={`${plan.src}-${plan.focus}`} src={plan.src} label={label} ring={plan.ring} inner={plan.inner ?? null} tone={tone} focus={plan.focus} frameClassName={frame} />
+        {plan ? <ZoomPane key={`${plan.src}-${plan.focus}-${plan.marks ? 'marks' : 'ring'}`} src={plan.src} label={label} ring={plan.ring} inner={plan.inner ?? null} tone={tone} focus={plan.focus} frameClassName={frame} marks={plan.marks ?? null} hideRing={Boolean(plan.marks?.length)} focusShare={plan.marks?.length ? 0.85 : 0.32} />
           : <div data-slot="chat-evidence-missing" className={cn('grid place-items-center rounded-lg border border-dashed px-6 text-center text-[13px] text-muted-foreground', tall ? 'h-[320px] max-md:h-[200px]' : 'h-[300px] max-md:h-[160px]')}>{emptyWords ?? 'No picture for this item'}</div>}
       </div>
       {footer && <p className="border-t px-3.5 py-2 text-xs text-muted-foreground">{footer}</p>}
     </figure>
+  );
+}
+
+// ── 2026-10-31: the vendor's own numbers, and why there is no design picture ──
+
+const NUMBER_TONE: Record<MarkTone, { border: string; text: string }> = {
+  part: { border: 'border-outcome-review', text: 'text-outcome-review-fg' },
+  total: { border: 'border-outcome-fail', text: 'text-outcome-fail-fg' },
+};
+
+/** Under the vendor's picture: what the two kinds of box mean. */
+function MarkLegend() {
+  return (
+    <span data-slot="chat-evidence-mark-legend" className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+      <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="inline-block size-2.5 rounded-[2px] border-2 border-outcome-review" />parts added</span>
+      <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="inline-block size-2.5 rounded-[2px] border-2 border-outcome-fail" />printed overall</span>
+    </span>
+  );
+}
+
+/** A close-up's padding round its label (points: a stacked fraction's bar and a foot mark reach past the label's box), its height on screen and its widest (pixels). */
+const CLOSE_UP_PAD_PT = 7;
+const CLOSE_UP_HEIGHT = 46;
+const CLOSE_UP_MAX_WIDTH = 170;
+
+/**
+ * One printed number, close up: the vendor's page picture (100 dpi, the same one the left card
+ * shows) cut to the label's box; a label written up the page is turned to read upright.
+ */
+function SpotCloseUp({ src, box, turned, tone, label, onBroken }: { src: string; box: FindingBox; turned: boolean; tone: MarkTone; label: string; onBroken: () => void }) {
+  const px = (points: number) => (points * 100) / 72;
+  const x0 = Math.min(box.x0, box.x1) - CLOSE_UP_PAD_PT;
+  const y0 = Math.min(box.y0, box.y1) - CLOSE_UP_PAD_PT;
+  const width = px(Math.abs(box.x1 - box.x0) + 2 * CLOSE_UP_PAD_PT);
+  const height = px(Math.abs(box.y1 - box.y0) + 2 * CLOSE_UP_PAD_PT);
+  const scale = Math.min(4, CLOSE_UP_HEIGHT / (turned ? width : height), CLOSE_UP_MAX_WIDTH / (turned ? height : width));
+  const cut = { width: width * scale, height: height * scale };
+  const shown = turned ? { width: cut.height, height: cut.width } : cut;
+  return (
+    <span data-slot="chat-evidence-closeup" data-turned={turned ? 'true' : undefined} className={cn('inline-block rounded-[6px] border-2 bg-white p-[3px]', NUMBER_TONE[tone].border)}>
+      <span className="relative block overflow-hidden" style={shown}>
+        <span className="absolute top-1/2 left-1/2 block overflow-hidden" style={{ ...cut, transform: `translate(-50%, -50%)${turned ? ' rotate(90deg)' : ''}` }}>
+          <img
+            src={src}
+            alt={label}
+            draggable={false}
+            onError={onBroken}
+            className="absolute top-0 left-0 block h-auto max-w-none select-none"
+            style={{ transform: `translate(${-px(x0) * scale}px, ${-px(y0) * scale}px) scale(${scale})`, transformOrigin: '0 0' }}
+          />
+        </span>
+      </span>
+    </span>
+  );
+}
+
+/** One number of the sum: its close-up with its value under it, or (no spot) its value in the same chip. */
+function NumberChip({ number, tone, pagePicture }: { number: SumNumber; tone: MarkTone; pagePicture: PagePicture | null }) {
+  const [broken, setBroken] = useState(false);
+  const src = number.box && pagePicture && !broken ? pagePicture(number.box.page, whereOf(number.box, true)) : null;
+  return (
+    <figure data-slot="chat-evidence-number" data-tone={tone} data-picture={src ? 'true' : undefined} className="m-0 grid min-w-0 justify-items-center gap-1">
+      {src && number.box ? (
+        <>
+          <SpotCloseUp src={src} box={number.box} turned={number.turned} tone={tone} label={`Printed ${number.value}`} onBroken={() => setBroken(true)} />
+          <figcaption className={cn('num text-[12.5px] leading-4 font-semibold whitespace-nowrap', NUMBER_TONE[tone].text)}>{number.value}</figcaption>
+        </>
+      ) : (
+        <span className={cn('num grid h-[50px] min-w-[50px] place-items-center rounded-[6px] border-2 bg-background px-2.5 text-[15px] font-semibold whitespace-nowrap', NUMBER_TONE[tone].border, NUMBER_TONE[tone].text)}>{number.value}</span>
+      )}
+    </figure>
+  );
+}
+
+function Op({ children }: { children: React.ReactNode }) {
+  return <span aria-hidden="true" className="num text-[17px] text-muted-foreground">{children}</span>;
+}
+
+/** "off 2 1/2″" (red tint), or "adds up" (green, with its check mark). */
+function OffPill({ difference, prefix = true }: { difference: number; prefix?: boolean }) {
+  if (difference === 0) {
+    return <span data-slot="chat-evidence-off" data-off="0" className="inline-flex items-center gap-1 rounded-[4px] bg-outcome-pass-bg px-2 py-px text-[13px] font-semibold text-outcome-pass-fg"><Check className="size-3.5" aria-hidden="true" />adds up</span>;
+  }
+  return <span data-slot="chat-evidence-off" className="num inline-block rounded-[4px] bg-outcome-fail-bg px-2 py-px text-[13px] font-semibold whitespace-nowrap text-outcome-fail-fg">{prefix ? 'off ' : ''}{inchWords(Math.abs(difference))}″</span>;
+}
+
+/**
+ * The right-hand card of a vendor string: its parts as printed (each close up), added by code,
+ * against the printed overall, and how far off. Never a second copy of the vendor's picture.
+ */
+function OwnNumbersSide({ sum, kind, words, area, pagePicture, drawn }: { sum: OwnSum; kind: DrawerKind; words: SideWords; area: string | null; pagePicture: PagePicture | null; drawn: string | null }) {
+  // A proven Wrong keeps what it should be in the header; any other card says what this card is.
+  const should = kind === 'clouded' && words.value && words.value !== '—' ? words : null;
+  return (
+    <figure data-slot="chat-evidence-side" data-side="architect" data-own="sum" className="grid min-w-0 content-start overflow-hidden rounded-xl border">
+      <figcaption className="flex min-w-0 items-baseline justify-between gap-2 border-b px-3.5 py-2.5">
+        <span className="shrink-0 text-[13px] text-muted-foreground">{should ? should.label : 'The vendor’s own numbers'}</span>
+        {should ? <span data-slot="chat-evidence-value" className={cn('num min-w-0 truncate text-[22px] leading-7 font-semibold max-md:text-[19px]', should.tone === 'right' && 'text-outcome-pass-fg')}>{should.value}</span>
+          : sum.difference !== null && <OffPill difference={sum.difference} />}
+      </figcaption>
+      <div data-slot="chat-evidence-sum" className="grid min-w-0 content-start gap-4 px-3.5 py-3.5">
+        <p className="text-[11.5px] leading-4 font-semibold tracking-[0.06em] text-muted-foreground uppercase">As printed{area ? ` on ${area}` : ''}, added by code</p>
+        <div data-slot="chat-evidence-sum-parts" className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2.5">
+          {sum.parts.map((one, at) => (
+            <Fragment key={at}>
+              {at > 0 && <Op>+</Op>}
+              <NumberChip number={one} tone="part" pagePicture={pagePicture} />
+            </Fragment>
+          ))}
+          <Op>=</Op>
+          <span data-slot="chat-evidence-sum-total" className="num text-[20px] leading-7 font-semibold whitespace-nowrap">{sum.sum ?? '—'}</span>
+        </div>
+        <div data-slot="chat-evidence-sum-overall" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+          <span className="text-[12.5px] text-muted-foreground">Printed overall</span>
+          <NumberChip number={sum.total} tone="total" pagePicture={pagePicture} />
+          {sum.difference !== null && sum.difference !== 0 && <span className="inline-flex items-center gap-1.5 text-[12.5px] text-muted-foreground">difference <OffPill difference={sum.difference} prefix={false} /></span>}
+        </div>
+      </div>
+      <p className="border-t px-3.5 py-2 text-xs text-muted-foreground">{drawn ? `Measured on the vendor’s own drawing: this line is drawn ${drawn} long` : 'Code added the numbers printed on the page. Never scaled.'}</p>
+    </figure>
+  );
+}
+
+/** A check of the vendor's own drawing with no numbers to add up: its own words, not a second picture. */
+function OwnWordsSide({ finding }: { finding: ChatFinding }) {
+  const why = (finding.why ?? finding.proof?.reason ?? '').replace(/\s+/g, ' ').trim();
+  return (
+    <figure data-slot="chat-evidence-side" data-side="architect" data-own="words" className="grid min-w-0 content-start overflow-hidden rounded-xl border">
+      <figcaption className="border-b px-3.5 py-2.5 text-[13px] text-muted-foreground">The vendor’s own drawing</figcaption>
+      <p data-slot="chat-evidence-own-why" className="px-3.5 py-3.5 text-[13.5px] leading-[21px] break-words text-foreground">
+        {why ? `${why.charAt(0).toUpperCase()}${why.slice(1)}`.replace(/"/g, '″').replace(/([^.!?])$/, '$1.') : 'Code checked this on the vendor’s own drawing.'}
+      </p>
+      <p className="border-t px-3.5 py-2 text-xs text-muted-foreground">Checked on the vendor’s own drawing only</p>
+    </figure>
+  );
+}
+
+/** Why a card has no design picture beside it: a short tag, the reason, and what happens next. */
+function ReasonLineBox({ reason }: { reason: ReasonLine }) {
+  return (
+    <section aria-label="Why there is no design picture" data-slot="chat-evidence-reason" data-reason={reason.key} className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-1 rounded-xl border bg-muted/40 px-3.5 py-3 max-sm:grid-cols-1">
+      <span className="num w-fit rounded-[4px] border border-current px-1.5 text-[11px] leading-[18px] font-semibold whitespace-nowrap text-muted-foreground">{reason.tag}</span>
+      <p className="min-w-0 text-[13.5px] leading-5 break-words text-foreground">
+        <span className="font-semibold">{reason.lead}</span>
+        {reason.rest ? `${/^[:,]/.test(reason.rest) ? '' : ' '}${reason.rest}` : null}
+      </p>
+      {reason.act && <p className="min-w-0 text-[13px] leading-[19px] text-muted-foreground sm:col-start-2">{reason.act}</p>}
+    </section>
   );
 }
 
