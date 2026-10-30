@@ -103,6 +103,7 @@ __all__ = [
     "MIN_PAGE_DIMS",
     "NO_DRAWING_NOTE",
     "NUMBERS_UNREAD",
+    "TAG_PAGES_MAX",
     "RankMemo",
     "architect_views_findings",
     "build_worklist",
@@ -161,6 +162,10 @@ KEY_PLAN_TAGS: Final = 8
 #: other callout is nearly as close (`CALLOUT_CLEAR` times as far, or more).
 CALLOUT_REACH_PT: Final = 100.0
 CALLOUT_CLEAR: Final = 1.5
+#: The vendor's item tag printed on at most this many pages of the architect's file names the
+#: item's architect page (`_tag_page`); printed on more, it is a finish or a type code (every
+#: room's plan, a legend, a schedule): no evidence of which page shows the piece.
+TAG_PAGES_MAX: Final = 3
 #: A naming word the vendor prints on more than this share of its drawings (and more than
 #: `COMMON_WORD_MIN` of them) is its title block's or its brand's, never evidence of a piece.
 COMMON_WORD_SHARE: Final = 0.25
@@ -916,6 +921,9 @@ def worklist_from(
             if isinstance(one.get("page"), int)
         },
     )
+    across_context.architect_text = _architect_text(
+        entries, architect_files, dims_pages, notes_pages, read_index, texts or {}, across_context
+    )
     separate_items = any(c.file != file for c in items_across)
     mine_vendor = [h for h in vendor_halves if h.file == file]
     for half in mine_vendor:
@@ -1385,6 +1393,16 @@ class _Across:
     word_limit: float = math.inf
     """A naming word printed on more of the vendor's drawings than this is its title block's or
     its brand's (`COPYRIGHT`, `DRAWN`, the brand's name): no evidence of which piece a drawing shows."""
+    printed: dict[str, tuple[views_module.Phrase, ...]] = field(default_factory=dict)
+    """Each architect item's printed text and tags, with where (by the item's id): its page's text
+    layer and the tags read on it (`_tag_page`)."""
+    architect_text: dict[tuple[str, int], tuple[str, ...]] = field(default_factory=dict)
+    """Every page of the architect's file (a reference set's left out), by file and page: what it
+    prints (its text layer, the tags read on it, the set index's checked item tags), whether or
+    not it holds a drawing (`_tag_page` counts the pages printing a tag)."""
+    tag_pages: dict[str, tuple[tuple[str, int], ...]] = field(default_factory=dict)
+    """The pages of `architect_text` printing each item tag, as `_tag_page` found them (kept: the
+    work list is built again as each matcher answer lands)."""
 
     def item_tags(self) -> frozenset[str]:
         """The vendor's item tags (`ITEM_TAG_SHARE`): every item-like tag it prints on few of its
@@ -1633,6 +1651,7 @@ def _enrich(
         key_plan = whole and _key_plan(found, read, len(tags))
         found_views[item.id] = found if views else ()
         phrases[item.id] = printed
+        context.printed[item.id] = (*printed, *_tags_read(notes_page))
         sheet = views_module.sheet_number(printed, found)
         if sheet is not None:
             sheet_of[item.id] = sheet
@@ -1896,9 +1915,13 @@ def _pair_across(
     boiler = frozenset(
         w for w in mine_facts.words if context.word_drawings.get(w, 0) > context.word_limit
     )
+    # The architect's own printed tag names the item's page (owner, 2026-10-31).
+    tagged = _tag_page(item_tags, everything, pool, project if refused is None else None, context)
+    tag_plan = tagged if tagged is not None and tagged.plan else None
     if not pool:
         why = (
             refused
+            or (_needed(_tag_only_words(tag_plan)) if tag_plan is not None else None)
             or _honest_unpaired(vendor, everything, item_tags, project, facts_of)
             or (
                 f"{pairing_module.UNPAIRED}: the architect's file holds no drawing it may be "
@@ -1919,8 +1942,12 @@ def _pair_across(
             section=None,
             candidates=(),
             why=_needed(
-                f"the architect's drawings of its project ({len(pool)} pages) print no sizes of "
-                "any piece (outlines, schedules or plans only)"
+                _tag_only_words(tag_plan)
+                if tag_plan is not None
+                else (
+                    f"the architect's drawings of its project ({len(pool)} pages) print no "
+                    "sizes of any piece (outlines, schedules or plans only)"
+                )
             ),
             needed=True,
         )
@@ -1998,6 +2025,42 @@ def _pair_across(
         chosen, why = pairing_module.agree(ranked, code_pick, answer)
         if not chosen and swap_why:
             why = f"{why}; {swap_why}"
+    tag_pair = tagged if tagged is not None and not tagged.plan else None
+    if tag_pair is not None and any(
+        s.ref == tag_pair.item and s.contradicts is not None for s in ranked
+    ):
+        # Code rules the page out (another variant, another section): never paired by its tag.
+        tag_pair = None
+    if tag_pair is not None and tag_pair.views:
+        # A sheet of several views is ruled out view by view (`narrow`): an accessible vendor
+        # unit is never paired with a view printing no accessible marker, its tag or not.
+        sheet = next(c for c in pool if c.id == tag_pair.item)
+        views_facts = [
+            v
+            for v in _view_facts(sheet, facts_of, _section_of(sheet, facts_of))
+            if v.ref in tag_pair.views
+        ]
+        if any(s.contradicts is not None for s in pairing_module.rank(mine_facts, views_facts)):
+            tag_pair = None
+    # The tag's page and another page code and the matcher agreed on: a person confirms.
+    rivals: tuple[str, ...] = ()
+    if tag_pair is not None:
+        if chosen in ((), (tag_pair.item,)):
+            # The architect's own printed tag decides: the paid matcher is not asked about it.
+            chosen, code_pick, code_paired = (tag_pair.item,), tag_pair.item, True
+            why = (
+                f"paired with {tag_pair.item}: it prints the vendor's item tag "
+                f"{tag_pair.printed}, the architect's own tag (no other elevation or section of "
+                "the architect's prints it)"
+            )
+        else:
+            rivals = (tag_pair.item, *chosen)
+            why = (
+                f"{pairing_module.UNPAIRED}: {tag_pair.item} prints the vendor's item tag "
+                f"{tag_pair.printed}, but code and the AI page matcher name "
+                f"{' and '.join(chosen)} ({why})"
+            )
+            chosen = ()
     by_id = {c.id: c for c in pool}
     picked_views: list[str] = []
     whole: set[str] = set()
@@ -2010,6 +2073,19 @@ def _pair_across(
             item = by_id[item_id]
             if not item.views:
                 kept.append(item_id)
+                continue
+            if tag_pair is not None and item_id == tag_pair.item:
+                # The views of the sheet that print the vendor's item tag.
+                kept.append(item_id)
+                picked_views.extend(tag_pair.views)
+                shown.append(
+                    f"its views printing {tag_pair.printed} on {item_id}: "
+                    + ", ".join(
+                        f'"{v.titles[0]}"' if v.titles else v.ref
+                        for v in item.views
+                        if v.ref in tag_pair.views
+                    )
+                )
                 continue
             own = {v.ref for v in item.views}
             vendor_facts = dataclasses.replace(
@@ -2129,7 +2205,31 @@ def _pair_across(
             hand = "the vendor's parts read in reverse order on the architect's: a mirrored unit"
         if hand is not None and not mirrored:
             why = f"{why}; {hand}: sizes are compared, positions from an end are not"
-    if not chosen and DRAWING_NEEDED not in why and saved is not None:
+    # A page the AI page matcher is sure of, or code's own clear pick, other than the tag's plan
+    # (owner's rule, 25 Oct: "no drawing to compare with" only when code is sure): the vendor's
+    # tag may be its wrong number for the piece, and that page may draw it.
+    held = (
+        _held_page(ranked, code_pick, answer or (saved[1] if saved is not None else None))
+        if tag_plan is not None and not chosen
+        else None
+    )
+    if not chosen and not rivals and DRAWING_NEEDED not in why and tag_plan is not None:
+        if held is None:
+            # The architect's only page printing the vendor's item tag is a plan of tags, and no
+            # other page is held: that is its page, with nothing to compare (never "pairing
+            # unsure" between other pages, nor "no drawing found").
+            why = _needed(
+                f"{_tag_only_words(tag_plan)}; {why.removeprefix(f'{pairing_module.UNPAIRED}: ')}"
+            )
+        else:
+            # Both are named for a person: the held page and the plan printing the tag.
+            rivals = (held, tag_plan.item)
+            why = (
+                f"{pairing_module.UNPAIRED}: its item tag {tag_plan.printed} is printed on a plan, "
+                f"{tag_plan.item}, with no sizes, but {held} is held for it "
+                f"({why.removeprefix(f'{pairing_module.UNPAIRED}: ')})"
+            )
+    if not chosen and not rivals and DRAWING_NEEDED not in why and saved is not None:
         # The item, not the project: the AI page matcher looked at every architect page of the
         # project and named only drawings that give no sizes of it, and code agrees.
         shown_only = (
@@ -2139,7 +2239,7 @@ def _pair_across(
         )
         if shown_only is not None:
             why = _needed(f"{shown_only}; {why.removeprefix(f'{pairing_module.UNPAIRED}: ')}")
-    if not chosen and DRAWING_NEEDED not in why:
+    if not chosen and not rivals and DRAWING_NEEDED not in why:
         honest = _honest_unpaired(vendor, everything, item_tags, project, facts_of)
         prefix = f"{pairing_module.UNPAIRED}: "
         if honest is not None:
@@ -2153,6 +2253,9 @@ def _pair_across(
     if not unsure and not chosen and code_paired and DRAWING_NEEDED not in why:
         # Code's own pass named the item, and something later (which view) is unsure.
         unsure = (str(code_pick),)
+    if rivals and not chosen:
+        # The architect's own tag names one page, code and the matcher another: both are named.
+        unsure = rivals
     if unsure:
         # A page is named (the matcher's, sure or not, or code's own) and the pair is not
         # confirmed: the drawing may be in the upload, so the candidates are named in the
@@ -2568,6 +2671,188 @@ def _label_of(label: Label, file: str, page: int) -> dict[str, Any]:
         "file": file,
         "box": list(label.box),
     }
+
+
+def _tags_read(notes_page: Mapping[str, Any] | None) -> list[views_module.Phrase]:
+    """The tags read on a page's architect drawings (`notes.json`), with where."""
+    out: list[views_module.Phrase] = []
+    for one in (notes_page or {}).get("drawings") or []:
+        if not isinstance(one, Mapping) or one.get("role") != "architect":
+            continue
+        for tag in one.get("tags") or []:
+            box = _box(tag.get("box")) if isinstance(tag, Mapping) else None
+            text = _plain(tag.get("text")) if isinstance(tag, Mapping) else ""
+            if box is not None and text:
+                out.append((text, box))
+    return out
+
+
+def _architect_text(
+    entries: Sequence[Mapping[str, Any]],
+    architect_files: frozenset[str],
+    dims_pages: Mapping[tuple[str, int], Mapping[str, Any]],
+    notes_pages: Mapping[tuple[str, int], Mapping[str, Any]],
+    read_index: Mapping[str, Mapping[str, Any]],
+    texts: Mapping[tuple[str, int], str],
+    context: _Across,
+) -> dict[tuple[str, int], tuple[str, ...]]:
+    """What every page of the architect's file prints (`_Across.architect_text`): its text layer
+    (the page's text, its phrases), the tags read on it, the set index's checked item tags. A
+    reference set's pages (the brand prototype, R1) are left out: they are never paired."""
+    out: dict[tuple[str, int], tuple[str, ...]] = {}
+    for entry in entries:
+        key = (str(entry.get("file")), int(entry["page"]))
+        if key[0] not in architect_files:
+            continue
+        place = context.places.get(key)
+        if place is not None and place.reference:
+            continue
+        read = read_index.get(f"{key[0]}#{key[1]}") or {}
+        out[key] = (
+            texts.get(key) or "",
+            *(text for text, _box in views_module.phrases_of(dims_pages.get(key))),
+            *(text for text, _box in _tags_read(notes_pages.get(key))),
+            *(_plain(t) for t in read.get("item_tags") or []),
+        )
+    return out
+
+
+@dataclass(frozen=True, slots=True)
+class _TagPage:
+    """The architect's page that prints the vendor drawing's item tag (`_tag_page`)."""
+
+    item: str
+    """The architect item's id (its page)."""
+    page: int
+    printed: str
+    """The tag as the architect prints it (`XX-801`)."""
+    plan: bool
+    """The page is a plan that shows the item only as its tag (a key or furniture plan)."""
+    views: tuple[str, ...] = ()
+    """A sheet of several views: the views that print the tag (an elevation, a section)."""
+
+
+def _same_project(item: AcrossCandidate, project: str) -> bool:
+    """Whether an architect item may be of the vendor drawing's project (`project`, normalised):
+    its page names no project, the same one, or only part of its name (the brand alone, "HOTEL
+    NORTH" of "HOTEL NORTH, SPRINGFIELD", when the set index read the name in two pieces). A page
+    naming a word the vendor's project lacks is another project's."""
+    own = _project_of(item)
+    return own is None or own == project or set(own.split()) <= set(project.split())
+
+
+def _tag_page(
+    item_tags: frozenset[str],
+    everything: Sequence[AcrossCandidate],
+    pool: Sequence[AcrossCandidate],
+    project: str | None,
+    context: _Across,
+) -> _TagPage | None:
+    """The item's architect page by the architect's own printed tag (owner, 2026-10-31): the
+    vendor prints its item tag (`XX-801`) in its title block, and the architect prints the same
+    tag, exactly (`pairing.printed_item_tag`, a top's `-T` or a sink's `-SK` suffix allowed), on
+    the drawing of the piece. When the tag is printed on one to `TAG_PAGES_MAX` pages of the
+    architect's file (a reference set's left out), every one a drawing of the vendor's project
+    (`_same_project`; the set index must know the project: never across projects):
+
+    - exactly one of them is not a plan of tags (an elevation, a section, an item's sheet), code
+      does not rule it out (`pool`: another variant or section is never paired), and on a sheet
+      of several views one or more of its views print the tag: that page (those views);
+    - all of them are key or furniture plans, and nothing points from the tag to an elevation
+      (no callout within `CALLOUT_REACH_PT` of it, the reach `_linked` follows; a room's
+      elevation marker further off is the room's): the first plan, "only as a tag on a plan".
+
+    Several of the vendor's item tags must name the same page. Else `None`: the tag does not
+    decide, and the pairing goes on as before."""
+    if not item_tags or project is None or not context.projects:
+        return None
+    by_place = {(c.file, c.page): c for c in everything if not c.reference}
+    open_ = {c.id: c for c in pool}
+    found: list[_TagPage] = []
+    for tag in sorted(item_tags):
+        if tag not in context.tag_pages:
+            context.tag_pages[tag] = tuple(
+                sorted(
+                    key
+                    for key, text in context.architect_text.items()
+                    if pairing_module.printed_item_tag(text, tag) is not None
+                )
+            )
+        pages = context.tag_pages[tag]
+        if not pages:
+            continue
+        if len(pages) > TAG_PAGES_MAX:
+            return None
+        items = [by_place.get(key) for key in pages]
+        if any(item is None or not _same_project(item, project) for item in items):
+            return None
+        printing = [item for item in items if item is not None]
+        shows = [item for item in printing if not item.key_plan]
+        if len(shows) > 1:
+            return None
+        if shows:
+            item = open_.get(shows[0].id)
+            if item is None:
+                return None
+            printed = pairing_module.printed_item_tag(
+                [text for text, _box in context.printed.get(item.id, ())], tag
+            )
+            views: tuple[str, ...] = ()
+            if item.views:
+                views = tuple(
+                    view.ref
+                    for view in item.views
+                    if any(
+                        pairing_module.printed_item_tag([text], tag) is not None
+                        and _distance(_centre(box), view.box) == 0
+                        for text, box in context.printed.get(item.id, ())
+                    )
+                )
+                if not views:
+                    return None
+            found.append(_TagPage(item.id, item.page, printed or tag, False, views))
+            continue
+        plan = printing[0]
+        spots = [
+            box
+            for text, box in context.printed.get(plan.id, ())
+            if pairing_module.printed_item_tag([text], tag) is not None
+        ]
+        marks = [m for p in context.plans if p.item == plan.id for m in p.marks]
+        if any(views_module.gap(box, m.box) <= CALLOUT_REACH_PT for box in spots for m in marks):
+            # The plan's elevation callout beside the tag points from it to the elevations that
+            # may draw it (`_linked`'s reach): not "only as a tag", the pairing goes on as before.
+            return None
+        printed = pairing_module.printed_item_tag(
+            [text for text, _box in context.printed.get(plan.id, ())], tag
+        )
+        found.append(_TagPage(plan.id, plan.page, printed or tag, True))
+    if not found or len({(f.item, f.plan, f.views) for f in found}) != 1:
+        return None
+    return found[0]
+
+
+def _held_page(
+    ranked: Sequence[pairing_module.Scored],
+    code_pick: str | None,
+    answer: pairing_module.MatchAnswer | None,
+) -> str | None:
+    """The architect page held for a vendor drawing although no pair is confirmed: the AI page
+    matcher's first pick when it is sure of it, or code's own clear pick; one code rules out
+    (another variant, another section) holds nothing."""
+    open_ = {s.ref for s in ranked if s.contradicts is None}
+    if answer is not None and answer.confident and answer.matches and answer.matches[0] in open_:
+        return answer.matches[0]
+    return code_pick if code_pick in open_ else None
+
+
+def _tag_only_words(tagged: _TagPage) -> str:
+    """Why an item whose architect page is a plan of tags is not compared: the plan's page and
+    the tag, in the words the result screen keys on (`full_check_plan.tag_only_words`)."""
+    return (
+        f"the architect shows this item only as a tag on a plan ({tagged.printed} on its page "
+        f"{tagged.page}; no elevation or section of the architect's prints it), with no sizes"
+    )
 
 
 def _shown_only(

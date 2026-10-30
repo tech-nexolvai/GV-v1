@@ -114,6 +114,7 @@ __all__ = [
     "opposite_hand",
     "piece_words",
     "plan_and_elevation",
+    "printed_item_tag",
     "rank",
     "references_in",
     "reuse",
@@ -661,6 +662,32 @@ def item_tags_in(texts: Iterable[str]) -> frozenset[str]:
             if letters not in _NOT_TAG:
                 found.add(f"{letters}{int(digits)}")
     return frozenset(found)
+
+
+#: A normalised item tag (`item_tags_in`): its letters and its number.
+_TAG_PARTS: Final = re.compile(r"^([A-Z]{1,4})(\d{1,4})$")
+
+
+def printed_item_tag(texts: Iterable[str], tag: str) -> str | None:
+    """The item tag `tag` (normalised, `item_tags_in`: `XX801`) as `texts` print it, when they
+    print it exactly as an item code: its letters, a hyphen, its number of three or four digits
+    (`XX-801`), alone or with the suffix the architect adds for the item's top or its sink
+    (`XX-801-T`, `XX-801T`, `XX-801-SK`); else `None`. Another number (`XX-8010`), another
+    letter after it (`XX-801A`, a variant) or a further part (`XX-801-1`) is another item,
+    never this one."""
+    parts = _TAG_PARTS.match(tag)
+    if parts is None:
+        return None
+    letters, number = parts.group(1), int(parts.group(2))
+    exact = re.compile(
+        rf"(?<![A-Z0-9])(?P<tag>{letters}[-_\u2010\u2013](?=\d{{3,4}}(?!\d))0*{number})"
+        r"(?:[-_]?(?:T|SK))?(?![-_.]?[A-Z0-9])"
+    )
+    for text in texts:
+        found = exact.search(str(text or "").upper())
+        if found is not None:
+            return found.group("tag")
+    return None
 
 
 def dense(candidate: Sequence[object], matched: int) -> bool:

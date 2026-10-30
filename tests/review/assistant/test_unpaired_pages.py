@@ -18,14 +18,18 @@ Synthetic page maps, findings and scripted models only: $0, no model call.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from app.review.assistant import full_check_roster, not_compared
+from app.review.assistant.chat_contract import ChatCoveragePageOut
 from app.review.assistant.chat_summary import code_summary
 from app.review.assistant.full_check_plan import (
+    TAG_ONLY_NEEDS,
+    TAG_ONLY_NOTE,
     UNPAIRED_NOTE,
     CrossPairs,
     mostly_unpaired,
@@ -222,6 +226,39 @@ def test_an_unpaired_page_is_not_compared_from_the_start_and_never_sent_on(
     assert first.endswith(
         "3 pages were not compared (title, divider or skipped pages; no drawing to compare with)."
     ), first
+
+
+TAG_WHY = (
+    f"{UNPAIRED}: drawing needed: the architect shows this item only as a tag on a plan (XX-801 "
+    "on its page 19; no elevation or section of the architect's prints it), with no sizes; the "
+    "AI page matcher picked architect page 23 but is not sure"
+)
+#: The result screen's reason line "TAG ONLY" (`frontend/main/src/lib/chat-drawer.ts`).
+TAG_ON_PLAN = re.compile(r"only as a tag on a plan \(([^()]+?) on its page (\d+)", re.IGNORECASE)
+
+
+def test_an_item_shown_only_as_a_tag_names_the_plan_never_no_drawing_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The architect's only page printing the item's tag is a plan (`worklist._tag_page`): its
+    coverage says so and names the plan's page, never "no architect drawing found" nor "pairing
+    unsure"; the result screen's "Drawing needed" and its "TAG ONLY" line read the tag and page."""
+    matcher = _Matched(CrossPairs(pairs={2: (("arch.pdf", 9),)}, unpaired={5: TAG_WHY}))
+
+    outcome, engine, _script, _seen = _run_with(tmp_path, monkeypatch, matcher)
+
+    note = _coverage(outcome)[5]["note"]
+    assert note == TAG_ONLY_NOTE.format(why="XX-801 on its page 19")
+    assert "no architect drawing found" not in note and "pairing unsure" not in note
+    assert unpaired_note(note)
+    page = ChatCoveragePageOut.model_validate({"page": 5, "status": "not_comparable", "note": note})
+    assert page.drawing_needed and not page.pairing_unsure
+    found = TAG_ON_PLAN.search(page.drawing_needed_why or "")
+    assert found is not None and (found.group(1), found.group(2)) == ("XX-801", "19")
+    rows = [g for g in engine.extra_gaps if g["page"] == 5]
+    assert len(rows) == 1 and rows[0]["needs"] == TAG_ONLY_NEEDS
+    assert "only as a tag on a plan (XX-801 on its page 19)" in rows[0]["what"]
+    assert not internal(rows[0]["what"])
 
 
 def test_most_pages_unpaired_are_said_first_and_the_check_still_runs(

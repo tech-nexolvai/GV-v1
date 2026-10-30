@@ -479,18 +479,152 @@ def test_a_project_the_architect_lacks_is_a_drawing_needed_up_front() -> None:
 
 
 def test_an_item_shown_only_as_a_tag_on_a_plan_is_a_drawing_needed() -> None:
-    """The matcher, shown every page of the project, named only the key plan; the plan prints
-    the item's tag with no callout near it: a drawing is needed, before any paid compare. With a
-    callout beside the tag, or a matcher that was not shown every page, it is left as not found."""
+    """The plan is the only architect page printing the item's tag (SB-202), with no callout near
+    it: that plan is its architect page, and it gives no sizes, so nothing is compared ("only as a
+    tag on a plan", naming the plan's page). Whatever the matcher answered (or before it is
+    asked): never "pairing unsure" between other pages. With a callout beside the tag (RD-101),
+    the plan points to an elevation: left to the pairing as before."""
     bench = _across(
         _work(_index(), _answers(["p1002", "p1004", "p1005"], ["p1005"], True, "p6.v0")), 6
     )
     assert bench.needed and bench.chosen == () and "only as a tag on a plan" in bench.why
-    assert "SB-202" in bench.why
-    narrower = _work(_index(), _answers(["p1005"], ["p1005"], True, "p6.v0"))
-    assert not _across(narrower, 6).needed
+    assert "SB-202 on its page 5" in bench.why and bench.unsure == ()
+    for matches in (None, _answers(["p1005"], ["p1005"], True, "p6.v0")):
+        alone = _across(_work(_index(), matches), 6)
+        assert alone.needed and alone.chosen == () and alone.unsure == ()
+        assert "only as a tag on a plan (SB-202 on its page 5" in alone.why
     desk = _across(_work(_index(), _answers(["p1004", "p1005"], ["p1005"], True)), 2)
     assert not desk.needed  # RD-101 has a callout beside it on the plan
+
+
+def test_a_tag_printed_once_on_a_plan_is_never_pairing_unsure() -> None:
+    """The matcher picks another architect page and is not sure: before, "pairing unsure"; the
+    architect's own tag names the plan, so the page is the plan's, with nothing to compare."""
+    bench = _across(_work(_index(), _answers(["p1004"], ["p1004"], False, "p6.v0")), 6)
+    assert bench.unsure == () and bench.chosen == () and bench.needed
+    assert pairing.PAIRING_UNSURE not in bench.why
+    assert "only as a tag on a plan (SB-202 on its page 5" in bench.why
+
+
+def test_a_page_the_matcher_is_sure_of_keeps_the_tag_plan_pairing_unsure() -> None:
+    """The matcher is sure of an architect page that does not print the tag (the vendor's tag may
+    be its wrong number for the piece; owner's rule, 25 Oct: "no drawing to compare with" only
+    when code is sure): "pairing unsure" naming that page and the plan printing the tag, never
+    "only as a tag on a plan", never "drawing needed"."""
+    bench = _across(_work(_index(), _answers(["p1004"], ["p1004"], True, "p6.v0")), 6)
+    assert bench.chosen == () and not bench.needed
+    assert bench.unsure == ("p1004", "p1005")
+    assert f"{pairing.PAIRING_UNSURE}: architect page 4 or architect page 5?" in bench.why
+    assert "only as a tag on a plan" not in bench.why and DRAWING_NEEDED not in bench.why
+
+
+def _with_pages(extra: dict[int, list[dict[str, Any]]]) -> dict[str, Any]:
+    """The synthetic set with more pages of the architect's file (NORTH, after its divider), each
+    with the phrases given, and phrases added to existing architect pages (`extra[4]`)."""
+    found = _set()
+    for page, phrases in extra.items():
+        entry = next(
+            (e for e in found["dims"]["pages"] if e["file"] == ARCH and e["page"] == page), None
+        )
+        if entry is None:
+            found["page_map"]["pages"].append(_entry(ARCH, page, "architect"))
+            found["dims"]["pages"].append(
+                {"file": ARCH, "page": page, "labels": [], "phrases": phrases}
+            )
+        else:
+            entry["phrases"] = [*entry["phrases"], *phrases]
+    return found
+
+
+def _work_with(
+    found: dict[str, Any], index: dict[str, Any], matches: dict[str, Any] | None = None
+) -> Any:
+    return worklist_from(
+        found["page_map"],
+        dims=found["dims"],
+        notes=found["notes"],
+        health=found["health"],
+        set_index=index,
+        matches=matches,
+        main_file=SHOP,
+    )
+
+
+def test_a_tag_on_a_plan_and_an_elevation_pairs_with_the_elevation() -> None:
+    """SB-202 printed on the key plan and inside the elevation sheet's "LOBBY BENCH ELEVATION":
+    the elevation's view is the item's drawing, by the architect's own tag, before any matcher
+    answer (the paid matcher is not asked about it)."""
+    found = _with_pages({4: [_phrase("SB-202", [820, 300, 860, 310])]})
+    bench = _across(_work_with(found, _index()), 6)
+    assert bench.chosen == ("p1004",) and bench.views == ("p1004.a1.view2",)
+    assert bench.code_paired and bench.unsure == () and not bench.needed
+    assert "SB-202" in bench.why and "LOBBY BENCH ELEVATION" in bench.why
+    # A "-T" (the item's top) or "-SK" (its sink) suffix is the same item's tag.
+    top = _with_pages({4: [_phrase("SB-202-T", [820, 300, 860, 310])]})
+    assert _across(_work_with(top, _index()), 6).views == ("p1004.a1.view2",)
+    # Another letter after it is another item (a variant): no pair by the tag.
+    variant = _with_pages({4: [_phrase("SB-202A", [820, 300, 860, 310])]})
+    other = _across(_work_with(variant, _index()), 6)
+    assert other.chosen == () and "only as a tag on a plan (SB-202 on its page 5" in other.why
+
+
+def test_a_vendor_variant_marker_still_rules_out_a_page_printing_its_tag() -> None:
+    """The architect's tag never overrides code's own rule-outs: an accessible vendor unit is
+    never paired with a sheet that prints no accessible marker, even one printing its tag; an
+    opposite-hand one is paired and flagged, as any pair."""
+    found = _with_pages({4: [_phrase("SB-202", [820, 300, 860, 310])]})
+    index = _index()
+    index["pages"][f"{SHOP}#6"]["variant_words"] = ["ADA"]
+    bench = _across(_work_with(found, index), 6)
+    assert bench.chosen == () and not bench.code_paired
+    # An opposite-hand unit is still paired by its tag, flagged: positions from an end not compared.
+    index = _index()
+    index["pages"][f"{SHOP}#6"]["hand_words"] = ["MIRROR"]
+    mirrored = _across(_work_with(found, index), 6)
+    assert mirrored.chosen == ("p1004",) and mirrored.opposite_hand is not None
+
+
+def test_a_finish_like_code_printed_on_many_pages_never_pairs() -> None:
+    """SB-202 printed on the plan, the elevation sheet and three more pages of the architect's
+    file (a finish legend on every sheet): no evidence of which page shows the piece, so the tag
+    decides nothing (not paired, not "only as a tag")."""
+    legend = [_phrase("SB-202 STONE", [100, 750, 200, 760])]
+    found = _with_pages(
+        {4: [_phrase("SB-202", [820, 300, 860, 310])], 6: legend, 7: legend, 8: legend}
+    )
+    index = _index()
+    for page in (6, 7, 8):
+        index["pages"][f"{ARCH}#{page}"] = _read(ARCH, page)
+    bench = _across(_work_with(found, index), 6)
+    assert bench.chosen == () and not bench.code_paired
+    assert "only as a tag on a plan" not in bench.why
+
+
+def test_another_projects_page_printing_the_tag_never_pairs() -> None:
+    """The architect's file holds a second project (WEST, after its own divider) whose elevation
+    prints SB-202 too: never paired across projects, and a tag printed on another project's page
+    decides nothing (not paired by it, not "only as a tag")."""
+    found = _with_pages(
+        {7: [_phrase("SB-202", [820, 300, 860, 310]), _phrase("BENCH", [700, 700, 760, 710])]}
+    )
+    found["page_map"]["pages"].insert(-1, _entry(ARCH, 6, None))
+    index = _index()
+    index["pages"][f"{ARCH}#6"] = _read(
+        ARCH, 6, projects=["PROJECT WEST"], set_kind="architectural", introduces=True
+    )
+    index["pages"][f"{ARCH}#7"] = _read(ARCH, 7)
+    bench = _across(_work_with(found, index), 6)
+    assert {c.id: c.project for c in bench.candidates}.get("p1007") is None  # not a candidate
+    assert bench.chosen == () and not bench.code_paired
+    assert "only as a tag on a plan" not in bench.why
+
+
+def test_the_tag_is_matched_exactly() -> None:
+    assert pairing.printed_item_tag(["XX-801"], "XX801") == "XX-801"
+    for text in ("XX-801-T", "XX-801T", "xx-801-sk", "see XX-801, XX-802"):
+        assert pairing.printed_item_tag([text], "XX801") == "XX-801"
+    for text in ("XX-8010", "XX-801A", "XX-801-1", "XXX-801", "XX 801", "XX-80"):
+        assert pairing.printed_item_tag([text], "XX801") is None
 
 
 def test_a_view_that_prints_no_sizes_is_a_drawing_needed() -> None:

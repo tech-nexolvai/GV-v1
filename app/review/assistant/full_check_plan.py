@@ -60,6 +60,8 @@ __all__ = [
     "NO_VENDOR_NOTE",
     "OWN_CHECK_NOTE",
     "PAGE_MAP_WAIT_SECONDS",
+    "TAG_ONLY_NEEDS",
+    "TAG_ONLY_NOTE",
     "UNPAIRED_NEEDS",
     "UNPAIRED_NOTE",
     "UNPAIRED_RETRY_NOTE",
@@ -82,6 +84,7 @@ __all__ = [
     "reading_of",
     "rules_summary",
     "scoped_plan",
+    "tag_only_words",
     "unpaired_note_why",
     "unpaired_words",
     "unsure_note_why",
@@ -776,6 +779,20 @@ UNSURE_NEEDS: Final = (
     "a person to confirm which architect page shows this item and compare it: the drawing is in "
     "the upload, but the pairing could not be confirmed"
 )
+#: A page whose item the architect shows only as its tag on a plan (`worklist._tag_page`): its
+#: coverage note names the tag and the plan's page (`tag_only_words`), never "no architect drawing
+#: found" (the architect's page of it is found: it prints no sizes). Final like `UNPAIRED_NOTE`,
+#: and on the result screen's "Drawing needed" (`unpaired_note_why`): the reason line "TAG ONLY"
+#: (`frontend/main/src/lib/chat-drawer.ts`, `TAG_ON_PLAN`) reads the tag and the page from it.
+TAG_ONLY_NOTE: Final = (
+    "Not compared with the architect: the architect shows this item only as a tag on a plan "
+    "({why})"
+)
+#: Its line in the Not-compared list: what would settle it.
+TAG_ONLY_NEEDS: Final = (
+    "an architect's elevation or section of this item with its sizes: the architect's file "
+    "shows it only as a tag on a plan"
+)
 #: An unpaired page's line in the Not-compared list (the set's rows): what would settle it.
 UNPAIRED_NEEDS: Final = (
     "the architect's drawing of this item: upload it, or check that the architect's file is for "
@@ -847,12 +864,30 @@ def unpaired_words(reason: str) -> str:
     return _UNPAIRED_DEFAULT
 
 
+#: The tag and the plan's page in a tag-only reason (`worklist._tag_only_words`, and the
+#: matcher-and-code one `worklist._shown_only`): "XX-801 on its page 19".
+_TAG_ONLY: Final = re.compile(r"only as a tag on a plan \(([^()]+?) on its page (\d+)")
+
+
+def tag_only_words(reason: str | None) -> str | None:
+    """The tag and the plan's page of a reason that says the architect shows the item only as a
+    tag on a plan ("XX-801 on its page 19"), else `None`."""
+    found = _TAG_ONLY.search(str(reason or ""))
+    return None if found is None else f"{found.group(1).strip()} on its page {found.group(2)}"
+
+
 def unpaired_note_why(note: str | None) -> str | None:
     """The plain reason of a page's final "no architect drawing found" coverage note (#1885:
-    `UNPAIRED_NOTE`, the words in its brackets), else `None` (any other note, or none). The result
+    `UNPAIRED_NOTE`, the words in its brackets), or of its tag-only note (`TAG_ONLY_NOTE`: "the
+    architect shows it only as a tag on a plan (XX-801 on its page 19)", the words the result
+    screen's reason line "TAG ONLY" reads), else `None` (any other note, or none). The result
     screen's "Drawing needed" reads it (`ChatCoveragePageOut.drawing_needed`)."""
-    head = UNPAIRED_NOTE.split("{", 1)[0]
     text = " ".join(str(note or "").split())
+    tag_head = TAG_ONLY_NOTE.split("{", 1)[0]
+    if text.startswith(tag_head):
+        where = text[len(tag_head) :].rsplit(")", 1)[0].strip()
+        return f"the architect shows it only as a tag on a plan ({where})"
+    head = UNPAIRED_NOTE.split("{", 1)[0]
     if not text.startswith(head):
         return None
     why = text[len(head) :].split(")", 1)[0].strip()
