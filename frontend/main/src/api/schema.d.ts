@@ -2132,6 +2132,11 @@ export interface components {
             not_compared_why?: ("not_viewed" | "pair_not_covered") | null;
             /** Page */
             page: number;
+            /**
+             * Part Boxes
+             * @description A vendor string (parts and a printed overall): each part's own spot, in the parts' order (2026-10-31, worked out on read; present only when code places at least one of its numbers).
+             */
+            part_boxes?: components["schemas"]["ChatFindingSpotOut"][] | null;
             /** Parts */
             parts?: string[] | null;
             /**
@@ -2196,6 +2201,8 @@ export interface components {
              * @description vendor_arithmetic from the ledger: code's sum written out ("12 + 15 1/2 = 27 1/2 ≠ 27 1/4 printed (off 1/4)").
              */
             sum_text?: string | null;
+            /** @description A vendor string: the printed overall's own spot, when code places it. */
+            total_box?: components["schemas"]["ChatFindingSpotOut"] | null;
             /** Trust Level */
             trust_level?: ("confirmed" | "likely" | "to_check") | null;
             /** @description Set when a later message of the chat corrected this finding (#1548): the finding shown is its newest version ("updated in a later message"). */
@@ -2493,6 +2500,31 @@ export interface components {
              * @enum {string}
              */
             was: "check" | "different";
+        };
+        /**
+         * ChatFindingSpotOut
+         * @description One printed number of a vendor string and its own spot (`string_spots`, worked out on
+         *     read from the set pack's dimension labels; nothing stored).
+         */
+        ChatFindingSpotOut: {
+            /** @description Its label's box; null: code could not place it for sure. */
+            box?: components["schemas"]["ChatBoxOut"] | null;
+            /**
+             * Inches
+             * @description Its value in inches, by code.
+             */
+            inches?: string | null;
+            /**
+             * Text
+             * @description The value as the finding prints it.
+             */
+            text: string;
+            /**
+             * Turned
+             * @description The label is written up the page (its text reads sideways).
+             * @default false
+             */
+            turned: boolean;
         };
         /**
          * ChatFindingStringReadsOut

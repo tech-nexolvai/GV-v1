@@ -146,6 +146,7 @@ __all__ = [
     "SessionChatLedger",
     "UploadSource",
     "continuable",
+    "pack_labels",
     "package_spent_micros",
     "recover_interrupted",
     "resume_of",
@@ -774,6 +775,74 @@ def vendor_page_titles(chat_root: Path, package_id: UUID) -> list[dict[str, Any]
             }
         )
     return sorted(out, key=lambda one: int(one["page"]))
+
+
+#: The set packs' dimension labels last read (`pack_labels`), by `dims.json` path, with its size
+#: and change time: a result read again does not parse the pack's labels again.
+_PACK_LABELS: dict[Path, tuple[tuple[int, int], dict[tuple[str, int], list[Mapping[str, Any]]]]] = (
+    {}
+)
+_PACK_LABELS_KEPT: Final = 4
+_PACK_LABELS_LOCK = threading.Lock()
+
+
+def pack_labels(
+    chat_root: Path, package_id: UUID
+) -> Callable[[str | None, int], Sequence[Mapping[str, Any]] | None] | None:
+    """The set pack's numbered dimension labels (`dims.json`) by (file, page), the same pack whose
+    page pictures the result screen shows (`plan_page_picture`); a `None` file is the vendor's
+    file. Read lazily and kept while the file is unchanged. `None` when the set has no pack."""
+    workspace = ChatWorkspace(_plan_root(chat_root, package_id))
+    listing = read_listing(workspace)
+    main = main_upload(listing)
+    if main is None:
+        return None
+    try:
+        folder: Path = import_module("app.review.assistant.set_pack").pack_folder(
+            chat_root, listing
+        )
+    except Exception:  # noqa: BLE001 - no pack: the screen shows no number spots
+        return None
+    path = folder / "dims.json"
+    main_name = str(main.get("name") or "")
+    loaded: dict[tuple[str, int], list[Mapping[str, Any]]] | None = None
+
+    def load() -> dict[tuple[str, int], list[Mapping[str, Any]]]:
+        try:
+            stat = path.stat()
+        except OSError:
+            return {}
+        stamp = (stat.st_size, stat.st_mtime_ns)
+        with _PACK_LABELS_LOCK:
+            kept = _PACK_LABELS.get(path)
+            if kept is not None and kept[0] == stamp:
+                return kept[1]
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        pages: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
+        for entry in (raw.get("pages") if isinstance(raw, Mapping) else None) or []:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                key = (str(entry.get("file") or ""), int(entry.get("page") or 0))
+            except (TypeError, ValueError):
+                continue
+            pages[key] = [one for one in entry.get("labels") or [] if isinstance(one, Mapping)]
+        with _PACK_LABELS_LOCK:
+            _PACK_LABELS[path] = (stamp, pages)
+            while len(_PACK_LABELS) > _PACK_LABELS_KEPT:
+                _PACK_LABELS.pop(next(iter(_PACK_LABELS)))
+        return pages
+
+    def labels_of(file: str | None, page: int) -> Sequence[Mapping[str, Any]] | None:
+        nonlocal loaded
+        if loaded is None:
+            loaded = load()
+        return loaded.get((file or main_name, page))
+
+    return labels_of
 
 
 def full_check_plan(

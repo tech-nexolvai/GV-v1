@@ -227,7 +227,11 @@ describe('results v2 on the screen', () => {
     expect(sides.map((side) => side.querySelector('figcaption')?.textContent)).toEqual(['Vendor shows14″', 'Should be11 5/8″']);
     // The vendor's own string: the should-be is measured on the vendor's own drawing, never "No evidence picture".
     expect(sides[1].textContent).toContain('Measured on the vendor’s own drawing: this line is drawn 11 5/8″ long');
-    expect(sides[1].querySelector('img')?.getAttribute('src')).toBe('/api/v1/chats/c-1/pictures/vend-w1');
+    // 2026-10-31: the vendor's own numbers added up, never the vendor's picture a second time.
+    expect(sides[1].dataset.own).toBe('sum');
+    expect(sides[1].querySelector('img')).toBeNull();
+    expect(sides[1].querySelector('[data-slot="chat-evidence-sum-parts"]')?.textContent).toBe('2 3/8″+14″+4″=20 3/8″');
+    expect(sides[1].querySelector('[data-slot="chat-evidence-sum-overall"]')?.textContent).toBe('Printed overall18″difference 2 3/8″');
     expect(panel.textContent).not.toContain('No evidence picture');
     const how = within(panel).getByRole('region', { name: 'How we know' });
     expect(within(how).getAllByRole('listitem').map((step) => step.textContent)).toEqual([
@@ -236,7 +240,11 @@ describe('results v2 on the screen', () => {
       'The 14″ line is drawn only 11 5/8″ long, so the 14″ is the mistake.',
     ]);
     expect(how.querySelector('[data-slot="chat-evidence-tell"]')?.textContent).toBe('Change the 14″ part to 11 5/8″: the 18″ overall is right.');
-    expect([...panel.querySelectorAll('[data-slot="chat-evidence-chips"] li')].map((chip) => chip.textContent)).toEqual(['In the comment letter as C-01', 'Architect drawing: not in the upload · in the GV request']);
+    // The design file IS uploaded (pages 1-2 were compared with it): no "not in the upload" chip; the reason line says why instead.
+    expect([...panel.querySelectorAll('[data-slot="chat-evidence-chips"] li')].map((chip) => chip.textContent)).toEqual(['In the comment letter as C-01']);
+    const reason = panel.querySelector<HTMLElement>('[data-slot="chat-evidence-reason"]')!;
+    expect(reason.dataset.reason).toBe('not_in_design');
+    expect(reason.textContent).toBe('NOT IN DESIGNNo drawing of this item was found in the design set. This page is in the drawings request to GV.');
     await user.keyboard('j');
     expect(panel.querySelector('[data-slot="chat-evidence-position"]')?.textContent).toBe('2 of 2 items');
     expect(within(panel).getByRole('heading', { level: 2 }).textContent).toMatch(/^Overall width/);
@@ -250,7 +258,9 @@ describe('results v2 on the screen', () => {
     await user.click(within(node).getByRole('button', { name: /^Page 3, Sample unit A: no architect drawing in this upload\. Open it$/ }));
     const panel = await screen.findByRole('dialog');
     expect(panel.querySelector('[data-slot="chat-evidence-kind"]')?.textContent).toBe('Drawing needed');
-    expect(panel.textContent).toContain('No architect drawing of this item in the upload.');
+    // 2026-10-31: the design set is uploaded; only this item's drawing was not found in it.
+    expect(panel.querySelector('[data-slot="chat-evidence-needed-words"]')?.textContent).toBe('No drawing of this item was found in the design set.');
+    expect(panel.textContent).not.toContain('in the upload');
     // Nothing is decided on a page: no "Your call".
     expect(within(panel).queryByRole('region', { name: 'Your call' })).toBeNull();
     expect(panel.querySelector('[data-slot="chat-evidence-request"]')?.textContent).toContain('In the drawings request to GV');

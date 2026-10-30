@@ -15,6 +15,7 @@ import { ConfidenceLine, HowChecked } from '@/components/chat/chat-trust';
 import { ChatMarkdown } from '@/components/chat/chat-markdown';
 import { Collapse, CopyButton, GVSpark, Shimmer, Spark, Spinner, type SparkState } from '@/components/chat/chat-motion';
 import { chatPaths, type ChatEffort, type ChatFile, type ChatFinding, type ChatFindingUpdate, type ChatModel, type FindingDecision, type FindingDecisionChoice, type FindingDecisionExtra, type PagePicture, type RemadeFiles } from '@/lib/chat-api';
+import { designFileInUpload } from '@/lib/chat-drawer';
 import { coverageCounts, isNarrowAnswer, isShortAnswer, NO_FILTER, sectionOrder, type FindingFilter } from '@/lib/chat-findings';
 import { fullCheckBubble, fullCheckFiles, withoutCodeNote } from '@/lib/chat-full-check';
 import { commentNumber, drawingNeededItems, drawingNeededPages, pairingUnsureItems, resultGroups, type PageTitles, type ResultCard } from '@/lib/chat-result';
@@ -716,7 +717,7 @@ export function AssistantMessage({ message, chatId, models, onReload, onRetry, o
           notice={decideFailed}
           cardOf={resultShown ? (id) => cardOf.get(id)?.id ?? null : null}
           lookup={resultShown ? (id) => findings.find((finding) => finding.id === id) ?? null : null}
-          results={resultShown ? { neededPages: new Set(neededItems.map((item) => item.page)), request, pageTitles, cardOf: (id) => cardOf.get(id) ?? null } : null}
+          results={resultShown ? { neededPages: new Set(neededItems.map((item) => item.page)), request, pageTitles, cardOf: (id) => cardOf.get(id) ?? null, designFile: designFileInUpload(coverage, findings), coverage: new Map((coverage?.pages ?? []).map((page) => [page.page, page])) } : null}
           draft={resultShown && review ? { updating: review.updating, failed: review.failed, updatedAt: review.updatedAt, stale: review.stale ?? false, refusal: review.refusal ?? null, decided: review.decided, pkg: made.pkg, href: made.pkg ? made.pkg.url || chatPaths.file(chatId, made.pkg.id) : null, onRetry: review.onUpdate } : null}
         />
       )}
