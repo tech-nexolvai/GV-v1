@@ -134,7 +134,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 19
+PACK_VERSION: Final = 20
 #: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
@@ -205,6 +205,10 @@ _DIMENSION: Final = re.compile(
     r"|\d+(?:\s+\d+/\d+)?\s*(?:\"|''|\u201d)"
 )
 _DRAWING_DIMS: Final = 3
+#: A page is a scan when its pictures cover at least this share of it: its title block's words,
+#: read from the picture (`picture_labels.PictureRead.words`), say whose drawing it is (2026-10-30:
+#: the architect's sheets inside a vendor's set, scanned, were read as the vendor's otherwise).
+_SCAN_SHARE: Final = 0.9
 #: A vendor page with fewer labels is a drawing whose numbers are pen strokes code could not read
 #: when it has at least this many of them on its dimension lines (`reading_ink`): a key plan's
 #: stray marks are a few at most.
@@ -865,6 +869,27 @@ def _inside(box: Sequence[float], halves: Sequence[Mapping[str, Any]]) -> bool:
 NUMBERS_UNREAD: Final = "numbers_unread"
 
 
+def _scan_title_role(
+    candidate: Mapping[str, Any], pictures: Mapping[str, Any] | None
+) -> str | None:
+    """`page_title_role` of a scanned page's picture words: only when its pictures cover at least
+    `_SCAN_SHARE` of the page (a vendor sheet with an architect's snapshot pasted on it is never
+    decided by the snapshot's words)."""
+    if not pictures or not pictures.get("words"):
+        return None
+    x0, y0, x1, y1 = (float(v) for v in candidate["box"])
+    page = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+    covered = 0.0
+    for box in pictures.get("boxes") or []:
+        a0, b0, a1, b1 = (float(v) for v in box)
+        covered = max(
+            covered, max(0.0, min(a1, x1) - max(a0, x0)) * max(0.0, min(b1, y1) - max(b0, y0))
+        )
+    if page <= 0 or covered / page < _SCAN_SHARE:
+        return None
+    return page_title_role(" ".join(str(word) for word in pictures["words"]))
+
+
 def settle_candidates(
     page_map: dict[str, Any],
     dims: Mapping[str, Any] | None,
@@ -881,9 +906,12 @@ def settle_candidates(
     the pages that had a candidate (their labels' sides are set again from their drawings) and
     those that became drawings."""
     by_page: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
+    scans: dict[tuple[str, int], Mapping[str, Any]] = {}
     for entry in (dims or {}).get("pages") or []:
         if isinstance(entry, Mapping):
             key = (str(entry.get("file")), int(entry.get("page") or 0))
+            if isinstance(entry.get("pictures"), Mapping):
+                scans[key] = entry["pictures"]
             # Its labels, and the millimetre-only values it prints (`metric`: never labels, but
             # dimensions all the same).
             by_page[key] = [
@@ -918,6 +946,12 @@ def settle_candidates(
             entry[NUMBERS_UNREAD] = "strokes"
         half = {k: v for k, v in candidate.items() if k != "upload"}
         half["box"] = list(candidate["box"])
+        if half.get("role") != "architect" and _scan_title_role(candidate, scans.get(key)) == (
+            "architect"
+        ):
+            # A scanned sheet whose title block names the architect alone is the architect's,
+            # as a typed page's title words make it (`_whole_page_role`); never a vendor round.
+            half["role"], half["round"] = "architect", None
         entry["halves"] = [half]
         entry["role"] = half["role"]
         entry["rounds"] = [half["round"]] if half.get("round") else []
