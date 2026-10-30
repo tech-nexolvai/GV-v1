@@ -506,6 +506,18 @@ def test_a_tag_printed_once_on_a_plan_is_never_pairing_unsure() -> None:
     assert "only as a tag on a plan (SB-202 on its page 5" in bench.why
 
 
+def test_a_page_the_matcher_is_sure_of_keeps_the_tag_plan_pairing_unsure() -> None:
+    """The matcher is sure of an architect page that does not print the tag (the vendor's tag may
+    be its wrong number for the piece; owner's rule, 25 Oct: "no drawing to compare with" only
+    when code is sure): "pairing unsure" naming that page and the plan printing the tag, never
+    "only as a tag on a plan", never "drawing needed"."""
+    bench = _across(_work(_index(), _answers(["p1004"], ["p1004"], True, "p6.v0")), 6)
+    assert bench.chosen == () and not bench.needed
+    assert bench.unsure == ("p1004", "p1005")
+    assert f"{pairing.PAIRING_UNSURE}: architect page 4 or architect page 5?" in bench.why
+    assert "only as a tag on a plan" not in bench.why and DRAWING_NEEDED not in bench.why
+
+
 def _with_pages(extra: dict[int, list[dict[str, Any]]]) -> dict[str, Any]:
     """The synthetic set with more pages of the architect's file (NORTH, after its divider), each
     with the phrases given, and phrases added to existing architect pages (`extra[4]`)."""

@@ -2205,13 +2205,30 @@ def _pair_across(
             hand = "the vendor's parts read in reverse order on the architect's: a mirrored unit"
         if hand is not None and not mirrored:
             why = f"{why}; {hand}: sizes are compared, positions from an end are not"
+    # A page the AI page matcher is sure of, or code's own clear pick, other than the tag's plan
+    # (owner's rule, 25 Oct: "no drawing to compare with" only when code is sure): the vendor's
+    # tag may be its wrong number for the piece, and that page may draw it.
+    held = (
+        _held_page(ranked, code_pick, answer or (saved[1] if saved is not None else None))
+        if tag_plan is not None and not chosen
+        else None
+    )
     if not chosen and not rivals and DRAWING_NEEDED not in why and tag_plan is not None:
-        # The architect's only page printing the vendor's item tag is a plan of tags: that is
-        # its page, with nothing to compare (never "pairing unsure" between other pages, nor "no
-        # drawing found").
-        why = _needed(
-            f"{_tag_only_words(tag_plan)}; {why.removeprefix(f'{pairing_module.UNPAIRED}: ')}"
-        )
+        if held is None:
+            # The architect's only page printing the vendor's item tag is a plan of tags, and no
+            # other page is held: that is its page, with nothing to compare (never "pairing
+            # unsure" between other pages, nor "no drawing found").
+            why = _needed(
+                f"{_tag_only_words(tag_plan)}; {why.removeprefix(f'{pairing_module.UNPAIRED}: ')}"
+            )
+        else:
+            # Both are named for a person: the held page and the plan printing the tag.
+            rivals = (held, tag_plan.item)
+            why = (
+                f"{pairing_module.UNPAIRED}: its item tag {tag_plan.printed} is printed on a plan, "
+                f"{tag_plan.item}, with no sizes, but {held} is held for it "
+                f"({why.removeprefix(f'{pairing_module.UNPAIRED}: ')})"
+            )
     if not chosen and not rivals and DRAWING_NEEDED not in why and saved is not None:
         # The item, not the project: the AI page matcher looked at every architect page of the
         # project and named only drawings that give no sizes of it, and code agrees.
@@ -2237,7 +2254,7 @@ def _pair_across(
         # Code's own pass named the item, and something later (which view) is unsure.
         unsure = (str(code_pick),)
     if rivals and not chosen:
-        # The architect's own tag names one page, code and the matcher another.
+        # The architect's own tag names one page, code and the matcher another: both are named.
         unsure = rivals
     if unsure:
         # A page is named (the matcher's, sure or not, or code's own) and the pair is not
@@ -2813,6 +2830,20 @@ def _tag_page(
     if not found or len({(f.item, f.plan, f.views) for f in found}) != 1:
         return None
     return found[0]
+
+
+def _held_page(
+    ranked: Sequence[pairing_module.Scored],
+    code_pick: str | None,
+    answer: pairing_module.MatchAnswer | None,
+) -> str | None:
+    """The architect page held for a vendor drawing although no pair is confirmed: the AI page
+    matcher's first pick when it is sure of it, or code's own clear pick; one code rules out
+    (another variant, another section) holds nothing."""
+    open_ = {s.ref for s in ranked if s.contradicts is None}
+    if answer is not None and answer.confident and answer.matches and answer.matches[0] in open_:
+        return answer.matches[0]
+    return code_pick if code_pick in open_ else None
 
 
 def _tag_only_words(tagged: _TagPage) -> str:
