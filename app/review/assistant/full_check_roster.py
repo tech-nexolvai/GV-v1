@@ -1381,11 +1381,15 @@ def carried_done(coverage: Mapping[str, Any] | None) -> frozenset[int]:
 
 
 def unpaired_note(note: str) -> bool:
-    """Whether a coverage note is the final "no architect drawing found" one (#1885), or the final
-    "pairing unsure" one (the matcher's pick code could not confirm)."""
-    from app.review.assistant.full_check_plan import UNPAIRED_NOTE, UNSURE_NOTE
+    """Whether a coverage note is the final "no architect drawing found" one (#1885), the final
+    "pairing unsure" one (the matcher's pick code could not confirm), or the final tag-only one
+    (the architect shows the item only as a tag on a plan)."""
+    from app.review.assistant.full_check_plan import TAG_ONLY_NOTE, UNPAIRED_NOTE, UNSURE_NOTE
 
-    return any(note.startswith(n.split("{", 1)[0].strip()) for n in (UNPAIRED_NOTE, UNSURE_NOTE))
+    return any(
+        note.startswith(n.split("{", 1)[0].strip())
+        for n in (UNPAIRED_NOTE, UNSURE_NOTE, TAG_ONLY_NOTE)
+    )
 
 
 def reopened(
@@ -2091,8 +2095,10 @@ class _Run:
         and listed in the Not-compared list with what would settle it. A page whose drawing the
         page matcher had no answer for is not final: Continue asks again."""
         from app.review.assistant.full_check_plan import (
+            TAG_ONLY_NEEDS,
             UNPAIRED_NEEDS,
             UNSURE_NEEDS,
+            tag_only_words,
             unpaired_words,
             unsure_words,
         )
@@ -2137,6 +2143,24 @@ class _Run:
                     }
                 )
                 continue
+            tag = tag_only_words(reason) if page in self.unpaired else None
+            if tag is not None:
+                # The architect's page of it is found: a plan that prints only its tag.
+                engine.extra_gaps.append(
+                    {
+                        "page": page,
+                        "what": (
+                            f"Vendor page {page}: not compared with the architect, the architect "
+                            f"shows this item only as a tag on a plan ({tag})"
+                        ),
+                        "why": "pairing_uncertain",
+                        "needs": TAG_ONLY_NEEDS,
+                        "scope": "set",
+                        "item": f"Page {page}: not compared with the architect",
+                        "category": "other",
+                    }
+                )
+                continue
             plain = unpaired_words(reason)
             engine.extra_gaps.append(
                 {
@@ -2162,9 +2186,11 @@ class _Run:
         """Each unpaired page's coverage says so (#1885), whatever a helper set there: the
         vendor's own checks on it are its findings, never a comparison with the architect."""
         from app.review.assistant.full_check_plan import (
+            TAG_ONLY_NOTE,
             UNPAIRED_NOTE,
             UNPAIRED_RETRY_NOTE,
             UNSURE_NOTE,
+            tag_only_words,
             unpaired_words,
             unsure_words,
         )
@@ -2177,7 +2203,11 @@ class _Run:
                 "note": (
                     UNSURE_NOTE.format(why=unsure)
                     if (unsure := unsure_words(why)) is not None
-                    else UNPAIRED_NOTE.format(why=unpaired_words(why))
+                    else (
+                        TAG_ONLY_NOTE.format(why=tag)
+                        if (tag := tag_only_words(why)) is not None
+                        else UNPAIRED_NOTE.format(why=unpaired_words(why))
+                    )
                 ),
             }
             for page, why in sorted(self.unpaired.items())

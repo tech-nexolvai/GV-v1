@@ -18,8 +18,10 @@ from uuid import uuid4
 from app.review.assistant.chat_contract import ChatCoverageOut, ChatCoveragePageOut, ChatFindingOut
 from app.review.assistant.chat_service import PLAN_CHECK_FOLDER, vendor_page_titles
 from app.review.assistant.full_check_plan import (
+    TAG_ONLY_NOTE,
     UNPAIRED_NOTE,
     UNPAIRED_RETRY_NOTE,
+    tag_only_words,
     unpaired_note_why,
     unpaired_words,
 )
@@ -80,6 +82,23 @@ def test_drawing_needed_reasons_said_up_front_have_plain_words() -> None:
     assert unpaired_words(
         "unpaired: drawing needed: the architect shows this item only as a tag on a plan (A-1)"
     ) == ("the architect shows it only as a tag on a plan")
+
+
+def test_a_tag_only_note_names_the_plan_and_is_drawing_needed() -> None:
+    """A tag-only page's note (`TAG_ONLY_NOTE`) is on "Drawing needed" with the tag and the plan's
+    page in the words the reason line "TAG ONLY" reads ("XX-801 on its page 19")."""
+    reason = (
+        "unpaired: drawing needed: the architect shows this item only as a tag on a plan (XX-801 "
+        "on its page 19; no elevation or section of the architect's prints it), with no sizes"
+    )
+    assert tag_only_words(reason) == "XX-801 on its page 19"
+    assert tag_only_words("unpaired: code found no clear architect drawing for it") is None
+    note = TAG_ONLY_NOTE.format(why=tag_only_words(reason))
+    why = "the architect shows it only as a tag on a plan (XX-801 on its page 19)"
+    assert unpaired_note_why(note) == why
+    page = ChatCoveragePageOut.model_validate({"page": 7, "status": "not_comparable", "note": note})
+    assert page.drawing_needed is True and page.drawing_needed_why == why
+    assert page.pairing_unsure is False
 
 
 def _pack(root: Path, package: str, listing: list[dict[str, str]]) -> Path:
