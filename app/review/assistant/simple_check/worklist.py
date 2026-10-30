@@ -1841,11 +1841,7 @@ def _vendor_project(vendor: Drawing, context: _Across) -> tuple[str | None, str 
     place = context.places.get((vendor.file, vendor.own_page)) or projects_module.Place()
     if place.project is None:
         return None, None
-    siblings = {
-        p.project
-        for (file, _page), p in context.places.items()
-        if file == vendor.file and p.project is not None
-    }
+    siblings = projects_module.siblings_of(context.places, vendor.file, place.source)
     mine = projects_module.match(place.project, context.projects, siblings)
     if mine is None:
         return None, _needed(

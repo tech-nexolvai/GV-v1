@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Final
 
 __all__ = [
@@ -39,6 +39,7 @@ __all__ = [
     "key",
     "match",
     "places",
+    "siblings_of",
 ]
 
 #: Set kinds (`set_index.SET_KINDS`) that are reference only.
@@ -59,6 +60,9 @@ class Place:
     """The project's name as printed."""
     reference: bool = False
     """The page belongs to a prototype, brand standard or reference set (R1)."""
+    source: str | None = None
+    """The file a page of a joined upload came from (`set_pack._mark_sources`), else `None`:
+    two names from different files are never rival projects of one file (`siblings_of`)."""
 
 
 def key(text: object) -> str:
@@ -172,7 +176,26 @@ def places(
             if introduces(file, page, one):
                 current = place
             out[(file, page)] = place
+    sources = {
+        (str(e.get("file")), int(e["page"])): str(e["source"])
+        for e in entries
+        if isinstance(e, Mapping) and isinstance(e.get("page"), int) and e.get("source")
+    }
+    for where, place in out.items():
+        if where in sources:
+            out[where] = replace(place, source=sources[where])
     return out
+
+
+def siblings_of(placed: Mapping[tuple[str, int], Place], file: str, source: str | None) -> set[str]:
+    """The projects of `file` that are rivals of a page from `source` (`match`'s `siblings`):
+    every project of the file, or, in a joined upload, those of pages from the same source file
+    (the vendor's cabinets and GV's stone tops name one job two ways)."""
+    return {
+        p.project
+        for (f, _page), p in placed.items()
+        if f == file and p.project is not None and (source is None or p.source == source)
+    }
 
 
 def architect_projects(placed: Mapping[tuple[str, int], Place], files: Iterable[str]) -> set[str]:

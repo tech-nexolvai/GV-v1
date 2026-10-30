@@ -191,17 +191,23 @@ def project_summary(folder: Path) -> ProjectSummary | None:
             architect.setdefault(place.project, _tidy(place.name or place.project))
     vendor_pages: dict[str, list[int]] = {}
     vendor_names: dict[str, str] = {}
+    vendor_sources: dict[str, set[str | None]] = {}
     for (file, page), place in sorted(placed.items()):
         if file != main or place.project is None or place.reference:
             continue
         vendor_pages.setdefault(place.project, []).append(page)
         vendor_names.setdefault(place.project, _tidy(place.name or place.project))
-    siblings = set(vendor_pages)
+        vendor_sources.setdefault(place.project, set()).add(place.source)
+    # Rivals are the projects of the same source file (`projects.siblings_of`, as the pairing).
     groups = tuple(
         ProjectGroup(
             name=vendor_names[key],
             vendor_pages=tuple(sorted(pages)),
-            architect=projects.match(key, architect, siblings) is not None,
+            architect=any(
+                projects.match(key, architect, projects.siblings_of(placed, main, source))
+                is not None
+                for source in sorted(vendor_sources[key], key=str)
+            ),
         )
         for key, pages in sorted(vendor_pages.items())
     )

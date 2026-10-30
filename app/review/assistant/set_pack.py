@@ -134,7 +134,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 20
+PACK_VERSION: Final = 21
 #: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
@@ -661,6 +661,22 @@ def _whole_page_role(upload_role: str, text: str) -> str:
     if upload_role == "architect":
         return "architect"
     return "architect" if page_title_role(text) == "architect" else "vendor"
+
+
+def _mark_sources(entries: Sequence[dict[str, Any]], item: Mapping[str, Any]) -> None:
+    """Each page of a joined upload (several shop-drawing files as one, `chat_service`'s
+    `joined_from`) marked with the file it came from (`source`): two files of one job name it
+    their own way, and those names are never two projects of one file (`projects.match`)."""
+    parts = item.get("joined_from")
+    if not isinstance(parts, list):
+        return
+    for entry in entries:
+        page = int(entry.get("page") or 0)
+        for part in parts:
+            first, count = int(part.get("first_page") or 0), int(part.get("pages") or 0)
+            if first <= page < first + count:
+                entry["source"] = str(part.get("name") or "")
+                break
 
 
 def _page_entries(
@@ -1201,6 +1217,7 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
                 used[name] = roles[name]
             # A sheet with no GV heading (#1825): its drawings' roles from their own content.
             _content_sides(uploads / name, entries, folder.parent / SIDES_CACHE)
+            _mark_sources(entries, next((i for i in listing if i.get("name") == name), {}))
             page_map += entries
         _write_json(folder / "annotations.json", annotations)
         _write_json(

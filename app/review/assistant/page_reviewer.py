@@ -747,6 +747,13 @@ def printed_sizes(found: Sequence[Mapping[str, Any]]) -> set[Decimal]:
 _ROW_PT: Final = 4.0
 #: At most this many rows and columns listed in the first message.
 MAX_STRINGS: Final = 40
+#: The design reference (`_Run.design_spots`): an item tag the design set prints on at most this
+#: many pages is the item's own (a finish code is printed everywhere), at most this many tags and
+#: pictures, and the design text this close to the tag (points) is listed with it.
+MAX_DESIGN_PAGES: Final = 3
+MAX_DESIGN_TAGS: Final = 4
+MAX_DESIGN_PICTURES: Final = 2
+DESIGN_NEAR_PT: Final = 220.0
 
 
 def _phrase_box(phrase: Mapping[str, Any]) -> list[float] | None:
@@ -1357,6 +1364,20 @@ class _Run:
                     + fence(finishes, "finish_facts"),
                 }
             )
+        spots = self.design_spots()
+        if spots:
+            text, pictures = self.design_reference(spots)
+            content.append(
+                {
+                    "type": "text",
+                    "text": "The design set (the architect's file, which governs) prints this "
+                    "page's item tags here. Compare what it shows of the item (its room, walls and "
+                    "free ends, sink, appliances, outlets, holes, its top's own number) with this "
+                    "page; never scale the design, and a size it does not print is not compared:\n"
+                    + fence(text, "design_reference"),
+                }
+            )
+            content += pictures
         strings = dimension_strings(review.found)
         if strings:
             content.append(
@@ -1380,6 +1401,95 @@ class _Run:
     def _context(self) -> SetContext:
         """What every page of this file prints (`set_context`), read once per check."""
         return set_context_of(self.engine, self.reviews, self.review.file)
+
+    def _design(self) -> SetContext | None:
+        """The design set's context (the architect's file, `set_context`), or `None`."""
+        listing = import_module("app.review.assistant.chat_findings").read_listing(
+            self.engine.tools.workspace
+        )
+        name = next(
+            (
+                str(item.get("name"))
+                for item in listing
+                if str(item.get("kind") or "").startswith("the architect")
+                and str(item.get("name")) != self.review.file
+            ),
+            None,
+        )
+        if name is None:
+            return None
+        design = set_context_of(self.engine, self.reviews, name)
+        return design if design.ready(SET_CONTEXT_WAIT_S, self.engine.cancel) else None
+
+    def design_spots(self) -> list[tuple[str, str, int, Box]]:
+        """Where the design set prints this page's item tags: `(tag, design file, page, box)`.
+        An item tag is one the design prints on at most `MAX_DESIGN_PAGES` pages (a finish code is
+        printed on most); its top's or sink's own number (`BOH-801T`) counts as the item's.
+        Code, $0; none when the set has no separate design file (2026-10-30: the design set showed
+        the items only as tags on its plans, and the reviewers never saw them)."""
+        try:
+            design = self._design()
+            if design is None:
+                return []
+            mine = self._context().tags_on(self.review.page)
+            out: list[tuple[str, str, int, Box]] = []
+            for tag in mine:
+                if len(out) >= MAX_DESIGN_TAGS:
+                    break
+                variants = [
+                    t
+                    for t in design.tags
+                    if (t == tag or re.fullmatch(rf"{re.escape(tag)}[A-Z]{{1,2}}", t))
+                    and len(design.tags[t]) <= MAX_DESIGN_PAGES
+                ]
+                pages = sorted({p for t in variants for p in design.tags[t]})
+                if not pages or len(pages) > MAX_DESIGN_PAGES:
+                    continue
+                for page in pages:
+                    found = next(
+                        (
+                            phrase
+                            for phrase in design.phrases(page)
+                            if any(t in tags_in(str(phrase.get("text") or "")) for t in variants)
+                        ),
+                        None,
+                    )
+                    box = _phrase_box(found) if found else None
+                    if box is not None:
+                        out.append((tag, design.file, page, (box[0], box[1], box[2], box[3])))
+                        break
+            return out
+        except Exception:  # noqa: BLE001 - the page is reviewed without the design, as before
+            _log.warning("page reviewer p%s: the design set was not read", self.review.page)
+            return []
+
+    def design_reference(
+        self, spots: Sequence[tuple[str, str, int, Box]]
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Each spot as a line with the design's text near it, and pictures of the first
+        `MAX_DESIGN_PICTURES` spots (the design's drawings-only copy)."""
+        design = self._design()
+        lines: list[str] = []
+        pictures: list[dict[str, Any]] = []
+        for tag, file, page, box in spots:
+            near = (
+                box[0] - DESIGN_NEAR_PT,
+                box[1] - DESIGN_NEAR_PT,
+                box[2] + DESIGN_NEAR_PT,
+                box[3] + DESIGN_NEAR_PT,
+            )
+            words = _listing(design.phrases(page), near) if design is not None else ""
+            lines.append(f"{tag}: design page {page} of {file}, at {[round(v) for v in box]}")
+            if words:
+                lines.append(words)
+            if len(pictures) < MAX_DESIGN_PICTURES:
+                try:
+                    pictures += self.picture(
+                        near, f"design p{page}: {tag}", zoomed=False, page=page, file=file
+                    )
+                except Exception:  # noqa: BLE001 - its words are listed all the same
+                    _log.warning("page reviewer p%s: design picture not drawn", self.review.page)
+        return "\n".join(lines), pictures
 
     def _set_summary(self) -> str | None:
         try:
@@ -1444,11 +1554,18 @@ class _Run:
     # -- pictures --
 
     def picture(
-        self, box: Box, label: str, *, zoomed: bool = True, page: int | None = None
+        self,
+        box: Box,
+        label: str,
+        *,
+        zoomed: bool = True,
+        page: int | None = None,
+        file: str | None = None,
     ) -> list[dict[str, Any]]:
         """One area drawn by GV's zoom (the drawings-only copy), at most `PICTURE_EDGE_PX` long.
         `zoomed`: it counts as a zoom (tiles, coverage); the whole page never does. `page`:
-        another page of the set (never counted toward this page's coverage)."""
+        another page of the set (never counted toward this page's coverage). `file`: another
+        upload (the design set, `design_reference`)."""
         from app.review.assistant.chat_tools import new_step
 
         review = self.review
@@ -1456,7 +1573,7 @@ class _Run:
         dpi = max(72, min(600, int(PICTURE_EDGE_PX * 72 / edge)))
         crop = {
             "page": review.page if page is None else page,
-            "file": review.file,
+            "file": review.file if file is None else file,
             "box": {"x0": box[0], "y0": box[1], "x1": box[2], "y1": box[3]},
             "label": label[:80],
         }

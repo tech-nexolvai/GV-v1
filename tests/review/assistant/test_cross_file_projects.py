@@ -661,3 +661,44 @@ def test_a_vendor_marker_alone_rules_the_pair_out() -> None:
     # Without the marker, the same answer pairs the view (the marker alone made the difference).
     plain = _across(_work(_index(), _answers(["p1004"], ["p1004"], sure=True)), 2)
     assert plain.views == ("p1004.a1.view1",)
+
+
+def test_a_joined_uploads_files_name_one_job_two_ways_and_still_match_the_architects() -> None:
+    """A vendor's cabinets and GV's stone tops, joined into one upload, each name the job their own
+    way ("RIVERBEND - NORTHFIELD STONE TOPS", "RB-LUXE - NORTHFIELD"): never rival projects of one
+    file, so NORTHFIELD still names the architect's "RIVERBEND NORTHFIELD" (#2023's joined file)."""
+    architect = ["riverbend", "riverbend northfield"]
+    tops, cabinets = "riverbend northfield stone tops", "rb luxe northfield"
+    # Read as rivals (one file), the word they share names neither.
+    assert projects.match(tops, architect, {tops, cabinets}) is None
+    placed = {
+        ("shop.pdf", 1): projects.Place(tops, "TOPS", source="tops.pdf"),
+        ("shop.pdf", 2): projects.Place(cabinets, "CABINETS", source="cabinets.pdf"),
+        ("arch.pdf", 1): projects.Place("riverbend northfield", "ARCH"),
+    }
+    assert projects.siblings_of(placed, "shop.pdf", "tops.pdf") == {tops}
+    assert projects.siblings_of(placed, "shop.pdf", None) == {tops, cabinets}
+    for name, source in ((tops, "tops.pdf"), (cabinets, "cabinets.pdf")):
+        siblings = projects.siblings_of(placed, "shop.pdf", source)
+        assert projects.match(name, architect, siblings) == "riverbend northfield"
+
+
+def test_each_page_of_a_joined_upload_keeps_the_file_it_came_from() -> None:
+    from app.review.assistant import set_pack
+
+    entries = [{"file": "joined.pdf", "page": n} for n in (1, 2, 3)]
+    item = {
+        "name": "joined.pdf",
+        "joined_from": [
+            {"name": "tops.pdf", "first_page": 1, "pages": 1},
+            {"name": "cabinets.pdf", "first_page": 2, "pages": 2},
+        ],
+    }
+    set_pack._mark_sources(entries, item)
+    assert [e["source"] for e in entries] == ["tops.pdf", "cabinets.pdf", "cabinets.pdf"]
+    plain = [{"file": "shop.pdf", "page": 1}]
+    set_pack._mark_sources(plain, {"name": "shop.pdf"})
+    assert "source" not in plain[0]
+    index = {"shop.pdf#1": {"file": "shop.pdf", "page": 1, "projects": ["RIVERBEND"]}}
+    placed = projects.places(index, [{"file": "shop.pdf", "page": 1, "source": "tops.pdf"}])
+    assert placed[("shop.pdf", 1)].source == "tops.pdf"

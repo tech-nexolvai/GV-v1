@@ -1112,3 +1112,57 @@ def test_a_fix_keeps_the_whole_view_allowance_it_was_accepted_with(tmp_path: Pat
     (draft,) = review.drafts
     assert draft.status == "fixed" and draft.whole_view and "no support is drawn" in draft.wrong
     assert not any("points across" in r for r in _results(engine.script.calls[-1].messages))
+
+
+def _design_pdf() -> bytes:
+    """A made-up design set: the item's top tag on a plan, with its room and an outlet beside it,
+    and a finish code printed on every page (never taken for the item's tag)."""
+    out = io.BytesIO()
+    c = canvas.Canvas(out, pagesize=(WIDTH, HEIGHT), invariant=1)
+    for page in range(1, 6):
+        c.setFont("Helvetica", 9)
+        c.drawString(100, HEIGHT - 700, "ST-01 QUARTZ" if page > 1 else "")
+        if page == 1:
+            for words, x, y in [
+                ("ST-01T", 600.0, 400.0),
+                ("SUNDRY SHOP", 640.0, 450.0),
+                ("GFI", 560.0, 420.0),
+            ]:
+                c.drawString(x, HEIGHT - y, words)
+        c.showPage()
+    c.save()
+    return out.getvalue()
+
+
+def test_the_design_sets_plan_around_the_items_tag_is_in_the_first_message(
+    tmp_path: Path,
+) -> None:
+    design = "Design set.pdf"
+    script = _Script([[_text("Nothing to report.")]], 200_000)
+    engine = _Engine(tmp_path, script)
+    (engine.workspace.uploads / design).write_bytes(_design_pdf())
+    listing = [
+        {"name": FILE, "pages": 2, "kind": "the vendor's shop drawings"},
+        {"name": design, "pages": 5, "kind": "the architect's drawings"},
+    ]
+    (engine.workspace.root / "uploads.json").write_text(json.dumps(listing), encoding="utf-8")
+    engine.tools = ChatTools(
+        workspace=engine.workspace,
+        sandbox=FakeSandbox(engine.workspace, lambda command, _w: ("ok", 0)),
+        page_count=2,
+        uploads=listing,
+    )
+    review = PageReview(page=2, file=FILE, options=Options())
+    agent = SimpleNamespace(
+        model=MODELS["claude-opus-5-5"], cap_micros=600_000, spent=0, last_call=0
+    )
+    page_reviewer._Run(engine, agent, review, Reviews(), {"steps": []}, 0).run()  # type: ignore[arg-type]
+    first = engine.script.calls[0].messages[0]["content"]
+    words = " ".join(b.get("text", "") for b in first if "text" in b)
+    assert "The design set (the architect's file, which governs)" in words
+    # The vendor's ST-01 is the design's ST-01T on page 1 (the top's own number); its room and
+    # the outlet beside it are listed, and the design's picture follows.
+    assert f"ST-01: design page 1 of {design}" in words
+    assert "SUNDRY SHOP" in words and "GFI" in words
+    at = next(i for i, b in enumerate(first) if "design_reference" in b.get("text", ""))
+    assert first[at + 1]["type"] == "text" and first[at + 2]["type"] == "image"
