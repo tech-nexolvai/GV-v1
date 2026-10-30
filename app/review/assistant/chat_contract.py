@@ -422,6 +422,11 @@ class ChatFindingChecksOut(BaseModel):
     arithmetic: str | None = Field(
         default=None, description="adds_up | does_not_add_up | not_a_number (vendor arithmetic)"
     )
+    parts_read: str | None = Field(
+        default=None,
+        description="code | ai: who read a vendor string's parts and overall; code's sum is a "
+        "witness only of parts code read (2026-10-31); null: not a vendor string.",
+    )
     lead_checked: bool
     ledger: str | None = Field(
         default=None,

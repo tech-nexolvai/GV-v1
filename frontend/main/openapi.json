@@ -1472,6 +1472,18 @@
             "description": "agrees | disagrees: code's reading ledger (a string that adds up, other views agreeing); null: the ledger says nothing about it.",
             "title": "Ledger"
           },
+          "parts_read": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "code | ai: who read a vendor string's parts and overall; code's sum is a witness only of parts code read (2026-10-31); null: not a vendor string.",
+            "title": "Parts Read"
+          },
           "printed_architect": {
             "description": "match | not_found | no_text | no_box | not_a_number | not_run",
             "title": "Printed Architect",
