@@ -33,6 +33,7 @@ the next answer: a full check keeps its findings and covered pages and checks th
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import os
@@ -469,6 +470,19 @@ def _sync_uploads(
         wanted.append(
             {"name": chosen, "sha256": source.sha256, "pages": source.pages, "kind": source.kind}
         )
+    # Several current shop-drawing files (the vendor's cabinets and GV's stone tops, 2026-10-30)
+    # are one vendor file to every check: joined in upload order (`_joined_item`).
+    shop = [i for i, item in enumerate(wanted) if _is_shop_kind(item["kind"])]
+    joined = _joined_item(wanted, shop) if len(shop) > 1 else None
+    listed = (
+        wanted
+        if joined is None
+        else [
+            joined if i == shop[0] else item
+            for i, item in enumerate(wanted)
+            if i == shop[0] or i not in shop
+        ]
+    )
     try:
         current = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else None
     except ValueError:
@@ -476,8 +490,8 @@ def _sync_uploads(
     same = (
         isinstance(current, list)
         and [(item.get("name"), item.get("sha256"), item.get("intake")) for item in current]
-        == [(item["name"], item["sha256"], version) for item in wanted]
-        and all((workspace.uploads / item["name"]).is_file() for item in wanted)
+        == [(item["name"], item["sha256"], version) for item in listed]
+        and all((workspace.uploads / item["name"]).is_file() for item in listed)
     )
     if same:
         assert isinstance(current, list)
@@ -491,7 +505,8 @@ def _sync_uploads(
         else:
             old.chmod(0o644) if not old.is_symlink() else None
             old.unlink()
-    for item, source in zip(wanted, sources, strict=True):
+    written: dict[int, bytes] = {}
+    for index, (item, source) in enumerate(zip(wanted, sources, strict=True)):
         data = source.read()
         if hashlib.sha256(data).hexdigest() != source.sha256:
             raise ValueError("a stored PDF does not match its recorded hash")
@@ -512,13 +527,102 @@ def _sync_uploads(
                     item["pages_not_read"] = [
                         {"page": page, "why": why} for page, why in working.not_read
                     ]
+        if joined is not None and index in shop:
+            written[index] = data
+            continue
         path = uploads / item["name"]
         path.write_bytes(data)
         path.chmod(0o444)
         item["size"] = len(data)
+    if joined is not None:
+        data = _join_shop_files(joined, [wanted[i] for i in shop], [written[i] for i in shop])
+        joined["intake"] = version
+        path = uploads / joined["name"]
+        path.write_bytes(data)
+        path.chmod(0o444)
+        joined["size"] = len(data)
     uploads.chmod(0o555)
-    manifest.write_text(json.dumps(wanted, ensure_ascii=False), encoding="utf-8")
-    return wanted, True
+    manifest.write_text(json.dumps(listed, ensure_ascii=False), encoding="utf-8")
+    return listed, True
+
+
+#: The name of the one vendor file several shop-drawing files are joined into.
+JOINED_NAME: Final = "Shop drawings ({count} files joined).pdf"
+
+
+def _is_shop_kind(kind: object) -> bool:
+    """An upload of the vendor's current shop drawings (never an earlier round, #1728, the
+    architect's drawings or a schedule)."""
+    return str(kind or "").strip().lower().startswith("the vendor's shop drawings")
+
+
+def _joined_item(wanted: Sequence[dict[str, Any]], shop: Sequence[int]) -> dict[str, Any]:
+    """The listing item of the shop-drawing files `shop` (indices into `wanted`) joined into one
+    PDF, in upload order: every check reads one vendor file (`chat_findings.main_upload`), so a
+    set with the vendor's cabinet drawings and GV's stone-top drawings is checked whole, its pages
+    numbered on through the files. `joined_from` says which pages came from which file; its hash is
+    made from theirs, so the set pack is rebuilt only when one of them changes."""
+    parts = [wanted[i] for i in shop]
+    names = {item["name"] for item in wanted}
+    name = JOINED_NAME.format(count=len(parts))
+    while name in names:
+        name = f"{Path(name).stem}-joined.pdf"
+    return {
+        "name": name,
+        "sha256": hashlib.sha256(
+            ("joined:" + ",".join(item["sha256"] for item in parts)).encode()
+        ).hexdigest(),
+        "pages": sum(int(item.get("pages") or 0) for item in parts),
+        "kind": parts[0]["kind"],
+        "joined_from": [
+            {"name": item["name"], "sha256": item["sha256"], "pages": item.get("pages")}
+            for item in parts
+        ],
+    }
+
+
+def _join_shop_files(
+    joined: dict[str, Any], parts: Sequence[Mapping[str, Any]], datas: Sequence[bytes]
+) -> bytes:
+    """The shop-drawing files' working copies as one PDF (their comments kept, so GV's notes on a
+    vendor's file are still left out the usual way), and `joined`'s page facts: each file's first
+    page, and its intake facts and unread pages numbered on."""
+    pikepdf = import_module("pikepdf")
+    out = pikepdf.new()
+    facts: dict[str, Any] = {}
+    pages: dict[str, Any] = {}
+    not_read: list[dict[str, Any]] = []
+    changes: list[str] = []
+    first = 1
+    for part, item, data in zip(joined["joined_from"], parts, datas, strict=True):
+        with pikepdf.open(io.BytesIO(data)) as pdf:
+            count = len(pdf.pages)
+            out.pages.extend(pdf.pages)
+        part["first_page"], part["pages"] = first, count
+        own = item.get("intake_facts")
+        if isinstance(own, Mapping):
+            for key, value in own.items():
+                if key != "pages":
+                    facts.setdefault(key, value)
+            for number, page in dict(own.get("pages") or {}).items():
+                pages[str(int(number) + first - 1)] = page
+        not_read += [
+            {**entry, "page": int(entry["page"]) + first - 1}
+            for entry in item.get("pages_not_read") or []
+            if isinstance(entry, Mapping) and "page" in entry
+        ]
+        changes += [str(change) for change in item.get("working_changes") or []]
+        first += count
+    buffer = io.BytesIO()
+    out.save(buffer)
+    data = buffer.getvalue()
+    joined["pages"] = first - 1
+    joined["intake_facts"] = {**facts, "pages": pages}
+    joined["working_sha256"] = hashlib.sha256(data).hexdigest()
+    joined["working_changes"] = [*changes, f"{len(parts)} shop-drawing files joined into one"]
+    if not_read:
+        joined["pages_not_read"] = not_read
+    return data
 
 
 #: Starts a set pack's build somewhere else than this process (#1871): `(folder, uploads, listing)`.
@@ -914,7 +1018,9 @@ def uploaded_files_text(listing: Sequence[dict[str, Any]], *, changed: bool) -> 
     PDFs changed)."""
     lines = [
         f'<file path="{UPLOADS}/{item["name"]}" pages="{item.get("pages", "?")}" '
-        f'size="{_size_words(int(item.get("size") or 0))}" kind="{item.get("kind", "")}"/>'
+        f'size="{_size_words(int(item.get("size") or 0))}" kind="{item.get("kind", "")}"'
+        + _joined_words(item)
+        + "/>"
         for item in listing
     ]
     if not lines:
@@ -923,6 +1029,18 @@ def uploaded_files_text(listing: Sequence[dict[str, Any]], *, changed: bool) -> 
     if changed:
         return "The drawing set's PDFs have changed since earlier in this chat:\n" + block
     return block
+
+
+def _joined_words(item: Mapping[str, Any]) -> str:
+    """` joined_from="pages 1-7: a.pdf; pages 8-18: b.pdf"` for a joined shop file, else ``."""
+    parts = item.get("joined_from")
+    if not isinstance(parts, list) or not parts:
+        return ""
+    spans = []
+    for part in parts:
+        first, count = int(part.get("first_page") or 0), int(part.get("pages") or 0)
+        spans.append(f"pages {first}-{first + count - 1}: {part.get('name')}")
+    return ' joined_from="' + "; ".join(spans).replace('"', "'") + '"'
 
 
 def _readable(folder: Path) -> None:
