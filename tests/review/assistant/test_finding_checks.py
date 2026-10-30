@@ -337,6 +337,25 @@ def test_vendor_arithmetic_is_added_up_by_code(sheet: Path) -> None:
     assert check_finding(finding, {"set.pdf": sheet}).arithmetic == "adds_up"
 
 
+def test_who_read_a_strings_parts_is_recorded_with_its_checks(sheet: Path) -> None:
+    """2026-10-31: code's sum is a witness only of parts code read. A string the AI typed is `ai`;
+    one a code check made, or whose row code verified, is `code`; any other finding has none."""
+    from app.review.assistant.finding_checks import parts_read
+
+    typed = _finding(source="vendor_arithmetic", parts=['10"', '10"'], printed_total='60"')
+    assert check_finding(typed, {"set.pdf": sheet}).parts_read == "ai"
+    assert check_finding(typed, {"set.pdf": sheet}).as_dict()["parts_read"] == "ai"
+    for code in (
+        {"created_by": "consistency"},
+        {"created_by": "run_fit"},
+        {"string_geometry": "verified"},
+        {"parts_read": "code"},
+    ):
+        assert parts_read({**typed, **code}) == "code"
+    assert parts_read({**typed, "string_geometry": "two_reads"}) == "ai"
+    assert check_finding(_finding(), {"set.pdf": sheet}).parts_read is None
+
+
 # ---- arithmetic ----------------------------------------------------------------------------------
 
 

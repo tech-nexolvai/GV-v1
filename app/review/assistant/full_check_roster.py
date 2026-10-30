@@ -123,6 +123,7 @@ from app.review.assistant.chat_trust import judged
 from app.review.assistant.colour_rule import COLOUR_RULE
 from app.review.assistant.dim_findings import own_architect_page
 from app.review.assistant.escalation import label_provenance
+from app.review.assistant.finding_checks import PARTS_READ
 from app.review.assistant.full_check_advocate import (
     ADVOCATE_SCHEMA,
     ADVOCATE_SYSTEM,
@@ -4561,6 +4562,9 @@ class _Run:
                         "difference": _plain(total - summed),
                     },
                     "string_geometry": "verified",
+                    # Code's lines and labels read the run (`PARTS_READ`): its sum is a witness.
+                    PARTS_READ: "code",
+                    "checks": {**(current.get("checks") or {}), PARTS_READ: "code"},
                     "architect_printed": [_plain(summed)],
                     "string_reads": {
                         "outcome": "proved",
@@ -4572,7 +4576,7 @@ class _Run:
                     },
                 }
             )
-            return current
+            return judged(current)  # its witnesses again: code's sum of code's own parts
 
         self.engine._update_finding(finding_id, change)
 

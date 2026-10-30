@@ -19,6 +19,15 @@ it To check (the read, the critic objecting, GV's rule, code's arithmetic, the l
 the drawing printing another value at the spot). A side code cannot read is neutral: it neither
 backs nor contradicts.
 
+**The vendor's sum is code's witness only when code read its parts** (`PARTS_READ`, 2026-10-31):
+code adding up parts the AI typed proves the AI's arithmetic, not the drawing's (on a paid run, a
+row typed as its two end parts only, its middle part left out, stood Confirmed). The sum backs a
+finding only when the parts and the overall are code's own labels of one whole row (`parts_read:
+code`: the consistency check's string, or a reading's string code found as its own row); with
+`parts_read: ai` it backs nothing. It may still contradict a finding (a sum that does not add up
+against a "same"): a disagreement only lowers trust. A check without the key (an answer stored
+before it) counts as before.
+
 **The drawn-ink witness (`ocr_ink`, #1531) is not AI, but it is a reading by OCR**: it measured one
 slip in 136 planted wrong values (a hand-lettered `7` read as `1`). So it gives Confirmed only
 together with the independent read agreeing (the second read, or the third read's majority), never
@@ -35,6 +44,7 @@ from typing import Any, Final, Literal
 
 __all__ = [
     "EVIDENCE_KINDS",
+    "PARTS_READ",
     "WITNESS_WORDS",
     "EvidenceKind",
     "ai_witnesses",
@@ -54,7 +64,7 @@ EVIDENCE_KINDS: Final = ("observed", "derived", "inferred")
 WITNESS_WORDS: Final = {
     "printed": "both values printed at their spots on the drawing",
     "rule": "GV's own rule check agrees",
-    "arithmetic": "code added up the vendor's dimension string",
+    "arithmetic": "code added up the vendor's dimension string, every part read by code",
     "ledger": "code's reading ledger backs it (a string that adds up, or other views agree)",
     "units": "the millimetres and inches printed together agree",
     "ocr_ink": "both values read from the vendor's drawn ink by two OCR engines",
@@ -63,6 +73,9 @@ WITNESS_WORDS: Final = {
 
 #: Each side's reading by `verify_value` in a finding's checks (#1531).
 _VERIFY_KEYS: Final = ("verify_architect", "verify_vendor")
+#: Who read a vendor string's parts and overall, in a finding's checks: `code` (code's own labels
+#: of one whole row) or `ai` (typed by the AI). See the module's rule on the vendor's sum.
+PARTS_READ: Final = "parts_read"
 
 
 def _arithmetic_backs(checks: Mapping[str, Any], status: object) -> bool | None:
@@ -70,13 +83,18 @@ def _arithmetic_backs(checks: Mapping[str, Any], status: object) -> bool | None:
 
     A sum that does not add up contradicts a "same"; one that adds up contradicts a "different".
     Otherwise (and with no status given) the sum code made backs the finding: its claim is about
-    the sum."""
+    the sum, but only when code read the parts (`PARTS_READ`): a sum of parts the AI typed says
+    nothing."""
     arithmetic = checks.get("arithmetic")
     if arithmetic == "does_not_add_up":
-        return status != "same"
-    if arithmetic == "adds_up":
-        return status != "different"
-    return None
+        backs = status != "same"
+    elif arithmetic == "adds_up":
+        backs = status != "different"
+    else:
+        return None
+    if backs and checks.get(PARTS_READ) == "ai":
+        return None  # the AI typed the parts: code's sum proves its arithmetic, not the drawing's
+    return backs
 
 
 def read_result(checks: Mapping[str, Any]) -> object:

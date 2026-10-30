@@ -1197,3 +1197,148 @@ def test_two_readings_of_a_string_an_eighth_off_make_it_red() -> None:
     assert compare_strings(near, '56"', chains)[0] == "within_rounding"
     slip = _ledger_string(['20"', '41"'], '60"', string_geometry="two_reads")
     assert proof.proof_group(slip) == "clouded"
+
+
+# ---- a reading's string is a card only as a whole row code reads (2026-10-31) --------------------
+
+
+def _sheet_middle_unread() -> bytes:
+    """A 60" overall over a row of 10" + 40" + 10" drawn end to end (2 pt per inch), the middle
+    40" drawn with its ticks but no printed value code can read (a stacked or hand-lettered
+    number): code sees the two 10" ends only. Made-up values."""
+    middle = _line(320, 280, 400, 280) + _line(318.5, 278.5, 321.5, 281.5)
+    middle += _line(398.5, 278.5, 401.5, 281.5)
+    return (
+        _dim(300, 420, 300, '60"')
+        + _dim(300, 320, 280, '10"')
+        + middle
+        + _dim(400, 420, 280, '10"')
+        + _dim(450, 500, 150, '25"')
+    )
+
+
+def _spot_of(result: vc.ConsistencyResult, value: str) -> dict[str, Any]:
+    """The spot of the vendor label printing `value` (a reading's string records it there)."""
+    labels = [raw for found in result.page_labels.values() for raw in found]
+    (label,) = [raw for raw in labels if raw.get("text") == value]
+    x0, y0, x1, y1 = label["box"]
+    return {"x0": x0, "y0": y0, "x1": x1, "y1": y1, "page": 1}
+
+
+def test_a_reading_that_leaves_a_part_of_the_row_out_makes_no_card(tmp_path: Path) -> None:
+    """A paid run's false lead, in made-up numbers: the reading typed 10" + 10" for the 60" row
+    and left the middle part out ("10" + 10" = 20" ≠ 60""). Code's labels show the two parts
+    stop short of each other: the string is dropped with that reason, never a card."""
+    result = _check(tmp_path, _sheet_middle_unread())
+    assert vc.judge_strings([_ledger_string(['10"', '10"'])], result.checks) == vc.StringJudgement()
+    string = _ledger_string(['10"', '10"'], vendor_box=_spot_of(result, '60"'))
+    judged = vc.judge_rows([string], result)
+    assert judged.complete == () and list(judged.dropped) == ["F7"]
+    reason = judged.dropped["F7"]
+    assert reason.startswith('The reading\'s sum (10" + 10" against the 60" printed) is not shown')
+    assert "stop short" in reason and "one whole row" in reason
+
+
+def test_the_hook_drops_a_part_row_and_says_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _check(tmp_path, _sheet_middle_unread())
+    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads, **_: result)
+    engine = _Engine("full_check", [])
+    engine.book = _FullBook([_ledger_string(['10"', '10"'], vendor_box=_spot_of(result, '60"'))])
+    dropped: list[tuple[str, str]] = []
+    engine._show_dropped = lambda finding_id, reason: dropped.append((finding_id, reason))  # type: ignore[attr-defined]
+    vc.add_to_answer(engine)
+    assert [finding_id for finding_id, _reason in dropped] == ["F7"]
+    assert "stop short" in dropped[0][1] and engine.book.live() == []
+
+
+def _raw(
+    label_id: str, text: str, inches: str, line: tuple[float, float], across: float
+) -> dict[str, Any]:
+    """A `dims.json` vendor label on a horizontal dimension line (made-up values)."""
+    x0, x1 = line
+    middle = (x0 + x1) / 2
+    return {
+        "id": label_id,
+        "text": text,
+        "inches": inches,
+        "box": [middle - 5, across - 9, middle + 5, across - 1],
+        "side": "vendor",
+        "orientation": "h",
+        "dim_line": [[x0, across], [x1, across]],
+        "extension": [[[x0, across + 40], [x0, across]], [[x1, across + 40], [x1, across]]],
+        "route": "text",
+    }
+
+
+def _row_result(*labels: dict[str, Any]) -> vc.ConsistencyResult:
+    """Code's result with only these labels on page 1 (no strings of its own)."""
+    return vc.ConsistencyResult(page_labels={(FILE, 1): list(labels)})
+
+
+#: A 30" overall at 2 pt per inch over a row 20 7/8" + 9" that fills its line end to end.
+_OVERALL = _raw("D1", '30"', "30", (100.0, 160.0), 300.0)
+_ROW = (
+    _raw("D2", '20 7/8"', "20.875", (100.0, 141.75), 280.0),
+    _raw("D3", '9"', "9", (141.75, 160.0), 280.0),
+)
+
+
+def _string_at_overall(parts: list[str], **more: Any) -> dict[str, Any]:
+    x0, y0, x1, y1 = _OVERALL["box"]
+    spot = {"x0": x0, "y0": y0, "x1": x1, "y1": y1, "page": 1, "file": FILE}
+    return _ledger_string(parts, '30"', vendor_box=spot, **more)
+
+
+def test_a_reading_whose_parts_are_a_whole_row_of_codes_labels_is_kept_as_codes() -> None:
+    """The parts are code's own labels of one row that fills the overall's line: the string stays
+    (it does not add up: 29 7/8" against 30"), and code's sum of them is a witness."""
+    judged = vc.judge_rows([_string_at_overall(['20 7/8"', '9"'])], _row_result(_OVERALL, *_ROW))
+    assert judged.complete == ("F7",) and judged.dropped == {}
+
+
+def test_a_row_code_cannot_see_whole_makes_no_card() -> None:
+    """A part left out of a row code reads (the parts stop short of the overall's end), a part
+    no label of code's prints, and an overall code has no label of: each dropped, with why."""
+    labels = _row_result(_OVERALL, *_ROW)
+    short = vc.judge_rows([_string_at_overall(['20 7/8"'])], labels)
+    assert "stop short" in short.dropped["F7"]
+    unknown = vc.judge_rows([_string_at_overall(['20 7/8"', '9 1/8"'])], labels)
+    assert "no row of its own labels printing exactly these parts" in unknown.dropped["F7"]
+    no_overall = vc.judge_rows([_string_at_overall(['20 7/8"', '9"'])], _row_result(*_ROW))
+    assert 'no label of the 30" overall' in no_overall.dropped["F7"]
+    unread = vc.judge_rows([_string_at_overall(['20 7/8"', "nine"])], labels)
+    assert "not one size code reads" in unread.dropped["F7"]
+
+
+def test_strings_code_judges_another_way_are_left_alone() -> None:
+    """Code's own strings, strings it verified, the unsized-ends rule's strings (`keep`), and
+    anything not a reading's Wrong string are never dropped here."""
+    nothing = _row_result()
+    for finding in (
+        {**_string_at_overall(['1"']), "created_by": vc.CREATED_BY},
+        {**_string_at_overall(['1"']), "status": "check"},
+        {**_string_at_overall(['1"']), "source": "cross_view"},
+    ):
+        assert vc.judge_rows([finding], nothing) == vc.RowJudgement()
+    verified = _string_at_overall(['1"'], string_geometry="verified")
+    assert vc.judge_rows([verified], nothing).complete == ("F7",)
+    assert vc.judge_rows([_string_at_overall(['1"'])], nothing, keep={"F7"}) == vc.RowJudgement()
+
+
+def test_the_hook_marks_a_whole_rows_parts_as_codes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kept: its parts are code's (`parts_read: code`) on the finding and its checks, and its
+    trust is worked out again, code's sum now one of its witnesses."""
+    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads, **_: _row_result(_OVERALL, *_ROW))
+    engine = _Engine("full_check", [])
+    typed = _string_at_overall(['20 7/8"', '9"'])
+    typed["checks"] = {"arithmetic": "does_not_add_up", "parts_read": "ai", "critic": "passed"}
+    typed["witnesses"] = []
+    engine.book = _FullBook([typed])
+    engine._show_dropped = lambda finding_id, reason: None  # type: ignore[attr-defined]
+    vc.add_to_answer(engine)
+    (kept,) = engine.book.live()
+    assert kept["parts_read"] == "code" and kept["checks"]["parts_read"] == "code"
+    assert kept["witnesses"] == ["arithmetic"] and kept["trust_level"] == "confirmed"
+    assert [f["id"] for f in engine.shown] == ["F7"]
