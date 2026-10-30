@@ -1207,6 +1207,10 @@ class PageReview:
     shown_sizes: set[Decimal] = field(default_factory=set)
     #: Its refused tool calls, by tool and reason (`_Refused.reason`), for the run's log.
     refusals: dict[str, int] = field(default_factory=dict)
+    #: Its calls' tokens (input, output, cache written, cache read), and its first call's alone
+    #: (a warm cache shows as a read there), for the run's log: where a page's money went.
+    tokens: dict[str, int] = field(default_factory=dict)
+    first_call: dict[str, int] = field(default_factory=dict)
 
     # -- coverage --
 
@@ -1463,6 +1467,11 @@ class _Run:
                 report = str(failure)
                 break
             review.calls += 1
+            used = _usage_tokens(reply.usage)
+            for key, value in used.items():
+                review.tokens[key] = review.tokens.get(key, 0) + value
+            if review.calls == 1:
+                review.first_call = used
             cost = engine._cost(model, reply.usage)
             agent.last_call = cost
             agent.spent += cost
@@ -2602,13 +2611,16 @@ def prewarm(engine: Any, reviews: Reviews, model: Any, options: Options) -> None
     reference pictures (their first message's opening blocks, the same picture ids), before they
     start together: each then reads that prefix from the prompt cache instead of all of them
     writing it at once (2026-10-31: 18 pages started together, each turn re-reading about 30,000
-    tokens of that prefix). Charged to the reviewers' own money. Only on Anthropic's own API (as
-    `ChatEngine._prewarm`); a failure is only logged."""
+    tokens of that prefix). Charged to the reviewers' own money. Only where the calls share one
+    cache (`chat_request.cache_shared`: Anthropic's own API, or OpenRouter's one pinned host, the
+    live route since 2026-10-29). It starts with the reviewers, after the credit pre-check (the
+    helpers' warm-up, which runs before it, stays on Anthropic's own API: a paused check spends
+    nothing). A failure is only logged."""
     from app.review.assistant.chat_engine import HARNESS_ID, _Cancelled
     from app.review.assistant.chat_provider import ProviderFailure
-    from app.review.assistant.chat_request import thinking_config
+    from app.review.assistant.chat_request import cache_shared, thinking_config
 
-    if getattr(engine.provider, "name", None) != "anthropic" or engine.cancel.is_set():
+    if not cache_shared(getattr(engine.provider, "name", None), model) or engine.cancel.is_set():
         return
     system = system_prompt(options.house_rules)
     blocks = shared_reference(engine, reviews, options.reference_pictures)
@@ -2701,10 +2713,26 @@ class Reviews:
                     "spent_usd": round(self.spent.get(review.page, 0) / 1_000_000, 4),
                     "tools": dict(review.counts),
                     "refused": dict(review.refusals),
+                    "tokens": dict(review.tokens),
+                    "first_call": dict(review.first_call),
                     "code_labels": len(review.labels),
                 }
             )
         return {"pages": rows, "cut_by_money": list(self.cut_by_money)}
+
+
+#: A call's usage fields, as the run's log names them.
+_USAGE_KEYS: Final = {
+    "input_tokens": "input",
+    "output_tokens": "output",
+    "cache_creation_input_tokens": "cache_write",
+    "cache_read_input_tokens": "cache_read",
+}
+
+
+def _usage_tokens(usage: Mapping[str, Any]) -> dict[str, int]:
+    """One call's tokens by kind (`_USAGE_KEYS`)."""
+    return {name: int(usage.get(key) or 0) for key, name in _USAGE_KEYS.items()}
 
 
 def review_money(options: Options | None, pages: int, room: int) -> int:

@@ -1535,8 +1535,24 @@ def test_the_cache_warm_up_sends_the_reviewers_exact_prefix_once(tmp_path: Path)
     assert shared and any(b["type"] == "image" for b in shared)
     assert first.messages[0]["content"][: len(shared)] == shared
     assert shared[-1]["cache_control"] == {"type": "ephemeral"}
-    # Only on Anthropic's own API.
+    # Each call's tokens and the first call's alone are kept for the run's log.
+    assert set(review.tokens) == {"input", "output", "cache_write", "cache_read"}
+    assert set(review.first_call) == set(review.tokens)
+    # Never where the calls keep separate caches.
     made = len(engine.script.calls)
-    engine.provider = SimpleNamespace(name="openrouter")
+    engine.provider = SimpleNamespace(name="somewhere-else")
     page_reviewer.prewarm(engine, reviews, model, options)
     assert len(engine.script.calls) == made
+
+
+def test_the_warm_up_is_for_routes_that_share_one_cache() -> None:
+    from app.review.assistant.chat_request import cache_shared
+
+    opus = MODELS["claude-opus-5-5"]
+    assert cache_shared("anthropic", opus)
+    # OpenRouter pins Claude to one host with no fallbacks: one cache.
+    assert cache_shared("openrouter", opus)
+    assert not cache_shared(None, opus)
+    outside = next((m for m in MODELS.values() if m.extra), None)
+    if outside is not None:
+        assert not cache_shared("openrouter", outside)
