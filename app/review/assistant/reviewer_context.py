@@ -13,10 +13,16 @@ now hands each reviewer:
   prompt cache pays for them once);
 - `view_sheet`: whether a design page that prints the item's tag is an elevation, section or detail
   (pictured around the tag beside the plan's room);
-- `item_room_facts`: the page's title names a room the design gives to ANOTHER item while the
-  page's own tag sits in a different room: the item number may be wrong;
+- `title_block`: the sheet's description strip first (`sheet_fields`: DESCRIPTION, ITEM NO.,
+  OVERALL SIZE as labelled), then its right or bottom strip;
+- `room_facts`: the sheet's description names a room the design does not put the sheet's tag in:
+  the design's item of another family with the same number is in that room (a vendor's tag took
+  another item's family), or the design puts the tag elsewhere. The design's room names may be
+  in a symbol font (read as the letters they stand for);
 - `other_file_facts`: the same item on the other file of a joined shop upload (the stone top of
-  this cabinet run, or the reverse): its page, sizes, sink and appliance models, seams and title;
+  this cabinet run, or the reverse), also under the same number in another family when both
+  sheets name one room: its page, sizes (code's reading of the drawn numbers when the text has
+  none), sink and appliance models, seams and title;
 - `date_fact`: the sheet is dated before the design set's latest revision.
 
 Every fact is a please-check for the reviewer to look at, never a verdict; a fact is given only
@@ -37,21 +43,25 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final
 
-from app.review.assistant.set_context import SetContext, family_of, item_key, tags_in
+from app.review.assistant.set_context import SetContext, family_of, tags_in
+from app.review.assistant.symbol_font import decoded
 
 __all__ = [
     "MAX_FACT_LINES",
     "MAX_REFERENCE_BYTES",
     "MAX_REFERENCE_PICTURES",
     "ReferencePicture",
+    "SheetField",
     "date_fact",
     "dates_in",
-    "item_room_facts",
     "model_tokens",
     "other_file_facts",
     "reference_pictures",
+    "room_facts",
     "room_labels",
     "same_item",
+    "sheet_description",
+    "sheet_fields",
     "title_block",
     "view_sheet",
 ]
@@ -166,6 +176,30 @@ def reference_pictures(folder: Path | None, names: Sequence[str] = ()) -> list[R
 #: A sheet's title block: a strip along its right side or its bottom (shares of the page).
 TITLE_RIGHT: Final = 0.75
 TITLE_BOTTOM: Final = 0.8
+#: A field's value is printed under its label at most this far (points, label's bottom to the
+#: value's top), or after it on its line at most this far (points, edge to edge).
+FIELD_BELOW_PT: Final = 60.0
+FIELD_AFTER_PT: Final = 200.0
+#: The labels of a sheet's description strip that say what the item is and where it goes
+#: (`DESCRIPTION`, `ITEM NO.`, `OVERALL SIZE`, `ROOM NAME`): two of them on one strip mark it
+#: (2026-10-31: a vendor's strip, on every sheet, under its material table, which the right and
+#: bottom strips picked instead). A one-word label that is also a plain word counts only with
+#: its colon (`ROOM:`, `LOCATION:`).
+_ITEM_LABEL: Final = re.compile(
+    r"^(DESCRIPTION|ITEM\s*(?:NO\.?|NUMBER|#)|OVERALL\s+SIZES?|ROOM\s*(?:NAME|NO\.?|#)|"
+    r"(?:ROOM|LOCATION|AREA)(?=\s*[:：]))\s*[:：]?\s*",
+    re.IGNORECASE,
+)
+#: The strip's other labels (the project, who drew it, its date, version and page): part of the
+#: strip when on its line, never enough alone (a revision table prints `DATE` and `DESCRIPTION`).
+_OTHER_LABEL: Final = re.compile(
+    r"^(PROJECT\s*(?:NAME|NO\.?|#)?|JOB\s*(?:NAME|NO\.?|#)?|DRAWN\s+BY|CHECKED\s+BY|"
+    r"APPROVED\s+BY|REV(?:ISION)?\.?\s*DATE|DATE|VERSION|REV(?:ISION)?\.?|PAGE|SHEET\s*(?:NO\.?|#)?|"
+    r"SCALE|QTY|QUANTITY)(?=\s*[:：]|\s*$)\s*[:：]?\s*",
+    re.IGNORECASE,
+)
+#: The fields that say what the item is and where it goes (a room's name among their words).
+_DESCRIBING: Final = ("DESCRIPTION", "ROOM", "LOCATION", "AREA")
 
 
 def _box(phrase: Mapping[str, Any]) -> list[float] | None:
@@ -180,17 +214,205 @@ def _box(phrase: Mapping[str, Any]) -> list[float] | None:
     return None
 
 
-def title_block(
-    found: Sequence[Mapping[str, Any]], size: tuple[float, float] | None = None
+def _text(phrase: Mapping[str, Any]) -> str:
+    """A phrase's text on one line, symbol-font characters as the letters they stand for (a design
+    set printed its room names in a font that stores `PANTRY` as private-use characters)."""
+    return " ".join(decoded(str(phrase.get("text") or "")).split())
+
+
+def _heuristic_block(
+    found: Sequence[Mapping[str, Any]], size: tuple[float, float] | None
 ) -> list[Mapping[str, Any]]:
-    """The phrases in the sheet's title block (its right or bottom strip, `TITLE_RIGHT`,
-    `TITLE_BOTTOM`). `size`: the page's (width, height) in points; without it the printed text's
-    own extent stands in."""
     boxes = [(p, b) for p in found if (b := _box(p)) is not None]
     if not boxes:
         return []
     width, height = size or (max(b[2] for _p, b in boxes), max(b[3] for _p, b in boxes))
     return [p for p, b in boxes if b[0] >= TITLE_RIGHT * width or b[1] >= TITLE_BOTTOM * height]
+
+
+@dataclass(frozen=True, slots=True)
+class SheetField:
+    """One labelled field of a sheet's strip: its label as printed, its value (the phrases under
+    the label, or after it on its line) and the phrases both are printed in."""
+
+    label: str
+    value: str
+    box: tuple[float, float, float, float]
+    phrases: tuple[int, ...]
+    """The indexes of the label's and the value's phrases in the page's phrases."""
+
+    @property
+    def describing(self) -> bool:
+        """The field says what the item is or where it goes (`DESCRIPTION`, `ROOM NAME`)."""
+        return self.label.upper().startswith(_DESCRIBING)
+
+    @property
+    def item(self) -> bool:
+        return self.label.upper().startswith("ITEM")
+
+
+def _same_line(a: Box, b: Box) -> bool:
+    middle = (a[1] + a[3]) / 2
+    return b[1] <= middle <= b[3]
+
+
+def _overlap(a: Box, b: Box) -> bool:
+    return min(a[2], b[2]) - max(a[0], b[0]) > 0
+
+
+def sheet_fields(found: Sequence[Mapping[str, Any]]) -> list[SheetField]:
+    """The sheet's description strip, field by field: two of its item labels (`_ITEM_LABEL`) on one
+    line, and the strip's other labels on that line (`_OTHER_LABEL`). A field's value is what the
+    label's phrase prints after it, else the phrases after it on its line (up to the next label,
+    `FIELD_AFTER_PT`), else the phrases under it (`FIELD_BELOW_PT`) that sit under no other label
+    of the strip. Empty when the sheet has no such strip (never guessed)."""
+    labels: list[tuple[int, str, str, Box, bool]] = []
+    for index, phrase in enumerate(found):
+        text, box = _text(phrase), _box(phrase)
+        if box is None or not text:
+            continue
+        for pattern, main in ((_ITEM_LABEL, True), (_OTHER_LABEL, False)):
+            hit = pattern.match(text)
+            if hit is not None:
+                label = " ".join(hit.group(1).upper().split())
+                labels.append((index, label, text[hit.end() :].strip(), box, main))
+                break
+    strip: list[tuple[int, str, str, Box, bool]] = []
+    for first in labels:
+        row = [one for one in labels if _same_line(first[3], one[3])]
+        if len({one[1] for one in row if one[4]}) >= 2 and len(row) > len(strip):
+            strip = row
+    if not strip:
+        return []
+    taken = {one[0] for one in labels}
+    out: list[SheetField] = []
+    for index, label, inline, at, _main in sorted(strip, key=lambda one: one[3][0]):
+        parts: list[tuple[int, Box]] = []
+        if not inline:
+            parts = _after(found, at, strip, taken) or _under(found, at, strip, taken)
+        used = (index, *(i for i, _b in parts))
+        boxes = [at, *(b for _i, b in parts)]
+        value = " ".join([inline, *(_text(found[i]) for i, _b in parts)]).strip()
+        whole = (
+            min(b[0] for b in boxes),
+            min(b[1] for b in boxes),
+            max(b[2] for b in boxes),
+            max(b[3] for b in boxes),
+        )
+        out.append(SheetField(label, value, whole, used))
+    return out
+
+
+def _after(
+    found: Sequence[Mapping[str, Any]],
+    box: Box,
+    strip: Sequence[tuple[int, str, str, Box, bool]],
+    taken: Collection[int],
+) -> list[tuple[int, Box]]:
+    """The phrases after the label on its line, up to the strip's next label."""
+    ends = [b[0] for _i, _l, _t, b, _m in strip if b[0] > box[2] and _same_line(box, b)]
+    stop = min([box[2] + FIELD_AFTER_PT, *ends])
+    out: list[tuple[int, Box]] = []
+    for index, phrase in enumerate(found):
+        b = _box(phrase)
+        if index in taken or b is None or not _same_line(box, b):
+            continue
+        if box[2] <= b[0] and b[2] <= stop:
+            out.append((index, b))
+    return sorted(out, key=lambda one: one[1][0])
+
+
+def _under(
+    found: Sequence[Mapping[str, Any]],
+    box: Box,
+    strip: Sequence[tuple[int, str, str, Box, bool]],
+    taken: Collection[int],
+) -> list[tuple[int, Box]]:
+    """The phrases under the label (`FIELD_BELOW_PT`) that sit under no other label of the strip."""
+    others = [b for _i, _l, _t, b, _m in strip if list(b) != list(box)]
+    out: list[tuple[int, Box]] = []
+    for index, phrase in enumerate(found):
+        b = _box(phrase)
+        if index in taken or b is None or not _overlap(b, box):
+            continue
+        if not box[3] - 1.0 <= b[1] <= box[3] + FIELD_BELOW_PT:
+            continue
+        if any(_overlap(b, other) for other in others):
+            continue  # a note across the strip, or another field's value
+        out.append((index, b))
+    return sorted(out, key=lambda one: (one[1][1], one[1][0]))
+
+
+def title_block(
+    found: Sequence[Mapping[str, Any]], size: tuple[float, float] | None = None
+) -> list[Mapping[str, Any]]:
+    """The phrases in the sheet's title block: its description strip first, each field as one
+    phrase `LABEL: value` (`sheet_fields`), then the phrases of its right or bottom strip
+    (`TITLE_RIGHT`, `TITLE_BOTTOM`) the strip did not take. `size`: the page's (width, height) in
+    points; without it the printed text's own extent stands in."""
+    fields = sheet_fields(found)
+    used = {index for field in fields for index in field.phrases}
+    first: list[Mapping[str, Any]] = [
+        {"text": f"{field.label}: {field.value}" if field.value else field.label, "box": field.box}
+        for field in fields
+    ]
+    taken = {id(found[index]) for index in used}
+    return first + [p for p in _heuristic_block(found, size) if id(p) not in taken]
+
+
+#: A header over a sheet's own item (`DRAWING # 3`, then the item's tag, then its name: a stone
+#: shop's sheets): its lines share a left edge and follow each other at most a line apart.
+_HEADER_LABEL: Final = re.compile(
+    r"^(?:DRAWING|DWG|SHEET|ITEM)\s*(?:NO\.?|#|NUMBER)", re.IGNORECASE
+)
+HEADER_EDGE_PT: Final = 4.0
+HEADER_LINES: Final = 4
+
+
+def sheet_description(
+    found: Sequence[Mapping[str, Any]],
+) -> tuple[list[str], str]:
+    """The sheet's own item tags and the words that say what the item is and where it goes: the
+    description strip's item and describing fields (`sheet_fields`), else a header that prints
+    the item's tag under a drawing number and its name under the tag. `([], "")` when the sheet
+    has neither (never guessed)."""
+    fields = sheet_fields(found)
+    tags = [t for field in fields if field.item for t in tags_in(field.value)]
+    words = "; ".join(field.value for field in fields if field.describing and field.value)
+    if tags or words:
+        return list(dict.fromkeys(tags)), words
+    for phrase in found:
+        box = _box(phrase)
+        if box is None or not _HEADER_LABEL.match(_text(phrase)):
+            continue
+        lines = _stack(found, box)
+        tag = next((t for t, _b in lines if tags_in(t) == [t]), None)
+        if tag is None:
+            continue
+        after = [t for t, _b in lines[[t for t, _b in lines].index(tag) + 1 :]]
+        name = "; ".join(t for t in after if re.search(r"[A-Za-z]{3}", t) and not tags_in(t))
+        return [tag], name
+    return [], ""
+
+
+def _stack(found: Sequence[Mapping[str, Any]], box: Box) -> list[tuple[str, Box]]:
+    """The lines under `box` sharing its left edge, each at most a line under the one before."""
+    lines: list[tuple[str, Box]] = []
+    last = box
+    for _ in range(HEADER_LINES):
+        height = last[3] - last[1]
+        below = [
+            (_text(p), b)
+            for p in found
+            if (b := _box(p)) is not None
+            and abs(b[0] - box[0]) <= HEADER_EDGE_PT
+            and last[3] - 1.0 <= b[1] <= last[3] + height
+        ]
+        if not below:
+            break
+        last = min(below, key=lambda one: one[1][1])[1]
+        lines.append(next(one for one in below if one[1] is last))
+    return lines
 
 
 # ---- which design sheet: plan, or elevation / section / detail -----------------------------------
@@ -225,8 +447,23 @@ def view_sheet(found: Sequence[Mapping[str, Any]], box: Box) -> bool:
 
 # ---- the item number against the room ------------------------------------------------------------
 
-#: A room label this close to a tag (points, edge to edge) is the room the tag is in.
+#: A room label this close to a tag (points, edge to edge) is the room the tag is in, when it is
+#: clearly the nearest: no label of another room within `ROOM_CLEAR` times its distance (plus
+#: `ROOM_SLACK_PT`); two rooms about as near are no room (never a guess). A plan prints no walls
+#: code reads, so the nearest label may be the next room's (a meeting-room item's tag beside the
+#: corridor's label, 2026-10-31): a tag is said to be IN a room only when its label is within
+#: `ROOM_IN_PT` (else "nearest the room name"), and the room a sheet names is said to be
+#: elsewhere only when the same plan prints it, and no further than `ROOM_FAR_PT` from the tag.
 ROOM_NEAR_PT: Final = 250.0
+ROOM_IN_PT: Final = 100.0
+ROOM_FAR_PT: Final = 500.0
+ROOM_CLEAR: Final = 1.5
+ROOM_SLACK_PT: Final = 12.0
+#: Items listed in the room the sheet names, at most.
+MAX_ROOM_ITEMS: Final = 3
+#: A room's name printed on two lines (`STAFF` over `LOUNGE`): the second line's top at most this
+#: many line heights under the first's bottom, their middles at most half the wider apart.
+ROOM_LINE_GAP: Final = 0.8
 #: Words that are never a room's name (parts, notes, trades and view words), on the design's
 #: labels and in the sheet's description alike.
 # fmt: off
@@ -244,8 +481,11 @@ _NOT_ROOM: Final = frozenset({
     "REVISION", "REVISIONS", "ISSUE", "ISSUED", "SHOP", "SUBMITTAL", "APPROVED", "APPROVAL",
     "CHECKED", "DRAWN", "JOB", "SIZE", "SHORT", "LONG", "LEFT", "RIGHT", "FRONT", "BACK", "SIDE",
     "END", "ENDS", "SPLASH", "BACKSPLASH", "SUPPORT", "BRACKET", "LEGS", "LEG", "WITH", "FROM",
-    "THIS", "THAT", "INTO", "OVER", "UNDER",
+    "THIS", "THAT", "INTO", "OVER", "UNDER", "FURNITURE", "LEVEL", "NUMBER", "ELEV",
 })
+#: Words of a room's name that say only that it is a room (`WORK AREA`, `BREAKFAST SERVING AREA`):
+#: never enough to call two rooms one.
+_ANY_ROOM: Final = frozenset({"AREA", "AREAS", "ROOM", "ROOMS", "SPACE", "ZONE", "STATION"})
 # fmt: on
 _ROOM_WORD: Final = re.compile(r"[A-Z][A-Z'&/-]*")
 
@@ -255,20 +495,45 @@ def _room_words(text: str) -> list[str]:
     return [w for w in re.findall(r"[A-Z]+", text.upper()) if len(w) >= 4 and w not in _NOT_ROOM]
 
 
+def _naming(text: str) -> set[str]:
+    """The words of `text` that tell one room from another (`_room_words`, `_ANY_ROOM` left out)."""
+    return {w for w in _room_words(text) if w not in _ANY_ROOM}
+
+
 def room_labels(found: Sequence[Mapping[str, Any]]) -> list[tuple[str, list[float]]]:
     """The room labels a design plan prints: short phrases in capitals (1 to 4 words, a room
-    number after them allowed), with a word that could name a room, never a tag or a size."""
-    out: list[tuple[str, list[float]]] = []
+    number after them allowed; a name printed on two lines read as one), with a word that could
+    name a room, never a tag, a size or a word written sideways (a title block's turned text).
+    Symbol-font letters are read as the letters they stand for."""
+    lines: list[tuple[list[str], list[float]]] = []
     for phrase in found:
-        text = " ".join(str(phrase.get("text") or "").split())
-        box = _box(phrase)
+        text, box = _text(phrase), _box(phrase)
         if box is None or not text or text != text.upper() or tags_in(text):
             continue
+        if box[3] - box[1] > box[2] - box[0]:
+            continue  # written sideways
         words = text.split()
         while words and words[-1].isdigit():  # a room number printed after its name
             words.pop()
-        if not 1 <= len(words) <= 4 or not all(_ROOM_WORD.fullmatch(w) for w in words):
+        if 1 <= len(words) <= 4 and all(_ROOM_WORD.fullmatch(w) for w in words):
+            lines.append((words, box))
+    lines.sort(key=lambda line: (line[1][1], line[1][0]))
+    out: list[tuple[str, list[float]]] = []
+    used: set[int] = set()
+    for index, (words, box) in enumerate(lines):
+        if index in used:
             continue
+        words, box = list(words), list(box)
+        for other, (more, below) in enumerate(lines):
+            if other in used or other == index or len(words) + len(more) > 4:
+                continue
+            height = box[3] - box[1]
+            wide = max(box[2] - box[0], below[2] - below[0])
+            middle = abs((box[0] + box[2]) / 2 - (below[0] + below[2]) / 2)
+            if -1.0 <= below[1] - box[3] <= ROOM_LINE_GAP * height and middle <= wide / 2:
+                used.add(other)
+                words += more
+                box = [min(box[0], below[0]), box[1], max(box[2], below[2]), below[3]]
         if _room_words(" ".join(words)):
             out.append((" ".join(words), box))
     return out
@@ -281,70 +546,181 @@ def _nearest(
     return sorted(near, key=lambda found: _gap(found[1], box))
 
 
-def item_room_facts(
-    title: Sequence[str],
-    spots: Sequence[tuple[str, int, Box]],
-    design_pages: Mapping[int, Sequence[Mapping[str, Any]]],
-    item_tags: Collection[str],
-) -> list[str]:
-    """The sheet's description names a room (`title`: its title-block phrases) that the design's
-    plans give to ANOTHER item of the same family, while this item's own tag (`spots`: the page's
-    tag, the design plan page and the tag's box there) sits in a different room: the item number
-    may be wrong (a vendor's wrong number led the reviewers to another design item, 2026-10-31).
-    `item_tags`: the design's item tags (printed on few pages). Only when both sides are found."""
-    rooms = {page: room_labels(found) for page, found in design_pages.items()}
-    lines: list[str] = []
-    for tag, page, box in spots:
-        here = _nearest(box, rooms.get(page, []), ROOM_NEAR_PT)
-        if not here:
+def _room_at(box: Box, rooms: Sequence[tuple[str, list[float]]]) -> tuple[str, float] | None:
+    """The room the tag at `box` is in and its label's distance: the nearest label
+    (`ROOM_NEAR_PT`) when no label of another room is about as near (`ROOM_CLEAR`,
+    `ROOM_SLACK_PT`); else `None`."""
+    near = _nearest(box, rooms, ROOM_NEAR_PT)
+    if not near:
+        return None
+    room, first = near[0]
+    gap = _gap(first, box)
+    bound = gap * ROOM_CLEAR + ROOM_SLACK_PT
+    if any(_gap(b, box) <= bound and _naming(other) != _naming(room) for other, b in near[1:]):
+        return None
+    return room, gap
+
+
+@dataclass(frozen=True, slots=True)
+class _Spot:
+    """Where the design prints an item tag on a plan, and the room label nearest it."""
+
+    tag: str
+    page: int
+    box: Box
+    room: str
+    gap: float
+
+    @property
+    def inside(self) -> bool:
+        """The room's label is right by the tag (`ROOM_IN_PT`): the tag is in that room."""
+        return self.gap <= ROOM_IN_PT
+
+    def where(self) -> str:
+        if self.inside:
+            return f"in {self.room} (design p{self.page})"
+        return f"on design p{self.page}, nearest the room name {self.room}"
+
+
+def _plain_pages(
+    pages: Mapping[int, Sequence[Mapping[str, Any]]],
+) -> dict[int, list[dict[str, Any]]]:
+    return {page: [dict(p, text=_text(p)) for p in found] for page, found in pages.items()}
+
+
+def _design_spots(
+    pages: Mapping[int, Sequence[Mapping[str, Any]]],
+    rooms: Mapping[int, Sequence[tuple[str, list[float]]]],
+    most: int,
+) -> list[_Spot]:
+    """Every item tag the design prints on a plan (at most `most` pages in all: a finish code is
+    printed on most), each with the room it is in (`_room_at`); a tag on an elevation, section or
+    detail, or in no clear room, is left out."""
+    printed: dict[str, list[tuple[int, Box]]] = {}
+    for page, found in sorted(pages.items()):
+        for phrase in found:
+            box = _box(phrase)
+            if box is None:
+                continue
+            for tag in tags_in(str(phrase.get("text") or "")):
+                if len(family_of(tag) or "") >= 2:  # one letter spells a cabinet code (W70)
+                    printed.setdefault(tag, []).append((page, box))
+    out: list[_Spot] = []
+    for tag, where in printed.items():
+        if len({page for page, _b in where}) > most:
             continue
-        here_words = {w for room, _b in here for w in _room_words(room)}
-        family, key = family_of(tag), item_key(tag)
-        for phrase in title:
-            for word in dict.fromkeys(_room_words(phrase)):
-                if word in here_words:
-                    continue  # the sheet names the room its tag is in: as it should be
-                other = _holder(word, rooms, design_pages, item_tags, family, key)
-                if other is None:
-                    continue
-                room, other_tag, other_page = other
-                line = (
-                    f"This sheet is {tag} '{' '.join(phrase.split())[:80]}'. On the design plan "
-                    f"p{page}, {tag} is in {here[0][0]}; the design's {room} holds {other_tag} "
-                    f"(p{other_page}). The item number may be wrong: please check."
-                )
-                if line not in lines:
-                    lines.append(line)
+        for page, at in where:
+            room = _room_at(at, rooms.get(page, []))
+            if room is not None and not view_sheet(pages[page], at):
+                out.append(_Spot(tag, page, at, room[0], room[1]))
+                break
+    return out
+
+
+def _named_gaps(
+    spot: _Spot, named: Collection[str], rooms: Mapping[int, Sequence[tuple[str, list[float]]]]
+) -> list[float]:
+    """How far from the tag the plan it is on prints a label naming one of `named` (points)."""
+    return [_gap(b, spot.box) for room, b in rooms.get(spot.page, []) if _naming(room) & set(named)]
+
+
+def _number(tag: str) -> tuple[int, str, str] | None:
+    """A tag's number, letter and suffix with the top's T left out (`XYZ-301T`: 301, "", "")."""
+    parts = _TAG_PARTS.match(tag)
+    if parts is None:
+        return None
+    return (
+        int(parts.group(2)),
+        _strip_t(parts.group(3) or ""),
+        _strip_t(parts.group(4) or ""),
+    )
+
+
+def room_facts(
+    sheet_tags: Sequence[str],
+    description: str,
+    design_pages: Mapping[int, Sequence[Mapping[str, Any]]],
+    most: int | None = None,
+) -> list[str]:
+    """The sheet's item number against the design's rooms (`sheet_tags`: the sheet's own item
+    tags; `description`: what its description strip or header says the item is). Only when the
+    description names a room the design's plans print, and that is not the room the design puts
+    the tag in:
+
+    - the design's item of ANOTHER family with this number is in the room the sheet names (a
+      vendor's tag took another item's family, 2026-10-31): that item, and where the design puts
+      the sheet's own tag, if anywhere;
+    - else, when the plan that prints the tag also prints the room the sheet names (further than
+      `ROOM_FAR_PT` from the tag): the room the design puts the tag in, and the design's items in
+      the room the sheet names, if any.
+
+    `design_pages`: the design's phrases by page; `most`: an item tag is printed on at most this
+    many pages. Please-checks for the reviewer, never a verdict; a fact only when code read both
+    sides of it."""
+    pages = _plain_pages(design_pages)
+    rooms = {page: room_labels(found) for page, found in pages.items()}
+    known = {w for labels in rooms.values() for room, _b in labels for w in _naming(room)}
+    named = _naming(description) & known
+    if not named or not sheet_tags:
+        return []
+    spots = _design_spots(pages, rooms, most or MAX_ITEM_PAGES)
+    said = " ".join(description.split())[:80]
+    lines: list[str] = []
+    for tag in dict.fromkeys(sheet_tags):
+        number, family = _number(tag), family_of(tag)
+        if number is None:
+            continue
+        own = next((s for s in spots if same_item(s.tag, tag)), None)
+        gaps = _named_gaps(own, named, rooms) if own is not None else []
+        if own is not None and (_naming(own.room) & named or min(gaps, default=1e9) <= ROOM_FAR_PT):
+            continue  # the design puts the tag in (or by) the room the sheet names
+        others = [
+            s
+            for s in spots
+            if family_of(s.tag) != family and _number(s.tag) == number and _naming(s.room) & named
+        ]
+        if others:
+            other = min(others, key=lambda s: (len(s.tag), s.tag))
+            where = (
+                f"which the design prints {own.where()}"
+                if own is not None
+                else "which the design does not print on a plan"
+            )
+            line = (
+                f"This sheet names '{said}'. The design's {other.room} item with this number is "
+                f"{other.tag} (design p{other.page}); this sheet uses {tag}, {where}. The item "
+                "number may be wrong: please check."
+            )
+        elif own is not None and gaps:
+            line = (
+                f"This sheet names '{said}'. The design prints {tag} {own.where()}; the room the sheet "
+                f"names is elsewhere on that plan (its name {round(min(gaps))} points from the tag)."
+            )
+            held = _held(spots, named, tag)
+            if held:
+                line += f" The design's {held[0].room} holds {', '.join(s.tag for s in held)}."
+            line += " The room name or the item number may be wrong: please check."
+        else:
+            continue
+        if line not in lines:
+            lines.append(line)
     return lines[:MAX_FACT_LINES]
 
 
-def _holder(
-    word: str,
-    rooms: Mapping[int, Sequence[tuple[str, list[float]]]],
-    design_pages: Mapping[int, Sequence[Mapping[str, Any]]],
-    item_tags: Collection[str],
-    family: str | None,
-    key: str | None,
-) -> tuple[str, str, int] | None:
-    """The design room named `word` and the item of `family` (another item than `key`) printed
-    nearest it: `(room, tag, page)`, or `None`."""
-    if family is None:
-        return None
-    best: tuple[float, str, str, int] | None = None
-    for page, labels in sorted(rooms.items()):
-        for room, room_box in labels:
-            if word not in _room_words(room):
-                continue
-            for phrase in design_pages.get(page, []):
-                b = _box(phrase)
-                if b is None or _gap(b, room_box) > ROOM_NEAR_PT:
-                    continue
-                for found in tags_in(str(phrase.get("text") or "")):
-                    if found in item_tags and family_of(found) == family and item_key(found) != key:
-                        gap = _gap(b, room_box)
-                        if best is None or gap < best[0]:
-                            best = (gap, room, found, page)
-    return None if best is None else (best[1], best[2], best[3])
+def _held(spots: Sequence[_Spot], named: Collection[str], tag: str) -> list[_Spot]:
+    """The design's items in the room the sheet names (one room, at most `MAX_ROOM_ITEMS`; a top's
+    own tag beside its item's left out), never the sheet's own item."""
+    inside = [s for s in spots if _naming(s.room) & set(named)]
+    if not inside:
+        return []
+    room = _naming(inside[0].room)
+    out: list[_Spot] = []
+    for spot in sorted(inside, key=lambda s: (len(s.tag), s.tag)):
+        if _naming(spot.room) != room or same_item(spot.tag, tag):
+            continue
+        if not any(same_item(spot.tag, kept.tag) for kept in out):
+            out.append(spot)
+    return sorted(out[:MAX_ROOM_ITEMS], key=lambda s: s.tag)
 
 
 # ---- the same item on the other file of a joined shop upload -------------------------------------
@@ -395,15 +771,19 @@ def model_tokens(found: Sequence[Mapping[str, Any]]) -> list[str]:
 
 
 def _largest_sizes(found: Sequence[Mapping[str, Any]]) -> list[str]:
+    return _largest(_text(phrase) for phrase in found)
+
+
+def _largest(texts: Iterable[str]) -> list[str]:
     from app.review.assistant.finding_checks import to_inches
 
     sizes: dict[str, Decimal] = {}
-    for phrase in found:
-        for printed in _INCHES.finditer(str(phrase.get("text") or "")):
-            text = printed.group(0).strip()
-            value = to_inches(text)
+    for text in texts:
+        for printed in _INCHES.finditer(text):
+            size = printed.group(0).strip()
+            value = to_inches(size)
             if value is not None and value > 0:
-                sizes.setdefault(text, value)
+                sizes.setdefault(size, value)
     ranked = sorted(sizes.items(), key=lambda item: -item[1])
     return [text for text, _v in ranked[:MAX_OTHER_SIZES]]
 
@@ -416,17 +796,27 @@ def _source_of(page: int, parts: Sequence[Mapping[str, Any]]) -> str | None:
     return None
 
 
+def _other_family(a: str, b: str) -> bool:
+    """`a` and `b` print one number (`same_item` but for the family) in two families."""
+    return family_of(a) != family_of(b) and _number(a) is not None and _number(a) == _number(b)
+
+
 def other_file_facts(
     context: SetContext,
     page: int,
     parts: Sequence[Mapping[str, Any]],
     size_of: Callable[[int], tuple[float, float] | None] = lambda _page: None,
+    labels_of: Callable[[int], Sequence[Mapping[str, Any]]] = lambda _page: [],
 ) -> list[str]:
     """For a page of a joined shop upload (`parts`: the upload's `joined_from`, each with its
-    `first_page` and `pages`), the pages of the OTHER files that print the same item (`same_item`):
-    each one's page, title words, largest printed sizes, sink and appliance models and seams. Facts
-    for the reviewer to compare (the top's length with the cabinet run, sinks, seams, the item
-    number), never a verdict. `size_of`: a page's size, for its title block."""
+    `first_page` and `pages`), the pages of the OTHER files that print the same item (`same_item`),
+    or the same number in another family when both sheets' descriptions name one room
+    (`sheet_description`: a vendor's tag took another item's family, 2026-10-31): each one's
+    page, title words, largest printed sizes, sink and appliance models and seams. Facts for the
+    reviewer to compare (the top's length with the cabinet run, sinks, seams, the item number),
+    never a verdict. `size_of`: a page's size, for its title block; `labels_of`: a page's
+    dimension labels as code read them (the set pack's `dims.json`), for its sizes when its text prints none
+    (a hand-drawn sheet)."""
     mine_source = _source_of(page, parts)
     if mine_source is None or len(parts) < 2:
         return []
@@ -436,6 +826,7 @@ def other_file_facts(
         for t in context.tags_on(page)
         if family_of(t) not in finish and len(context.tags.get(t, [])) <= MAX_ITEM_PAGES
     ]
+    _tags, described = sheet_description(context.pages.get(page, []))
     lines: list[str] = []
     seen: set[int] = set()
     for other in sorted(context.pages):
@@ -445,22 +836,39 @@ def other_file_facts(
         if other == page or source in (None, mine_source):
             continue
         theirs = context.tags_on(other)
-        match = next(((m, t) for m in mine for t in theirs if same_item(m, t)), None)
-        if match is None:
-            continue
-        seen.add(other)
         found = context.pages.get(other, [])
+        match = next(((m, t) for m in mine for t in theirs if same_item(m, t)), None)
+        link = f"prints {match[1]} (this page: {match[0]})" if match else ""
+        if match is None:
+            _other_tags, their_words = sheet_description(found)
+            shared = sorted(_naming(described) & _naming(their_words))
+            match = next(((m, t) for m in mine for t in theirs if _other_family(m, t)), None)
+            if match is None or not shared:
+                continue
+            link = (
+                f"prints {match[1]}: the same number as this page's {match[0]} in another family, "
+                f"and both sheets name {' '.join(shared)} ('{described[:60]}'; "
+                f"'{their_words[:60]}'). One item under two numbers? Please check which number "
+                "the design gives it"
+            )
+        seen.add(other)
         title = "; ".join(
-            " ".join(str(p.get("text") or "").split())[:60]
+            _text(p)[:60]
             for p in title_block(found, size_of(other))
             if re.search(r"[A-Za-z]{3}", str(p.get("text") or ""))
         )[:240]
-        sizes = ", ".join(_largest_sizes(found)) or "none"
-        models = ", ".join(model_tokens(found)) or "none"
+        sizes = ", ".join(_largest_sizes(found))
+        if not sizes:
+            read = _largest(str(one.get("text") or "") for one in labels_of(other))
+            sizes = f"{', '.join(read)} (code read the drawn numbers)" if read else ""
+        strip = {i for field in sheet_fields(found) for i in field.phrases}
+        # The strip's project number is no model (`SR-100-2`).
+        models = ", ".join(model_tokens([p for i, p in enumerate(found) if i not in strip]))
+        models = models or "none"
         joints = sum(1 for p in found if _SEAM.search(str(p.get("text") or "")))
         lines.append(
-            f"p{other} (from {source}) prints {match[1]} (this page: {match[0]}). "
-            f"Its title block: '{title or 'not read'}'. Largest sizes: {sizes}. "
+            f"p{other} (from {source}) {link}. "
+            f"Its title block: '{title or 'not read'}'. Largest sizes: {sizes or 'none'}. "
             f"Sink or appliance models: {models}. Seams (JOINT) marked: {joints}."
         )
     return lines[:MAX_FACT_LINES]

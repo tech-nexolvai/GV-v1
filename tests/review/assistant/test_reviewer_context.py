@@ -3,8 +3,14 @@
 - GV's reference pictures: read from the folder's manifest, in order, a job's own examples left
   out, at most 16 and a byte cap; a missing or broken folder is no picture, never an error.
 - Which design sheet a tag sits on: a plan, or an elevation, section or detail.
-- The item number against the design's rooms: a fact only when both sides are found.
-- The same item on the other file of a joined upload: its sizes, models, seams and title.
+- The sheet's description strip (DESCRIPTION, ITEM NO.) found by its labels, before the right and
+  bottom strips; a stone shop's header (drawing number, tag, name) when there is no strip.
+- The item number against the design's rooms (symbol-font names read, two-line names joined): the
+  same number in another family in the room the sheet names, or the tag in another room of the
+  same plan; a fact only when both sides are found.
+- The same item on the other file of a joined upload: its sizes (code's reading of the drawn
+  numbers when the text has none), models, seams and title; the same number in another family
+  only when both sheets name one room.
 - The sheet's date against the design's latest revision.
 """
 
@@ -23,12 +29,14 @@ from app.review.assistant import reviewer_context
 from app.review.assistant.reviewer_context import (
     date_fact,
     dates_in,
-    item_room_facts,
     model_tokens,
     other_file_facts,
     reference_pictures,
+    room_facts,
     room_labels,
     same_item,
+    sheet_description,
+    sheet_fields,
     title_block,
     view_sheet,
 )
@@ -154,22 +162,143 @@ def test_room_labels_are_short_capitals_never_tags_sizes_or_notes() -> None:
     assert labels == ["LOUNGE", "PANTRY"]
 
 
-def test_a_title_naming_another_items_room_raises_the_item_number() -> None:
-    spots = [("XYZ-301", 3, (200.0, 300.0, 240.0, 309.0))]
-    items = {"XYZ-301T", "XYZ-302T"}
-    (line,) = item_room_facts(["PANTRY A"], spots, _design_plan(), items)
+def _symbol(text: str) -> str:
+    """`text` in a symbol font that stores each letter as a private-use character."""
+    return "".join(chr(0xF000 + ord(ch)) for ch in text)
+
+
+def test_room_labels_read_a_symbol_font_join_two_lines_and_skip_turned_text() -> None:
+    found = [
+        _at(_symbol("STAFF"), 200, 330),
+        _at(_symbol("LOUNGE"), 200, 341),
+        {"text": "YRTNAP", "box": [600.0, 100.0, 612.0, 160.0]},  # written sideways
+        _at("XYZ-301", 200, 300),
+    ]
+    assert room_labels(found) == [("STAFF LOUNGE", [200.0, 330.0, 240.0, 350.0])]
+
+
+def _design_rooms() -> dict[int, list[dict[str, Any]]]:
+    return {
+        # XYZ-301 in the lounge; the design's pantry item with the same number is ABC-301.
+        1: [
+            _at("XYZ-301", 200, 300),
+            _at("LOUNGE", 200, 340),
+            _at("ABC-301", 900, 300),
+            _at("ABC-301T", 900, 312),
+            _at("PANTRY", 900, 340),
+        ],
+        # XYZ-302 in the staff lounge (its name in a symbol font, on two lines); the same plan
+        # prints the breakfast room far off, with XYZ-305 and a cabinet code in it.
+        2: [
+            _at("XYZ-302", 200, 300),
+            _at(_symbol("STAFF"), 200, 330),
+            _at(_symbol("LOUNGE"), 200, 341),
+            _at("XYZ-305", 900, 300),
+            _at("W70", 960, 300),
+            _at("BREAKFAST", 900, 340),
+        ],
+        # XYZ-303 beside a corridor's name; the meeting room is on another plan only.
+        3: [_at("XYZ-303", 200, 300), _at("CORRIDOR", 200, 420)],
+        4: [_at("MEETING ROOM", 200, 340, 90)],
+    }
+
+
+def test_another_familys_item_with_the_same_number_in_the_sheets_room_is_told() -> None:
+    (line,) = room_facts(["XYZ-301"], "PANTRY B - CABINETS", _design_rooms())
     assert line == (
-        "This sheet is XYZ-301 'PANTRY A'. On the design plan p3, XYZ-301 is in LOUNGE; the "
-        "design's PANTRY holds XYZ-302T (p3). The item number may be wrong: please check."
+        "This sheet names 'PANTRY B - CABINETS'. The design's PANTRY item with this number is "
+        "ABC-301 (design p1); this sheet uses XYZ-301, which the design prints in LOUNGE (design "
+        "p1). The item number may be wrong: please check."
     )
-    # The sheet names its own room, or a room no item of the family is in: nothing to say.
-    assert item_room_facts(["LOUNGE BAR"], spots, _design_plan(), items) == []
-    assert item_room_facts(["STORAGE"], spots, _design_plan(), items) == []
-    # The design prints no room near the tag: never a guess.
-    far = [("XYZ-301", 3, (200.0, 700.0, 240.0, 709.0))]
-    assert item_room_facts(["PANTRY A"], far, _design_plan(), items) == []
-    # The other item is of another family: not this item's number.
-    assert item_room_facts(["PANTRY A"], spots, _design_plan(), {"XYZ-301T"}) == []
+    # A tag the design never prints, with the other family's item in the sheet's room.
+    (line,) = room_facts(["QQ-301"], "PANTRY B", _design_rooms())
+    assert "this sheet uses QQ-301, which the design does not print on a plan" in line
+
+
+def test_a_tag_the_same_plan_puts_in_another_room_is_told() -> None:
+    (line,) = room_facts(["XYZ-302"], "CABINETS @ BREAKFAST AREA", _design_rooms())
+    assert line.startswith(
+        "This sheet names 'CABINETS @ BREAKFAST AREA'. The design prints XYZ-302 in STAFF LOUNGE "
+        "(design p2); the room the sheet names is elsewhere on that plan (its name 661 points "
+        "from the tag)."
+    )
+    assert line.endswith(
+        "The design's BREAKFAST holds XYZ-305. The room name or the item number may be wrong: "
+        "please check."
+    )
+
+
+def test_no_room_fact_without_both_sides() -> None:
+    design = _design_rooms()
+    # The sheet names the tag's own room, or a room the design does not print.
+    assert room_facts(["XYZ-302"], "STAFF LOUNGE CABINETS", design) == []
+    assert room_facts(["XYZ-302"], "GARAGE", design) == []
+    # The room the sheet names is only on another plan, and the tag's nearest name may be the
+    # next room's: never said.
+    assert room_facts(["XYZ-303"], "CABINETS @ MEETING ROOM", design) == []
+    # The room the sheet names is printed near the tag on its plan.
+    near = {1: [_at("XYZ-306", 200, 300), _at("LOUNGE", 200, 330), _at("BREAKFAST", 300, 330)]}
+    near[2] = [_at("BREAKFAST", 900, 900)]
+    assert room_facts(["XYZ-306"], "BREAKFAST", near) == []
+    # No tag, or no description.
+    assert room_facts([], "PANTRY", design) == []
+    assert room_facts(["XYZ-301"], "", design) == []
+
+
+# ---- the sheet's description strip ---------------------------------------------------------------
+
+
+def _vendor_sheet() -> list[dict[str, Any]]:
+    return [
+        _at("MATERIAL", 1000, 60),
+        _at("SPEC", 1060, 60),
+        _at("DESCRIPTION", 460, 700, 70),
+        _at("ITEM NO.", 640, 700, 50),
+        _at("OVERALL SIZE", 730, 700, 70),
+        _at("DATE", 920, 700, 30),
+        _at("CABINETS @", 452, 738, 60),
+        _at("STAFF LOUNGE", 452, 749, 70),
+        _at("XYZ-301", 645, 748, 45),
+        _at("03/01/2026", 910, 748, 60),
+        _at("A notice printed across the whole strip", 30, 760, 1100),
+    ]
+
+
+def test_the_description_strip_is_found_by_its_labels_and_comes_first() -> None:
+    texts = [p["text"] for p in title_block(_vendor_sheet(), (1224.0, 792.0))]
+    assert texts == [
+        "DESCRIPTION: CABINETS @ STAFF LOUNGE",
+        "ITEM NO.: XYZ-301",
+        "OVERALL SIZE",
+        "DATE: 03/01/2026",
+        "MATERIAL",
+        "SPEC",
+        "A notice printed across the whole strip",
+    ]
+    assert sheet_description(_vendor_sheet()) == (["XYZ-301"], "CABINETS @ STAFF LOUNGE")
+    # A value after its label on its line, and one in the label's own phrase.
+    inline = [
+        _at("ITEM #: XYZ-302", 100, 700, 80),
+        _at("ROOM NAME", 300, 700, 60),
+        _at("STAFF LOUNGE", 365, 700, 70),
+    ]
+    assert [(f.label, f.value) for f in sheet_fields(inline)] == [
+        ("ITEM #", "XYZ-302"),
+        ("ROOM NAME", "STAFF LOUNGE"),
+    ]
+
+
+def test_a_revision_table_is_no_strip_and_a_stone_header_describes_the_sheet() -> None:
+    revisions = [_at("DATE", 900, 600, 30), _at("DESCRIPTION", 950, 600, 70)]
+    assert sheet_fields(revisions) == []
+    assert sheet_description(revisions) == ([], "")
+    header = [
+        _at("DRAWING # 3", 40, 23, 60),
+        _at("XYZ-301", 40, 35),
+        _at("Staff Lounge B", 40, 47, 80),
+        _at("PLAN VIEW", 700, 23, 50),
+    ]
+    assert sheet_description(header) == (["XYZ-301"], "Staff Lounge B")
 
 
 # ---- the same item on the other file -------------------------------------------------------------
@@ -220,6 +349,38 @@ def test_the_other_files_page_of_the_same_item_is_listed_with_its_facts() -> Non
     # A page of the same file is never listed, and an upload of one file has no other file.
     assert other_file_facts(context, 2, parts) == []
     assert other_file_facts(context, 1, parts[:1]) == []
+
+
+def test_the_same_number_in_another_family_links_only_when_both_sheets_name_one_room() -> None:
+    pages = {
+        1: [
+            _at("DESCRIPTION", 460, 700, 70),
+            _at("ITEM NO.", 640, 700, 50),
+            _at("STAFF LOUNGE B", 452, 738, 70),
+            _at("XYZ-301", 645, 738, 45),
+        ],
+        2: [
+            _at("DRAWING # 2", 40, 23, 60),
+            _at("ABC-301", 40, 35),
+            _at("Staff Lounge B", 40, 47, 80),
+        ],
+        3: [_at("DRAWING # 3", 40, 23, 60), _at("ABC-301", 40, 35), _at("Pantry", 40, 47)],
+    }
+    parts = [
+        {"name": "Cabinets.pdf", "first_page": 1, "pages": 1},
+        {"name": "Tops.pdf", "first_page": 2, "pages": 2},
+    ]
+    labels = {2: [{"text": '96"'}, {"text": '30 1/2"'}, {"text": "170"}]}
+    context = SetContext("Joined.pdf", lambda page: pages[page], 3)
+    (line,) = other_file_facts(
+        context, 1, parts, lambda _page: (1224.0, 792.0), lambda page: labels.get(page, [])
+    )
+    assert line.startswith(
+        "p2 (from Tops.pdf) prints ABC-301: the same number as this page's XYZ-301 in another "
+        "family, and both sheets name LOUNGE STAFF ('STAFF LOUNGE B'; 'Staff Lounge B'). One item "
+        "under two numbers? Please check which number the design gives it."
+    )
+    assert 'Largest sizes: 96", 30 1/2" (code read the drawn numbers).' in line
 
 
 # ---- the sheet's date ----------------------------------------------------------------------------
