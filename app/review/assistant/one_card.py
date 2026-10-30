@@ -47,21 +47,42 @@ Two more folds (2026-10-25, the client-meeting job), by code facts only, never h
   it (2026-10-26: such a copy had stayed a second card). The card lists every other page in
   `also_on`, so the drawing marks each page's spot and the card names the pages.
 
+One more fold (2026-10-30, a real full check listed 7 vendor strings twice): **one vendor string
+that does not add up, one card**. A page reviewer (or the consistency check) and the reading ledger
+can both report the same vendor dimension string whose parts miss its printed overall; the
+reviewer's copy is a Likely problem, the ledger's a Not compared ("vendor's string not verified on
+the drawing"), so the list said it twice. They fold only when code knows it is one string, all of:
+
+- the ledger's copy (`created_by: "ledger"`, the vendor's own sum) has parts and a printed overall,
+  and code adds the parts up to something else;
+- the other copy is on the same vendor page, in the same round, and its spot and the ledger's
+  overlap by at least half of the smaller one (two strings of one page sit apart);
+- and either it records the same printed overall with parts that do not add up either, one copy's
+  parts all among the other's (one reader missed a part), or it records no parts and no architect
+  side, and its own words name the ledger's overall and every one of the ledger's parts.
+
+The card kept is the more severe (a Wrong, then a Likely problem, then Not compared), then code's
+own (the ledger's or the consistency check's) over the AI's; the other is kept inside it as
+evidence. A Wrong is never folded away (two Wrongs both stay), nothing is made redder, and two
+strings with different overalls, or parts that are not one within the other, are never joined.
+
 Pure code: no I/O, no AI call.
 """
 
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
-from app.review.assistant import proof
+from app.review.assistant import likely_problems, proof
 from app.review.assistant.chat_trust import inch_words
 from app.review.assistant.classification import SAME_ITEM, internal
 from app.review.assistant.decision_resolver import MILLWORK_FAMILIES
+from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.round_reference import round_only
 
 __all__ = ["RANK", "Folded", "OneCard", "compares_architect", "fold", "same_item"]
@@ -492,6 +513,8 @@ def fold(findings: Sequence[Mapping[str, Any]], drawing_needed: Collection[int] 
     _fold_unpaired(live, gone, out)
     gone.update(f.drop for f in out.folded)
     _fold_material(live, gone, out)
+    gone.update(f.drop for f in out.folded)
+    _fold_sums(live, gone, out)
     return out
 
 
@@ -780,3 +803,155 @@ def _earlier_copies(finding: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     given = finding.get(SAME_ITEM)
     copies = given.get("copies") if isinstance(given, Mapping) else None
     return [c for c in copies or [] if isinstance(c, Mapping)]
+
+
+# ---- one vendor string that does not add up, one card ----------------------------------------------
+
+#: Who made the reading ledger's copy of a vendor string (its sum).
+_LEDGER: Final = "ledger"
+#: Code's own checks of a vendor string: kept over the AI's copy of the same string.
+_CODE_SUMS: Final = frozenset({"ledger", "consistency"})
+#: The source of a vendor's own sum (the ledger's, the consistency check's, a reviewer's).
+_VENDOR_SUM: Final = "vendor_arithmetic"
+#: The sources a copy of a vendor string may have: its sum, or a page reviewer's please-check
+#: filed against no reference (GV's rules and limits ask another question).
+_STRING_SOURCES: Final = frozenset({_VENDOR_SUM, "architect"})
+#: Two spots are one string's when they share at least this part of the smaller one: a reviewer's
+#: box is often a tight crop inside the ledger's whole-string box, or the other way round, so the
+#: share of their union (`_SAME_SPOT`) is too strict here.
+_SAME_STRING_SPOT: Final = 0.5
+#: The cards a copy may be on: a Right or a dismissed one says nothing is wrong, and an Ask the
+#: architect asks another question.
+_OPEN_GROUPS: Final = frozenset({"clouded", "likely_problem", "not_compared"})
+#: A size written in a finding's words: a whole number with a fraction, a fraction, a decimal or a
+#: whole number ("48 1/8", "3/4", "50.75", "2").
+_SIZE: Final = re.compile(r"(?<![\d./])(\d+)(?:\s+(\d+)/(\d+)|/(\d+)|(\.\d+))?(?![\d/])")
+
+
+def _sizes_in(text: str) -> frozenset[Decimal]:
+    """Every size the words write, in inches (`_SIZE`; a zero denominator is no size)."""
+    out: set[Decimal] = set()
+    for found in _SIZE.finditer(text):
+        whole, top, bottom, under, decimal = found.groups()
+        if under is not None:  # "3/4"
+            if int(under):
+                out.add(Decimal(int(whole)) / Decimal(int(under)))
+        elif top is not None:  # "48 1/8"
+            if int(bottom):
+                out.add(Decimal(int(whole)) + Decimal(int(top)) / Decimal(int(bottom)))
+        else:  # "50.75", "2"
+            out.add(Decimal(whole + (decimal or "")))
+    return frozenset(out)
+
+
+def _string_sum(finding: Mapping[str, Any]) -> tuple[Decimal, tuple[Decimal, ...]] | None:
+    """(the printed overall, the parts) in inches of a vendor string whose parts code adds up to
+    something other than the overall; else None (no parts, a value code cannot read, or a string
+    that adds up)."""
+    parts, total = finding.get("parts"), finding.get("printed_total")
+    if not isinstance(parts, list) or len(parts) < 2 or total is None:
+        return None
+    whole = to_inches(str(total))
+    read = tuple(value for part in parts if (value := to_inches(str(part))) is not None)
+    if whole is None or len(read) != len(parts):
+        return None
+    return None if sum(read) == whole else (whole, read)
+
+
+def _shared_of_smaller(a: _Box, b: _Box) -> float:
+    """The area two boxes share over the smaller one's (0 to 1; 0 on two sheets)."""
+    if not _same_sheet(a, b):
+        return 0.0
+    w = min(a[4], b[4]) - max(a[2], b[2])
+    h = min(a[5], b[5]) - max(a[3], b[3])
+    smaller = min(_area(a), _area(b))
+    if w <= 0 or h <= 0 or smaller <= 0:
+        return 0.0
+    return (w * h) / smaller
+
+
+def _one_within(a: Sequence[Decimal], b: Sequence[Decimal]) -> bool:
+    """Every part of one string is among the other's (counted): one reader missed a part."""
+    first, second = Counter(a), Counter(b)
+    return not (first - second) or not (second - first)
+
+
+def _said(finding: Mapping[str, Any]) -> str:
+    """The copy's own words: its item, its why, and its please-check mark's words."""
+    mark = finding.get(likely_problems.FIELD)
+    marked = [mark.get("why"), mark.get("words")] if isinstance(mark, Mapping) else []
+    return " ".join(str(t) for t in (finding.get("item"), finding.get("why"), *marked) if t)
+
+
+def _same_string(ledger: Mapping[str, Any], other: Mapping[str, Any]) -> bool:
+    """Code knows `other` reports the ledger's vendor string (see the module)."""
+    found = _string_sum(ledger)
+    if found is None or other.get("page") != ledger.get("page"):
+        return False
+    if not _same_round(ledger, other) or str(other.get("source") or "") not in _STRING_SOURCES:
+        return False
+    if other.get("rule_check_id") or other.get("gv_standard") or proof.gv_limits(other):
+        return False  # GV's rule or limit at that spot asks another question
+    if {proof.proof_group(ledger), proof.proof_group(other)} - _OPEN_GROUPS:
+        return False
+    spot, theirs = _vendor_box(ledger), _vendor_box(other)
+    if spot is None or theirs is None or _shared_of_smaller(spot, theirs) < _SAME_STRING_SPOT:
+        return False  # two strings of one page sit apart
+    total, parts = found
+    their_sum = _string_sum(other)
+    if their_sum is not None:
+        return their_sum[0] == total and _one_within(parts, their_sum[1])
+    if other.get("parts") or other.get("printed_total") or other.get("vs_page") is not None:
+        return False  # its own string adds up, or it compares with a reference page
+    if _inches(other, "architect") is not None:
+        return False
+    sizes = _sizes_in(_said(other))
+    return total in sizes and set(parts) <= sizes
+
+
+def _sum_order(finding: Mapping[str, Any]) -> tuple[Any, ...]:
+    """The most severe copy first, then code's own check over the AI's, then `_order`."""
+    return (
+        RANK.get(proof.proof_group(finding), len(RANK)),
+        0 if finding.get("created_by") in _CODE_SUMS else 1,
+        *_order(finding),
+    )
+
+
+def _fold_sums(live: Sequence[Mapping[str, Any]], gone: set[str], out: OneCard) -> None:
+    """One vendor string that does not add up, one card (see the module)."""
+    ledgers = [
+        f
+        for f in live
+        if str(f["id"]) not in gone
+        and f.get("created_by") == _LEDGER
+        and f.get("source") == _VENDOR_SUM
+        and _string_sum(f) is not None
+    ]
+    for given in sorted(ledgers, key=lambda f: _number(str(f["id"]))):
+        if str(given["id"]) in gone:
+            continue
+        ledger = _current(given, out)
+        copies = [
+            current
+            for f in live
+            if str(f["id"]) not in gone | {str(ledger["id"])}
+            and f.get("created_by") != _LEDGER
+            and _same_string(ledger, current := _current(f, out))
+        ]
+        if not copies:
+            continue
+        keep, *others = sorted([ledger, *copies], key=_sum_order)
+        if any(_fixed(f) or proof.proof_group(f) == "clouded" for f in others):
+            continue  # a Wrong, or a copy that must stay, is never folded away: all stay
+        found = _string_sum(ledger)
+        total = inch_words(found[0]) if found is not None else "its overall"
+        _keep_card(
+            out,
+            keep,
+            others,
+            f"The same vendor dimension string as {keep['id']} (the same page and spot, the "
+            f"printed overall {total}, the same parts not adding up to it): one card, this copy "
+            "kept on it as evidence.",
+        )
+        gone.update(str(o["id"]) for o in others)

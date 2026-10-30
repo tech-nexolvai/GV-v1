@@ -493,3 +493,176 @@ def test_a_drawing_needed_page_keeps_its_folded_items_on_its_coverage(tmp_path: 
     page = next(p for p in book.coverage_map()["pages"] if p["page"] == 2)
     shown = ChatCoveragePageOut.model_validate(page)
     assert shown.folded is not None and shown.folded[0].finding_id == "F1"
+
+
+# ---- one vendor string that does not add up, one card (2026-10-30) ---------------------------------
+
+
+def _spot(x0: float, y0: float, x1: float, y1: float) -> dict[str, Any]:
+    return {"page": 3, "x0": x0, "y0": y0, "x1": x1, "y1": y1, "file": VENDOR_FILE}
+
+
+def _ledger_sum(
+    fid: str, parts: list[str], total: str, spot: dict[str, Any], **changes: Any
+) -> dict[str, Any]:
+    """The reading ledger's copy of a vendor string whose parts miss its printed overall: Not
+    compared ("vendor's string not verified on the drawing")."""
+    finding: dict[str, Any] = {
+        "id": fid,
+        "page": 3,
+        "vs_page": None,
+        "item": "Dimension string (elevation)",
+        "category": "cabinet",
+        "architect": "see the sum",
+        "vendor": total,
+        "status": "different",
+        "why": f"Vendor's parts don't add up: {' + '.join(parts)} is not {total} printed.",
+        "vendor_box": spot,
+        "source": "vendor_arithmetic",
+        "parts": parts,
+        "printed_total": total,
+        "created_by": "ledger",
+        "ledger_ids": ["S1"],
+        "checks": {"arithmetic": "does_not_add_up", "printed_vendor": "match"},
+        "inches": {"architect": None, "vendor": None, "difference": None},
+        "trust_level": "confirmed",
+        "witnesses": ["arithmetic"],
+    }
+    finding.update(changes)
+    return finding
+
+
+def _reviewer_sum(fid: str, words: str, spot: dict[str, Any], **changes: Any) -> dict[str, Any]:
+    """A page reviewer's please-check of a vendor string, filed with no parts and no architect
+    side (the numbers only in its words): a Likely problem."""
+    finding: dict[str, Any] = {
+        "id": fid,
+        "page": 3,
+        "vs_page": None,
+        "item": "Front view: width string conflicts with overall",
+        "category": "other",
+        "architect": "n/a",
+        "vendor": "see the drawing",
+        "status": "check",
+        "why": words,
+        "vendor_box": spot,
+        "source": "architect",
+        "parts": None,
+        "printed_total": None,
+        "created_by": "page_reviewer",
+        "checks": {"printed_architect": "not_a_number", "printed_vendor": "not_a_number"},
+        "inches": {"architect": None, "vendor": None, "difference": None},
+        "trust_level": "to_check",
+        "witnesses": [],
+        "whole_look": {"by": "page_reviewer", "proof": "likely_only", "kind": "completeness"},
+    }
+    finding.update(changes)
+    return finding
+
+
+_FRONT = 'The dimensions 3/4" + 48 1/8" + 2" add up to 50 7/8", but the overall reads 50 3/4".'
+_PLAN = 'The dimensions 24 7/8" + 24" + 2" add up to 50 7/8", but the overall reads 50 3/4".'
+_FRONT_PARTS = ['3/4"', '48 1/8"', '2"']
+
+
+def test_the_string_fixtures_are_the_cards_they_say() -> None:
+    ledger = _ledger_sum("F20", _FRONT_PARTS, '50 3/4"', _spot(100, 300, 460, 340))
+    reviewer = _reviewer_sum("F5", _FRONT, _spot(120, 310, 470, 345))
+    assert proof_group(ledger) == "not_compared"
+    assert proof_group(reviewer) == "likely_problem"
+
+
+def test_a_string_the_page_reviewer_and_the_ledger_both_report_is_one_card() -> None:
+    """A real full check (2026-10-30): the reviewer's Likely problem and the ledger's Not compared
+    copy of one string were two cards. One stays (the Likely problem); the ledger's copy is kept on
+    it as evidence, and nothing changes colour."""
+    ledger = _ledger_sum("F20", _FRONT_PARTS, '50 3/4"', _spot(100, 300, 460, 340))
+    reviewer = _reviewer_sum("F5", _FRONT, _spot(120, 310, 470, 345))
+    final = _apply([reviewer, ledger])
+    assert [f["id"] for f in final] == ["F5"]
+    assert proof_group(final[0]) == "likely_problem"
+    copies = final[0]["same_item"]["copies"]
+    assert [c["finding_id"] for c in copies] == ["F20"]
+    assert copies[0]["group"] == "not_compared"
+    ChatFindingSameItemOut.model_validate(final[0]["same_item"])
+    folded = one_card.fold([reviewer, ledger]).folded
+    assert [(f.keep, f.drop) for f in folded] == [("F5", "F20")]
+    assert "same vendor dimension string" in folded[0].reason
+
+
+def test_a_reviewer_string_that_read_one_more_part_is_the_same_string() -> None:
+    """One reader missed a part (the reviewer read 7 parts, the ledger 6): the same overall, one
+    list of parts within the other, at the same spot, is one string."""
+    parts = ['2 3/4"', '16"', '3/4"', '31 5/8"', '3/4"', '27 1/8"']
+    ledger = _ledger_sum("F20", parts, '79 1/2"', _spot(104, 438, 393, 470))
+    reviewer = _reviewer_sum(
+        "F6",
+        "The parts add to 79 3/4, but the overall reads 79 1/2.",
+        _spot(100, 440, 455, 482),
+        source="vendor_arithmetic",
+        parts=[p.rstrip('"') for p in parts] + ["3/4"],
+        printed_total="79 1/2",
+        status="different",
+    )
+    assert proof_group(reviewer) == "likely_problem"
+    assert [f["id"] for f in _apply([reviewer, ledger])] == ["F6"]
+
+
+def test_two_open_copies_of_one_string_keep_codes_own() -> None:
+    """Both copies Not compared: the ledger's (code's own sum) is the card, the AI's its copy."""
+    ledger = _ledger_sum("F20", _FRONT_PARTS, '50 3/4"', _spot(100, 300, 460, 340))
+    reviewer = _reviewer_sum("F5", _FRONT, _spot(120, 310, 470, 345), whole_look=None)
+    assert proof_group(reviewer) == "not_compared"
+    final = _apply([reviewer, ledger])
+    assert [f["id"] for f in final] == ["F20"]
+    assert [c["finding_id"] for c in final[0]["same_item"]["copies"]] == ["F5"]
+
+
+def test_two_different_strings_are_never_one_card() -> None:
+    """Two strings of one page with the same overall (a plan and a front view), another overall,
+    another page or round, words naming other parts, a spot apart: each stays its own card."""
+    front = _ledger_sum("F20", _FRONT_PARTS, '50 3/4"', _spot(100, 300, 460, 340))
+    # The plan's string at its own spot, with the same overall: two strings.
+    plan = _reviewer_sum("F5", _PLAN, _spot(118, 200, 480, 250))
+    assert len(_apply([plan, front])) == 2
+    # The plan's words at the front view's spot: its parts are not the ledger's.
+    assert len(_apply([{**plan, "vendor_box": _spot(120, 310, 470, 345)}, front])) == 2
+    # The front view's words, but a spot apart from the ledger's.
+    assert len(_apply([_reviewer_sum("F6", _FRONT, _spot(100, 500, 460, 540)), front])) == 2
+    # Another overall, another page, another round: never one string.
+    other_total = _reviewer_sum("F7", _FRONT.replace("50 3/4", "50 1/2"), front["vendor_box"])
+    assert len(_apply([other_total, front])) == 2
+    same = _reviewer_sum("F8", _FRONT, _spot(120, 310, 470, 345))
+    assert len(_apply([{**same, "page": 4}, front])) == 2
+    assert len(_apply([{**same, "round": 1}, {**front, "round": 2}])) == 2
+    # Two lists of parts, neither within the other (the same overall): two strings.
+    apart = {**same, "source": "vendor_arithmetic", "status": "different"}
+    apart.update(parts=["1", "47 7/8", "2"], printed_total="50 3/4")
+    assert len(_apply([apart, front])) == 2
+    # A ledger string that adds up says nothing is wrong: never folded.
+    adds_up = {**front, "id": "F21", "parts": ['3/4"', '48"', '2"']}
+    assert len(_apply([same, adds_up])) == 2
+
+
+def test_a_wrong_is_never_folded_away_by_the_string_fold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A red stays red and stays shown: two red copies both stay; a red ledger copy is the card
+    and the reviewer's Likely problem is kept on it as evidence (nothing turns red)."""
+    ledger = _ledger_sum("F20", _FRONT_PARTS, '50 3/4"', _spot(100, 300, 460, 340))
+    reviewer = _reviewer_sum("F5", _FRONT, _spot(120, 310, 470, 345))
+    real = one_card.proof.proof_group
+    reds: set[str] = set()
+
+    def group(finding: Any) -> Any:
+        return "clouded" if finding.get("id") in reds else real(finding)
+
+    monkeypatch.setattr(one_card.proof, "proof_group", group)
+    reds.update({"F5", "F20"})
+    assert {f["id"] for f in _apply([reviewer, ledger])} == {"F5", "F20"}
+    reds.clear()
+    reds.add("F20")
+    final = _apply([reviewer, ledger])
+    assert [f["id"] for f in final] == ["F20"]
+    assert [c["finding_id"] for c in final[0]["same_item"]["copies"]] == ["F5"]
+    # A copy that must stay (a recorded difference) is never folded away.
+    reds.clear()
+    assert len(_apply([reviewer, {**ledger, "record_id": "R1"}])) == 2
