@@ -217,7 +217,7 @@ def test_an_unrotated_page_is_placed_exactly_as_before(tmp_path: Path) -> None:
 # ---- the front door (#1724) ----------------------------------------------------------------------
 
 
-def _source(path: Path, name: str) -> Any:
+def _source(path: Path, name: str, kind: str = "vendor") -> Any:
     import hashlib
 
     from app.review.assistant.chat_service import UploadSource
@@ -226,7 +226,7 @@ def _source(path: Path, name: str) -> Any:
     return UploadSource(
         name=name,
         sha256=hashlib.sha256(data).hexdigest(),
-        kind="vendor",
+        kind=kind,
         pages=1,
         read=lambda: data,
     )
@@ -240,7 +240,11 @@ def test_the_chat_reads_the_working_copy_and_its_pack_is_made_from_it(tmp_path: 
     turned = _sheet(tmp_path / "turned.pdf", 90, ORIGINS[1])
     upright = _sheet(tmp_path / "upright.pdf", 0, ORIGINS[0])
     workspace = ChatWorkspace(tmp_path / "chat")
-    sources = [_source(turned, "turned.pdf"), _source(upright, "upright.pdf")]
+    # Two files of different sides: kept apart (two vendor files are joined, see below).
+    sources = [
+        _source(turned, "turned.pdf"),
+        _source(upright, "upright.pdf", "the architect's drawings"),
+    ]
     listing, changed = sync_uploads(workspace, sources)
     assert changed
     turned_item, upright_item = listing
@@ -254,7 +258,7 @@ def test_the_chat_reads_the_working_copy_and_its_pack_is_made_from_it(tmp_path: 
     # The upright file is copied byte for byte and keeps its pack's name.
     assert (workspace.uploads / "upright.pdf").read_bytes() == upright.read_bytes()
     assert "working_sha256" not in upright_item
-    old = [{"name": "upright.pdf", "sha256": upright_item["sha256"]}]
+    old = [{"name": "upright.pdf", "sha256": upright_item["sha256"], "kind": upright_item["kind"]}]
     assert set_pack.pack_key([upright_item]) == set_pack.pack_key(old)
     # The turned file's pack is a new one, made from the working copy.
     assert set_pack.pack_key([turned_item]) != set_pack.pack_key(
@@ -267,3 +271,52 @@ def test_the_chat_reads_the_working_copy_and_its_pack_is_made_from_it(tmp_path: 
     found = dim_labels.page_labels(copy, 1, equal_parts=False)
     box = next(label["box"] for label in found.labels if label["text"] == LABEL)
     assert _centre(box) == pytest.approx(_text_centre(90, ORIGINS[1], LABEL_AT, LABEL), abs=NEAR_PT)
+
+
+def test_several_shop_drawing_files_are_one_vendor_file_their_pages_numbered_on(
+    tmp_path: Path,
+) -> None:
+    from app.review.assistant.chat_findings import main_upload
+    from app.review.assistant.chat_service import sync_uploads, uploaded_files_text
+    from app.review.assistant.sandbox import ChatWorkspace
+
+    cabinets = _sheet(tmp_path / "cabinets.pdf", 0, ORIGINS[0])
+    tops = _sheet(tmp_path / "tops.pdf", 90, ORIGINS[1])
+    design = _sheet(tmp_path / "design.pdf", 0, ORIGINS[0])
+    workspace = ChatWorkspace(tmp_path / "chat")
+    shop = "the vendor's shop drawings (a sheet may carry the architect's drawing beside it)"
+    earlier = "the vendor's previous round of shop drawings (round 1)"
+    sources = [
+        _source(cabinets, "cabinets.pdf", shop),
+        _source(design, "design.pdf", "the architect's drawings"),
+        _source(tops, "tops.pdf", shop),
+        _source(design, "round1.pdf", earlier),
+    ]
+    listing, changed = sync_uploads(workspace, sources)
+    assert changed
+    # An earlier round stays its own file (the round-2 check follows it).
+    assert [item["name"] for item in listing] == [
+        "Shop drawings (2 files joined).pdf",
+        "design.pdf",
+        "round1.pdf",
+    ]
+    joined = listing[0]
+    assert main_upload(listing) is joined and joined["pages"] == 2
+    assert [(p["name"], p["first_page"], p["pages"]) for p in joined["joined_from"]] == [
+        ("cabinets.pdf", 1, 1),
+        ("tops.pdf", 2, 1),
+    ]
+    # One PDF, each file's working copy in upload order: the turned page is upright here too.
+    with pikepdf.open(workspace.uploads / joined["name"]) as pdf:
+        assert len(pdf.pages) == 2
+        assert int(pdf.pages[1].obj.get("/Rotate", 0)) == 0
+    assert joined["intake_facts"]["pages"].keys() == {"1", "2"}
+    assert 'joined_from="pages 1-1: cabinets.pdf; pages 2-2: tops.pdf"' in uploaded_files_text(
+        listing, changed=False
+    )
+    # A second sync changes nothing; a changed file makes a new joined file.
+    again, changed_again = sync_uploads(workspace, sources)
+    assert not changed_again and again == listing
+    sources[2] = _source(cabinets, "tops.pdf", shop)
+    other, changed = sync_uploads(workspace, sources)
+    assert changed and other[0]["sha256"] != joined["sha256"]
