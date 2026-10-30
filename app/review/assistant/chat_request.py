@@ -85,6 +85,7 @@ __all__ = [
     "ChatModel",
     "ChoiceRefused",
     "Provider",
+    "cache_shared",
     "call_params",
     "check_choice",
     "full_check_helper_effort",
@@ -479,6 +480,21 @@ def _openrouter_routing() -> dict[str, object]:
         "extraction.slot_reader.openrouter"
     )._routing
     return routing()
+
+
+def cache_shared(provider: str | None, model: ChatModel) -> bool:
+    """Whether calls with the same prefix read each other's prompt cache, so a warm-up call pays
+    for the prefix once: Anthropic's own API, or a Claude model on OpenRouter, which sends every
+    call to one host with no fallbacks (`_openrouter_routing`: Google Vertex's global endpoint).
+    Several hosts would each keep their own cache."""
+    if provider == "anthropic":
+        return True
+    if provider != "openrouter" or model.extra:
+        return False
+    routing = _openrouter_routing()
+    only = routing.get("only")
+    hosts = list(model.hosts) or (list(only) if isinstance(only, list | tuple) else [])
+    return len(hosts) == 1 and routing.get("allow_fallbacks") is False
 
 
 #: Anthropic's tool search (regex), sent first whenever a tool is deferred (`defer_loading`): the
