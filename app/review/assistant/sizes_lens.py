@@ -559,7 +559,10 @@ class _LensRun(_Run):
     def _draft(self, given: Mapping[str, Any], n: int) -> Draft:
         letter = str(given.get("kind") or "")
         if letter == "C" and page_reviewer._SIZE_WORDS.search(str(given.get("wrong") or "")):
-            given = {**given, "kind": "A"}  # a missing or stray dimension is a size here
+            # A missing or stray dimension is a size here; the reviewer's C kept as the second
+            # kind (plan M10), unless it gave another.
+            also = given.get("also_kind")
+            given = {**given, "kind": "A", "also_kind": "C" if also in (None, "", "A") else also}
         elif letter in KIND_OF and letter not in LENS_KINDS:
             raise _Refused(
                 "this reviewer reports sizes only (kind A); the page's other reviewer reports "

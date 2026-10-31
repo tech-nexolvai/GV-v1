@@ -1455,6 +1455,7 @@ def test_a_completeness_issue_naming_a_finish_tag_or_a_supplier_is_filed_by_code
         _issue(wrong="The sink cut-out has no width.", box={"x0": 700, "y0": 300, "x1": 820, "y1": 340}),
     )  # fmt: skip
     assert [d.kind for d in review.drafts] == ["D", "E", "C"]
+    assert [d.also_kind for d in review.drafts] == ["C", "C", None]  # the reviewer's C kept
     kinds = [
         likely_problems.payload(f)["kind"]
         for f in _engine.book.live()
@@ -1473,6 +1474,137 @@ def test_a_sheet_reference_or_a_size_gap_is_never_refiled(tmp_path: Path) -> Non
                box={"x0": 700, "y0": 300, "x1": 820, "y1": 340}),
     )  # fmt: skip
     assert [d.kind for d in review.drafts] == ["C", "C", "E"]
+    assert [d.also_kind for d in review.drafts] == [None, None, "C"]
+
+
+# ---- two kinds (plan M10, 2026-11-01) ----------------------------------------------------------------
+
+
+def test_a_second_kind_is_kept_and_a_bad_one_refused(tmp_path: Path) -> None:
+    engine, review = _after_tiles(
+        tmp_path,
+        _issue(kind="C", also_kind="C"),  # the same as kind
+        _issue(kind="C", also_kind="G"),  # not a kind
+        _issue(kind="C", also_kind="B", wrong="The end panel is drawn with no section."),
+        _issue(kind="B", also_kind="", wrong="No support is drawn under the overhang.",
+               box={"x0": 500, "y0": 300, "x1": 620, "y1": 340}),  # empty: none given
+    )  # fmt: skip
+    refused = [r for r in _results(engine.script.calls[3].messages) if r.startswith("Refused")]
+    assert len(refused) == 2
+    assert "also_kind must differ from kind" in refused[0]
+    assert "also_kind must be one of A, B, C, D, E, F" in refused[1]
+    assert [(d.kind, d.also_kind) for d in review.drafts] == [("C", "B"), ("B", None)]
+
+
+def test_the_words_add_a_second_kind_and_never_replace_the_reviewers(tmp_path: Path) -> None:
+    _engine, review = _after_tiles(
+        tmp_path,
+        _issue(kind="B", wrong="The toe kick panel tagged ST-03 has no support drawn."),
+        _issue(kind="F", wrong="The title block says the bin is by GC/Owner; nothing else does.",
+               box={"x0": 500, "y0": 300, "x1": 620, "y1": 340}),
+        _issue(kind="A", wrong='The ST-03 top is 25 1/2" deep; the plan says 26".',
+               read='25 1/2"', box={"x0": 700, "y0": 300, "x1": 820, "y1": 340}),
+        _issue(kind="D", wrong="The finish table lists PL-07; the elevation says PL-08.",
+               box={"x0": 900, "y0": 300, "x1": 1020, "y1": 340}),
+        _issue(kind="B", also_kind="C", wrong="The ST-03 apron has no support or section.",
+               box={"x0": 300, "y0": 500, "x1": 420, "y1": 540}),
+    )  # fmt: skip
+    assert [(d.kind, d.also_kind) for d in review.drafts] == [
+        ("B", "D"),  # a finish tag named: finish added
+        ("F", "E"),  # a supplier named: scope added
+        ("A", None),  # a size stays a size only
+        ("D", None),  # finish words on a finish issue: nothing to add
+        ("B", "C"),  # the reviewer's own second kind wins
+    ]
+
+
+def test_the_finding_carries_its_second_kind_to_the_screen(tmp_path: Path) -> None:
+    from app.review.assistant.chat_contract import ChatFindingLikelyOut
+
+    engine, _review = _after_tiles(
+        tmp_path,
+        _issue(kind="B", also_kind="D", wrong="The end panel has no support drawn."),
+        _issue(kind="B", wrong="The base has no toe kick drawn.",
+               box={"x0": 500, "y0": 300, "x1": 620, "y1": 340}),
+    )  # fmt: skip
+    live = [f for f in engine.book.live() if f["created_by"] == "page_reviewer"]
+    marks = [f[likely_problems.FIELD] for f in live]
+    assert [(m.get("also_kind"), m.get("also_letter")) for m in marks] == [
+        ("finish", "D"),
+        (None, None),
+    ]
+    shown = [likely_problems.payload(f) or {} for f in live]
+    assert [p.get("also_kind") for p in shown] == ["finish", None]
+    assert "also_kind" not in shown[1]  # nothing new on an item with one kind
+    assert ChatFindingLikelyOut.model_validate(shown[0]).also_kind == "finish"
+    assert ChatFindingLikelyOut.model_validate(shown[1]).also_kind is None
+
+
+def test_a_second_kind_never_makes_a_red(tmp_path: Path) -> None:
+    engine, review = _after_tiles(
+        tmp_path, _issue(kind="B", also_kind="A", claim="wrong", wrong="No support is drawn.")
+    )
+    (draft,) = review.drafts
+    assert (draft.kind, draft.also_kind) == ("B", "A")
+    (found,) = [f for f in engine.book.live() if f["created_by"] == "page_reviewer"]
+    assert likely_problems.likely_only(found)
+
+
+# ---- the sharp whole page (plan M8e, 2026-11-01) -------------------------------------------------------
+
+
+def _whole_page_picture(first: list[dict[str, Any]]) -> tuple[str, Mapping[str, Any]]:
+    """The whole page's crop line and its picture's source, from a first message."""
+    at = next(
+        i
+        for i, block in enumerate(first)
+        if block.get("type") == "text" and "(The whole page)" in str(block.get("text"))
+    )
+    return str(first[at]["text"]), first[at + 1]["source"]
+
+
+@pytest.mark.parametrize(
+    ("sharp", "dpi", "size"),
+    [(False, 94, (1598, 1034)), (True, 139, (2363, 1529))],
+)
+def test_the_sharp_page_setting_draws_the_whole_page_at_the_high_resolution_tier(
+    tmp_path: Path, sharp: bool, dpi: int, size: tuple[int, int]
+) -> None:
+    """This made-up 17 x 11 in sheet: 1,600 px by default; with the setting, as sharp as fits
+    the 4,784-token budget (2,576 px asked: 151 dpi would be 5,423 tokens), so the API never
+    shrinks it, and under the 3,000 px limit of a request with more than 20 pictures."""
+    listing = [{"name": FILE, "pages": 2, "kind": "the vendor's shop drawings"}]
+    options = Options(sharp_page=sharp)
+    _engine, first = _first_message(tmp_path, {}, listing, options=options)
+    line, source = _whole_page_picture(first)
+    assert f"{dpi} dpi, {size[0]} x {size[1]} px" in line
+    assert (source["width"], source["height"]) == size
+    tokens = -(-size[0] // 28) * -(-size[1] // 28)
+    assert tokens <= 4784 and max(size) <= page_reviewer.SHARP_PAGE_EDGE_PX < 3000
+    images = [b["source"] for b in first if b.get("type") == "image"]
+    others = [o for o in images if o is not source]
+    assert len(others) == 9  # the tiles: as before, at most 1,600 px either way
+    assert all(max(o["width"], o["height"]) <= page_reviewer.PICTURE_EDGE_PX for o in others)
+
+
+def test_the_sharp_page_setting_is_off_by_default() -> None:
+    from app.api.assistant_chats import page_reviewer_options
+    from app.config import Settings
+
+    assert Settings.model_fields["assistant_page_reviewer_sharp_page"].default is False
+    assert Options().sharp_page is False
+    settings = SimpleNamespace(
+        assistant_page_reviewer=True,
+        assistant_page_reviewer_per_page_usd=Decimal("1.50"),
+        assistant_page_reviewer_effort="high",
+        assistant_page_reviewer_house_rules=None,
+        assistant_page_reviewer_pictures=None,
+        assistant_separate_verifier=False,
+        assistant_sizes_lens=False,
+        assistant_page_reviewer_sharp_page=True,
+    )
+    on = page_reviewer_options(settings)  # type: ignore[arg-type]
+    assert on is not None and on.sharp_page is True
 
 
 def test_a_fix_keeps_the_whole_view_allowance_it_was_accepted_with(tmp_path: Path) -> None:

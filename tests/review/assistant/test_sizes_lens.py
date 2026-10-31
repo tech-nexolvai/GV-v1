@@ -315,10 +315,11 @@ def test_a_missing_dimension_reported_as_completeness_is_filed_as_a_size(tmp_pat
         tmp_path, [[_text("ok")]], [[_overall_check(kind="C", wrong=wrong)], [_text("ok")]]
     )
     (draft,) = reviews.lenses[2].drafts
-    assert draft.kind == "A"
+    assert draft.kind == "A" and draft.also_kind == "C"  # the reviewer's C kept (plan M10)
     (found,) = engine.book.live()
     mark = found[likely_problems.FIELD]
     assert mark["kind"] == "size" and mark["lens"] == "sizes" and mark["by"] == "page_reviewer"
+    assert mark["also_kind"] == "completeness"
     assert (likely_problems.payload(found) or {})["by"] == "page_reviewer"
     assert proof.proof_group(found) == "likely_problem"  # a please-check, never red
 

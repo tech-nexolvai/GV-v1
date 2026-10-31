@@ -934,6 +934,25 @@ class ChatFindingLikelyOut(BaseModel):
         "mark), the page reviewer, or code's cross-sheet tag check (`set_check`: a tag only one "
         "sheet prints, or tagged differently on the item's other drawing).",
     )
+    also_kind: (
+        Literal[
+            "missing_piece",
+            "extra_piece",
+            "count",
+            "size",
+            "layout",
+            "construction",
+            "completeness",
+            "finish",
+            "scope",
+            "labels",
+        ]
+        | None
+    ) = Field(
+        default=None,
+        description="A second kind the page reviewer's item also is (a missing finish tag is "
+        "completeness and finish); a label only, never what makes an item red.",
+    )
 
 
 class ChatFindingWrongPartOut(BaseModel):

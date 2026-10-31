@@ -2129,6 +2129,30 @@
       "ChatFindingLikelyOut": {
         "description": "What the whole-drawing look or the page reviewer claimed (`likely_problems.payload`): never\nred by itself; a Likely problem until code proves it (the page reviewer's construction,\ncompleteness, material, scope and label items never are).",
         "properties": {
+          "also_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "missing_piece",
+                  "extra_piece",
+                  "count",
+                  "size",
+                  "layout",
+                  "construction",
+                  "completeness",
+                  "finish",
+                  "scope",
+                  "labels"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A second kind the page reviewer's item also is (a missing finish tag is completeness and finish); a label only, never what makes an item red.",
+            "title": "Also Kind"
+          },
           "by": {
             "default": "whole_drawing_look",
             "description": "Who found it: the whole-drawing look (or a code step that lays the same mark), the page reviewer, or code's cross-sheet tag check (`set_check`: a tag only one sheet prints, or tagged differently on the item's other drawing).",

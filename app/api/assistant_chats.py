@@ -1547,6 +1547,7 @@ def page_reviewer_options(settings: Settings) -> PageReviewerOptions | None:
         reference_pictures=settings.assistant_page_reviewer_pictures,
         separate_verifier=settings.assistant_separate_verifier,
         sizes_lens=settings.assistant_sizes_lens,
+        sharp_page=settings.assistant_page_reviewer_sharp_page,
     )
 
 
