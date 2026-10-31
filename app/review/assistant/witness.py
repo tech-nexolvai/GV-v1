@@ -26,7 +26,9 @@ finding only when the parts and the overall are code's own labels of one whole r
 code`: the consistency check's string, or a reading's string code found as its own row); with
 `parts_read: ai` it backs nothing. It may still contradict a finding (a sum that does not add up
 against a "same"): a disagreement only lowers trust. A check without the key (an answer stored
-before it) counts as before.
+before it) counts as before. A please-check of a string the AI typed (status `check`, `parts_read:
+ai`: code could not see its parts as one row, M6 2026-11-01) is AI reading only whatever AI reads
+agree: they checked the printed values, never that the parts are one row.
 
 **The drawn-ink witness (`ocr_ink`, #1531) is not AI, but it is a reading by OCR**: it measured one
 slip in 136 planted wrong values (a hand-lettered `7` read as `1`). So it gives Confirmed only
@@ -207,6 +209,8 @@ def trust_level(checks: Mapping[str, Any], status: object = None) -> str:
     """Confirmed / Likely / To check (see the module's trust rule)."""
     if disagreement(checks, status) is not None:
         return "to_check"
+    if status == "check" and checks.get(PARTS_READ) == "ai":
+        return "to_check"  # a please-check of an AI-typed string: AI reading only (M6)
     found = witnesses(checks, status)
     non_ai = bool(found)
     ai = len(ai_witnesses(checks))
