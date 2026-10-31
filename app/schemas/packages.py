@@ -27,10 +27,10 @@ Verification: `tests/api/test_packages.py`
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Final, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.document import DocumentKind, clean_file_name
 from vocabulary.product_registry import registry
@@ -404,6 +404,25 @@ class PackagePage(BaseModel):
     ordering: str
 
 
+#: The media types an upload may have. A drawing is always a PDF; GV's project schedule (kind
+#: `schedule`: a finish schedule, material legend or item list) may also be a CSV or an .xlsx
+#: workbook (`app/review/assistant/project_schedule.py` reads all three).
+PDF_MEDIA_TYPE: Final = "application/pdf"
+XLSX_MEDIA_TYPE: Final = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+CSV_MEDIA_TYPE: Final = "text/csv"
+MediaType = Literal[
+    "application/pdf",
+    "text/csv",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+]
+MEDIA_TYPE_DESCRIPTION: Final = (
+    "The file's media type, sent as its Content-Type when uploading. A drawing is always "
+    "`application/pdf` (the default); only a `schedule` (GV's finish schedule, material legend or "
+    "item list) may also be a CSV (`text/csv`) or an .xlsx workbook."
+)
+SCHEDULE_ONLY_DETAIL: Final = "Only a project schedule may be a spreadsheet; drawings are PDFs."
+
+
 class DocumentRegistration(BaseModel):
     """A document about to be uploaded: what it is, and the exact bytes it will be.
 
@@ -426,6 +445,13 @@ class DocumentRegistration(BaseModel):
             "these bytes and nothing else."
         ),
     )
+    media_type: MediaType = Field(default=PDF_MEDIA_TYPE, description=MEDIA_TYPE_DESCRIPTION)
+
+    @model_validator(mode="after")
+    def _spreadsheet_only_for_a_schedule(self) -> DocumentRegistration:
+        if self.media_type != PDF_MEDIA_TYPE and self.kind != DocumentKind.SCHEDULE:
+            raise ValueError(SCHEDULE_ONLY_DETAIL)
+        return self
 
 
 class UploadRequest(BaseModel):
@@ -439,6 +465,7 @@ class UploadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     sha256: str = Field(pattern=SHA256_PATTERN, description="The SHA-256 of the new file.")
+    media_type: MediaType = Field(default=PDF_MEDIA_TYPE, description=MEDIA_TYPE_DESCRIPTION)
 
 
 class PresignedUpload(BaseModel):

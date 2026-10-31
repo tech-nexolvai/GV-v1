@@ -1358,6 +1358,14 @@ def opening_blocks(run: Any) -> list[dict[str, Any]]:
     except Exception:  # noqa: BLE001 - the review goes on without questions
         _log.exception("page reviewer p%s: the view questions were not made", review.page)
         return []
+    try:
+        if context.ready(0, run.engine.cancel) and context.project is not None:
+            # Where the page and GV's project schedule differ (`project_schedule`).
+            made += import_module("app.review.assistant.project_schedule").question_list(
+                context.project, context, review.page, len(made) + 1, MAX_QUESTIONS - len(made)
+            )
+    except Exception:  # noqa: BLE001 - the view questions stand without them
+        _log.exception("page reviewer p%s: the schedule's questions were not made", review.page)
     review.questions = made
     if not made:
         return []

@@ -148,6 +148,15 @@
    "unjudged_reds": 0,
    "planted_mistakes": 0,
    "planted_traps": 0
+  },
+  "schedule": {
+   "keyed_cases": 0,
+   "false_reds": 0,
+   "right_reds": 0,
+   "kept_quiet": 0,
+   "unjudged_reds": 0,
+   "planted_mistakes": 0,
+   "planted_traps": 0
   }
  },
  "rules_run": "20261026-013315"

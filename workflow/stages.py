@@ -7318,6 +7318,11 @@ def _declared_inputs(rule: object) -> dict[str, str]:
     return {name: getattr(selector, "source", "?") for name, selector in inputs.items()}
 
 
+#: GV's project schedule (a spreadsheet or a PDF table, `app/review/assistant/project_schedule.py`)
+#: is no drawing: the stages never read it as pages.
+_NOT_A_DRAWING: Final = DocumentKind.SCHEDULE.value
+
+
 def _documents_for(session: Session, package_revision_id: UUID) -> list[tuple[UUID, str]]:
     """Every document version attached to this revision, with the key its bytes live under.
 
@@ -7341,7 +7346,11 @@ def _documents_for(session: Session, package_revision_id: UUID) -> list[tuple[UU
             DocumentVersion,
             DocumentVersion.id == PackageRevisionDocument.document_version_id,
         )
-        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        .join(Document, Document.id == PackageRevisionDocument.document_id)
+        .where(
+            PackageRevisionDocument.package_revision_id == package_revision_id,
+            Document.kind != _NOT_A_DRAWING,
+        )
         .order_by(DocumentVersion.created_at, DocumentVersion.id)
     ).all()
     return [(version_id, storage_key(document_id, sha)) for version_id, document_id, sha in rows]
@@ -7439,7 +7448,11 @@ def _document_records_for(
             DocumentVersion,
             DocumentVersion.id == PackageRevisionDocument.document_version_id,
         )
-        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        .join(Document, Document.id == PackageRevisionDocument.document_id)
+        .where(
+            PackageRevisionDocument.package_revision_id == package_revision_id,
+            Document.kind != _NOT_A_DRAWING,
+        )
         .order_by(DocumentVersion.created_at)
     ).all()
     return [

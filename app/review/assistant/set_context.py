@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
+    from app.review.assistant.project_schedule import ProjectSchedule
     from app.review.assistant.schedule_index import ScheduleIndex
 
 __all__ = [
@@ -179,6 +180,9 @@ class SetContext:
     pdf: Path | None = None
     #: The set's material/finish tables and legend (`schedule_index`), read once in `build`.
     schedule: ScheduleIndex | None = None
+    #: GV's project schedule, when one was uploaded (`project_schedule`, set by
+    #: `page_reviewer.set_context_of`): the should-be values the facts compare the pages with.
+    project: ProjectSchedule | None = None
     _ready: threading.Event = field(default_factory=threading.Event)
     _started: bool = False
     #: Only for `_started`: `lock` is held for the whole read, and a reviewer asking whether the
@@ -455,6 +459,13 @@ class SetContext:
             lines += self.schedule_facts(page)
         except Exception:  # noqa: BLE001 - the other facts stand
             _log.exception("set schedule: the facts of p%s were not made", page)
+        if self.project is not None:
+            try:
+                from app.review.assistant import project_schedule
+
+                lines += project_schedule.facts(self.project, self, page)
+            except Exception:  # noqa: BLE001 - the other facts stand
+                _log.exception("project schedule: the facts of p%s were not made", page)
         if self.notes:
             lines.append('"Who supplies it" notes the set prints, with their pages:')
             ordered = sorted(self.notes.items(), key=lambda item: (-len(item[1]), item[0]))
@@ -874,6 +885,14 @@ def add_to_answer(engine: Any) -> int:
                     engine._show_finding(marked)
                     live.append(marked)
                     added += 1
+    try:
+        # GV's project schedule against the vendor's table rows: code-proved reds, only while
+        # `project_schedule.SHOULD_BE_RED` is on (off until measured).
+        from app.review.assistant import project_schedule
+
+        added += project_schedule.add_reds(engine, context, pages)
+    except Exception:  # noqa: BLE001 - the please-checks stand without them
+        _log.exception("project schedule: its reds were not added")
     # After code's own checks: their duplicate test (`_already`) sees every reviewer card first.
     try:
         folded = fold_repeats(engine, context)

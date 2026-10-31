@@ -1150,8 +1150,10 @@ class ChatFindingOut(BaseModel):
         "gv_review",
         "cross_view",
         "completeness",
+        "project_schedule",
     ] = Field(
-        description="cross_view and completeness are made only by code, from the reading ledger."
+        description="cross_view and completeness are made only by code, from the reading ledger; "
+        "project_schedule only by code, from GV's project schedule (what governs)."
     )
     parts: list[str] | None = None
     printed_total: str | None = None
