@@ -270,6 +270,11 @@ class Settings(BaseSettings):
     # drop a draft or hold a red back, never make one. Paid from the reviewer's own share (no
     # price change). OFF by default, so a measured run can compare the two.
     assistant_separate_verifier: bool = False
+    # The sizes lens (plan "Why not all 50", Phase 3, `sizes_lens`): a sizes-only reviewer after
+    # each page's reviewer, the same tools and gates, on what the page's own money left (the
+    # per-page rate above; the price is unchanged). Only with the page reviewer on. OFF by
+    # default: switched on for a measured run first.
+    assistant_sizes_lens: bool = False
     # The set index (two-file uploads): each page read once by a cheap call (project, set, views),
     # every string checked by code, kept in the set pack; the vendor's drawings are then paired
     # only within their own project, never with a brand prototype. About $0.01-0.02 a page.

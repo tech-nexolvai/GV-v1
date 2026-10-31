@@ -58,7 +58,7 @@ import math
 import re
 import threading
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from importlib import import_module
@@ -887,10 +887,13 @@ def questions(
     ledger: Ledger,
     sisters: Sequence[Makeup] = (),
     elsewhere: Mapping[str, tuple[str, int]] | None = None,
+    kinds: Collection[str] | None = None,
 ) -> list[Question]:
     """The questions for one page, most likely first, at most `MAX_QUESTIONS`, numbered from 1.
     `sisters`: other sheets' sections (`sister_makeups`, the nearest kin first); `elsewhere`: for a
-    finish tag, how another sheet prints it in full and on which page (`full_callouts`)."""
+    finish tag, how another sheet prints it in full and on which page (`full_callouts`); `kinds`:
+    only questions of these kinds (`None`: every kind), chosen before the cap, so a reviewer of one
+    kind (the sizes lens, `sizes_lens`) gets all of that kind's questions."""
     drafts = (
         _tag_questions(ledger)
         + _supplier_questions(ledger)
@@ -902,6 +905,8 @@ def questions(
         + _near_questions(ledger)
         + _missing_questions(ledger)
     )
+    if kinds is not None:
+        drafts = [d for d in drafts if d[3] in kinds]
     drafts.sort(key=lambda d: d[:3])
     out: list[Question] = []
     seen: set[str] = set()

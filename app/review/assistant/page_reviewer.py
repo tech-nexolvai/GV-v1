@@ -91,6 +91,12 @@ never above `MIN_TOKENS` in the review and `MIN_REFLECT_TOKENS` after it, which 
 its first call), so its share is used close to the end and a call is rarely cut off; the review
 always leaves the final report turn the money for its own call.
 
+**The sizes lens** (`sizes_lens`, `GV_ASSISTANT_SIZES_LENS`, off by default; plan Phase 3): a
+second run of this loop per page, for sizes only, after this reviewer and on what the page's cap
+left (`_loop`; the page's money and this reviewer are unchanged). Its items fold with this
+reviewer's (`_likely`, and `_known_item` through `_foreign`); its spend and log are kept apart
+(`Reviews.lenses`).
+
 Off by default (`GV_ASSISTANT_PAGE_REVIEWER`). Verification: `tests/review/assistant/
 test_page_reviewer.py` (made-up pages, a scripted AI; no network, no paid call).
 """
@@ -330,6 +336,9 @@ class Options:
     separate_verifier: bool = False
     """The self-check as its own short conversation after the review (`selfcheck_verifier`, plan
     M7b) instead of inside the reviewer's (off by default, `GV_ASSISTANT_SEPARATE_VERIFIER`)."""
+    sizes_lens: bool = False
+    """A sizes-only reviewer after each page's reviewer, on what the page's money left
+    (`sizes_lens`, `GV_ASSISTANT_SIZES_LENS`; off by default until a measured run)."""
 
 
 # ---- the brief ------------------------------------------------------------------------------------
@@ -1422,6 +1431,9 @@ class PageReview:
     held_back: int = 0
     verifier_dropped: list[dict[str, Any]] = field(default_factory=list)
     verifier_skipped: str | None = None
+    #: `None`: the page's reviewer; "sizes": the sizes lens after it (`sizes_lens`), whose spend
+    #: and log are kept apart (`Reviews.lenses`).
+    lens: str | None = None
 
     # -- coverage --
 
@@ -1635,11 +1647,16 @@ class _Run:
         per_token = max(1e-9, (full - fixed) / MAX_TOKENS)
         hard = engine.settings.message_cap_micros - engine.spent
         limit = self._limit()
-        if self.review.phase == "review":
+        if self.review.phase == "review" and self._keeps_final_turn():
             limit = min(limit, int(self.cap - fixed - MIN_REFLECT_TOKENS * per_token))
         room = min(limit - int(self.agent.spent), hard) - fixed
         tokens = int(min(MAX_TOKENS, room / per_token)) if room > 0 else 0
         return tokens if tokens >= self._floor() else 0
+
+    def _keeps_final_turn(self) -> bool:
+        """The review keeps the final report turn's money (the sizes lens does not: it reports as
+        it finds on what its page left, `sizes_lens`)."""
+        return True
 
     def _floor(self) -> int:
         """The least output allowance a call is made with (tokens): `FLOOR_MARGIN` times the most
@@ -1660,7 +1677,8 @@ class _Run:
             review.nudges += 1
             return review.coverage_note()
         if review.phase == "review":
-            self.reviews.cut_by_money.append(review.page)
+            if review.lens is None:
+                self.reviews.cut_by_money.append(review.page)
             return review.final_turn()
         return None
 
@@ -2969,13 +2987,21 @@ class _Run:
         from app.review.assistant.one_card import same_item
 
         for finding in self.engine.book.live():
-            if finding.get("created_by") == CREATED_BY:
+            if finding.get("created_by") == CREATED_BY and not self._foreign(finding):
                 continue
             if finding.get("status") not in ("different", "check"):
                 continue
             if same_item(probe, finding) is not None:
                 return str(finding["id"])
         return None
+
+    def _foreign(self, finding: Mapping[str, Any]) -> bool:
+        """A page reviewer's item recorded by the other reviewer of its page (the sizes lens's,
+        `sizes_lens`): code's one-card test may take it as the same item; this reviewer's own are
+        never (as before)."""
+        mark = finding.get(likely_problems.FIELD)
+        lens = mark.get("lens") if isinstance(mark, Mapping) else None
+        return lens != self.review.lens
 
     def _recorded(self, raw: Mapping[str, Any], draft: Draft, *, proof: str) -> str:
         from app.review.assistant.sandbox import SandboxRefused
@@ -3297,6 +3323,10 @@ class Reviews:
     reference: list[dict[str, Any]] | None = None
     #: Set when the cache warm-up's call has ended (`prewarm`); `None`: no warm-up this check.
     warm: threading.Event | None = None
+    #: The sizes lens after each page's reviewer (`sizes_lens`), by page, and what each spent:
+    #: kept apart from `pages` and `spent`, logged in its page's row.
+    lenses: dict[int, PageReview] = field(default_factory=dict)
+    lens_spent: dict[int, int] = field(default_factory=dict)
 
     def context_for(
         self, file: str, page_count: int, read: Callable[[int], list[dict[str, Any]]]
@@ -3309,7 +3339,7 @@ class Reviews:
 
     def done(self, review: PageReview, spent: int) -> None:
         with self.lock:
-            self.spent[review.page] = spent
+            (self.spent if review.lens is None else self.lens_spent)[review.page] = spent
 
     def block(self) -> dict[str, Any]:
         """For the run's log: per page, what it looked at, found, kept and spent."""
@@ -3345,9 +3375,20 @@ class Reviews:
                     "context_clears": review.context_clears,
                     **review.knowledge,
                     **view_questions.log_fields(review),
+                    **self._lens_fields(review.page),
                 }
             )
         return {"pages": rows, "cut_by_money": list(self.cut_by_money)}
+
+    def _lens_fields(self, page: int) -> dict[str, Any]:
+        """The sizes lens's fields of a page's row (`sizes_lens.log_fields`); none when it is off."""
+        lens = self.lenses.get(page)
+        if lens is None:
+            return {}
+        fields: dict[str, Any] = import_module("app.review.assistant.sizes_lens").log_fields(
+            lens, self.lens_spent.get(page, 0)
+        )
+        return fields
 
 
 def _verifier_log(review: PageReview) -> dict[str, Any]:
@@ -3484,4 +3525,12 @@ def _loop(
     share: Any,
 ) -> tuple[str, bool, str | None]:
     del share  # its own money: never the helpers' share
-    return _Run(engine, agent, review, reviews, entry, step_index).run()
+    ended = _Run(engine, agent, review, reviews, entry, step_index).run()
+    if review.options.sizes_lens:
+        # The sizes lens on what the page's money left (`sizes_lens`, off by default).
+        lens = import_module("app.review.assistant.sizes_lens")
+        after: tuple[str, bool, str | None] = lens.after(
+            ended, review, reviews, engine, agent, entry, step_index
+        )
+        return after
+    return ended

@@ -1546,6 +1546,7 @@ def page_reviewer_options(settings: Settings) -> PageReviewerOptions | None:
         house_rules=house_rules_text(settings.assistant_page_reviewer_house_rules),
         reference_pictures=settings.assistant_page_reviewer_pictures,
         separate_verifier=settings.assistant_separate_verifier,
+        sizes_lens=settings.assistant_sizes_lens,
     )
 
 
