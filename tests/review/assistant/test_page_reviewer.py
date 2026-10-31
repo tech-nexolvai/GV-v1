@@ -932,6 +932,7 @@ def test_every_call_is_opus_at_high_effort_with_thinking_and_fixed_tools(tmp_pat
             "check_math",
             "report_issue",
             "resolve_finding",
+            "answer_question",
         )
     }
     assert len({c.system for c in calls}) == 1

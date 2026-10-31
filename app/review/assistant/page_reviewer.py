@@ -35,7 +35,11 @@ tokens. Its tools: `view_page`, `zoom` (GV's own zoom: the drawings-only copy, G
    `TIGHT_PT` across or drawn at `CLOSE_DPI` or sharper (`close_look`: an A3 tile is);
 4. the coverage stop-hook: when it ends its turn below `COVERAGE_GOAL` (or with tiles left) it is
    sent on, at most `MAX_NUDGES` times; the same check is sent when its own pass's money is used
-   (`PASS_SHARE`), before any money stop;
+   (`PASS_SHARE`), before any money stop; then, while code's numbered questions are open
+   (`view_questions`: what one view says and another does not, a section's depth parts against
+   its sister sections, in its first message), it is sent on with their numbers, at most
+   `view_questions.MAX_QUESTION_NUDGES` times; each ends as a report_issue naming it or an
+   answer_question "ok" with a reason (2026-11-01, plan M3/M1/M9);
 5. a self-check (reflection) with money kept for it (`REVIEW_SHARE`): each red and each
    low-confidence draft drawn close up by code into the self-check's message (at most
    `MAX_SELFCHECK_ZOOMS`), then kept, fixed or dropped after that picture or a tight zoom near it
@@ -102,7 +106,13 @@ from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
-from app.review.assistant import filler_facts, likely_problems, reviewer_context, title_block
+from app.review.assistant import (
+    filler_facts,
+    likely_problems,
+    reviewer_context,
+    title_block,
+    view_questions,
+)
 from app.review.assistant.set_context import SetContext, family_of, tags_in
 from app.review.assistant.untrusted import fence
 
@@ -328,11 +338,11 @@ How to work
 page. Numbers come from the text layer (on a hand-drawn page, from the sizes code read off the \
 drawing, listed with ids); pictures show what text cannot: what a number dimensions, \
 arrows, grain marks, supports, what is missing.
-- zoom draws any area sharp from the PDF. {tiles_how} \
-zoom tight (under about 300 points a side) on every dimension string, \
-callout and tag. Boxes are in page points, origin top-left.
-- page_lines lists the drawing's vector lines in an area (dimension, extension and edge \
-lines): it shows what a dimension spans. Use check_math for every sum.
+- {tiles_how} zoom tight (under about 300 points a side) on every dimension string, callout \
+and tag.
+- page_lines shows what a dimension spans; check_math adds exactly.
+- Code's numbered questions (Q1, Q2...) in your first message compare this page's views. Settle \
+each: report_issue with question "Qn", or answer_question with a short reason.
 - Compare with the rest of the set from the facts in your first message (read another page only \
 when a fact points there): a part tagged differently than on other sheets (D), something other \
 sheets mark by the GC, owner or others left unsaid here (E), a size that differs from the item's \
@@ -617,7 +627,7 @@ REPORT_ISSUE: Final[Mapping[str, Any]] = {
         "type": "object",
         "additionalProperties": False,
         "required": _ISSUE_REQUIRED,
-        "properties": dict(_ISSUE_FIELDS),
+        "properties": {**_ISSUE_FIELDS, "question": view_questions.QUESTION_FIELD},
     },
 }
 RESOLVE_FINDING: Final[Mapping[str, Any]] = {
@@ -651,6 +661,7 @@ TOOLS: Final = (
     CHECK_MATH,
     REPORT_ISSUE,
     RESOLVE_FINDING,
+    view_questions.ANSWER_QUESTION,
 )
 
 # ---- the page's geometry (pure code) --------------------------------------------------------------
@@ -1385,6 +1396,11 @@ class PageReview:
     #: What code's knowledge facts gave its first message, for the run's log (`filler_facts`,
     #: `title_block`: filler_facts, title_cells, title_mismatches).
     knowledge: dict[str, Any] = field(default_factory=dict)
+    #: Code's questions in its first message (`view_questions`), how each was settled ("issue" or
+    #: "ok", by its label Qn), and the stop-hook's sends while some were open.
+    questions: list[Any] = field(default_factory=list)
+    answers: dict[str, str] = field(default_factory=dict)
+    question_nudges: int = 0
 
     # -- coverage --
 
@@ -1424,6 +1440,7 @@ class PageReview:
             + (f" Tiles not yet zoomed: {self.tiles_left()}." if self.tiles_left() else "")
             + " First report with report_issue anything you have found and not yet reported. "
             "Then look at the items not yet seen, reporting as you go, and finish."
+            + view_questions.still_open(self)
         )
 
     def stop_hook(self) -> str | None:
@@ -1443,9 +1460,15 @@ class PageReview:
                 problems.append(f"Tiles not yet zoomed: {left}.")
             if problems and self.nudges < MAX_NUDGES:
                 self.nudges += 1
-                return " ".join(problems) + (
-                    " Continue with these, report any issue you find, then finish."
+                return (
+                    " ".join(problems)
+                    + (" Continue with these, report any issue you find, then finish.")
+                    + view_questions.still_open(self)
                 )
+            # Code's questions keep it looking while some are open (plan M3/M1/M9, 2026-11-01).
+            asked = view_questions.nudge(self)
+            if asked is not None:
+                return asked
             return self.begin_reflection("")
         live = [d for d in self.drafts if d.status == "draft"]
         if live and self.reflect_nudges < MAX_REFLECT_NUDGES:
@@ -1886,6 +1909,7 @@ class _Run:
                     "check):\n" + fence(strings, "dimension_strings"),
                 }
             )
+        content += view_questions.opening_blocks(self)
         if review.tiles_in_opening and not review.tiles_left():
             start = (
                 "The nine tiles are above, drawn sharp. Zoom tight on every dimension string, "
@@ -2391,9 +2415,12 @@ class _Run:
             reported = self._report(given)
             for draft in review.drafts[before:]:
                 draft.zooms_at = len(review.zooms)
+            view_questions.mark_reported(review, given)
             return reported
         if name == "resolve_finding":
             return self._resolve(given)
+        if name == "answer_question":
+            return view_questions.answer(review, given)
         raise _Refused(f"there is no tool {name!r}")
 
     def _room_for(self, count: int) -> None:
@@ -3278,6 +3305,7 @@ class Reviews:
                     "code_zooms_for_selfcheck": review.code_zooms,
                     "context_clears": review.context_clears,
                     **review.knowledge,
+                    **view_questions.log_fields(review),
                 }
             )
         return {"pages": rows, "cut_by_money": list(self.cut_by_money)}
