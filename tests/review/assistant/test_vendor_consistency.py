@@ -1298,18 +1298,40 @@ def test_a_reading_whose_parts_are_a_whole_row_of_codes_labels_is_kept_as_codes(
     assert judged.complete == ("F7",) and judged.dropped == {}
 
 
-def test_a_row_code_cannot_see_whole_makes_no_card() -> None:
+def test_a_row_code_sees_is_incomplete_makes_no_card() -> None:
     """A part left out of a row code reads (the parts stop short of the overall's end), a part
-    no label of code's prints, and an overall code has no label of: each dropped, with why."""
+    no label of code's prints while the run prints another part the list leaves out, parts that
+    miss the overall by a whole part or more, and a part that is not a size: each dropped, with
+    why, never a please-check."""
     labels = _row_result(_OVERALL, *_ROW)
     short = vc.judge_rows([_string_at_overall(['20 7/8"'])], labels)
-    assert "stop short" in short.dropped["F7"]
+    assert "stop short" in short.dropped["F7"] and short.unproved == {}
     unknown = vc.judge_rows([_string_at_overall(['20 7/8"', '9 1/8"'])], labels)
     assert "no row of its own labels printing exactly these parts" in unknown.dropped["F7"]
-    no_overall = vc.judge_rows([_string_at_overall(['20 7/8"', '9"'])], _row_result(*_ROW))
-    assert 'no label of the 30" overall' in no_overall.dropped["F7"]
+    assert '(the drawing also prints 9" along that run), so the reading left a part out' in (
+        unknown.dropped["F7"]
+    )
+    assert unknown.unproved == {}
+    # 2" + 3/4" against 30": 27 1/4" off, more than any part read (no label of the overall).
+    grouped = vc.judge_rows([_string_at_overall(['2"', '3/4"'])], _row_result(*_ROW))
+    assert "as much as a whole part or more" in grouped.dropped["F7"]
+    assert grouped.unproved == {}
     unread = vc.judge_rows([_string_at_overall(['20 7/8"', "nine"])], labels)
-    assert "not one size code reads" in unread.dropped["F7"]
+    assert "not one size code reads" in unread.dropped["F7"] and unread.unproved == {}
+
+
+def test_a_row_code_cannot_see_is_a_please_check_with_codes_reason() -> None:
+    """M6 (Anant, 2026-11-01): an overall code has no label of at the spot, or no row of code's
+    labels printing the parts (and nothing else printed along the run): code cannot see the row,
+    so the string is kept as a please-check with what code could not confirm, never dropped."""
+    no_overall = vc.judge_rows([_string_at_overall(['20 7/8"', '9"'])], _row_result(*_ROW))
+    assert no_overall.dropped == {} and no_overall.complete == ()
+    why = no_overall.unproved["F7"]
+    assert why.startswith("Code could not confirm these parts form one string on the drawing")
+    assert 'no label of the 30" overall' in why and "please check" in why
+    no_row = vc.judge_rows([_string_at_overall(['20 7/8"', '9"'])], _row_result(_OVERALL))
+    assert no_row.dropped == {}
+    assert "no row of its own labels printing exactly these parts" in no_row.unproved["F7"]
 
 
 def test_strings_code_judges_another_way_are_left_alone() -> None:
@@ -1342,3 +1364,155 @@ def test_the_hook_marks_a_whole_rows_parts_as_codes(monkeypatch: pytest.MonkeyPa
     assert kept["parts_read"] == "code" and kept["checks"]["parts_read"] == "code"
     assert kept["witnesses"] == ["arithmetic"] and kept["trust_level"] == "confirmed"
     assert [f["id"] for f in engine.shown] == ["F7"]
+
+
+# ---- a string code cannot see as one row is a please-check (M6, Anant 2026-11-01) ---------------
+
+
+class _LiveBook(_FullBook):
+    """The book as the engine's: code's own item is live once added."""
+
+    def add_code_finding(self, given: dict[str, Any], *, created_by: str) -> dict[str, Any]:
+        added = super().add_code_finding(given, created_by=created_by)
+        self._live.append(added)
+        return added
+
+
+def _hook(
+    monkeypatch: pytest.MonkeyPatch, result: vc.ConsistencyResult, *strings: dict[str, Any]
+) -> tuple[_Engine, list[tuple[str, str]]]:
+    monkeypatch.setattr(vc, "check_pack", lambda folder, uploads, **_: result)
+    engine = _Engine("full_check", [])
+    engine.book = _LiveBook(list(strings))
+    dropped: list[tuple[str, str]] = []
+    engine._show_dropped = lambda finding_id, reason: dropped.append((finding_id, reason))  # type: ignore[attr-defined]
+    vc.add_to_answer(engine)
+    return engine, dropped
+
+
+def test_the_hook_keeps_a_row_code_cannot_see_as_a_please_check_never_red(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reading's string whose overall code has no label of (a hand-drawn row): a Likely problem
+    (status check, never Wrong, never clouded), code's reason as its why, AI reading only even with
+    two AI reads agreeing; the page reviewer's please-check words stay."""
+    from app.review.assistant import proof
+    from app.review.assistant.chat_trust import cloud_kind
+
+    typed = _string_at_overall(['20 7/8"', '9"'])
+    typed["checks"] = {
+        "arithmetic": "does_not_add_up",
+        "parts_read": "ai",
+        "critic": "passed",
+        "second_read": "agrees",
+    }
+    typed["why"] = "The parts add up to 29 7/8 against 30. (page review)"
+    typed["whole_look"] = {
+        "by": "page_reviewer",
+        "proof": "labels",
+        "kind": "size",
+        "words": "Please check and confirm: Dimension string (elevation): the parts add up to 29 7/8",
+    }
+    engine, dropped = _hook(monkeypatch, _row_result(*_ROW), typed)
+    assert dropped == []
+    (kept,) = engine.book.live()
+    assert kept["status"] == "check" and kept["source"] == "vendor_arithmetic"
+    assert kept["why"].startswith("Code could not confirm these parts form one string")
+    assert kept["why"].endswith("The reading: The parts add up to 29 7/8 against 30. (page review)")
+    mark = kept["whole_look"]
+    assert mark["proof"] == "likely_only" and mark["by"] == "page_reviewer"
+    assert mark["why"].startswith("Code could not confirm") and 'the 30" overall' in mark["why"]
+    assert mark["words"] == typed["whole_look"]["words"]
+    assert kept["trust_level"] == "to_check" and kept["evidence_kind"] == "inferred"
+    assert "arithmetic" not in kept["witnesses"]
+    assert proof.proof_group(kept) == "likely_problem" and cloud_kind(kept) == "check"
+    assert not proof.proved_wrong(kept)
+    assert [f["id"] for f in engine.shown] == ["F7"]
+
+
+def test_a_ledger_string_code_cannot_see_gets_codes_please_check_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, _dropped = _hook(
+        monkeypatch, _row_result(_OVERALL), _string_at_overall(['20 7/8"', '9"'])
+    )
+    (kept,) = engine.book.live()
+    mark = kept["whole_look"]
+    assert mark["by"] == "whole_drawing_look" and mark["kind"] == "size"
+    assert mark["words"] == (
+        "Please check and confirm: Dimension string (elevation): the parts read here "
+        '(20 7/8" + 9" = 29 7/8") do not add up to the 30" printed.'
+    )
+
+
+def test_the_hook_still_drops_strings_code_sees_are_incomplete_or_add_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Code proved the reading wrong: the string it measured adds up (another chain grouped in),
+    or the parts' lines stop short of the overall's ends (a part left out). Both stay dropped,
+    never a please-check."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    adds_up = _check(tmp_path / "a", _sheet_two_chains())
+    engine, dropped = _hook(monkeypatch, adds_up, _ledger_string(['20"', '25"']))
+    assert [i for i, _r in dropped] == ["F7"] and "it adds up" in dropped[0][1]
+    assert engine.book.live() == []
+    short = _check(tmp_path / "b", _sheet_middle_unread())
+    string = _ledger_string(['10"', '10"'], vendor_box=_spot_of(short, '60"'))
+    engine, dropped = _hook(monkeypatch, short, string)
+    assert [i for i, _r in dropped] == ["F7"] and "stop short" in dropped[0][1]
+    assert engine.book.live() == []
+
+
+def test_a_whole_row_string_stays_a_wrong_beside_a_please_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Code's proved string is unchanged (Wrong, its parts code's); the unseeable one on another
+    page becomes the please-check."""
+    whole = _string_at_overall(['20 7/8"', '9"'])
+    other = {**_string_at_overall(['20 7/8"', '9"']), "id": "F8", "page": 2}
+    other["vendor_box"] = {**other["vendor_box"], "page": 2}
+    engine, dropped = _hook(monkeypatch, _row_result(_OVERALL, *_ROW), whole, other)
+    assert dropped == []
+    by_id = {f["id"]: f for f in engine.book.live()}
+    assert by_id["F7"]["status"] == "different" and by_id["F7"]["parts_read"] == "code"
+    assert "whole_look" not in by_id["F7"]
+    assert by_id["F8"]["status"] == "check"
+    assert by_id["F8"]["whole_look"]["proof"] == "likely_only"
+
+
+def test_one_please_check_per_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two readings of the same unseeable string (same page, overall and spot): one please-check;
+    the other is dropped as its copy. A string already a card is never repeated either."""
+    first = _string_at_overall(['20 7/8"', '9"'])
+    second = {**_string_at_overall(['20 3/4"', '9"']), "id": "F8"}
+    engine, dropped = _hook(monkeypatch, _row_result(*_ROW), first, second)
+    assert [f["id"] for f in engine.book.live()] == ["F7"]
+    assert dropped == [
+        ("F8", "The reading's sum is not shown again: F7 is already a card of the same string.")
+    ]
+    elsewhere = {**second, "vendor_box": {**second["vendor_box"], "x0": 400.0, "x1": 410.0}}
+    engine, dropped = _hook(monkeypatch, _row_result(*_ROW), first, elsewhere)
+    assert dropped == [] and {f["status"] for f in engine.book.live()} == {"check"}
+
+
+def test_codes_own_item_of_the_string_is_added_and_replaces_the_please_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Code's own item of the same overall is never hidden by the reading's string about to be a
+    please-check; the please-check is then dropped as its copy."""
+    own = {
+        "page": 1,
+        "source": "vendor_arithmetic",
+        "architect": '29 7/8"',
+        "vendor": '30"',
+        "printed_total": '30"',
+        "status": "different",
+    }
+    result = vc.ConsistencyResult(findings=[own], page_labels={(FILE, 1): list(_ROW)})
+    engine, dropped = _hook(monkeypatch, result, _string_at_overall(['20 7/8"', '9"']))
+    assert [(g["printed_total"], by) for g, by in engine.book.added] == [('30"', "consistency")]
+    assert [f["id"] for f in engine.book.live()] == ["F1"]
+    assert dropped == [
+        ("F7", "The reading's sum is not shown again: F1 is already a card of the same string.")
+    ]

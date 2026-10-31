@@ -114,6 +114,21 @@ def test_codes_sum_of_parts_the_ai_typed_is_no_witness() -> None:
     assert witness.disagreement(typed, "same") == "code's arithmetic disagrees"
 
 
+def test_a_please_check_of_a_string_the_ai_typed_is_ai_reading_only() -> None:
+    """M6 (2026-11-01): a string code cannot see as one row is a please-check (status `check`)
+    whose parts the AI typed: AI reading only, however many AI reads agree (they checked the
+    printed values, not that the parts are one row). Not a disagreement: it still scores as an
+    AI reading, never 0. The same AI reads on a Wrong, or on parts code read, count as before."""
+    typed = _checks(
+        arithmetic="does_not_add_up", parts_read="ai", critic="passed", second_read="agrees"
+    )
+    assert witness.trust_level(typed, "check") == "to_check"
+    assert witness.disagreement(typed, "check") is None
+    assert witness.evidence_kind(typed, "check") == "inferred"
+    assert witness.trust_level(typed, "different") == "likely"
+    assert witness.trust_level({**typed, "parts_read": "code"}, "check") == "confirmed"
+
+
 def test_pen_strokes_are_neutral() -> None:
     """`no_text` neither backs nor contradicts: two AI reads stay likely, a rule still confirms."""
     pen = {"printed_architect": "no_text", "printed_vendor": "no_text"}
