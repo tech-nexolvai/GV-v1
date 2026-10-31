@@ -986,3 +986,145 @@ def test_a_line_crossing_an_eq_chain_cuts_no_part(tmp_path: Path) -> None:
     parts = [label for label in _vendor_labels(tmp_path, body) if label.get("derived")]
     assert [p["inches"] for p in parts] == ["18", "18"]
     assert [p["dim_line"][1][0] for p in parts] == [360, 420]
+
+
+# ---- a leader crossing a dimension line; a small dimension's line through its text (2026-11-01) --
+
+
+def _ticked(x0: float, x1: float, y: float, reach: float = 50) -> bytes:
+    """A horizontal dimension line at `y` (PDF space) with a slash tick and an extension line at
+    each end."""
+    body = _dimension(x0, x1, y, reach)
+    for x in (x0, x1):
+        body += _line(x - 1.5, y - 1.5, x + 1.5, y + 1.5)
+    return body
+
+
+def test_a_leader_crossing_a_dimension_line_does_not_cut_it(tmp_path: Path) -> None:
+    # A 30" (4 points to the inch) whose line a callout's leader crosses with no tick, left of
+    # the text: the line runs from tick to tick, not from the leader.
+    body = _ticked(300, 420, 300) + _text(370, 303, '30"')
+    body += _line(330, 270, 330, 340)  # the leader, through the line
+    path = tmp_path / "leader.pdf"
+    path.write_bytes(_pdf([body]))
+    (label,) = dl.page_labels(path, 1, HALVES).labels
+    assert label["dim_line"] == [[300.0, 100.0], [420.0, 100.0]]
+    assert label["span_pt"] == 120.0
+
+
+def _flat(
+    x0: float, y0: float, x1: float, y1: float
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    return ((x0, y0), (x1, y1))
+
+
+def _ticks_at(*xs: float, y: float) -> list[Any]:
+    return [_flat(x - 1.2, y + 1.2, x + 1.2, y - 1.2) for x in xs]
+
+
+#: A label's text over a line at y 100, from x 360 to 380 (shown points, origin top-left).
+_TEXT_BOX = (360.0, 91.0, 380.0, 99.0)
+
+
+def _line_work(*, ticks: Sequence[float], crossing: Any) -> list[Any]:
+    segments: list[Any] = [_flat(298.5, 100, 421.5, 100)]
+    segments += [_flat(x, 97, x, 150) for x in (300, 420)]  # extension lines
+    segments += _ticks_at(*ticks, y=100)
+    segments.append(crossing)
+    return segments
+
+
+def test_a_crossing_cuts_the_line_where_the_drawing_marks_an_end_or_marks_none() -> None:
+    leader = _flat(330, 60, 330, 140)
+    # Ticked at both ends, none at the crossing: joined over.
+    found = dl.dimension_line(_TEXT_BOX, "h", _line_work(ticks=(300, 420), crossing=leader), 8)
+    assert found is not None and found["dim_line"] == [[300.0, 100.0], [420.0, 100.0]]
+    # A tick where it crosses: a chain's joint, the line ends there.
+    found = dl.dimension_line(_TEXT_BOX, "h", _line_work(ticks=(300, 330, 420), crossing=leader), 8)
+    assert found is not None and found["dim_line"] == [[330.0, 100.0], [420.0, 100.0]]
+    # No ticks anywhere: nothing tells an end from a crossing, the cut stays.
+    found = dl.dimension_line(_TEXT_BOX, "h", _line_work(ticks=(), crossing=leader), 8)
+    assert found is not None and found["dim_line"] == [[330.0, 100.0], [420.0, 100.0]]
+    # An extension line ending on it (touching, not crossing): the cut stays.
+    touching = _flat(330, 100, 330, 150)
+    found = dl.dimension_line(_TEXT_BOX, "h", _line_work(ticks=(300, 420), crossing=touching), 8)
+    assert found is not None and found["dim_line"] == [[330.0, 100.0], [420.0, 100.0]]
+
+
+def _scaled(value: int, x0: float, row: float, side: str = "vendor") -> dict[str, Any]:
+    """A label drawn to 4 points to the inch, its line from `x0`."""
+    return {
+        "id": "",
+        "text": f'{value}"',
+        "inches": str(value),
+        "box": [x0, row - 10, x0 + 4 * value, row - 2],
+        "side": side,
+        "orientation": "h",
+        "route": "text",
+        "dim_line": [[x0, row], [x0 + 4 * value, row]],
+        "extension": None,
+        "span_pt": 4.0 * value,
+    }
+
+
+def test_a_joined_line_off_its_drawing_s_scale_goes_back_to_the_cut_one() -> None:
+    labels = [_scaled(12, 100, 300), _scaled(24, 100, 320), _scaled(36, 100, 340)]
+    joined = _scaled(10, 100, 360)
+    joined.update(dim_line=[[100, 360], [160, 360]], span_pt=60.0)  # 6 to the inch: off
+    cut = {"dim_line": [[120, 360], [160, 360]], "extension": [None, None], "span_pt": 40.0}
+    lines: list[dict[str, Any] | None] = [None, None, None, {"_unjoined": cut}]
+    dl._joins_on_scale([*labels, joined], lines)
+    assert joined["dim_line"] == [[120, 360], [160, 360]] and joined["span_pt"] == 40.0
+    # On its scale it stays joined.
+    joined.update(dim_line=[[100, 360], [140, 360]], span_pt=40.0)
+    cut = {"dim_line": [[120, 360], [140, 360]], "extension": [None, None], "span_pt": 20.0}
+    dl._joins_on_scale([*labels, joined], [None, None, None, {"_unjoined": cut}])
+    assert joined["span_pt"] == 40.0
+
+
+def _small_label(box: list[float]) -> dict[str, Any]:
+    return {
+        "id": "",
+        "text": "20 [3/4]",
+        "inches": "0.75",
+        "box": box,
+        "side": "vendor",
+        "orientation": "h",
+        "route": "text",
+        "dim_line": None,
+        "extension": None,
+        "span_pt": None,
+    }
+
+
+def test_a_small_dimension_s_line_through_its_own_text_is_its_line() -> None:
+    # Millimetres over inches, the 3/4"'s 3-point line between the two rows, its extension lines
+    # running through the text down to the part (4 points to the inch).
+    labels = [_scaled(12, 100, 300), _scaled(24, 100, 320), _scaled(36, 100, 340)]
+    small = _small_label([500.0, 190.0, 516.0, 206.0])
+    segments: list[Any] = [_flat(506, 198, 509, 198), _flat(506, 192, 506, 215)]
+    segments.append(_flat(509, 192, 509, 215))
+    dl._short_lines([*labels, small], segments)
+    assert small["dim_line"] == [[506.0, 198.0], [509.0, 198.0]]
+    assert small["span_pt"] == 3.0
+    assert small["extension"] == [
+        [[506.0, 215.0], [506.0, 198.0]],
+        [[509.0, 215.0], [509.0, 198.0]],
+    ]
+
+
+def test_a_line_through_a_small_label_needs_its_length_one_line_and_extension_lines() -> None:
+    labels = [_scaled(12, 100, 300), _scaled(24, 100, 320), _scaled(36, 100, 340)]
+    ends = [_flat(506, 192, 506, 215), _flat(509, 192, 509, 215)]
+    # Not drawn to its value (6 points for 3/4" at 4 to the inch).
+    small = _small_label([500.0, 190.0, 516.0, 206.0])
+    dl._short_lines([*labels, small], [_flat(506, 198, 512, 198), *ends])
+    assert small["dim_line"] is None
+    # Two such lines through it: which is its own is not known.
+    small = _small_label([500.0, 190.0, 516.0, 206.0])
+    dl._short_lines([*labels, small], [_flat(506, 198, 509, 198), _flat(506, 194, 509, 194), *ends])
+    assert small["dim_line"] is None
+    # No extension lines at its ends.
+    small = _small_label([500.0, 190.0, 516.0, 206.0])
+    dl._short_lines([*labels, small], [_flat(506, 198, 509, 198)])
+    assert small["dim_line"] is None

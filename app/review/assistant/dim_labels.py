@@ -751,6 +751,80 @@ def _crosses(a: float, b: float, y: float) -> bool:
     return low <= y - margin and high >= y + margin
 
 
+#: A cut is marked as a dimension's end when a slash tick or an arrowhead's tip lies this close to
+#: it along the line (points).
+_MARK_AT_CUT_PT: Final = 1.0
+#: A line crossing a dimension line (a leader, another drawing's line) runs at least this far past
+#: it on both sides (points); a line merely touching it (an extension line's end) does not.
+_CROSSING_PT: Final = 1.0
+#: The dimension line runs on through a crossing: its pieces meet there within this (points).
+_THROUGH_GAP_PT: Final = 1.0
+
+
+def _across_crossings(
+    y: float,
+    cx: float,
+    cuts: Sequence[float],
+    pieces: Sequence[tuple[float, float]],
+    segments: Sequence[Segment],
+    font: float,
+) -> list[float]:
+    """The text route's cuts of the dimension line at `y` with the crossings it runs through put
+    back together (2026-11-01: a toe kick's 4" line was cut where the toe kick's leader crosses
+    it, so the 4" took a 3" piece of its own line and was left out as off its scale).
+
+    A cut is joined over when it is a line crossing the dimension line (running past it on both
+    sides, `_CROSSING_PT`) with no tick or arrowhead there, while the dimension line runs on
+    through it (`pieces`, the line's own pieces on this row, meet there) and the two cuts either
+    side of the label (`cx`) once it is joined over are each marked by a tick or an arrowhead
+    (`_end_marks`): the drawing marks its dimensions' ends, and this crossing is not one. Anything
+    else, or a line with no marks at all: the cuts are kept as they are."""
+    inner = sorted(set(cuts))[1:-1]
+    if not inner:
+        return list(cuts)
+    lo, hi = min(cuts), max(cuts)
+    marks = _end_marks(y, lo, hi, segments, font)
+
+    def marked(at: float) -> bool:
+        return any(abs(m - at) <= _MARK_AT_CUT_PT for m in marks)
+
+    def through(at: float) -> bool:
+        before = after = False
+        for a, b in pieces:
+            before = before or (a <= at - _THROUGH_GAP_PT / 2 and b >= at - _THROUGH_GAP_PT)
+            after = after or (a <= at + _THROUGH_GAP_PT and b >= at + _THROUGH_GAP_PT / 2)
+        return before and after
+
+    def crossing(at: float) -> bool:
+        reach: list[tuple[float, float]] = []
+        for a, b in segments:
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            length = math.hypot(dx, dy)
+            if length < 0.8 or abs(dx) > 0.05 * length or abs((a[0] + b[0]) / 2 - at) > 0.8:
+                continue
+            reach.append((min(a[1], b[1]), max(a[1], b[1])))
+        top = min((p0 for p0, p1 in reach if p0 - 1.5 <= y <= p1 + 1.5), default=None)
+        bottom = max((p1 for p0, p1 in reach if p0 - 1.5 <= y <= p1 + 1.5), default=None)
+        return (
+            top is not None
+            and bottom is not None
+            and top <= y - _CROSSING_PT
+            and bottom >= y + _CROSSING_PT
+        )
+
+    joined = [c for c in inner if marked(c) or not (through(c) and crossing(c))]
+    if len(joined) == len(inner):
+        return list(cuts)
+    kept = sorted({lo, hi, *joined})
+    left = max((c for c in kept if c <= cx), default=None)
+    right = min((c for c in kept if c >= cx), default=None)
+    if left is None or right is None or not (marked(left) and marked(right)):
+        return list(cuts)
+    if not any(left < c < right for c in inner):
+        return list(cuts)  # nothing joined under the label
+    return kept
+
+
 def _extension(x: float, y: float, segments: Sequence[Segment], font: float) -> list[Point] | None:
     """The extension line at `x` that reaches the dimension line at `y` (dashes followed): its far
     end first, then its end at the dimension line."""
@@ -872,18 +946,18 @@ def dimension_line(
             if hi - lo < 0.9 * width or hi - lo > _LINE_MAX_RATIO * max(width, font):
                 continue
             candidates.append((abs(y - cy), y, lo, hi))
-    for _score, y, lo, hi in sorted(candidates):
-        cuts = _boundaries(y, lo, hi, segments, font, drawn)
+
+    def line_at(y: float, lo: float, hi: float, cuts: Sequence[float]) -> dict[str, Any] | None:
         found = _span_at(
             cuts, cx, x0, x1, lo, hi, width, drawn, [t[1:] for t in taken if abs(y - t[0]) <= 0.6]
         )
         if found is None:
-            continue
+            return None
         left, right = found
         ends = [_extension(x, y, segments, font) for x in (left, right)]
         inner = len(cuts) > 2 and (left != lo or right != hi)
         if not any(ends) and not inner:
-            continue
+            return None
         line: list[Point] = [(left, y), (right, y)]
         if flip:
             line = [_flip(p) for p in line]
@@ -895,7 +969,56 @@ def dimension_line(
             ],
             "span_pt": round(right - left, 2),
         }
+
+    for _score, y, lo, hi in sorted(candidates):
+        cuts = _boundaries(y, lo, hi, segments, font, drawn)
+        joined = cuts if drawn else _across_crossings(y, cx, cuts, rows[y], segments, font)
+        found = line_at(y, lo, hi, joined)
+        if joined != cuts:
+            plain = line_at(y, lo, hi, cuts)
+            if found is None:
+                found = plain
+            elif plain is None or plain["dim_line"] != found["dim_line"]:
+                # Joined over a crossing: the line as cut is kept beside it, for the drawing's
+                # scale to choose by (`_joins_on_scale`).
+                found[_UNJOINED] = plain
+        if found is not None:
+            return found
     return None
+
+
+#: A line joined over a crossing (`_across_crossings`) keeps the line as cut under this key until
+#: the drawing's scale has had its say (`_joins_on_scale`); it is never listed.
+_UNJOINED: Final = "_unjoined"
+
+
+def _joins_on_scale(
+    labels: Sequence[dict[str, Any]], lines: Sequence[dict[str, Any] | None]
+) -> None:
+    """A line joined over a crossing stands unless the drawing's scale says otherwise: where its
+    drawing has a scale (the median drawn length per inch of its labels, at least three, as
+    `_scale_checks`), a joined line off it while the line as cut is on it goes back to the cut
+    one. Without a scale the drawing's own ticks decided it (`_across_crossings`)."""
+    ratios: dict[str, list[float]] = {}
+    for label in labels:
+        inches = float(label["inches"])
+        if label.get("span_pt") and inches >= 2:
+            ratios.setdefault(str(label["side"]), []).append(float(label["span_pt"]) / inches)
+    for label, line in zip(labels, lines, strict=True):
+        if line is None or _UNJOINED not in line:
+            continue
+        plain = line[_UNJOINED]
+        found = sorted(ratios.get(str(label["side"]), []))
+        inches = float(label["inches"])
+        if plain is None or len(found) < 3 or inches <= 0:
+            continue
+        median = found[len(found) // 2]
+        joined_off = abs(float(label["span_pt"]) / inches / median - 1) > _SCALE_TOLERANCE
+        plain_on = abs(float(plain["span_pt"]) / inches / median - 1) <= _SCALE_TOLERANCE
+        if joined_off and plain_on:
+            label.update(
+                dim_line=plain["dim_line"], extension=plain["extension"], span_pt=plain["span_pt"]
+            )
 
 
 #: A hand-lettered dimension's line standing off its text (`_ticked_line`): it lies within this
@@ -2922,6 +3045,7 @@ def _text_labels(parsed: _Parsed, halves: Sequence[Mapping[str, Any]]) -> list[d
         kept.append((reading, line))
     kept.sort(key=lambda item: (round(item[0].box[1] / 4), item[0].box[0]))
     labels = [_label(r, line, _side(r.box, halves)) for r, line in kept[:MAX_LABELS]]
+    _joins_on_scale(labels, [line for _r, line in kept[:MAX_LABELS]])
     _short_lines(labels, parsed.segments)
     return labels
 
@@ -2933,8 +3057,9 @@ def _short_lines(labels: Sequence[dict[str, Any]], segments: Sequence[Segment]) 
     span under its middle: the reference's `1"` beside its `35"` took the `35"`'s line, so the
     chain `1" + 35"` could never be added up). When the label's line is not drawn to its value at
     its drawing's scale (or it has none), it takes the one pair of neighbouring ticks by it, or at
-    a leader's end, drawn to its value (`dim_ends.small_span`), with an extension line at both
-    ends; otherwise it keeps what it had."""
+    a leader's end, drawn to its value (`dim_ends.small_span`), or else its line drawn through its
+    own text (`_inside_line`), with an extension line at both ends; otherwise it keeps what it
+    had."""
     dim_ends = import_module("app.review.assistant.dim_ends")
     ratios: dict[str, list[float]] = {}
     for label in labels:
@@ -2957,30 +3082,77 @@ def _short_lines(labels: Sequence[dict[str, Any]], segments: Sequence[Segment]) 
                 segments, dim_ends._page_box(segments)
             )
         short = dim_ends.small_span(label, lines, ppi, labels)
-        if short is None:
+        found_span = (
+            (short.axis, short.row, short.a, short.b)
+            if short is not None
+            else _inside_line(label, segments, drawn, max(0.15 * drawn, 0.6))
+        )
+        if found_span is None:
             continue
+        axis, row, a, b = found_span
         box = label["box"]
-        if short.axis == "h":
+        if axis == "h":
             font = box[3] - box[1]
-            ends = [_extension(x, short.row, segments, font) for x in (short.a, short.b)]
-            line = [(short.a, short.row), (short.b, short.row)]
+            ends = [_extension(x, row, segments, font) for x in (a, b)]
+            line = [(a, row), (b, row)]
         else:
             font = box[2] - box[0]
-            flipped = [(_flip(a), _flip(b)) for a, b in segments]
+            flipped = [(_flip(p), _flip(q)) for p, q in segments]
             ends = [
                 None if found_end is None else [_flip(q) for q in found_end]
-                for found_end in (
-                    _extension(y, short.row, flipped, font) for y in (short.a, short.b)
-                )
+                for found_end in (_extension(y, row, flipped, font) for y in (a, b))
             ]
-            line = [(short.row, short.a), (short.row, short.b)]
+            line = [(row, a), (row, b)]
         if not all(ends):
             continue
         label.update(
             dim_line=[[round(q[0], 2), round(q[1], 2)] for q in line],
             extension=[[[round(q[0], 2), round(q[1], 2)] for q in end] for end in ends if end],
-            span_pt=round(short.b - short.a, 2),
+            span_pt=round(b - a, 2),
         )
+
+
+#: A small dimension's line through its own text (`_inside_line`) lies at least this far inside
+#: the text's box across (points), and is at least this long.
+_INSIDE_PT: Final = 0.5
+_INSIDE_MIN_PT: Final = 1.0
+
+
+def _inside_line(
+    label: Mapping[str, Any], segments: Sequence[Segment], drawn: float, slack: float
+) -> tuple[str, float, float, float] | None:
+    """A small dimension's line drawn through its own text (2026-11-01): a `20 [3/4]` whose short
+    line runs between its millimetres and its inches, narrower than the text, its two extension
+    lines through the text. Such a label was listed with no line, and its line and extension lines
+    were then taken for an object's corner by the checks that walk the drawing (`dim_parts`). The
+    one straight line along the label's direction lying inside its box across (`_INSIDE_PT`), its
+    middle within the box along, and drawn to the value (`drawn` points, within `slack`): `(axis,
+    row, start, end)`, or `None` when there is none or more than one. The caller still needs an
+    extension line at both its ends."""
+    axis = label.get("orientation")
+    raw = label.get("box")
+    if axis not in ("h", "v") or not isinstance(raw, Sequence) or len(raw) != 4:
+        return None
+    x0, y0, x1, y1 = (float(v) for v in raw)
+    if axis == "v":
+        x0, y0, x1, y1 = y0, x0, y1, x1
+    found: set[tuple[float, float, float]] = set()
+    for p, q in segments:
+        if axis == "v":
+            p, q = _flip(p), _flip(q)
+        dx, dy = q[0] - p[0], q[1] - p[1]
+        length = math.hypot(dx, dy)
+        if length < _INSIDE_MIN_PT or abs(dy) > 0.02 * length or abs(length - drawn) > slack:
+            continue
+        row = (p[1] + q[1]) / 2
+        a, b = min(p[0], q[0]), max(p[0], q[0])
+        if not y0 + _INSIDE_PT <= row <= y1 - _INSIDE_PT or not x0 <= (a + b) / 2 <= x1:
+            continue
+        found.add((round(row, 2), round(a, 2), round(b, 2)))
+    if len(found) != 1:
+        return None
+    row, a, b = next(iter(found))
+    return str(axis), row, a, b
 
 
 type _Taken = tuple[str, float, float, float]
