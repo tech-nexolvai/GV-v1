@@ -789,6 +789,21 @@ def question_for(
     thing = _thing(finding.get("item"))
     architect = _short(finding.get("architect"), 60)
     vendor = _vendor_value_words(finding)
+    if (
+        reason == "architect_prints_nothing"
+        and finding.get("check_reason") == "pairing_not_certain"
+        and not _NOTHING_PRINTED.search(str(finding.get("architect") or ""))
+    ):
+        # Words only: the pairing is unsure, not missing, so the architect may well print a size.
+        pairs = f"Code could not be sure which architect size the vendor's {vendor} for {thing}"
+        if dimension_tokens(finding.get("architect")):
+            return (
+                f"{pairs} pairs with. The architect's drawing shows {architect}: do the two "
+                f"measure the same thing?"
+            )
+        return (
+            f"{pairs} pairs with: which architect size applies, and is the vendor's {vendor} right?"
+        )
     if reason == "architect_prints_nothing":
         scaled = _SCALES_ABOUT.search(_words(finding, "architect", "why"))
         about = (
