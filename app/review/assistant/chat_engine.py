@@ -1154,6 +1154,10 @@ class ChatEngine:
             main_file=self.book.main_file,
         )
         self.book.scope_pages = scoped_pages(self._asked_scope)
+        if settings.mode == "full_check" and settings.pages:
+            # A full check on picked pages (Anant, 2026-10-31): nothing on another page is
+            # recorded, a Continue's carried items included.
+            self.book.picked_pages = frozenset(settings.pages)
         self._started_scope: dict[str, Any] = {
             **self._asked_scope,
             **self.product_scope.as_dict(),
@@ -2190,7 +2194,10 @@ class ChatEngine:
 
     def scope(self) -> dict[str, Any]:
         """This answer's scope now: the question's, with the pages it worked on (its coverage and
-        its own findings; a recorded difference it was handed is not its choice of page)."""
+        its own findings; a recorded difference it was handed is not its choice of page). A full
+        check on picked pages stays on them: nothing it made elsewhere widens it (2026-10-31: a
+        whole-set code check's item on another page made that page "not compared", the check
+        incomplete and Continue offer to compare it)."""
         book = self.book
         with self._lock:
             used = set(book.coverage)
@@ -2199,7 +2206,8 @@ class ChatEngine:
             for f in book.live()
             if isinstance(f.get("page"), int) and not f.get("record_id")
         }
-        scope = widened(self._asked_scope, used)
+        picked = self.settings.mode == "full_check" and bool(self.settings.pages)
+        scope = dict(self._asked_scope) if picked else widened(self._asked_scope, used)
         book.scope_pages = scoped_pages(scope)
         return {**scope, **self.product_scope.as_dict()}
 
@@ -2755,6 +2763,8 @@ class ChatEngine:
         sums and cross-view checks see them. Returns the entries replayed."""
         replayed = 0
         for entry in set_proofs.load(self.tools.workspace.set_pack)["ledger"]:
+            if self._not_picked_entry(entry.get("input")):
+                continue
             tool = str(entry.get("tool") or "")
             try:
                 _text, is_error = self.reading_ledger.run_tool(tool, entry.get("input"), by="chat")
@@ -2765,6 +2775,16 @@ class ChatEngine:
         if replayed:
             _log.warning("assistant full check: %d chat proofs replayed into the ledger", replayed)
         return replayed
+
+    def _not_picked_entry(self, given: object) -> bool:
+        """A vendor string or reading on a page a full check on picked pages was not asked to
+        check (2026-10-31): never replayed or carried into its ledger. The architect's stay: they
+        are the reference for its pages."""
+        return (
+            isinstance(given, Mapping)
+            and given.get("side") == "vendor"
+            and not self.book.picked(given.get("page"))
+        )
 
     def carry_ledger(self, blocks: Sequence[Mapping[str, Any]]) -> int:
         """Continue (#1827): the strings and readings an earlier answer recorded (its trust
@@ -2786,6 +2806,8 @@ class ChatEngine:
                 if not isinstance(entry, Mapping):
                     continue
                 given = {name: entry[name] for name in fields[tool] if entry.get(name) is not None}
+                if self._not_picked_entry(given):
+                    continue
                 by = str(entry.get("by") or "earlier")
                 _text, is_error = self.reading_ledger.run_tool(tool, given, by=by)
                 carried += 0 if is_error else 1
@@ -2967,6 +2989,12 @@ class ChatEngine:
             if record_id.startswith("ai-review:p") and ":" in record_id[len("ai-review:p") :]:
                 out.setdefault(record_id.split(":", 2)[2], reason)
         return out
+
+    def _picked_gaps(self, gaps: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        """The set's own gaps code found (the consistency and finish checks', #1584, #1623): a
+        full check on picked pages keeps only those on its pages (2026-10-31: those checks read
+        the whole set; a gap on another page, or of the whole set, is not this check's)."""
+        return [dict(gap) for gap in gaps if self.book.picked(gap.get("page"))]
 
     def _recorded_results_check(self) -> dict[str, Any] | None:
         """The ledger's "never drop a recorded result" check (whole-set work only; not a full
@@ -3622,7 +3650,7 @@ class ChatEngine:
             coverage,
             waiting=recorded.waiting,
             refused_diffs=list(self.refused_diffs),
-            set_gaps=self.consistency_gaps,
+            set_gaps=self._picked_gaps(self.consistency_gaps),
         )
         if self._unknowns:
             index = self._add_block({"type": "unknowns", "unknowns": self._unknowns})
@@ -4070,7 +4098,9 @@ class ChatEngine:
         # consistency check), apart from the answer's items: those of the products in scope only
         # (the strict scope: a cabinet note is not listed in a countertop check).
         set_gaps, left_out = scoped_gaps(
-            [*self.consistency_gaps, *self.extra_gaps], self.product_scope, self.page_words
+            self._picked_gaps([*self.consistency_gaps, *self.extra_gaps]),
+            self.product_scope,
+            self.page_words,
         )
         if left_out:
             _log.info("assistant chat: %d set gaps outside the product scope left out", left_out)

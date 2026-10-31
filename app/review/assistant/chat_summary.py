@@ -12,7 +12,7 @@ from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any, Final
 
-from app.review.assistant.chat_findings import products_words
+from app.review.assistant.chat_findings import page_ranges, products_words
 from app.review.assistant.chat_trust import cloud_kind
 from app.review.assistant.classification import not_compared_line
 from app.review.assistant.impact import by_impact
@@ -202,6 +202,20 @@ def _plural(count: int, one: str, many: str) -> str:
     return f"{count} {one if count == 1 else many}"
 
 
+def _checked_words(done: int, total: int, scope: str, picked: Collection[int] = ()) -> str:
+    """The first line's count: "Checked 5 of 9 pages (scope)". A full check on picked pages
+    names them and counts no other page (Anant, 2026-10-31): "Checked the 4 picked pages (pages
+    3-4, 6, 8; scope)", or "Checked 3 of the 4 picked pages (...)" when one was not compared."""
+    if not picked:
+        return f"Checked {done} of {total} pages ({scope})"
+    named = sorted(set(picked))
+    where = f"page {named[0]}" if len(named) == 1 else f"pages {page_ranges(named)}"
+    pages = _plural(total, "picked page", "picked pages")
+    if done >= total:
+        return f"Checked the {pages} ({where}; {scope})"
+    return f"Checked {done} of the {pages} ({where}; {scope})"
+
+
 def code_summary(
     findings: Sequence[Mapping[str, Any]],
     *,
@@ -219,6 +233,7 @@ def code_summary(
     compared_pages: Collection[int] | None = None,
     left_kinds: Mapping[int, str] | None = None,
     own_pages: Collection[int] = (),
+    picked: Collection[int] = (),
 ) -> str:
     """The 5-6 line summary: what was checked, the verdict, the biggest issues, the one line on
     what could not be compared (#1619), why it stopped (if it did) and the next step; then the
@@ -232,7 +247,8 @@ def code_summary(
     that are true (2026-10-25: a check stopped by its price said "title or divider sheets, pages
     with no drawing to compare, or not reached" though every page had its drawing). `own_pages`:
     the pages checked within the vendor's own drawings with no architect drawing in the set
-    (2026-10-29): said apart, never "compared with the architect" whatever their coverage says."""
+    (2026-10-29): said apart, never "compared with the architect" whatever their coverage says.
+    `picked`: a full check on picked pages (2026-10-31): the first line names them."""
     # The cloud drawing's own counts (#1581, #1619): Wrong = proved by code (clouded), Right, and
     # what could not be compared; the screen and the files count the same final list.
     counts = proof_counts(findings)
@@ -272,8 +288,8 @@ def code_summary(
                 "GV's rules)"
             )
             first = (
-                f"Checked {checked + own} of {total} pages ({scope}): {checked} compared with "
-                f"the architect, {own} {how}"
+                _checked_words(checked + own, total, scope, picked)
+                + f": {checked} compared with the architect, {own} {how}"
                 + (
                     f"; the other {rest} {'page was' if rest == 1 else 'pages were'} not "
                     f"compared ({why_left})."
@@ -282,7 +298,7 @@ def code_summary(
                 )
             )
         else:
-            first = f"Checked {checked} of {total} pages ({scope})" + (
+            first = _checked_words(checked, total, scope, picked) + (
                 f"; {rest} {'page was' if rest == 1 else 'pages were'} not compared "
                 f"({why_left})."
                 if rest
