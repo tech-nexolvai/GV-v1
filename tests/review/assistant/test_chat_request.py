@@ -525,6 +525,17 @@ def test_dropped_thinking_is_read_from_the_stream() -> None:
     assert _accumulate(events, None, lambda: False, {}).transformations == []
 
 
+def test_applied_context_edits_are_read_from_the_last_message_delta() -> None:
+    """The page reviewer logs its clears: the API reports them on the final `message_delta`."""
+    events = reply(text("Hi"))
+    applied = [{"type": "clear_tool_uses_20250919", "cleared_tool_uses": 4,
+                "cleared_input_tokens": 31_000}]  # fmt: skip
+    events[-2]["context_management"] = {"applied_edits": applied}
+    assert events[-2]["type"] == "message_delta"
+    assert _accumulate(events, None, lambda: False, {}).applied_edits == applied
+    assert _accumulate(reply(text("Hi")), None, lambda: False, {}).applied_edits == []
+
+
 def test_usage_rows_name_the_route_and_the_purpose() -> None:
     lead, helper = prompt_ids("anthropic")
     assert infer_route("anthropic.claude-opus-5-5", lead) == "anthropic"

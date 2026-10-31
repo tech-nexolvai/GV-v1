@@ -402,7 +402,10 @@ def test_nine_overlapping_tiles_cover_the_page() -> None:
     found = tiles(WIDTH, HEIGHT)
     assert len(found) == 9
     assert found[0][:2] == (0.0, 0.0) and found[-1][2:] == (WIDTH, HEIGHT)
-    assert found[0][2] > WIDTH / 3  # each a little larger than its cell
+    # Each reaches a fifth of a cell into its neighbours (2026-11-01, M8c; was 8%).
+    cell = WIDTH / 3
+    assert found[0][2] == pytest.approx(cell * 1.2)
+    assert found[4][0] == pytest.approx(cell * 0.8) and found[4][2] == pytest.approx(cell * 2.2)
     assert page_reviewer.tile_seen(found[4], [found[4]])
     assert not page_reviewer.tile_seen(found[4], [found[0]])
 
@@ -419,7 +422,38 @@ def test_phrases_join_words_on_a_line_and_targets_leave_long_notes_out() -> None
     ]
     found = phrases(words)
     assert [p["text"] for p in found][:2] == ["SECTION A", '12"']
-    assert [p["text"] for p in coverage_targets(found)] == ["SECTION A", '12"']
+    # A view title is not a target since 2026-11-01 (M8a); the long note never was.
+    assert [p["text"] for p in coverage_targets(found)] == ['12"']
+
+
+def test_coverage_targets_are_sizes_tags_and_part_callouts_only() -> None:
+    """M8a (2026-11-01): the coverage nudges chased title-block cells, view titles and notes with
+    300-point zooms; only a phrase with a digit, a tag or a part word is a target now."""
+
+    def at(text: str, n: int = 1) -> dict[str, Any]:
+        return {"text": text, "box": [10, 10, 60, 18], "n": n}
+
+    found = [
+        at('24 3/4"'),  # a size
+        at("QZ-01"),  # a finish tag
+        at("TOE KICK", 2),  # a part callout
+        at("ITEM 101", 2),  # a digit
+        at("ABC-801 ELEVATION", 2),  # a view title that carries the item's tag
+        at("SECTION A", 2),  # a view title
+        at("COUNTERTOP PLAN", 2),  # a view title with a part word
+        at("SCALE: 1/2 = 1'-0", 4),  # a title-block cell
+        at("SHEET 3 OF 9", 4),  # a title-block cell
+        at("10/12/2026"),  # a date
+        at("VERIFY IN FIELD", 3),  # a note
+        at("PROVIDED BY OTHERS", 3),  # a note
+    ]
+    assert [p["text"] for p in coverage_targets(found)] == [
+        '24 3/4"',
+        "QZ-01",
+        "TOE KICK",
+        "ITEM 101",
+        "ABC-801 ELEVATION",
+    ]
 
 
 def test_check_math_adds_exactly_in_inches_and_millimetres() -> None:
@@ -459,7 +493,45 @@ def test_the_money_is_the_rate_per_page_within_what_the_budget_leaves() -> None:
 # ---- the look, in code ------------------------------------------------------------------------------
 
 
-def test_text_first_then_the_whole_page_then_tiles_before_any_report(tmp_path: Path) -> None:
+def test_the_first_message_has_the_text_the_whole_page_and_the_nine_tiles(tmp_path: Path) -> None:
+    """M8c (2026-11-01): code draws the nine tiles into the first message and counts them as
+    zoomed, so the reviewer may report on its first call (before, it spent two calls on them)."""
+    engine, review, ended, reviews = _review(
+        tmp_path,
+        [
+            [_support_issue()],  # at once: the tiles were in its first message
+            [_tight_on_text(), _tight_last()],
+            [_text("Checked the elevation, the section and the title block.")],
+            _settle_all,
+            [_text("All settled.")],
+        ],
+    )
+    first = engine.script.calls[0].messages[0]["content"]
+    assert first[0]["type"] == "text" and "text layer" in first[0]["text"]
+    assert first[1]["type"] == "text" and first[2]["type"] == "image"  # then the whole page
+    assert "The page in nine tiles" in first[3]["text"]
+    labels = [b["text"] for b in first[4:22] if b["type"] == "text"]
+    assert [label.split(" (")[1].split(")")[0] for label in labels] == [
+        f"tile {n}" for n in range(1, 10)
+    ]
+    assert sum(1 for b in first[4:22] if b["type"] == "image") == 9
+    assert first[-1]["text"].startswith("The nine tiles are above")
+    assert not _results(engine.script.calls[1].messages)[-1].startswith("Refused")
+    assert [d.kind for d in review.drafts] == ["B"]
+    assert review.tiles_in_opening == 9
+    assert review.counts.get("zoom") == 2  # only its two tight zooms: no call asked for a tile
+    assert "first message count as zoomed" in page_reviewer.REPORT_ISSUE["description"]
+    assert "first message has the nine tiles" in system_prompt()
+    reviews.pages["p2"] = review
+    (row,) = reviews.block()["pages"]
+    assert row["tiles_sent_in_opening"] == 9 and row["tiles_left"] == []
+    assert ended[2] is None and ended[1] is True
+
+
+def test_without_tiles_in_the_first_message_reports_wait_for_the_nine_tiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(page_reviewer, "TILES_IN_OPENING", False)
     engine, review, ended, _ = _review(
         tmp_path,
         [
@@ -476,12 +548,13 @@ def test_text_first_then_the_whole_page_then_tiles_before_any_report(tmp_path: P
     assert first[0]["type"] == "text" and "text layer" in first[0]["text"]
     assert '36 1/4"' in first[0]["text"]  # the page's own text, with its boxes
     assert first[1]["type"] == "text" and first[2]["type"] == "image"  # then the whole page
+    assert first[3]["type"] == "text" and "The page in nine tiles" not in first[3]["text"]
     results = _results(engine.script.calls[1].messages)
     assert results[-1].startswith("Refused: not yet: first zoom on tiles [1, 2, 3, 4, 5, 6, 7")
     # Said up front, so a reviewer does not write its issues twice (2026-10-31: about 40 refused
     # reports on one 18-page check).
-    assert "once all nine tiles were zoomed" in page_reviewer.REPORT_ISSUE["description"]
     assert "Issues are taken once all nine tiles were zoomed." in first[-1]["text"]
+    assert review.tiles_in_opening == 0
     assert not review.tiles_left()
     assert [d.kind for d in review.drafts] == ["B"]
     assert ended[2] is None and ended[1] is True
@@ -520,16 +593,47 @@ def test_each_issue_is_in_the_book_as_soon_as_it_is_reported(tmp_path: Path) -> 
     assert seen == [1]
 
 
-def test_the_coverage_check_sends_it_on_at_most_three_times(tmp_path: Path) -> None:
+def test_the_coverage_check_sends_it_on_at_most_three_times(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A sheet whose tiles are drawn below the close-look dpi (an ARCH D sheet's are ~114 dpi).
+    monkeypatch.setattr(page_reviewer, "CLOSE_DPI", 400)
     turns: list[Any] = [[_tiles(1, 2, 3, 4, 5, 6)], [_tiles(7, 8, 9)]]
     turns += [[_text("I am done.")]] * (MAX_NUDGES + 1)
     engine, review, ended, _ = _review(tmp_path, turns)
     nudges = [n for n in _notes(engine.script.calls[-1].messages) if n.startswith("Only ")]
     assert len(nudges) == MAX_NUDGES
-    assert "were seen in a tight zoom" in nudges[0] and "ST-01 at" in nudges[0]
+    assert "were seen close up" in nudges[0] and "ST-01 at" in nudges[0]
+    assert "SECTION A at" not in nudges[0]  # a view title is not a target
     assert review.coverage() < COVERAGE_GOAL
     assert len(engine.script.calls) == 2 + MAX_NUDGES + 1
     assert ended[2] is None  # nothing reported: no self-check, it ends
+
+
+def test_a_crop_drawn_at_200_dpi_or_more_is_a_close_look_whatever_its_box() -> None:
+    """M8b (2026-11-01): on A3 a tile is drawn at about 200-250 dpi, where 6-point text reads; on
+    an ARCH D sheet the tiles are about 114 dpi and the 320-point rule still holds."""
+    close_look = page_reviewer.close_look
+    assert close_look({"box": (0, 0, 560, 400), "dpi": 250})  # an A3 tile
+    assert close_look({"box": (0, 0, 560, 400), "dpi": 200})
+    assert not close_look({"box": (0, 0, 1000, 700), "dpi": 114})  # an ARCH D tile
+    assert close_look({"box": (0, 0, 300, 200), "dpi": 114})  # tight: always
+    assert not page_reviewer.is_tight((0, 0, 560, 400))  # the self-check's test is unchanged
+    review = PageReview(page=2, file=FILE, options=Options())
+    review.targets = [{"text": '12"', "box": [200, 300, 214, 308], "n": 1}]
+    review.zooms = [{"box": (0.0, 0.0, 560.0, 400.0), "phase": "review", "at": 0, "dpi": 114}]
+    assert review.coverage() == 0.0
+    review.zooms[0]["dpi"] = 250
+    assert review.coverage() == 1.0
+
+
+def test_sharp_tiles_in_the_first_message_meet_the_coverage_goal_at_once(tmp_path: Path) -> None:
+    """This made-up 17 x 11 in sheet's tiles are drawn at 200 dpi or more: the reviewer that
+    finds nothing finishes on its first call, with no coverage nudge and no tile zoom."""
+    engine, review, ended, _ = _review(tmp_path, [[_text("Nothing to report on this page.")]])
+    assert min(z["dpi"] for z in review.zooms) >= page_reviewer.CLOSE_DPI
+    assert review.coverage() >= COVERAGE_GOAL and not review.tiles_left()
+    assert len(engine.script.calls) == 1 and ended[2] is None
 
 
 def test_tight_zooms_reach_the_coverage_goal_and_no_nudge_is_sent(tmp_path: Path) -> None:
@@ -547,7 +651,11 @@ def test_tight_zooms_reach_the_coverage_goal_and_no_nudge_is_sent(tmp_path: Path
     assert len(engine.script.calls) == 4
 
 
-def test_the_self_check_needs_a_fresh_tight_zoom_and_can_drop_or_fix(tmp_path: Path) -> None:
+def test_the_self_check_needs_a_fresh_tight_zoom_and_can_drop_or_fix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(page_reviewer, "MAX_SELFCHECK_ZOOMS", 0)  # no pictures by code here
+
     def early(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [_tool("resolve_finding", n=1, decision="keep", why="sure")]
 
@@ -563,10 +671,11 @@ def test_the_self_check_needs_a_fresh_tight_zoom_and_can_drop_or_fix(tmp_path: P
         tmp_path,
         [
             [_tiles(1, 2, 3, 4, 5, 6)],
-            [_tiles(7, 8, 9), _support_issue(confidence="low"),
+            [_tiles(7, 8, 9), _tight_on_text(), _tight_last()],
+            # Reported after its zooms: no zoom since, so the self-check must look again.
+            [_support_issue(confidence="low"),
              _support_issue(item="Base: end panel", kind="C", confidence="low",
                             box={"x0": 605, "y0": 382, "x1": 755, "y1": 438})],
-            [_tight_on_text(), _tight_last()],
             [_text("Done.")],
             early,
             settle,
@@ -581,6 +690,69 @@ def test_the_self_check_needs_a_fresh_tight_zoom_and_can_drop_or_fix(tmp_path: P
     assert live[0][likely_problems.FIELD]["kind"] == "finish"
     assert "no finish tag" in live[0][likely_problems.FIELD]["words"]
     assert len(engine.dropped) == 2  # the dropped one, and the fixed one's first version
+
+
+def test_code_draws_each_draft_for_the_self_check_and_that_picture_settles_it(
+    tmp_path: Path,
+) -> None:
+    """M7a (2026-11-01): code draws each re-checked draft's evidence into the self-check's message
+    (labelled with its number), and `resolve_finding` takes that picture as the fresh look: no
+    "zoom tight first" refusal, no zoom by the model. A whole-view draft (a box larger than a tight
+    zoom) is settled by its code picture too."""
+    whole = {"x0": 300, "y0": 200, "x1": 800, "y1": 500}
+
+    def settle(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            _tool("resolve_finding", n=1, decision="keep", why="the picture shows it"),
+            _tool("resolve_finding", n=2, decision="keep", why="the picture shows it"),
+        ]
+
+    engine, review, _ended, reviews = _review(
+        tmp_path,
+        [
+            [_support_issue(confidence="low"),
+             _issue(claim="please_check", confidence="low", whole_view=True, box=whole)],
+            [_text("Done.")],
+            settle,
+            [_text("Settled.")],
+        ],
+    )  # fmt: skip
+    check = engine.script.calls[2].messages[-1]["content"]
+    note = next(b["text"] for b in check if b.get("type") == "text" and "Self-check" in b["text"])
+    assert "code drew below" in note
+    labels = [b["text"] for b in check if b.get("type") == "text" and b["text"].startswith("Crop")]
+    assert ["issue #1" in labels[0], "issue #2" in labels[1]] == [True, True]
+    assert sum(1 for b in check if b.get("type") == "image") == 2
+    assert not [r for r in _results(engine.script.calls[3].messages) if r.startswith("Refused")]
+    assert [d.status for d in review.drafts] == ["kept", "kept"]
+    assert review.counts.get("zoom") is None  # the model never zoomed
+    assert review.code_zooms == 2
+    drawn = [z for z in review.zooms if z.get("for_draft") == 1]
+    assert len(drawn) == 1 and page_reviewer.is_tight(drawn[0]["box"])
+    reviews.pages["p2"] = review
+    (row,) = reviews.block()["pages"]
+    assert row["code_zooms_for_selfcheck"] == 2
+
+
+def test_a_tight_zoom_since_the_draft_was_reported_is_a_fresh_look(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M7a: a tight zoom near the evidence made after the report and before the self-check counts
+    (before, only one made after the self-check began)."""
+    monkeypatch.setattr(page_reviewer, "MAX_SELFCHECK_ZOOMS", 0)  # no pictures by code here
+    near = _tool("zoom", crops=[{"box": {"x0": 600, "y0": 380, "x1": 760, "y1": 440}}])
+    engine, review, *_ = _review(
+        tmp_path,
+        [
+            [_support_issue(confidence="low")],
+            [near],
+            [_text("Done.")],
+            [_tool("resolve_finding", n=1, decision="keep", why="seen again")],
+            [_text("Settled.")],
+        ],
+    )
+    assert not [r for r in _results(engine.script.calls[4].messages) if r.startswith("Refused")]
+    assert [d.status for d in review.drafts] == ["kept"] and review.code_zooms == 0
 
 
 # ---- money ----------------------------------------------------------------------------------------
@@ -837,6 +1009,25 @@ def test_an_item_already_recorded_at_the_spot_is_not_recorded_twice(tmp_path: Pa
     assert review.drafts[0].joined is not None and review.drafts[2].joined == mine[0]["id"]
 
 
+def test_a_clear_the_api_reports_is_counted_once_in_the_log() -> None:
+    """M8d: the API reports the same cleared tool uses on every call between clears."""
+    review = PageReview(page=2, file=FILE, options=Options())
+    run = page_reviewer._Run.__new__(page_reviewer._Run)
+    run.review = review
+
+    def reply(cleared: int) -> Any:
+        edit = {"type": "clear_tool_uses_20250919", "cleared_tool_uses": cleared,
+                "cleared_input_tokens": 30_000}  # fmt: skip
+        return SimpleNamespace(applied_edits=[edit] if cleared else [])
+
+    for cleared in (0, 0, 2, 2, 2, 5, 5):
+        run._count_clears(reply(cleared))
+    assert review.context_clears == 2
+    reviews = Reviews()
+    reviews.pages["p2"] = review
+    assert reviews.block()["pages"][0]["context_clears"] == 2
+
+
 def test_the_log_block_says_what_each_page_review_did(tmp_path: Path) -> None:
     _engine, _review_, _ended, reviews = _review(
         tmp_path,
@@ -1058,8 +1249,9 @@ def test_another_page_can_be_read_and_zoomed_but_never_counts_for_this_pages_cov
     text, missing, *_ = _results(engine.script.calls[1].messages)
     assert "BIN BY GC/OWNER" in text and "ST-02 Quartz top" in text
     assert "Refused" in missing and "no page 7" in missing
-    assert review.zooms == []  # p1's picture is not this page's coverage
-    assert review.pictures == 2  # the whole page in the first message, then p1's area
+    # p1's picture is not this page's coverage: its zooms are only the tiles of its first message.
+    assert [z["box"] for z in review.zooms] == review.tile_boxes
+    assert review.pictures == 2 + 9  # the whole page and the tiles, then p1's area
 
 
 def test_a_size_issue_may_rest_on_a_number_another_page_prints_once_read(
@@ -1111,8 +1303,9 @@ def test_every_reviewer_call_clears_old_zoom_pictures_once_the_prompt_is_long(
     tmp_path: Path,
 ) -> None:
     """2026-10-29: each turn re-sent every picture (most of a page's money); old tool results are
-    cleared server-side past `CONTEXT_CLEAR_TOKENS`, the last `CONTEXT_KEEP_TURNS` turns kept,
-    the same shape on every call so the prompt cache holds."""
+    cleared server-side past `CONTEXT_CLEAR_TOKENS`, kept by tool uses (2026-11-01, M8d: "keep 4
+    turns" cleared nothing, a reviewer has two or three turns), in large batches, never its
+    reports, sums or text listings."""
     from app.review.assistant.page_reviewer import CONTEXT_CLEAR_TOKENS
 
     engine, *_ = _review(
@@ -1125,7 +1318,51 @@ def test_every_reviewer_call_clears_old_zoom_pictures_once_the_prompt_is_long(
         (edit,) = call.context_management["edits"]
         assert edit["type"] == "clear_tool_uses_20250919"
         assert edit["trigger"] == {"type": "input_tokens", "value": CONTEXT_CLEAR_TOKENS}
-        assert edit["keep"]["type"] == "tool_uses" and edit["keep"]["value"] >= 1
+        assert edit["keep"]["type"] == "tool_uses" and edit["keep"]["value"] >= 6
+        assert edit["clear_at_least"] == {"type": "input_tokens", "value": 25_000}
+        assert edit["exclude_tools"] == ["check_math", "page_text", "report_issue"]
+
+
+def _tool_turns(names_and_pictures: Sequence[tuple[str, int]]) -> list[dict[str, Any]]:
+    """A made-up reviewer conversation: its first message, then one tool use per call, each
+    result carrying that many 1600 x 1132 px pictures (about 2,300 tokens each)."""
+    messages: list[dict[str, Any]] = [{"role": "user", "content": [_text("The page.")]}]
+    for name, pictures in names_and_pictures:
+        call = _tool(name)
+        picture = {"type": "image", "source": {"type": "gv_picture", "picture_id": "p",
+                                              "width": 1600, "height": 1132}}  # fmt: skip
+        messages.append({"role": "assistant", "content": [call]})
+        result = {"type": "tool_result", "tool_use_id": call["id"],
+                  "content": [_text("Crop")] + [dict(picture) for _ in range(pictures)]}  # fmt: skip
+        messages.append({"role": "user", "content": [result]})
+    return messages
+
+
+def test_the_reviewers_context_edit_clears_by_tool_uses_in_rare_large_batches() -> None:
+    """M8d: the boundary moves only when a whole batch of at least 25k tokens lies before the last
+    six tool uses, so between clears every call clears the same blocks (the cache holds); the
+    lead's edit (`context_edits`, by turns) is unchanged."""
+    from app.review.assistant.chat_context import context_edits
+
+    keep = page_reviewer.CONTEXT_KEEP_TOOL_USES
+
+    def kept(uses: Sequence[tuple[str, int]]) -> int:
+        (edit,) = page_reviewer.review_context(_tool_turns(uses))["edits"]
+        return int(edit["keep"]["value"])
+
+    # Zooms of six crops (~14k tokens each): nothing to clear until two of them lie before the
+    # last six uses; then the oldest two are cleared, and the boundary holds call after call.
+    zooms = [("zoom", 6)] * 7
+    assert kept(zooms) == 7  # one zoom outside the last six: under 25k, nothing cleared
+    assert kept([*zooms, ("zoom", 6)]) == 6  # two (~28k) outside: cleared, six kept
+    assert kept([*zooms, ("zoom", 6), ("check_math", 0)]) == 7  # the same two cleared
+    # The next two zooms make a second batch outside the last six: the next clear.
+    assert kept([*zooms, ("zoom", 6), ("check_math", 0), ("zoom", 1)]) == 6
+    # Reports, sums and text listings never count toward a batch (they are never cleared).
+    assert kept([("page_text", 9)] * 3 + [("zoom", 1)] * 6) == 9
+    assert kept([("zoom", 0)] * 3) == keep  # few uses: at least the six
+    lead = context_edits(_tool_turns(zooms), threshold=400_000, keep_turns=2, near=False)
+    assert "exclude_tools" not in lead["edits"][0]
 
 
 # ---- tight boxes and the kind by words (2026-10-29) --------------------------------------------------
@@ -1501,7 +1738,7 @@ def test_the_design_room_its_views_and_the_cross_checks_are_in_the_first_message
         in blocks["sheet_dates"]
     )
     # The dimension rows and the start note still close the message.
-    assert first[-1]["text"].startswith("Start with the nine tiles")
+    assert first[-1]["text"].startswith("The nine tiles are above")
 
 
 def test_a_single_file_upload_with_no_design_adds_no_cross_check(tmp_path: Path) -> None:
