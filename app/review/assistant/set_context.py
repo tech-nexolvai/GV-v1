@@ -32,6 +32,7 @@ __all__ = [
     "MAX_NOTES",
     "MAX_TAGS",
     "MIN_FAMILY_PAGES",
+    "ONE_DIGIT_FAMILIES",
     "SCOPE",
     "TAG",
     "FinishDifference",
@@ -45,10 +46,19 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-#: A finish, material or item tag as drafters print it: letters, an optional dash, 2-3 digits, an
-#: optional letter and an optional ".X" suffix (WD-04, ST-02, LA-007, MT-001.C, ML-018T.C,
-#: GVQZ-19, BOH-802.CT, SR433).
-TAG: Final = re.compile(r"\b[A-Z]{1,5}-?\d{2,3}[A-Z]?(?:\.[A-Z]{1,3})?\b")
+#: Finish and material families a schedule numbers from 1 (ST-3, PL-1, WD-2): their codes may have
+#: one digit. Any other prefix needs two or three, so a sheet or detail number (A-1, MW-1, S-1, D-2)
+#: never reads as a tag (Bluebeam's own warning: 1-2 character tags give inaccurate results).
+ONE_DIGIT_FAMILIES: Final = frozenset(
+    {"ST", "WD", "PL", "PLAM", "LA", "LAM", "MT", "SS", "GL", "HW", "QZ", "SP", "PT", "WV", "VN"}
+)
+_ONE_DIGIT: Final = "|".join(sorted(ONE_DIGIT_FAMILIES, key=lambda f: (-len(f), f)))
+#: A finish, material or item tag as drafters print it: letters, an optional dash, 2-3 digits (1-3
+#: in a `ONE_DIGIT_FAMILIES` family), an optional letter and an optional ".X" suffix (WD-04, ST-02,
+#: ST-3, PL-1, LA-007, MT-001.C, ML-018T.C, GVQZ-19, BOH-802.CT, SR433).
+TAG: Final = re.compile(
+    rf"\b(?:(?:{_ONE_DIGIT})-?\d{{1,3}}|[A-Z]{{1,5}}-?\d{{2,3}})[A-Z]?(?:\.[A-Z]{{1,3}})?\b"
+)
 #: A "who supplies it" note: by GV, the GC, the owner or others; not in contract; provided by.
 SCOPE: Final = re.compile(
     r"\b(?:by|provided by|supplied by|furnished by|installed by)\s+"
@@ -71,8 +81,9 @@ FAMILY_PAGE_SHARE: Final = 0.2
 MAX_FAMILY_CODES: Final = 6
 #: Who made the cross-sheet findings (the chat finding's `created_by`; a please-check maker).
 CREATED_BY: Final = "set_check"
-#: A tag's family, number, letter and suffix (`MT-001.C`: MT, 001, "", .C; `GRT-801T`: GRT, 801, T).
-_PARTS: Final = re.compile(r"^([A-Z]{1,5})-?(\d{2,3})([A-Z]?)(\.[A-Z]{1,3})?$")
+#: A tag's family, number, letter and suffix (`MT-001.C`: MT, 001, "", .C; `GRT-801T`: GRT, 801, T;
+#: `ST-3`: ST, 3). One digit only in a `ONE_DIGIT_FAMILIES` family (`_split`).
+_PARTS: Final = re.compile(r"^([A-Z]{1,5})-?(\d{1,3})([A-Z]?)(\.[A-Z]{1,3})?$")
 #: The printed sizes listed for an item's other drawing, at most.
 _MAX_SIZES: Final = 24
 #: A seam as drafters print it on a countertop drawing.
@@ -95,15 +106,23 @@ def scope_notes(phrases: Sequence[Mapping[str, Any]]) -> list[str]:
     return out
 
 
-def family_of(tag: str) -> str | None:
+def _split(tag: str) -> re.Match[str] | None:
+    """A tag's parts (`_PARTS`), or `None` for what `TAG` would not read (`A-1`, `MW-1`)."""
     found = _PARTS.match(tag)
+    if found is None or (len(found.group(2)) == 1 and found.group(1) not in ONE_DIGIT_FAMILIES):
+        return None
+    return found
+
+
+def family_of(tag: str) -> str | None:
+    found = _split(tag)
     return found.group(1) if found else None
 
 
 def item_key(tag: str) -> str | None:
     """What makes an item's drawings one item: family and number (`BOH-802.C` and `BOH-802.CT`,
     `GRT-801` and `GRT-801T`, `ML-018.C` and `ML-018T.C`: the same key)."""
-    found = _PARTS.match(tag)
+    found = _split(tag)
     return f"{found.group(1)}-{int(found.group(2))}" if found else None
 
 
