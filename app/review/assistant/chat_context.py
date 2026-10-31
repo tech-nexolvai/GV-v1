@@ -19,10 +19,17 @@ output it no longer needs. claude.ai and Claude Code clear them; so does this:
   the findings reported and the files handed over) and the answer starts from that summary instead
   of the history: simple compaction, which replays nothing older, so no earlier thinking is sent
   out of its conversation.
+- **One agent's long run of tool calls** (the page reviewer, `tool_result_edits`): a reviewer has
+  only two or three "turns" (its first message and code's notes), so keeping turns cleared nothing
+  (2026-10-31: every call re-read every zoom picture). There the boundary is counted in tool uses
+  and moves in batches: the oldest tool results are cleared only once a whole batch of at least
+  `clear_at_least` tokens lies before the last `keep` tool uses, so a clear is rare and large and
+  the cached prefix holds between clears; the tools named in `exclude` are never cleared.
 """
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
@@ -35,6 +42,7 @@ __all__ = [
     "context_keep_turns",
     "context_tokens",
     "history_summary",
+    "tool_result_edits",
     "turn_starts",
 ]
 
@@ -138,6 +146,104 @@ def context_edits(
         }
     )
     return {"edits": edits}
+
+
+#: A picture's tokens (`tool_result_edits`): one per 28 x 28 pixel patch, and when its size is not
+#: known, a full picture of the page reviewer's (1600 x 1132 px).
+_PATCH_PX: Final = 28
+_UNKNOWN_PICTURE_TOKENS: Final = 2_400
+#: Characters of text per token, about (a tool result's words).
+_CHARS_PER_TOKEN: Final = 4
+
+
+def _picture_tokens(block: Mapping[str, Any]) -> int:
+    source = block.get("source")
+    if isinstance(source, Mapping):
+        try:
+            width, height = int(source["width"]), int(source["height"])
+        except (KeyError, TypeError, ValueError):
+            return _UNKNOWN_PICTURE_TOKENS
+        if width > 0 and height > 0:
+            return math.ceil(width / _PATCH_PX) * math.ceil(height / _PATCH_PX)
+    return _UNKNOWN_PICTURE_TOKENS
+
+
+def _result_tokens(block: Mapping[str, Any]) -> int:
+    """A tool result's tokens, about: its pictures by their size, its words by their length."""
+    content = block.get("content")
+    if isinstance(content, str):
+        return len(content) // _CHARS_PER_TOKEN
+    if not isinstance(content, list):
+        return 0
+    total = 0
+    for part in content:
+        if not isinstance(part, Mapping):
+            continue
+        if part.get("type") == "image":
+            total += _picture_tokens(part)
+        elif part.get("type") == "text":
+            total += len(str(part.get("text") or "")) // _CHARS_PER_TOKEN
+    return total
+
+
+def _tool_uses(messages: Sequence[Mapping[str, Any]]) -> list[tuple[str, int]]:
+    """Every tool use in the conversation, in order: its tool's name and its result's tokens."""
+    sizes: dict[str, int] = {}
+    for message in messages:
+        content = message.get("content")
+        if message.get("role") != "user" or not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, Mapping) and block.get("type") == "tool_result":
+                sizes[str(block.get("tool_use_id"))] = _result_tokens(block)
+    uses: list[tuple[str, int]] = []
+    for message in messages:
+        content = message.get("content")
+        if message.get("role") != "assistant" or not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, Mapping) and block.get("type") == "tool_use":
+                uses.append((str(block.get("name")), sizes.get(str(block.get("id")), 0)))
+    return uses
+
+
+def tool_result_edits(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    trigger: int,
+    keep: int,
+    clear_at_least: int,
+    exclude: Sequence[str] = (),
+) -> dict[str, Any]:
+    """The `context_management` of one agent's call in a long run of tool calls: old tool results
+    cleared once the prompt passes `trigger` tokens, in batches of at least `clear_at_least`
+    tokens, always keeping the last `keep` tool uses and never clearing the tools in `exclude`.
+
+    The batches are counted from the conversation's start (its history is append-only), so the
+    boundary moves only when a whole new batch lies before the last `keep` uses: between clears
+    every call clears exactly the same blocks and the prompt cache holds. The API is told to keep
+    every tool use after that boundary (at least `keep`); counted with or without the excluded
+    tools, that never clears past it."""
+    uses = _tool_uses(messages)
+    excluded = set(exclude)
+    boundary = 0
+    gathered = 0
+    for index, (name, tokens) in enumerate(uses):
+        if index >= len(uses) - keep:
+            break
+        if name not in excluded:
+            gathered += tokens
+        if gathered >= clear_at_least:
+            boundary, gathered = index + 1, 0
+    edit: dict[str, Any] = {
+        "type": "clear_tool_uses_20250919",
+        "trigger": {"type": "input_tokens", "value": trigger},
+        "keep": {"type": "tool_uses", "value": max(1, keep, len(uses) - boundary)},
+        "clear_at_least": {"type": "input_tokens", "value": clear_at_least},
+    }
+    if excluded:
+        edit["exclude_tools"] = sorted(excluded)
+    return {"edits": [edit]}
 
 
 # ---- the fallback: a code-written summary of the earlier turns -----------------------------------

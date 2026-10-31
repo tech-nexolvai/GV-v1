@@ -755,6 +755,9 @@ class _Reply:
     transformations: list[dict[str, Any]] = field(default_factory=list)
     """What the API did to the request's history before the model read it (thinking blocks it
     dropped), from `input_transformations` (sent with the thinking-binding beta)."""
+    applied_edits: list[dict[str, Any]] = field(default_factory=list)
+    """The context edits the API applied to the request (`context_management.applied_edits`, on
+    the final `message_delta`): what server-side clearing removed, for the run's log."""
 
     def history_content(self) -> list[dict[str, Any]]:
         """The content to send back. After a refusal fallback, the declined model's thinking and
@@ -849,6 +852,7 @@ def _accumulate(
     model: str | None = None
     bad: set[int] = set()
     transformations: list[dict[str, Any]] = []
+    applied: list[dict[str, Any]] = []
     for event in events:
         if cancelled():
             raise _Cancelled
@@ -916,6 +920,9 @@ def _accumulate(
             _merge_usage(usage, event.get("usage"))
             # Sent again here after a fallback in the middle of the stream: the later list wins.
             transformations = _transformations(event.get("input_transformations"), transformations)
+            managed = event.get("context_management")
+            if isinstance(managed, Mapping):
+                applied = _transformations(managed.get("applied_edits"), applied)
         if display is not None:
             display(event)
     # A tool call whose input never finished (cut at max_tokens) is not run.
@@ -929,6 +936,7 @@ def _accumulate(
         model=model,
         bad_inputs={id(content[n]) for n in bad if n < len(content)},
         transformations=transformations,
+        applied_edits=applied,
     )
 
 
