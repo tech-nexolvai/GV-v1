@@ -1442,9 +1442,10 @@ def _paired_brief(
     return ready
 
 
-def remaining_plan(plan: Any, done: Collection[int]) -> Any:
+def remaining_plan(plan: Any, done: Collection[int], *, look: bool = True) -> Any:
     """`plan` with the pages in `done` taken out of every job, the jobs left with no page dropped
-    and numbered again from 1 (before `with_lenses`, which pairs the lenses by number)."""
+    and numbered again from 1 (before `with_lenses`, which pairs the lenses by number). `look`:
+    the pages taken out stay their job's reference pages."""
     from dataclasses import replace
 
     from app.review.assistant.full_check_plan import FanOutPlan
@@ -1456,7 +1457,7 @@ def remaining_plan(plan: Any, done: Collection[int]) -> Any:
             continue
         # A page carried over is still looked at (an architect-only page is the reference for
         # its area's vendor pages left, #1837), never compared again.
-        kept = tuple((job.file, page) for page in job.pages if page in done)
+        kept = tuple((job.file, page) for page in job.pages if look and page in done)
         jobs.append(
             replace(
                 job,
@@ -1468,6 +1469,37 @@ def remaining_plan(plan: Any, done: Collection[int]) -> Any:
             )
         )
     return FanOutPlan(tuple(jobs), plan.skipped)
+
+
+def picked_plan(plan: Any, picked: Collection[int]) -> Any:
+    """`plan` cut to a full check's picked pages (`EngineSettings.pages`): the other pages leave
+    every job (not even looked at) and only the picked pages' own notes stay."""
+    wanted = set(picked)
+    planned = {page for job in plan.jobs for page in job.pages}
+    cut = remaining_plan(plan, planned - wanted, look=False)
+    return replace(cut, skipped=tuple(item for item in plan.skipped if item[0] in wanted))
+
+
+def nothing_picked(engine: ChatEngine, picked: Sequence[int]) -> MessageOutcome:
+    """The stored answer of a full check whose picked pages hold no vendor drawing it compares:
+    stopped before any paid step."""
+    from app.review.assistant.chat_engine import MessageOutcome
+    from app.review.assistant.chat_findings import page_ranges
+
+    text = (
+        f"Nothing was compared: pages {page_ranges(picked)} hold no vendor drawing this check "
+        "compares (a title, divider or architect's page, or another product). Pick the vendor's "
+        "drawing pages."
+    )
+    index = engine._add_block({"type": "text", "text": text, "by": "code"})
+    engine.emit("text_delta", {"index": index, "text": text, "by": "code"})
+    return MessageOutcome(
+        text=text,
+        blocks=engine.stored_blocks(),
+        api_content=[],
+        cost_micros=engine.spent,
+        stopped="cancelled",
+    )
 
 
 #: What Continue does for a roster full check that did not finish (#1821), in plain words.
@@ -2382,6 +2414,12 @@ class _Run:
             warm.result()
         if plan is None:
             return None  # no page map: the lead plans, as before (nothing was done yet)
+        if settings.pages:
+            # A full check on picked pages (a fix's test, Anant 2026-10-31): only they are
+            # compared and priced; the other pages are no part of this check.
+            plan = picked_plan(plan, settings.pages)
+            if not plan.jobs:
+                return nothing_picked(engine, settings.pages)
         # Before any paid step: the pre-flight report, code's stops and the supervisor's look;
         # a stop pauses the check here (nothing spent but the look), exact copies are dropped.
         from app.review.assistant import plan_supervisor as supervisor
@@ -4024,7 +4062,9 @@ class _Run:
                     "tool": (
                         "chat proof"
                         if answer.get("chat_proof") is not None
-                        else "read_number" if answer.get("read_number") else "verify_value"
+                        else "read_number"
+                        if answer.get("read_number")
+                        else "verify_value"
                     ),
                     "value": value,
                     "result": answer.get("result"),

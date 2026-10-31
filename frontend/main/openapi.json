@@ -5095,6 +5095,25 @@
             "title": "Model",
             "type": "string"
           },
+          "pages": {
+            "anyOf": [
+              {
+                "items": {
+                  "maximum": 2000.0,
+                  "minimum": 1.0,
+                  "type": "integer"
+                },
+                "maxItems": 200,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A roster full check only (Anant, 2026-10-31): compare only these vendor pages (a test of a fix on the pages it touches); every step runs as in a whole-set check, on these pages, and the price counts only them. Not given: the whole set.",
+            "title": "Pages"
+          },
           "pilot": {
             "anyOf": [
               {

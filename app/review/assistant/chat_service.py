@@ -779,9 +779,9 @@ def vendor_page_titles(chat_root: Path, package_id: UUID) -> list[dict[str, Any]
 
 #: The set packs' dimension labels last read (`pack_labels`), by `dims.json` path, with its size
 #: and change time: a result read again does not parse the pack's labels again.
-_PACK_LABELS: dict[Path, tuple[tuple[int, int], dict[tuple[str, int], list[Mapping[str, Any]]]]] = (
-    {}
-)
+_PACK_LABELS: dict[
+    Path, tuple[tuple[int, int], dict[tuple[str, int], list[Mapping[str, Any]]]]
+] = {}
 _PACK_LABELS_KEPT: Final = 4
 _PACK_LABELS_LOCK = threading.Lock()
 
@@ -1158,9 +1158,13 @@ def prepare_skill(
     _readable(skill)
 
 
-def full_check_label(products: Sequence[str], effort: str) -> str:
-    """The question a full check shows: "Full check · Countertops · High effort"."""
-    return f"Full check \u00b7 {products_words(products)} \u00b7 {effort.capitalize()} effort"
+def full_check_label(products: Sequence[str], effort: str, pages: Sequence[int] = ()) -> str:
+    """The question a full check shows: "Full check \u00b7 Countertops \u00b7 High effort", and the
+    picked pages when it checks only some ("\u2026 \u00b7 Pages 4-5, 12")."""
+    label = f"Full check \u00b7 {products_words(products)} \u00b7 {effort.capitalize()} effort"
+    if pages:
+        label += f" \u00b7 {'Page' if len(pages) == 1 else 'Pages'} {page_ranges(pages)}"
+    return label
 
 
 def focus_line(products: Sequence[str], unruled: Sequence[str] = ()) -> str:
@@ -1223,6 +1227,9 @@ class MessageJob:
     mode: str = "chat"
     products: tuple[str, ...] | None = None
     """The products picked in the composer, else the set's own (`None`: not stated)."""
+    pages: tuple[int, ...] = ()
+    """A roster full check on picked vendor pages only (a fix's test, Anant 2026-10-31); empty:
+    the whole set."""
     continue_from: UUID | None = None
     """Continue (#1514): the interrupted answer whose work this message goes on from."""
     drawn_helpers: bool = False
@@ -1460,7 +1467,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
     # `message_start` already shows the chat, titled by its first question.
     try:
         shown = (
-            full_check_label(job.products or (), job.effort)
+            full_check_label(job.products or (), job.effort, job.pages)
             if job.mode == "full_check"
             else job.text
         )
@@ -1489,6 +1496,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         "thinking": job.thinking,
         "mode": job.mode,
         "products": None if job.products is None else list(job.products),
+        "pages": list(job.pages),
         # How Continue picks it up (`resume_of`): a simple check replays its saved answers.
         "full_check_mode": job.full_check_mode if job.mode == "full_check" else None,
     }
@@ -1703,6 +1711,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             rates=job.rates,
             mode=job.mode,
             products=job.products or (),
+            pages=job.pages if job.mode == "full_check" else (),
             drawn_helpers=job.drawn_helpers,
             roster=job.roster,
             price_rule=job.price_rule,

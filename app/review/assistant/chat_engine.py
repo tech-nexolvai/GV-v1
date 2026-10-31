@@ -641,6 +641,9 @@ class EngineSettings:
     """`chat`, or `full_check` (CONTRACT4): GV's recorded differences are made findings at the
     start, and code makes the cloud drawing and the check report at the end."""
     products: tuple[str, ...] = ()
+    pages: tuple[int, ...] = ()
+    """A roster full check on these vendor pages only (a fix's test, Anant 2026-10-31): every
+    whole-set step runs, on these pages; empty: the whole set."""
     drawn_helpers: bool = False
     """A full check's second, drawn-things helper per page group (#1569,
     `GV_ASSISTANT_DRAWN_HELPERS`)."""
@@ -1145,6 +1148,7 @@ class ChatEngine:
         self._asked_scope = question_scope(
             question_of(user_content),
             mode=settings.mode,
+            picked=settings.pages,
             page_map=load_page_map(tools.workspace.set_folder),
             page_count=self.book.page_count,
             main_file=self.book.main_file,
@@ -2201,7 +2205,11 @@ class ChatEngine:
 
     def _whole_set_work(self) -> bool:
         """Whole-set work (a full check, or a whole-set answer that used coverage): only it gets
-        the "every page, every recorded difference" checks."""
+        the "every page, every recorded difference" checks. A full check on picked pages is
+        whole-set work on its pages (its coverage and recorded differences are theirs only)."""
+        if self.settings.mode == "full_check" and self.settings.pages:
+            self.scope()  # the coverage map and recorded differences cut to its pages
+            return True
         if not is_whole_set(self.scope()):
             return False
         return self.settings.mode == "full_check" or self.book.coverage_used
@@ -2231,6 +2239,9 @@ class ChatEngine:
                 loaded = loader(None)
                 document = loaded if isinstance(loaded, Mapping) else None
                 recorded = recorded_from(loaded)
+                if self.settings.mode == "full_check" and self.settings.pages:
+                    # A full check on picked pages: GV's recorded differences on them only.
+                    recorded = scoped_recorded(recorded, frozenset(self.settings.pages))
             except Exception as failed:  # noqa: BLE001 - the report says it could not be read
                 _log.warning("assistant chat could not read the records: %s", type(failed).__name__)
         with self._lock:
@@ -2958,8 +2969,9 @@ class ChatEngine:
         return out
 
     def _recorded_results_check(self) -> dict[str, Any] | None:
-        """The ledger's "never drop a recorded result" check (whole-set work only)."""
-        if not self._whole_set_work():
+        """The ledger's "never drop a recorded result" check (whole-set work only; not a full
+        check on picked pages: the ledger's document is the whole set's)."""
+        if not self._whole_set_work() or self.settings.pages:
             return None
         self._recorded_checks()
         with self._lock:
