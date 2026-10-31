@@ -498,8 +498,9 @@ PAGE_LINES: Final[Mapping[str, Any]] = {
 REPORT_ISSUE: Final[Mapping[str, Any]] = {
     "name": "report_issue",
     "description": (
-        "Report one issue on this page, as soon as it is confirmed. One call per issue. The box is "
-        "on this page (where the problem shows here); name another page in the words."
+        "Report one issue on this page, as soon as it is confirmed, once all nine tiles were "
+        "zoomed (a report before that is refused). One call per issue. The box is on this page "
+        "(where the problem shows here); name another page in the words."
     ),
     "input_schema": {
         "type": "object",
@@ -1610,8 +1611,9 @@ class _Run:
         content.append(
             {
                 "type": "text",
-                "text": "Start with the nine tiles (zoom with tile 1-9), then zoom tight on every "
-                "dimension string, callout and tag.",
+                "text": "Start with the nine tiles (zoom with tile 1-9; up to six crops in one "
+                "zoom call), then zoom tight on every dimension string, callout and tag. Issues "
+                "are taken once all nine tiles were zoomed.",
             }
         )
         return content
