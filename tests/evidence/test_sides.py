@@ -331,11 +331,19 @@ def test_a_page_with_no_drawings_takes_the_uploads_kind(
 
 
 def test_a_schedule_reading_takes_no_part(session: Session, store: LocalStore) -> None:
+    """GV's project schedule is never read as a drawing (the stages skip it, 2026-11-01): it has
+    no pages, so no reading of it can take a side."""
     revision = _read(session, store, kind="schedule")
 
-    side = _side(session, revision, '24"')
-    assert isinstance(side, SideRefusal)
-    assert side.reason is SideRefusalReason.NOT_COMPARED
+    pages = session.execute(
+        select(Page)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == Page.document_version_id,
+        )
+        .where(PackageRevisionDocument.package_revision_id == revision.id)
+    ).all()
+    assert pages == []
 
 
 def test_a_one_drawing_page_in_a_two_pdf_package_takes_the_uploads_side_until_confirmed(

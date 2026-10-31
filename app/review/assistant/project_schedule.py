@@ -152,7 +152,7 @@ ROLES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = tuple(
         ("scope", r"\bSCOPE\b|\b(?:SUPPLIED|PROVIDED|FURNISHED|INSTALLED)\s*BY\b|^BY$|\bRESPONSIB"),
         ("room", r"\bROOMS?\b|\bAREAS?\b|\bLOCATIONS?\b|\bSPACES?\b"),
         ("tag", r"^(?:TAGS?|CODES?|MARKS?|SYMBOLS?|KEY|ID|NO\.?|#)$"),
-        ("material", r"\bMATERIALS?\b|\bFINISH(?:ES)?\b"),
+        ("finish_words", r"\bMATERIALS?\b|\bFINISH(?:ES)?\b"),
         (
             "description",
             (
@@ -442,7 +442,7 @@ def rows_of(grid: Grid) -> tuple[list[FinishEntry], list[ItemEntry]]:
             tops = _cells(row, roles, "countertop")
             top = next((t for c in tops if (t := _item_number(c)) is not None), None)
             scope = "; ".join(_cells(row, roles, "scope"))
-            kept = ("material",) if "item" in kinds else ()
+            kept = ("finish_words",) if "item" in kinds else ()
             tagged = [t for c in _cells(row, roles, "tag", *kept) for t in tags_in(c.upper())]
             items.append(
                 ItemEntry(
@@ -461,7 +461,9 @@ def rows_of(grid: Grid) -> tuple[list[FinishEntry], list[ItemEntry]]:
         tag = _finish_tag(row[key]) if 0 <= key < len(row) else None
         if tag is None:
             continue
-        words = [c for c in _cells(row, roles, "material", "description") if _finish_tag(c) != tag]
+        words = [
+            c for c in _cells(row, roles, "finish_words", "description") if _finish_tag(c) != tag
+        ]
         if words:
             finishes.append(
                 FinishEntry(tag, "; ".join(words), "; ".join(_cells(row, roles, "scope")), where)
