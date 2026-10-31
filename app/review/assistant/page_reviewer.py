@@ -43,7 +43,10 @@ tokens. Its tools: `view_page`, `zoom` (GV's own zoom: the drawings-only copy, G
 5. a self-check (reflection) with money kept for it (`REVIEW_SHARE`): each red and each
    low-confidence draft drawn close up by code into the self-check's message (at most
    `MAX_SELFCHECK_ZOOMS`), then kept, fixed or dropped after that picture or a tight zoom near it
-   since it was reported (the rest are kept as reported);
+   since it was reported (the rest are kept as reported); or, with `GV_ASSISTANT_SEPARATE_VERIFIER`
+   (off by default, plan M7b), the same drafts asked about in a separate short conversation after
+   the review (`selfcheck_verifier`: confirmed / not_shown / cannot_tell and a score 0-10 per draft;
+   it can drop a draft or hold a red back to a please-check, never make one);
 6. a final "report what you have" turn when the review's money is used, so nothing found is lost.
 
 It reports **as it finds** (`report_issue` records the item at once): a stop keeps every item.
@@ -110,6 +113,7 @@ from app.review.assistant import (
     filler_facts,
     likely_problems,
     reviewer_context,
+    selfcheck_verifier,
     title_block,
     view_questions,
 )
@@ -323,6 +327,9 @@ class Options:
     """GV's folder of reference pictures (`reviewer_context.reference_pictures`: its rule
     pictures and examples of what its reviewer marks), put first in every page's first message
     when given (off by default, `GV_ASSISTANT_PAGE_REVIEWER_PICTURES`)."""
+    separate_verifier: bool = False
+    """The self-check as its own short conversation after the review (`selfcheck_verifier`, plan
+    M7b) instead of inside the reviewer's (off by default, `GV_ASSISTANT_SEPARATE_VERIFIER`)."""
 
 
 # ---- the brief ------------------------------------------------------------------------------------
@@ -1302,7 +1309,8 @@ class Draft:
     """The finding it recorded; `None` when it joined one already recorded (`joined`)."""
     joined: str | None = None
     status: str = "draft"
-    """draft, kept, fixed, dropped, or kept_unreflected (the self-check never reached it)."""
+    """draft, kept, fixed, dropped, kept_unreflected (the self-check never reached it), or
+    held_back (a red the separate verifier did not confirm, kept as a please-check)."""
     why: str | None = None
     whole_view: bool = False
     """Reported as an issue about a whole view (`_tight`): a fix keeps the allowance."""
@@ -1315,6 +1323,10 @@ class Draft:
     zooms_at: int = 0
     """How many zooms were made when it was reported: a tight zoom near its evidence made since
     then is a fresh look for the self-check (`_Run._resolve`)."""
+    verdict: str | None = None
+    score: int | None = None
+    """The separate verifier's answer (`selfcheck_verifier`): confirmed, not_shown or
+    cannot_tell, and its score 0-10 (`None`: not asked, or no score given)."""
 
     def line(self) -> str:
         box = [round(v) for v in self.box]
@@ -1401,6 +1413,15 @@ class PageReview:
     questions: list[Any] = field(default_factory=list)
     answers: dict[str, str] = field(default_factory=dict)
     question_nudges: int = 0
+    #: The separate verifier (`selfcheck_verifier`, `Options.separate_verifier`): its calls and
+    #: spend, its answers by verdict ("unanswered" too), the reds it held back, the drafts it
+    #: dropped with its reason, and why it stopped short ("money", "error", "unreadable").
+    verifier_calls: int = 0
+    verifier_spent: int = 0
+    verdicts: dict[str, int] = field(default_factory=dict)
+    held_back: int = 0
+    verifier_dropped: list[dict[str, Any]] = field(default_factory=list)
+    verifier_skipped: str | None = None
 
     # -- coverage --
 
@@ -1470,6 +1491,8 @@ class PageReview:
             if asked is not None:
                 return asked
             return self.begin_reflection("")
+        if self.options.separate_verifier:
+            return None  # the drafts are settled by the separate verifier, after this turn
         live = [d for d in self.drafts if d.status == "draft"]
         if live and self.reflect_nudges < MAX_REFLECT_NUDGES:
             self.reflect_nudges += 1
@@ -1484,7 +1507,11 @@ class PageReview:
         """The self-check's first message (`None`: nothing to settle, the review ends). Only a
         red (claim wrong) or a low-confidence draft is re-checked; the rest are kept as reported
         (the run of 2026-10-30: the self-check took about a quarter of each page's money and
-        dropped 0-1 issues a page, money the review itself lacked)."""
+        dropped 0-1 issues a page, money the review itself lacked). With the separate verifier on
+        (`Options.separate_verifier`) there is none here: the review ends and code asks the
+        verifier after it (`selfcheck_verifier.verify`)."""
+        if self.options.separate_verifier:
+            return None
         for draft in self.drafts:
             if draft.status == "draft" and not _worth_reflecting(draft):
                 draft.status = "kept_unreflected"
@@ -1545,6 +1572,10 @@ class PageReview:
             "Time is up for the review itself. Report with report_issue every issue you found "
             "and have not reported yet, then finish with a two-line summary."
         )
+
+
+#: A draft's statuses that keep its card (`Draft.status`).
+KEPT_STATUSES: Final = ("kept", "fixed", "kept_unreflected", "held_back")
 
 
 def _worth_reflecting(draft: Draft) -> bool:
@@ -1760,6 +1791,10 @@ class _Run:
                 break
             _append_note(messages, note)
             self._send_pending(messages)
+        if review.options.separate_verifier and stopped != "cancelled":
+            # The self-check as its own short conversation (plan M7b): it can only drop a draft
+            # or hold a red back, never make one.
+            selfcheck_verifier.verify(self)
         for draft in review.drafts:
             if draft.status == "draft":
                 draft.status = "kept_unreflected"
@@ -1814,7 +1849,7 @@ class _Run:
 
     def summary(self, report: str, stopped: str | None) -> str:
         review = self.review
-        kept = sum(1 for d in review.drafts if d.status in ("kept", "fixed", "kept_unreflected"))
+        kept = sum(1 for d in review.drafts if d.status in KEPT_STATUSES)
         dropped = sum(1 for d in review.drafts if d.status == "dropped")
         head = (
             f"Page review of page {review.page}: {kept} issue(s) reported"
@@ -2273,18 +2308,20 @@ class _Run:
         page: int | None = None,
         file: str | None = None,
         for_draft: int | None = None,
+        edge: int = PICTURE_EDGE_PX,
     ) -> list[dict[str, Any]]:
         """One area drawn by GV's zoom (the drawings-only copy), at most `PICTURE_EDGE_PX` long.
         `zoomed`: it counts as a zoom (tiles, coverage), with the dpi it was drawn at; the whole
         page never does. `page`: another page of the set (never counted toward this page's
         coverage). `file`: another upload (the design set, `design_reference`). `for_draft`: code
         drew it of that draft's evidence for the self-check (`_resolve` takes it as a fresh look).
+        `edge`: its longest side in pixels (the separate verifier's close-ups are smaller).
         """
         from app.review.assistant.chat_tools import new_step
 
         review = self.review
-        edge = max(1.0, box[2] - box[0], box[3] - box[1])
-        dpi = max(72, min(600, int(PICTURE_EDGE_PX * 72 / edge)))
+        longest = max(1.0, box[2] - box[0], box[3] - box[1])
+        dpi = max(72, min(600, int(min(edge, PICTURE_EDGE_PX) * 72 / longest)))
         crop = {
             "page": review.page if page is None else page,
             "file": review.file if file is None else file,
@@ -2985,6 +3022,8 @@ class _Run:
         review = self.review
         if review.phase != "reflect":
             raise _Refused("resolve_finding is for the self-check, after your review")
+        if review.options.separate_verifier:
+            raise _Refused("not needed: code checks the reported issues after your review")
         try:
             n = int(given.get("n"))  # type: ignore[arg-type]
         except (TypeError, ValueError):
@@ -3285,11 +3324,7 @@ class Reviews:
                     "tight_zooms": len(review.tight_boxes()),
                     "zooms": len(review.zooms),
                     "issues": len(review.drafts),
-                    "kept": sum(
-                        1
-                        for d in review.drafts
-                        if d.status in ("kept", "fixed", "kept_unreflected")
-                    ),
+                    "kept": sum(1 for d in review.drafts if d.status in KEPT_STATUSES),
                     "dropped": sum(1 for d in review.drafts if d.status == "dropped"),
                     "nudges": review.nudges,
                     "stop": review.stop,
@@ -3306,12 +3341,28 @@ class Reviews:
                     "code_labels": len(review.labels),
                     "tiles_sent_in_opening": review.tiles_in_opening,
                     "code_zooms_for_selfcheck": review.code_zooms,
+                    **_verifier_log(review),
                     "context_clears": review.context_clears,
                     **review.knowledge,
                     **view_questions.log_fields(review),
                 }
             )
         return {"pages": rows, "cut_by_money": list(self.cut_by_money)}
+
+
+def _verifier_log(review: PageReview) -> dict[str, Any]:
+    """The separate verifier's part of a page's log row (`selfcheck_verifier`)."""
+    return {
+        "verifier_calls": review.verifier_calls,
+        "verifier_spent_usd": round(review.verifier_spent / 1_000_000, 4),
+        **{
+            f"verifier_{v}": review.verdicts.get(v, 0)
+            for v in (*selfcheck_verifier.VERDICTS, "unanswered")
+        },
+        "verifier_held_back": review.held_back,
+        "verifier_dropped": [dict(row) for row in review.verifier_dropped],
+        "verifier_skipped": review.verifier_skipped,
+    }
 
 
 #: A call's usage fields, as the run's log names them.
