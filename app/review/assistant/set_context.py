@@ -25,7 +25,11 @@ import time
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Final
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Final
+
+if TYPE_CHECKING:
+    from app.review.assistant.schedule_index import ScheduleIndex
 
 __all__ = [
     "CREATED_BY",
@@ -170,6 +174,11 @@ class SetContext:
     unread: list[int] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
     built: bool = False
+    #: The drawings-only PDF the pages are read from, for the ruled tables (`schedule_index`);
+    #: `None`: only the tables the text shows (unruled rows, labelled cells) are read.
+    pdf: Path | None = None
+    #: The set's material/finish tables and legend (`schedule_index`), read once in `build`.
+    schedule: ScheduleIndex | None = None
     _ready: threading.Event = field(default_factory=threading.Event)
     _started: bool = False
     #: Only for `_started`: `lock` is held for the whole read, and a reviewer asking whether the
@@ -227,7 +236,42 @@ class SetContext:
                     notes[note].append(page)
             self.tags = dict(tags)
             self.notes = dict(notes)
+            self.schedule = self._read_schedule()
             self.built = True
+        self._log_schedule()
+
+    def _read_schedule(self) -> ScheduleIndex | None:
+        """The set's tables (`schedule_index`), once; `None` when they cannot be read (the set's
+        other facts stand)."""
+        from app.review.assistant import schedule_index
+
+        try:
+            return schedule_index.build_index(self.pages, self.pdf)
+        except Exception:  # noqa: BLE001 - the set is reviewed without its tables, as before
+            _log.exception("set schedule: the tables of %s were not read", self.file)
+            return None
+
+    def _log_schedule(self) -> None:
+        """The schedule's counts in the run's log (once: right after `build` read the set)."""
+        if self.schedule is None:
+            return
+        from app.review.assistant import schedule_index
+
+        try:
+            _log.warning(
+                "set schedule: %s: %s", self.file, schedule_index.log_block(self.schedule, self)
+            )
+        except Exception:  # noqa: BLE001 - only the log line is lost
+            _log.exception("set schedule: the counts of %s were not logged", self.file)
+
+    def schedule_facts(self, page: int) -> list[str]:
+        """The schedule's please-check leads for `page` (`schedule_index.facts`)."""
+        self.build()
+        if self.schedule is None:
+            return []
+        from app.review.assistant import schedule_index
+
+        return schedule_index.facts(self.schedule, self, page)
 
     def phrases(self, page: int) -> list[dict[str, Any]]:
         self.build()
@@ -407,6 +451,10 @@ class SetContext:
                 f"p{diff.other_page} ({diff.other_item}) tags {', '.join(diff.there)}. One of them "
                 "is wrong (please check)."
             )
+        try:
+            lines += self.schedule_facts(page)
+        except Exception:  # noqa: BLE001 - the other facts stand
+            _log.exception("set schedule: the facts of p%s were not made", page)
         if self.notes:
             lines.append('"Who supplies it" notes the set prints, with their pages:')
             ordered = sorted(self.notes.items(), key=lambda item: (-len(item[1]), item[0]))
@@ -464,13 +512,20 @@ def _box_dict(box: Sequence[float], page: int, file: str) -> dict[str, Any]:
 
 
 def _please_check(
-    context: SetContext, page: int, tag: str, item: str, wrong: str, should_be: str | None
+    context: SetContext,
+    page: int,
+    tag: str,
+    item: str,
+    wrong: str,
+    should_be: str | None,
+    spots: Sequence[Sequence[float]] | None = None,
 ) -> dict[str, Any] | None:
     """One cross-sheet please-check (kind finish, never red), at the tag's first spot on the
-    page, every other spot on the page listed under `also_on` (GV's reviewer marks each one)."""
+    page, every other spot on the page listed under `also_on` (GV's reviewer marks each one).
+    `spots`: where to mark instead (a table row's tag and description cells)."""
     from app.review.assistant import likely_problems
 
-    spots = context.occurrences(page, tag)
+    spots = list(spots) if spots else context.occurrences(page, tag)
     if not spots:
         return None
     words = f"{likely_problems.LETTER_LEAD}: {item}: {wrong}"
@@ -544,6 +599,56 @@ def check_page(context: SetContext, page: int) -> list[dict[str, Any]]:
             )
             if finding is not None:
                 out.append(finding)
+    out += _schedule_cards(context, page, out)
+    return out
+
+
+def _schedule_cards(
+    context: SetContext, page: int, made: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Code's please-check card at each table row of `page` that disagrees (`schedule_index`), only
+    while `schedule_index.SCHEDULE_RED` is on (off until measured; never red). A row whose tag a
+    card above already marks only adds its cells to that card's `also_on`."""
+    from app.review.assistant import schedule_index
+
+    if not schedule_index.red_on() or context.schedule is None:
+        return []
+    out: list[dict[str, Any]] = []
+    for found in schedule_index.disagreements(context.schedule, context, page):
+        row = found.row
+        spots = [row.box] + ([row.text_box] if row.text_box else [])
+        same = next((f for f in [*made, *out] if f.get("vendor") == row.tag), None)
+        if same is not None:
+            also = list(same.get("also_on") or [])
+            for spot in spots:
+                entry = {
+                    "page": page,
+                    "vendor": row.tag,
+                    "vendor_box": _box_dict(spot, page, context.file),
+                }
+                if entry["vendor_box"] != same.get("vendor_box") and entry not in also:
+                    also.append(entry)
+            if isinstance(same, dict):
+                same["also_on"] = also
+            continue
+        if found.against == "set":
+            other = "the set's other tables"
+            where = f"{other} ({', '.join(f'p{p}' for p in found.other_pages[:8])}) list"
+        else:
+            other = "the item's other drawing"
+            where = f"{other} (p{found.other_pages[0]}, {found.other_item}) lists"
+        finding = _please_check(
+            context,
+            page,
+            row.tag,
+            f"Material table row {row.tag}: disagrees with {other}",
+            f"This sheet's material table lists {row.tag} as '{row.description[:80]}'; {where} "
+            f"{found.other_tag} as '{found.other_description[:80]}'.",
+            f"{found.other_tag} '{found.other_description[:60]}', or the schedule's entry",
+            spots=spots,
+        )
+        if finding is not None:
+            out.append(finding)
     return out
 
 

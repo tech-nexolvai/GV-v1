@@ -3361,7 +3361,10 @@ def set_context_of(engine: Any, reviews: Reviews, file: str) -> SetContext:
     reader = import_module("app.review.assistant.under_markup")
     pdf = Path(pack.drawings_only(folder, workspace.uploads, file))
     pages = len(cache.page_sizes(folder / pack.HIRES, pdf))
-    return reviews.context_for(file, pages, lambda page: phrases(reader.page_words(pdf, page)))
+    context = reviews.context_for(file, pages, lambda page: phrases(reader.page_words(pdf, page)))
+    if context.pdf is None:
+        context.pdf = pdf  # its ruled tables (`schedule_index`), read with the rest of the set
+    return context
 
 
 def roster_agents(run: Any, pages: Sequence[int], money: int, reviews: Reviews) -> list[Any]:
