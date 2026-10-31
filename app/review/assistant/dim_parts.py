@@ -15,7 +15,8 @@ part it measures, the way a drafter reads it, and only when the drawing proves e
    L or a T), or a collinear piece that begins there; a line merely crossing it, or another
    dimension's line, is not one. From the corner on, the collinear line is the **object edge** (at
    least `MIN_EDGE_PT`). Both lines are walked to the same side of the dimension line, and both
-   edges must lie in one drawing (a view, `views_of`). Anything unclear: no edge, no part.
+   edges must lie in one drawing (a view, `views_of`: the page split the one way
+   `view_questions` splits it, `page_views`). Anything unclear: no edge, no part.
 2. **The part callout.** The page's phrases with a part word (`PART_WORDS`: TOP, SPLASH, TOE KICK,
    END PANEL, FILLER, DOOR, DRAWER, SHELF, BIN, PANEL, CABINET, SINK, CUT-OUT...), stacked lines
    joined into one callout; view titles, notes and the title block are not callouts. Its
@@ -153,19 +154,6 @@ TIP_MARGIN_PT: Final = 3.0
 #: Stacked lines of one callout: at most this far apart (points) and aligned on one side.
 STACK_GAP_PT: Final = 2.5
 STACK_ALIGN_PT: Final = 4.0
-#: The line work's pieces join into one drawing (a view) when they pass within this (points); a
-#: drawing has at least `MIN_PIECES` pieces and is not the border (`PAGE_SHARE` of the page).
-JOIN_PT: Final = 3.0
-MIN_PIECES: Final = 12
-PAGE_SHARE: Final = 0.5
-#: A view title sits under its drawing at most this far (points); its bubble beside it.
-TITLE_BELOW_PT: Final = 80.0
-MARKER_PT: Final = 30.0
-TITLE_JOIN_PT: Final = 60.0
-#: A drawing thinner than this (points) is a dimension chain, a bubble or a fixture: it belongs to
-#: the view it lies in or beside, within `THIN_GAP_PT`.
-THIN_PT: Final = 40.0
-THIN_GAP_PT: Final = 20.0
 #: Lines in the reviewer's facts, at most.
 MAX_LINK_LINES: Final = 30
 MAX_DISAGREEMENTS: Final = 12
@@ -222,7 +210,6 @@ _TITLE: Final = re.compile(r"\b(VIEW|ELEVATION|SECTION|PLAN|DETAIL)\b", re.IGNOR
 _NOT_TITLE: Final = re.compile(r"/|\bSEE\b|\bSCALE\b|\bTYP", re.IGNORECASE)
 #: A general note is not a part callout ("NOTE-MOUNTING CLEATS AND ACCESSORIES ...").
 _NOTE: Final = re.compile(r"^\s*(?:GENERAL\s+)?NOTES?\b", re.IGNORECASE)
-_MARKER: Final = re.compile(r"^(?:[A-Z]|[A-Z]?\d{1,2})$")
 _TITLE_BLOCK: Final = re.compile(
     r"\b(?:PROJECT|DESCRIPTION|ITEM\s*NO|OVERALL\s*SIZE|DRAWN|DATE|PAGE|SHEET|REV|SCALE|"
     r"COPYRIGHT|MATERIAL\s*SPEC|QTY)\b",
@@ -359,12 +346,6 @@ def _centre(box: Sequence[float]) -> Point:
     return (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
 
 
-def _gap(a: Sequence[float], b: Sequence[float]) -> float:
-    dx = max(0.0, max(a[0], b[0]) - min(a[2], b[2]))
-    dy = max(0.0, max(a[1], b[1]) - min(a[3], b[3]))
-    return math.hypot(dx, dy)
-
-
 def _box_of(phrase: Mapping[str, Any]) -> Box | None:
     raw = phrase.get("box")
     if not isinstance(raw, Sequence) or len(raw) != 4:
@@ -376,113 +357,19 @@ def _box_of(phrase: Mapping[str, Any]) -> Box | None:
     return x0, y0, x1, y1
 
 
-def _titles(found: Sequence[Mapping[str, Any]]) -> list[tuple[str, Box]]:
-    """The page's view titles, each with the bubble printed just before it ("A", "S1"); titles on
-    one line next to each other are one title, named by the one with a bubble."""
-    boxed = [(str(p.get("text") or "").strip(), b) for p in found if (b := _box_of(p)) is not None]
-    titles: list[tuple[str, Box, bool]] = []
-    for text, box in boxed:
-        if (
-            not _TITLE.search(text)
-            or _NOT_TITLE.search(text)
-            or _TITLE_BLOCK.search(text)
-            or len(text.split()) > 5
-            or parts_in(re.sub(r"\bTOP\b", " ", text, flags=re.IGNORECASE))
-        ):
-            continue
-        marker = next(
-            (
-                other
-                for other, ob in boxed
-                if _MARKER.match(other)
-                and abs(_centre(ob)[1] - _centre(box)[1]) <= 8
-                and 0 <= box[0] - ob[2] <= MARKER_PT
-            ),
-            None,
-        )
-        titles.append((f"{text} {marker}" if marker else text, box, marker is not None))
-    titles.sort(key=lambda t: (round(_centre(t[1])[1] / 8), t[1][0]))
-    joined: list[tuple[str, Box, bool]] = []
-    for name, box, marked in titles:
-        if joined:
-            last_name, last, last_marked = joined[-1]
-            if abs(_centre(last)[1] - _centre(box)[1]) <= 8 and box[0] - last[2] <= TITLE_JOIN_PT:
-                keep = (name, marked) if marked and not last_marked else (last_name, last_marked)
-                joined[-1] = (
-                    keep[0],
-                    (min(last[0], box[0]), min(last[1], box[1]), max(last[2], box[2]), box[3]),
-                    keep[1],
-                )
-                continue
-        joined.append((name, box, marked))
-    return [(name, box) for name, box, _ in joined]
-
-
-def _drawings(
-    segments: Sequence[Segment], size: tuple[float, float] | None
-) -> tuple[list[int], dict[int, Box]]:
-    """Each piece's drawing (its root) and each drawing's box: pieces that meet or pass within
-    `JOIN_PT` are one drawing; a drawing of fewer than `MIN_PIECES` pieces or covering more than
-    `PAGE_SHARE` of the page (the border) has no box."""
-    parent = list(range(len(segments)))
-
-    def root(i: int) -> int:
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-
-    cells: dict[tuple[int, int], int] = {}
-    for i, ((ax, ay), (bx, by)) in enumerate(segments):
-        steps = max(1, int(math.hypot(bx - ax, by - ay) / JOIN_PT) + 1)
-        for k in range(steps + 1):
-            key = (
-                int((ax + (bx - ax) * k / steps) // JOIN_PT),
-                int((ay + (by - ay) * k / steps) // JOIN_PT),
-            )
-            other = cells.setdefault(key, i)
-            ra, rb = root(i), root(other)
-            if ra != rb:
-                parent[ra] = rb
-    roots = [root(i) for i in range(len(segments))]
-    boxes: dict[int, list[float]] = {}
-    counts: dict[int, int] = defaultdict(int)
-    for i, ((ax, ay), (bx, by)) in enumerate(segments):
-        r = roots[i]
-        counts[r] += 1
-        b = boxes.setdefault(r, [min(ax, bx), min(ay, by), max(ax, bx), max(ay, by)])
-        b[0], b[1] = min(b[0], ax, bx), min(b[1], ay, by)
-        b[2], b[3] = max(b[2], ax, bx), max(b[3], ay, by)
-    every = list(boxes.values())
-    if size is None or size[0] <= 0 or size[1] <= 0:
-        size = (
-            max((b[2] for b in every), default=1.0) - min((b[0] for b in every), default=0.0),
-            max((b[3] for b in every), default=1.0) - min((b[1] for b in every), default=0.0),
-        )
-    page_area = max(1.0, size[0] * size[1])
-    kept = {
-        r: (b[0], b[1], b[2], b[3])
-        for r, b in boxes.items()
-        if counts[r] >= MIN_PIECES and (b[2] - b[0]) * (b[3] - b[1]) <= PAGE_SHARE * page_area
-    }
-    return roots, kept
-
-
 @dataclass(slots=True)
 class _Views:
-    """The page's drawings and their titles: which view a piece of line belongs to."""
+    """The page's views (`page_views`, through `view_questions.page_split`: one splitter for both)
+    and their titles: which view a piece of line belongs to."""
 
-    roots: list[int]
-    boxes: dict[int, Box]
-    titled: dict[int, list[tuple[str, Box]]]
-    alias: dict[int, int] = field(default_factory=dict)
-    """A small or thin drawing (a dimension chain, a bubble, a fixture) -> the view it sits by."""
+    drawings: Any
+    """`page_views.Drawings`."""
+    titled: Mapping[int, Sequence[tuple[str, Box]]]
 
-    def view_root(self, index: int) -> int | None:
-        if not 0 <= index < len(self.roots):
-            return None
-        root = self.roots[index]
-        return self.alias.get(root, root)
+    def view_root(self, index: int) -> tuple[str, int] | None:
+        """Piece `index`'s drawing: its view, else its own small drawing."""
+        found: tuple[str, int] | None = self.drawings.group_of(index)
+        return found
 
     def same(self, a: int, b: int) -> bool:
         """Two pieces of line are in one drawing (a view, with its small and thin drawings)."""
@@ -490,20 +377,14 @@ class _Views:
         return ra is not None and ra == rb
 
     def of(self, index: int | None, near: Point) -> View:
-        root = self.roots[index] if index is not None and 0 <= index < len(self.roots) else None
-        if root is not None:
-            root = self.alias.get(root, root)
-        named = self.titled.get(root, []) if root is not None else []
+        view = self.drawings.view_of(index) if index is not None else None
+        named = self.titled.get(view, []) if view is not None else []
         if named:
             name, _box = min(named, key=lambda t: math.dist(_centre(t[1]), near))
             return View(name, _kind_of(name))
-        box = self.boxes.get(root) if root is not None else None
+        box = self.drawings.boxes[view] if view is not None else None
         where = box if box is not None else (near[0], near[1], near[0], near[1])
         return View(f"the untitled drawing at {where[0]:.0f},{where[1]:.0f}", "view", box)
-
-
-def _area(box: Box) -> float:
-    return (box[2] - box[0]) * (box[3] - box[1])
 
 
 def views_of(
@@ -511,41 +392,12 @@ def views_of(
     segments: Sequence[Segment],
     size: tuple[float, float] | None = None,
 ) -> _Views:
-    """The page's views: its drawings (`_drawings`) at least `THIN_PT` both ways, each small or thin
-    drawing counted with the one it lies in or beside (`THIN_GAP_PT`), and the title each view
-    carries (a title inside a view's box, else the view just above it, `TITLE_BELOW_PT`)."""
-    roots, boxes = _drawings(segments, size)
-    thick = {r: b for r, b in boxes.items() if min(b[2] - b[0], b[3] - b[1]) >= THIN_PT}
-    alias: dict[int, int] = {}
-    for r, b in boxes.items():
-        if r in thick:
-            continue
-        holding = [t for t, tb in thick.items() if _gap(b, tb) <= THIN_GAP_PT]
-        if holding:
-            alias[r] = min(holding, key=lambda t: (_gap(b, thick[t]), _area(thick[t])))
-    # A view's box grown by its dimension chains and small pieces: a title sits under all of it.
-    grown = {r: list(b) for r, b in thick.items()}
-    for r, owner in alias.items():
-        g, b = grown[owner], boxes[r]
-        grown[owner] = [min(g[0], b[0]), min(g[1], b[1]), max(g[2], b[2]), max(g[3], b[3])]
-    titled: dict[int, list[tuple[str, Box]]] = defaultdict(list)
-    for name, tbox in _titles(found):
-        cx, cy = _centre(tbox)
-        inside = [r for r, b in thick.items() if b[0] <= cx <= b[2] and b[1] <= cy <= b[3]]
-        if inside:
-            owner = min(inside, key=lambda r: _area(thick[r]))
-        else:
-            under = [
-                (tbox[1] - box[3], r)
-                for r in thick
-                for box in (thick[r], (grown[r][0], grown[r][1], grown[r][2], grown[r][3]))
-                if -10 <= tbox[1] - box[3] <= TITLE_BELOW_PT and box[0] - 20 <= cx <= box[2] + 20
-            ]
-            if not under:
-                continue
-            owner = min(under)[1]
-        titled[owner].append((name, tbox))
-    return _Views(roots, boxes, dict(titled), alias)
+    """The page's views, split the one way `view_questions` splits them (`page_split`, on
+    `page_views`): connected drawings with the small ones inside or the thin ones beside each
+    view counted with it, and the titles each view carries."""
+    questions = import_module("app.review.assistant.view_questions")
+    split = questions.page_split(questions.phrase_items(found), segments, size)
+    return _Views(split.drawings, split.owners)
 
 
 # ---- callouts -------------------------------------------------------------------------------------
