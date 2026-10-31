@@ -66,7 +66,11 @@ logged).
 vendor page it reviews and kept apart from every other share (`ChatEngine.own_share_micros`): the
 other steps' caps and reserves are unchanged. Inside its cap: its own pass up to `PASS_SHARE`, the
 coverage check up to `REVIEW_SHARE`, the rest for the final report turn and the self-check. Each
-call's output allowance is cut to the money left (never below `MIN_TOKENS`).
+call's output allowance is the money left (at most `MAX_TOKENS`); a call is made only while that
+covers twice the most one of its calls wrote so far (`FLOOR_MARGIN`, never below `FLOOR_LEAST`,
+never above `MIN_TOKENS` in the review and `MIN_REFLECT_TOKENS` after it, which also hold before
+its first call), so its share is used close to the end and a call is rarely cut off; the review
+always leaves the final report turn the money for its own call.
 
 Off by default (`GV_ASSISTANT_PAGE_REVIEWER`). Verification: `tests/review/assistant/
 test_page_reviewer.py` (made-up pages, a scripted AI; no network, no paid call).
@@ -188,10 +192,22 @@ PASS_SHARE: Final = 0.50
 #: sheets): 0.72 found 28 of 106, 0.85 found 21 and 23. Since 2026-10-30 the self-check takes only
 #: reds and low-confidence drafts (`_worth_reflecting`), so the review keeps most of the money.
 REVIEW_SHARE: Final = 0.90
-#: The output allowance of one call, and the least one is worth making with (tokens).
+#: The output allowance of one call, and the least one is worth making with (tokens): in the review
+#: and after it, before any call was seen. The model is not told its allowance, so a call that
+#: writes more is cut off (cut thinking cannot go back, so that call's money is lost). The review
+#: keeps back the final report turn's `MIN_REFLECT_TOKENS` whatever its last call writes.
 MAX_TOKENS: Final = 64_000
 MIN_TOKENS: Final = 12_000
 MIN_REFLECT_TOKENS: Final = 6_000
+#: Once its calls are seen, the least follows what they write: `FLOOR_MARGIN` times the most one
+#: of them wrote (a cut-off call counts as writing its whole allowance), never below `FLOOR_LEAST`
+#: and never above the least above (`_Run._floor`). Why (2026-10-31, live, Opus at high effort):
+#: its calls wrote about 1,100 tokens each, so the fixed 12,000 (about $0.24) ended the review with
+#: that much of its share unused on the two pages that found most, though they still had work.
+#: Twice the most seen: on the saved runs of 2026-10-29 (672 calls at xhigh), no call after the
+#: 15th wrote more than that, and 1 of 228 after the 8th.
+FLOOR_MARGIN: Final = 2
+FLOOR_LEAST: Final = 4_000
 #: The proposed rate (Anant tunes it: `GV_ASSISTANT_PAGE_REVIEWER_PER_PAGE_USD`): the fair re-test
 #: of 2026-10-29 spent about $2 a page at xhigh with one funded reviewer; high effort spends less.
 DEFAULT_PER_PAGE_MICROS: Final = 1_500_000
@@ -1212,6 +1228,11 @@ class PageReview:
     #: (a warm cache shows as a read there), for the run's log: where a page's money went.
     tokens: dict[str, int] = field(default_factory=dict)
     first_call: dict[str, int] = field(default_factory=dict)
+    #: The most output tokens one of its calls wrote (0: none yet; a cut-off call counts as its
+    #: whole allowance), which sets the least the next call is made with (`_Run._floor`), and
+    #: its calls cut off at their allowance, for the run's log.
+    most_output: int = 0
+    cut_off: int = 0
 
     # -- coverage --
 
@@ -1363,7 +1384,9 @@ class _Run:
 
     def _allowance(self, body: Mapping[str, Any], cached: int, previous: int) -> int:
         """The output tokens the next call may have: what the money left allows, at most
-        `MAX_TOKENS`; 0 when less than the least worth a call."""
+        `MAX_TOKENS`; 0 when less than the least worth a call (`_floor`). In the review, the
+        final report turn keeps the money for its own call (its fixed part and
+        `MIN_REFLECT_TOKENS`), whatever this call writes: a cut-off call writes all it may."""
         engine = self.engine
         model = self.agent.model
         fixed = engine._estimate(model, {**body, "max_tokens": 0}, cached, previous)
@@ -1372,10 +1395,23 @@ class _Run:
             return MAX_TOKENS  # no stated price: the message cap's guard still holds
         per_token = max(1e-9, (full - fixed) / MAX_TOKENS)
         hard = engine.settings.message_cap_micros - engine.spent
-        room = min(self._limit() - int(self.agent.spent), hard) - fixed
+        limit = self._limit()
+        if self.review.phase == "review":
+            limit = min(limit, int(self.cap - fixed - MIN_REFLECT_TOKENS * per_token))
+        room = min(limit - int(self.agent.spent), hard) - fixed
         tokens = int(min(MAX_TOKENS, room / per_token)) if room > 0 else 0
-        floor = MIN_TOKENS if self.review.phase == "review" else MIN_REFLECT_TOKENS
-        return tokens if tokens >= floor else 0
+        return tokens if tokens >= self._floor() else 0
+
+    def _floor(self) -> int:
+        """The least output allowance a call is made with (tokens): `FLOOR_MARGIN` times the most
+        one of its calls wrote, at least `FLOOR_LEAST`, at most the part's own least
+        (`MIN_TOKENS` in the review, `MIN_REFLECT_TOKENS` after), which holds until a call is
+        seen."""
+        full = MIN_TOKENS if self.review.phase == "review" else MIN_REFLECT_TOKENS
+        most = self.review.most_output
+        if most <= 0:
+            return full
+        return min(full, max(FLOOR_LEAST, most * FLOOR_MARGIN))
 
     def _money_stop(self) -> str | None:
         """Its money for this part is used: the next part's first message, or `None` (done)."""
@@ -1473,6 +1509,13 @@ class _Run:
                 review.tokens[key] = review.tokens.get(key, 0) + value
             if review.calls == 1:
                 review.first_call = used
+            written = used["output"]
+            if reply.stop_reason == "max_tokens":
+                # Cut off: it wanted more than its allowance, so the next call needs twice that
+                # (at the end of a part: the money stop, not a second cut-off call).
+                review.cut_off += 1
+                written = max(written, tokens)
+            review.most_output = max(review.most_output, written)
             cost = engine._cost(model, reply.usage)
             agent.last_call = cost
             agent.spent += cost
@@ -2717,6 +2760,8 @@ class Reviews:
                     "refused": dict(review.refusals),
                     "tokens": dict(review.tokens),
                     "first_call": dict(review.first_call),
+                    "most_output": review.most_output,
+                    "cut_off": review.cut_off,
                     "code_labels": len(review.labels),
                 }
             )

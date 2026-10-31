@@ -40,6 +40,7 @@ from app.review.assistant.page_reviewer import (
     COVERAGE_GOAL,
     MAX_NUDGES,
     MAX_TOKENS,
+    MIN_REFLECT_TOKENS,
     Options,
     PageReview,
     Reviews,
@@ -115,17 +116,26 @@ class _Call:
     context_management: Mapping[str, Any] | None = None
 
 
-class _Script:
-    """Answers each call from a list of turns: a turn is a list of blocks (and a stop reason), or
-    a function of the conversation so far."""
+#: A scripted turn cut off at its output allowance in the middle of its thinking (unsigned: it
+#: cannot go back into the conversation).
+_CUT = "cut off"
 
-    def __init__(self, turns: Sequence[Any], cost: int = 100_000) -> None:
+
+class _Script:
+    """Answers each call from a list of turns: a turn is a list of blocks (and a stop reason), a
+    function of the conversation so far, or `_CUT`. `output`: the tokens each call writes, in its
+    usage (0: not reported)."""
+
+    def __init__(self, turns: Sequence[Any], cost: int = 100_000, output: int = 0) -> None:
         self.turns = list(turns)
         self.cost = cost
+        self.output = output
         self.calls: list[_Call] = []
 
     def __call__(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
         turn = self.turns.pop(0) if self.turns else [_text("Done.")]
+        if turn == _CUT:
+            return [{"type": "thinking", "thinking": "Looking at the"}], "max_tokens"
         if callable(turn):
             turn = turn(messages)
         stop = "tool_use" if any(b["type"] == "tool_use" for b in turn) else "end_turn"
@@ -192,13 +202,19 @@ class _Engine:
             )
         )
         content, stop = self.script(messages)
-        self.spent += self.script.cost
-        self.own_spent += self.script.cost
+        usage: dict[str, Any] = {"cost_micros": self.script.cost}
+        if stop == "max_tokens":  # it wrote its whole allowance: the worst case is paid
+            usage = {"cost_micros": _FIXED + given["max_tokens"] * _PER_TOKEN}
+            usage["output_tokens"] = given["max_tokens"]
+        elif self.script.output:
+            usage["output_tokens"] = self.script.output
+        self.spent += usage["cost_micros"]
+        self.own_spent += usage["cost_micros"]
         return _Reply(
             content=content,
             stop_reason=stop,
             stop_details=None,
-            usage={"cost_micros": self.script.cost},
+            usage=usage,
             model="claude-opus-5-5",
         )
 
@@ -210,9 +226,14 @@ class _Engine:
 
 
 def _review(
-    tmp_path: Path, turns: Sequence[Any], *, cap: int = 5_000_000, cost: int = 100_000
+    tmp_path: Path,
+    turns: Sequence[Any],
+    *,
+    cap: int = 5_000_000,
+    cost: int = 100_000,
+    output: int = 0,
 ) -> tuple[_Engine, PageReview, tuple[str, bool, str | None], Reviews]:
-    script = _Script(turns, cost)
+    script = _Script(turns, cost, output)
     engine = _Engine(tmp_path, script)
     review = PageReview(page=2, file=FILE, options=Options())
     reviews = Reviews()
@@ -603,6 +624,107 @@ def test_the_model_is_never_told_about_money(tmp_path: Path) -> None:
     words = " ".join(n for c in engine.script.calls for n in _notes(c.messages)[1:]).lower()
     for said in ("money", "budget", "price", "cost", "$", "cap"):
         assert said not in words
+
+
+#: Its turns when money ends it: the nine tiles, then a tight zoom per call (never done on its own).
+_LOOKING = [[_tiles(1, 2, 3)], [_tiles(4, 5, 6)], [_tiles(7, 8, 9)]] + [[_tight_last()]] * 12
+
+
+def _first_final_turn(calls: Sequence[_Call]) -> int:
+    return next(
+        n for n, c in enumerate(calls) if "Time is up for the review" in _notes(c.messages)[-1]
+    )
+
+
+def test_a_reviewer_whose_calls_write_little_works_on_close_to_its_share(tmp_path: Path) -> None:
+    """Cap $1; each call costs $0.05 and writes 1,000 tokens (the worst case held: $0.01 + 20
+    micros a token). After its first call, the least a call is made with is twice 1,000, at least
+    4,000 tokens ($0.08), not 12,000 ($0.24): the review goes on to $0.80 of its $0.90 share
+    (12,000 stopped it at $0.70), still leaves the final report turn its money, and the page
+    never passes $1."""
+    engine, review, ended, reviews = _review(
+        tmp_path, _LOOKING + [[_tight_last()]] * 10, cap=1_000_000, cost=50_000, output=1_000
+    )
+    calls = engine.script.calls
+    assert reviews.cut_by_money == [2]
+    assert _first_final_turn(calls) * 50_000 == 800_000  # what the review spent
+    assert len(calls) == 19 and engine.spent == 950_000 and ended[2] == "cost_cap"
+    # Every call's worst case fits what is left of the cap.
+    for n, call in enumerate(calls):
+        assert n * 50_000 + _FIXED + call.max_tokens * _PER_TOKEN <= 1_000_000
+    assert review.most_output == 1_000 and review.cut_off == 0
+
+
+def test_a_call_cut_off_at_its_allowance_is_paid_once_and_the_final_turn_still_runs(
+    tmp_path: Path,
+) -> None:
+    """As above, but the review's last call wants more than its 5,500 tokens and is cut off in its
+    thinking (lost: it cannot go back). It counts as writing all 5,500, so a next call would need
+    11,000: no second cut-off call, the money stop comes, and the final report turn still has its
+    6,000 tokens (the review kept them back). The page stays within $1."""
+    engine, review, ended, reviews = _review(
+        tmp_path,
+        _LOOKING + [_CUT, [_text("Nothing more to report.")]],
+        cap=1_000_000,
+        cost=50_000,
+        output=1_000,
+    )
+    calls = engine.script.calls
+    assert len(calls) == 17 and _first_final_turn(calls) == 16
+    assert calls[15].max_tokens == 5_500
+    assert "Continue where you stopped." in _notes(calls[16].messages)
+    assert calls[16].max_tokens == MIN_REFLECT_TOKENS
+    assert reviews.cut_by_money == [2] and ended[2] is None
+    assert engine.spent == 15 * 50_000 + (_FIXED + 5_500 * _PER_TOKEN) + 50_000 <= 1_000_000
+    reviews.pages["p2"] = review
+    (row,) = reviews.block()["pages"]
+    assert row["cut_off"] == 1 and row["most_output"] == 5_500
+
+
+def _money_run(tmp_path: Path, cap: int) -> tuple[page_reviewer._Run, _Engine]:
+    engine = _Engine(tmp_path, _Script([]))
+    review = PageReview(page=2, file=FILE, options=Options())
+    agent = SimpleNamespace(model=MODELS["claude-opus-5-5"], cap_micros=cap, spent=0, last_call=0)
+    run = page_reviewer._Run(engine, agent, review, Reviews(), {"steps": []}, 0)  # type: ignore[arg-type]
+    return run, engine
+
+
+def test_the_least_a_call_is_made_with_follows_what_its_calls_write(tmp_path: Path) -> None:
+    """Before any call is seen, the full least (12,000 tokens in the review, 6,000 after); then
+    twice the most one call wrote, at least 4,000 and never above the full least."""
+    run, _engine = _money_run(tmp_path, cap=2_000_000)
+    body = {"max_tokens": MAX_TOKENS}
+    run.agent.spent = 830_000  # its own pass ($1.00) leaves room for 8,000 tokens
+    assert run._allowance(body, 0, 0) == 0  # the first call: 12,000 needed
+    for most, allowed in ((1_000, 8_000), (3_000, 8_000), (4_000, 8_000), (4_001, 0)):
+        run.review.most_output = most
+        assert run._allowance(body, 0, 0) == allowed
+    run.review.most_output = 20_000
+    run.agent.spent = 700_000  # room for 14,500: the least is never above 12,000
+    assert run._allowance(body, 0, 0) == 14_500
+    run.review.phase = "reflect"
+    run.agent.spent = 1_890_000  # the rest of the cap leaves room for 5,000 tokens
+    for most, allowed in ((0, 0), (1_000, 5_000), (2_500, 5_000), (2_600, 0)):
+        run.review.most_output = most
+        assert run._allowance(body, 0, 0) == allowed
+
+
+def test_a_calls_allowance_never_passes_the_message_cap_or_the_final_turns_money(
+    tmp_path: Path,
+) -> None:
+    run, engine = _money_run(tmp_path, cap=1_000_000)
+    body = {"max_tokens": MAX_TOKENS}
+    run.review.pass_done = True
+    run.review.most_output = 1_000
+    run.agent.spent = 700_000
+    # The review's share ends at $0.90, but the final report turn keeps its $0.01 + 6,000 tokens
+    # ($0.13) of the $1: room for ($1 - 0.13 - 0.70 - 0.01) / 20 micros = 8,000, not 9,500.
+    assert run._allowance(body, 0, 0) == 8_000
+    # The message's own cap leaves less: that is the allowance, while it covers the least.
+    engine.settings.message_cap_micros = engine.spent + _FIXED + 4_500 * _PER_TOKEN
+    assert run._allowance(body, 0, 0) == 4_500
+    engine.settings.message_cap_micros = engine.spent + _FIXED + 3_000 * _PER_TOKEN
+    assert run._allowance(body, 0, 0) == 0
 
 
 def test_every_call_is_opus_at_high_effort_with_thinking_and_fixed_tools(tmp_path: Path) -> None:
