@@ -3524,6 +3524,13 @@ def set_context_of(engine: Any, reviews: Reviews, file: str) -> SetContext:
     context = reviews.context_for(file, pages, lambda page: phrases(reader.page_words(pdf, page)))
     if context.pdf is None:
         context.pdf = pdf  # its ruled tables (`schedule_index`), read with the rest of the set
+    if context.project is None:
+        try:  # GV's project schedule, when uploaded (`project_schedule`): the should-be values
+            context.project = import_module("app.review.assistant.project_schedule").load(
+                workspace.root
+            )
+        except Exception:  # noqa: BLE001 - the set is reviewed without it, as before
+            _log.exception("page reviewer: the project schedule was not read")
     return context
 
 

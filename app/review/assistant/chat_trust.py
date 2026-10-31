@@ -500,8 +500,10 @@ def _parts_sum(finding: Mapping[str, Any]) -> str | None:
 
 #: The code checks that read codes or values from the drawings' text and searched every vendor
 #: sheet of the area: the finish check (`architect_items`, #1623) and the simple full check's
-#: absence search (`simple_check.verify`, an architect value no vendor sheet prints).
-_TEXT_MADE_BY: Final = frozenset({"architect_items", "simple_check"})
+#: absence search (`simple_check.verify`, an architect value no vendor sheet prints); and the
+#: vendor's table row against GV's project schedule, both cells code-read (`project_schedule`,
+#: made only while its `SHOULD_BE_RED` is on).
+_TEXT_MADE_BY: Final = frozenset({"architect_items", "simple_check", "project_schedule"})
 
 
 def _text_made(finding: Mapping[str, Any]) -> str | None:

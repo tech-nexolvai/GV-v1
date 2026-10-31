@@ -2684,7 +2684,7 @@
             "description": "Set when code settled this item, which was not compared, by itself (#1554)."
           },
           "source": {
-            "description": "cross_view and completeness are made only by code, from the reading ledger.",
+            "description": "cross_view and completeness are made only by code, from the reading ledger; project_schedule only by code, from GV's project schedule (what governs).",
             "enum": [
               "architect",
               "brand_prototype",
@@ -2692,7 +2692,8 @@
               "vendor_arithmetic",
               "gv_review",
               "cross_view",
-              "completeness"
+              "completeness",
+              "project_schedule"
             ],
             "title": "Source",
             "type": "string"
@@ -9180,6 +9181,17 @@
             "$ref": "#/components/schemas/DocumentKind",
             "description": "What kind of source document this is, from the fixed V1 vocabulary."
           },
+          "media_type": {
+            "default": "application/pdf",
+            "description": "The file's media type, sent as its Content-Type when uploading. A drawing is always `application/pdf` (the default); only a `schedule` (GV's finish schedule, material legend or item list) may also be a CSV (`text/csv`) or an .xlsx workbook.",
+            "enum": [
+              "application/pdf",
+              "text/csv",
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ],
+            "title": "Media Type",
+            "type": "string"
+          },
           "sha256": {
             "description": "The SHA-256 of the file you are about to upload, lowercase hex. Hash it locally first. It is part of the storage key, so the upload ticket you get back permits writing exactly these bytes and nothing else.",
             "pattern": "^[0-9a-f]{64}$",
@@ -12582,6 +12594,17 @@
         "additionalProperties": false,
         "description": "Another upload of an existing document \u2014 a new version of the same logical document.\n\nSeparate from `DocumentRegistration` because the document already exists and its `kind` is already\nsettled. Sending `kind` again would let a caller appear to change it, and a document that silently\nchanges kind is a document whose earlier versions were classified under something else.",
         "properties": {
+          "media_type": {
+            "default": "application/pdf",
+            "description": "The file's media type, sent as its Content-Type when uploading. A drawing is always `application/pdf` (the default); only a `schedule` (GV's finish schedule, material legend or item list) may also be a CSV (`text/csv`) or an .xlsx workbook.",
+            "enum": [
+              "application/pdf",
+              "text/csv",
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ],
+            "title": "Media Type",
+            "type": "string"
+          },
           "sha256": {
             "description": "The SHA-256 of the new file.",
             "pattern": "^[0-9a-f]{64}$",

@@ -217,6 +217,7 @@ _SOURCE_WORDS: Final[Mapping[str, str]] = {
     # A difference GV Review's page review recorded is the vendor against the architect.
     "gv_review": "architect",
     "vendor_arithmetic": "the vendor's own parts",
+    "project_schedule": "GV's project schedule",
 }
 #: Each non-AI witness as the proof line says it.
 _PROOF_WORDS: Final[Mapping[str, str]] = {
@@ -230,6 +231,11 @@ _PROOF_WORDS: Final[Mapping[str, str]] = {
 }
 #: The limits in the resolver's words for GV's limits (`decision_resolver._filler_limits`).
 _LIMITS: Final = re.compile(r"limits are (.+?) \(")
+#: The `text` witness of a row checked against GV's project schedule (`project_schedule`).
+_SCHEDULE_PROOF_WORDS: Final = (
+    "code read the vendor's material row from the drawing's text and the same tag's row in GV's "
+    "project schedule; their product codes share none"
+)
 #: A pairing proof in the proof line: code paired the two itself, or the advocate's checks.
 _PAIRED_BY_CODE: Final = "code paired the two dimensions itself"
 _PAIRED_BY_ADVOCATE: Final = (
@@ -1122,6 +1128,8 @@ def proof_line(finding: Mapping[str, Any]) -> str:
                 parts.append(f"GV's rule check {finding.get('rule_check_id')} fails it")
             elif name == "text" and _missing_item(finding) is not None:
                 parts.append(missing_items.proof_words(_missing_item(finding) or {}))
+            elif name == "text" and finding.get("source") == "project_schedule":
+                parts.append(_SCHEDULE_PROOF_WORDS)
             elif name in _PROOF_WORDS:
                 parts.append(_PROOF_WORDS[name])
     if witnesses:

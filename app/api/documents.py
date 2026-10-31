@@ -75,6 +75,7 @@ from app.models import (
     SourceArtifact,
 )
 from app.schemas.packages import (
+    SCHEDULE_ONLY_DETAIL,
     DocumentRegistration,
     DocumentVersionOut,
     ExtractionRequestOut,
@@ -149,6 +150,9 @@ SAME_FILE_DETAIL: Final = (
 )
 
 
+SAME_SCHEDULE_DETAIL: Final = "This exact file is already in this package as the project schedule."
+
+
 def _same_bytes_in_revision(
     session: Session, revision_id: UUID, sha256: str, *, other_than: UUID | None = None
 ) -> Document | None:
@@ -178,6 +182,8 @@ def _refuse_same_bytes(
     if (
         holder := _same_bytes_in_revision(session, revision_id, sha256, other_than=other_than)
     ) is not None:
+        if holder.kind == DocumentKind.SCHEDULE.value:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=SAME_SCHEDULE_DETAIL)
         kind = "architect's" if holder.kind == DocumentKind.ARCHITECTURAL.value else "vendor's"
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=SAME_FILE_DETAIL.format(kind=kind)
@@ -284,11 +290,16 @@ def _existing_version(
     return None if row is None else DocumentVersionOut.model_validate(dict(row._mapping))
 
 
-def _ticket(store: ArtifactStore, document_id: UUID, sha256: str) -> PresignedUpload:
-    """Issue the ticket for one document's declared bytes. Writes nothing."""
+def _ticket(
+    store: ArtifactStore, document_id: UUID, sha256: str, content_type: str = CONTENT_TYPE
+) -> PresignedUpload:
+    """Issue the ticket for one document's declared bytes. Writes nothing. `content_type`: a PDF,
+    or (a project schedule only, checked by the request model) a CSV or an .xlsx workbook. The key
+    keeps its `.pdf` suffix whatever the type: every reader derives it from the id and the hash
+    alone, and the schedule's reader tells the formats apart by their bytes."""
 
     key = storage_key(document_id, sha256)
-    ticket = store.upload_ticket(key, content_type=CONTENT_TYPE, expires_in=UPLOAD_TICKET_LIFETIME)
+    ticket = store.upload_ticket(key, content_type=content_type, expires_in=UPLOAD_TICKET_LIFETIME)
     return PresignedUpload(
         document_id=document_id,
         storage_key=ticket.key,
@@ -355,7 +366,7 @@ def register_document(
     document = Document(package_id=package_id, kind=body.kind)
     # The id is assigned at construction (`app/db/base.py` assigns it on `init`, not at INSERT), so the
     # key and the ticket can be built before anything is committed.
-    ticket = _ticket(store, document.id, body.sha256)
+    ticket = _ticket(store, document.id, body.sha256, body.media_type)
 
     session.add(document)
     try:
@@ -393,7 +404,11 @@ def request_upload(
     del principal
 
     document = _document(session, project_id, document_id)
-    return _ticket(store, document.id, body.sha256)
+    if body.media_type != CONTENT_TYPE and document.kind != DocumentKind.SCHEDULE.value:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=SCHEDULE_ONLY_DETAIL
+        )
+    return _ticket(store, document.id, body.sha256, body.media_type)
 
 
 @router.post(

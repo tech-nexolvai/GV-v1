@@ -120,7 +120,7 @@ def finding_categories() -> tuple[str, ...]:
 STATUSES: Final = ("different", "check", "same")
 SOURCES: Final = ("architect", "brand_prototype", "rules", "vendor_arithmetic", "gv_review")
 #: Sources only code makes (the reading ledger): never in the tool's enum.
-CODE_SOURCES: Final = ("cross_view", "completeness")
+CODE_SOURCES: Final = ("cross_view", "completeness", "project_schedule")
 COVERAGE_STATUSES: Final = ("same", "different", "not_comparable", "not_opened")
 MAX_FINDINGS: Final = 300
 #: A big set's answer may hold this many findings a page of the vendor's file, when that is more
@@ -148,6 +148,7 @@ CODE_ROOM_MAKERS: Final = frozenset(
         "set_check",
         "gv_review",
         "code",
+        "project_schedule",
     }
 )
 _MAX_ITEM: Final = 160

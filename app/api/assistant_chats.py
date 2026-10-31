@@ -192,6 +192,7 @@ from app.review.assistant.package_store import stored_numbers
 from app.review.assistant.page_reviewer import Options as PageReviewerOptions
 from app.review.assistant.page_reviewer import house_rules_text
 from app.review.assistant.product_scope import PriceRule, ProductScope
+from app.review.assistant.project_schedule import SCHEDULE_WORDS
 from app.review.assistant.proof import reviewer_value_refusal
 from app.review.assistant.review_action import CheckState
 from app.review.assistant.sandbox import ChatWorkspace, Sandbox, open_sandbox
@@ -212,6 +213,9 @@ _KIND_WORDS: Final = {
     "shop": "the vendor's shop drawings (a sheet may carry the architect's drawing beside the "
     "vendor's, with GV's markup on top)",
     "architectural": "the architect's drawings",
+    # GV's finish schedule / material legend / item list (a spreadsheet or a PDF table): the
+    # should-be values, never a drawing (`project_schedule`).
+    "schedule": SCHEDULE_WORDS,
 }
 #: The vendor's earlier round of a set uploaded as separate files (#1728): the shop drawings of the
 #: revision before the latest, beside its re-issued ones, so the round-2 check can follow round 1.

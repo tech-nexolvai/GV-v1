@@ -103,6 +103,7 @@ KINDS: Final[Mapping[str, str]] = {
     "formula_chain": "GV's formula: top width = the sum of the reference's chain of sizes",
     "gv_rule": "another GV rule check",
     "size_vs_architect": "a size differs from the architect's",
+    "schedule": "a vendor's material row differs from GV's project schedule",
 }
 
 #: Each kind in a few plain words, for the accuracy line (`record_line`).
@@ -124,6 +125,7 @@ SHORT_NAMES: Final[Mapping[str, str]] = {
     "formula_chain": "top width by the reference's chain",
     "gv_rule": "other GV rules",
     "size_vs_architect": "sizes against the architect's",
+    "schedule": "material rows against the project schedule",
 }
 #: The confidence of the bound the accuracy line states (95%).
 _BOUND_RISK: Final = 0.05
@@ -136,6 +138,7 @@ _CREATED_BY: Final[Mapping[str, str]] = {
     "run_fit": "run_fit",
     "splash_views": "splash",
     "architect_items": "finish_code",
+    "project_schedule": "schedule",
 }
 #: `missing_items.KIND`, stamped in a missing item's `text_proof`.
 _MISSING_KIND: Final = "missing_item"

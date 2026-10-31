@@ -458,6 +458,14 @@ def _sync_uploads(
     for byte; one that was changed is listed with its working copy's `working_sha256` and what was
     done (`working_changes`, `pages_not_read`), so its set pack is made from the working copy."""
     manifest = workspace.root / "uploads.json"
+    # GV's project schedule (a spreadsheet or a PDF table) is no drawing: copied beside the
+    # drawings with its own listing (`project_schedule.sync`), never into the set pack.
+    schedules = import_module("app.review.assistant.project_schedule")
+    try:
+        schedules.sync(workspace.root, [s for s in sources if schedules.is_schedule(s.kind)])
+    except Exception as failed:  # noqa: BLE001 - the drawings are checked without it
+        _log.warning("assistant project schedule not copied: %s", type(failed).__name__)
+    sources = [s for s in sources if not schedules.is_schedule(s.kind)]
     # Loaded by name: the front door opens PDFs, which the control plane never imports.
     front_door = import_module("extraction.working_copy")
     version = front_door.WORKING_COPY_VERSION

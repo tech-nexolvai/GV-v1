@@ -2195,10 +2195,10 @@ export interface components {
             settled?: components["schemas"]["ChatFindingSettledOut"] | null;
             /**
              * Source
-             * @description cross_view and completeness are made only by code, from the reading ledger.
+             * @description cross_view and completeness are made only by code, from the reading ledger; project_schedule only by code, from GV's project schedule (what governs).
              * @enum {string}
              */
-            source: "architect" | "brand_prototype" | "rules" | "vendor_arithmetic" | "gv_review" | "cross_view" | "completeness";
+            source: "architect" | "brand_prototype" | "rules" | "vendor_arithmetic" | "gv_review" | "cross_view" | "completeness" | "project_schedule";
             /**
              * Status
              * @enum {string}
@@ -5063,6 +5063,13 @@ export interface components {
             /** @description What kind of source document this is, from the fixed V1 vocabulary. */
             kind: components["schemas"]["DocumentKind"];
             /**
+             * Media Type
+             * @description The file's media type, sent as its Content-Type when uploading. A drawing is always `application/pdf` (the default); only a `schedule` (GV's finish schedule, material legend or item list) may also be a CSV (`text/csv`) or an .xlsx workbook.
+             * @default application/pdf
+             * @enum {string}
+             */
+            media_type: "application/pdf" | "text/csv" | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+            /**
              * Sha256
              * @description The SHA-256 of the file you are about to upload, lowercase hex. Hash it locally first. It is part of the storage key, so the upload ticket you get back permits writing exactly these bytes and nothing else.
              */
@@ -6737,6 +6744,13 @@ export interface components {
          *     changes kind is a document whose earlier versions were classified under something else.
          */
         UploadRequest: {
+            /**
+             * Media Type
+             * @description The file's media type, sent as its Content-Type when uploading. A drawing is always `application/pdf` (the default); only a `schedule` (GV's finish schedule, material legend or item list) may also be a CSV (`text/csv`) or an .xlsx workbook.
+             * @default application/pdf
+             * @enum {string}
+             */
+            media_type: "application/pdf" | "text/csv" | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
             /**
              * Sha256
              * @description The SHA-256 of the new file.
