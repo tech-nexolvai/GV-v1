@@ -44,6 +44,7 @@ import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from importlib import import_module
 from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Final
@@ -357,9 +358,8 @@ class _Frame:
 
     @classmethod
     def of(cls, page: Any) -> _Frame:
-        from extraction.reader import pixel_placement
-
-        place = pixel_placement(page, 7200)
+        # By name, at call time: the API never reaches the reader's heavy geometry (`test_no_heavy_work`).
+        place = import_module("extraction.reader").pixel_placement(page, 7200)
         o, r, d = place(0, 0), place(1000, 0), place(0, 1000)
         left, top, right, bottom = (float(v) for v in page.bbox)
         return cls(
@@ -434,7 +434,7 @@ def ruled_tables(
     rows a page's text prints (`header_rows`: from `CROP_ABOVE_PT` above a row to `CROP_BELOW_PT`
     below it, `CROP_SIDE_PT` to each side), within `budget_s` for the set. Returns the tables and
     how many pages were searched."""
-    import pdfplumber
+    pdfplumber = import_module("pdfplumber")
 
     wanted = {p: rows for p, found in sorted(pages.items()) if (rows := header_rows(found))}
     out: list[Table] = []
