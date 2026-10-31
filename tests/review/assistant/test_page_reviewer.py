@@ -815,7 +815,7 @@ def test_an_item_already_recorded_at_the_spot_is_not_recorded_twice(tmp_path: Pa
         )  # fmt: skip
         # The engine's own checks read its values (`ChatEngine._checked`).
         engine.book.replace({**helper, "inches": {"vendor": "36.25", "architect": "35.75"}})
-        return [_string_issue(), _support_issue(), _support_issue(item="Same support again")]
+        return [_string_issue(), _support_issue(), _support_issue(item="Island top: support")]
 
     engine_box: list[Any] = []
     original = _Engine.__init__
@@ -980,20 +980,21 @@ def test_page_lines_reads_the_pages_own_vector_lines(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("read", "why"),
     [
-        ('the overall looks short (about 30")', "quotes the two printed numbers"),
+        ('the overall looks short (about 30")', "the two printed numbers a red size issue"),
         ('24" in plan, 25" in elevation', "does not find two of the numbers"),
     ],
 )
-def test_a_size_issue_must_quote_two_numbers_printed_on_the_page(
+def test_a_red_size_issue_must_quote_two_numbers_printed_on_the_page(
     tmp_path: Path, read: str, why: str
 ) -> None:
+    """A red (claim wrong) still rests on two printed numbers (2026-11-01: only reds)."""
     size = _tool(
-        "report_issue", kind="A", claim="please_check", item="Elevation: width",
+        "report_issue", kind="A", claim="wrong", item="Elevation: width",
         wrong="The width differs between views.", read=read, confidence="medium",
         box={"x0": 190, "y0": 285, "x1": 370, "y1": 340},
     )  # fmt: skip
     printed = _tool(
-        "report_issue", kind="A", claim="please_check", item="Elevation: overall",
+        "report_issue", kind="A", claim="wrong", item="Elevation: overall",
         wrong="The overall and the parts disagree.", read='36 1/4" overall; parts 12" + 12"',
         confidence="medium", box={"x0": 190, "y0": 285, "x1": 370, "y1": 340},
     )  # fmt: skip
@@ -1014,11 +1015,11 @@ def test_a_size_issue_must_quote_two_numbers_printed_on_the_page(
 # ---- the rest of the set (2026-10-29) --------------------------------------------------------------
 
 
-def _size_issue(read: str) -> dict[str, Any]:
+def _size_issue(read: str, claim: str = "wrong") -> dict[str, Any]:
     return _tool(
         "report_issue",
         kind="A",
-        claim="please_check",
+        claim=claim,
         item="Top length vs the countertop drawing",
         wrong='The elevation prints 36 1/4"; the countertop drawing (p1) prints 36".',
         read=read,
@@ -1153,9 +1154,9 @@ def _after_tiles(tmp_path: Path, *issues: dict[str, Any]) -> tuple[_Engine, Page
 def test_a_broad_box_is_refused_with_the_way_to_box_the_callout(tmp_path: Path) -> None:
     engine, review = _after_tiles(
         tmp_path,
-        _issue(box={"x0": 100, "y0": 100, "x1": 700, "y1": 500}),  # a whole view, no whole_view
-        _issue(box={"x0": 100, "y0": 100, "x1": 450, "y1": 180}),  # 350 across: still broad
-        _issue(),  # tight: recorded
+        _issue(kind="D", box={"x0": 100, "y0": 100, "x1": 700, "y1": 500}),  # a view, no flag
+        _issue(kind="D", box={"x0": 100, "y0": 100, "x1": 450, "y1": 180}),  # 350: still broad
+        _issue(kind="D"),  # tight: recorded
     )
     refused = [r for r in _results(engine.script.calls[3].messages) if r.startswith("Refused")]
     assert len(refused) == 2 and all(
@@ -1577,9 +1578,9 @@ def _pen_review(
     return engine, review, reviews
 
 
-def _pen_issue(read: str) -> dict[str, Any]:
+def _pen_issue(read: str, claim: str = "please_check") -> dict[str, Any]:
     return _tool(
-        "report_issue", kind="A", claim="please_check", item="Cabinet top vs the stone top",
+        "report_issue", kind="A", claim=claim, item="Cabinet top vs the stone top",
         wrong="The cabinet top and GV's stone top (p1) differ.", read=read,
         box={"x0": 290, "y0": 310, "x1": 340, "y1": 340}, confidence="medium",
     )  # fmt: skip
@@ -1626,7 +1627,7 @@ def test_a_size_issue_on_a_hand_drawn_page_still_needs_a_number_code_read(
     turns = [
         [_tiles(1, 2, 3, 4, 5, 6)],
         [_tiles(7, 8, 9)],
-        [_pen_issue('10" ; 11"')],
+        [_pen_issue('10" ; 11"', claim="wrong")],
         [_text("ok")],
     ]
     engine, review, reviews = _pen_review(tmp_path, turns)
@@ -1682,3 +1683,195 @@ def test_the_warm_up_is_for_routes_that_share_one_cache() -> None:
     outside = next((m for m in MODELS.values() if m.extra), None)
     if outside is not None:
         assert not cache_shared("openrouter", outside)
+
+
+# ---- the gates since 2026-11-01 (plan M4, M5, M11) --------------------------------------------------
+
+
+def _red_and_check(read: str, claim: str, **more: Any) -> dict[str, Any]:
+    given = {
+        "kind": "A", "claim": claim, "item": "Elevation: overall", "confidence": "medium",
+        "wrong": "The overall does not match the other view.", "read": read,
+        "box": {"x0": 250, "y0": 315, "x1": 300, "y1": 340},
+        **more,
+    }  # fmt: skip
+    return _tool("report_issue", **given)
+
+
+def test_a_size_please_check_is_kept_with_one_printed_number_or_at_low_confidence(
+    tmp_path: Path,
+) -> None:
+    """GV's 'what is this dimension for?' quotes one number: a please-check is never refused for
+    its numbers; with none code finds printed it is kept at low confidence, saying so."""
+    engine, review = _after_tiles(
+        tmp_path,
+        _red_and_check('36 1/4"', "please_check"),  # one printed number: kept as it is
+        _red_and_check('about 30"', "please_check", box={"x0": 600, "y0": 600, "x1": 650, "y1": 640}),
+        _red_and_check("", "please_check", box={"x0": 800, "y0": 600, "x1": 850, "y1": 640}),
+    )  # fmt: skip
+    assert not any(r.startswith("Refused") for r in _results(engine.script.calls[3].messages))
+    one, unprinted, unquoted = review.drafts
+    assert one.confidence == "medium" and page_reviewer.NO_PRINTED_NUMBER not in one.wrong
+    for draft in (unprinted, unquoted):
+        assert draft.confidence == "low" and draft.claim == "please_check"
+        assert draft.wrong.endswith(page_reviewer.NO_PRINTED_NUMBER)
+    for found in engine.book.live():
+        assert found["status"] == "check"
+        assert proof.proof_group(found) == "likely_problem"
+
+
+def test_a_red_still_needs_two_printed_numbers_where_a_please_check_needs_one(
+    tmp_path: Path,
+) -> None:
+    """Zero false reds: the two-numbers rule still guards every red."""
+    red, _ = _after_tiles(tmp_path / "red", _red_and_check('36 1/4" vs 30"', "wrong"))
+    (refused,) = [r for r in _results(red.script.calls[3].messages) if r.startswith("Refused")]
+    assert "does not find two of the numbers" in refused and "claim please_check" in refused
+    assert not [f for f in red.book.live() if f["created_by"] == "page_reviewer"]
+    _check, review = _after_tiles(
+        tmp_path / "check", _red_and_check('36 1/4" vs 30"', "please_check")
+    )
+    assert [(d.claim, d.confidence) for d in review.drafts] == [("please_check", "medium")]
+
+
+def test_a_red_refused_twice_at_one_spot_is_kept_as_a_low_please_check_never_red(
+    tmp_path: Path,
+) -> None:
+    string = {"parts": ['10"', '10"'], "printed_total": '21"'}  # nothing of it printed here
+    red = _red_and_check('10" + 10" ; 21"', "wrong", **string)
+    engine, review = _after_tiles(tmp_path, red, red, red)
+    refused = [r for r in _results(engine.script.calls[3].messages) if r.startswith("Refused")]
+    assert len(refused) == 2
+    (draft,) = review.drafts
+    assert (draft.claim, draft.confidence) == ("please_check", "low")
+    assert draft.wrong.endswith(page_reviewer.NO_TWO_PRINTED)
+    (found,) = [f for f in engine.book.live() if f["created_by"] == "page_reviewer"]
+    assert found["status"] == "check" and found.get("source") != "vendor_arithmetic"
+    assert proof.proof_group(found) == "likely_problem"
+    assert [r["reason"] for r in review.refused_items] == [
+        "size: two quoted numbers not printed"
+    ] * 2
+
+
+def test_every_refused_report_and_decision_is_kept_short_for_the_log(tmp_path: Path) -> None:
+    long_words = "The table lists no such finish. " * 12  # about 380 characters
+    broad = _issue(kind="D", wrong=long_words, box={"x0": 100, "y0": 100, "x1": 700, "y1": 500})
+    early = _tool("resolve_finding", n=1, decision="drop", why="a misread")
+    _engine, review, _ended, reviews = _review(
+        tmp_path,
+        [[_tiles(1, 2, 3, 4, 5, 6)], [_tiles(7, 8, 9)], [broad, early], [_text("ok")]],
+        cap=900_000,
+        cost=100_000,
+    )
+    box_row, resolve_row = review.refused_items
+    assert box_row["tool"] == "report_issue" and box_row["reason"] == "box: too big"
+    assert box_row["kind"] == "D" and box_row["item"] == "Elevation: a callout"
+    assert len(box_row["wrong"]) == page_reviewer.LOG_TEXT_CHARS
+    assert box_row["box"] == [100.0, 100.0, 700.0, 500.0]
+    assert resolve_row["tool"] == "resolve_finding" and resolve_row["why"] == "a misread"
+    reviews.pages["p2"] = review
+    (row,) = reviews.block()["pages"]
+    assert row["refused_items"] == review.refused_items
+    # At most 40 a page.
+    _many, review2 = _after_tiles(tmp_path / "many", *[broad] * 45)
+    assert len(review2.refused_items) == page_reviewer.MAX_REFUSED_ITEMS
+
+
+def test_a_box_too_big_is_snapped_to_the_printed_tag_it_quotes(tmp_path: Path) -> None:
+    engine, review = _after_tiles(
+        tmp_path,
+        _issue(kind="D", wrong="The top is tagged ST-01; the table lists no ST-01.",
+               box={"x0": 500, "y0": 300, "x1": 1000, "y1": 600}),  # 500 across, around ST-01
+        _issue(kind="D", wrong="The top is tagged ST-01; the table lists no ST-01.",
+               box={"x0": 100, "y0": 450, "x1": 600, "y1": 700}),  # 500 across, ST-01 not in it
+    )  # fmt: skip
+    (draft,) = review.drafts
+    assert draft.snapped
+    assert draft.box == pytest.approx((694.0, 406.9, 730.5, 427.9))  # ST-01's phrase, padded 6
+    (refused,) = [r for r in _results(engine.script.calls[3].messages) if r.startswith("Refused")]
+    assert "give anchor" in refused and "500 points across" in refused
+
+
+def test_an_anchor_is_boxed_by_code_and_the_models_box_is_only_a_hint(tmp_path: Path) -> None:
+    _engine, review = _after_tiles(
+        tmp_path,
+        _issue(kind="F", wrong="The item number differs from the title.", anchor="ITEM 101",
+               box={"x0": 1000, "y0": 650, "x1": 1200, "y1": 700}),  # near, not on it
+        _issue(kind="A", wrong="A part of the string is unclear.", anchor='12" 12" 11 3/4"',
+               box={"x0": 190, "y0": 280, "x1": 360, "y1": 310}),  # the parts of a row
+        _issue(kind="F", wrong="Unknown words.", anchor="NOT ON THE PAGE",
+               box={"x0": 300, "y0": 300, "x1": 420, "y1": 340}),  # no match: the box as given
+    )  # fmt: skip
+    item, row, unmatched = review.drafts
+    assert item.snapped and item.box == pytest.approx((1094.0, 746.9, 1145.0, 767.9))
+    assert row.snapped and row.box == pytest.approx((194.0, 286.9, 354.2, 307.9))
+    assert not unmatched.snapped and unmatched.box == (300.0, 300.0, 420.0, 340.0)
+    assert "anchor" in page_reviewer.REPORT_ISSUE["input_schema"]["properties"]
+
+
+def test_a_thin_strip_is_tight_by_its_short_side(tmp_path: Path) -> None:
+    engine, review = _after_tiles(
+        tmp_path,
+        _issue(kind="D", box={"x0": 100, "y0": 500, "x1": 450, "y1": 520}),  # 350 x 20: a strip
+        _issue(kind="D", box={"x0": 100, "y0": 600, "x1": 450, "y1": 640}),  # 350 x 40: broad
+    )  # fmt: skip
+    assert [round(d.box[2] - d.box[0]) for d in review.drafts] == [350]
+    (refused,) = [r for r in _results(engine.script.calls[3].messages) if r.startswith("Refused")]
+    assert "350 points across" in refused
+
+
+@pytest.mark.parametrize("kind", ["B", "C", "E"])
+def test_construction_completeness_and_scope_may_box_an_area_up_to_a_view(
+    tmp_path: Path, kind: str
+) -> None:
+    engine, review = _after_tiles(
+        tmp_path,
+        _issue(kind=kind, wrong="Something is missing in this area.",
+               box={"x0": 100, "y0": 100, "x1": 650, "y1": 500}),  # 550: a view, no flag
+        _issue(kind=kind, wrong="Something is missing anywhere.",
+               box={"x0": 0, "y0": 0, "x1": 1200, "y1": 700}),  # the page: refused
+    )  # fmt: skip
+    assert [round(d.box[2] - d.box[0]) for d in review.drafts] == [550]
+    assert any("1200 points across" in r for r in _results(engine.script.calls[3].messages))
+
+
+def test_two_problems_at_one_spot_stay_two_and_the_same_problem_folds_once(
+    tmp_path: Path,
+) -> None:
+    spot = {"x0": 690, "y0": 405, "x1": 740, "y1": 430}
+    engine, review = _after_tiles(
+        tmp_path,
+        _issue(kind="D", item="Material table: ST-01 code", box=spot,
+               wrong="ST-01 is not in the material table."),
+        _issue(kind="D", item="Grain arrows on the stone", box=spot,
+               wrong="Grain arrows are drawn on a stone top."),  # another problem: kept
+        _issue(kind="D", item="Material table: ST-01 code missing", box=spot,
+               wrong="The table has no ST-01 row."),  # alike words: folded
+    )  # fmt: skip
+    first, second, third = review.drafts
+    mine = [f for f in engine.book.live() if f["created_by"] == "page_reviewer"]
+    assert len(mine) == 2 and second.joined is None and second.related_to == first.finding_id
+    assert third.joined == first.finding_id
+    (fold,) = review.folds
+    assert fold["how"] == "same kind, alike words" and fold["into"] == first.finding_id
+    assert (
+        "ST-01 code missing" in fold["new"] and "ST-01 is not in the material table" in fold["kept"]
+    )
+
+
+def test_another_kind_folds_only_on_the_same_quoted_numbers_at_the_same_spot(
+    tmp_path: Path,
+) -> None:
+    spot = {"x0": 255, "y0": 318, "x1": 295, "y1": 336}
+    engine, review = _after_tiles(
+        tmp_path,
+        _red_and_check('36 1/4"', "please_check", box=spot),
+        _issue(kind="F", item="Elevation: overall label", read='36 1/4"', box=spot,
+               wrong="The overall's label is unreadable."),  # same quote, same spot: folded
+        _issue(kind="F", item="Elevation: view title", read="SECTION A", box=spot,
+               wrong="The view title is missing."),  # other words, other kind: kept
+    )  # fmt: skip
+    size, label, title = review.drafts
+    assert label.joined == size.finding_id and title.joined is None
+    assert [f["how"] for f in review.folds] == ["another kind, same quoted numbers or tags"]
+    assert len([f for f in engine.book.live() if f["created_by"] == "page_reviewer"]) == 2

@@ -49,17 +49,23 @@ logged).
 - kinds B to F (construction, completeness, material, scope, labels) and every "please check" are
   Likely problems (`likely_problems`, `by: page_reviewer`, `proof: likely_only`), never red, their
   kind in words on the card;
-- a kind A issue quotes two sizes code finds printed (`_cited`): on this page's text layer or
-  among the sizes code read off its pen strokes, on another page it read, or in the facts code
-  gave it; reading another page only ever adds sizes, so it never turns an accepted issue into a
-  refused one (2026-10-31: it did, on a hand-drawn page once the stone page was read);
+- a red kind A issue (claim wrong) quotes two sizes code finds printed (`_cited`): on this page's
+  text layer or among the sizes code read off its pen strokes, on another page it read, or in the
+  facts code gave it; reading another page only ever adds sizes, so it never turns an accepted
+  issue into a refused one (2026-10-31: it did, on a hand-drawn page once the stone page was
+  read). A kind A please-check is never refused for its numbers: with none code finds printed it
+  is kept at low confidence and says so (`_size_gate`, 2026-11-01);
+- a box is the evidence's: code boxes an `anchor`'s printed words, and snaps a box too big to the
+  printed numbers or tags it quotes before refusing it (`_tight`); every refused report or
+  self-check decision is kept, short, for the run's log (`refused_items`);
 - a kind A size claim that a dimension string does not add up (its parts and printed total) is
   checked by code first (a sum that adds up is sent back as a misread) and then recorded as the
   vendor's own string (`source: vendor_arithmetic`): it takes the existing proof path (code's
   string geometry, the blind string reading, the check's track record), and is red only through
   those gates; unproved, it is a Likely problem;
 - an item a helper already recorded at the same spot (`one_card.same_item`), or a Likely problem of
-  the same kind on the same spot, is not recorded twice.
+  the same kind on the same spot with alike words or the same quoted numbers, is not recorded
+  twice (each fold logged with both texts); two different problems at one spot stay two.
 
 **Money** (never told to the model): each reviewer has its own cap (`Options.per_page_micros`,
 `GV_ASSISTANT_PAGE_REVIEWER_PER_PAGE_USD`, proposed $0.90 a page), added to the fixed price per
@@ -178,6 +184,31 @@ _SIZE_WORDS: Final = re.compile(
 TIGHT_BOX_PT: Final = 200.0
 STRING_BOX_PT: Final = 400.0
 WHOLE_VIEW_PT: Final = 600.0
+#: Box rules beside the long side (2026-11-01, plan M5: 11 boxes of 290-652 points refused on four
+#: sheets, a half-page view being 500-600): a thin strip (a dimension row, a table row) whose short
+#: side is at most `STRIP_PT` is tight up to `STRING_BOX_PT` long; construction, completeness and
+#: scope issues are about areas by nature and may box up to `WHOLE_VIEW_PT` without `whole_view`.
+STRIP_PT: Final = 30.0
+AREA_KINDS: Final = frozenset({"B", "C", "E"})
+#: A box too big is snapped to the printed phrases it quotes that lie in it or this close to it,
+#: padded by `SNAP_PAD_PT` (the same for the phrases an `anchor` names), before any refusal.
+SNAP_NEAR_PT: Final = 20.0
+SNAP_PAD_PT: Final = 6.0
+#: Refused report_issue / resolve_finding calls kept per page for the run's log, and folds logged,
+#: each text cut to `LOG_TEXT_CHARS` (plan M4: the refused text was lost).
+MAX_REFUSED_ITEMS: Final = 40
+MAX_FOLDS_LOGGED: Final = 40
+LOG_TEXT_CHARS: Final = 200
+#: A red size claim refused this many times at one spot is kept as a low-confidence please-check.
+SPOT_REFUSALS: Final = 2
+#: What a size please-check with no printed number, or a red kept as a please-check, says.
+NO_PRINTED_NUMBER: Final = "(no printed number quoted)"
+NO_TWO_PRINTED: Final = "(two printed numbers not found)"
+#: A new issue folds into a card already on the page only above these box overlaps (plan M11):
+#: the same kind with alike words or the same quoted numbers/tags, or any kind with the same
+#: quoted numbers/tags and more overlap.
+FOLD_OVERLAP: Final = 0.5
+CROSS_KIND_FOLD_OVERLAP: Final = 0.7
 #: How close a fresh zoom must be to a draft's evidence for the self-check to settle it (points).
 NEAR_PT: Final = 20.0
 #: A phrase longer than this many words is a note, not something to zoom on.
@@ -299,10 +330,11 @@ profiles or thicknesses (GV's reviewer does not), or flag a note printed on ever
 "Nothing to report" is a good outcome when true.
 
 Reporting
-One report per issue: the kind, a box around the callout, dimension or tag itself, or for a \
-missing part (a support, a filler) where it belongs (under about 200 points a side), a short item \
-name, what is wrong, what it should be, the exact text you read, and your confidence. \
-A size issue (kind A) quotes the two printed numbers it rests on, exactly as printed. claim = \
+One report per issue: the kind, a box around the callout, dimension or tag itself (or anchor: \
+the printed words, which code boxes), or for a missing part (a support, a filler) where it \
+belongs (under about 200 points a side), a short item name, what is wrong, what it should be, \
+the exact text you read, and your confidence. A size please-check quotes the printed number it \
+is about; a red size issue quotes the two printed numbers it rests on, exactly as printed. claim = \
 "wrong" only when the page itself shows a contradiction you quoted (two different numbers for \
 the same thing, a string that does not add up); for a string, also give its parts and printed \
 total. claim = "please_check" for everything else, including \
@@ -385,8 +417,15 @@ _ISSUE_FIELDS: Final[Mapping[str, Any]] = {
     "read": {"type": "string", "description": "The exact text or numbers you read as evidence"},
     "box": _box_schema(
         "Around the evidence itself: the callout, dimension or tag (under about 200 points a "
-        "side; a dimension string may be longer)."
+        "side; a dimension string or a thin strip may be longer; a construction, completeness or "
+        "scope issue may box its area, up to a view)."
     ),
+    "anchor": {
+        "type": "string",
+        "description": "Optional: the words printed on this page that show the issue, as "
+        "page_text gives them (a dimension, tag or callout). Code boxes them; your box is then "
+        "only a hint for which one",
+    },
     "whole_view": {
         "type": "boolean",
         "description": "The issue is about a whole view or area (a missing view, no support under "
@@ -516,7 +555,11 @@ REPORT_ISSUE: Final[Mapping[str, Any]] = {
     "description": (
         "Report one issue on this page, as soon as it is confirmed, once all nine tiles were "
         "zoomed (a report before that is refused). One call per issue. The box is on this page "
-        "(where the problem shows here); name another page in the words."
+        "(where the problem shows here); name another page in the words. Examples. A size "
+        "please-check on one printed number: kind A, claim please_check, item 'Base run: "
+        "filler', wrong 'What is this 2 1/2\" for? Nothing it dimensions is drawn.', read "
+        "'2 1/2\"', anchor '2 1/2\"'. A red: kind A, claim wrong, item 'Sink base: width', "
+        "wrong 'Plan prints 33\", elevation 30\" for the same cabinet.', read '33\" ; 30\"'."
     ),
     "input_schema": {
         "type": "object",
@@ -1172,6 +1215,10 @@ class Draft:
     """Reported as an issue about a whole view (`_tight`): a fix keeps the allowance."""
     parts: list[str] | None = None
     """A string's parts as reported (kind A): a fix keeps the string's allowance."""
+    snapped: bool = False
+    """Code placed its box on printed phrases (an `anchor`, or a box too big snapped, `_tight`)."""
+    related_to: str | None = None
+    """A card of the same kind at the same spot it was not folded into (different words)."""
 
     def line(self) -> str:
         box = [round(v) for v in self.box]
@@ -1224,6 +1271,11 @@ class PageReview:
     shown_sizes: set[Decimal] = field(default_factory=set)
     #: Its refused tool calls, by tool and reason (`_Refused.reason`), for the run's log.
     refusals: dict[str, int] = field(default_factory=dict)
+    #: What its refused report_issue / resolve_finding calls said (`_Run._keep_refused`), at most
+    #: `MAX_REFUSED_ITEMS`, so the next run shows what the gates blocked; and each issue code folded
+    #: into a card already there, with both texts (`_Run._fold`).
+    refused_items: list[dict[str, Any]] = field(default_factory=list)
+    folds: list[dict[str, Any]] = field(default_factory=list)
     #: Its calls' tokens (input, output, cache written, cache read), and its first call's alone
     #: (a warm cache shows as a read there), for the run's log: where a page's money went.
     tokens: dict[str, int] = field(default_factory=dict)
@@ -2036,6 +2088,7 @@ class _Run:
             content = self._tool(name, given or {})
         except _Refused as refused:
             self._count_refusal(name, refused.reason)
+            self._keep_refused(name, refused.reason, given or {})
             return _result(call, f"Refused: {refused}", error=True)
         except ValueError as wrong:
             self._count_refusal(name, _short(str(wrong)))
@@ -2049,6 +2102,22 @@ class _Run:
     def _count_refusal(self, name: str, reason: str) -> None:
         key = f"{name}: {reason}"
         self.review.refusals[key] = self.review.refusals.get(key, 0) + 1
+
+    def _keep_refused(self, name: str, reason: str, given: Mapping[str, Any]) -> None:
+        """A refused report or self-check decision, as it was sent (short), for the run's log."""
+        items = self.review.refused_items
+        if name not in ("report_issue", "resolve_finding") or len(items) >= MAX_REFUSED_ITEMS:
+            return
+        row: dict[str, Any] = {"tool": name, "reason": reason}
+        for key in ("n", "decision", "kind", "claim", "item", "wrong", "read", "anchor", "why"):
+            text = _words(given.get(key), LOG_TEXT_CHARS)
+            if text:
+                row[key] = text
+        box = _box_of(given.get("box"))
+        if box is not None:
+            x0, y0, x1, y1 = box
+            row["box"] = [round(v, 1) for v in (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))]
+        items.append(row)
 
     def _tool(self, name: str, given: Mapping[str, Any]) -> str | list[dict[str, Any]]:
         review = self.review
@@ -2166,17 +2235,71 @@ class _Run:
             raise _Refused(f"at most {MAX_ISSUES} issues on one page; keep the most important")
         draft = self._draft(given, len(review.drafts) + 1)
         if draft.kind == "A":
-            self._cited(given)
+            given = self._size_gate(draft, given)
         self._record(draft, given)
         review.drafts.append(draft)
         if draft.joined is not None:
             return f"Issue {draft.n}: already recorded as {draft.joined}; it is counted once."
         return f"Recorded issue {draft.n}."
 
+    def _size_gate(self, draft: Draft, given: Mapping[str, Any]) -> Mapping[str, Any]:
+        """The two-numbers rule guards reds only (plan M4, 2026-11-01: 15 refusals on four sheets,
+        GV's own size comments quoting one number or none). A red (claim wrong) quotes two printed
+        numbers (`_cited`), refused otherwise, except that a third try at a spot refused twice is
+        kept as a low-confidence please-check (never red). A size please-check is never refused:
+        with no quoted number code finds printed it is kept at low confidence, saying so."""
+        if draft.claim == "wrong":
+            try:
+                self._cited(given)
+            except _Refused:
+                spot = _box_of(given.get("box"))
+                if spot is None or self._refused_at(spot) < SPOT_REFUSALS:
+                    raise
+                draft.claim = "please_check"
+                _doubt(draft, NO_TWO_PRINTED)
+                # Recorded as a please-check: never the string's red path (`_record`).
+                return {**given, "claim": "please_check"}
+            return given
+        text, _here, printed, drawn = self._printed()
+        if (text or drawn) and not set(cited_sizes(given)) & printed:
+            _doubt(draft, NO_PRINTED_NUMBER)
+        return given
+
+    def _refused_at(self, spot: Box) -> int:
+        """How many size reports at this spot were refused already (`refused_items`)."""
+        x0, y0, x1, y1 = spot
+        box = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+        return sum(
+            1
+            for row in self.review.refused_items
+            if row["tool"] == "report_issue"
+            and str(row["reason"]).startswith("size:")
+            and isinstance(row.get("box"), list)
+            and _overlap_share(row["box"], box) >= FOLD_OVERLAP
+        )
+
+    def _printed(self) -> tuple[set[Decimal], set[Decimal], set[Decimal], list[dict[str, Any]]]:
+        """The sizes code finds printed: on this page's text layer, here (text layer and the sizes
+        code read off its drawing), anywhere it may rest on (here, the facts, pages it read), and
+        the sizes code read off this page's drawing."""
+        review = self.review
+        text = printed_sizes(review.found)
+        drawn = review.labels or self._refresh_labels()
+        here = text | label_sizes(drawn)
+        printed = here | review.shown_sizes
+        for found in review.other_text.values():
+            # A size the countertop drawing of the same item prints (read with set_page_text).
+            printed |= printed_sizes(found)
+        for labels in review.other_labels.values():
+            printed |= label_sizes(labels)
+        return text, here, printed, drawn
+
     def _cited(self, given: Mapping[str, Any]) -> None:
-        """A size issue rests on two numbers printed on the page (the fair re-test of 2026-10-29: a
-        reviewer free to script called 7 of 20 checked sizes wrong): refused unless it quotes at
-        least two sizes and code finds them printed.
+        """A red size issue rests on two numbers printed on the page (the fair re-test of
+        2026-10-29: a reviewer free to script called 7 of 20 checked sizes wrong): refused unless it
+        quotes at least two sizes and code finds them printed. Since 2026-11-01 only a red (claim
+        wrong) is held to it (`_size_gate`); each refusal says what is missing and the legal next
+        move, never the call back.
 
         Printed: on this page's text layer, among the sizes code read off its drawing
         (`code_labels`), on another page it read (`set_page_text`, or a zoom there), or in the facts
@@ -2190,26 +2313,18 @@ class _Run:
         quoted = set(cited)
         if len(cited) < 2:
             raise _Refused(
-                "a size issue quotes the two printed numbers it rests on (in read, or a string's "
-                "parts and printed total), exactly as printed",
+                "missing the two printed numbers a red size issue rests on. Next: quote both in "
+                "read exactly as printed (or a string's parts and printed total), or report it "
+                "with claim please_check",
                 "size: fewer than two numbers quoted",
             )
-        review = self.review
-        text = printed_sizes(review.found)
-        drawn = review.labels or self._refresh_labels()
-        here = text | label_sizes(drawn)
-        printed = here | review.shown_sizes
-        for found in review.other_text.values():
-            # A size the countertop drawing of the same item prints (read with set_page_text).
-            printed |= printed_sizes(found)
-        for labels in review.other_labels.values():
-            printed |= label_sizes(labels)
+        text, here, printed, drawn = self._printed()
         if drawn:
             if not quoted & printed:
                 raise _Refused(
-                    "code does not find any of the numbers you quoted on this page (its sizes "
-                    "code read are in your first message) or on a page you read: quote them "
-                    "exactly as drawn",
+                    "code does not find any of the numbers you quoted among the sizes it read on "
+                    "this page (listed in your first message) or on a page you read. Next: quote "
+                    "them exactly as drawn, or report it with claim please_check",
                     "size: no quoted number read by code",
                 )
             return
@@ -2218,13 +2333,15 @@ class _Run:
         if len(quoted & printed) < 2:
             raise _Refused(
                 "code does not find two of the numbers you quoted printed on this page's text "
-                "layer: quote them exactly as printed (page_text lists them)",
+                "layer. Next: quote them exactly as printed (page_text lists them), or report it "
+                "with claim please_check",
                 "size: two quoted numbers not printed",
             )
         if not quoted & here:
             raise _Refused(
-                "a size issue on this page quotes at least one number printed on this page "
-                "(page_text lists them)",
+                "missing a quoted number printed on this page. Next: quote the number printed "
+                "on this page (page_text lists them) beside the other page's, or report it with "
+                "claim please_check",
                 "size: no quoted number on this page",
             )
 
@@ -2242,8 +2359,7 @@ class _Run:
         confidence = str(given.get("confidence") or "medium")
         if confidence not in ("high", "medium", "low"):
             confidence = "medium"
-        box = self._box(given.get("box"))
-        self._tight(box, letter, given)
+        box, snapped = self._tight(self._box(given.get("box")), letter, given)
         letter = self._kind_by_words(letter, wrong)
         parts = given.get("parts")
         return Draft(
@@ -2259,29 +2375,113 @@ class _Run:
             read=_words(given.get("read"), 200) or None,
             confidence=confidence,
             finding_id=None,
+            snapped=snapped,
         )
 
-    def _tight(self, box: Box, letter: str, given: Mapping[str, Any]) -> None:
-        """The box points at the evidence (`TIGHT_BOX_PT`): a broad box is refused with the way to
-        report it, so the cloud lands on the callout, as GV's reviewer's marks do."""
-        side = max(box[2] - box[0], box[3] - box[1])
-        string = letter == "A" and isinstance(given.get("parts"), list) and len(given["parts"]) >= 2
-        limit = STRING_BOX_PT if string else TIGHT_BOX_PT
-        if given.get("whole_view") is True:
-            limit = max(limit, WHOLE_VIEW_PT)
+    def _tight(self, box: Box, letter: str, given: Mapping[str, Any]) -> tuple[Box, bool]:
+        """The box points at the evidence (`TIGHT_BOX_PT`), as GV's reviewer's marks do; the box
+        to use, and whether code placed it on printed phrases.
+
+        Since 2026-11-01 (plan M5; "quote, don't point": a model's coordinates are approximate,
+        the text layer's are exact): an `anchor` (printed words) is boxed by code, the model's box
+        only a hint; a thin strip is judged by its short side too (`STRIP_PT`); construction,
+        completeness and scope issues may box up to a view (`AREA_KINDS`); a box still too big is
+        snapped to the printed phrases it quotes in or near it. Refused, with the way to report
+        it, only when nothing applies."""
+        anchored = self._anchored(given.get("anchor"), box, letter, given)
+        if anchored is not None:
+            return anchored, True
+        side, limit = self._box_limit(box, letter, given)
         if side <= limit:
-            return
+            return box, False
+        snapped = self._snapped(box, letter, given)
+        if snapped is not None:
+            return snapped, True
         if given.get("whole_view") is True:
             raise _Refused(
                 f"the box is {side:.0f} points across; even an issue about a whole view boxes just "
-                f"that view (under about {WHOLE_VIEW_PT:.0f} points a side)"
+                f"that view (under about {WHOLE_VIEW_PT:.0f} points a side). Next: box that view, "
+                "or give anchor: the printed words that show the issue",
+                "box: wider than a view",
             )
         raise _Refused(
-            f"the box is {side:.0f} points across: box the callout, dimension or tag itself "
-            f"(under about {TIGHT_BOX_PT:.0f} points a side; page_text gives each phrase's box). "
-            "For an issue about a whole view (a missing view, a support, a layout) set whole_view "
-            "true and box that view."
+            f"the box is {side:.0f} points across and code finds no number or tag you quoted "
+            "printed in it. Next: give anchor (the printed words that show the issue), or box "
+            f"the callout, dimension or tag itself (under about {TIGHT_BOX_PT:.0f} points a "
+            "side; page_text gives each phrase's box). For an issue about a whole view (a "
+            "missing view, a support, a layout) set whole_view true and box that view.",
+            "box: too big",
         )
+
+    def _box_limit(self, box: Box, letter: str, given: Mapping[str, Any]) -> tuple[float, float]:
+        """A box's longest side and the most it may be for this issue."""
+        side = max(box[2] - box[0], box[3] - box[1])
+        short = min(box[2] - box[0], box[3] - box[1])
+        string = letter == "A" and isinstance(given.get("parts"), list) and len(given["parts"]) >= 2
+        limit = STRING_BOX_PT if string or short <= STRIP_PT else TIGHT_BOX_PT
+        if letter in AREA_KINDS or given.get("whole_view") is True:
+            limit = max(limit, WHOLE_VIEW_PT)
+        return side, limit
+
+    def _padded(self, boxes: Sequence[Sequence[float]]) -> Box:
+        """The union of `boxes`, padded by `SNAP_PAD_PT`, on the page."""
+        width, height = self.review.size
+        return (
+            max(0.0, min(b[0] for b in boxes) - SNAP_PAD_PT),
+            max(0.0, min(b[1] for b in boxes) - SNAP_PAD_PT),
+            min(width, max(b[2] for b in boxes) + SNAP_PAD_PT),
+            min(height, max(b[3] for b in boxes) + SNAP_PAD_PT),
+        )
+
+    def _snapped(self, box: Box, letter: str, given: Mapping[str, Any]) -> Box | None:
+        """A box too big, snapped to the text layer's phrases printing a number or tag quoted in
+        read, item, wrong or anchor that lie in it or within `SNAP_NEAR_PT` of it; `None` when
+        there is none, or their union is still too big."""
+        quoted = " ".join(str(given.get(k) or "") for k in ("read", "item", "wrong", "anchor"))
+        sizes, tags = set(_sizes_in(quoted)), set(tags_in(quoted))
+        if not sizes and not tags:
+            return None
+        hits = []
+        for phrase in self.review.found:
+            text = str(phrase.get("text") or "")
+            if _distance(phrase["box"], box) > SNAP_NEAR_PT:
+                continue
+            printed = {*_sizes_in(text), *bracketed_sizes(text)}
+            if sizes & printed or tags & set(tags_in(text)):
+                hits.append(phrase["box"])
+        if not hits:
+            return None
+        snapped = self._padded(hits)
+        side, limit = self._box_limit(snapped, letter, given)
+        return snapped if side <= limit else None
+
+    def _anchored(
+        self, raw: object, hint: Box, letter: str, given: Mapping[str, Any]
+    ) -> Box | None:
+        """The box of the printed phrase(s) an `anchor` names: phrases printing the whole anchor,
+        else phrases the anchor is made of; those near the model's box (`hint`), else the one
+        closest to it. `None` when no phrase matches."""
+        anchor = _plain(raw)
+        if len(anchor) < 2:
+            return None
+        texts = [(p, _plain(p.get("text"))) for p in self.review.found]
+        matches = [p for p, t in texts if t and f" {anchor} " in f" {t} "]
+        if not matches:
+            matches = [
+                p
+                for p, t in texts
+                if len(t) >= 2 and re.search(r"[a-z0-9]", t) and f" {t} " in f" {anchor} "
+            ]
+        if not matches:
+            return None
+        near = [p["box"] for p in matches if _distance(p["box"], hint) <= SNAP_NEAR_PT]
+        closest = min(matches, key=lambda p: _distance(p["box"], hint))["box"]
+        if near:
+            union = self._padded(near)
+            side, limit = self._box_limit(union, letter, {**given, "whole_view": False})
+            if side <= limit:
+                return union
+        return self._padded([closest])
 
     def _kind_by_words(self, letter: str, wrong: str) -> str:
         """A completeness issue whose words (what is wrong) name a finish tag, or say the issue is
@@ -2378,21 +2578,45 @@ class _Run:
 
     def _likely(self, draft: Draft, skip: str | None = None) -> str | None:
         """A please-check (kinds B to F, and every size claim code cannot check): a Likely problem
-        only, never red."""
+        only, never red.
+
+        Folded into a Likely problem already on the page only when it is the same problem (plan
+        M11, 2026-11-01: two different finish comments on one table row were folded into one):
+        the same kind, boxes overlapping `FOLD_OVERLAP` and alike words (`set_context._alike`) or
+        the same quoted numbers and tags; or any kind with the same quoted numbers and tags and
+        boxes overlapping `CROSS_KIND_FOLD_OVERLAP`. A same-kind card at the spot with other words
+        is kept beside it (`related_to`). Every fold is logged with both texts."""
+        from app.review.assistant.set_context import _alike
+
         kind = KIND_OF[draft.kind]
         page = self.review.page
+        mine = _quoted_tokens(draft.read)
         for finding in self.engine.book.live():
             mark = finding.get(likely_problems.FIELD)
             box = _box_of(finding.get("vendor_box"))
             if (
-                finding.get("page") == page
-                and finding.get("id") != skip
-                and isinstance(mark, Mapping)
-                and mark.get("kind") == kind
-                and box is not None
-                and _overlap_share(box, draft.box) >= 0.5
+                finding.get("page") != page
+                or finding.get("id") == skip
+                or not isinstance(mark, Mapping)
+                or box is None
             ):
-                draft.joined = str(finding["id"])
+                continue
+            share = _overlap_share(box, draft.box)
+            if share < FOLD_OVERLAP:
+                continue
+            same_quote = bool(mine) and mine == _quoted_tokens(self._read_of(finding, mark))
+            how: str | None = None
+            if mark.get("kind") == kind:
+                if _alike({"item": draft.item}, finding):
+                    how = "same kind, alike words"
+                elif same_quote:
+                    how = "same kind, same quoted numbers or tags"
+                else:
+                    draft.related_to = draft.related_to or str(finding["id"])
+            elif same_quote and share >= CROSS_KIND_FOLD_OVERLAP:
+                how = "another kind, same quoted numbers or tags"
+            if how is not None:
+                self._fold(draft, finding, how)
                 return None
         if draft.kind == "A":
             from app.review.assistant.finding_checks import to_inches
@@ -2406,7 +2630,9 @@ class _Run:
                 }
                 known = self._known_item(probe)
                 if known is not None:
-                    draft.joined = known
+                    live = self.engine.book.live()
+                    found = next((f for f in live if f.get("id") == known), {"id": known})
+                    self._fold(draft, found, "the same size as another step's item")
                     return None
         raw = {
             "page": page,
@@ -2425,6 +2651,30 @@ class _Run:
             "vendor_box": self._spot(draft.box),
         }
         return self._recorded(raw, draft, proof="likely_only")
+
+    def _fold(self, draft: Draft, finding: Mapping[str, Any], how: str) -> None:
+        """The draft counted once, as `finding`; logged with both texts (`PageReview.folds`)."""
+        draft.joined = str(finding["id"])
+        mark = finding.get(likely_problems.FIELD)
+        theirs = mark.get("why") if isinstance(mark, Mapping) else finding.get("why")
+        row = {
+            "n": draft.n,
+            "into": draft.joined,
+            "how": how,
+            "new": _words(f"{draft.kind} {draft.item}: {draft.wrong}", LOG_TEXT_CHARS),
+            "kept": _words(f"{finding.get('item') or ''}: {theirs or ''}", LOG_TEXT_CHARS),
+        }
+        _log.info("page reviewer p%s: issue folded %s", self.review.page, row)
+        if len(self.review.folds) < MAX_FOLDS_LOGGED:
+            self.review.folds.append(row)
+
+    def _read_of(self, finding: Mapping[str, Any], mark: Mapping[str, Any]) -> str | None:
+        """What a Likely problem's reviewer read: its draft's, else the end of its why."""
+        draft = next((d for d in self.review.drafts if d.finding_id == finding.get("id")), None)
+        if draft is not None:
+            return draft.read
+        why = str(mark.get("why") or "")
+        return why.rsplit(" Read: ", 1)[1] if " Read: " in why else None
 
     def _known_item(self, probe: Mapping[str, Any]) -> str | None:
         """An open item another step recorded that code knows is this one (`one_card.same_item`)."""
@@ -2570,6 +2820,29 @@ def _result(
 def _words(value: object, limit: int) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _doubt(draft: Draft, note: str) -> None:
+    """A draft kept at low confidence, its words saying why (within what is wrong's 400)."""
+    draft.confidence = "low"
+    if note not in draft.wrong:
+        draft.wrong = f"{_words(draft.wrong, 400 - len(note) - 1)} {note}"
+
+
+def _quoted_tokens(text: object) -> frozenset[tuple[str, str]]:
+    """The sizes (in inches) and tags a reviewer quoted: what makes two reports the same spot's
+    evidence whatever their words."""
+    raw = str(text or "")
+    sizes = {("size", str(v.normalize())) for v in (*_sizes_in(raw), *bracketed_sizes(raw))}
+    return frozenset(sizes | {("tag", tag) for tag in tags_in(raw)})
+
+
+def _plain(value: object) -> str:
+    """Printed words compared loosely: lower case, one space, straight quotes."""
+    text = str(value or "").lower()
+    for curly, straight in (("″", '"'), ("“", '"'), ("”", '"'), ("′", "'"), ("’", "'")):
+        text = text.replace(curly, straight)
+    return " ".join(text.split())
 
 
 def _box_of(value: object) -> Box | None:
@@ -2758,6 +3031,9 @@ class Reviews:
                     "spent_usd": round(self.spent.get(review.page, 0) / 1_000_000, 4),
                     "tools": dict(review.counts),
                     "refused": dict(review.refusals),
+                    "refused_items": [dict(r) for r in review.refused_items],
+                    "folds": [dict(f) for f in review.folds],
+                    "snapped": sum(1 for d in review.drafts if d.snapped),
                     "tokens": dict(review.tokens),
                     "first_call": dict(review.first_call),
                     "most_output": review.most_output,
