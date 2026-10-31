@@ -212,10 +212,18 @@ SET_CONTEXT_WAIT_S: Final = 120.0
 MAX_OTHER_LINES: Final = 200
 #: Pictures one page's conversation holds at most (the API's limit on one request).
 MAX_PICTURES: Final = 90
-#: Crops one zoom call takes, and every picture's longest side (pixels): many pictures in one
-#: request must each stay at most 2,000 px.
+#: Crops one zoom call takes, and every picture's longest side (pixels): a request with more
+#: than 20 pictures refuses any picture over 3,000 px a side (Anthropic's vision docs).
 MAX_CROPS: Final = 6
 PICTURE_EDGE_PX: Final = 1600
+#: The whole-page picture's longest side asked for with `Options.sharp_page` (plan M8e,
+#: 2026-11-01, `GV_ASSISTANT_PAGE_REVIEWER_SHARP_PAGE`, off until a measured comparison): Opus
+#: 5.5's high-resolution limit, under the 3,000 px many-picture limit, so the API never refuses
+#: it. The zoom draws it at the sharpest dpi that also fits the 4,784-token budget
+#: (`set_pack.crop_dpi`): about 2,360 px on a 17 x 11 in sheet and 2,280 px on A3, so the API
+#: does not shrink it. A sheet over about 32 in (ARCH D, A1) is drawn at the 72-dpi floor, cut to
+#: 2,576 px, with or without this setting, and that picture the API does shrink to its budget.
+SHARP_PAGE_EDGE_PX: Final = 2576
 #: Issues one page may hold at most (a flood is never a review).
 MAX_ISSUES: Final = 25
 #: Finish families a kind-C issue's words may name to be filed as finish (`_kind_by_words`): the
@@ -339,6 +347,10 @@ class Options:
     sizes_lens: bool = False
     """A sizes-only reviewer after each page's reviewer, on what the page's money left
     (`sizes_lens`, `GV_ASSISTANT_SIZES_LENS`; off by default until a measured run)."""
+    sharp_page: bool = False
+    """The whole-page picture at the high-resolution tier (`SHARP_PAGE_EDGE_PX`, plan M8e)
+    instead of `PICTURE_EDGE_PX` (`GV_ASSISTANT_PAGE_REVIEWER_SHARP_PAGE`; off by default until
+    a measured comparison)."""
 
 
 # ---- the brief ------------------------------------------------------------------------------------
@@ -476,6 +488,12 @@ _ISSUE_FIELDS: Final[Mapping[str, Any]] = {
         "enum": list(KIND_OF),
         "description": "A size, B construction (support, filler, panel), C drawing completeness, "
         "D material, finish or grain, E scope, F item number, label or title block",
+    },
+    "also_kind": {
+        "type": "string",
+        "enum": list(KIND_OF),
+        "description": "Optional: a second kind the issue also is, different from kind (e.g. "
+        "kind C with also_kind D for a missing finish tag)",
     },
     "claim": {"type": "string", "enum": ["wrong", "please_check"]},
     "item": {
@@ -1336,6 +1354,9 @@ class Draft:
     score: int | None = None
     """The separate verifier's answer (`selfcheck_verifier`): confirmed, not_shown or
     cannot_tell, and its score 0-10 (`None`: not asked, or no score given)."""
+    also_kind: str | None = None
+    """A second kind letter (plan M10): the reviewer's `also_kind`, or the one its words name
+    (`_kind_by_words`); never `kind`. A label only: it never decides red."""
 
     def line(self) -> str:
         box = [round(v) for v in self.box]
@@ -1896,7 +1917,9 @@ class _Run:
                 f"({width:.0f} x {height:.0f} points). Its text layer (phrases with boxes in page "
                 f"points):\n" + fence(listing, "page_text"),
             },
-            *self.picture((0.0, 0.0, width, height), "The whole page", zoomed=False),
+            *self.picture(
+                (0.0, 0.0, width, height), "The whole page", zoomed=False, edge=self.page_edge()
+            ),
         ]
         if TILES_IN_OPENING:
             content += self._tile_pictures()
@@ -2317,6 +2340,11 @@ class _Run:
 
     # -- pictures --
 
+    def page_edge(self) -> int:
+        """The whole-page picture's longest side asked for: `SHARP_PAGE_EDGE_PX` with
+        `Options.sharp_page` (plan M8e), else `PICTURE_EDGE_PX`."""
+        return SHARP_PAGE_EDGE_PX if self.review.options.sharp_page else PICTURE_EDGE_PX
+
     def picture(
         self,
         box: Box,
@@ -2328,18 +2356,19 @@ class _Run:
         for_draft: int | None = None,
         edge: int = PICTURE_EDGE_PX,
     ) -> list[dict[str, Any]]:
-        """One area drawn by GV's zoom (the drawings-only copy), at most `PICTURE_EDGE_PX` long.
+        """One area drawn by GV's zoom (the drawings-only copy), at most `edge` long.
         `zoomed`: it counts as a zoom (tiles, coverage), with the dpi it was drawn at; the whole
         page never does. `page`: another page of the set (never counted toward this page's
         coverage). `file`: another upload (the design set, `design_reference`). `for_draft`: code
         drew it of that draft's evidence for the self-check (`_resolve` takes it as a fresh look).
-        `edge`: its longest side in pixels (the separate verifier's close-ups are smaller).
+        `edge`: its longest side in pixels (`PICTURE_EDGE_PX`; the separate verifier's close-ups
+        are smaller; the sharp whole page, `page_edge`, larger; never over `SHARP_PAGE_EDGE_PX`).
         """
         from app.review.assistant.chat_tools import new_step
 
         review = self.review
         longest = max(1.0, box[2] - box[0], box[3] - box[1])
-        dpi = max(72, min(600, int(min(edge, PICTURE_EDGE_PX) * 72 / longest)))
+        dpi = max(72, min(600, int(min(edge, SHARP_PAGE_EDGE_PX) * 72 / longest)))
         crop = {
             "page": review.page if page is None else page,
             "file": review.file if file is None else file,
@@ -2423,7 +2452,12 @@ class _Run:
         if name == "view_page":
             self._room_for(1)
             width, height = review.size
-            return self.picture((0.0, 0.0, width, height), "The whole page again", zoomed=False)
+            return self.picture(
+                (0.0, 0.0, width, height),
+                "The whole page again",
+                zoomed=False,
+                edge=self.page_edge(),
+            )
         if name == "zoom":
             crops = given.get("crops")
             if not isinstance(crops, list) or not crops:
@@ -2655,6 +2689,12 @@ class _Run:
         letter = str(given.get("kind") or "")
         if letter not in KIND_OF:
             raise _Refused("kind must be one of A, B, C, D, E, F")
+        also = given.get("also_kind")
+        also = None if also in (None, "") else str(also)
+        if also is not None and also not in KIND_OF:
+            raise _Refused("also_kind must be one of A, B, C, D, E, F, or left out")
+        if also == letter:
+            raise _Refused("also_kind must differ from kind (or be left out)")
         claim = str(given.get("claim") or "")
         if claim not in ("wrong", "please_check"):
             raise _Refused("claim must be wrong or please_check")
@@ -2666,11 +2706,18 @@ class _Run:
         if confidence not in ("high", "medium", "low"):
             confidence = "medium"
         box, snapped = self._tight(self._box(given.get("box")), letter, given)
-        letter = self._kind_by_words(letter, wrong)
+        named = self._kind_by_words(letter, wrong)
+        if named is not None and letter == "C":
+            # The one refiling kept (2026-10-29): a completeness issue whose words name a finish
+            # tag or a supplier is filed as finish or scope, the reviewer's C kept beside it.
+            letter, also = named, "C"
+        elif named is not None and also is None:
+            also = named  # every other kind stays the reviewer's; the words add a second
         parts = given.get("parts")
         return Draft(
             n=n,
             kind=letter,
+            also_kind=also,
             claim=claim,
             box=box,
             whole_view=given.get("whole_view") is True,
@@ -2789,19 +2836,26 @@ class _Run:
                 return union
         return self._padded([closest])
 
-    def _kind_by_words(self, letter: str, wrong: str) -> str:
-        """A completeness issue whose words (what is wrong) name a finish tag, or say the issue is
-        who supplies a part, is filed as finish or scope by code (the breaking map of 2026-10-29:
-        wrong kind filed about 13 times a run, mostly C for D and E); every other kind stays as
-        the reviewer said. A sheet reference (MW-501, 3/L-2) is never a finish tag; a size gap that
-        happens to mention "N.I.C." stays a size gap; the set's own families count only once the
-        set is read (never waited for here)."""
-        if letter != "C":
-            return letter
+    def _kind_by_words(self, letter: str, wrong: str) -> str | None:
+        """The kind an issue's words (what is wrong) name besides `letter`: scope (E) when they
+        say the issue is who supplies a part, finish (D) when they name a finish tag; `None` when
+        they name neither, or only `letter` itself, and always for a size (A).
+
+        Since 2026-11-01 (plan M10: a kind is often two at once, and 4-5 cards a run were the
+        right object under another kind) the words add a second kind (`Draft.also_kind`) and the
+        reviewer's kind stays; only a completeness issue (C) is still filed under the named kind,
+        its C kept as the second (`_draft`): the breaking map of 2026-10-29 found C filed about
+        13 times a run where GV's reviewer wrote finish or scope. A sheet reference (MW-501,
+        3/L-2) is never a finish tag; a size gap that happens to mention "N.I.C." stays a size
+        gap; the set's own families count only once the set is read (never waited for here)."""
+        if letter == "A":
+            return None
         from app.review.assistant.set_context import SCOPE, family_of, tags_in
 
-        if SCOPE.search(wrong) and not _SIZE_WORDS.search(wrong):
+        if letter != "E" and SCOPE.search(wrong) and not _SIZE_WORDS.search(wrong):
             return "E"
+        if letter == "D":
+            return None
         families = set(FINISH_WORD_FAMILIES)
         try:
             context = self._context()
@@ -2813,7 +2867,7 @@ class _Run:
             family = family_of(tag)
             if family is not None and len(family) >= 2 and family in families:
                 return "D"
-        return letter
+        return None
 
     def _record(self, draft: Draft, given: Mapping[str, Any], skip: str | None = None) -> None:
         """The draft as a finding at once (incremental), or joined to one already there. `skip`:
@@ -3021,7 +3075,7 @@ class _Run:
         if draft.should_be:
             words = f"{words.rstrip('.')}. It should be: {draft.should_be}."
         why = draft.wrong + (f" Read: {draft.read}." if draft.read else "")
-        return {
+        mark = {
             "by": CREATED_BY,
             "proof": proof,
             "kind": KIND_OF[draft.kind],
@@ -3031,6 +3085,10 @@ class _Run:
             "why": _words(why, 400),
             "words": _words(words, 600),
         }
+        also = draft.also_kind
+        if also is not None and also in KIND_OF:
+            mark |= {"also_kind": KIND_OF[also], "also_letter": also}
+        return mark
 
     def _spot(self, box: Box) -> dict[str, Any]:
         return {
@@ -3087,8 +3145,9 @@ class _Run:
             self._drop(draft, f"Dropped by the page review's self-check: {why}")
             draft.status = "dropped"
             return f"Issue {n}: dropped."
-        merged = {
+        merged: dict[str, Any] = {
             "kind": draft.kind,
+            "also_kind": draft.also_kind,
             "claim": draft.claim,
             "item": draft.item,
             "wrong": draft.wrong,
@@ -3101,6 +3160,8 @@ class _Run:
             "parts": draft.parts,
             **{k: v for k, v in given.items() if k in _ISSUE_FIELDS and v is not None},
         }
+        if merged["also_kind"] == merged["kind"]:
+            merged["also_kind"] = None  # a fix to the second kind: it is the kind now
         fixed = self._draft(merged, draft.n)
         # The corrected item first (a refusal leaves the reported one as it was), then the old
         # one taken away.

@@ -275,6 +275,10 @@ class Settings(BaseSettings):
     # per-page rate above; the price is unchanged). Only with the page reviewer on. OFF by
     # default: switched on for a measured run first.
     assistant_sizes_lens: bool = False
+    # The page reviewer's whole-page picture at the high-resolution tier (plan M8e,
+    # `page_reviewer.SHARP_PAGE_EDGE_PX`, 2,576 px asked; drawn as sharp as fits the 4,784-token
+    # budget) instead of 1,600 px. OFF by default: switched on for a measured comparison first.
+    assistant_page_reviewer_sharp_page: bool = False
     # The set index (two-file uploads): each page read once by a cheap call (project, set, views),
     # every string checked by code, kept in the set pack; the vendor's drawings are then paired
     # only within their own project, never with a brand prototype. About $0.01-0.02 a page.

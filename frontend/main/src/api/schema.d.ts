@@ -2030,6 +2030,11 @@ export interface components {
          */
         ChatFindingLikelyOut: {
             /**
+             * Also Kind
+             * @description A second kind the page reviewer's item also is (a missing finish tag is completeness and finish); a label only, never what makes an item red.
+             */
+            also_kind?: ("missing_piece" | "extra_piece" | "count" | "size" | "layout" | "construction" | "completeness" | "finish" | "scope" | "labels") | null;
+            /**
              * By
              * @description Who found it: the whole-drawing look (or a code step that lays the same mark), the page reviewer, or code's cross-sheet tag check (`set_check`: a tag only one sheet prints, or tagged differently on the item's other drawing).
              * @default whole_drawing_look

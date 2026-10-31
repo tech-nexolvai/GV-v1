@@ -33,7 +33,8 @@ AI cannot prove a missing support or a wrong title, and code has no rule that co
      "words": "Please check and confirm: <what differs>",
      "reason": "<the AI's reason, one line>",
      "sure": "sure" | "likely",
-     "by": "whole_drawing_look" | "page_reviewer"}
+     "by": "whole_drawing_look" | "page_reviewer",
+     "also_kind": <a second kind, as kind; the page reviewer's, only when it gave one>}
 
 The spots are the finding's own `vendor_box` / `arch_box` (with their pictures), as for any item.
 
@@ -172,10 +173,14 @@ def payload(finding: Mapping[str, Any]) -> dict[str, Any] | None:
     kind = str(mark.get("kind") or "size")
     sure = str(mark.get("sure") or "likely")
     by = str(mark.get("by") or "")
-    return {
+    shown = {
         "kind": kind if kind in (*KINDS, *REVIEW_KINDS) else "size",
         "words": please_check(finding),
         "reason": " ".join(str(mark.get("why") or "").split()) or None,
         "sure": sure if sure in ("sure", "likely") else "likely",
         "by": by if by in BY else "whole_drawing_look",
     }
+    also = str(mark.get("also_kind") or "")
+    if also in (*KINDS, *REVIEW_KINDS) and also != shown["kind"]:
+        shown["also_kind"] = also
+    return shown
