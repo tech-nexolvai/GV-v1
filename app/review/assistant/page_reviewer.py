@@ -1989,6 +1989,8 @@ class _Run:
             )
         content += view_questions.opening_blocks(self)
         content += import_module("app.review.assistant.dim_parts").question_blocks(self)
+        # GV's reviewer's accepted wording and Anant's approved "do not raise" kinds (`learned`).
+        content += import_module("app.review.assistant.learned").reviewer_blocks(self)
         if review.tiles_in_opening and not review.tiles_left():
             start = (
                 "The nine tiles are above, drawn sharp. Zoom tight on every dimension string, "
