@@ -1879,6 +1879,8 @@ class _Run:
                 }
             )
         content += filler_facts.blocks(review) + title_block.blocks(review, self._context)
+        # Which part each size measures, and the same part across views (please-checks, never red).
+        content += import_module("app.review.assistant.dim_parts").blocks(self)
         spots = self.design_spots()
         if spots:
             text, pictures = self.design_reference(spots)
@@ -1910,6 +1912,7 @@ class _Run:
                 }
             )
         content += view_questions.opening_blocks(self)
+        content += import_module("app.review.assistant.dim_parts").question_blocks(self)
         if review.tiles_in_opening and not review.tiles_left():
             start = (
                 "The nine tiles are above, drawn sharp. Zoom tight on every dimension string, "
