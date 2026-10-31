@@ -974,6 +974,10 @@ class FindingBook:
     scope_pages: frozenset[int] | None = None
     """A page or area answer's pages (`chat_scope`): the coverage map lists only those and the
     pages recorded; `None` (the whole set): every page of the vendor's file."""
+    picked_pages: frozenset[int] | None = None
+    """A full check on picked pages (`EngineSettings.pages`, Anant 2026-10-31): a finding or a
+    coverage line on another page is never recorded (the hard filter: code's whole-set checks, a
+    replayed proof or a helper that strays never widen the check); `None`: every page."""
     dismissed: dict[str, str] = field(default_factory=dict)
     """Recorded differences the lead set aside: record id -> its reason."""
     record_ids: frozenset[str] = frozenset()
@@ -1293,6 +1297,19 @@ class FindingBook:
         page, words = finding.get("page"), self.page_words
         return lambda: words(page) if words is not None and isinstance(page, int) else ""
 
+    def picked(self, page: object) -> bool:
+        """Whether a page is one of a picked full check's pages (every page is, when none were
+        picked)."""
+        return self.picked_pages is None or page in self.picked_pages
+
+    def _not_picked(self, page: object) -> str:
+        """Why a finding on a page outside the picked pages is refused."""
+        assert self.picked_pages is not None
+        return (
+            f"page {page} is not one of the pages this check was asked to check (pages "
+            f"{page_ranges(sorted(self.picked_pages))})"
+        )
+
     def _in_scope(self, fields: dict[str, Any], created_by: str) -> bool:
         """Whether a finding's product is in this message's scope. An "other" or unknown item is
         re-filed to a product first, from its own words, then its page's (`refiled`); a code-made
@@ -1319,6 +1336,8 @@ class FindingBook:
         raw, dims, label_notes = self._labelled(raw, None)
         fields = self._fields(raw, partial=False)
         self._pinned(fields, raw.get("arch_box"))
+        if not self.picked(fields["page"]):
+            raise SandboxRefused(self._not_picked(fields["page"]))
         if not self._in_scope(fields, created_by):
             assert self.product_scope is not None
             raise SandboxRefused(self.product_scope.refusal(fields["category"]))
@@ -1452,6 +1471,13 @@ class FindingBook:
             except SandboxRefused as refused:
                 _log.warning("assistant chat ledger finding skipped: %s", refused)
                 return None
+        if not self.picked(fields["page"]):
+            _log.info(
+                "assistant chat finding left out (%s): %s",
+                created_by,
+                self._not_picked(fields["page"]),
+            )
+            return None
         if not self._in_scope(fields, created_by):
             return None
         given_dims = given.get("dims") if isinstance(given.get("dims"), Mapping) else None
@@ -1635,6 +1661,8 @@ class FindingBook:
         changes = self._fields(given, partial=True)
         if not changes:
             raise SandboxRefused("give at least one field to change")
+        if "page" in changes and not self.picked(changes["page"]):
+            raise SandboxRefused(self._not_picked(changes["page"]))
         if {"page", "vs_page", "arch_box", "vendor_box"} & set(changes):
             pinned = {**current, **changes}
             # A box kept from before keeps its file (`False`: never re-filed).
@@ -1984,6 +2012,8 @@ class FindingBook:
             )
         with self._lock:
             for entry in entries:
+                if not self.picked(entry["page"]):
+                    continue  # a page this check was not asked to check is never listed
                 before = self.coverage.get(entry["page"])
                 if (
                     entry["status"] == "not_opened"

@@ -2478,7 +2478,12 @@ class _Run:
             plan = with_lenses(plan, settings.numbers_pages, page_map)
         engine._plan = plan
         _say_usual_time(engine, plan.pages, 0 if matching is None else matching.total)
-        self.no_vendor = no_vendor_pages(page_map, engine.book.main_file)
+        # A full check on picked pages: only its own pages with no vendor drawing (2026-10-31).
+        self.no_vendor = frozenset(
+            page
+            for page in no_vendor_pages(page_map, engine.book.main_file)
+            if engine.book.picked(page)
+        )
         self.vendor_pages = whole_plan - self.no_vendor
         self.own_check = own_check_pages(page_map, engine.book.main_file, self.vendor_pages)
         # A vendor round after the first: the cheap picks' money is kept from the start (#1861).
@@ -5675,6 +5680,7 @@ class _Run:
             compared_pages=self._compared_pages(),
             left_kinds=self._left_kinds(stopped),
             own_pages=sorted(self.own_checked),
+            picked=settings.pages,
         )
         # Code's summary is the roster's own, not a fallback: its "AI did not finish" note goes.
         text = "\n".join(
