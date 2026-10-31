@@ -1,0 +1,71 @@
+{
+  "format": "gv-learned-never-suppress/1",
+  "about": "Please-check types GV's learned list may NEVER suppress, whatever GV's reviewer clicked (plan 'Why not all 50', Phase 4, M13c; Greptile keeps a never-suppress list too). Reds and anything code proved are never suppressible in code (learned.py); this file adds the types tied to the client's settled rules. A type is tied to a rule when one of the rule's words is a whole word or phrase of the type's words (the part after 'A: ', 'D: ' ...). Generic words only: no project, drawing or client value.",
+  "letters": {
+    "A": "Sizes: the client settled exact match in inches and 'flag everything'; the reviewer clears false alarms one by one (the client's settled answers: units and matching)."
+  },
+  "makers": {
+    "ledger": "the reading ledger's sums (code-proved)",
+    "consistency": "the vendor consistency check (code)",
+    "architect_items": "the finish check against the architect (code)",
+    "pairs": "code's own pairs (code-proved)",
+    "run_fit": "GV's site-fit method (CAB-FILLER-001)",
+    "filler_range": "GV's filler range (the client's email, a GV note)",
+    "sink_offset": "GV's sink rules (CT-SINK-OFFSET-FRONT-001, CT-BACK-OFFSET-MIN-001)",
+    "sink_centre": "the sink centre on the sink base (GV's formula)",
+    "splash_views": "the splash sizes on the architect's other views (code)",
+    "scale_measure": "measuring by the architect's scale (code)"
+  },
+  "rules": [
+    {
+      "id": "CAB-ARCH-VS-SHOP-001",
+      "name": "Architectural versus shop cabinet widths",
+      "words": ["cabinet width"]
+    },
+    {
+      "id": "CAB-FILLER-001",
+      "name": "Cabinet run distribution (fillers first, then the door cabinets equally)",
+      "words": ["filler", "fillers", "scribe"]
+    },
+    {
+      "id": "CT-ARCH-WIDTH-001",
+      "name": "Countertop widths match the architect's drawing",
+      "words": ["top width", "countertop width"]
+    },
+    {
+      "id": "CT-BACK-OFFSET-MIN-001",
+      "name": "Countertop back offset at least 2 1/2 inches",
+      "words": ["back offset", "offset"]
+    },
+    {
+      "id": "CT-DEPTH-001",
+      "name": "Countertop depth = cabinet depth + front overhang",
+      "words": ["depth", "overhang"]
+    },
+    {
+      "id": "CT-SINK-CABINET-WIDTH-001",
+      "name": "Sink cabinet width against its cutout and clearances",
+      "words": ["sink"]
+    },
+    {
+      "id": "CT-SINK-CUTOUT-DEPTH-001",
+      "name": "Sink cutout depth (D) from the sink's inside depth",
+      "words": ["cut-out", "sink"]
+    },
+    {
+      "id": "CT-SINK-CUTOUT-WIDTH-001",
+      "name": "Sink cutout width (A) from the sink's inside width",
+      "words": ["cut-out", "sink"]
+    },
+    {
+      "id": "CT-SINK-OFFSET-FRONT-001",
+      "name": "Sink front offset 4 inches (a job setting)",
+      "words": ["sink", "offset"]
+    },
+    {
+      "id": "CT-WIDTH-001",
+      "name": "Countertop width = wall to wall + 1 inch field cut per wall end",
+      "words": ["field cut", "top width"]
+    }
+  ]
+}

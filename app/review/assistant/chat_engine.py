@@ -3522,6 +3522,9 @@ class ChatEngine:
         # they run on partial labels (#1768 review).
         unlabelled = pack_without_labels(self.tools.workspace.set_pack)
         self._run_code_steps(steps)
+        # Last: please-check kinds Anant approved not raising are dropped with their reason
+        # (`learned`; never a red; off unless GV_ASSISTANT_LEARNED_DIR is set; never raises).
+        import_module("app.review.assistant.learned").drop_suppressed(self)
         if self.settings.mode != "full_check" or self._simple:
             return  # the simple check names its broken steps once, with its other reasons
         if unlabelled or pack_without_labels(self.tools.workspace.set_pack):
