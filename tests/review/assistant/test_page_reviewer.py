@@ -457,6 +457,10 @@ def test_text_first_then_the_whole_page_then_tiles_before_any_report(tmp_path: P
     assert first[1]["type"] == "text" and first[2]["type"] == "image"  # then the whole page
     results = _results(engine.script.calls[1].messages)
     assert results[-1].startswith("Refused: not yet: first zoom on tiles [1, 2, 3, 4, 5, 6, 7")
+    # Said up front, so a reviewer does not write its issues twice (2026-10-31: about 40 refused
+    # reports on one 18-page check).
+    assert "once all nine tiles were zoomed" in page_reviewer.REPORT_ISSUE["description"]
+    assert "Issues are taken once all nine tiles were zoomed." in first[-1]["text"]
     assert not review.tiles_left()
     assert [d.kind for d in review.drafts] == ["B"]
     assert ended[2] is None and ended[1] is True
