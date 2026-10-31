@@ -264,6 +264,12 @@ class Settings(BaseSettings):
     # `manifest.json` (file, caption, group rule/example, exclude_projects), put first in every
     # page's first message and cached once per check (`reviewer_context.reference_pictures`).
     assistant_page_reviewer_pictures: Path | None = None
+    # The page reviewer's self-check as its own short conversation after the review (plan M7b,
+    # `selfcheck_verifier`) instead of inside the reviewer's: per red or low-confidence draft one
+    # question with code's close-up (confirmed / not_shown / cannot_tell, a score 0-10); it can
+    # drop a draft or hold a red back, never make one. Paid from the reviewer's own share (no
+    # price change). OFF by default, so a measured run can compare the two.
+    assistant_separate_verifier: bool = False
     # The set index (two-file uploads): each page read once by a cheap call (project, set, views),
     # every string checked by code, kept in the set pack; the vendor's drawings are then paired
     # only within their own project, never with a brand prototype. About $0.01-0.02 a page.
