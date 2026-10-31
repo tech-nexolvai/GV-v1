@@ -779,9 +779,9 @@ def vendor_page_titles(chat_root: Path, package_id: UUID) -> list[dict[str, Any]
 
 #: The set packs' dimension labels last read (`pack_labels`), by `dims.json` path, with its size
 #: and change time: a result read again does not parse the pack's labels again.
-_PACK_LABELS: dict[
-    Path, tuple[tuple[int, int], dict[tuple[str, int], list[Mapping[str, Any]]]]
-] = {}
+_PACK_LABELS: dict[Path, tuple[tuple[int, int], dict[tuple[str, int], list[Mapping[str, Any]]]]] = (
+    {}
+)
 _PACK_LABELS_KEPT: Final = 4
 _PACK_LABELS_LOCK = threading.Lock()
 

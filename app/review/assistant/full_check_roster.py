@@ -4062,9 +4062,7 @@ class _Run:
                     "tool": (
                         "chat proof"
                         if answer.get("chat_proof") is not None
-                        else "read_number"
-                        if answer.get("read_number")
-                        else "verify_value"
+                        else "read_number" if answer.get("read_number") else "verify_value"
                     ),
                     "value": value,
                     "result": answer.get("result"),
