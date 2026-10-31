@@ -294,3 +294,81 @@ def test_a_horizontal_label_is_drawn_without_a_turned_copy(tmp_path: Path) -> No
     # as drawn beside it (was: the region turned).
     kinds = [kind for kind, _png in pictures.crops["vendor"].pictures()]
     assert kinds == ["plain", "zoom_upright"]
+
+
+# A made-up string the page reviewer reports (2026-11-01): 12" + 24" + 12 1/8" on one row under a
+# printed 48" overall, each part's dimension line touching the next along the overall's own line.
+ROW_OVERALL = _label("S1", '48"', [200.0, 100.0, 216.0, 110.0], [[100.0, 112.0], [400.0, 112.0]])
+ROW_PARTS = [
+    _label("S2", '12"', [130.0, 126.0, 144.0, 134.0], [[100.0, 124.0], [175.0, 124.0]]),
+    _label("S3", '24"', [240.0, 126.0, 256.0, 134.0], [[175.0, 124.0], [325.0, 124.0]]),
+    _label("S4", '12 1/8"', [355.0, 126.0, 375.0, 134.0], [[325.0, 124.0], [400.0, 124.0]]),
+]
+ROW_LABELS = [ROW_OVERALL, *ROW_PARTS]
+#: The card's box snapped tight around the printed overall (`page_reviewer`'s box snap).
+TIGHT = {"page": 2, "x0": 198.0, "y0": 98.0, "x1": 218.0, "y1": 112.0, "file": FILE}
+
+
+def _row_labels_of(file: str, page: int) -> list[dict[str, Any]]:
+    return ROW_LABELS if (file, page) == (FILE, 2) else []
+
+
+def _covers(region: tuple[float, float, float, float], box: list[float]) -> bool:
+    return (
+        region[0] <= box[0] and region[1] <= box[1] and region[2] >= box[2] and region[3] >= box[3]
+    )
+
+
+def _tight_string(**changes: Any) -> dict[str, Any]:
+    finding = _string(
+        parts=['12"', '24"', '12 1/8"'],
+        architect='48 1/8"',
+        vendor_box=dict(TIGHT),
+        arch_box=None,
+        dims=None,  # the page reviewer's string: no label named when it is read
+    )
+    finding.update(changes)
+    return finding
+
+
+def test_a_string_whose_card_box_is_tight_on_its_overall_is_read_with_every_part() -> None:
+    spot = spots(_tight_string(), _row_labels_of)["vendor"]
+    # The reading's picture shows the overall and every part, not only the card's box.
+    for label in ROW_LABELS:
+        assert _covers(spot.region, label["box"]), label["id"]
+    # The whole string holds several values: the overall is asked, no centre is said.
+    assert spot.overall and spot.values == 4 and not spot.centred
+    # The card's box (what GV sees clouded) is not changed.
+    assert _tight_string()["vendor_box"] == TIGHT
+
+
+def test_a_string_read_at_its_overalls_label_still_reaches_every_part() -> None:
+    # The overall named by code's labels, with no dimension line in the pack: its own region
+    # (`NO_LINE_ALONG_PT` around it) stops short of the far part; the named parts widen it.
+    bare = {**ROW_OVERALL, "dim_line": None, "orientation": "h"}
+    far = _label("S5", '12 1/8"', [455.0, 126.0, 475.0, 134.0])
+
+    def labels_of(file: str, page: int) -> list[dict[str, Any]]:
+        return [bare, *ROW_PARTS[:2], far]
+
+    finding = _tight_string(
+        dims={"vendor": {"id": "S1", "box": bare["box"], "page": 2, "file": FILE}},
+        ledger_ids=["p2.S1", "p2.S2", "p2.S3", "p2.S5"],
+    )
+    spot = spots(finding, labels_of)["vendor"]
+    for label in [bare, *ROW_PARTS[:2], far]:
+        assert _covers(spot.region, label["box"]), label["id"]
+    # Still centred on the overall's own label, which is still the value asked for.
+    assert _centre(spot.region) == _centre(tuple(bare["box"]))
+    assert spot.overall and spot.values == 1 and spot.centred
+
+
+def test_a_finding_that_is_not_a_string_keeps_its_own_box() -> None:
+    finding = _tight_string(source="architect", architect='47"', vendor='48"')
+    spot = spots(finding, _row_labels_of)["vendor"]
+    box = (TIGHT["x0"], TIGHT["y0"], TIGHT["x1"], TIGHT["y1"])
+    assert spot.region == read_spots.around(box)  # type: ignore[arg-type]
+    assert spot.values == 1 and spot.centred and not spot.overall
+    # A string code cannot place any number of keeps its box too.
+    alone = spots(_tight_string(), lambda file, page: [])["vendor"]
+    assert alone.region == read_spots.around(box)  # type: ignore[arg-type]

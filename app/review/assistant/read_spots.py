@@ -52,7 +52,16 @@ dropped too (`extraction.rasterise.render_region(vendor_only=True)`), as the thi
 was; else from the upload with GV's layers dropped. The same pictures go to both readings.
 
 A vendor string's architect side is code's sum of its parts, printed nowhere: no picture of it is
-read. Pure code here, but for the drawing (the renderer is loaded by name).
+read.
+
+**A vendor string's picture shows the whole string** (2026-11-01, after a real upload's right red
+was held: the page reviewer's card box was snapped tight around the overall, so the readings'
+picture showed the overall and one part, and the third reading was unsure where it had been sure
+on the whole string). Its region reaches the box of its printed overall and of every part code
+places (`string_spots.spots_of`: the labels the finding names, else the row along the overall's
+dimension line, else inside the area the reading is shown), padded, whatever the card's box.
+The card's box (what GV sees clouded) is not changed; only the reading's picture shows more. Pure
+code here, but for the drawing (the renderer is loaded by name).
 """
 
 from __future__ import annotations
@@ -65,6 +74,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
 
+from app.review.assistant import string_spots
 from app.review.assistant.finding_checks import to_inches
 
 _log = logging.getLogger(__name__)
@@ -86,6 +96,7 @@ __all__ = [
     "sideways",
     "source_pdf",
     "spots",
+    "string_boxes",
     "values_in",
 ]
 
@@ -304,6 +315,51 @@ def sideways(label: Mapping[str, Any], box: Box) -> bool:
     return (box[3] - box[1]) > (box[2] - box[0])
 
 
+def _union(boxes: Sequence[Box]) -> Box:
+    return (
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
+
+
+def string_boxes(
+    finding: Mapping[str, Any],
+    search: Box,
+    page: int,
+    file: str | None,
+    labels: Sequence[Mapping[str, Any]] | None,
+) -> list[Box]:
+    """The boxes of a vendor string's printed overall and of each part code places on this page
+    (`string_spots.spots_of`: the labels the finding names, else the row along its overall's
+    dimension line, else inside `search`, the area the reading is shown); empty when code places
+    none. Code's own labels only: nothing is guessed."""
+    if not labels:
+        return []
+    x0, y0, x1, y1 = search
+    probe = {
+        **finding,
+        "vendor_box": {"page": page, "file": file, "x0": x0, "y0": y0, "x1": x1, "y1": y1},
+    }
+    try:
+        found = string_spots.spots_of(probe, lambda _file, _page: labels)
+    except (ArithmeticError, KeyError, TypeError, ValueError):
+        return []
+    if found is None:
+        return []
+    numbers = [found.get(string_spots.TOTAL_BOX), *(found.get(string_spots.PART_BOXES) or [])]
+    out: list[Box] = []
+    for number in numbers:
+        raw = number.get("box") if isinstance(number, Mapping) else None
+        if not isinstance(raw, Mapping) or int(raw.get("page") or 0) != page:
+            continue
+        box = _four(raw)
+        if box is not None:
+            out.append(box)
+    return out
+
+
 def spots(finding: Mapping[str, Any], labels_of: LabelsOf | None = None) -> dict[str, ReadSpot]:
     """Each side a reading of `finding` looks at (see the module), by side; a side with no box is
     left out, and so is a vendor string's architect side (code's sum, printed nowhere)."""
@@ -340,11 +396,15 @@ def spots(finding: Mapping[str, Any], labels_of: LabelsOf | None = None) -> dict
             # A vendor string's label is its printed overall's: else the whole string is read.
             if string and not _same_value(label, finding.get("printed_total") or finding.get(side)):
                 label = None
+        # A vendor string's picture reaches its overall and every part code places (see the
+        # module): the card's box may be snapped tight around one of its numbers.
+        numbers = string_boxes(finding, around(box), page, file, labels) if string else []
         if label is not None:
             own = _four(label.get("box"))
             assert own is not None
             ends = _ends(label)
-            region = around(own, [*ends, *_reach(label, own)], least=_least(label, ends))
+            corners = [corner for b in numbers for corner in ((b[0], b[1]), (b[2], b[3]))]
+            region = around(own, [*ends, *_reach(label, own), *corners], least=_least(label, ends))
             known = label.get("orientation") in ("h", "v")
             tall = sideways(label, own)
             out[side] = ReadSpot(
@@ -361,13 +421,14 @@ def spots(finding: Mapping[str, Any], labels_of: LabelsOf | None = None) -> dict
                 zoom=_zoom(region, own) if known or not tall else None,
             )
             continue
-        x0, y0, x1, y1 = box
+        read = _union([box, *numbers]) if numbers else box
+        x0, y0, x1, y1 = read
         out[side] = ReadSpot(
             side=side,
             file=file,
             page=page,
-            region=around(box),
-            values=values_in(box, labels),
+            region=around(read),
+            values=values_in(read, labels),
             overall=string,
             tall=(y1 - y0) > (x1 - x0),
         )
