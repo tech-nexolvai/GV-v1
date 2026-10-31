@@ -3306,6 +3306,11 @@ export interface components {
             /** Model */
             model: string;
             /**
+             * Pages
+             * @description A roster full check only (Anant, 2026-10-31): compare only these vendor pages (a test of a fix on the pages it touches); every step runs as in a whole-set check, on these pages, and the price counts only them. Not given: the whole set.
+             */
+            pages?: number[] | null;
+            /**
              * Pilot
              * @description The simple full check only (#1665): compare only the first N drawings of the work list (a paid pilot); the rest are listed as left out on purpose.
              */

@@ -255,6 +255,14 @@ class ChatMessageIn(BaseModel):
         description="A full check only: run even when the pre-flight check would pause it (a "
         "swapped, broken or other-project file). Every warning is still recorded.",
     )
+    pages: list[Annotated[int, Field(ge=1, le=2000)]] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description="A roster full check only (Anant, 2026-10-31): compare only these vendor "
+        "pages (a test of a fix on the pages it touches); every step runs as in a whole-set "
+        "check, on these pages, and the price counts only them. Not given: the whole set.",
+    )
     compare_missing: bool = Field(
         default=False,
         description="#1710, with `replay` ('Compare them again'): the drawings that run has no "
@@ -273,6 +281,11 @@ class ChatMessageIn(BaseModel):
             raise ValueError("compare_model, compare_effort and replay go with a full check only")
         if self.run_anyway and self.mode != "full_check":
             raise ValueError("run_anyway goes with a full check only")
+        if self.pages is not None:
+            if self.mode != "full_check":
+                raise ValueError("pages go with a full check only")
+            if len(set(self.pages)) != len(self.pages):
+                raise ValueError("each page at most once")
         if self.compare_missing and not self.replay:
             raise ValueError("compare_missing goes with replay (the run to compare again)")
         if self.plan_answers is not None:

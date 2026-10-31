@@ -10,8 +10,9 @@ The scope is worked out by code, never by the model, $0:
 - `whole_set`: a full check; a question about the whole set ("the whole set", "every page", "all
   the drawings"); a question that names no page and no area of the set; or an
   answer that worked on more than `WIDEN_PAGES` pages outside the ones the question named.
-- `pages`: the pages the question names ("page 8", "p.8", "pages 27-28", "sheets 3 and 5"), plus
-  the pages the answer worked on (its coverage and its own findings).
+- `pages`: the pages the question names ("page 8", "p.8", "pages 27-28", "sheets 3 and 5"), or a
+  full check's picked pages (`ChatMessageIn.pages`), plus the pages the answer worked on (its
+  coverage and its own findings).
 - `area`: an area of the set the question names, matched against the set pack's `page_map.json`
   (the typed area titles, e.g. "4. Bussing station"), and the pages that area is on.
 
@@ -171,13 +172,17 @@ def question_scope(
     question: str,
     *,
     mode: str = "chat",
+    picked: Sequence[int] = (),
     page_map: Mapping[str, Any] | None = None,
     page_count: int = 0,
     main_file: str | None = None,
 ) -> dict[str, Any]:
-    """The scope the question asks for, before any work (see the module's docstring)."""
+    """The scope the question asks for, before any work (see the module's docstring). `picked`:
+    a full check's picked pages (a fix's test), its scope."""
     if mode == "full_check":
-        return _scope("whole_set", "full_check")
+        return (
+            _scope("pages", "full_check", picked) if picked else _scope("whole_set", "full_check")
+        )
     text = question or ""
     if _WHOLE_SET.search(text):
         return _scope("whole_set", "whole_set_words")

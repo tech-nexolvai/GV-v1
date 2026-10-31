@@ -1621,6 +1621,14 @@ def _message(
             "pilot, compare_model, compare_effort and replay go only with the simple full check "
             "(GV_ASSISTANT_FULL_CHECK_MODE=simple).",
         )
+    if body.pages and (
+        settings.assistant_full_check_mode == "simple" or not settings.assistant_full_check_roster
+    ):
+        raise CodedHTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "invalid_request",
+            "pages go only with the roster full check (the simple check has pilot).",
+        )
     revision_id = _latest_revision_id(session, package.id)
     factory = _factory(session)
     # The products are a strict scope (Anant, 2026-10-18): the pick, else every active product
@@ -1643,6 +1651,10 @@ def _message(
         mode = str(resume.get("mode") or "chat")
         if resume.get("products"):
             products = tuple(resume["products"])
+        # A full check on picked pages goes on with the same pages (never the whole set).
+        pages = tuple(int(page) for page in resume.get("pages") or ())
+    else:
+        pages = tuple(body.pages or ())
     # One paid full check at a time on this server, whatever the chat (#1770): a $0 replay of a
     # saved run is not one.
     paid = mode == "full_check" and not (body.replay and not body.compare_missing)
@@ -1696,6 +1708,7 @@ def _message(
             skill_builder=runtime.skill_builder(),
             mode=mode,
             products=products,
+            pages=pages,
             continue_from=continue_from,
             drawn_helpers=settings.assistant_drawn_helpers,
             page_cache_set_mb=settings.assistant_page_cache_set_mb,
