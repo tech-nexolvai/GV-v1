@@ -418,3 +418,31 @@ def test_the_facts_name_the_seams_the_items_countertop_drawing_marks() -> None:
         "check a support or leg sits under each." in facts
     )
     assert "seam" not in context.facts_for(2)  # its countertop drawing marks none
+
+
+def test_one_digit_codes_are_tags_only_in_a_finish_family() -> None:
+    from app.review.assistant.set_context import family_of, item_key
+
+    # A schedule that numbers from 1: ST-3, PL-1, WD-2 are tags (the whole tag pipeline sees them).
+    assert tags_in("ST-3 top, PL-1 panel, WD2 front, MT-001.C bar, WD-04, ST-3A") == [
+        "ST-3",
+        "PL-1",
+        "WD2",
+        "MT-001.C",
+        "WD-04",
+        "ST-3A",
+    ]
+    assert family_of("ST-3") == "ST" and item_key("PL-1") == "PL-1"
+    # Sheet, detail and section numbers keep out: one digit after any other prefix is no tag.
+    assert tags_in("SEE A-1, MW-1 AND S-1; DETAIL D-2; SECTION S1") == []
+    assert family_of("A-1") is None and item_key("MW-1") is None
+    # Two or three digits read as before for every prefix.
+    assert tags_in("MW-101 A-201 BOH-802.CT") == ["MW-101", "A-201", "BOH-802.CT"]
+
+
+def test_a_one_digit_finish_code_only_one_sheet_prints_is_an_outlier() -> None:
+    pages = {n: _phrases("ST-2 Quartz top", f"ABC-{100 + n}.C") for n in range(1, 5)}
+    pages[2] = _phrases("ST-3 Quartz top", "ABC-102.C")
+    context = _context(pages, 4)
+    (outlier,) = context.outliers(2)
+    assert outlier.tag == "ST-3" and outlier.others == {"ST-2": [1, 3, 4]}

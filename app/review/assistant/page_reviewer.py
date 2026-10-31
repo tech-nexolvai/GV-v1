@@ -102,7 +102,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
-from app.review.assistant import likely_problems, reviewer_context
+from app.review.assistant import filler_facts, likely_problems, reviewer_context, title_block
 from app.review.assistant.set_context import SetContext, family_of, tags_in
 from app.review.assistant.untrusted import fence
 
@@ -1382,6 +1382,9 @@ class PageReview:
     zoomer: Callable[[Draft], list[dict[str, Any]]] | None = None
     #: Pictures code drew for the next message to the reviewer (`begin_reflection`), sent after it.
     pending: list[dict[str, Any]] = field(default_factory=list)
+    #: What code's knowledge facts gave its first message, for the run's log (`filler_facts`,
+    #: `title_block`: filler_facts, title_cells, title_mismatches).
+    knowledge: dict[str, Any] = field(default_factory=dict)
 
     # -- coverage --
 
@@ -1852,6 +1855,7 @@ class _Run:
                     + fence(finishes, "finish_facts"),
                 }
             )
+        content += filler_facts.blocks(review) + title_block.blocks(review, self._context)
         spots = self.design_spots()
         if spots:
             text, pictures = self.design_reference(spots)
@@ -3273,6 +3277,7 @@ class Reviews:
                     "tiles_sent_in_opening": review.tiles_in_opening,
                     "code_zooms_for_selfcheck": review.code_zooms,
                     "context_clears": review.context_clears,
+                    **review.knowledge,
                 }
             )
         return {"pages": rows, "cut_by_money": list(self.cut_by_money)}

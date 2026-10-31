@@ -528,6 +528,21 @@ def test_the_first_message_has_the_text_the_whole_page_and_the_nine_tiles(tmp_pa
     assert ended[2] is None and ended[1] is True
 
 
+def test_the_first_message_gives_code_s_title_block_cells_and_the_log_keeps_them(
+    tmp_path: Path,
+) -> None:
+    engine, review, _ended, reviews = _review(tmp_path, [[_text("Checked the page.")]])
+    first = engine.script.calls[0].messages[0]["content"]
+    texts = [b["text"] for b in first if b["type"] == "text"]
+    (cells,) = [t for t in texts if t.startswith("Title block cells code read")]
+    assert "Cells: ITEM: 101" in cells and "never red" in cells
+    assert not any(t.startswith("Filler facts") for t in texts)  # no run with an end on this page
+    reviews.pages["p2"] = review
+    (row,) = reviews.block()["pages"]
+    assert row["title_cells"] == {"ITEM": "101"}
+    assert row["title_mismatches"] == [] and row["filler_facts"] == []
+
+
 def test_without_tiles_in_the_first_message_reports_wait_for_the_nine_tiles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
