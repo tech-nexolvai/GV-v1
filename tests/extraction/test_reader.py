@@ -297,6 +297,24 @@ def test_geometry_is_read_from_lines_rectangles_and_paths() -> None:
     assert len(contents.segments) >= 5
 
 
+def test_a_path_drawn_with_curves_lands_where_it_was_drawn() -> None:
+    """pdfplumber gives a curve's points measured from the page top, as it gives a line's `top`.
+    Turning them over a second time put every curve at the mirror height, so a dimension line drawn
+    as a path sat far from its own label (#1750)."""
+    drawing = _pdf(
+        b"1 w 20 80 m 120 80 l S\n"  # a line near the top of the page
+        b"1 w 20 80 m 50 80 90 80 120 80 c S\n"  # the same run, drawn as a curve
+    )
+
+    heights = {
+        point.y for segment in _contents(drawing).segments for point in (segment.start, segment.end)
+    }
+
+    # Both runs sit at one height: the curve was not moved to the mirror place near the bottom.
+    assert len(heights) == 1
+    assert heights.pop() < Decimal("0.5")
+
+
 # ---------------------------------------------------------------------------
 # What it refuses
 # ---------------------------------------------------------------------------
