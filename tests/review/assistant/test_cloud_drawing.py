@@ -42,6 +42,7 @@ from app.review.assistant.cloud_layout import (
 )
 from app.review.assistant.proof_drawing import proof_markup_pdf
 from app.review.assistant.verify_value import printed_spots
+from extraction.working_copy import NotAWorkingCopy, working_copy
 
 WIDTH, HEIGHT = 1000.0, 700.0
 #: Where the sheet prints its values (shown points, origin top-left: x, baseline y).
@@ -51,8 +52,9 @@ VALUE_12 = (200.0, 200.0)
 BIG_BOX = (120.0, 330.0, 680.0, 560.0)
 
 
-def _sheet(path: Path, *, rotate: int = 0, ink: bool = True) -> Path:
-    """A one-page sheet: two printed values and a block of drawing lines on the left half."""
+def _sheet(path: Path, *, rotate: int = 0, ink: bool = True, original: bool = False) -> Path:
+    """A one-page sheet: two printed values and a block of drawing lines on the left half. A
+    turned sheet is its working copy, as every upload is (#1750), unless `original`."""
     out = io.BytesIO()
     c = canvas.Canvas(out, pagesize=(WIDTH, HEIGHT), invariant=1)
     c.setFont("Helvetica", 10)
@@ -68,7 +70,10 @@ def _sheet(path: Path, *, rotate: int = 0, ink: bool = True) -> Path:
     with pikepdf.open(io.BytesIO(out.getvalue())) as pdf:
         if rotate:
             pdf.pages[0].obj["/Rotate"] = rotate
-        pdf.save(path)
+        turned = io.BytesIO()
+        pdf.save(turned)
+    data = turned.getvalue()
+    path.write_bytes(data if original else working_copy(data).data)
     return path
 
 
@@ -233,6 +238,17 @@ def test_a_rotated_page_gets_its_cloud_where_the_page_shows_the_box(tmp_path: Pa
     picture = _render(out)
     assert picture.shape[1] == int(HEIGHT) and picture.shape[0] == int(WIDTH)
     assert _red(picture, (box[0] - 14, box[1] - 4, box[0] - 2, box[3] + 4)) > 5
+
+
+@pytest.mark.parametrize("rotate", [90, 180, 270])
+def test_a_turned_original_is_refused_not_drawn_on(tmp_path: Path, rotate: int) -> None:
+    """The drawing never turns a page back itself (#1750): a turned page that did not come through
+    the front door says so loudly instead of putting the cloud on the wrong spot."""
+    sheet = _sheet(tmp_path / "sheet.pdf", rotate=rotate, ink=False, original=True)
+    out = tmp_path / "out.pdf"
+    with pytest.raises(NotAWorkingCopy, match="not a working copy"):
+        markup_pdf(sheet, _placed([_finding(vendor='99"', vendor_box=_box(1, 2, 30, 20))]), out)
+    assert not out.exists()
 
 
 # ---- notes in clear space ------------------------------------------------------------------------

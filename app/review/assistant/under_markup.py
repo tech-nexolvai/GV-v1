@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import io
 import logging
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -46,6 +46,7 @@ from app.review.assistant.symbol_font import decoded
 from extraction.pdfium_guard import pdfium
 from extraction.reader import pixel_placement
 from extraction.stamp_text import carries_drawing
+from extraction.working_copy import require_standard_page
 
 __all__ = ["UnderMarkup", "page_words", "read_under_markup"]
 
@@ -161,33 +162,11 @@ class UnderMarkup:
 # ---- geometry ------------------------------------------------------------------------------------
 
 
-def _shown_frame(page: pikepdf.Page) -> Callable[[float, float], tuple[float, float]]:
-    """PDF user space (x, y up) to the page as shown (points, origin top-left, rotation applied)."""
-    box = [float(v) for v in page.obj.get("/CropBox", page.mediabox)]
-    llx, lly, urx, ury = (
-        min(box[0], box[2]),
-        min(box[1], box[3]),
-        max(box[0], box[2]),
-        max(box[1], box[3]),
-    )
-    rotation = int(page.obj.get("/Rotate", 0) or 0) % 360
-
-    def shown(x: float, y: float) -> tuple[float, float]:
-        if rotation == 90:
-            return y - lly, x - llx
-        if rotation == 180:
-            return urx - x, y - lly
-        if rotation == 270:
-            return ury - y, urx - x
-        return x - llx, ury - y
-
-    return shown
-
-
-def _rect_shown(shown: Callable[[float, float], tuple[float, float]], rect: Iterable[Any]) -> Box:
+def _rect_shown(rect: Iterable[Any], height: float) -> Box:
+    """A PDF rectangle (y up) as points of a working copy's page as shown (origin top-left): the
+    page is upright with its corner at the origin (`require_standard_page`, #1750)."""
     x0, y0, x1, y1 = (float(v) for v in rect)
-    a, b = shown(x0, y0), shown(x1, y1)
-    return min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1])
+    return min(x0, x1), height - max(y0, y1), max(x0, x1), height - min(y0, y1)
 
 
 def _meets(a: Box, b: Box) -> bool:
@@ -411,11 +390,7 @@ def read_under_markup(pdf: Path, page_number: int, box: Box, dpi: int | None = N
         raise ValueError(f"there is no page {page_number} (the file has {count})")
     original = _one_page(data, page_number - 1)
     page = original.pages[0]
-    shown = _shown_frame(page)
-    frame = [float(v) for v in page.obj.get("/CropBox", page.mediabox)]
-    width, height = abs(frame[2] - frame[0]), abs(frame[3] - frame[1])
-    if int(page.obj.get("/Rotate", 0) or 0) % 180 == 90:
-        width, height = height, width
+    width, height = require_standard_page(page, page_number)
     x0, y0, x1, y1 = box
     area = (
         max(0.0, min(x0, x1)),
@@ -433,7 +408,7 @@ def read_under_markup(pdf: Path, page_number: int, box: Box, dpi: int | None = N
     kept = pikepdf.Array()
     for annotation in page.obj.get("/Annots") or pikepdf.Array():
         rect = annotation.get("/Rect")
-        spot = _rect_shown(shown, rect) if rect is not None and len(rect) == 4 else None
+        spot = _rect_shown(rect, height) if rect is not None and len(rect) == 4 else None
         over = spot is not None and _meets(spot, area)
         subtype = annotation.get("/Subtype")
         if subtype in ("/Link", "/Popup", "/Widget"):

@@ -131,22 +131,16 @@ class _PageFacts:
         return tuple(a.box for a in self.annotations if a.subtype == "/Stamp")
 
 
-def _shown_box(rect: Sequence[float], frame: Sequence[float], rotation: int) -> Box:
-    """A PDF rectangle (origin bottom-left) as points of the page as shown (origin top-left)."""
+def _shown_box(rect: Sequence[float], height: float) -> Box:
+    """A PDF rectangle (origin bottom-left) as points of a working copy's page as shown (origin
+    top-left): the page is upright with its corner at the origin (`require_standard_page`)."""
     x0, y0, x1, y1 = (
         min(rect[0], rect[2]),
         min(rect[1], rect[3]),
         max(rect[0], rect[2]),
         max(rect[1], rect[3]),
     )
-    cx0, cy0, cx1, cy1 = frame
-    if rotation == 90:
-        return (y0 - cy0, x0 - cx0, y1 - cy0, x1 - cx0)
-    if rotation == 180:
-        return (cx1 - x1, y0 - cy0, cx1 - x0, y1 - cy0)
-    if rotation == 270:
-        return (cy1 - y1, cx1 - x1, cy1 - y0, cx1 - x0)
-    return (x0 - cx0, cy1 - y1, x1 - cx0, cy1 - y0)
+    return (x0, height - y1, x1, height - y0)
 
 
 def _text_of(value: object) -> str:
@@ -159,16 +153,11 @@ def _text_of(value: object) -> str:
 def _page_facts(path: Path) -> list[_PageFacts]:
     """Every page's size as shown and its annotations (subtype, text, box), in order."""
     facts: list[_PageFacts] = []
+    # Every upload is a working copy (#1750): its pages are checked, not turned back here.
+    standard = import_module("extraction.working_copy").require_standard_page
     with pikepdf.open(path) as pdf:
-        for page in pdf.pages:
-            frame = [float(v) for v in (page.obj.get("/CropBox") or page.mediabox)]
-            frame = [min(frame[0], frame[2]), min(frame[1], frame[3]), max(frame[0], frame[2])] + [
-                max(frame[1], frame[3])
-            ]
-            rotation = int(page.obj.get("/Rotate", 0) or 0) % 360
-            width, height = frame[2] - frame[0], frame[3] - frame[1]
-            if rotation in (90, 270):
-                width, height = height, width
+        for number, page in enumerate(pdf.pages, start=1):
+            width, height = standard(page, number)
             found: list[_Annotation] = []
             for annotation in page.obj.get("/Annots") or []:
                 rect = annotation.get("/Rect")
@@ -178,7 +167,7 @@ def _page_facts(path: Path) -> list[_PageFacts]:
                     _Annotation(
                         subtype=str(annotation.get("/Subtype")),
                         text=_text_of(annotation.get("/Contents")),
-                        box=_shown_box([float(v) for v in rect], frame, rotation),
+                        box=_shown_box([float(v) for v in rect], height),
                     )
                 )
             facts.append(_PageFacts(width, height, tuple(found)))
