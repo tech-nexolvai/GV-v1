@@ -37,6 +37,14 @@ and Docker then stop, as on 17 Oct). Two limits: one file may not grow past `MAX
 kernel's file-size limit: the write fails with "File size limit exceeded"), and the writable folders
 together may not grow past `MAX_FOLDER_BYTES` (code measures them while the command runs and stops
 it, with a plain line, as soon as they do).
+
+**PDF text.** Some CAD programs write `15 1/2"` in a PDF as `(15 1\\/2")` and `[394mm]` as
+`(\\[394mm\\])`; pdfplumber (pdfminer) drops the escaped character, so a command reading the label
+with it saw `15 12"` and `394mm` (#1921). The app's own readers keep it (`extraction.pdf_strings`,
+#1922). The sandbox's Python gets the same fix: every command starts with `PYTHONPATH` naming a
+read-only folder whose `sitecustomize.py` (which Python runs at start-up) is a copy of
+`extraction/pdf_strings.py` (`python_startup`). `pdftotext`, pypdf and pypdfium2 read their own
+way and keep the character already.
 """
 
 from __future__ import annotations
@@ -53,6 +61,7 @@ import threading
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from importlib import import_module
 from pathlib import Path
 from typing import Final, Protocol, Self
 
@@ -64,6 +73,7 @@ __all__ = [
     "MAX_OUTPUT_CHARS",
     "NO_SANDBOX_WORDS",
     "OUTPUTS",
+    "PYTHON_STARTUP",
     "SCRATCH",
     "SET_PACK",
     "SKILLS",
@@ -85,6 +95,7 @@ __all__ = [
     "folder_bytes",
     "open_sandbox",
     "page_folder",
+    "python_startup",
     "quiet_pdf_warnings",
     "safe_file_name",
     "view_path",
@@ -102,6 +113,8 @@ OUTPUTS: Final = "/mnt/user-data/outputs"
 SKILLS: Final = "/mnt/skills/gv-review"
 #: The set pack (`set_pack.py`, read-only): page map, drawings-only copies, page pictures.
 SET_PACK: Final = "/mnt/user-data/set"
+#: Where Docker's Python finds `sitecustomize.py` (`python_startup`), read-only.
+PYTHON_STARTUP: Final = "/opt/gv-python"
 TIMEOUT_SECONDS: Final = 60
 #: The largest file one command may write (the kernel's file-size limit).
 MAX_FILE_BYTES: Final = 200_000_000
@@ -580,6 +593,29 @@ def folder_bytes(folders: Sequence[Path]) -> int:
     return total
 
 
+def python_startup(workspace: _Workspace) -> Path:
+    """The workspace's `python/` folder, holding `sitecustomize.py`: `extraction/pdf_strings.py` as
+    it is, so pdfplumber in the sandbox keeps a `/`, `[` or `]` a PDF escapes, as the app's own
+    readers do. Written again when that file changed; never mounted where a command can write."""
+    folder = workspace.root / "python"
+    target = folder / "sitecustomize.py"
+    # Loaded here, not at import: app/api reaches this module and must not reach extraction.
+    fix = import_module("extraction.pdf_strings")
+    source = Path(fix.__file__).read_text(encoding="utf-8")
+    try:
+        if target.read_text(encoding="utf-8") == source:
+            return folder
+    except OSError:
+        pass
+    folder.mkdir(exist_ok=True)
+    # Helpers run commands at the same time: each writes its own file, then swaps it in.
+    pending = folder / f".sitecustomize-{uuid.uuid4().hex[:12]}"
+    pending.write_text(source, encoding="utf-8")
+    pending.chmod(0o444)
+    os.replace(pending, target)
+    return folder
+
+
 def _writable(workspace: _Workspace) -> list[Path]:
     return [mount.real for mount in workspace.mounts if mount.writable]
 
@@ -701,6 +737,8 @@ class DockerSandbox:
         for mount in self.workspace.mounts:
             spec = f"type=bind,source={mount.real},target={mount.shown}"
             mounts += ["--mount", spec if mount.writable else spec + ",readonly"]
+        startup = python_startup(self.workspace)
+        mounts += ["--mount", f"type=bind,source={startup},target={PYTHON_STARTUP},readonly"]
         return [
             self.docker,
             "run",
@@ -734,6 +772,8 @@ class DockerSandbox:
             SCRATCH,
             "--env",
             f"HOME={SCRATCH}",
+            "--env",
+            f"PYTHONPATH={PYTHON_STARTUP}",
             self.image,
             "bash",
             "-c",
@@ -798,8 +838,8 @@ class DockerSandbox:
         return SandboxResult(output=text + watch.note(), exit_code=done.returncode, truncated=cut)
 
 
-def _profile(python_roots: Sequence[str], mounts: Sequence[Mount]) -> str:
-    reads = " ".join(f'(subpath "{root}")' for root in python_roots)
+def _profile(python_roots: Sequence[str], mounts: Sequence[Mount], startup: Path) -> str:
+    reads = " ".join(f'(subpath "{root}")' for root in (*python_roots, str(startup)))
     folders = " ".join(f'(subpath (param "M{n}"))' for n in range(len(mounts)))
     writes = " ".join(
         f'(subpath (param "M{n}"))' for n, mount in enumerate(mounts) if mount.writable
@@ -894,7 +934,8 @@ class MacSandbox:
         mounts = self.workspace.mounts
         # One profile file per command: helpers run commands at the same time.
         profile = self.workspace.root / f"profile-{uuid.uuid4().hex[:12]}.sb"
-        profile.write_text(_profile(self._python_roots(), mounts))
+        startup = python_startup(self.workspace)
+        profile.write_text(_profile(self._python_roots(), mounts, startup))
         shims = self._shims()
         defines: list[str] = []
         for n, mount in enumerate(mounts):
@@ -919,6 +960,7 @@ class MacSandbox:
             "TMPDIR": str(home),
             "LANG": "en_US.UTF-8",
             "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPATH": str(startup),
         }
         process = subprocess.Popen(
             argv,
