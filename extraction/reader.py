@@ -2419,10 +2419,9 @@ def _segments(
         points = curve.get("pts") or ()
         # Consecutive pairs only. A path's points are in drawing order, so pairing them recovers the
         # straight runs; the curved parts come back as short chords, which is a faithful reading of
-        # what was drawn rather than an interpolation of what was meant.
+        # what was drawn rather than an interpolation of what was meant. pdfplumber already measures
+        # these points from the page top, like a line's `top`, so they are used as they come (#1750).
         for start, end in pairwise(points):
-            add(
-                start[0], frame.height - _decimal(start[1]), end[0], frame.height - _decimal(end[1])
-            )
+            add(start[0], start[1], end[0], end[1])
 
     return tuple(found)
