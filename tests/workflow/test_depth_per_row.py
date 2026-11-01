@@ -532,6 +532,26 @@ def test_judgment_two_a_view_astride_the_drawing(session: Session) -> None:
     _held_on_one_countertop(rows, "does not lie clearly inside its drawing")
 
 
+def test_two_suggestions_on_one_row_never_let_it_be_checked_on_its_own(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The schema keeps one countertop suggestion per row (`part_proposal_rows`), so a second can
+    only come from a later change. The rule is "exactly one", not "at least one": with two, which
+    countertop the row is is not known, so it is held and says why (#1404)."""
+    import workflow.depth_rows as rows_module
+
+    rows = _Rows(session)
+    rows.reading(CT007, 4, QUALIFIED, link=rows.link())
+    found = rows_module._row_suggestions
+    monkeypatch.setattr(
+        rows_module,
+        "_row_suggestions",
+        lambda s, anchors: {row: listed * 2 for row, listed in found(s, anchors).items()},
+    )
+
+    _held_on_one_countertop(rows, NO_ONE_SUGGESTION)
+
+
 def test_a_person_taking_back_the_suggestion_holds_the_row(session: Session) -> None:
     from app.models import PartProposal
 
