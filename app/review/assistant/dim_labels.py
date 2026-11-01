@@ -135,6 +135,7 @@ from app.review.assistant import (
     ink_labels,
     ocr_labels,
     picture_labels,
+    unmapped_text,
     vendor_alphabet,
 )
 from app.review.assistant import verify_value as vv
@@ -146,6 +147,7 @@ from app.review.assistant.finding_checks import (
     value_flags,
 )
 from app.review.assistant.measure import _pieces
+from extraction.stamp_text import drawing_ink
 from extraction.visible_text import ink_picture
 
 __all__ = [
@@ -293,6 +295,9 @@ class _Parsed:
     rings: tuple[Box, ...] = ()
     """Closed tag-sized shapes (circles, ovals, boxes, polygons), shown points: a bare number inside
     one is a tag (`01` in a drawing-reference bubble), never a dimension."""
+    codes: tuple[unmapped_text.Code, ...] = ()
+    """The visible characters whose font has no letter for them (Type3, Type0 with no `ToUnicode`):
+    the text route cannot read them, the OCR route reads them at their spot (#1750)."""
 
 
 def _parse(pdf: Path, page_index: int) -> _Parsed:
@@ -310,6 +315,7 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
     segments: list[Segment] = []
     widths: list[float] = []
     rings: list[Box] = []
+    codes: list[unmapped_text.Code] = []
     with pdfplumber.open(io.BytesIO(vendor)) as document:
         page = document.pages[0]
         shown = vv._placement(page)
@@ -320,6 +326,14 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
             made = vv._char(char, shown, colour_rule=colour_rule)
             if made is not None and vv._visible(made.box, size, ink):
                 chars.append(made)
+            elif made is None:
+                code = unmapped_text.code_of(char, shown, colour_rule=colour_rule, ink=drawing_ink)
+                if (
+                    code is not None
+                    and vv._on_page(code.box, size)
+                    and unmapped_text.inked(code, ink.grey, ink.scale)
+                ):
+                    codes.append(code)
         for item in (*page.curves, *page.lines, *page.rects):
             made_path = vv._path(item, shown, colour_rule=colour_rule)
             if made_path is not None:
@@ -341,7 +355,7 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
         )
     parsed = vv._Page(key, vendor, tuple(chars), tuple(paths), pictures, size, colour_rule)
     weight = float(np.median(widths)) if widths else 0.3
-    return _Parsed(parsed, tuple(segments), weight, tuple(rings))
+    return _Parsed(parsed, tuple(segments), weight, tuple(rings), tuple(codes))
 
 
 def _ring(
@@ -2743,7 +2757,9 @@ def _add_ocr(
     """The OCR route (`ocr_labels`): the numbers the label readers missed on the page's drawings,
     read at their spots by two OCR engines. A confirmed reading is a label (`origin: "ocr"`, no
     dimension line), added after every label already listed; the rest are listed in
-    `ocr.unconfirmed`, never labels."""
+    `ocr.unconfirmed`, never labels. Then the rows of text with no letter map (#1750,
+    `unmapped_text`), read the same way within what is left of the time: their labels come after,
+    marked `no_letter_map`, and `ocr.codes` says what was read there."""
     started = clock()
     taken = [tuple(label["box"]) for label in result.labels] + [
         tuple(phrase["box"]) for phrase in result.phrases
@@ -2752,23 +2768,28 @@ def _add_ocr(
     areas, every = _ocr_spots(parsed, halves, taken, missed, pieces)
     dual = _mm_spots(pieces)
     spots = sum(len(found) for _box, found in areas) + len(dual)
-    if not spots:
+    coded, rows_by_box, skipped = _code_spots(parsed, halves, taken)
+    if not spots and not coded and not parsed.codes:
         seconds = round(clock() - started, 2)
         result.ocr = {"status": "done", "spots": 0, "seconds": seconds, "unconfirmed": []}
         return
     engines = list(drawn_readers() if readers is None else readers)
     page = parsed.page
-    crossed = _mm_crossed(dual, engines, started + budget_s, clock)
-    read = ocr_labels.read_spots(
-        page.vendor_pdf,
-        page.size,
-        areas,
-        [*taken, *every],
-        engines,
-        marked=_marked_value,
-        fits=_fits_vectors,
-        deadline=started + budget_s,
-        clock=clock,
+    crossed = _mm_crossed(dual, engines, started + budget_s, clock) if spots else []
+    read = (
+        ocr_labels.read_spots(
+            page.vendor_pdf,
+            page.size,
+            areas,
+            [*taken, *every],
+            engines,
+            marked=_marked_value,
+            fits=_fits_vectors,
+            deadline=started + budget_s,
+            clock=clock,
+        )
+        if spots
+        else ocr_labels.OcrRead(status="done")
     )
     added, unconfirmed = _read_labels(
         [*crossed, *read.labels],
@@ -2783,6 +2804,93 @@ def _add_ocr(
         "seconds": round(clock() - started, 2),
         "unconfirmed": unconfirmed,
     }
+    if not parsed.codes:
+        return
+    # Text with no letter map (#1750): after every other OCR label, so none of theirs moves.
+    fit = unmapped_text.Fit()
+    for _box, found in coded:
+        for spot in found:
+            fit.add(rows_by_box[tuple(round(v, 2) for v in spot.box)], spot)
+    keep = [*taken, *every, *(row.box for row in rows_by_box.values())]
+    codes = (
+        ocr_labels.read_spots(
+            page.vendor_pdf,
+            page.size,
+            coded,
+            keep,
+            engines,
+            fits=fit,
+            deadline=started + budget_s,
+            clock=clock,
+        )
+        if coded
+        else ocr_labels.OcrRead(status="done")
+    )
+    from_codes, not_confirmed = _read_labels(
+        unmapped_text.consistent(codes.labels, rows_by_box, fit),
+        lambda box: _side(box, halves),
+        ocr_labels.ORIGIN,
+        unmapped_text.UNCONFIRMED,
+    )
+    for label in from_codes:
+        label[unmapped_text.FIELD] = True
+    result.labels += from_codes[: max(0, MAX_LABELS - len(result.labels))]
+    if codes.status != "done" and result.ocr["status"] == "done":
+        result.ocr["status"] = codes.status
+    result.ocr["seconds"] = round(clock() - started, 2)
+    result.ocr["codes"] = {
+        "characters": len(parsed.codes),
+        "spots": codes.spots,
+        "read": len(from_codes),
+        "not_read_rows": skipped,
+        "unconfirmed": not_confirmed,
+    }
+
+
+def _code_spots(
+    parsed: _Parsed, halves: Sequence[Mapping[str, Any]], taken: Sequence[Box]
+) -> tuple[
+    list[tuple[Box, list[ocr_labels.Spot]]], dict[tuple[float, ...], unmapped_text.Row], int
+]:
+    """The page's rows of text with no letter map to read (`unmapped_text.rows`), as spots grouped
+    by the page map's drawing they are on, as `_ocr_spots` groups the vector ink's; each spot's
+    row by its box (rounded as the reader rounds a label's); and how many rows are not read (too
+    close to other text, of no number's size, on no vendor drawing, or already covered). The
+    vendor's drawings only, as the OCR route: the architect's numbers are the reference."""
+    if not parsed.codes:
+        return [], {}, 0
+    others = [char.box for char in parsed.page.chars]
+    found, skipped = unmapped_text.rows(parsed.codes, others)
+    drawings = [h for h in halves if h.get("box") and len(h["box"]) == 4 and not h.get("picture")]
+    by_drawing: dict[int, list[ocr_labels.Spot]] = {}
+    rows_by_box: dict[tuple[float, ...], unmapped_text.Row] = {}
+    count = 0
+    for row in found:
+        spot = unmapped_text.spot_of(row)
+        holding = (
+            None
+            if spot is None
+            else next(
+                (i for i, h in enumerate(drawings) if _within(_centre(spot.box), h["box"])), None
+            )
+        )
+        if (
+            spot is None
+            or holding is None
+            or _side(spot.box, halves) != "vendor"
+            or any(_overlap(spot.box, other) > 0.1 for other in taken)
+            or count >= ocr_labels.MAX_SPOTS
+        ):
+            skipped += 1
+            continue
+        count += 1
+        by_drawing.setdefault(holding, []).append(spot)
+        rows_by_box[tuple(round(v, 2) for v in spot.box)] = row
+    areas = [
+        (tuple(float(v) for v in drawings[index]["box"]), by_drawing[index])
+        for index in sorted(by_drawing)
+    ]
+    return areas, rows_by_box, skipped  # type: ignore[return-value]
 
 
 # ---- the vendor's alphabet (#1860) -------------------------------------------------------------------
