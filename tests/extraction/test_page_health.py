@@ -12,6 +12,10 @@ from PIL import Image
 
 from extraction.page_health import page_health
 from extraction.working_copy import working_copy
+from tests.extraction.test_scan_text import INVISIBLE
+from tests.extraction.test_scan_text import SCAN as SCAN_PICTURE
+from tests.extraction.test_scan_text import page as scan_page
+from tests.extraction.test_scan_text import strokes as shx_strokes
 
 WIDTH, HEIGHT = 600.0, 400.0
 TYPED = b"".join(
@@ -171,6 +175,23 @@ def test_a_scanned_page_is_said() -> None:
     health = _health(_pdf(f"q {WIDTH} 0 0 {HEIGHT} 0 0 cm /Im0 Do Q".encode(), setup=picture))
     assert health["facts"]["picture_share"] == 1.0 and health["facts"]["typed_text"] == 0
     assert _says(health, "This page is a scanned picture")
+
+
+def test_a_scan_with_the_scanners_ocr_text_is_said() -> None:
+    """A scan whose scanner laid its own OCR text over the picture (#1750, item 4): that text is
+    not typed and not AutoCAD's; the control is AutoCAD's hidden SHX text over its strokes."""
+    health = _health(scan_page(SCAN_PICTURE + INVISIBLE))
+    facts = health["facts"]
+    assert facts["scan_text"] == 6  # 36 1/4" without its space
+    assert facts["typed_text"] == 0 and facts["shx_hidden_text"] == 0
+    assert _says(health, "This page is a scan; its text came from the scanner's OCR")
+    assert _says(health, "This page is a scanned picture")
+    assert not _says(health, "numbers are read directly")
+    assert not _says(health, "AutoCAD stored the real text")
+    control = _health(scan_page(SCAN_PICTURE + shx_strokes() + INVISIBLE))
+    assert control["facts"]["scan_text"] == 0 and control["facts"]["shx_hidden_text"] == 1
+    assert not _says(control, "scanner's OCR")
+    assert _says(control, "AutoCAD stored the real text")
 
 
 def test_a_font_without_a_letter_map_is_said() -> None:

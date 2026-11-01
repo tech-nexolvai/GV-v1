@@ -416,8 +416,9 @@ _OCR_LABEL: dict[str, Any] = {
 
 
 def test_an_ocr_label_is_read_by_pixels_like_a_picture_label() -> None:
-    assert OCR_ORIGINS == {"picture", "ocr"}
-    assert ocr_read(_OCR_LABEL) and ocr_read({"origin": "picture"})
+    # A scan's own OCR text (#1750) is an OCR reading of pixels too, and lower still.
+    assert OCR_ORIGINS == {"picture", "ocr", "scan"}
+    assert ocr_read(_OCR_LABEL) and ocr_read({"origin": "picture"}) and ocr_read({"origin": "scan"})
     assert not ocr_read({"route": "drawn"}) and not ocr_read({"route": "text"})
 
 

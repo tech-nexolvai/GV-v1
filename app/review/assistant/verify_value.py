@@ -48,6 +48,12 @@ reads the same whole number with a fraction (an engine on the whole box that los
 fraction reads `63` for `63 1/2"`), and so is any drawn match when the box's own text prints a
 near-miss of the value.
 
+**A scan's own OCR text is not the drawing's text** (#1750, item 4): characters the scanner's
+software laid over (or under) a scanned picture (`visible_text`, `InkPicture.scanned`) are kept
+apart (`_Page.scanned`) and never read by route 1, so they never give a text `match` and never a
+`mismatch`. The spot is then a picture's, read as any pasted picture is (`cannot_read` with the
+picture's reason here; only the picture route makes a label of it).
+
 **What it never does.** It never calls a model, never reads GV's coloured markup as a value, and
 never says `mismatch` from OCR alone: only when the box's text was read, none of it is the value,
 and no ink reader read the value. A `match` proves the number is on the drawing at that spot, not
@@ -305,6 +311,8 @@ class _Page:
     colour_rule: bool = True
     """Whether only black or grey ink is read: on GV's combined sheets only (`gv_marks.gv_combined`,
     the colour rule); every other file is read in every colour."""
+    scanned: tuple[_Char, ...] = ()
+    """A scan's own OCR text (`visible_text`, #1750): never read as the drawing's text."""
 
 
 _CACHE_LOCK: Final = threading.Lock()
@@ -499,8 +507,8 @@ def _read_page(path: Path, page_index: int) -> _Page:
                 return cached
         colour_rule = combined_sheet_at(path)
         vendor = vendor_page_at(path, page_index)
-        chars, paths, pictures, size = _parsed(vendor, colour_rule)
-        result = _Page(key, vendor, chars, paths, pictures, size, colour_rule)
+        chars, paths, pictures, size, scanned = _parsed(vendor, colour_rule)
+        result = _Page(key, vendor, chars, paths, pictures, size, colour_rule, scanned)
         with _CACHE_LOCK:
             _PAGE_CACHE[key] = result
             while len(_PAGE_CACHE) > _PAGE_CACHE_SIZE:
@@ -514,6 +522,7 @@ def _parsed(vendor: bytes, colour_rule: bool) -> tuple[
     tuple[_Path, ...],
     tuple[tuple[float, float, float, float], ...],
     tuple[float, float],
+    tuple[_Char, ...],
 ]:
     """`_parse_page` in a worker process when the server asks for them (#1874: a big set's checks
     parse many pages, beside each other); on this thread otherwise, or when the workers broke
@@ -535,10 +544,13 @@ def _parse_page(vendor: bytes, colour_rule: bool) -> tuple[
     tuple[_Path, ...],
     tuple[tuple[float, float, float, float], ...],
     tuple[float, float],
+    tuple[_Char, ...],
 ]:
-    """A one-page vendor layer's characters and character-sized paths, its pictures and its shown
-    size: plain code on the page's bytes, so it runs in a worker process as well (#1874)."""
+    """A one-page vendor layer's characters and character-sized paths, its pictures, its shown
+    size, and the scan's own OCR text kept apart (`InkPicture.scanned`): plain code on the page's
+    bytes, so it runs in a worker process as well (#1874)."""
     chars: list[_Char] = []
+    scanned: list[_Char] = []
     paths: list[_Path] = []
     with import_module("app.review.assistant.chat_drawing").PDFIUM_LOCK:
         ink = ink_picture(vendor)
@@ -551,7 +563,7 @@ def _parse_page(vendor: bytes, colour_rule: bool) -> tuple[
         for char in page.chars:
             made = _char(char, shown, colour_rule=colour_rule)
             if made is not None and _visible(made.box, size, ink):
-                chars.append(made)
+                (scanned if ink.scanned(made.box) else chars).append(made)
         for item in (*page.curves, *page.lines, *page.rects):
             made_path = _path(item, shown, colour_rule=colour_rule)
             if made_path is not None:
@@ -560,7 +572,7 @@ def _parse_page(vendor: bytes, colour_rule: bool) -> tuple[
             _shown_box(shown, *(float(image[k]) for k in ("x0", "top", "x1", "bottom")))
             for image in page.images
         )
-    return tuple(chars), tuple(paths), pictures, size
+    return tuple(chars), tuple(paths), pictures, size, tuple(scanned)
 
 
 #: Worker processes that parse pages for the checks (#1874), when the server asks for them
