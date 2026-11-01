@@ -641,6 +641,44 @@ def test_every_kept_item_has_one_question() -> None:
     }
 
 
+def test_an_unsure_pairing_never_says_the_architect_prints_no_size() -> None:
+    # A whole-drawing look's please-check: the architect prints a size, code is unsure it pairs.
+    unsure = {
+        "check_reason": "pairing_not_certain",
+        "why": "The whole-drawing look found a design difference.",
+    }
+    items = [
+        finding(
+            "F1",
+            **unsure,
+            item="Counter height",
+            architect="2'-6\"",
+            vendor='about 34" (chain 4 + 30)',
+        ),
+        finding("F2", **unsure, item="Shelf depth", architect=None, vendor='14"', page=6),
+        finding(
+            "F3", **unsure, item="Island depth", architect="no depth printed", vendor='40"', page=8
+        ),
+    ]
+    result = resolve(items, ResolverContext(areas=AREAS))
+    by_id = {f["id"]: f for f in result.changed}
+    assert by_id["F1"]["question"] == (
+        "Code could not be sure which architect size the vendor's 34\" for the counter height "
+        "pairs with. The architect's drawing shows 2'-6\": do the two measure the same thing?"
+    )
+    assert by_id["F2"]["question"] == (
+        "Code could not be sure which architect size the vendor's 14\" for the shelf depth "
+        "pairs with: which architect size applies, and is the vendor's 14\" right?"
+    )
+    # Only where the architect truly prints nothing does the question still say so.
+    assert by_id["F3"]["question"].startswith("The architect prints no size for")
+    # Words only: what is decided is unchanged (still a please-check, same keep reason).
+    for f in by_id.values():
+        assert f["status"] == "check"
+        assert f["keep_reason"] == "architect_prints_nothing"
+    assert result.block["kept"] == {"architect_prints_nothing": 3}
+
+
 def test_the_decision_helps_own_question_is_used_when_it_has_one() -> None:
     item = finding(
         "F1",
