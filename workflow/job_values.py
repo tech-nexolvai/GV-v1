@@ -44,6 +44,7 @@ from workflow.job_value_results import (
     JobValueSuggestion,
     latest_job_values,
 )
+from workflow.working_copies import reading_copy
 
 __all__ = [
     "JOB_VALUES_EXTRACTOR",
@@ -259,6 +260,8 @@ def run_job_values(
         if hashlib.sha256(data).hexdigest() != sha:
             not_prepared.append("a stored file does not match its digest")
             continue
+        # The working copy every stage reads (#1750), so the stored pages' boxes are its own.
+        data = reading_copy(stages._store, key, data)
         architect_file = separate and kinds.get(version_id) == DocumentKind.ARCHITECTURAL.value
         for page in session.scalars(
             select(Page).where(Page.document_version_id == version_id).order_by(Page.index)

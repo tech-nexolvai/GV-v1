@@ -56,6 +56,7 @@ from extraction.rasterise import PageTooLarge
 from extraction.reader import UnreadablePdf
 from storage.store import ArtifactStore
 from workflow.stages import DatabaseStages, evidence_crop_spec
+from workflow.working_copies import reading_copy
 
 #: A stored crop and the reading it was cut for.
 _Crop = tuple[EvidenceArtifact, ObservationCandidate]
@@ -200,7 +201,9 @@ def recheck_crop_marks(
             },
         )
         try:
-            data = _fetch(store, storage_key(version.document_id, version.sha256))
+            key = storage_key(version.document_id, version.sha256)
+            # The working copy the crops were cut from (#1750).
+            data = reading_copy(store, key, _fetch(store, key))
         # The store is backend-neutral and cannot name every backend's error. A document that
         # cannot be read leaves its crops exactly as they are, and says so.
         except Exception as error:  # noqa: BLE001

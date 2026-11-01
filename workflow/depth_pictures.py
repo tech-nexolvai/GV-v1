@@ -48,6 +48,7 @@ from app.models import (
 from app.models.runs import ExtractionRun
 from workflow.depth_evidence import DEPTH_EXTRACTOR
 from workflow.stages import REPORTED_REFUSALS, DatabaseStages
+from workflow.working_copies import reading_copy
 
 __all__ = ["DepthPictures", "cut_depth_pictures"]
 
@@ -156,8 +157,9 @@ def cut_depth_pictures(
 
     for version, pages in pending.values():
         count = sum(len(candidates) for _, candidates in pages.values())
+        key = storage_key(version.document_id, version.sha256)
         try:
-            with store.get(storage_key(version.document_id, version.sha256)) as stored:
+            with store.get(key) as stored:
                 data = stored.read()
         # The store is backend-neutral and cannot name every backend's error.
         except Exception as error:  # noqa: BLE001 - every reading on it is told why
@@ -168,6 +170,8 @@ def cut_depth_pictures(
             outcome.not_cut += count
             outcome.reasons.append("the drawing's stored file does not match its digest")
             continue
+        # The working copy the readings were made on (#1750).
+        data = reading_copy(store, key, data)
         for page, candidates in pages.values():
             cut = stages.cut_page_crops(session, data, page, candidates, set(), dry_run=dry_run)
             outcome.cut += len(cut.cut)

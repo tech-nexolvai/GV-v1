@@ -209,9 +209,16 @@ class RevisionPagePictures:
             return None
         from app.api.documents import storage_key  # the one place the key is derived
 
-        with self.store.get(storage_key(version.document_id, version.sha256)) as stored:
+        key = storage_key(version.document_id, version.sha256)
+        with self.store.get(key) as stored:
             data: bytes = stored.read()
-        return data if hashlib.sha256(data).hexdigest() == version.sha256 else None
+        if hashlib.sha256(data).hexdigest() != version.sha256:
+            return None
+        # The working copy the page's views were read from (#1750), loaded by name like the
+        # renderer below.
+        copies = import_module("workflow.working_copies")
+        working: bytes = copies.reading_copy(self.store, key, data)
+        return working
 
     def _render(self, page: Page) -> tuple[PagePicture, ...]:
         data = self._pdf(page)
