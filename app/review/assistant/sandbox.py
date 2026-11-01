@@ -61,10 +61,9 @@ import threading
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from importlib import import_module
 from pathlib import Path
 from typing import Final, Protocol, Self
-
-from extraction import pdf_strings
 
 __all__ = [
     "DOCKER_FAILED_WORDS",
@@ -600,7 +599,9 @@ def python_startup(workspace: _Workspace) -> Path:
     readers do. Written again when that file changed; never mounted where a command can write."""
     folder = workspace.root / "python"
     target = folder / "sitecustomize.py"
-    source = Path(pdf_strings.__file__).read_text(encoding="utf-8")
+    # Loaded here, not at import: app/api reaches this module and must not reach extraction.
+    fix = import_module("extraction.pdf_strings")
+    source = Path(fix.__file__).read_text(encoding="utf-8")
     try:
         if target.read_text(encoding="utf-8") == source:
             return folder
