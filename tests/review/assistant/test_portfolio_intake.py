@@ -185,7 +185,10 @@ def test_attached_names_never_clash_with_an_upload(tmp_path: Path) -> None:
     workspace = ChatWorkspace(tmp_path / "chat")
     listing, _changed = sync_uploads(
         workspace,
-        [_source(_with_files({"A-101.pdf": A}), "set.pdf"), _source(_drawing(1, "other"), "A-101.pdf")],
+        [
+            _source(_with_files({"A-101.pdf": A}), "set.pdf"),
+            _source(_drawing(1, "other"), "A-101.pdf"),
+        ],
     )
     assert [item["name"] for item in listing] == ["A-101-1.pdf", "A-101.pdf"]
     assert (workspace.uploads / "A-101-1.pdf").read_bytes() == A
