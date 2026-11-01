@@ -18,9 +18,12 @@ existing wait for the reading:
    (`set_index.json` / `architect_index.json`, read by another builder) share none with the
    vendor's, or, in a two-file set, no vendor page has any architect page that could match it.
 3. **A broken file**: a PDF that is damaged, locked with a password, empty, or could not be read
-   at all.
+   at all, or a PDF portfolio that cannot be unpacked (too many attached files, or no drawing PDF
+   in it; #1750).
 
 Everything else is a plain note on the pages it touches; the other pages go on at full speed.
+Files attached to an upload (`extraction/portfolio.py`) are one such note: a portfolio's attached
+PDFs read as files of their own, and each attached file that is not read, with why.
 
 **Pairing numbers before and after Run.** With a separate architect's file, code's own pairing is
 free and is known before Run; the AI page matcher (paid) runs only after Run. So before Run the
@@ -291,19 +294,30 @@ def _broken(inputs: Inputs) -> list[Line]:
     lines: list[Line] = []
     for item in inputs.listing:
         name = str(item.get("name") or "a file")
-        problem = item.get("intake_problem")
-        if problem:
+        # A file joined into the one vendor file keeps its own problem (a refused portfolio).
+        problems = [
+            entry
+            for entry in (item, *(item.get("joined_from") or []))
+            if isinstance(entry, Mapping) and entry.get("intake_problem")
+        ]
+        for entry in problems:
             lines.append(
                 Line(
                     "broken_file",
                     "stop",
-                    f"“{name}” could not be opened: {problem}.",
+                    f"“{entry.get('name') or name}” could not be opened: "
+                    f"{entry['intake_problem']}.",
                     goes_on=False,
                     who="you",
-                    todo="Upload a copy that opens (no password, not damaged).",
+                    todo=str(
+                        entry.get("intake_todo")
+                        or "Upload a copy that opens (no password, not damaged)."
+                    ),
                 )
             )
-        elif int(item.get("pages") or 0) <= 0:
+        if problems:
+            continue
+        if int(item.get("pages") or 0) <= 0:
             lines.append(
                 Line(
                     "broken_file",
@@ -720,6 +734,58 @@ def _reading_lines(inputs: Inputs) -> list[Line]:
     return lines
 
 
+#: How many attached files that are not read one line names before "and N more".
+ATTACHMENTS_SHOWN: Final = 4
+
+
+def _attachment_lines(inputs: Inputs) -> list[Line]:
+    """Files attached to an upload (#1750, `extraction/portfolio.py`): a PDF portfolio's attached
+    PDFs read as files of their own, and every attached file that is not read, with why."""
+    lines: list[Line] = []
+    for item in inputs.listing:
+        for note in item.get("attachments") or []:
+            if not isinstance(note, Mapping):
+                continue
+            file = str(note.get("file") or item.get("name") or "a file")
+            read = [str(n) for n in note.get("read") or []]
+            skipped = [s for s in note.get("not_read") or [] if isinstance(s, Mapping)]
+            words: list[str] = []
+            if note.get("portfolio") and read:
+                they = "is read as a file" if len(read) == 1 else "are read as files"
+                words.append(
+                    f"“{file}” is a PDF portfolio: {_count(len(read), 'attached PDF')} {they} "
+                    f"of {'its' if len(read) == 1 else 'their'} own ({_names(read)})"
+                    + ("" if note.get("own_pages_read") else "; its cover page is not read")
+                    + "."
+                )
+            if skipped:
+                shown = "; ".join(
+                    f"{s.get('name')} ({s.get('why')})" for s in skipped[:ATTACHMENTS_SHOWN]
+                )
+                more = len(skipped) - ATTACHMENTS_SHOWN
+                words.append(
+                    f"Not read, attached to “{file}”: {shown}"
+                    + (f"; and {more} more" if more > 0 else "")
+                    + "."
+                )
+            if not words:
+                continue
+            lines.append(
+                Line(
+                    "attachments",
+                    "note" if skipped else "ok",
+                    " ".join(words),
+                    who="you" if skipped else "nobody",
+                    todo=(
+                        "Upload any of them that holds drawings as a PDF of its own."
+                        if skipped
+                        else None
+                    ),
+                )
+            )
+    return lines
+
+
 def _health_lines(inputs: Inputs) -> list[Line]:
     scanned: list[int] = []
     drawn: list[int] = []
@@ -1011,6 +1077,7 @@ def build(inputs: Inputs) -> Report:
         *(_reads_like_shop(inputs) if not stops else []),
         *_pairing_lines(inputs),
         *_project_lines(inputs),
+        *_attachment_lines(inputs),
         *_reading_lines(inputs),
         *_health_lines(inputs),
         *_units_and_scale(inputs),
