@@ -93,6 +93,8 @@ def label_line(label: Mapping[str, Any]) -> str:
         bits.append("read from a pasted picture, two OCR engines")  # #1830
     elif label.get("origin") == "ocr":
         bits.append("read at its spot, two OCR engines")  # #1848
+        if label.get("no_letter_map"):
+            bits.append("printed in text with no letter map")  # #1750
     elif label.get("route") == "drawn":
         bits.append("drawn ink, OCR")
     if label.get("units") == "disagrees":

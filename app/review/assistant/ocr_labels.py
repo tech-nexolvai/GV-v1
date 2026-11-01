@@ -97,6 +97,9 @@ class Spot:
     """`(turn, layout)` for each allowed direction in which the spot is one row the vectors lay
     out (`dim_labels._layout`): how many characters its whole number, numerator and denominator
     have. A reading counts only when it fits them (`Fits`)."""
+    direction_known: bool = False
+    """The file says which way the spot reads (text with no letter map keeps its text direction,
+    `unmapped_text`): it is read only that way, never the other way round."""
 
 
 #: A reading of a spot whose vectors draw the inch mark: `(spot, turn, text) -> inches or None`.
@@ -150,7 +153,9 @@ def _read_spot(
     allowed = {int(turn) for turn in spot.turns}
     for turn in allowed:
         values.setdefault((pl._FOUND, turn), set())
-    ways = sorted(allowed | {pl._OTHER_WAY[turn] for turn in allowed})
+    ways = sorted(
+        allowed if spot.direction_known else allowed | {pl._OTHER_WAY[t] for t in allowed}
+    )
     x0, y0, x1, y1 = box_px
     crops = {turn: pl._crop(clean, box_px, turn) for turn in ways}
     for number, reader in enumerate(readers):

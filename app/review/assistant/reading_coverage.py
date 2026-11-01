@@ -15,7 +15,10 @@ look at it. It only COUNTS: it never makes, changes or drops a label, a finding 
   number and became no label (`reading_ink`: an inch mark or millimetres over [inches] of its
   own, or a glyph shaped like a digit this set's vendor drew in a number code did read);
 - numbers in pasted pictures: every picture label, plus every number two OCR engines did not
-  confirm there (`pictures.unconfirmed`).
+  confirm there (`pictures.unconfirmed`);
+- numbers in text with no letter map (Type3, or Type0 with no `ToUnicode`; #1750): every label
+  read there by OCR at its spot (`unmapped_text.FIELD`), plus every number two OCR engines did not
+  confirm there (`ocr.codes.unconfirmed`).
 
 **Read** (X): those that became labels. EQ parts code worked out are not printed, so not counted.
 
@@ -62,6 +65,7 @@ SCHEMA: Final = "gv-reading-coverage/1"
 REASONS: Final[dict[str, str]] = {
     "gv_sticker": "GV's sticker or markup over it",
     "picture": "in a pasted picture, not confirmed",
+    "no_letter_map": "in text with no letter map, not confirmed",
     "mm_row": "mm over [inches] row",
     "stacked_fraction": "stacked fraction",
     "sideways": "written sideways",
@@ -104,8 +108,10 @@ SIDE_NAMES: Final[dict[str, str]] = {
     "unknown": "Not told apart",
 }
 
-#: How the pieces of a count are named (the set pack's routes).
-KINDS: Final = ("typed", "strokes", "pictures")
+#: How the pieces of a count are named (the set pack's routes; `codes`: text with no letter map).
+KINDS: Final = ("typed", "strokes", "pictures", "codes")
+#: A label read in text with no letter map (`unmapped_text.FIELD`; this module imports nothing).
+_NO_LETTER_MAP: Final = "no_letter_map"
 
 #: A number with an inch mark in a typed note: `24 1/4"W`, `12-1/2"H`, `9"`.
 _NOTE_NUMBER: Final = re.compile(r"\d+(?:[- ]\d+/\d+)?\s*[\"”″]|\d+/\d+\s*[\"”″]")
@@ -142,6 +148,8 @@ def _kind(label: Mapping[str, Any]) -> str | None:
         return None  # worked out by code (EQ parts), not printed
     if label.get("origin") == "picture":
         return "pictures"
+    if label.get(_NO_LETTER_MAP):
+        return "codes"
     return "strokes" if label.get("route") == "drawn" else "typed"
 
 
@@ -175,10 +183,11 @@ def printed_as(counts: Mapping[str, Any], facts: Mapping[str, Any] | None = None
     typed = int(counts["typed"]["printed"])
     drawn = int(counts["strokes"]["printed"])
     pictures = int(counts["pictures"]["printed"])
-    if not typed + drawn + pictures:
+    codes = int((counts.get("codes") or {}).get("printed") or 0)
+    if not typed + drawn + pictures + codes:
         return None
     health = facts or {}
-    if health.get("no_letter_map") or float(health.get("code_share") or 0) > _CODES_SHARE:
+    if codes or health.get("no_letter_map") or float(health.get("code_share") or 0) > _CODES_SHARE:
         return "codes"
     if pictures > typed + drawn:
         return "picture"
@@ -255,6 +264,24 @@ def build(
                     "kind": "pictures",
                     "side": side,
                     "reason": "picture",
+                    "box": list(box),
+                    "count": 1,
+                }
+            )
+        # Numbers in text with no letter map two engines did not confirm (#1750).
+        ocr = entry.get("ocr")
+        codes = ocr.get("codes") if isinstance(ocr, Mapping) else None
+        for item in (codes.get("unconfirmed") or []) if isinstance(codes, Mapping) else []:
+            box = _box(item.get("box")) if isinstance(item, Mapping) else None
+            side = str(item.get("side") or "unknown") if isinstance(item, Mapping) else ""
+            if box is None or side not in SIDES:
+                continue
+            _add(sides.setdefault(side, _empty()), "codes", False)
+            spots.append(
+                {
+                    "kind": "codes",
+                    "side": side,
+                    "reason": "no_letter_map",
                     "box": list(box),
                     "count": 1,
                 }
@@ -425,6 +452,9 @@ def headline(coverage: Mapping[str, Any] | None) -> dict[str, Any] | None:
         out[f"{side}_percent"] = _percent(int(counts["read"]), int(counts["printed"]))
         out[f"{side}_strokes_read"] = int(counts["strokes"]["read"])
         out[f"{side}_strokes_printed"] = int(counts["strokes"]["printed"])
+        codes = counts.get("codes") or {}
+        out[f"{side}_codes_read"] = int(codes.get("read") or 0)
+        out[f"{side}_codes_printed"] = int(codes.get("printed") or 0)
     for side in ("vendor", "architect"):
         out[f"{side}_printed_as"] = dict((coverage.get("printed_as") or {}).get(side) or {})
     out["vendor_not_read_by_reason"] = dict(
@@ -514,6 +544,7 @@ def sheet_rows(coverage: Mapping[str, Any] | None) -> list[list[str]]:
                         "typed": "typed text",
                         "strokes": "pen strokes",
                         "pictures": "pasted picture",
+                        "codes": "text with no letter map",
                     }.get(str(spot.get("kind")), str(spot.get("kind"))),
                 ]
             )
