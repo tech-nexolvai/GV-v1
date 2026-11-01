@@ -456,7 +456,13 @@ def _sync_uploads(
     page, the visible area at the origin, the user unit applied), shown exactly as the original.
     The original stays untouched in the set's storage. A file already in that shape is copied byte
     for byte; one that was changed is listed with its working copy's `working_sha256` and what was
-    done (`working_changes`, `pages_not_read`), so its set pack is made from the working copy."""
+    done (`working_changes`, `pages_not_read`), so its set pack is made from the working copy.
+
+    **A PDF portfolio is unpacked first** (`extraction/portfolio.py`, #1750): each attached PDF
+    goes through the front door as its own document, named after its file name and listed with
+    the upload it came from (`portfolio`); what was attached and not read (a spreadsheet, a
+    picture, a portfolio inside the portfolio, a file too big) is listed on the first document
+    (`attachments`) for the pre-flight report. An upload with nothing attached is as before."""
     manifest = workspace.root / "uploads.json"
     # GV's project schedule (a spreadsheet or a PDF table) is no drawing: copied beside the
     # drawings with its own listing (`project_schedule.sync`), never into the set pack.
@@ -479,23 +485,13 @@ def _sync_uploads(
         wanted.append(
             {"name": chosen, "sha256": source.sha256, "pages": source.pages, "kind": source.kind}
         )
-    # Several current shop-drawing files (the vendor's cabinets and GV's stone tops, 2026-10-30)
-    # are one vendor file to every check: joined in upload order (`_joined_item`).
-    shop = [i for i, item in enumerate(wanted) if _is_shop_kind(item["kind"])]
-    joined = _joined_item(wanted, shop) if len(shop) > 1 else None
-    listed = (
-        wanted
-        if joined is None
-        else [
-            joined if i == shop[0] else item
-            for i, item in enumerate(wanted)
-            if i == shop[0] or i not in shop
-        ]
-    )
     try:
         current = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else None
     except ValueError:
         current = None
+    # A PDF portfolio's attached PDFs are documents of their own (#1750): known from the last copy
+    # without reading the file again (`_from_portfolios`).
+    listed = _listed(_from_portfolios(wanted, current))[0]
     same = (
         isinstance(current, list)
         and [(item.get("name"), item.get("sha256"), item.get("intake")) for item in current]
@@ -505,6 +501,8 @@ def _sync_uploads(
     if same:
         assert isinstance(current, list)
         return current, False
+    # Loaded by name too: the portfolio check opens PDFs.
+    portfolios = import_module("extraction.portfolio")
     uploads = workspace.uploads
     uploads.mkdir(parents=True, exist_ok=True)
     uploads.chmod(0o755)
@@ -514,45 +512,164 @@ def _sync_uploads(
         else:
             old.chmod(0o644) if not old.is_symlink() else None
             old.unlink()
-    written: dict[int, bytes] = {}
-    for index, (item, source) in enumerate(zip(wanted, sources, strict=True)):
+    documents: list[dict[str, Any]] = []
+    held: dict[int, bytes] = {}
+    taken = set(names)
+    for item, source in zip(wanted, sources, strict=True):
         data = source.read()
         if hashlib.sha256(data).hexdigest() != source.sha256:
             raise ValueError("a stored PDF does not match its recorded hash")
-        item["intake"] = version
-        try:
-            working = front_door.working_copy(data)
-        except front_door.WorkingCopyRefused as refused:
-            # Copied as it is: the readers then refuse it with their own plain reasons.
-            item["intake_problem"] = str(refused)
-        else:
-            # What the original says about itself, for the set pack's health check.
-            item["intake_facts"] = working.facts
-            if working.changed:
-                data = working.data
-                item["working_sha256"] = working.sha256
-                item["working_changes"] = list(working.changes)
-                if working.not_read:
-                    item["pages_not_read"] = [
-                        {"page": page, "why": why} for page, why in working.not_read
-                    ]
-        if joined is not None and index in shop:
-            written[index] = data
-            continue
-        path = uploads / item["name"]
-        path.write_bytes(data)
-        path.chmod(0o444)
-        item["size"] = len(data)
-    if joined is not None:
-        data = _join_shop_files(joined, [wanted[i] for i in shop], [written[i] for i in shop])
+        for document, own in _unpacked(portfolios, item, data, taken):
+            document["intake"] = version
+            own = _through_front_door(front_door, document, own)
+            documents.append(document)
+            if _is_shop_kind(document["kind"]):
+                # Kept until every file is seen: several are joined into one (`_listed`).
+                held[len(documents) - 1] = own
+                continue
+            _write_upload(uploads, document, own)
+    listed, joined, shop = _listed(documents)
+    if joined is None:
+        for index in shop:
+            _write_upload(uploads, documents[index], held[index])
+    else:
+        data = _join_shop_files(joined, [documents[i] for i in shop], [held[i] for i in shop])
         joined["intake"] = version
-        path = uploads / joined["name"]
-        path.write_bytes(data)
-        path.chmod(0o444)
-        joined["size"] = len(data)
+        _write_upload(uploads, joined, data)
     uploads.chmod(0o555)
     manifest.write_text(json.dumps(listed, ensure_ascii=False), encoding="utf-8")
     return listed, True
+
+
+def _through_front_door(front_door: Any, item: dict[str, Any], data: bytes) -> bytes:
+    """`data`'s working copy (`extraction/working_copy.py`), what was done noted on `item`."""
+    try:
+        working = front_door.working_copy(data)
+    except front_door.WorkingCopyRefused as refused:
+        # Copied as it is: the readers then refuse it with their own plain reasons.
+        item["intake_problem"] = str(refused)
+        return data
+    # What the original says about itself, for the set pack's health check.
+    item["intake_facts"] = working.facts
+    if not working.changed:
+        return data
+    item["working_sha256"] = working.sha256
+    item["working_changes"] = list(working.changes)
+    if working.not_read:
+        item["pages_not_read"] = [{"page": page, "why": why} for page, why in working.not_read]
+    return bytes(working.data)
+
+
+def _write_upload(uploads: Path, item: dict[str, Any], data: bytes) -> None:
+    path = uploads / item["name"]
+    path.write_bytes(data)
+    path.chmod(0o444)
+    item["size"] = len(data)
+
+
+def _listed(
+    wanted: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, list[int]]:
+    """The listing of the documents `wanted`, the joined shop-drawing item (or `None`) and the
+    shop-drawing documents' indices. Several current shop-drawing files (the vendor's cabinets and
+    GV's stone tops, 2026-10-30) are one vendor file to every check: joined in upload order
+    (`_joined_item`)."""
+    shop = [i for i, item in enumerate(wanted) if _is_shop_kind(item["kind"])]
+    joined = _joined_item(wanted, shop) if len(shop) > 1 else None
+    if joined is None:
+        return wanted, None, shop
+    listed = [
+        joined if i == shop[0] else item
+        for i, item in enumerate(wanted)
+        if i == shop[0] or i not in shop
+    ]
+    return listed, joined, shop
+
+
+def _unpacked(
+    portfolios: Any, item: dict[str, Any], data: bytes, taken: set[str]
+) -> list[tuple[dict[str, Any], bytes]]:
+    """The documents one upload holds (`extraction/portfolio.py`, #1750): the upload itself, as it
+    is, when nothing is attached to it (every ordinary PDF); a PDF portfolio's attached PDFs, each
+    its own document named after its file name (and the portfolio's own page when it is not a
+    `/Collection`). The first document carries what was attached and not read (`attachments`)."""
+    try:
+        unpacked = portfolios.unpack(data)
+    except Exception as failed:  # noqa: BLE001 - the upload is read as it is
+        _log.warning("assistant portfolio check failed: %s", type(failed).__name__)
+        unpacked = None
+    if unpacked is None:
+        return [(item, data)]
+    out: list[tuple[dict[str, Any], bytes]] = []
+    if unpacked.keep_own_pages or unpacked.refused or not unpacked.parts:
+        out.append((item, data))
+    if unpacked.refused:
+        item["intake_problem"] = unpacked.refused
+        item["intake_todo"] = "Upload the drawings as separate PDFs."
+    read: list[str] = []
+    for number, part in enumerate(unpacked.parts, start=1):
+        name = safe_file_name(part.name, f"attachment-{number}.pdf")
+        while name in taken:
+            name = f"{Path(name).stem}-{number}.pdf"
+        taken.add(name)
+        read.append(name)
+        document = {
+            "name": name,
+            "sha256": hashlib.sha256(part.data).hexdigest(),
+            "pages": part.pages,
+            "kind": item["kind"],
+            "portfolio": {"name": item["name"], "sha256": item["sha256"]},
+        }
+        out.append((document, part.data))
+    out[0][0]["attachments"] = [
+        {
+            "file": item["name"],
+            "portfolio": bool(unpacked.portfolio),
+            "own_pages_read": bool(unpacked.keep_own_pages),
+            "read": read,
+            "not_read": [{"name": s.name, "why": s.why} for s in unpacked.skipped],
+        }
+    ]
+    return out
+
+
+def _from_portfolios(wanted: Sequence[dict[str, Any]], current: object) -> list[dict[str, Any]]:
+    """`wanted` with each PDF portfolio replaced by the documents its last copy listed (`current`,
+    `portfolio` names the upload each came from), so a set whose files did not change is known to
+    be the same without reading them again. A portfolio not copied before stays itself here: its
+    listing then differs and the set is copied again (`_unpacked`)."""
+    if not isinstance(current, list):
+        return list(wanted)
+    entries: list[Mapping[str, Any]] = []
+    for item in current:
+        if isinstance(item, Mapping):
+            entries.append(item)
+            entries += [p for p in item.get("joined_from") or [] if isinstance(p, Mapping)]
+    out: list[dict[str, Any]] = []
+    for item in wanted:
+        key = {"name": item["name"], "sha256": item["sha256"]}
+        parts = [e for e in entries if e.get("portfolio") == key]
+        if not parts:
+            out.append(item)
+            continue
+        if any(
+            e.get("name") == item["name"]
+            and e.get("sha256") == item["sha256"]
+            and not e.get("portfolio")
+            for e in entries
+        ):
+            out.append(item)
+        out += [
+            {
+                "name": str(e.get("name")),
+                "sha256": str(e.get("sha256")),
+                "pages": e.get("pages"),
+                "kind": item["kind"],
+                "portfolio": key,
+            }
+            for e in parts
+        ]
+    return out
 
 
 #: The name of the one vendor file several shop-drawing files are joined into.
@@ -584,7 +701,13 @@ def _joined_item(wanted: Sequence[dict[str, Any]], shop: Sequence[int]) -> dict[
         "pages": sum(int(item.get("pages") or 0) for item in parts),
         "kind": parts[0]["kind"],
         "joined_from": [
-            {"name": item["name"], "sha256": item["sha256"], "pages": item.get("pages")}
+            {
+                "name": item["name"],
+                "sha256": item["sha256"],
+                "pages": item.get("pages"),
+                # The PDF portfolio it came from (#1750), for `_from_portfolios`.
+                **{key: item[key] for key in ("portfolio",) if key in item},
+            }
             for item in parts
         ],
     }
@@ -602,6 +725,7 @@ def _join_shop_files(
     pages: dict[str, Any] = {}
     not_read: list[dict[str, Any]] = []
     changes: list[str] = []
+    attachments: list[Mapping[str, Any]] = []
     first = 1
     for part, item, data in zip(joined["joined_from"], parts, datas, strict=True):
         with pikepdf.open(io.BytesIO(data)) as pdf:
@@ -621,6 +745,11 @@ def _join_shop_files(
             if isinstance(entry, Mapping) and "page" in entry
         ]
         changes += [str(change) for change in item.get("working_changes") or []]
+        attachments += [a for a in item.get("attachments") or [] if isinstance(a, Mapping)]
+        for key in ("intake_problem", "intake_todo"):
+            # A refused portfolio stops the check by its own name (`preflight._broken`).
+            if item.get(key):
+                part[key] = item[key]
         first += count
     buffer = io.BytesIO()
     out.save(buffer)
@@ -631,6 +760,8 @@ def _join_shop_files(
     joined["working_changes"] = [*changes, f"{len(parts)} shop-drawing files joined into one"]
     if not_read:
         joined["pages_not_read"] = not_read
+    if attachments:
+        joined["attachments"] = attachments
     return data
 
 
@@ -1097,6 +1228,7 @@ def uploaded_files_text(listing: Sequence[dict[str, Any]], *, changed: bool) -> 
         f'<file path="{UPLOADS}/{item["name"]}" pages="{item.get("pages", "?")}" '
         f'size="{_size_words(int(item.get("size") or 0))}" kind="{item.get("kind", "")}"'
         + _joined_words(item)
+        + _portfolio_words(item)
         + "/>"
         for item in listing
     ]
@@ -1118,6 +1250,14 @@ def _joined_words(item: Mapping[str, Any]) -> str:
         first, count = int(part.get("first_page") or 0), int(part.get("pages") or 0)
         spans.append(f"pages {first}-{first + count - 1}: {part.get('name')}")
     return ' joined_from="' + "; ".join(spans).replace('"', "'") + '"'
+
+
+def _portfolio_words(item: Mapping[str, Any]) -> str:
+    """` from_portfolio="set.pdf"` for a PDF attached to an uploaded portfolio (#1750), else ``."""
+    portfolio = item.get("portfolio")
+    if not isinstance(portfolio, Mapping) or not portfolio.get("name"):
+        return ""
+    return ' from_portfolio="' + str(portfolio["name"]).replace('"', "'") + '"'
 
 
 def _readable(folder: Path) -> None:

@@ -34,7 +34,15 @@ _log = logging.getLogger(__name__)
 
 #: Pre-flight lines worth repeating at the end (the rest are plain facts).
 _PREFLIGHT_KEEP: Final = frozenset(
-    {"unreadable", "pages_broken", "duplicates", "project_missing", "only_plans", "no_sizes"}
+    {
+        "unreadable",
+        "pages_broken",
+        "duplicates",
+        "project_missing",
+        "only_plans",
+        "no_sizes",
+        "attachments",
+    }
 )
 #: The code steps' names in everyday words (`chat_engine.CODE_CHECK_NAMES` and its other steps).
 _STEP_WORDS: Final[Mapping[str, str]] = {
