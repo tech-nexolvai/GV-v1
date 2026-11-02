@@ -26,7 +26,9 @@ it, and no route and no reader names a doubt:
   the owner's rule of 2026-10-26: such a number never makes a red);
 - the drawing printing another value at the spot (`verify_value` mismatch, or both OCR engines
   reading another whole number of the same shape at a typed number's spot, `typed_ocr`);
-- a second or third AI reading that is unsure (the AI is never a route, but its doubt counts).
+- a second or third AI reading that is unsure (the AI is never a route, but its doubt counts);
+- a number read from a scan's own OCR text (`label_origin.SCAN`, #1750): the scanner's software
+  read it, not code, and it is never typed text (`SCAN_DOUBT`).
 
 A would-be red that fails it is a Likely problem with the reason in plain words (`held`): "the
 vendor's 23" is read from the PDF's text, but its drawn length at its view's own scale is
@@ -58,7 +60,7 @@ from typing import Any, Final
 
 from app.review.assistant import witness
 from app.review.assistant.finding_checks import units_check
-from app.review.assistant.label_origin import ocr_read
+from app.review.assistant.label_origin import SCAN, ocr_read
 
 __all__ = [
     "DRAWN",
@@ -68,6 +70,7 @@ __all__ = [
     "NOT_DOUBLE_READ",
     "OCR",
     "ROUTE_WORDS",
+    "SCAN_DOUBT",
     "STROKES",
     "TEXT",
     "UNITS",
@@ -107,6 +110,8 @@ ROUTE_WORDS: Final[Mapping[str, str]] = {
 }
 #: The doubt a value that does not agree with its drawn length names, before that length.
 DRAWN_DOUBT: Final = "its drawn length at its view's own scale is "
+#: The doubt a number read from a scan's own OCR text names (`label_origin.SCAN`): never red.
+SCAN_DOUBT: Final = "it is read from the scan's own OCR text (the scanner's software), not typed"
 #: How many different kinds of route must agree on a number before it may feed a red.
 NEEDED: Final = 2
 
@@ -273,6 +278,8 @@ def _label_value(
     text = str(data.get("text") or "")
     routes: list[str] = []
     doubts: list[str] = []
+    if data.get("origin") == SCAN:
+        doubts.append(SCAN_DOUBT)
     if ocr_read(data) or data.get("route") == "drawn":
         routes.append(OCR)
     elif data.get("route") in (None, "text") and text:

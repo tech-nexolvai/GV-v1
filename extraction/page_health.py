@@ -6,8 +6,9 @@ sentence for the reviewer when it matters:
 
 | fact | how |
 |---|---|
-| `typed_text` | characters of the drawing (its own content and pasted drawings) |
+| `typed_text` | characters of the drawing (its own content and pasted drawings), not `scan_text` |
 | `hidden_text` | characters with no ink at their spot (`visible_text`): not used |
+| `scan_text` | characters of a scan's own OCR text (`visible_text`, #1750): unverified |
 | `invisible_objects` | text objects set invisible (render mode 3, PDFium) |
 | `shx_hidden_text` | of those, the ones over drawn strokes: AutoCAD's SHX text, used |
 | `shx_comments` | comments authored `AutoCAD SHX Text`: the vendor's text, used |
@@ -130,11 +131,11 @@ def _text_facts(vendor: bytes, ink: InkPicture, facts: dict[str, Any]) -> None:
     with pdfplumber.open(io.BytesIO(vendor)) as document:
         page = document.pages[0]
         chars = [c for c in page.chars if str(c.get("text", "")).strip()]
-        hidden = sum(
-            1
-            for c in chars
-            if not ink.shows((float(c["x0"]), float(c["top"]), float(c["x1"]), float(c["bottom"])))
-        )
+        boxes = [
+            (float(c["x0"]), float(c["top"]), float(c["x1"]), float(c["bottom"])) for c in chars
+        ]
+        hidden = sum(1 for box in boxes if not ink.shows(box))
+        scanned = sum(1 for box in boxes if ink.shows(box) and ink.scanned(box))
         codes = sum(
             1
             for c in chars
@@ -152,8 +153,9 @@ def _text_facts(vendor: bytes, ink: InkPicture, facts: dict[str, Any]) -> None:
             * max(0.0, float(i["bottom"]) - float(i["top"]))
             for i in page.images
         )
-        facts["typed_text"] = len(chars)
+        facts["typed_text"] = len(chars) - scanned
         facts["hidden_text"] = hidden
+        facts["scan_text"] = scanned
         facts["code_share"] = round(codes / len(chars), 3) if chars else 0.0
         facts["drawn_letters"] = len(chars) < _TYPED_FEW and strokes >= _STROKES_MIN
         facts["picture_share"] = round(min(1.0, pictures / area), 3) if area else 0.0
@@ -177,7 +179,8 @@ def _object_facts(vendor: bytes, ink: InkPicture, facts: dict[str, Any]) -> None
                 continue
             invisible += 1
             left, bottom, right, top = obj.get_bounds()
-            if ink.shows((left, height - top, right, height - bottom)):
+            box = (left, height - top, right, height - bottom)
+            if ink.shows(box) and not ink.scanned(box):
                 shx += 1
     finally:
         document.close()
@@ -272,6 +275,11 @@ def _sentences(facts: Mapping[str, Any]) -> list[str]:
         says.append(
             "The lettering on this page is drawn with lines, not typed: it is read from its "
             "shapes, and positions are still exact."
+        )
+    if facts.get("scan_text"):
+        says.append(
+            "This page is a scan; its text came from the scanner's OCR, not typed: those numbers "
+            "are unverified readings, never typed text, and never make anything red."
         )
     if facts.get("shx_hidden_text") or facts.get("shx_comments"):
         says.append("AutoCAD stored the real text behind the drawn letters; it was used.")

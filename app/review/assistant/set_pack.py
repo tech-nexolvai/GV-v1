@@ -136,7 +136,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 23
+PACK_VERSION: Final = 24
 #: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
@@ -1103,7 +1103,8 @@ pages/<name>/p-NNN.png every page at 100 dpi (drawings only). Zoom to read numbe
 contact/*.png          nine pages per picture, page numbers stamped: the whole set at a glance.
 health.json            per page: what kind of page it is and what was or was not read (typed or
                        drawn lettering, hidden text not used, AutoCAD SHX text used, layers off,
-                       scanned, straightened, markups not read), with a plain sentence each.
+                       scanned, a scan's own OCR text, straightened, markups not read), with a
+                       plain sentence each.
 dims.json              every printed dimension code found, numbered per page (D17): value,
                        inches, box, side, dimension line. zoom marks: true draws the ids.
                        route "drawn": numbers drawn as pen strokes (the vendor's, and an
@@ -1117,6 +1118,10 @@ dims.json              every printed dimension code found, numbered per page (D1
                        "derived": an EQ part: the printed overall (less the chain's
                        printed parts) shared equally, by code; "from" names the overall
                        (36" wall to wall marked EQ / EQ is 18" each side).
+                       "origin": "scan": read from a scan's own OCR text (the scanner's
+                       software laid it over the picture): unverified, never typed, never
+                       red; where two OCR engines confirm the spot, their "picture" label
+                       replaces it.
                        "origin": "ocr": a number no label reader read, read at its spot
                        by two OCR engines that agree (numbered last; same trust as
                        "picture": no dimension line). What one engine read alone is

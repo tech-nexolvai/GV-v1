@@ -210,6 +210,11 @@ def fill_from_labels(
             )
         if label.get("origin") == "picture":
             notes.append(f"{label['id']} was read from a pasted picture by OCR: look at it once")
+        elif label.get("origin") == "scan":
+            notes.append(
+                f"{label['id']} was read from the scan's own OCR text (the scanner's software, "
+                "not typed, not confirmed by code): look at it once"
+            )
         elif label.get("origin") == "ocr":
             notes.append(
                 f"{label['id']} was read at its spot by two OCR engines (no label reader read "
@@ -279,6 +284,8 @@ def label_checks(finding: Mapping[str, Any], checks: Mapping[str, Any]) -> dict[
         existing = out.get(key)
         if isinstance(existing, Mapping) and existing.get("result") == "match":
             continue
+        if label.get("origin") == "scan":
+            continue  # the scanner's software read it, not code: no reading of code's (#1750)
         route = "drawn" if label.get("route") == "drawn" else "text"
         how = (
             f"the {side}'s pasted picture (two OCR engines)"

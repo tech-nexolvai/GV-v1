@@ -99,9 +99,18 @@ other way round. It is the picture route's trust class (`route: "drawn"`, `origi
 dimension line: `label_origin.ocr_read`); anything less is listed under the page's `ocr`
 (`unconfirmed`), a suggestion only.
 
+**A scan's own OCR text** (#1750, item 4): characters the scanner's software laid over (or under)
+a scanned picture (`visible_text`, `InkPicture.scanned`) are not the drawing's text. They are read
+as the text route reads (rows, stacked fractions, millimetres over inches) but kept as an
+unverified OCR reading of the picture (`_scan_labels`: `route: "drawn"`, `origin: "scan"`,
+`label_origin.SCAN`, no dimension line), never as typed text, and never a phrase. A bare number is
+never one (no line says it is a dimension). The picture route reads the same spots with code's
+own two engines; where it confirms a value, its label replaces the scanner's (`_add_pictures`).
+`reading_routes` names a scanner's reading as a doubt, so it never makes anything red.
+
 **Ids are stable:** text labels are numbered in reading order (top to bottom, left to right), then
-picture labels, then drawn labels after them, then derived parts, then the OCR route's, so a label
-found later never moves an earlier label's id.
+the scan's own OCR labels, then picture labels, then drawn labels after them, then derived parts,
+then the OCR route's, so a label found later never moves an earlier label's id.
 
 Loaded by name (`set_pack`, `dim_index`), like `verify_value`: it parses PDFs and may run OCR.
 Verification: `tests/review/assistant/test_dim_labels.py` (synthetic PDFs).
@@ -115,7 +124,7 @@ import math
 import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
 from importlib import import_module
@@ -133,6 +142,7 @@ from app.review.assistant import (
     dims_pool,
     hand_labels,
     ink_labels,
+    label_origin,
     ocr_labels,
     picture_labels,
     unmapped_text,
@@ -311,6 +321,7 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
     with import_module("app.review.assistant.chat_drawing").PDFIUM_LOCK:
         ink = ink_picture(vendor)
     chars: list[Any] = []
+    scanned: list[Any] = []
     paths: list[Any] = []
     segments: list[Segment] = []
     widths: list[float] = []
@@ -325,7 +336,8 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
         for char in page.chars:
             made = vv._char(char, shown, colour_rule=colour_rule)
             if made is not None and vv._visible(made.box, size, ink):
-                chars.append(made)
+                # A scan's own OCR text is kept apart (`visible_text`, #1750): `_scan_labels`.
+                (scanned if ink.scanned(made.box) else chars).append(made)
             elif made is None:
                 code = unmapped_text.code_of(char, shown, colour_rule=colour_rule, ink=drawing_ink)
                 if (
@@ -353,7 +365,9 @@ def _parse(pdf: Path, page_index: int) -> _Parsed:
             vv._shown_box(shown, *(float(image[k]) for k in ("x0", "top", "x1", "bottom")))
             for image in page.images
         )
-    parsed = vv._Page(key, vendor, tuple(chars), tuple(paths), pictures, size, colour_rule)
+    parsed = vv._Page(
+        key, vendor, tuple(chars), tuple(paths), pictures, size, colour_rule, tuple(scanned)
+    )
     weight = float(np.median(widths)) if widths else 0.3
     return _Parsed(parsed, tuple(segments), weight, tuple(rings), tuple(codes))
 
@@ -2149,8 +2163,10 @@ def page_labels(
     started = clock()
     parsed = _parse(Path(pdf), page - 1)
     phrases = _phrases(parsed)
+    labels = _text_labels(parsed, halves)
+    labels += _scan_labels(parsed, halves, labels)
     result = PageLabels(
-        labels=_text_labels(parsed, halves),
+        labels=labels,
         scale_notes=_scale_notes(phrases),
         phrases=[
             {"text": text, "box": [round(v, 2) for v in box], "side": _side(box, halves)}
@@ -2217,7 +2233,10 @@ def drawn_labels(
         labels=[
             dict(label)
             for label in text_labels
-            if (label["route"] == "text" or label.get("origin") == picture_labels.ORIGIN)
+            if (
+                label["route"] == "text"
+                or label.get("origin") in (picture_labels.ORIGIN, label_origin.SCAN)
+            )
             and not label.get("derived")
         ]
     )
@@ -2470,9 +2489,10 @@ def _add_pictures(
         return
     if not read.boxes:
         return
-    taken = [tuple(label["box"]) for label in result.labels] + [
-        tuple(phrase["box"]) for phrase in result.phrases
-    ]
+    # A scan's own OCR label does not keep code's engines away: their reading replaces it.
+    taken = [
+        tuple(label["box"]) for label in result.labels if label.get("origin") != label_origin.SCAN
+    ] + [tuple(phrase["box"]) for phrase in result.phrases]
     fresh = [
         found
         for found in read.labels
@@ -2484,6 +2504,12 @@ def _add_pictures(
         picture_labels.ORIGIN,
         picture_labels.UNCONFIRMED,
     )
+    result.labels = [
+        label
+        for label in result.labels
+        if label.get("origin") != label_origin.SCAN
+        or not any(_overlap(tuple(label["box"]), tuple(new["box"])) > 0.5 for new in added)
+    ]
     result.labels += added[: max(0, MAX_LABELS - len(result.labels))]
     result.pictures = {
         "status": read.status,
@@ -3156,6 +3182,41 @@ def _text_labels(parsed: _Parsed, halves: Sequence[Mapping[str, Any]]) -> list[d
     _joins_on_scale(labels, [line for _r, line in kept[:MAX_LABELS]])
     _short_lines(labels, parsed.segments)
     return labels
+
+
+def _scan_labels(
+    parsed: _Parsed, halves: Sequence[Mapping[str, Any]], labels: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """The scan's own OCR text (`visible_text`, #1750) as unverified labels, after `labels`: read
+    as the text route reads, kept as an OCR reading of the picture (`route: "drawn"`,
+    `origin: "scan"`) with no dimension line. A bare number, inches in brackets with no
+    millimetres, or millimetres that disagree with their inches is none."""
+    if not parsed.page.scanned:
+        return []
+    readings, _millimetres = _paired(
+        _text_readings(replace(parsed.page, chars=parsed.page.scanned))
+    )
+    kept: list[_Reading] = []
+    for reading in sorted(readings, key=lambda r: (not r.bracket, r.bare, -len(r.text))):
+        if reading.bare or (reading.bracket and reading.mm is None):
+            continue
+        if reading.mm is not None and reading.units != "agrees":
+            continue
+        if any(
+            _overlap(reading.box, other.box) > 0.6 and other.inches == reading.inches
+            for other in kept
+        ) or any(_overlap(reading.box, tuple(label["box"])) > 0.5 for label in labels):
+            continue
+        kept.append(reading)
+    kept.sort(key=lambda reading: (round(reading.box[1] / 4), reading.box[0]))
+    out: list[dict[str, Any]] = []
+    for reading in kept[: max(0, MAX_LABELS - len(labels))]:
+        # No dimension line: an OCR reading never passes a check on a line.
+        label = _label(reading, None, _side(reading.box, halves))
+        label["route"] = "drawn"
+        label["origin"] = label_origin.SCAN
+        out.append(label)
+    return out
 
 
 def _short_lines(labels: Sequence[dict[str, Any]], segments: Sequence[Segment]) -> None:

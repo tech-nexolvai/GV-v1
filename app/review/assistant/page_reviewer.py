@@ -1027,6 +1027,7 @@ CODE_LABEL_HOW: Final[Mapping[str, str]] = {
     "drawn": "pen strokes",
     "ocr": "read at its spot, two OCR engines",
     "picture": "pasted picture, two OCR engines",
+    "scan": "a scan's own OCR text, not typed, unconfirmed",
 }
 #: The design reference (`_Run.design_spots`): an item tag the design set prints on at most this
 #: many pages is the item's own (a finish code is printed everywhere), at most this many tags and

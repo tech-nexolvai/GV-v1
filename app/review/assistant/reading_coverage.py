@@ -146,7 +146,7 @@ def _meets(a: Sequence[float], b: Sequence[float]) -> bool:
 def _kind(label: Mapping[str, Any]) -> str | None:
     if label.get("derived"):
         return None  # worked out by code (EQ parts), not printed
-    if label.get("origin") == "picture":
+    if label.get("origin") in ("picture", "scan"):
         return "pictures"
     if label.get(_NO_LETTER_MAP):
         return "codes"
