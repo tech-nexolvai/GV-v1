@@ -481,7 +481,9 @@ def facts(
 _LEAD: Final = (
     "Filler facts code worked out from this page's dimension rows (each run's parts, its ends from "
     'the wall inward, the first cabinet each side). GV\'s rules: a 1"-2" box filler at a wall end '
-    '(GV writes 2"), never a flat scribe strip; the range is a GV note, never red; when a run is '
+    '(GV writes 2"), or a scribe-to-fit filler the vendor notes as cut on site (GV accepts it, '
+    "with that note at that end in every view); GV asks for a box filler where an end has no "
+    "filler or a finished panel against the wall; the range is a GV note, never red; when a run is "
     "refitted the fillers keep their size and the door cabinets share the difference equally. "
     "Code cannot see the wall, doors or drawers: zoom on the end before you report, as a "
     "please-check (kind B for the filler type, kind A for the sizes), quoting the printed numbers:"

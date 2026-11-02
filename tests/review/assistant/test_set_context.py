@@ -440,6 +440,21 @@ def test_one_digit_codes_are_tags_only_in_a_finish_family() -> None:
     assert tags_in("MW-101 A-201 BOH-802.CT") == ["MW-101", "A-201", "BOH-802.CT"]
 
 
+def test_a_countertop_item_written_without_its_dot_is_the_same_item() -> None:
+    from app.review.assistant.set_context import family_of, item_key
+
+    # 2026-11-02: "ABC-101CT" (no dot) was no tag, so its cabinet sheet had no other drawing.
+    assert tags_in("ABC-101CT Countertop, ABC-101.C") == ["ABC-101CT", "ABC-101.C"]
+    assert item_key("ABC-101CT") == item_key("ABC-101.C") == "ABC-101"
+    assert family_of("ABC-101CT") == "ABC"
+    # Only CT is read as a two-letter suffix: other letters after the number keep out as before.
+    assert tags_in("HW150MM ABC-101XY") == []
+    pages = {1: _phrases("ABC-101.C", "WD-04 toe kick"), 2: _phrases("ABC-101CT", "ST-03 top")}
+    context = SetContext("Vendor set.pdf", lambda n: pages[n], 2)
+    context.build()
+    assert context.pair_pages(1) == [(2, "ABC-101CT", "ABC-101.C")]
+
+
 def test_a_one_digit_finish_code_only_one_sheet_prints_is_an_outlier() -> None:
     pages = {n: _phrases("ST-2 Quartz top", f"ABC-{100 + n}.C") for n in range(1, 5)}
     pages[2] = _phrases("ST-3 Quartz top", "ABC-102.C")

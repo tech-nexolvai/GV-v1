@@ -250,6 +250,12 @@ WHOLE_VIEW_PT: Final = 600.0
 #: scope issues are about areas by nature and may box up to `WHOLE_VIEW_PT` without `whole_view`.
 STRIP_PT: Final = 30.0
 AREA_KINDS: Final = frozenset({"B", "C", "E"})
+#: More spots of the same problem on the page one report may give (`also_at`, 2026-11-02): GV's
+#: reviewer marks each wall end and each view that leaves a thing out, and on four held-out sheets
+#: two right cards were boxed at one end or at the overall while GV marked the other end or
+#: the end the size belongs to. Each is a spot, not an area (`_also_at`; one too big is left out and
+#: said so); they are kept as the finding's `also_on` spots on this page, which the drawing marks.
+MAX_ALSO_AT: Final = 3
 #: A box too big is snapped to the printed phrases it quotes that lie in it or this close to it,
 #: padded by `SNAP_PAD_PT` (the same for the phrases an `anchor` names), before any refusal.
 SNAP_NEAR_PT: Final = 20.0
@@ -384,8 +390,8 @@ What GV's reviewer checks
 to the overall; the top's length matches the cabinet run.
 - Construction (kind B): a support, bracket or leg under every seam (the countertop drawing marks \
 the seams; the facts say where) and under any top that spans or overhangs with no cabinet below; \
-a box filler, not a flat scribe strip, where a run meets a wall, its size given; no finished end \
-or side panel against a wall.
+a filler where a run meets a wall (a box filler, or a scribe-to-fit filler cut on site), its size \
+given, shown at that end in every view; no finished end or side panel against a wall.
 - Completeness (kind C): every item has the views it needs; key dimensions are there; splash and \
 side splash shown where needed, with their height; sink, cooktop and outlet cut-outs sized and \
 positioned; equal spaces marked; no stray, duplicate or conflicting dimensions.
@@ -396,7 +402,7 @@ every view; grain direction only on wood or veneer.
 marked by others) says who supplies it; parts by GV say so where trades mix; an area by others \
 that another GV item covers names that item.
 - A missing or wrong finish, material or grain callout is kind D and a missing "who supplies it" \
-is kind E, not kind C. Two problems at one spot are two reports.
+is kind E, not kind C.
 - Labels (kind F): item numbers, view titles and tags right and consistent; the title block has \
 project, description, item number and size, and they agree with the rest of the set.
 
@@ -406,15 +412,16 @@ profiles or thicknesses (GV's reviewer does not), or flag a note printed on ever
 "Nothing to report" is a good outcome when true.
 
 Reporting
-One report per issue: the kind, a box around the callout, dimension or tag itself (or anchor: \
-the printed words, which code boxes), or for a missing part (a support, a filler) where it \
-belongs (under about 200 points a side), a short item name, what is wrong, what it should be, \
-the exact text you read, and your confidence. A size please-check quotes the printed number it \
-is about; a red size issue quotes the two printed numbers it rests on, exactly as printed. claim = \
-"wrong" only when the page itself shows a contradiction you quoted (two different numbers for \
-the same thing, a string that does not add up); for a string, also give its parts and printed \
-total. claim = "please_check" for everything else, including \
-anything missing, unclear, or shown by a symbol such as a grain arrow or a support mark.
+One report per problem: the kind, a box where GV would write the fix (the callout, dimension or \
+tag itself, or anchor: the printed words, which code boxes; for something missing, where it \
+belongs: that end, that view; under about 200 points a side), its other spots in also_at (each \
+wall end, each view lacking it), a short item name, what is wrong, what it \
+should be (in GV's words), the exact text you read, and your confidence. A size issue quotes \
+the printed numbers it rests on (a red one, two), exactly as printed. claim = "wrong" only when \
+the page itself shows a contradiction you \
+quoted (two different numbers for the same thing, a string that does not add up); for a string, \
+also give its parts and printed total. claim = "please_check" for everything else, including \
+anything missing, unclear, or shown by a symbol.
 
 Examples
 - A, wrong: "Elevation shows 36 1/4" overall; the parts 12 + 12 + 11 3/4 = 35 3/4"."
@@ -514,6 +521,16 @@ _ISSUE_FIELDS: Final[Mapping[str, Any]] = {
         "description": "Optional: the words printed on this page that show the issue, as "
         "page_text gives them (a dimension, tag or callout). Code boxes them; your box is then "
         "only a hint for which one",
+    },
+    "also_at": {
+        "type": "array",
+        "maxItems": MAX_ALSO_AT,
+        "items": _box_schema(
+            "Another spot on this page where the same problem shows, boxed like box."
+        ),
+        "description": f"Optional: up to {MAX_ALSO_AT} more spots on this page where the same "
+        "problem shows and GV marks it too (the other wall end, each view that leaves it out). "
+        "A different problem is its own report",
     },
     "whole_view": {
         "type": "boolean",
@@ -1358,6 +1375,11 @@ class Draft:
     also_kind: str | None = None
     """A second kind letter (plan M10): the reviewer's `also_kind`, or the one its words name
     (`_kind_by_words`); never `kind`. A label only: it never decides red."""
+    also_at: list[Box] = field(default_factory=list)
+    """More spots of the same problem on this page (`also_at`, `MAX_ALSO_AT`), kept as the
+    finding's `also_on` spots (a please-check's only)."""
+    also_left_out: int = 0
+    """`also_at` spots left out (too big, or not a box): told in the report's answer."""
 
     def line(self) -> str:
         box = [round(v) for v in self.box]
@@ -2585,6 +2607,12 @@ class _Run:
         review.drafts.append(draft)
         if draft.joined is not None:
             return f"Issue {draft.n}: already recorded as {draft.joined}; it is counted once."
+        if draft.also_left_out:
+            return (
+                f"Recorded issue {draft.n}; {draft.also_left_out} also_at spot(s) left out (each "
+                f"a box on this page under about {TIGHT_BOX_PT:.0f} points a side, at most "
+                f"{MAX_ALSO_AT})."
+            )
         return f"Recorded issue {draft.n}."
 
     def _size_gate(self, draft: Draft, given: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -2711,6 +2739,7 @@ class _Run:
         if confidence not in ("high", "medium", "low"):
             confidence = "medium"
         box, snapped = self._tight(self._box(given.get("box")), letter, given)
+        also_at, left_out = self._also_at(given.get("also_at"), box)
         named = self._kind_by_words(letter, wrong)
         if named is not None and letter == "C":
             # The one refiling kept (2026-10-29): a completeness issue whose words name a finish
@@ -2734,7 +2763,32 @@ class _Run:
             confidence=confidence,
             finding_id=None,
             snapped=snapped,
+            also_at=also_at,
+            also_left_out=left_out,
         )
+
+    def _also_at(self, raw: object, box: Box) -> tuple[list[Box], int]:
+        """The report's more spots of the same problem (`also_at`): each a box on this page that is
+        a spot, not an area (under `TIGHT_BOX_PT` a side, or a thin strip under `STRING_BOX_PT`,
+        whatever the kind), not the main spot again, at most `MAX_ALSO_AT`; and how many were
+        left out. Never refused: the report stands on its main box."""
+        if not isinstance(raw, list) or not raw:
+            return [], 0
+        kept: list[Box] = []
+        left_out = 0
+        for spot in raw[:MAX_ALSO_AT]:
+            try:
+                extra = self._box(spot)
+            except _Refused:
+                left_out += 1
+                continue
+            side = max(extra[2] - extra[0], extra[3] - extra[1])
+            short = min(extra[2] - extra[0], extra[3] - extra[1])
+            if side > (STRING_BOX_PT if short <= STRIP_PT else TIGHT_BOX_PT):
+                left_out += 1
+            elif _overlap_share(extra, box) < FOLD_OVERLAP and extra not in kept:
+                kept.append(extra)
+        return kept, left_out + max(0, len(raw) - MAX_ALSO_AT)
 
     def _tight(self, box: Box, letter: str, given: Mapping[str, Any]) -> tuple[Box, bool]:
         """The box points at the evidence (`TIGHT_BOX_PT`), as GV's reviewer's marks do; the box
@@ -2766,7 +2820,9 @@ class _Run:
             f"the box is {side:.0f} points across and code finds no number or tag you quoted "
             "printed in it. Next: give anchor (the printed words that show the issue), or box "
             f"the callout, dimension or tag itself (under about {TIGHT_BOX_PT:.0f} points a "
-            "side; page_text gives each phrase's box). For an issue about a whole view (a "
+            "side; page_text gives each phrase's box). Two problems under one box (a dimension "
+            "string and a part drawn short) are two reports, each boxed on its own; one problem "
+            "at several spots: box one, the others in also_at. For an issue about a whole view (a "
             "missing view, a support, a layout) set whole_view true and box that view.",
             "box: too big",
         )
@@ -3070,6 +3126,19 @@ class _Run:
             with engine.finding_lock:
                 finding, _notes = engine.book.report(dict(raw), CREATED_BY)
                 marked = {**finding, likely_problems.FIELD: self._mark(draft, proof)}
+                if proof == "likely_only" and draft.also_at:
+                    # The same problem's other spots on this page: marked there too (the drawing's
+                    # same-page `also_on`), never a page of its own (`spot`: never a fold carrier).
+                    marked["also_on"] = [
+                        {
+                            "finding_id": str(finding["id"]),
+                            "page": self.review.page,
+                            "vendor": "see the drawing",
+                            "vendor_box": self._spot(spot),
+                            "spot": True,
+                        }
+                        for spot in draft.also_at
+                    ]
                 engine.book.replace(marked)
         except SandboxRefused as refused:
             raise _Refused(f"not recorded: {refused}") from None
@@ -3160,9 +3229,11 @@ class _Run:
             "read": draft.read,
             "confidence": draft.confidence,
             "box": {"x0": draft.box[0], "y0": draft.box[1], "x1": draft.box[2], "y1": draft.box[3]},
-            # What the reported issue was accepted with (its box allowance), unless resent.
+            # What the reported issue was accepted with (its box allowance, its other spots),
+            # unless resent.
             "whole_view": draft.whole_view,
             "parts": draft.parts,
+            "also_at": [{"x0": b[0], "y0": b[1], "x1": b[2], "y1": b[3]} for b in draft.also_at],
             **{k: v for k, v in given.items() if k in _ISSUE_FIELDS and v is not None},
         }
         if merged["also_kind"] == merged["kind"]:

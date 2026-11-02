@@ -1550,6 +1550,56 @@ def test_a_second_kind_never_makes_a_red(tmp_path: Path) -> None:
     assert likely_problems.likely_only(found)
 
 
+# ---- more spots of one problem (also_at, 2026-11-02) ---------------------------------------------
+
+
+def test_more_spots_of_one_problem_are_kept_on_its_card_and_marked_on_the_page(
+    tmp_path: Path,
+) -> None:
+    from app.review.assistant import one_card
+    from app.review.assistant.chat_contract import ChatFindingAlsoOnOut
+    from app.review.assistant.chat_drawing import settled_lines
+
+    engine, review = _after_tiles(
+        tmp_path,
+        _issue(kind="C", wrong="No side splash is drawn at either wall end.",
+               box={"x0": 100, "y0": 300, "x1": 130, "y1": 330},
+               also_at=[{"x0": 900, "y0": 300, "x1": 930, "y1": 330},  # the other wall end
+                        {"x0": 102, "y0": 302, "x1": 128, "y1": 328},  # the main spot again
+                        {"x0": 0, "y0": 0, "x1": 1000, "y1": 700}]),  # an area, not a spot: left out
+    )  # fmt: skip
+    (result,) = [r for r in _results(engine.script.calls[3].messages) if "issue 1" in r]
+    assert result == (
+        "Recorded issue 1; 1 also_at spot(s) left out (each a box on this page under about "
+        "200 points a side, at most 3)."
+    )
+    (draft,) = review.drafts
+    assert draft.also_at == [(900.0, 300.0, 930.0, 330.0)]
+    (found,) = [f for f in engine.book.live() if f["created_by"] == "page_reviewer"]
+    (spot,) = found["also_on"]
+    assert spot["page"] == 2 and spot["finding_id"] == found["id"] and spot["spot"] is True
+    assert (spot["vendor_box"]["x0"], spot["vendor_box"]["x1"]) == (900.0, 930.0)
+    assert ChatFindingAlsoOnOut.model_validate(spot).page == 2
+    assert "Also at 1 more spot on this page" in settled_lines(found)
+    # A spot on its own page carries no other page: one card may still fold the card.
+    assert not one_card._fixed(found)
+    assert one_card._fixed({**found, "also_on": [{**spot, "spot": False, "page": 5}]})
+
+
+def test_a_red_keeps_its_one_spot(tmp_path: Path) -> None:
+    long_string = _tool(
+        "report_issue",
+        kind="A", claim="wrong", item="Elevation: overall width", confidence="high",
+        wrong='The parts 12 + 12 + 11 3/4 add up to 35 3/4", the overall says 36 1/4".',
+        read='12" + 12" + 11 3/4" ; 36 1/4"', parts=['12"', '12"', '11 3/4"'], printed_total='36 1/4"',
+        box={"x0": 100, "y0": 285, "x1": 450, "y1": 340},
+        also_at=[{"x0": 700, "y0": 285, "x1": 760, "y1": 340}],
+    )  # fmt: skip
+    engine, review = _after_tiles(tmp_path, long_string)
+    assert review.drafts[0].also_at == [(700.0, 285.0, 760.0, 340.0)]
+    assert all(not f.get("also_on") for f in engine.book.live())
+
+
 # ---- the sharp whole page (plan M8e, 2026-11-01) -------------------------------------------------------
 
 
