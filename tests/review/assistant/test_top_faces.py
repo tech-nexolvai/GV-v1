@@ -238,7 +238,7 @@ def test_an_architect_only_page_never_blocks_a_complete_check(
 
     assert "Check incomplete" not in outcome.text
     assert full_check_roster.NOT_SENDABLE_NEXT not in outcome.text
-    assert "more looks" not in outcome.text
+    assert "more look" not in outcome.text
     pages = {
         int(p["page"]): p
         for p in [b for b in outcome.blocks if b["type"] == "coverage"][-1]["coverage"]["pages"]

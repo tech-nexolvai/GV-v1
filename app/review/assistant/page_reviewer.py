@@ -89,7 +89,12 @@ call's output allowance is the money left (at most `MAX_TOKENS`); a call is made
 covers twice the most one of its calls wrote so far (`FLOOR_MARGIN`, never below `FLOOR_LEAST`,
 never above `MIN_TOKENS` in the review and `MIN_REFLECT_TOKENS` after it, which also hold before
 its first call), so its share is used close to the end and a call is rarely cut off; the review
-always leaves the final report turn the money for its own call.
+always leaves the final report turn the money for its own call. **One pool (2026-11-03, Anant:
+"fix the money share so pages finish"):** the reviewers' money is shared (`ReviewPool`): a reviewer
+whose coverage check or final turn reaches its cap first takes what finished reviewers left
+unspent (at most its first cap again each time), so a busy page goes on with a quiet page's
+leftover instead of stopping at its own share; the reviewers together never pass their money. Its
+own pass still ends at `PASS_SHARE` (the coverage check comes next by design).
 
 **The sizes lens** (`sizes_lens`, `GV_ASSISTANT_SIZES_LENS`, off by default; plan Phase 3): a
 second run of this loop per page, for sizes only, after this reviewer and on what the page's cap
@@ -136,6 +141,7 @@ __all__ = [
     "TOOLS",
     "Options",
     "PageReview",
+    "ReviewPool",
     "Reviews",
     "check_math",
     "cited_sizes",
@@ -313,6 +319,10 @@ FLOOR_LEAST: Final = 4_000
 #: The proposed rate (Anant tunes it: `GV_ASSISTANT_PAGE_REVIEWER_PER_PAGE_USD`): the fair re-test
 #: of 2026-10-29 spent about $2 a page at xhigh with one funded reviewer; high effort spends less.
 DEFAULT_PER_PAGE_MICROS: Final = 1_500_000
+#: The least a top-up from the reviewers' pool is worth (`ReviewPool.top_up`): about one reviewer
+#: call at the least it is made with (Opus at high effort; a live check of 2026-11-03 paid
+#: $0.06-0.12 a call).
+POOL_TOP_UP_LEAST: Final = 100_000
 #: Line pieces one page_lines call lists at most.
 MAX_LINES: Final = 150
 #: The cache warm-up's output allowance (`prewarm`, as `ChatEngine._prewarm`'s), and how long a
@@ -1490,6 +1500,8 @@ class PageReview:
     #: its calls cut off at their allowance, for the run's log.
     most_output: int = 0
     cut_off: int = 0
+    #: What it took from the reviewers' pool past its first cap (`ReviewPool`), for the log.
+    topped_up: int = 0
     #: The tiles code drew into its first message (`TILES_IN_OPENING`), the pictures code drew of
     #: its drafts for the self-check (`begin_reflection`), and the times the API cleared old tool
     #: results (`context_clears`; `cleared_tool_uses`: the most it reported cleared), for the log.
@@ -1757,6 +1769,28 @@ class _Run:
             return full
         return min(full, max(FLOOR_LEAST, most * FLOOR_MARGIN))
 
+    def _topped_up(self) -> bool:
+        """Its cap is reached in its coverage check or its final turn: it takes what finished
+        reviewers left unspent from the reviewers' pool (`ReviewPool.top_up`) and goes on, so a
+        page stops at its own share only when the reviewers' money is really used (2026-11-03).
+        Never in its own pass (that share ends in the coverage check by design) and never for the
+        sizes lens (it runs on what its page left, `sizes_lens`)."""
+        review = self.review
+        pool = self.reviews.pool
+        if pool is None or review.lens is not None:
+            return False
+        if review.phase == "review" and not review.pass_done:
+            return False
+        engine = self.engine
+        if engine.settings.message_cap_micros - engine.spent < POOL_TOP_UP_LEAST:
+            return False  # the message's own cap stops it, not its share: nothing to take
+        more = pool.top_up(self.agent)
+        if more <= 0:
+            return False
+        self.cap = int(self.agent.cap_micros or 0)
+        review.topped_up += more
+        return True
+
     def _money_stop(self) -> str | None:
         """Its money for this part is used: the next part's first message, or `None` (done)."""
         review = self.review
@@ -1817,6 +1851,9 @@ class _Run:
                 max_tokens=MAX_TOKENS,
             )
             tokens = self._allowance(body, cached, previous)
+            if tokens <= 0 and self._topped_up():
+                # A finished page's leftover: the same part goes on (2026-11-03).
+                tokens = self._allowance(body, cached, previous)
             if tokens <= 0:
                 note = self._money_stop()
                 if note is None:
@@ -3490,6 +3527,57 @@ def prewarm(engine: Any, reviews: Reviews, model: Any, options: Options) -> None
 
 
 @dataclass(slots=True)
+class ReviewPool:
+    """The page reviewers' money as one pool (2026-11-03, Anant: "fix the money share so pages
+    finish"; the 2026-10-28 rule: a step at its share uses what the others left unspent). Each
+    reviewer starts with its page's share as its cap; at its cap it takes what the others do not
+    hold: a finished reviewer holds what it spent, a running one its cap (or what it spent, when
+    more). So the caps of the running reviewers and the spend of the finished ones never add up to
+    more than `limit`, the reviewers' money; nothing is taken from any other step."""
+
+    limit: int
+    agents: list[Any] = field(default_factory=list)
+    first: dict[int, int] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def add(self, agent: Any) -> Any:
+        self.agents.append(agent)
+        self.first[id(agent)] = int(agent.cap_micros or 0)
+        return agent
+
+    @staticmethod
+    def _holds(agent: Any) -> int:
+        spent = int(getattr(agent, "spent", 0) or 0)
+        if getattr(agent, "done", False):
+            return spent
+        return max(spent, int(agent.cap_micros or 0))
+
+    def committed(self, skip: Any = None) -> int:
+        """What the reviewers hold (`skip`: all but that one)."""
+        return sum(self._holds(agent) for agent in self.agents if agent is not skip)
+
+    def free(self) -> int:
+        """What no reviewer holds: the finished reviewers' leftovers (millionths of $)."""
+        with self.lock:
+            return max(0, self.limit - self.committed())
+
+    def all_done(self) -> bool:
+        return all(getattr(agent, "done", False) for agent in self.agents)
+
+    def top_up(self, agent: Any) -> int:
+        """More money for `agent` at its cap: what no other reviewer holds, at most its first cap
+        again and at least `POOL_TOP_UP_LEAST`, else 0. Its cap is raised by what it gets."""
+        with self.lock:
+            free = self.limit - self.committed(agent) - self._holds(agent)
+            step = max(self.first.get(id(agent), 0), POOL_TOP_UP_LEAST)
+            more = min(free, step)
+            if more < POOL_TOP_UP_LEAST:
+                return 0
+            agent.cap_micros = int(agent.cap_micros or 0) + more
+            return more
+
+
+@dataclass(slots=True)
 class Reviews:
     """One full check's page reviews: each page's review and spend, for the run's log."""
 
@@ -3497,6 +3585,9 @@ class Reviews:
     spent: dict[int, int] = field(default_factory=dict)
     cut_by_money: list[int] = field(default_factory=list)
     lock: threading.RLock = field(default_factory=threading.RLock)
+    #: The reviewers' money as one pool (`ReviewPool`, set by `roster_agents`); `None`: each
+    #: reviewer has only its own cap (a reviewer run on its own).
+    pool: ReviewPool | None = None
     #: What every page of each file prints (`set_context`), read once for all the reviewers.
     context: dict[str, SetContext] = field(default_factory=dict)
     #: GV's reference pictures as message blocks (`_Run.reference_blocks`), made once per check so
@@ -3549,6 +3640,7 @@ class Reviews:
                     "first_call": dict(review.first_call),
                     "most_output": review.most_output,
                     "cut_off": review.cut_off,
+                    "topped_up_usd": round(review.topped_up / 1_000_000, 4),
                     "code_labels": len(review.labels),
                     "tiles_sent_in_opening": review.tiles_in_opening,
                     "code_zooms_for_selfcheck": review.code_zooms,
@@ -3652,7 +3744,9 @@ def set_context_of(engine: Any, reviews: Reviews, file: str) -> SetContext:
 
 def roster_agents(run: Any, pages: Sequence[int], money: int, reviews: Reviews) -> list[Any]:
     """One reviewer per vendor page (`chat_engine._Agent` with its own loop), each with its
-    share of `money` as its cap (the rate per page, or less when the set's budget is short)."""
+    share of `money` as its cap (the rate per page, or less when the set's budget is short), all
+    in one pool of `money` (`ReviewPool`): a finished page's leftover goes to a page still at work.
+    """
     engine = run.engine
     options = getattr(engine.settings, "page_reviewer", None)
     if options is None or not pages or money <= 0:
@@ -3664,6 +3758,7 @@ def roster_agents(run: Any, pages: Sequence[int], money: int, reviews: Reviews) 
     if model is None or not main:
         return []
     cap = money // len(pages)
+    pool = reviews.pool = ReviewPool(money)
     engine._page_reviews = reviews  # the finish's cross-sheet check reads the same context
     try:
         # The rest of the set read in the background from now, before any reviewer needs it.
@@ -3686,7 +3781,7 @@ def roster_agents(run: Any, pages: Sequence[int], money: int, reviews: Reviews) 
             phase=LENS,
         )
         agent.loop = partial(_loop, review, reviews)
-        agents.append(agent)
+        agents.append(pool.add(agent))
     if agents and reviews.warm is None:
         # The shared prefix written to the prompt cache once, while the reviewers read their pages.
         warm = reviews.warm = threading.Event()
