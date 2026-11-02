@@ -277,6 +277,52 @@ def test_a_part_tagged_in_one_view_and_not_called_out_in_another_is_asked() -> N
     assert "END PANEL" in asked.text and "not called out in SECTION VIEW S1" in asked.text
 
 
+def _plan_string(*sizes: str) -> list[dict[str, Any]]:
+    """A string of parts across the plan, at y 170, left to right from x 810."""
+    return [_at(f"[{s}]", 810 + 30 * k, 170, 20) for k, s in enumerate(sizes)]
+
+
+def test_an_overall_that_stops_short_of_its_string_is_asked() -> None:
+    parts = _plan_string("2", "30", "2", "30", "2")  # 66 in all
+    # 64 = every part but the last 2: it stops one end part short (the held-out miss).
+    (asked,) = [
+        q
+        for q in _asked(_page([], [], [*parts, _at("[64]", 870, 150, 15)]))
+        if q.made_by == "overall"
+    ]
+    assert asked.kind == "C" and "Overall 64" in asked.text and "TOP PLAN" in asked.text
+    assert "leaves out 2 at the right end" in asked.text
+    assert "What is this dimension for?" in asked.text
+    # 50 matches no run of the parts.
+    (asked,) = [
+        q
+        for q in _asked(_page([], [], [*parts, _at("[50]", 870, 150, 15)]))
+        if q.made_by == "overall"
+    ]
+    assert "matches no run of its parts" in asked.text
+
+
+def test_an_overall_that_dimensions_its_string_or_something_else_is_never_asked() -> None:
+    parts = _plan_string("2", "30", "2", "30", "2")  # 66 in all
+    for overall in (
+        "66",  # the whole string
+        "64",  # but printed far from the string (below)
+        "62",  # the string less one end part at each end: the cabinets between end fillers
+        "30",  # one part dimensioned again
+        "40",  # much shorter than the string: it measures something else
+        "65 1/2",  # within an inch: a mistyped part is likelier (the string's sum shows it)
+        "70",  # longer: it may take in pieces printed elsewhere
+    ):
+        y = 230 if overall == "64" else 150
+        found = _page([], [], [*parts, _at(f"[{overall}]", 870, y, 15)])
+        assert not [q for q in _asked(found) if q.made_by == "overall"], overall
+    # A turned string is read top to bottom, the same way.
+    column = [_up(f"]{s}[", 1050, 105 + 25 * k) for k, s in enumerate(("01", "02", "01"))]
+    found = _page([], [], [*column, _up("]03[", 1030, 120)])
+    (asked,) = [q for q in _asked(found) if q.made_by == "overall"]
+    assert "leaves out 10 at the bottom end" in asked.text
+
+
 def test_questions_are_ranked_numbered_and_capped() -> None:
     found = _page(
         [_at("TOE KICK", 150, 380), _at("BIN BY GC/OWNER", 150, 300)],

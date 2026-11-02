@@ -36,7 +36,11 @@ So code reads the page's text layer (and its line work, when it can be read) and
    - the tallest overall height printed in some elevations and not in another;
    - a tag printed bare on this page that other sheets print with what it is and who supplies it;
    - a size in one view only, with a size within an inch of it in another view only;
-   - a part tagged or supplied in one view and not called out in another elevation or section.
+   - a part tagged or supplied in one view and not called out in another elevation or section;
+   - an overall printed by a string of parts that is shorter than the string and is not the
+     string's parts less the same number at each end (`_overall_questions`, 2026-11-02): it stops
+     short of one end, or matches no run of the parts (GV: "What is this dimension for?",
+     "Remove this dimension").
 
 The reviewer settles each question: `report_issue` with `question: "Qn"`, or `answer_question`
 "ok" with a short reason (`answer`, `mark_reported`); while questions are open and its money is
@@ -122,6 +126,20 @@ MAX_DEPTH_VALUES: Final = 14
 MAX_SISTER_PAGES: Final = 8
 #: A part callout is at most this many words (a longer phrase is a note).
 CALLOUT_WORDS: Final = 10
+#: An overall and its string of parts (`_overall_questions`): sizes on one dimension line have
+#: centre lines within `LINE_PT` (points); a string has at least `STRING_PARTS` sizes; an overall
+#: is a lone size of the same direction and view, its centre line within `OVERALL_GAP_PT` of the
+#: string's and its middle inside the string's run (with `OVERALL_REACH_PT` to spare).
+LINE_PT: Final = 4.0
+STRING_PARTS: Final = 3
+OVERALL_GAP_PT: Final = 30.0
+OVERALL_REACH_PT: Final = 10.0
+#: Only an overall that is most of its string is asked about (at least `OVERALL_SHARE` of the parts
+#: added up: a smaller lone size measures something else, a counter height beside a cabinet's
+#: string), and only one more than `OVERALL_NEAR_IN` short of it: within an inch, a mistyped part
+#: or overall is likelier, which the string's own sum already shows.
+OVERALL_SHARE: Final = Decimal("0.75")
+OVERALL_NEAR_IN: Final = Decimal(1)
 
 #: How likely each kind of question was a real issue on GV's marked sheets (the order they are
 #: listed in, most likely first; ties by place on the page).
@@ -133,6 +151,7 @@ _RANK: Final[Mapping[str, float]] = {
     "thickness": 0.70,
     "height": 0.70,
     "bare_tag": 0.60,
+    "overall": 0.65,
     "near": 0.55,
     "missing_tagged": 0.50,
     "missing_supplied": 0.45,
@@ -746,6 +765,7 @@ def questions(
         + _bare_tag_questions(ledger, elsewhere or {})
         + _near_questions(ledger)
         + _missing_questions(ledger)
+        + _overall_questions(ledger)
     )
     if kinds is not None:
         drafts = [d for d in drafts if d[3] in kinds]
@@ -1028,6 +1048,97 @@ def _near_questions(ledger: Ledger) -> list[_Draft]:
         )
         boxes = [box for p, q in pairs[:2] for box in (p.box, q.box)]
         out.append(_draft("A", "near", text, boxes, pairs[0][0].box))
+    return out
+
+
+def _line(value: Value) -> float:
+    """Where a size's dimension line runs: its centre across the line (y across, x turned)."""
+    b = value.box
+    return (b[0] + b[2]) / 2 if value.turned else (b[1] + b[3]) / 2
+
+
+def _strings(values: Sequence[Value]) -> list[list[Value]]:
+    """Sizes of one direction on one dimension line (centre lines within `LINE_PT`), in order."""
+    out: list[list[Value]] = []
+    used: set[int] = set()
+    for i, value in enumerate(values):
+        if i in used:
+            continue
+        members = [
+            j
+            for j, other in enumerate(values)
+            if j not in used
+            and other.turned == value.turned
+            and abs(_line(other) - _line(value)) <= LINE_PT
+        ]
+        used.update(members)
+        along = 1 if value.turned else 0
+        out.append(sorted((values[j] for j in members), key=lambda v: v.box[along]))
+    return out
+
+
+def _overall_questions(ledger: Ledger) -> list[_Draft]:
+    """An overall printed by a string of parts that does not dimension the string (#6 of the
+    held-out misses, 2026-11-02: a plan's overall stopped one end part short of its string, and
+    GV wrote "Remove this dimension" / "What is this dimension for?"). Asked only when the lone
+    size is shorter than its string's parts added up and is not those parts less the same number
+    of parts at each end (a cabinets-only overall between end fillers); a longer overall may take
+    in pieces printed elsewhere (fillers, the field cut), so it is never asked; nor one much
+    shorter than the string (`OVERALL_SHARE`) or within an inch of it (`OVERALL_NEAR_IN`). Never
+    red."""
+    out: list[_Draft] = []
+    for n, view in enumerate(ledger.views):
+        strings = _strings(ledger.sizes(n))
+        runs = [s for s in strings if len(s) >= STRING_PARTS]
+        for lone in (s[0] for s in strings if len(s) == 1):
+            if lone.inches < NEAR_FROM:
+                continue
+            along = 1 if lone.turned else 0
+            middle = (lone.box[along] + lone.box[along + 2]) / 2
+            near = [
+                (abs(_line(s[0]) - _line(lone)), s)
+                for s in runs
+                if s[0].turned == lone.turned
+                and abs(_line(s[0]) - _line(lone)) <= OVERALL_GAP_PT
+                and s[0].box[along] - OVERALL_REACH_PT
+                <= middle
+                <= s[-1].box[along + 2] + OVERALL_REACH_PT
+            ]
+            if not near:
+                continue
+            string = min(near, key=lambda pair: pair[0])[1]
+            parts = [v.inches for v in string]
+            total = sum(parts, Decimal(0))
+            if lone.inches < total * OVERALL_SHARE or total - lone.inches <= OVERALL_NEAR_IN:
+                continue
+            matched = [
+                (i, j)
+                for i in range(len(parts))
+                for j in range(i + 1, len(parts) + 1)
+                if abs(sum(parts[i:j], Decimal(0)) - lone.inches) <= SUM_ROUNDING
+            ]
+            if any(i == len(parts) - j or j - i == 1 for i, j in matched):
+                # The string less the same parts at each end (between end fillers), or one part
+                # dimensioned again: not this question.
+                continue
+            ends = ("top", "bottom") if lone.turned else ("left", "right")
+            said = f"{' + '.join(_inch(p) for p in parts)} = {_inch(total)}"
+            if matched:
+                i, j = matched[0]
+                left_out = parts[:i] + parts[j:]
+                side = ends[0] if i and j == len(parts) else ends[1] if not i else "both"
+                how = (
+                    f"covers only part of it: it leaves out {_list(left_out)} at the "
+                    f"{side} end{'s' if side == 'both' else ''}"
+                )
+            else:
+                how = "matches no run of its parts"
+            text = (
+                f"Overall {_inch(lone.inches)} at {_b(lone.box)} in {view.name} sits by the string "
+                f'{said} but {how}. What does it dimension? (GV writes "What is this dimension '
+                'for?" or "Remove this dimension".)'
+            )
+            out.append(_draft("C", "overall", text, [lone.box, string[0].box], lone.box))
     return out
 
 

@@ -341,6 +341,18 @@ def test_bracketed_inches_of_a_millimetre_drawing_count_as_printed_sizes() -> No
     assert printed_sizes(found) == {Decimal(225), Decimal(2), Decimal(3), Decimal(4), Decimal(24)}
 
 
+def test_bracketed_inches_may_carry_their_inch_mark_and_reach_the_dimension_rows() -> None:
+    # 2026-11-02: a plan view printed `[2 1/2'']`; none of its sizes reached the rows.
+    assert page_reviewer.bracketed_sizes("[2 1/2'']") == [Decimal("2.5")]
+    assert page_reviewer.bracketed_sizes('[24"]') == [Decimal(24)]
+    assert page_reviewer.bracketed_sizes("]''61/31[") == [Decimal("0.8125")]  # read backwards
+    found = [
+        {"text": t, "box": [100 + 40 * k, 200, 130 + 40 * k, 206]}
+        for k, t in enumerate(("[2 1/2'']", "[30'']", "[2 1/2'']"))
+    ]
+    assert page_reviewer.dimension_strings(found).endswith('= 35"')
+
+
 def test_dimension_strings_are_added_up_by_code_row_by_row() -> None:
     found = [
         {"text": "[11]", "box": [127, 204, 136, 210]},

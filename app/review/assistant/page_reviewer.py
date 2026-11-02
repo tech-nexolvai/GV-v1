@@ -949,9 +949,12 @@ def cited_sizes(given: Mapping[str, Any]) -> list[Decimal]:
 
 
 #: Inches in brackets after millimetres, as a text layer splits them: `[242]`, `[2][3]`, and upside
-#: down `]4[` (a turned dimension read backwards).
-_BRACKETED: Final = re.compile(r"\[\s*([\d\s/.]*\d)\s*\]")
-_BRACKETED_BACKWARDS: Final = re.compile(r"\]\s*([\d\s/.]*\d)\s*\[")
+#: down `]4[` (a turned dimension read backwards); an inch mark inside is allowed (`[2 1/2'']`,
+#: `[24"]`, read backwards `]''61/31[`): 2026-11-02, a vendor's plan views print them so, and none
+#: of a plan's sizes reached the dimension rows or the filler facts.
+_INCH_MARK: Final = r"(?:\"|''|″|”)?"
+_BRACKETED: Final = re.compile(rf"\[\s*([\d\s/.]*\d)\s*{_INCH_MARK}\s*\]")
+_BRACKETED_BACKWARDS: Final = re.compile(rf"\]\s*{_INCH_MARK}\s*([\d\s/.]*\d)\s*\[")
 
 
 def bracketed_sizes(text: object) -> list[Decimal]:
@@ -1034,6 +1037,10 @@ def label_listing(labels: Sequence[Mapping[str, Any]]) -> str:
 
 #: Dimension values whose centres lie within this of one line make one row (or column).
 _ROW_PT: Final = 4.0
+#: A line of sizes is two strings where neighbours are more than this far apart (points) and more
+#: than `ROW_SPLIT_TIMES` as far as their sizes at the line's own scale say (`_pieces`).
+ROW_SPLIT_PT: Final = 60.0
+ROW_SPLIT_TIMES: Final = 3
 #: At most this many rows and columns listed in the first message.
 MAX_STRINGS: Final = 40
 #: The sizes code read off a page's drawing where its text layer has none (`code_labels`), at most
@@ -1181,19 +1188,56 @@ def dimension_strings(
                 continue
             used.update(members)
             members.sort(key=lambda j: along(values[j][2]))
-            total = sum((values[j][1] for j in members), Decimal(0))
-            first, last = values[members[0]][2], values[members[-1]][2]
-            lines.append(
-                f"{name} at {centre(first):.0f} ({first[0]:.0f},{first[1]:.0f} to "
-                f"{last[2]:.0f},{last[3]:.0f}): "
-                + " + ".join(
-                    # A label says its inches already (`shown`), once.
-                    values[j][0] if j in side else f"{values[j][0]} ({_inch_text(values[j][1])})"
-                    for j in members
+            for piece in _pieces(
+                members, [values[j][2] for j in members], [values[j][1] for j in members], columns
+            ):
+                if len(piece) < 2:
+                    continue
+                total = sum((values[j][1] for j in piece), Decimal(0))
+                first, last = values[piece[0]][2], values[piece[-1]][2]
+                lines.append(
+                    f"{name} at {centre(first):.0f} ({first[0]:.0f},{first[1]:.0f} to "
+                    f"{last[2]:.0f},{last[3]:.0f}): "
+                    + " + ".join(
+                        # A label says its inches already (`shown`), once.
+                        (
+                            values[j][0]
+                            if j in side
+                            else f"{values[j][0]} ({_inch_text(values[j][1])})"
+                        )
+                        for j in piece
+                    )
+                    + f" = {_inch_text(total)}"
                 )
-                + f" = {_inch_text(total)}"
-            )
     return "\n".join(lines[:MAX_STRINGS])
+
+
+def _pieces(
+    members: list[int], boxes: list[list[float]], inches: list[Decimal], columns: bool
+) -> list[list[int]]:
+    """One line of sizes cut where two neighbours sit much farther apart than their sizes say: two
+    views side by side print on one line, and their sizes are two strings (2026-11-02: an
+    elevation's string and a section's depth parts on one line were added as one row). The line's
+    own scale (points per inch, the middle of its neighbours' spacing over their half sizes) says
+    how far apart two neighbours should be; a cut is more than `ROW_SPLIT_TIMES` that and more
+    than `ROW_SPLIT_PT`. A long part between narrow ones (a 168" run between 2" fillers) is far
+    from both, as its size says, so it stays in."""
+    if len(members) < 3:
+        return [members]
+    axis = 1 if columns else 0
+    centres = [(b[axis] + b[axis + 2]) / 2 for b in boxes]
+    apart = [abs(centres[k + 1] - centres[k]) for k in range(len(centres) - 1)]
+    halves = [float(inches[k] + inches[k + 1]) / 2 for k in range(len(inches) - 1)]
+    scales = sorted(a / h for a, h in zip(apart, halves, strict=True) if h > 0)
+    if not scales:
+        return [members]
+    scale = scales[len(scales) // 2]
+    out: list[list[int]] = [[members[0]]]
+    for k, (gap, half) in enumerate(zip(apart, halves, strict=True)):
+        if gap > ROW_SPLIT_PT and gap > ROW_SPLIT_TIMES * scale * half:
+            out.append([])
+        out[-1].append(members[k + 1])
+    return out
 
 
 #: Words that name a part a finish belongs to (a view title is not one).
