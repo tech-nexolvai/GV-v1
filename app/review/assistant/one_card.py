@@ -360,7 +360,10 @@ def _fixed(finding: Mapping[str, Any]) -> bool:
     carries the same item on other pages (its marks there belong to its own verdict; the pages
     this step's own set-wide material card lists do not count: a Continue folds it again)."""
     carried = [
-        e for e in finding.get("also_on") or [] if not (isinstance(e, Mapping) and e.get("fold"))
+        e
+        for e in finding.get("also_on") or []
+        # A page reviewer's other spot of the same problem on its own page (`spot`) is no page.
+        if not (isinstance(e, Mapping) and (e.get("fold") or e.get("spot")))
     ]
     return bool(finding.get("record_id") or finding.get("decision") or carried)
 

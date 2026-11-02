@@ -106,6 +106,19 @@ def test_the_item_cell_and_description_are_checked_against_the_item_s_other_draw
     assert title_block.check(context, 2, stone) == []
 
 
+def test_a_countertop_drawing_numbered_without_the_dot_is_still_the_items_other_drawing() -> None:
+    cabinet = _cabinet_sheet("ABC-101.C", "Cabinets @ break room", "02/14/2026", "7")
+    stone = _stone_sheet("ABC-101CT", "Break room", "x")
+    lines = title_block.check(_context({1: cabinet, 2: stone}), 1, cabinet)
+    assert lines == [
+        (
+            "Item cell prints 'ABC-101.C'; the item's other drawing p2 is ABC-101CT. GV's item cell "
+            "names both items (ABC-101.C / ABC-101CT) when the item has its own countertop "
+            "drawing: please check (kind F, box the item cell)."
+        )
+    ]
+
+
 def test_a_sheet_older_than_the_newest_of_its_template_is_said_never_against_the_stone() -> None:
     old = _cabinet_sheet("ABC-101.C", "Break room", "02/14/2026", "7")
     new = _cabinet_sheet("ABC-102.C", "Lobby", "03/02/2026", "8")

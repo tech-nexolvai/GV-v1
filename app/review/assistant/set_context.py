@@ -59,10 +59,13 @@ ONE_DIGIT_FAMILIES: Final = frozenset(
 )
 _ONE_DIGIT: Final = "|".join(sorted(ONE_DIGIT_FAMILIES, key=lambda f: (-len(f), f)))
 #: A finish, material or item tag as drafters print it: letters, an optional dash, 2-3 digits (1-3
-#: in a `ONE_DIGIT_FAMILIES` family), an optional letter and an optional ".X" suffix (WD-04, ST-02,
-#: ST-3, PL-1, LA-007, MT-001.C, ML-018T.C, GVQZ-19, BOH-802.CT, SR433).
+#: in a `ONE_DIGIT_FAMILIES` family), an optional letter (or the countertop suffix CT written
+#: without its dot) and an optional ".X" suffix (WD-04, ST-02, ST-3, PL-1, LA-007, MT-001.C,
+#: ML-018T.C, GVQZ-19, BOH-802.CT, ABC-801CT, SR433). 2026-11-02: a countertop drawing numbered
+#: "ABC-801CT" was no tag at all, so its cabinet sheet "ABC-801.C" had no other drawing (no title
+#: block check, no sister sizes), and GV's reviewer wrote the countertop item into the cell.
 TAG: Final = re.compile(
-    rf"\b(?:(?:{_ONE_DIGIT})-?\d{{1,3}}|[A-Z]{{1,5}}-?\d{{2,3}})[A-Z]?(?:\.[A-Z]{{1,3}})?\b"
+    rf"\b(?:(?:{_ONE_DIGIT})-?\d{{1,3}}|[A-Z]{{1,5}}-?\d{{2,3}})(?:CT|[A-Z])?(?:\.[A-Z]{{1,3}})?\b"
 )
 #: A "who supplies it" note: by GV, the GC, the owner or others; not in contract; provided by.
 SCOPE: Final = re.compile(
@@ -87,8 +90,9 @@ MAX_FAMILY_CODES: Final = 6
 #: Who made the cross-sheet findings (the chat finding's `created_by`; a please-check maker).
 CREATED_BY: Final = "set_check"
 #: A tag's family, number, letter and suffix (`MT-001.C`: MT, 001, "", .C; `GRT-801T`: GRT, 801, T;
-#: `ST-3`: ST, 3). One digit only in a `ONE_DIGIT_FAMILIES` family (`_split`).
-_PARTS: Final = re.compile(r"^([A-Z]{1,5})-?(\d{1,3})([A-Z]?)(\.[A-Z]{1,3})?$")
+#: `ABC-801CT`: ABC, 801, CT; `ST-3`: ST, 3). One digit only in a `ONE_DIGIT_FAMILIES` family
+#: (`_split`).
+_PARTS: Final = re.compile(r"^([A-Z]{1,5})-?(\d{1,3})(CT|[A-Z]?)(\.[A-Z]{1,3})?$")
 #: The printed sizes listed for an item's other drawing, at most.
 _MAX_SIZES: Final = 24
 #: A seam as drafters print it on a countertop drawing.
