@@ -10,6 +10,9 @@ land on it:
 - the label's box in `dims.json` (`dim_labels.page_labels`), and a phrase's box;
 - the zoom crop of that box (`set_pack.crop_picture`): its ink is in the crop's middle;
 - the cloud drawn round it (`chat_drawing.markup_pdf`): red on the rendered page right round it.
+
+Since #1750 those three read the sheet's working copy, as every upload is: the drawing no longer
+turns a page back itself (`tests/review/assistant/test_cloud_drawing.py` checks it refuses one).
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from app.review.assistant.chat_drawing import markup_pdf
 from app.review.assistant.set_pack import crop_picture
 from evidence.coordinates import PageTransform, PdfPoint
 from extraction.reader import page_frame
+from extraction.working_copy import working_copy
 
 #: The sheet before any turn: a landscape page, in points.
 WIDTH, HEIGHT = 900.0, 600.0
@@ -134,7 +138,11 @@ def test_pixel_placement_applies_the_rotation_once(
 def test_the_label_box_the_crop_and_the_cloud_land_on_the_label(
     tmp_path: Path, rotate: int, origin: tuple[float, float]
 ) -> None:
-    sheet = _sheet(tmp_path / "sheet.pdf", rotate, origin)
+    """Read as the chat reads every upload: its working copy (#1750), shown exactly as the
+    original, so the label must land where the original shows it."""
+    original = _sheet(tmp_path / "original.pdf", rotate, origin)
+    sheet = tmp_path / "sheet.pdf"
+    sheet.write_bytes(working_copy(original.read_bytes()).data)
     width, height = _shown_size(rotate)
     found = dim_labels.page_labels(sheet, 1, equal_parts=False)
 

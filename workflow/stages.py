@@ -445,6 +445,7 @@ from workflow.view_roles import (
     revision_views,
 )
 from workflow.wall_cases import plain_width_failure, wall_free_finding
+from workflow.working_copies import reading_copy, take_in
 
 if TYPE_CHECKING:
     from app.config import Settings
@@ -1417,6 +1418,10 @@ class DatabaseStages:
         The other two findings are still reported rather than raised. A document that will not parse
         is #491's own case and is recorded per page by `extract_pages`; a page count that has moved
         is a fact a person should see, and neither means the package is a different package.
+
+        **This is the front door (#1750).** Each verified file's working copy is made here, once,
+        and stored (`workflow/working_copies.py`); every later stage reads it. What was changed is
+        reported per document (`working_copies`); a file already in the standard shape is not.
         """
         if self._store is None:
             # The same answer `extract_pages` gives, and for the same reason: no store is a fact
@@ -1437,6 +1442,7 @@ class DatabaseStages:
         # checked below — each copy is its own stored object, and a wrong one still halts the
         # package — but two copies of the same bytes have the same pages, so they are counted once.
         parsed: dict[str, int | UnreadablePdf] = {}
+        working: list[dict[str, object]] = []
         for version_id, key, sha256, page_count in records:
             data = _fetch(self._store, key)
             if hashlib.sha256(data).hexdigest() != sha256:
@@ -1456,6 +1462,16 @@ class DatabaseStages:
                 raise ArtifactCorrupt(
                     f"document version {version_id} does not match the digest recorded when it was "
                     "uploaded, so this package is not the one that was submitted"
+                )
+            intake = take_in(self._store, key, data)
+            if intake.changed or intake.refused is not None:
+                working.append(
+                    {
+                        "document_version_id": str(version_id),
+                        "changes": list(intake.changes),
+                        "pages_not_read": [page for page, _ in intake.pages_not_read],
+                        "refused": intake.refused,
+                    }
                 )
             if sha256 not in parsed:
                 try:
@@ -1478,6 +1494,7 @@ class DatabaseStages:
             "verified": verified,
             "unreadable": unreadable,
             "page_count_changed": miscounted,
+            "working_copies": working,
         }
 
     def extract_pages(self, session: Session, package_revision_id: UUID) -> Sequence[PageResult]:
@@ -1566,6 +1583,8 @@ class DatabaseStages:
                     session, extraction_run_id=run.id, document_version_id=version
                 )
                 continue
+            # Read as its working copy (#1750): every page upright, its corner at the origin.
+            data = reading_copy(self._store, key, data)
             verified_data[version] = data
 
             with traced(
@@ -2421,7 +2440,7 @@ class DatabaseStages:
                 continue
             data = _fetch(self._store, key)
             if hashlib.sha256(data).hexdigest() == sha256:
-                verified[version] = data
+                verified[version] = reading_copy(self._store, key, data)
         self._architect_pages = {}
         self._architect_view_crops = {}
         if self._architect_reader is not None:
@@ -4187,7 +4206,9 @@ class DatabaseStages:
                 key, sha256 = documents[page.document_version_id]
                 data = _fetch(self._store, key)
                 loaded[page.document_version_id] = (
-                    data if hashlib.sha256(data).hexdigest() == sha256 else None
+                    reading_copy(self._store, key, data)
+                    if hashlib.sha256(data).hexdigest() == sha256
+                    else None
                 )
             document = loaded[page.document_version_id]
             if document is None:
@@ -4252,7 +4273,7 @@ class DatabaseStages:
                 key, expected_hash = documents[page.document_version_id]
                 fetched_data = _fetch(self._store, key)
                 loaded[page.document_version_id] = (
-                    fetched_data
+                    reading_copy(self._store, key, fetched_data)
                     if hashlib.sha256(fetched_data).hexdigest() == expected_hash
                     else None
                 )
@@ -5127,7 +5148,8 @@ class DatabaseStages:
                 if hashlib.sha256(data).hexdigest() != record[1]:
                     not_prepared[page.id] = "the stored file does not match its digest"
                     continue
-                loaded[page.document_version_id] = data
+                assert self._store is not None  # an empty file never matches its digest
+                loaded[page.document_version_id] = reading_copy(self._store, record[0], data)
             try:
                 prepared.append(
                     prepare_pdf_page(
@@ -5348,7 +5370,9 @@ class DatabaseStages:
         if key is None:
             return "code's part finder did not run: the page's document is not in this revision"
         if page.document_version_id not in loaded:
-            loaded[page.document_version_id] = _fetch(self._store, key)
+            loaded[page.document_version_id] = reading_copy(
+                self._store, key, _fetch(self._store, key)
+            )
         data = loaded[page.document_version_id]
         try:
             contents = (
@@ -5671,7 +5695,9 @@ class DatabaseStages:
                 skipped += len(candidates)
                 continue
             if page.document_version_id not in documents:
-                documents[page.document_version_id] = _fetch(self._store, key)
+                documents[page.document_version_id] = reading_copy(
+                    self._store, key, _fetch(self._store, key)
+                )
             cut = self.cut_page_crops(
                 session, documents[page.document_version_id], page, candidates, already
             )

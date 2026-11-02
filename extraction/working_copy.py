@@ -61,8 +61,11 @@ __all__ = [
     "MAX_SIDE_PT",
     "VERIFY_DPI",
     "WORKING_COPY_VERSION",
+    "NotAWorkingCopy",
     "WorkingCopy",
     "WorkingCopyRefused",
+    "require_standard",
+    "require_standard_page",
     "working_copy",
 ]
 
@@ -212,6 +215,81 @@ def _original_facts(pdf: pikepdf.Pdf, data: bytes) -> dict[str, Any]:
             continue
     facts["pages"] = pages
     return facts
+
+
+class NotAWorkingCopy(RuntimeError):
+    """A reader was handed a page the front door did not put in shape (`require_standard`).
+
+    Never a fact about the drawing: every entry point reads the working copy (the chat's uploads,
+    `workflow/working_copies.py` for the pipeline), so this is a caller that skipped the front
+    door. It fails loudly rather than put a box on the wrong spot (#1750)."""
+
+
+def require_standard(
+    rotation: Any,
+    media: Sequence[Any] | None,
+    crop: Sequence[Any] | None = None,
+    unit: Any = None,
+    *,
+    page: int | None = None,
+) -> tuple[float, float]:
+    """The width and height (points) of a page in the standard shape this module writes, after
+    checking it is: no turn, its media box's corner at `(0, 0)`, its crop box (if any) holding the
+    whole media box, its user unit 1 (or kept on a page too large for it, `MAX_SIDE_PT`). Raises
+    `NotAWorkingCopy` saying what is not.
+
+    Cheap on purpose, for every reader that turns PDF space into the page as shown: with this
+    checked, that is only `(x, height - y)`."""
+    where = f"page {page}" if page is not None else "a page"
+
+    def refuse(what: str) -> NotAWorkingCopy:
+        return NotAWorkingCopy(
+            f"{where} is not a working copy ({what}): read it through the front door"
+        )
+
+    try:
+        turn = int(rotation or 0)
+        box = tuple(Decimal(str(v)) for v in media) if media is not None else None
+        visible = tuple(Decimal(str(v)) for v in crop) if crop is not None else None
+        factor = Decimal(str(unit)) if unit is not None else Decimal(1)
+    except (ArithmeticError, TypeError, ValueError) as error:
+        raise refuse("its page box or rotation is not a number") from error
+    if turn % 360:
+        raise refuse(f"it is turned by {turn} degrees")
+    if box is None or len(box) != 4:
+        raise refuse("it has no media box")
+    left, bottom, right, top = (
+        min(box[0], box[2]),
+        min(box[1], box[3]),
+        *(max(box[0], box[2]), max(box[1], box[3])),
+    )
+    if left or bottom:
+        raise refuse("its corner is not at the origin")
+    if (
+        visible is not None
+        and len(visible) == 4
+        and (
+            min(visible[0], visible[2]) > 0
+            or min(visible[1], visible[3]) > 0
+            or max(visible[0], visible[2]) < right
+            or max(visible[1], visible[3]) < top
+        )
+    ):
+        raise refuse("its crop box cuts its media box")
+    if factor != 1 and max(right, top) * factor <= MAX_SIDE_PT:
+        raise refuse(f"its user unit is {factor}")
+    return float(right), float(top)
+
+
+def require_standard_page(page: pikepdf.Page, number: int | None = None) -> tuple[float, float]:
+    """`require_standard` for a pikepdf page (its attributes read as inherited)."""
+    return require_standard(
+        _inherited(page, "/Rotate"),
+        _inherited(page, "/MediaBox"),
+        _inherited(page, "/CropBox"),
+        page.obj.get("/UserUnit"),
+        page=number,
+    )
 
 
 def _pages(numbers: list[int]) -> str:

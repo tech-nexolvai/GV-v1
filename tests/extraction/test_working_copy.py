@@ -283,22 +283,34 @@ def test_rotation_is_baked_in_and_the_annotations_go_with_it(
     assert (ink[0], shown_height - ink[1]) == pytest.approx(start, abs=1e-6)
 
 
-def test_the_set_pack_annotation_boxes_are_the_same_before_and_after() -> None:
-    """The set pack's annotation boxes (shown points) read from the turned original and from its
-    working copy agree: the front door moves nothing a reviewer sees."""
+def test_the_set_pack_annotation_boxes_are_where_the_original_shows_them() -> None:
+    """The set pack's annotation boxes (shown points) read from the working copy are where the
+    turned original shows each annotation: the front door moves nothing a reviewer sees. The set
+    pack no longer turns a page back itself (#1750): the original is refused, loudly."""
     from pypdf import PdfReader
 
     from app.review.assistant import set_pack
 
+    visible = (-30.0, 15.0, WIDTH - 30, HEIGHT + 15)
     pdf = pikepdf.new()
-    page = _page(pdf, rotate=270, media=(-30, 15, WIDTH - 30, HEIGHT + 15))
+    page = _page(pdf, rotate=270, media=visible)
     _annotate(pdf, page, -30, 15)
+    rects = [[float(v) for v in a["/Rect"]] for a in page.obj["/Annots"]]
     data = _bytes(pdf)
     copy = working_copy(data)
-    before = set_pack._annotations("a.pdf", PdfReader(io.BytesIO(data)))
     after = set_pack._annotations("a.pdf", PdfReader(io.BytesIO(copy.data)))
-    assert len(before) == len(after) == 4
-    assert [a["box"] for a in before] == pytest.approx([a["box"] for a in after], abs=0.11)
+    assert len(after) == len(rects) == 4
+    for found, rect in zip(after, rects, strict=True):
+        corners = [_shown(270, visible, x, y) for x in rect[::2] for y in rect[1::2]]
+        expected = (
+            min(c[0] for c in corners),
+            min(c[1] for c in corners),
+            max(c[0] for c in corners),
+            max(c[1] for c in corners),
+        )
+        assert found["box"] == pytest.approx(expected, abs=0.11)
+    with pytest.raises(front_door.NotAWorkingCopy):
+        set_pack._annotations("a.pdf", PdfReader(io.BytesIO(data)))
 
 
 # ---- 5-6: inherited and odd rotations ------------------------------------------------------------
@@ -753,3 +765,41 @@ def test_a_file_that_crashes_the_reader_on_many_pages_is_refused_plainly(
     _crashing_on(monkeypatch, "1,2,3")
     with pytest.raises(WorkingCopyRefused, match="crashed on more than 1 of this file's pages"):
         working_copy(_turned(3))
+
+
+# ---- the shape every reader may assert (#1750) ---------------------------------------------------
+
+
+def test_every_page_of_a_working_copy_is_in_the_standard_shape() -> None:
+    copy = working_copy(_turned(3))
+    with pikepdf.open(io.BytesIO(copy.data)) as pdf:
+        for number, page in enumerate(pdf.pages, start=1):
+            width, height = front_door.require_standard_page(page, number)
+            assert (width, height) == tuple(float(v) for v in list(page.mediabox)[2:])
+
+
+@pytest.mark.parametrize(
+    ("rotation", "media", "crop", "unit", "why"),
+    [
+        (90, (0, 0, 600, 800), None, None, "turned by 90 degrees"),
+        (-90, (0, 0, 600, 800), None, None, "turned by -90 degrees"),
+        (0, (-10, 5, 600, 800), None, None, "corner is not at the origin"),
+        (0, (0, 0, 600, 800), (20, 30, 580, 760), None, "crop box cuts its media box"),
+        (0, (0, 0, 600, 800), None, 2, "user unit is 2"),
+        (0, None, None, None, "no media box"),
+    ],
+)
+def test_a_page_not_in_shape_fails_loudly(
+    rotation: int, media: Any, crop: Any, unit: Any, why: str
+) -> None:
+    with pytest.raises(front_door.NotAWorkingCopy, match=why):
+        front_door.require_standard(rotation, media, crop, unit, page=3)
+
+
+def test_a_page_in_shape_gives_its_size() -> None:
+    assert front_door.require_standard(0, (0, 0, 600, 800)) == (600.0, 800.0)
+    assert front_door.require_standard(None, (0, 0, 600, 800), (0, 0, 600, 800), 1) == (600, 800)
+    # A crop box larger than the page cuts nothing (viewers clip it to the media box).
+    assert front_door.require_standard(360, (0, 0, 600, 800), (-5, -5, 700, 900)) == (600, 800)
+    # A large page keeps its user unit (`MAX_SIDE_PT`): every reader ignores it, positions agree.
+    assert front_door.require_standard(0, (0, 0, 10000, 9000), None, 2) == (10000.0, 9000.0)

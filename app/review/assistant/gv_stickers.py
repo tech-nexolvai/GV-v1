@@ -499,26 +499,16 @@ def _appearance_to_page(annotation: Any, normal: Any) -> Matrix | None:
     return _multiply(own, fit)
 
 
-def _shown(page: Any) -> Callable[[float, float], tuple[float, float]]:
-    """PDF user space to the page as shown (points, origin top-left, rotation applied)."""
-    raw = page.obj.get("/CropBox", page.mediabox)
-    box = [float(v) for v in raw]
-    llx, lly, urx, ury = (
-        min(box[0], box[2]),
-        min(box[1], box[3]),
-        max(box[0], box[2]),
-        max(box[1], box[3]),
-    )
-    rotation = int(page.obj.get("/Rotate", 0) or 0) % 360
+def _shown(page: Any, number: int) -> Callable[[float, float], tuple[float, float]]:
+    """PDF user space to the page as shown (points, origin top-left). Every upload is a working
+    copy (#1750), upright with its corner at the origin (`require_standard_page`, which says so
+    loudly when it is not), so this only turns y down."""
+    from importlib import import_module
+
+    _width, height = import_module("extraction.working_copy").require_standard_page(page, number)
 
     def shown(x: float, y: float) -> tuple[float, float]:
-        if rotation == 90:
-            return y - lly, x - llx
-        if rotation == 180:
-            return urx - x, y - lly
-        if rotation == 270:
-            return ury - y, urx - x
-        return x - llx, ury - y
+        return x, height - y
 
     return shown
 
@@ -725,7 +715,7 @@ def _find(pdf: pikepdf.Pdf) -> list[_Found]:
     stamp_text = _stamp_text()
     found: list[_Found] = []
     for number, page in enumerate(pdf.pages, start=1):
-        shown = _shown(page)
+        shown = _shown(page, number)
         for annotation in page.obj.get("/Annots") or []:
             try:
                 if stamp_text.carries_drawing(annotation):

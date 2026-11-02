@@ -287,6 +287,19 @@ def _label_pixels(candidate: ObservationCandidate) -> list[ImagePoint] | None:
     return corners
 
 
+def _upright_at_origin(page: Page) -> bool:
+    """Whether `page` was read upright with its corner at the origin, as every working copy's page
+    is (#1750). Only there is pdfplumber's frame PDF space with y turned down, which is how the
+    architect reader's tick and line records (`arch-ticks:`, `arch-line:`) are placed below; on any
+    other page they would be outlined in the wrong spot, so no outline is given."""
+    if page.rotation != 0 or page.media_box is None or len(page.media_box) != 4:
+        return False
+    try:
+        return Decimal(page.media_box[0]) == 0 and Decimal(page.media_box[1]) == 0
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+
+
 def _line(flags: Sequence[str], page: Page) -> Decimal | None:
     """The row's dimension line as a PDF `y`, from its one well-formed `arch-line:` record.
 
@@ -323,13 +336,14 @@ def architect_location(
       around its centre, in which the reader found the line.
 
     Widened by one pixel for the label's rounding to whole pixels. `None` when the candidate is not
-    the architect reader's, is not on `page`, or its ticks, label or transform are missing or
-    malformed.
+    the architect reader's, is not on `page`, its ticks, label or transform are missing or
+    malformed, or the page was not read as a working copy's page (`_upright_at_origin`).
     """
     if (
         run.extractor != ARCHITECT_EXTRACTOR
         or candidate.extraction_run_id != run.id
         or candidate.page_id != page.id
+        or not _upright_at_origin(page)
     ):
         return None
     flags = candidate.ambiguity_flags or ()

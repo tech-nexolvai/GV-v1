@@ -56,6 +56,7 @@ from app.models.evidence import EvidenceArtifact
 from app.models.package import Package
 from app.models.retention import LegalHold
 from storage.store import ArtifactStore
+from workflow.working_copies import working_copy_keys
 
 __all__ = [
     "RETENTION",
@@ -344,6 +345,10 @@ def apply_retention(
     deleted: list[Expired] = []
     already_gone: list[Expired] = []
     for item in expired:
+        if item.artifact_class is ArtifactClass.ORIGINAL:
+            # The drawing's working copy (#1750) is the same drawing: it goes with the original.
+            for copy in working_copy_keys(item.storage_key):
+                store.delete(copy)
         if store.delete(item.storage_key):
             deleted.append(item)
         else:

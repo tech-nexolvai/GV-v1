@@ -7,8 +7,10 @@ first time a finding needs a picture or a reviewer asks for the marked-up PDF, a
 
 **Boxes are in PDF points of the page as it is shown** (the crop box, after the page's rotation),
 origin top-left: what `pdftotext -bbox` prints and what a picture measures (points = pixels x 72 /
-dpi). `crop_png` cuts that area (padded) from the original upload page; `markup_pdf` turns it back
-into the page's own drawing space (rotation and box origin included) to draw a cloud there.
+dpi). `crop_png` cuts that area (padded) from the original upload page; `markup_pdf` draws a cloud
+there. Every upload is a working copy (`extraction/working_copy.py`, #1750): upright with its corner
+at the origin, so the page's own drawing space is the shown page with y turned up, and a page that
+is not (`require_standard_page`) is refused loudly rather than turned back here.
 
 **The cloud drawing looks like a reviewer's markup (#1537)**: tight clouds at the value (its
 printed text, found by `verify_value.printed_spots`, else at most 2.5 in), a numbered marker and a
@@ -79,6 +81,7 @@ from extraction import gv_marks
 from extraction.pdfium_guard import PDFIUM_LOCK as GUARD_LOCK
 from extraction.pdfium_guard import pdfium
 from extraction.stamp_text import carries_drawing, pasted_picture
+from extraction.working_copy import require_standard_page
 from vocabulary.product_registry import registry
 
 __all__ = [
@@ -424,26 +427,10 @@ def _box_value(finding: Mapping[str, Any]) -> str:
     return str(finding.get("architect") or "")
 
 
-def _shown_size(page: Any) -> tuple[float, float]:
-    box = page.cropbox
-    width, height = float(box[2]) - float(box[0]), float(box[3]) - float(box[1])
-    rotation = int(page.obj.get("/Rotate", 0) or 0) % 360
-    return (height, width) if rotation in (90, 270) else (width, height)
-
-
-def _shown_space(c: canvas.Canvas, page: Any) -> None:
-    """Make the canvas draw in the shown page's points, origin bottom-left, y up (whatever the
-    page's rotation and crop box)."""
-    llx, lly, urx, ury = (float(v) for v in page.cropbox)
-    rotation = int(page.obj.get("/Rotate", 0) or 0) % 360
-    if rotation == 90:
-        c.transform(0, 1, -1, 0, urx, lly)
-    elif rotation == 180:
-        c.transform(-1, 0, 0, -1, urx, ury)
-    elif rotation == 270:
-        c.transform(0, -1, 1, 0, llx, ury)
-    else:
-        c.translate(llx, lly)
+def _shown_size(page: pikepdf.Page) -> tuple[float, float]:
+    """The page's width and height in points. A working copy's page (`require_standard_page`,
+    #1750): upright with its corner at the origin, so its own points are the points shown."""
+    return require_standard_page(page)
 
 
 def _cloud(c: canvas.Canvas, x0: float, y0: float, x1: float, y1: float, r: float = 5.0) -> None:
@@ -601,7 +588,7 @@ def _outlined(area: Box) -> bool:
 
 
 def _draw_page(c: canvas.Canvas, height: float, placed: Sequence[_Placed]) -> None:
-    """One page's marks, in shown points with y up (`_shown_space`)."""
+    """One page's marks, in shown points with y up (the page's own: a working copy's page)."""
 
     def up(y: float) -> float:
         return height - y
@@ -687,12 +674,11 @@ def _stamp(c: canvas.Canvas, height: float, title: str = MARKUP_TITLE) -> None:
 
 def _overlay(pdf: pikepdf.Pdf, page: Any, draw: Any) -> None:
     """Draw on `page` with `draw(canvas, shown_height)`, on top of its own content."""
-    _llx, _lly, urx, ury = (float(v) for v in page.mediabox)
+    width, height = _shown_size(page)
     buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=(max(urx, 1.0), max(ury, 1.0)), invariant=1)
+    c = canvas.Canvas(buffer, pagesize=(max(width, 1.0), max(height, 1.0)), invariant=1)
     c.saveState()
-    _shown_space(c, page)
-    draw(c, _shown_size(page)[1])
+    draw(c, height)
     c.restoreState()
     c.save()
     with pikepdf.open(io.BytesIO(buffer.getvalue())) as drawn:

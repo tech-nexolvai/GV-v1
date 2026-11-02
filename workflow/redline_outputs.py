@@ -64,6 +64,7 @@ from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore, StoredArtifact
 from verdict.outcomes import Outcome, Severity, is_decision
 from workflow.changed_values import ChangedValues
+from workflow.working_copies import reading_copy
 
 __all__ = [
     "NOT_CHECKED",
@@ -618,6 +619,11 @@ def _source_package(
         except (ArtifactCorrupt, IntegrityRecordMissing, OSError):
             return None
         if hashlib.sha256(source).hexdigest() != digest:
+            return None
+        try:
+            # Drawn on the working copy the pages were read from (#1750), never the original.
+            source = reading_copy(store, key, source)
+        except (ArtifactCorrupt, IntegrityRecordMissing, OSError):
             return None
         try:
             reader = PdfReader(BytesIO(source))

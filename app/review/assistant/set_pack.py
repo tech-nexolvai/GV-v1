@@ -114,6 +114,7 @@ from app.review.assistant.chat_drawing import PDFIUM_LOCK
 from app.review.assistant.page_pictures import fitting_dpi
 from app.review.assistant.symbol_font import decoded
 from extraction.pdfium_guard import pdfium
+from extraction.working_copy import require_standard
 from vocabulary.panel_headings import HeadingMeaning, heading_meaning, page_title_role
 
 __all__ = [
@@ -498,44 +499,21 @@ _GV_RESERVED: Final = frozenset({"/GVCloudDrawing", "/GVRedline939"})
 # ---- annotations and the page map ----------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class _Geometry:
-    """A page's boxes and rotation, to turn its drawing-space boxes into shown boxes."""
-
-    llx: float
-    lly: float
-    urx: float
-    ury: float
-    rotation: int
-
-    def shown(self, x: float, y: float) -> tuple[float, float]:
-        if self.rotation == 90:
-            return y - self.lly, x - self.llx
-        if self.rotation == 180:
-            return self.urx - x, y - self.lly
-        if self.rotation == 270:
-            return self.ury - y, self.urx - x
-        return x - self.llx, self.ury - y
-
-    def box(self, rect: Sequence[float]) -> Box:
-        x0, y0, x1, y1 = (float(v) for v in rect)
-        a, b = self.shown(x0, y0), self.shown(x1, y1)
-        return (
-            round(min(a[0], b[0]), 1),
-            round(min(a[1], b[1]), 1),
-            round(max(a[0], b[0]), 1),
-            round(max(a[1], b[1]), 1),
-        )
+def _page_size(page: Any, number: int) -> tuple[float, float]:
+    """A pypdf page's width and height in points, after checking it is a working copy's page
+    (`require_standard`, #1750): upright, its corner at the origin, so a PDF point `(x, y)` shows
+    at `(x, height - y)`."""
+    return require_standard(page.rotation, page.mediabox, page.cropbox, page.user_unit, page=number)
 
 
-def _geometry(page: Any) -> _Geometry:
-    box = page.cropbox
-    return _Geometry(
-        float(box.left),
-        float(box.bottom),
-        float(box.right),
-        float(box.top),
-        int(page.get("/Rotate", 0) or 0) % 360,
+def _shown_box(rect: Sequence[float], height: float) -> Box:
+    """A PDF rectangle (y up) as a box of the page as shown (origin top-left)."""
+    x0, y0, x1, y1 = (float(v) for v in rect)
+    return (
+        round(min(x0, x1), 1),
+        round(height - max(y0, y1), 1),
+        round(max(x0, x1), 1),
+        round(height - min(y0, y1), 1),
     )
 
 
@@ -550,12 +528,12 @@ def _annotations(
     """Every annotation of `name`; one of `pictures` (`picture_annotations`) says so."""
     out: list[dict[str, Any]] = []
     for number, page in enumerate(reader.pages, start=1):
-        geometry = _geometry(page)
+        _width, height = _page_size(page, number)
         for index, raw in enumerate(page.get("/Annots") or []):
             try:
                 annotation = raw.get_object()
                 rect = annotation.get("/Rect")
-                box = geometry.box(rect) if rect is not None and len(rect) == 4 else None
+                box = _shown_box(rect, height) if rect is not None and len(rect) == 4 else None
             except (AttributeError, TypeError, ValueError):
                 continue
             kind = str(annotation.get("/Subtype") or "").lstrip("/")
@@ -645,13 +623,6 @@ def _picture_headings(
 def _round_of(text: str) -> int | None:
     found = _ROUNDS.search(text)
     return _ROUND_NUMBER[found.group(1).lower()] if found else None
-
-
-def _shown_size(page: Any) -> tuple[float, float]:
-    """A page's width and height as shown (its rotation applied), in points."""
-    geometry = _geometry(page)
-    width, height = geometry.urx - geometry.llx, geometry.ury - geometry.lly
-    return (height, width) if geometry.rotation in (90, 270) else (width, height)
 
 
 def _whole_page_role(upload_role: str, text: str) -> str:
@@ -1212,7 +1183,7 @@ def build_pack(folder: Path, uploads: Path, listing: Sequence[Mapping[str, Any]]
                 texts,
                 len(reader.pages),
                 upload_role=roles.get(name),
-                sizes=[_shown_size(page) for page in reader.pages],
+                sizes=[_page_size(page, n) for n, page in enumerate(reader.pages, start=1)],
                 upload_round=rounds.get(name),
                 own_texts=own,
             )
