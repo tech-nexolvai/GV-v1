@@ -360,7 +360,8 @@ def test_no_page_is_left_unchecked_without_its_reason(
     outcome = _roster(tmp_path, _Lazy()).run()
     for page in (2, 3, 4, 5):
         note = str(_coverage(outcome)[page].get("note"))
-        assert "out of money" in note or "more looks" in note, note
+        # "still not compared after 1 more look" (the passes that took it, 2026-11-03).
+        assert "out of money" in note or "more look" in note, note
 
 
 @pytest.mark.parametrize(

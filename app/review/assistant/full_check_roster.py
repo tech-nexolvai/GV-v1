@@ -69,6 +69,17 @@ answer carries a `resume` block: Continue keeps the findings and compared pages,
 on the pages left (`carried_done`, `remaining_plan`), and is priced for those pages plus what the
 finishing steps need.
 
+**Pages finish while money is left (2026-11-03, Anant: "fix the money share so pages finish").**
+The page reviewers share their money (`page_reviewer.ReviewPool`: a finished page's leftover goes
+to a page still at work), and once all are done what they did not spend joins the money left
+under the fixed price (`_release_review_money`): the fixed price the answer states is the price
+plus the reviewers' money, and the message's cap (that sum) stays the hard ceiling. The passes
+after the lead are no longer a fixed two: another pass runs while pages are open, money is left
+(the finishing steps' needs kept first) and the pass before it closed a page or added a finding,
+at most `AGAIN_MOST_PASSES`; the late look takes the pages left for money again while money
+covers them. A page code cannot compare for a reason that is not money (no architect drawing,
+pairing unsure, a title or divider page, no vendor drawing) keeps that reason and is never sent.
+
 **Pages with no architect drawing (#1885).** With a separate architect's file, a vendor page the
 cross-file pairing leaves unpaired is "Not compared with the architect: no architect drawing found
 for it (why)" as soon as the pairs are final: no gap closer, lead review, look-again or Continue
@@ -265,13 +276,21 @@ JOB_CAPS: Final[Mapping[str, int]] = {
 }
 #: The kinds whose cap follows their pages.
 PAGE_KINDS: Final = frozenset({"numbers", "drawn", "gaps"})
-#: The passes after the lead review that send on the pages still not compared (#1817, #1819).
-AGAIN_PASSES: Final = 2
+#: The passes after the lead review that send on the pages still not compared (#1817, #1819), at
+#: most (2026-11-03, Anant: "fix the money share so pages finish"): no longer a fixed two. The first
+#: pass runs whenever pages are open and money is left; each further pass only when the pass before
+#: it made progress (closed a page or added a finding), so a pass that changed nothing ends them.
+#: This many in all stops a loop; the late look (`_late_pages`) has the same most.
+AGAIN_MOST_PASSES: Final = 4
 #: The phases a big set's band runs, in order (#1874, `full_check_schedule`): its money is its
 #: part of their shares.
 _BAND_PHASES: Final = ("numbers", "drawn", "gaps", "provers", "lead")
-#: How a page the passes after the lead still did not compare is said (`_after_lead`).
-_MORE_LOOKS: Final = "more looks"
+#: How a page the passes after the lead still did not compare is said (`_after_lead`):
+#: "still not compared after 1 more look", "... after 3 more looks" (`looks_reason`).
+_MORE_LOOK: Final = "more look"
+#: A page the passes after the lead never reached, with money left (a page that opened after the
+#: last pass): said so, never "out of money".
+NOT_REACHED_AGAIN: Final = "not reached by the passes after the lead review"
 #: How `_still_open` starts the line of a page never compared yet (not one left open by its
 #: helper, which is extra polishing): only such pages get the late look (`_late_pages`).
 _NOT_COMPARED_YET: Final = "page not compared yet"
@@ -1316,6 +1335,12 @@ def page_runs(pages: Sequence[int], closers: int) -> list[list[int]]:
     return [run for run in runs if run]
 
 
+def looks_reason(looks: int) -> str:
+    """Why a page the passes after the lead took is still not compared: "still not compared after
+    1 more look", "... after 3 more looks" (the passes that took it, 2026-11-03)."""
+    return f"still not compared after {looks} {_MORE_LOOK}{'' if looks == 1 else 's'}"
+
+
 def page_ranges_words(pages: Sequence[int]) -> str:
     """`page 7`, `pages 3-5`, `pages 3, 5 and 9`."""
     ordered = sorted(pages)
@@ -1659,6 +1684,14 @@ class _Run:
     #: While the late look's items are proved (`_late_proofs`): only these items' ids, so the
     #: proof steps never ask again about an item the first round already gave its look.
     only_ids: frozenset[str] | None = None
+    #: The page reviewers' unspent money, once every reviewer has finished, added to what is left
+    #: under the fixed price (`_release_review_money`, 2026-11-03): the reviewers' money and the
+    #: price together are the check's fixed price, and what the reviewers did not need finishes
+    #: the pages still open. Millionths of $.
+    released: int = 0
+    review_released: bool = False
+    #: The passes after the lead (and the late look) that took each page (`looks_reason`).
+    looks: dict[int, int] = field(default_factory=dict)
 
     # -- money --
 
@@ -1683,10 +1716,48 @@ class _Run:
         for the products in scope when that is less."""
         # What the fixed price's shares count, the page reviewer's own share apart
         # (`ChatEngine.counted_spent`); with no reviewer, the message cap and its whole spend.
+        # Once every page reviewer has finished, what they did not spend counts too (`released`).
         left = _counted_cap(self.engine) - _counted(self.engine)
         if self.plan is not None:
-            left = min(left, self.plan.price - (_counted(self.engine) - self.started_at))
+            price = self.plan.price + self.released
+            left = min(left, price - (_counted(self.engine) - self.started_at))
         return max(0, left)
+
+    def _release_review_money(self) -> int:
+        """Once every page reviewer has finished, the money they were given and did not spend
+        joins what is left under the fixed price (2026-11-03, Anant: "fix the money share so
+        pages finish"; the 2026-10-28 rule: a step may use what the other steps left unspent).
+        A live check of 2026-11-03 (a real job) used $10.76 of its $28.60 fixed price; $14.15 of
+        the unused money was the reviewers' own share. Only once (and only when every reviewer is
+        done, so none is ever short of its own money): the reviewers' own share shrinks to what
+        they spent (`ChatEngine.own_share_micros`) and `released` grows by the rest, so the
+        message's cap (the price plus the reviewers' money) stays the hard ceiling of the whole
+        check. Returns the money released (millionths of $)."""
+        if self.review_money <= 0 or self.review_released:
+            return 0
+        reviewers = [a for a in self.agents if getattr(a, "lens", None) == page_reviewer.LENS]
+        if not all(getattr(a, "done", False) for a in reviewers):
+            return 0  # a big set's band still reviewing: its money is still its own
+        engine = self.engine
+        with self._spare_lock:
+            if self.review_released:
+                return 0
+            self.review_released = True
+            own = int(getattr(engine, "own_share_micros", 0) or 0)
+            # What the reviewers' calls really cost (the cache warm-up too), as the engine counts.
+            own_spent = max(0, int(engine.spent) - _counted(engine))
+            free = max(0, own - own_spent)
+            if free <= 0:
+                return 0
+            engine.own_share_micros = own - free
+            self.released += free
+        _log.warning(
+            "assistant roster: the page reviewers left $%.2f of their $%.2f unspent; it joins the "
+            "money left for the passes that finish the pages and the steps after them",
+            free / _MICROS,
+            own / _MICROS,
+        )
+        return free
 
     def _room(self, phase: str) -> int:
         """All that is left under the price less the money kept for the steps after `phase`: each
@@ -1785,11 +1856,15 @@ class _Run:
         except Exception:  # noqa: BLE001 - the shares alone are then kept, as before
             _log.exception("assistant roster could not work out the finishing steps' needs")
             return
+        phase = before if before in LATER_ORDER else "gaps"
+        # The room is said too (2026-11-03): "kept before advocate: $0.55" is the money kept for
+        # the steps AFTER the advocate; the advocate's own room is the room, read as under-funded.
         _log.warning(
-            "assistant roster money kept before %s: $%.2f for the steps after it "
-            "(needs: round picks $%.2f, advocate $%.2f, escalation $%.2f)",
+            "assistant roster money kept before %s: $%.2f for the steps after it; $%.2f left for "
+            "it (needs: round picks $%.2f, advocate $%.2f, escalation $%.2f)",
             before,
-            self._kept_after(before if before in LATER_ORDER else "gaps") / _MICROS,
+            self._kept_after(phase) / _MICROS,
+            self._room(phase) / _MICROS,
             self.needs.get(ROUND_PHASE, 0) / _MICROS,
             self.needs.get("advocate", 0) / _MICROS,
             self.needs.get("escalation", 0) / _MICROS,
@@ -2297,9 +2372,15 @@ class _Run:
             why = service
         elif short:
             why = "out of money"
-        elif any(_MORE_LOOKS in line for line in self.not_done):
-            # #1825: the passes after the lead took these pages and still did not compare them.
-            why = f"still not compared after {AGAIN_PASSES} more looks"
+        elif any(_MORE_LOOK in line for line in self.not_done):
+            # #1825: the passes after the lead took these pages and still did not compare them;
+            # how many passes took them is said when it is the same for every page (2026-11-03).
+            counts = {self.looks[page] for page in pages if page in self.looks}
+            why = (
+                looks_reason(counts.pop())
+                if len(counts) == 1
+                else f"still not compared after {_MORE_LOOK}s"
+            )
         else:
             why = "not reached"
         return pages, items, why
@@ -2863,6 +2944,8 @@ class _Run:
         assert self.plan is not None
         budgets = self.plan.budgets
         total = int(band.fraction * sum(budgets[n] for n in _BAND_PHASES))
+        # The page reviewers' unspent money, once released (2026-11-03): the band's part of it.
+        total += int(band.fraction * self.released)
         later = _BAND_PHASES[_BAND_PHASES.index(phase) + 1 :]
         kept = int(band.fraction * sum(budgets[n] for n in later))
         return max(0, min(self._room(phase), total - band.spent() - kept))
@@ -2955,10 +3038,23 @@ class _Run:
         left open by their helper are not taken. Code's own findings then cover the pages it
         compared (`ChatEngine.add_late_code_findings`, scoped to its items and pages), and the items
         both add get their own proof steps (`_late_proofs`); a page it still does not compare says
-        why, as before."""
+        why, as before.
+
+        **Again while pages are left for money (2026-11-03).** A pass takes as many pages as its
+        money covers at the least a page gets, but its closers often spend less: while pages are
+        still left "out of money" and the money left covers another closer, another late pass
+        takes them (at most `AGAIN_MOST_PASSES`), after the page reviewers' unspent money joined
+        the pool (`_release_review_money`). Each pass takes only pages no late pass took yet, so
+        the passes always end."""
+        for _late in range(AGAIN_MOST_PASSES):
+            if not self._late_pass(plan, page_map):
+                return
+
+    def _late_pass(self, plan: Any, page_map: Mapping[str, Any] | None) -> bool:
+        """One late pass (`_late_pages`); whether another may follow (it took pages)."""
         engine = self.engine
         if self.plan is None or self._halted() or not self.money_pages:
-            return
+            return False
         engine._wait_checks()  # every read in flight charged first: the pool is what is really left
         still_open = self._still_open()
         pages = {
@@ -2968,7 +3064,8 @@ class _Run:
             and any(line.startswith(_NOT_COMPARED_YET) for line in lines)
         }
         if not pages:
-            return
+            return False
+        self._release_review_money()
         budget = self._late_room()
         _log.warning(
             "assistant roster late look: %d pages left for money; $%.2f the finished steps left",
@@ -2976,7 +3073,7 @@ class _Run:
             budget / _MICROS,
         )
         if budget < MIN_GAP_RUN_MICROS:
-            return  # their "out of money" stands
+            return False  # their "out of money" stands
         self._forget_money_marks(pages, still_open)
         before = {str(f.get("id")) for f in engine.book.live()}
         self._step("look_again")
@@ -2988,12 +3085,14 @@ class _Run:
             engine.helper_ceiling = None
         with engine._lock:
             self.lead_taken |= set(taken)
+            for page in taken:
+                self.looks[page] = self.looks.get(page, 0) + 1
         engine._wait_checks()
         # A page a closer took and still did not compare says so; one the money did not reach was
-        # said "out of money" by `_close`.
+        # said "out of money" by `_close` (a later late pass may take it).
         left = {page: lines for page, lines in self._still_open().items() if page in taken}
         if left:
-            self._left_unchecked(left, f"still not compared after {_MORE_LOOKS}")
+            self._say_looked(left)
         if taken and not engine.cancel.is_set():
             # Code's own findings ($0) on the pages the late look compared: they were made before
             # it, so its items never met them (`late_code_findings`, scoped: never a first-round
@@ -3005,6 +3104,7 @@ class _Run:
         new = frozenset(str(f.get("id")) for f in engine.book.live()) - before
         if new and not engine.cancel.is_set():
             self._late_proofs(plan, page_map, new)
+        return bool(taken)
 
     def _forget_money_marks(self, pages: Collection[int], still_open: Collection[int]) -> None:
         """The "out of money" marks of `pages` taken off (their coverage notes and what was not
@@ -3611,24 +3711,39 @@ class _Run:
         it, "not opened", a note that says it was not reached, the lead's own "Budget", or any
         page the check would call not compared, such as one marked not comparable: #1825) and every
         page left open by its helper that the lead did not take goes to another closer pass,
-        while the money really left covers it (the later steps' shares kept), at most
-        `AGAIN_PASSES` times. Code decides, not an AI's guess about money: the paid run of
-        2026-10-20 ended with pages "not opened: Budget" and seven open pages never taken, with $8
-        of a $15 price unspent. A page left unchecked says why on its coverage (#1819): out of
-        money, or the passes that still did not compare it."""
+        while the money really left covers it (the later steps' shares and needs kept). Code
+        decides, not an AI's guess about money: the paid run of 2026-10-20 ended with pages "not
+        opened: Budget" and seven open pages never taken, with $8 of a $15 price unspent. A page
+        left unchecked says why on its coverage (#1819): out of money, or how many passes took it
+        and still did not compare it.
+
+        **How many passes (2026-11-03, Anant: "fix the money share so pages finish").** No longer
+        a fixed two: the first pass runs whenever pages are open and money is left, and each
+        further pass only while the pass before it made progress (`_progressed`: it closed a page
+        or added a finding), at most `AGAIN_MOST_PASSES` in all; a pass that changed nothing ends
+        them (the next would only repeat it). Before each pass the page reviewers' unspent money
+        joins what is left once they are all done (`_release_review_money`) and the finishing
+        steps' needs are worked out again and kept (`_refresh_needs`, `_room`): the devil's
+        advocate and the escalation never lose their money to a pass. A page a pass reached
+        loses an earlier "out of money" mark (`_reached_after_all`); one the money did not reach
+        keeps it, and the late look (`_late_pages`) may still take it."""
         engine = self.engine
         if self.plan is None:
             return
-        pages: dict[int, list[str]] = {}
-        for _pass in range(AGAIN_PASSES):
+        passes = 0
+        taken: set[int] = set()
+        while passes < AGAIN_MOST_PASSES:
             pages = self._still_open(band)
             if not pages or engine.cancel.is_set():
-                return
+                break
+            self._release_review_money()
             # The finishing steps' needs first (#1821): this pass spends only what is left after.
             self._refresh_needs("lead")
             budget = self._room("lead") if band is None else self._band_room(band, "lead")
             _log.warning(
-                "assistant roster look-again after the lead: %d pages still open; $%.2f left",
+                "assistant roster look-again after the lead (pass %d): %d pages still open; "
+                "$%.2f left",
+                passes + 1,
                 len(pages),
                 budget / _MICROS,
             )
@@ -3642,17 +3757,18 @@ class _Run:
                 for page, lines in pages.items()
                 if any(line.startswith(_NOT_COMPARED_YET) for line in lines)
             }
+            before = self._progress_mark(band)
             if band is None:
                 engine.helper_ceiling = _counted(engine) + budget
                 try:
                     with engine.timings.phase("gap_closers"):
-                        taken = self._close(pages, budget, (), page_map, again=True, first=first)
+                        got = self._close(pages, budget, (), page_map, again=True, first=first)
                 finally:
                     engine.helper_ceiling = None
             else:
                 # A band's own ceiling (#1874): the bands' passes run at the same time.
                 with engine.timings.phase("gap_closers"):
-                    taken = self._close(
+                    got = self._close(
                         pages,
                         budget,
                         (),
@@ -3662,18 +3778,82 @@ class _Run:
                         ceiling=_counted(engine) + budget,
                         first=first,
                     )
+            passes += 1
+            taken |= set(got)
             # A page a closer took is not "left open, not compared again": its closer said what it
             # did on its coverage.
             with engine._lock:
-                self.lead_taken |= set(taken)
+                self.lead_taken |= set(got)
+                for page in got:
+                    self.looks[page] = self.looks.get(page, 0) + 1
+            self._reached_after_all(got)
+            if not got or not self._progressed(before, band):
+                _log.warning(
+                    "assistant roster look-again after the lead: pass %d closed no page and added "
+                    "no finding; no more passes",
+                    passes,
+                )
+                break
         left = self._still_open(band)
-        if left:
-            room = self._room("lead") if band is None else self._band_room(band, "lead")
-            short = room < MIN_GAP_RUN_MICROS
-            self._left_unchecked(
-                left,
-                OUT_OF_MONEY if short else f"still not compared after {AGAIN_PASSES} {_MORE_LOOKS}",
-            )
+        if not left or engine.cancel.is_set():
+            return
+        room = self._room("lead") if band is None else self._band_room(band, "lead")
+        if room < MIN_GAP_RUN_MICROS:
+            self._left_unchecked(left, OUT_OF_MONEY)
+            return
+        # Money is left: each page says what the passes did with it. One the last pass did not
+        # reach for money keeps its "out of money" (`_close`), for the late look.
+        with engine._lock:
+            unreached = set(left) & self.money_pages
+        looked = {page: lines for page, lines in left.items() if page in taken - unreached}
+        self._say_looked(looked)
+        never = {page: lines for page, lines in left.items() if page not in taken | unreached}
+        if never:
+            self._left_unchecked(never, NOT_REACHED_AGAIN)
+
+    def _progress_mark(self, band: Band | None = None) -> tuple[frozenset[int], frozenset[str]]:
+        """What a pass is measured against (`_progressed`): the pages still open and the ids of
+        the items found (a big set's band: its own pages and items)."""
+        live = self.engine.book.live()
+        ids = frozenset(str(f.get("id")) for f in live if band is None or band.holds(f.get("page")))
+        return frozenset(self._still_open(band)), ids
+
+    def _progressed(
+        self, before: tuple[frozenset[int], frozenset[str]], band: Band | None = None
+    ) -> bool:
+        """The pass since `before` (`_progress_mark`) closed a page or added a finding."""
+        pages, ids = self._progress_mark(band)
+        return bool(before[0] - pages) or bool(ids - before[1])
+
+    def _say_looked(self, pages: Mapping[int, Any]) -> None:
+        """Each page the passes took and still did not compare says how many passes took it
+        (`looks_reason`), on its coverage and in what was not done."""
+        by_count: dict[int, dict[int, Any]] = {}
+        for page, lines in pages.items():
+            by_count.setdefault(self.looks.get(page, 1), {})[page] = lines
+        for count, group in sorted(by_count.items()):
+            self._left_unchecked(group, looks_reason(count))
+
+    def _reached_after_all(self, pages: Collection[int]) -> None:
+        """The "out of money" marks of `pages` a later pass reached after all (2026-11-03): taken
+        off their coverage notes and what was not done, so a page a pass looked at is never said
+        to be out of money (the summary then blamed the money for pages with $3.91 left)."""
+        engine = self.engine
+        with engine._lock:
+            reached = set(pages) & self.money_pages
+            if not reached:
+                return
+            self.money_pages -= reached
+            line_end = f"not compared, {OUT_OF_MONEY}"
+            self.not_done = [line for line in self.not_done if not line.endswith(line_end)]
+            if self.money_pages:
+                self._note(f"{page_ranges_words(sorted(self.money_pages))}: {line_end}")
+        note = f"not compared: {OUT_OF_MONEY}"
+        for page in reached:
+            try:
+                engine.book.drop_coverage_note(page, note)
+            except Exception:  # noqa: BLE001 - the page's note keeps the older words
+                _log.warning("assistant roster could not clear page %s's money note", page)
 
     def _still_open(self, band: Band | None = None) -> dict[int, list[str]]:
         """The planned pages still not compared, and the pages left open by their helper that no
@@ -5741,7 +5921,11 @@ class _Run:
     def _not_done_line(self, stopped: str | None) -> str:
         """The summary's list of what was not done: "within the fixed price" only when the price
         was really used up; else each stopped at its own share while money was left, said with
-        how much (2026-10-24: "the fixed price was reached" with $4.64 of $9 left)."""
+        how much (2026-10-24: "the fixed price was reached" with $4.64 of $9 left). The pages the
+        passes after the lead took and still could not compare are said apart, "not for lack of
+        money" (2026-11-03: a live check of a real job said "each stopped at its own share of the
+        money" about four key-plan and checklist pages that its helper and two closers had each
+        looked at and found nothing to compare on; nothing had stopped for money)."""
         listed = "; ".join(self.not_done)
         if self._credit_cut():
             return f"Not done ({CREDIT_WHY}; listed, not dropped): {listed}."
@@ -5750,10 +5934,23 @@ class _Run:
         if stopped == "cost_cap" or self.stopped_for_money or self.plan is None:
             return f"Not done within the fixed price (listed, not dropped): {listed}."
         left = _dollars(self._left())
-        return (
-            f"Not done (listed, not dropped; each stopped at its own share of the money while "
-            f"{left} of the fixed price was left): {listed}."
-        )
+        # The pages the passes took and still could not compare are said apart: no money stopped
+        # them (each page's own note says what its closer found).
+        looked = [line for line in self.not_done if _MORE_LOOK in line or NOT_REACHED_AGAIN in line]
+        others = [line for line in self.not_done if line not in looked]
+        parts = []
+        if others:
+            parts.append(
+                f"Not done (listed, not dropped; each stopped at its own share of the money while "
+                f"{left} of the fixed price was left): {'; '.join(others)}."
+            )
+        if looked:
+            parts.append(
+                "Not compared after more looks (listed, not dropped; not for lack of money, "
+                f"{left} of the fixed price was left; each page's note says what its closer "
+                f"found): {'; '.join(looked)}."
+            )
+        return "\n\n".join(parts)
 
     def _left_kinds(self, stopped: str | None) -> dict[int, str] | None:
         """Each vendor page not compared and why, in a few words, for the summary's first line
