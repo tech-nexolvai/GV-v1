@@ -58,6 +58,7 @@ from itertools import pairwise
 from typing import Any, Final, Literal
 
 from app.review.assistant.segment_index import near as _segments_near
+from vocabulary.dashes import dashes_to_hyphen
 
 __all__ = [
     "FIELD",
@@ -571,7 +572,7 @@ def _cabinets(
     same value and both stations, another view of the same cabinets)."""
     tags: list[tuple[str, Fraction, Box]] = []
     for phrase in phrases:
-        text = " ".join(str(phrase.get("text") or "").split()).upper()
+        text = dashes_to_hyphen(" ".join(str(phrase.get("text") or "").split())).upper()
         match = _TAG.match(text)
         box = _phrase_box(phrase)
         if match is None or box is None:
@@ -714,7 +715,7 @@ def _names_a_sink(text: str) -> bool:
     """A sink's words, or a sink base's tag (VSB30, SB36)."""
     if _SINK_WORDS.search(text):
         return True
-    tag = _TAG.match(" ".join(text.split()).upper())
+    tag = _TAG.match(dashes_to_hyphen(" ".join(text.split())).upper())
     return bool(tag and _SINK_BASE.search(tag.group("letters")))
 
 

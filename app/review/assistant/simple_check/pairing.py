@@ -83,6 +83,8 @@ from fractions import Fraction
 from itertools import pairwise
 from typing import Any, Final
 
+from vocabulary.dashes import dashes_to_hyphen
+
 __all__ = [
     "CODE_BAR",
     "CODE_MARGIN",
@@ -169,10 +171,11 @@ def _sheet(text: str) -> str:
 
 def references_in(texts: Iterable[str]) -> frozenset[str]:
     """The sheet numbers and view references printed in `texts`, normalised: a view reference
-    gives itself (`2/A501`) and its sheet (`A501`)."""
+    gives itself (`2/A501`) and its sheet (`A501`). Any look-alike dash is the hyphen
+    (`vocabulary.dashes`: `A−501` is `A-501`)."""
     found: set[str] = set()
     for text in texts:
-        upper = str(text or "").upper()
+        upper = dashes_to_hyphen(str(text or "")).upper()
         for view, sheet in _VIEW_REF.findall(upper):
             found.add(f"{int(view)}/{_sheet(sheet)}")
             found.add(_sheet(sheet))
@@ -638,10 +641,11 @@ DENSE_SHARE: Final = 0.2
 
 def tags_in(texts: Iterable[str]) -> frozenset[str]:
     """The tag codes printed in `texts`, normalised: letters and the number without its leading
-    zeros (`EQ-512_ALT-X` is `EQ512`, `PL-07` is `PL7`); view markers and sizes left out."""
+    zeros (`EQ-512_ALT-X` is `EQ512`, `PL-07` is `PL7`); view markers and sizes left out. Any
+    look-alike dash is the hyphen (`vocabulary.dashes`: `EQ−512` is `EQ512` too)."""
     found: set[str] = set()
     for text in texts:
-        for letters, digits in _TAG.findall(str(text or "").upper()):
+        for letters, digits in _TAG.findall(dashes_to_hyphen(str(text or "")).upper()):
             if letters not in _NOT_TAG:
                 found.add(f"{letters}{int(digits)}")
     return frozenset(found)
@@ -655,10 +659,10 @@ def item_tags_in(texts: Iterable[str]) -> frozenset[str]:
     """The tags in `texts` printed the way an item code is (a number of three digits or more,
     zero-padded or not: `XX-001`, `XX-801`, `XX-318`), normalised as `tags_in` (`ML1`). Whether one
     names a piece or a finish (`LM-004` is a laminate) is decided by how many of the vendor's
-    drawings print it (`worklist`)."""
+    drawings print it (`worklist`). Any look-alike dash is the hyphen (`vocabulary.dashes`)."""
     found: set[str] = set()
     for text in texts:
-        for letters, digits in _PADDED_TAG.findall(str(text or "").upper()):
+        for letters, digits in _PADDED_TAG.findall(dashes_to_hyphen(str(text or "")).upper()):
             if letters not in _NOT_TAG:
                 found.add(f"{letters}{int(digits)}")
     return frozenset(found)
@@ -674,17 +678,18 @@ def printed_item_tag(texts: Iterable[str], tag: str) -> str | None:
     (`XX-801`), alone or with the suffix the architect adds for the item's top or its sink
     (`XX-801-T`, `XX-801T`, `XX-801-SK`); else `None`. Another number (`XX-8010`), another
     letter after it (`XX-801A`, a variant) or a further part (`XX-801-1`) is another item,
-    never this one."""
+    never this one. Any look-alike dash is the hyphen (`vocabulary.dashes`: an architect's
+    `XX−801`, printed with the minus sign, is `XX-801`), and the tag is given with the hyphen."""
     parts = _TAG_PARTS.match(tag)
     if parts is None:
         return None
     letters, number = parts.group(1), int(parts.group(2))
     exact = re.compile(
-        rf"(?<![A-Z0-9])(?P<tag>{letters}[-_\u2010\u2013](?=\d{{3,4}}(?!\d))0*{number})"
+        rf"(?<![A-Z0-9])(?P<tag>{letters}[-_](?=\d{{3,4}}(?!\d))0*{number})"
         r"(?:[-_]?(?:T|SK))?(?![-_.]?[A-Z0-9])"
     )
     for text in texts:
-        found = exact.search(str(text or "").upper())
+        found = exact.search(dashes_to_hyphen(str(text or "")).upper())
         if found is not None:
             return found.group("tag")
     return None
@@ -712,7 +717,7 @@ def markers_in(texts: Iterable[str]) -> tuple[frozenset[str], frozenset[str]]:
     variant: set[str] = set()
     hand: set[str] = set()
     for text in texts:
-        upper = " ".join(str(text or "").upper().split())
+        upper = " ".join(dashes_to_hyphen(str(text or "")).upper().split())
         variant.update(m.group(1) for m in _ACCESSIBLE.finditer(upper))
         hand.update(" ".join(m.group(1).split()) for m in _HAND.finditer(upper))
     return frozenset(variant), frozenset(hand)

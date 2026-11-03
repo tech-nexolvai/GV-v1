@@ -33,6 +33,8 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+from vocabulary.dashes import dashes_to_hyphen
+
 __all__ = [
     "LEFT_REACH_PT",
     "ROW_PT",
@@ -117,8 +119,8 @@ def _plain(text: object) -> str:
 
 def normal_sheet(text: str) -> str | None:
     """A printed sheet number normalised (`IN 7.0`, `IN-7.0` and `IN7.0` are `IN7.0`), or `None`
-    when the text is not one."""
-    found = _SHEET.fullmatch(_plain(text).upper())
+    when the text is not one. Any look-alike dash is the hyphen (`vocabulary.dashes`)."""
+    found = _SHEET.fullmatch(dashes_to_hyphen(_plain(text)).upper())
     if found is None:
         return None
     return f"{found.group(1)}{found.group(2)}"

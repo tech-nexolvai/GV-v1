@@ -28,10 +28,13 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
+from vocabulary.dashes import dashes_to_hyphen
+
 __all__ = ["NOTES_FILE", "notes_on", "page_notes", "set_notes"]
 
 NOTES_FILE: Final = "notes.json"
-#: A tag: one to four letters, a dash, one to four digits, an optional letter and suffix.
+#: A tag: one to four letters, a dash, one to four digits, an optional letter and suffix. Read
+#: through `dashes_to_hyphen`, so a look-alike dash (`XX−12`, a minus sign) is the hyphen.
 _TAG: Final = re.compile(r"\b[A-Z]{1,4}-\d{1,4}[A-Z]?(?:-[A-Z]{2,8})?\b")
 _WORD: Final = re.compile(r"[A-Za-z]{2,}")
 _SCALE: Final = re.compile(r"\bSCALE\b|\d\s*\"?\s*=\s*\d", re.IGNORECASE)
@@ -50,7 +53,7 @@ def _kind(text: str) -> str | None:
     """`tag`, `note` or `None` (a dimension, a scale note, a lone word or number)."""
     if _SCALE.search(text):
         return None
-    if _TAG.fullmatch(text.strip(" .,;:()")):
+    if _TAG.fullmatch(dashes_to_hyphen(text).strip(" .,;:()")):
         return "tag"
     return "note" if len(_WORD.findall(text)) >= 2 else None
 
@@ -84,13 +87,13 @@ def page_notes(
         if not isinstance(box, Sequence) or len(box) != 4:
             continue
         kind = _kind(text)
-        tags = sorted(set(_TAG.findall(text))) if kind == "note" else []
+        tags = sorted(set(_TAG.findall(dashes_to_hyphen(text)))) if kind == "note" else []
         if kind is None:
             continue
         where = next((d for d in drawings if _inside(box, d["box"])), outside)
         item = {"text": text, "box": [round(float(v), 1) for v in box]}
         if kind == "tag":
-            where["tags"].append({**item, "text": text.strip(" .,;:()")})
+            where["tags"].append({**item, "text": dashes_to_hyphen(text).strip(" .,;:()")})
         else:
             where["notes"].append(item)
             # A tag inside a note (`TOEKICK- FN-04`) is a tag the drawing prints too.

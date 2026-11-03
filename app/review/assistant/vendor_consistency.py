@@ -104,6 +104,7 @@ from app.review.assistant.finding_checks import PARTS_READ, WRONG_PART
 from app.review.assistant.full_check_advocate import string_chain, string_extras
 from app.review.assistant.inch_figures import PRINTED_STRING
 from app.review.assistant.ledger import add_up, format_inches
+from vocabulary.dashes import dashes_to_hyphen
 
 __all__ = [
     "CREATED_BY",
@@ -1577,7 +1578,7 @@ _INDEX_MIN: Final = 3
 
 
 def _norm_code(code: str) -> str:
-    return code.upper().replace("-", "").replace(" ", "")
+    return dashes_to_hyphen(code).upper().replace("-", "").replace(" ", "")
 
 
 def sheet_index(
@@ -1591,7 +1592,9 @@ def sheet_index(
         heading = _INDEX_HEADING.search(text or "")
         if heading is None:
             continue
-        codes = [_norm_code(c) for c in _SHEET_CODE.findall(text[heading.end() :])]
+        codes = [
+            _norm_code(c) for c in _SHEET_CODE.findall(dashes_to_hyphen(text[heading.end() :]))
+        ]
         if len(set(codes)) < _INDEX_MIN:
             continue
         found["index_pages"].append(page)
@@ -1603,7 +1606,7 @@ def sheet_index(
     for (file, page), text in texts.items():
         if found["index_pages"] and page in found["index_pages"]:
             continue
-        present |= {_norm_code(c) for c in _SHEET_CODE.findall(text or "")}
+        present |= {_norm_code(c) for c in _SHEET_CODE.findall(dashes_to_hyphen(text or ""))}
     for entry in _entries(page_map):
         present |= {_norm_code(str(c)) for c in entry.get("sheet_numbers") or []}
     # The index's own sheet (a cover lists itself first) is the page the index is printed on.

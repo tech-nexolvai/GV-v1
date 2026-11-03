@@ -45,6 +45,7 @@ from typing import Any, Final
 
 from app.review.assistant.set_context import SetContext, family_of, tags_in
 from app.review.assistant.symbol_font import decoded
+from vocabulary.dashes import dashes_to_hyphen
 
 __all__ = [
     "MAX_FACT_LINES",
@@ -386,12 +387,12 @@ def sheet_description(
         if box is None or not _HEADER_LABEL.match(_text(phrase)):
             continue
         lines = _stack(found, box)
-        tag = next((t for t, _b in lines if tags_in(t) == [t]), None)
+        tag = next((t for t, _b in lines if tags_in(t) == [dashes_to_hyphen(t)]), None)
         if tag is None:
             continue
         after = [t for t, _b in lines[[t for t, _b in lines].index(tag) + 1 :]]
         name = "; ".join(t for t in after if re.search(r"[A-Za-z]{3}", t) and not tags_in(t))
-        return [tag], name
+        return [dashes_to_hyphen(tag)], name
     return [], ""
 
 
@@ -626,7 +627,7 @@ def _named_gaps(
 
 def _number(tag: str) -> tuple[int, str, str] | None:
     """A tag's number, letter and suffix with the top's T left out (`XYZ-301T`: 301, "", "")."""
-    parts = _TAG_PARTS.match(tag)
+    parts = _TAG_PARTS.match(dashes_to_hyphen(tag))
     if parts is None:
         return None
     return (
@@ -745,7 +746,9 @@ def _strip_t(text: str) -> str:
 
 def same_item(a: str, b: str) -> bool:
     """`a` and `b` name one item, one of them maybe with the top's T (`BOH-801` and `BOH-801T`,
-    `ML-018.C` and `ML-018T.C`, `BOH-802.C` and `BOH-802.CT`); never `801A` and `801B`."""
+    `ML-018.C` and `ML-018T.C`, `BOH-802.C` and `BOH-802.CT`); never `801A` and `801B`. Any
+    look-alike dash is the hyphen (`vocabulary.dashes`)."""
+    a, b = dashes_to_hyphen(a), dashes_to_hyphen(b)
     pa, pb = _TAG_PARTS.match(a), _TAG_PARTS.match(b)
     if pa is None or pb is None:
         return False
@@ -764,7 +767,7 @@ def model_tokens(found: Sequence[Mapping[str, Any]]) -> list[str]:
     out."""
     out: dict[str, None] = {}
     for phrase in found:
-        for token in _MODEL.findall(str(phrase.get("text") or "")):
+        for token in _MODEL.findall(dashes_to_hyphen(str(phrase.get("text") or ""))):
             if not any(t == token for t in tags_in(token)) and not token[0].isdigit():
                 out.setdefault(token, None)
     return list(out)[:8]

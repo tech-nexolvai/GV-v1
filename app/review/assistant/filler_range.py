@@ -63,6 +63,8 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
 
+from vocabulary.dashes import dashes_to_hyphen
+
 __all__ = [
     "ARCHITECT_OUTSIDE",
     "CATEGORY",
@@ -193,7 +195,7 @@ def is_filler_label(text: object) -> bool:
     if len(sizes) != 1:
         return False
     rest = _PUNCTUATION.sub(" ", _SIZE.sub(" ", words)).split()
-    named = [w for w in rest if _FILLER_WORD.match(w) or _FILLER_TAG.match(w)]
+    named = [w for w in rest if _FILLER_WORD.match(w) or _FILLER_TAG.match(dashes_to_hyphen(w))]
     if len(named) != 1:
         return False
     return all(w in named or w.lower() in _BESIDE for w in rest)

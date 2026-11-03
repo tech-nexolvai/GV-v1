@@ -115,6 +115,7 @@ from app.review.assistant.page_pictures import fitting_dpi
 from app.review.assistant.symbol_font import decoded
 from extraction.pdfium_guard import pdfium
 from extraction.working_copy import require_standard
+from vocabulary.dashes import dashes_to_hyphen
 from vocabulary.panel_headings import HeadingMeaning, heading_meaning, page_title_role
 
 __all__ = [
@@ -135,8 +136,10 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-#: Changes when what the pack holds changes: an older pack is built again.
-PACK_VERSION: Final = 24
+#: Changes when what the pack holds changes: an older pack is built again. 25: a sheet number
+#: (`page_map.json`) and a tag (`notes.json`) printed with a look-alike dash (`A−501`, a minus
+#: sign) are read, written with the hyphen (`vocabulary.dashes`).
+PACK_VERSION: Final = 25
 #: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
@@ -779,11 +782,7 @@ def _page_entries(
         rounds = sorted({half["round"] for half in halves if half["round"]})
         if not halves and round_labels:
             rounds = sorted({label["round"] for label in round_labels})
-        sheets: list[str] = []
-        for printed in _SHEET.finditer(text):
-            sheet = printed.group(1) or printed.group(2)
-            if sheet and sheet not in sheets:
-                sheets.append(sheet)
+        sheets = _sheet_numbers(text)
         entry: dict[str, Any] = {
             "file": name,
             "page": number,
@@ -809,6 +808,17 @@ def _page_entries(
             entry[CANDIDATE] = candidate
         entries.append(entry)
     return entries
+
+
+def _sheet_numbers(text: str) -> list[str]:
+    """The sheet numbers a page's text prints (`_SHEET`), each once, in order, written with the
+    hyphen: any look-alike dash is read as one (`vocabulary.dashes`: `A−501` is `A-501`)."""
+    sheets: list[str] = []
+    for printed in _SHEET.finditer(dashes_to_hyphen(text)):
+        sheet = printed.group(1) or printed.group(2)
+        if sheet and sheet not in sheets:
+            sheets.append(sheet)
+    return sheets
 
 
 def _own_text(

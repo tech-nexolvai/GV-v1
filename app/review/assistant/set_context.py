@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+from vocabulary.dashes import dashes_to_hyphen
+
 if TYPE_CHECKING:
     from app.review.assistant.project_schedule import ProjectSchedule
     from app.review.assistant.schedule_index import ScheduleIndex
@@ -102,7 +104,9 @@ _INCHES: Final = re.compile(r"(?:\d+'-?\s?)?\d+(?:[ -]\d+/\d+)?\s?\"")
 
 
 def tags_in(text: str) -> list[str]:
-    return TAG.findall(text)
+    """The tags `text` prints (`TAG`), each written with the hyphen: any look-alike dash a drawing
+    prints is read as one (`vocabulary.dashes`: `ST−02` is `ST-02`)."""
+    return TAG.findall(dashes_to_hyphen(text))
 
 
 def scope_notes(phrases: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -116,8 +120,9 @@ def scope_notes(phrases: Sequence[Mapping[str, Any]]) -> list[str]:
 
 
 def _split(tag: str) -> re.Match[str] | None:
-    """A tag's parts (`_PARTS`), or `None` for what `TAG` would not read (`A-1`, `MW-1`)."""
-    found = _PARTS.match(tag)
+    """A tag's parts (`_PARTS`), or `None` for what `TAG` would not read (`A-1`, `MW-1`). Any
+    look-alike dash is the hyphen (`vocabulary.dashes`)."""
+    found = _PARTS.match(dashes_to_hyphen(tag))
     if found is None or (len(found.group(2)) == 1 and found.group(1) not in ONE_DIGIT_FAMILIES):
         return None
     return found

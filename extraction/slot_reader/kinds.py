@@ -30,6 +30,7 @@ from enum import StrEnum
 from typing import Final, Literal
 
 from vocabulary.cabinet_codes import is_cabinet_code
+from vocabulary.dashes import DASH
 
 __all__ = ["KindProposal", "PieceKind", "WallEnd", "propose_kind"]
 
@@ -44,7 +45,7 @@ class PieceKind(StrEnum):
 
 type WallEnd = Literal["left", "right"]
 
-_TOKEN: Final = re.compile(r"[A-Za-z0-9]+(?:[-−][A-Za-z0-9]+)*")
+_TOKEN: Final = re.compile(rf"[A-Za-z0-9]+(?:{DASH}[A-Za-z0-9]+)*")
 _APPLIANCES: Final = frozenset({"DW", "REF", "RANGE"})
 _EQUAL: Final = re.compile(r"[0-9]*EQ")
 

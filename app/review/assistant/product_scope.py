@@ -50,6 +50,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+from vocabulary.dashes import dashes_to_hyphen
 from vocabulary.product_registry import OTHER_CATEGORY, registry
 
 __all__ = [
@@ -386,7 +387,7 @@ _TAG_CODE: Final = re.compile(r"\b([A-Z]{2,5})\s?-?\s?\d{1,4}[A-Z]?\b")
 def _family_product(text: str) -> str | None:
     """The one product the finish codes in the words belong to (the registry's `tag_families`:
     LA-002 and WD-01 are a cabinet's), or `None` when they name none or several."""
-    families = {found.group(1) for found in _TAG_CODE.finditer(text)}
+    families = {found.group(1) for found in _TAG_CODE.finditer(dashes_to_hyphen(text))}
     owners = {
         product.id
         for product in registry().products

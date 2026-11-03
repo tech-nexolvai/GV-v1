@@ -57,6 +57,7 @@ from fractions import Fraction
 from typing import Final
 
 from extraction.architect.pairing import DrawnRow, PairingSettings, PairingStatus, pair_rows
+from vocabulary.dashes import dashes_to_hyphen
 
 __all__ = [
     "ArchitectViewFacts",
@@ -73,7 +74,7 @@ __all__ = [
     "reference_keys",
 ]
 
-_DROPPED: Final = re.compile(r"[\s\-.‐-―]+")
+_DROPPED: Final = re.compile(r"[\s\-.]+")
 #: `3/A-401`, `4 / ID 7.4`: a view mark (1-3 letters or digits), a slash, and a sheet (1-3 letters,
 #: an optional space, dash or dot, then digits, with an optional decimal part). A fraction such as
 #: `3/4` never matches: a sheet starts with a letter.
@@ -191,8 +192,9 @@ class MatchDecision:
 
 
 def normalise_reference(text: str) -> str:
-    """Upper case, with every space, dash and dot dropped: `3 / a-401.` → `3/A401`."""
-    return _DROPPED.sub("", text.upper())
+    """Upper case, with every space, dash (any look-alike too, `vocabulary.dashes`) and dot dropped:
+    `3 / a-401.` → `3/A401`."""
+    return _DROPPED.sub("", dashes_to_hyphen(text).upper())
 
 
 def find_references(phrases: Iterable[str]) -> tuple[str, ...]:
@@ -201,7 +203,7 @@ def find_references(phrases: Iterable[str]) -> tuple[str, ...]:
     letter)."""
     found: list[str] = []
     for phrase in phrases:
-        for match in _REFERENCE.finditer(phrase.upper()):
+        for match in _REFERENCE.finditer(dashes_to_hyphen(phrase).upper()):
             key = normalise_reference(f"{match.group(1)}/{match.group(2)}")
             if key not in found:
                 found.append(key)

@@ -65,6 +65,7 @@ from typing import Any, Final, Literal
 
 from app.review.assistant import likely_problems, proof
 from app.review.assistant.classification import internal
+from vocabulary.dashes import dashes_to_hyphen
 
 __all__ = [
     "FIELD",
@@ -224,7 +225,9 @@ def _norm(name: str) -> str:
 
 
 def _lines(text: str) -> list[str]:
-    return [line for line in re.split(r"[\r\n]+", text or "") if line.strip()]
+    """The text's lines, any look-alike dash written as the hyphen (`vocabulary.dashes`): a unit
+    code printed `AB−CD` is `AB-CD`."""
+    return [line for line in re.split(r"[\r\n]+", dashes_to_hyphen(text or "")) if line.strip()]
 
 
 def _vendor_units(text: str) -> tuple[dict[str, int], str | None]:

@@ -35,6 +35,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Final
 
+from vocabulary.dashes import DASH
+
 __all__ = [
     "CABINET_CODES_VERSION",
     "CABINET_CODE_SHAPES",
@@ -44,11 +46,13 @@ __all__ = [
     "is_finish_code",
 ]
 
-#: Changes whenever a shape is added, removed or altered in either list below.
-CABINET_CODES_VERSION: Final = "1"
+#: Changes whenever a shape is added, removed or altered in either list below. 2: a shape's dash is
+#: any look-alike the drawings print (`vocabulary.dashes`), not only the hyphen and the minus sign.
+CABINET_CODES_VERSION: Final = "2"
 
-#: A dash as the drawings print one: the ASCII hyphen, or the minus sign some text runs carry.
-_DASH: Final = "[-−]"
+#: A dash as the drawings print one: the ASCII hyphen, or any look-alike a text run carries (the
+#: minus sign, an en dash, a non-breaking hyphen: `vocabulary.dashes`).
+_DASH: Final = DASH
 
 
 @dataclass(frozen=True, slots=True)
