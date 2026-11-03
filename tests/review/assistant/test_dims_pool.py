@@ -12,7 +12,10 @@ page that crashes the PDF engine must cost that page, never the set. These tests
 from __future__ import annotations
 
 import os
+import sys
+import types
 from collections.abc import Mapping
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -132,3 +135,119 @@ def test_how_many_workers(monkeypatch: Any) -> None:
     assert dims_pool.workers() == 3
     monkeypatch.delenv(dims_pool.WORKERS_SETTING)
     assert 1 <= dims_pool.workers() <= dims_pool.MOST_WORKERS
+    # The cores are shared out at the threads each worker's libraries may use.
+    monkeypatch.setattr(os, "cpu_count", lambda: 10)
+    monkeypatch.delenv(dims_pool.THREADS_SETTING, raising=False)
+    assert dims_pool.threads() == dims_pool.THREADS_PER_WORKER == 1
+    assert dims_pool.workers() == min(dims_pool.MOST_WORKERS, 10 - dims_pool.SPARE_CORES)
+    monkeypatch.setenv(dims_pool.THREADS_SETTING, "4")
+    assert dims_pool.workers() == 2
+    monkeypatch.setenv(dims_pool.THREADS_SETTING, "0")  # the libraries choose: as before
+    assert dims_pool.threads() == 0
+    assert dims_pool.workers() == min(dims_pool.MOST_WORKERS, 10 - dims_pool.SPARE_CORES)
+    monkeypatch.setattr(os, "cpu_count", lambda: 2)
+    assert dims_pool.workers() == 1
+
+
+def library_threads(task: dims_pool.PageTask, given: Mapping[str, float]) -> Any:
+    """What a worker's libraries were given, instead of the page's labels."""
+    try:
+        rapid = import_module("rapidocr_onnxruntime").RapidOCR
+    except ImportError:  # the OCR extra is not installed
+        rapid = None
+    return {
+        "page": task.number,
+        "math": [os.environ.get(name) for name in dims_pool._MATH_THREADS],
+        "rapidocr": getattr(rapid, "gv_threads", None),
+    }
+
+
+def _no_math_variables(monkeypatch: Any) -> None:
+    """The math libraries' thread variables unset, and as they were after the test."""
+    for name in dims_pool._MATH_THREADS:
+        monkeypatch.setenv(name, "x")
+        monkeypatch.delenv(name)
+
+
+def _has_rapidocr() -> bool:
+    try:
+        import_module("rapidocr_onnxruntime")
+    except ImportError:
+        return False
+    return True
+
+
+def test_each_worker_starts_with_its_libraries_at_one_thread(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.delenv(dims_pool.THREADS_SETTING, raising=False)
+    _no_math_variables(monkeypatch)
+    pdf = _set(tmp_path, 2)
+    tasks = [dims_pool.PageTask("set.pdf", str(pdf), n) for n in (1, 2)]
+    results: dict[int, Any] = {}
+    table = dims_pool.Table(tasks)
+    dims_pool.read_pages(
+        tasks,
+        {},
+        library_threads,
+        results.__setitem__,
+        unreadable=lambda task, why: why,
+        count=2,
+        table=table,
+    )
+    for index in (0, 1):
+        assert results[index] == {
+            "page": index + 1,
+            "math": ["1"] * len(dims_pool._MATH_THREADS),
+            "rapidocr": 1 if _has_rapidocr() else None,
+        }
+    # This process's own environment is as it was.
+    assert all(name not in os.environ for name in dims_pool._MATH_THREADS)
+    # Each page's seconds are in the reading table.
+    rows = table.snapshot()["pages"]
+    assert all(row["state"] == dims_pool.READY and row["seconds"] >= 0 for row in rows)
+
+
+def test_threads_0_leaves_the_libraries_as_they_choose(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv(dims_pool.THREADS_SETTING, "0")
+    _no_math_variables(monkeypatch)
+    pdf = _set(tmp_path, 1)
+    results: dict[int, Any] = {}
+    dims_pool.read_pages(
+        [dims_pool.PageTask("set.pdf", str(pdf), 1)],
+        {},
+        library_threads,
+        results.__setitem__,
+        unreadable=lambda task, why: why,
+        count=2,
+    )
+    assert results[0]["math"] == [None] * len(dims_pool._MATH_THREADS)
+    assert results[0]["rapidocr"] is None
+
+
+def test_rapidocr_is_made_with_the_threads_asked(monkeypatch: Any) -> None:
+    made: list[dict[str, Any]] = []
+
+    class Fake:
+        def __init__(self, config_path: str | None = None, **kwargs: Any) -> None:
+            made.append(kwargs)
+
+    fake = types.ModuleType("rapidocr_onnxruntime")
+    fake.RapidOCR = Fake  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rapidocr_onnxruntime", fake)
+    # OpenCV on macOS runs on Grand Central Dispatch, whose `getNumThreads` always says the cores.
+    opencv: list[int] = []
+    monkeypatch.setitem(sys.modules, "cv2", types.SimpleNamespace(setNumThreads=opencv.append))
+    _no_math_variables(monkeypatch)
+    dims_pool.limit_threads(2)
+    fake.RapidOCR()
+    dims_pool.limit_threads(1)  # asked again: the package's own class, limited once
+    fake.RapidOCR(intra_op_num_threads=3)
+    dims_pool.limit_threads(0)  # 0: nothing changes
+    assert opencv == [2, 1]
+    assert made == [
+        {"intra_op_num_threads": 2, "inter_op_num_threads": 1},
+        {"intra_op_num_threads": 3, "inter_op_num_threads": 1},
+    ]
+    assert fake.RapidOCR.__mro__[1] is Fake
+    assert os.environ["VECLIB_MAXIMUM_THREADS"] == "1"
