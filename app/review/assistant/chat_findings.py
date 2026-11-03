@@ -146,6 +146,7 @@ CODE_ROOM_MAKERS: Final = frozenset(
         "sink_offset",
         "splash_views",
         "set_check",
+        "sink_sheets",
         "gv_review",
         "code",
         "project_schedule",
@@ -652,7 +653,14 @@ def coverage_note(gaps: Sequence[int], file_name: str | None) -> str:
 #: Findings code made itself (GV Review's records, the reading ledger, the vendor consistency
 #: check, the finish check, code's pairs): their words are code's, so the lead is never sent back for their
 #: decision help.
-_CODE_MADE: Final = ("gv_review", "ledger", "consistency", "architect_items", "pairs")
+_CODE_MADE: Final = (
+    "gv_review",
+    "ledger",
+    "consistency",
+    "architect_items",
+    "pairs",
+    "sink_sheets",
+)
 
 
 def helpless_decisions(findings: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

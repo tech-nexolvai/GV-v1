@@ -155,7 +155,8 @@ def mark(finding: Mapping[str, Any], rules_md: str | None) -> dict[str, Any] | N
 
 def words(record: Mapping[str, Any]) -> tuple[str, str]:
     """(why, what would settle it) for an item `mark` (or a formula, `formulas.missing_record`)
-    named, in plain words: the formula, and the job values it waits for."""
+    named, in plain words: the formula, and the job values it waits for (a record's own `why`
+    first, when its rule gave one)."""
     missing = [str(m) for m in record.get("missing") or () if m]
     values = (
         " and ".join(missing)
@@ -165,9 +166,16 @@ def words(record: Mapping[str, Any]) -> tuple[str, str]:
     verb = "is" if len(missing) == 1 else "are"
     rule = str(record.get("rule") or "")
     named = f" ({rule})" if rule and rule != record.get("name") else ""
+    own = " ".join(str(record.get("why") or "").split())
     why = (
-        f"GV's formula for this size: {record.get('formula')}{named}. The job's {values} {verb} "
-        "not entered yet, so code could not run it (the reference's size it was set against "
-        "measures something else)"
+        # A rule's own words (`sink_sheets`: the offset printed from a top's edge, which the
+        # overhang would settle) with the formula it waits for.
+        f"{own.rstrip('.')}. GV's formula: {record.get('formula')}{named}"
+        if own
+        else (
+            f"GV's formula for this size: {record.get('formula')}{named}. The job's {values} "
+            f"{verb} not entered yet, so code could not run it (the reference's size it was set "
+            "against measures something else)"
+        )
     )
     return why, f"the job's {values}, entered once for the job; then GV's formula runs"

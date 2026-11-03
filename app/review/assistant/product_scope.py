@@ -87,6 +87,7 @@ CODE_MADE: Final = frozenset(
         "filler_range",
         "run_fit",
         "sink_offset",
+        "sink_sheets",
     }
 )
 #: GV's sink rules a sink cut-out on a cabinet drawing also needs (`sink_cutout_category`): the

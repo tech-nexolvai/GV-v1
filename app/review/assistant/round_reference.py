@@ -71,7 +71,15 @@ _COMPARED_SOURCES: Final = frozenset({"architect", "brand_prototype", "gv_review
 #: Items code made itself with the vendor's own drawing as their reference (a span printed twice,
 #: GV's rules, code's own pairs): never round matches.
 _CODE_MADE: Final = frozenset(
-    {"consistency", "filler_range", "run_fit", "sink_offset", "pairs", "architect_items"}
+    {
+        "consistency",
+        "filler_range",
+        "run_fit",
+        "sink_offset",
+        "sink_sheets",
+        "pairs",
+        "architect_items",
+    }
 )
 #: Two printed values this close are the same (inches): the drawings' smallest step, halved.
 _SAME_IN: Final = Decimal(1) / Decimal(32)

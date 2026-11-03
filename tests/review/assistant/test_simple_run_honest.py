@@ -39,6 +39,7 @@ _BREAK = {
     "scale_measure": "add_scale_measures",
     "room_matrix": "add_room_matrix",
     "set_check": "add_set_check",
+    "sink_sheets": "add_sink_sheets",
 }
 
 
