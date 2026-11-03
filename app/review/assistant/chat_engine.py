@@ -296,6 +296,7 @@ from app.review.assistant.set_context import add_to_answer as add_set_check
 from app.review.assistant.sharpen import helper_lines
 from app.review.assistant.sink_centre import add_to_answer as add_sink_centre
 from app.review.assistant.sink_offset import add_to_answer as add_sink_offset
+from app.review.assistant.sink_sheets import add_to_answer as add_sink_sheets
 from app.review.assistant.splash_views import add_to_answer as add_splash_views
 from app.review.assistant.spot_guard import dropped as spot_dropped
 from app.review.assistant.spot_locate import code_spotted
@@ -581,6 +582,7 @@ CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
     "scale_measure": "the measuring by scale where the architect prints no size",
     "room_matrix": "the room list check",
     "set_check": "the cross-sheet tag check",
+    "sink_sheets": "the sink cut-out on two sheets of the same top",
 }
 
 
@@ -3527,6 +3529,9 @@ class ChatEngine:
             # A tag only one sheet prints, or tagged differently on the item's other drawing
             # (2026-10-29, `set_context`): please-checks, never red.
             (CODE_CHECK_NAMES["set_check"], lambda: add_set_check(self)),
+            # The same top's sink cut-out on two sheets (a vanity sheet and its countertop sheet,
+            # 2026-11-04, `sink_sheets`): code's own labels; red only when code proves both.
+            (CODE_CHECK_NAMES["sink_sheets"], lambda: add_sink_sheets(self)),
         )
         # The pack's state before the checks read its labels counts too: it may turn `ready` while
         # they run on partial labels (#1768 review).

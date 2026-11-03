@@ -294,6 +294,10 @@ def settings_from(rules_md: str | None) -> dict[str, Setting]:
         )
     cabinet = setting_from(rules_md, "cabinet_depth", "cabinet depth")
     overhang = setting_from(rules_md, TOP.setting, "overhang")
+    if overhang is not None:
+        # On a plan of the top alone the front offset is printed from the top's edge: the rule's
+        # value plus the overhang (`sink_sheets.edge_findings`). Not a rule of its own.
+        out[TOP.setting] = overhang
     if cabinet is not None and overhang is not None:
         out[TOP.id] = _combined(
             cabinet.value + overhang.value,
@@ -435,35 +439,65 @@ class _Frame:
 # ---- the sink cut-out --------------------------------------------------------------------------
 
 
-def _rectangles(frame: _Frame, pt_per_in: float) -> list[Box]:
-    """Closed rectangles (square or rounded corners) of a cut-out's size, as (u0, v0, u1, v1)."""
-    low, high = CUTOUT_MIN_IN * pt_per_in, CUTOUT_MAX_IN * pt_per_in
+def _rectangles(
+    frame: _Frame,
+    pt_per_in: float,
+    *,
+    size_pt: tuple[float, float] | None = None,
+    tick_margin: float = 0.0,
+    keep: Callable[[Box], bool] | None = None,
+) -> list[Box]:
+    """Closed rectangles (square or rounded corners) of a cut-out's size, as (u0, v0, u1, v1).
+    `size_pt`: the smallest and largest side in points instead (a drawing whose scale code does
+    not know yet: `sink_sheets`); `tick_margin`: how far a tick must cross a side (`_crossed`);
+    `keep`: two sides whose box (their ends, before the edges are looked for) it refuses are
+    passed over (speed: only a box with a faucet hole near it can be a sink's)."""
+    low, high = size_pt or (CUTOUT_MIN_IN * pt_per_in, CUTOUT_MAX_IN * pt_per_in)
     # A dimension line drawn edge to edge inside the cut-out (its depth) is never one of its sides.
     sides = sorted(
         (
             p
             for p in frame.along
-            if not (_crossed(frame, p[2], p[0]) and _crossed(frame, p[2], p[1]))
+            if not (
+                _crossed(frame, p[2], p[0], tick_margin)
+                and _crossed(frame, p[2], p[1], tick_margin)
+            )
         ),
         key=lambda piece: piece[2],
     )
+    # Two sides pair only when their ends match (within `_SAME_PT * 3`): each side is looked for
+    # among the sides that start where it starts (speed, 2026-11-04: a page of 14,000 pieces had
+    # every pair of its sides tried; the same rectangles are found).
+    starts: dict[int, list[tuple[float, float, float]]] = {}
+    for piece in sides:
+        starts.setdefault(math.floor(piece[0]), []).append(piece)
+    places = {key: [piece[2] for piece in group] for key, group in starts.items()}
     found: set[Box] = set()
-    for i, (a0, a1, left) in enumerate(sides):
-        for b0, b1, right in sides[i + 1 :]:
-            width = right - left
-            if width > high:
-                break
-            if width < low or abs(a0 - b0) > _SAME_PT * 3 or abs(a1 - b1) > _SAME_PT * 3:
+    for a0, a1, left in sides:
+        key = math.floor(a0)
+        for near in (key - 1, key, key + 1):
+            group = starts.get(near)
+            if not group:
                 continue
-            top_side, bottom_side = (a0 + b0) / 2, (a1 + b1) / 2
-            reach = _ROUND_SHARE * min(width, bottom_side - top_side)
-            top = _edge(frame, left, right, top_side, -1, reach)
-            bottom = _edge(frame, left, right, bottom_side, 1, reach)
-            if top is None or bottom is None:
-                continue
-            height = bottom - top
-            if low <= height <= high:
-                found.add((round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)))
+            first = bisect_right(places[near], left)
+            last = bisect_right(places[near], left + high)
+            for b0, b1, right in group[first:last]:
+                width = right - left
+                if width > high or width < low:
+                    continue
+                if abs(a0 - b0) > _SAME_PT * 3 or abs(a1 - b1) > _SAME_PT * 3:
+                    continue
+                top_side, bottom_side = (a0 + b0) / 2, (a1 + b1) / 2
+                if keep is not None and not keep((left, top_side, right, bottom_side)):
+                    continue
+                reach = _ROUND_SHARE * min(width, bottom_side - top_side)
+                top = _edge(frame, left, right, top_side, -1, reach)
+                bottom = _edge(frame, left, right, bottom_side, 1, reach)
+                if top is None or bottom is None:
+                    continue
+                height = bottom - top
+                if low <= height <= high:
+                    found.add((round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)))
     return sorted(found)
 
 
@@ -526,14 +560,31 @@ def _holes(frame: _Frame, region: Box, pt_per_in: float) -> list[Point]:
     piece's ends joined to the next, every corner as far from the centre as the others (within a
     fifth), and filling at least half of the circle through them (a tick's thin outline does not).
     """
+    smallest, longest = HOLE_MIN_IN * pt_per_in, HOLE_MAX_IN * pt_per_in
+    return [centre for centre, _size in round_outlines(frame, region, smallest, longest)]
+
+
+def round_outlines(
+    frame: _Frame, region: Box, smallest: float, longest: float, places: int = 1
+) -> list[tuple[Point, float]]:
+    """`_holes` with each outline's size across (points), from `smallest` to `longest` across (a
+    drawing whose scale code does not know yet reads every one once: `sink_sheets`). `places`: the
+    decimals a piece's ends are joined at (2: a centre line ending a few hundredths of a point from
+    the hole's own corner is not joined to it)."""
     u0, v0, u1, v1 = region
-    longest = HOLE_MAX_IN * pt_per_in
 
     def inside(p: Point) -> bool:
         return u0 <= p[0] <= u1 and v0 <= p[1] <= v1
 
     pieces = {
-        tuple(sorted(((round(a[0], 1), round(a[1], 1)), (round(b[0], 1), round(b[1], 1)))))
+        tuple(
+            sorted(
+                (
+                    (round(a[0], places), round(a[1], places)),
+                    (round(b[0], places), round(b[1], places)),
+                )
+            )
+        )
         for a, b in frame.all
         if inside(a) and inside(b) and math.dist(a, b) <= longest
     }
@@ -550,7 +601,7 @@ def _holes(frame: _Frame, region: Box, pt_per_in: float) -> list[Point]:
     groups: dict[Point, list[tuple[Point, Point]]] = {}
     for a, b in pieces:
         groups.setdefault(root(a), []).append((a, b))
-    out: list[Point] = []
+    out: list[tuple[Point, float]] = []
     for edges in groups.values():
         degree: dict[Point, int] = {}
         for a, b in edges:
@@ -562,7 +613,7 @@ def _holes(frame: _Frame, region: Box, pt_per_in: float) -> list[Point]:
         xs, ys = [p[0] for p in corners], [p[1] for p in corners]
         width, height = max(xs) - min(xs), max(ys) - min(ys)
         size = max(width, height)
-        if not HOLE_MIN_IN * pt_per_in <= size <= longest or min(width, height) < 0.75 * size:
+        if not smallest <= size <= longest or min(width, height) < 0.75 * size:
             continue
         centre = ((max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2)
         reach = [math.dist(centre, p) for p in corners]
@@ -571,7 +622,7 @@ def _holes(frame: _Frame, region: Box, pt_per_in: float) -> list[Point]:
             continue
         if _area(_hull(corners)) < 0.5 * math.pi * mean * mean:
             continue
-        out.append(centre)
+        out.append((centre, size))
     return out
 
 
@@ -624,16 +675,19 @@ class SinkPlan:
     """The cut-out as drawn, in inches at the drawing's scale (width along the front, depth)."""
 
 
-def _crossed(frame: _Frame, u: float, v: float) -> bool:
+def _crossed(frame: _Frame, u: float, v: float, margin: float = 0.0) -> bool:
     """A tick across a line at right angles to the front (at `u`) at its end `v`: a short slanted
     stroke whose middle is at that end and that runs to both sides of the line (a rounded corner's
-    arc starts there but stays on one side)."""
+    arc starts there but stays on one side). `margin`: by more than this on each side (a corner
+    drawn as one straight chord may end a few hundredths of a point past the side it meets)."""
     strokes = frame.slanted if frame.ticks is None else frame.ticks.near((u, v), _TICK_PT)
     for a, b in strokes:
         if math.dist(a, b) > _TICK_LONGEST_PT:
             continue
         middle = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
-        if math.dist(middle, (u, v)) <= _TICK_PT and (a[0] - u) * (b[0] - u) < 0:
+        if math.dist(middle, (u, v)) > _TICK_PT:
+            continue
+        if min(a[0], b[0]) < u - margin and max(a[0], b[0]) > u + margin:
             return True
     return False
 
@@ -1480,6 +1534,11 @@ def check_pack(
     doubt = (
         SIZES_DIFFER if _sizes_differ([p for _v, plans, *_rest in read for p in plans]) else None
     )
+    edge = _top_plans(Path(folder), uploads, main_file, segments, stop, work, rules, category)
+    # GV's rule on a plan of the top alone (`sink_sheets`) speaks for its labels: this check's own
+    # unsure note on the same label (no cabinets' front there) gives way to it, and it gives way to
+    # this check's own decided item (the cabinets' front proved).
+    edged = {key for f in edge if (key := _label_key(f, main_file)) is not None}
     out: list[dict[str, Any]] = []
     for vendor, plans, architects, area, by_itself in read:
         for rule in RULES:
@@ -1487,23 +1546,57 @@ def check_pack(
             if value is None:
                 continue  # its job value is not entered: skipped quietly
             try:
+                made = findings_for(
+                    vendor,
+                    plans,
+                    architects,
+                    value,
+                    area,
+                    category,
+                    rule=rule,
+                    alone=by_itself,
+                    doubt=doubt if rule in (WIDTH, DEPTH) else None,
+                )
                 out.extend(
-                    findings_for(
-                        vendor,
-                        plans,
-                        architects,
-                        value,
-                        area,
-                        category,
-                        rule=rule,
-                        alone=by_itself,
-                        doubt=doubt if rule in (WIDTH, DEPTH) else None,
-                    )
+                    f
+                    for f in made
+                    if not (rule is FRONT and _label_key(f, main_file) in edged and not _decides(f))
                 )
             except Exception:  # noqa: BLE001 - a drawing code cannot read gives no finding
                 _log.exception("sink offset: %s on p%s could not be checked", rule.id, vendor.page)
+    decided = {
+        _label_key(f, main_file)
+        for f in out
+        if (f.get("gv_standard") or {}).get("rule") == FRONT.id and _decides(f)
+    }
+    out += [f for f in edge if _label_key(f, main_file) not in decided]
     order = {"different": 0, "check": 1, "same": 2}
     return sorted(out, key=lambda f: (order.get(str(f["status"]), 3), f["page"]))
+
+
+def _top_plans(
+    folder: Path,
+    uploads: Path | None,
+    main_file: str | None,
+    segments: Segments | None,
+    stop: Callable[[], bool] | None,
+    work: Any,
+    rules: Mapping[str, Setting],
+    category: str,
+) -> list[dict[str, Any]]:
+    """GV's front offset rule on the plans of a top alone (`sink_sheets.edge_findings`): the
+    offset there is printed from the top's front edge, so the job's overhang is added to the
+    rule's value. Never raises (a drawing code cannot read gives nothing)."""
+    front = rules.get(FRONT.id)
+    if front is None:
+        return []
+    try:
+        sheets = import_module("app.review.assistant.sink_sheets")
+        tops = sheets.read_pack(folder, uploads, main_file, segments, stop, work=work)
+        return list(sheets.edge_findings(tops, front, rules.get(TOP.setting), category))
+    except Exception:  # noqa: BLE001 - the rule's other items stand
+        _log.exception("sink offset: the plans of the tops could not be read")
+        return []
 
 
 def _sizes_differ(plans: Sequence[SinkPlan]) -> bool:
@@ -1635,8 +1728,31 @@ def _decided_by_reviewer(finding: Mapping[str, Any]) -> bool:
     return isinstance(decision, Mapping) and bool(decision.get("decision"))
 
 
-#: The fields of this check's items laid over what the finding book recorded.
-_EXTRA: Final = ("settled", "gv_standard", "keep_reason", "gv_note")
+#: The fields of this check's items laid over what the finding book recorded (a rule item on a
+#: top's plan may carry a please-check mark, `likely_problems.FIELD`, or the job value it waits
+#: for, `job_value_rules.FIELD`: `sink_sheets`).
+_EXTRA: Final = ("settled", "gv_standard", "keep_reason", "gv_note", "whole_look", "job_value_rule")
+
+
+def _plain_not_compared(finding: Mapping[str, Any]) -> bool:
+    """Another item that says only "Not compared" on the label (a helper's "architect not
+    shown"): no outcome, no please-check, nobody's decision, not one of code's own checks."""
+    chat_findings = import_module("app.review.assistant.chat_findings")
+    return (
+        finding.get("status") == "check"
+        and not isinstance(finding.get("whole_look"), Mapping)
+        and not _decided_by_reviewer(finding)
+        and str(finding.get("created_by") or "") not in chat_findings.CODE_ROOM_MAKERS
+    )
+
+
+def _speaks_over(finding: Mapping[str, Any], others: Sequence[Mapping[str, Any]]) -> bool:
+    """GV's rule on a top's plan (`sink_sheets`) that cannot decide its label (a please-check, or a
+    job value that is missing) still says more than another item that only says "Not compared":
+    it takes the label (one item per label)."""
+    standard = finding.get("gv_standard")
+    edge = isinstance(standard, Mapping) and bool(standard.get("edge"))
+    return edge and bool(others) and all(_plain_not_compared(o) for o in others)
 
 
 def add_to_answer(engine: Any) -> dict[str, int] | None:
@@ -1681,8 +1797,9 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
                 for other in book.live()
                 if not own_item(other) and key is not None and _label_key(other, main_file) == key
             ]
+            speaks_over = not _decides(finding) and _speaks_over(finding, others)
             if not _decides(finding):
-                if others:
+                if others and not speaks_over:
                     continue  # the answer's own item on the label speaks for it
             else:
                 if any(_decided_by_reviewer(other) for other in others):
@@ -1695,9 +1812,10 @@ def add_to_answer(engine: Any) -> dict[str, int] | None:
             added = book.add_code_finding(finding, created_by=CREATED_BY)
             if added is None:
                 continue
-            if _decides(finding):
+            if _decides(finding) or speaks_over:
+                verb = "Settled" if _decides(finding) else "Said"
                 reason = (
-                    f"Settled by GV Review: the {(finding.get('gv_standard') or {}).get('name', NAME)}, "
+                    f"{verb} by GV Review: the {(finding.get('gv_standard') or {}).get('name', NAME)}, "
                     f"{(finding.get('gv_standard') or {}).get('origin', 'GV standard')} "
                     f"{(finding.get('gv_standard') or {}).get('value', '')}."
                 )
