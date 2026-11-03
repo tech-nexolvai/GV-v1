@@ -57,6 +57,7 @@ from app.review.assistant.product_scope import named_products
 from app.review.assistant.sheet_revisions import exact_copies, older_copies
 from app.review.assistant.simple_check import pairing as pairing_module
 from app.review.assistant.simple_check import projects as projects_module
+from app.review.assistant.simple_check import rooms as rooms_module
 from app.review.assistant.simple_check import views as views_module
 from app.review.assistant.simple_check.schema import (
     AcrossCandidate,
@@ -954,6 +955,24 @@ def worklist_from(
                 # The page's item is this drawing's only when it is the page's one vendor drawing.
                 across_context.index_titles[half.ref] = title
     across_context.word_limit = max(COMMON_WORD_MIN, COMMON_WORD_SHARE * len(mine_vendor))
+    for half in vendor_halves:
+        # The room or unit numbers a vendor page lists (`_room_numbers_page`): its text layer
+        # (`page_texts`), else its printed phrases; only the page's one vendor drawing's.
+        own = half.file_page or half.page
+        if per_page[(half.file, own)] != 1:
+            continue
+        page_text = (texts or {}).get((half.file, own))
+        printed_text = (
+            [page_text]
+            if page_text
+            else [text for text, _box in views_module.phrases_of(dims_pages.get((half.file, own)))]
+        )
+        listed = rooms_module.vendor_rooms(printed_text)
+        if len(listed) >= rooms_module.MIN_ROOMS:
+            across_context.vendor_rooms[half.ref] = (
+                listed,
+                rooms_module.printed_rooms(printed_text, rooms_module.has_short(listed)),
+            )
 
     def own_area(half: _Half) -> tuple[list[_Half], tuple[Drawing, ...]]:
         """The drawings of a vendor drawing's own area (GV's typed area, or its own page), and
@@ -1423,6 +1442,19 @@ class _Across:
     tag_pages: dict[str, tuple[tuple[str, int], ...]] = field(default_factory=dict)
     """The pages of `architect_text` printing each item tag, as `_tag_page` found them (kept: the
     work list is built again as each matcher answer lands)."""
+    callouts: dict[str, tuple[views_module.Callout, ...]] = field(default_factory=dict)
+    """Each architect item's elevation callouts (`views.callouts`), by the item's id: where a plan
+    the vendor's room numbers paired points (`_room_numbers_page`)."""
+    vendor_rooms: dict[str, tuple[frozenset[str], frozenset[str]]] = field(default_factory=dict)
+    """A vendor drawing's room or unit numbers (`rooms.vendor_rooms`: printed after a room or unit
+    label) and every room-shaped number its page prints (`rooms.printed_rooms`), by the drawing's
+    ref: only the page's one vendor drawing."""
+    room_numbers: dict[bool, dict[tuple[str, int], frozenset[str]]] = field(default_factory=dict)
+    """Each page of `architect_text`'s room numbers (`rooms.printed_rooms`, the title block's left
+    out), with a unit's short numbers (`2A`) or not (the key), as `_room_numbers` found them."""
+    room_paired: dict[str, str] = field(default_factory=dict)
+    """The vendor drawings the room numbers paired (`_room_numbers_page`), with the architect item:
+    like a pair by the printed item tag, the swap audit doubts them only on strong evidence."""
 
     def item_tags(self) -> frozenset[str]:
         """The vendor's item tags (`ITEM_TAG_SHARE`): every item-like tag it prints on few of its
@@ -1715,6 +1747,15 @@ def _enrich(
                 tags=tuple(printed_tags),
                 marks=views_module.callouts(phrases[item.id], (), sheets),
             )
+        )
+    for item in out:
+        if item.reference:
+            continue
+        plan = next((p for p in context.plans if p.item == item.id), None)
+        context.callouts[item.id] = (
+            plan.marks
+            if plan is not None
+            else views_module.callouts(phrases[item.id], found_views[item.id], sheets)
         )
     return out, context
 
@@ -2139,7 +2180,39 @@ def _pair_across(
                 f"{' and '.join(chosen)} ({why})"
             )
             chosen = ()
+    # The vendor's printed room numbers name the architect's page about those rooms (2026-11-04),
+    # when no printed item tag decided: as strong as the tag (code decides, the paid matcher is not
+    # asked); a page code and the matcher agreed on other than it and its callouts' sheets is held
+    # against it, as against the tag.
+    room_added: tuple[str, ...] = ()
+    """The sheets the room plan's callouts point to, added by code (not agreed by the matcher)."""
+    room_pair = (
+        _room_numbers_page(vendor, mine_facts, everything, pool, project, facts_of, context)
+        if tagged is None and refused is None
+        else None
+    )
+    if room_pair is not None:
+        others = tuple(c for c in chosen if c != room_pair.item and c not in room_pair.sheets)
+        if not others:
+            agreed = tuple(c for c in chosen if c in room_pair.sheets)
+            room_added = tuple(c for c in room_pair.sheets if c not in agreed)
+            chosen = (room_pair.item, *agreed, *room_added)
+            code_pick, code_paired = room_pair.item, True
+            context.room_paired[vendor.ref] = room_pair.item
+            why = f"paired with {room_pair.item}: {_rooms_words(room_pair)}"
+        else:
+            rivals = (room_pair.item, *others)
+            why = (
+                f"{pairing_module.UNPAIRED}: {room_pair.item} is about the vendor's rooms "
+                f"({_rooms_words(room_pair)}), but code and the AI page matcher name "
+                f"{' and '.join(others)} ({why})"
+            )
+            chosen = ()
     by_id = {c.id: c for c in pool}
+    if room_pair is not None:
+        # The room plan may be a key or furniture plan (a suite's plan printing its tags), never
+        # one of the matcher's candidates: it is listed with the candidates, never asked about.
+        by_id.setdefault(room_pair.item, next(c for c in everything if c.id == room_pair.item))
     picked_views: list[str] = []
     whole: set[str] = set()
     """The chosen items of several views compared whole (their page is titled the vendor's item)."""
@@ -2149,8 +2222,53 @@ def _pair_across(
         shown: list[str] = []
         for item_id in chosen:
             item = by_id[item_id]
+            if room_pair is not None and item_id == room_pair.item:
+                # The page about the vendor's rooms: compared whole (its rooms' plan).
+                kept.append(item_id)
+                if item.views:
+                    whole.add(item_id)
+                continue
             if not item.views:
                 kept.append(item_id)
+                continue
+            if (
+                room_pair is not None
+                and item_id in room_added
+                and not any(s.ref == item_id and s.contradicts is not None for s in ranked)
+                and (
+                    pointed := _pointed_view(
+                        dataclasses.replace(
+                            mine_facts,
+                            tags=mine_facts.tags - common,
+                            words=mine_facts.words - boiler,
+                            item_tags=item_tags,
+                        ),
+                        [
+                            v
+                            for v in _view_facts(item, facts_of, _section_of(item, facts_of))
+                            if v.ref in room_pair.sheets[item_id]
+                        ],
+                    )
+                )
+                is not None
+            ):
+                # The room plan's elevation callout points to this sheet, and code finds the
+                # vendor's piece on the view it points to.
+                kept.append(item_id)
+                picked_views.append(pointed.ref)
+                view = next(v for v in item.views if v.ref == pointed.ref)
+                title = view.titles[0] if view.titles else pointed.ref
+                shown.append(
+                    f'the plan\'s elevation callout points to its view "{title}" on {item_id} '
+                    f"({pairing_module.evidence_words(pointed)})"
+                )
+                continue
+            if room_pair is not None and item_id in room_added:
+                # Pointed to, but code does not find the vendor's piece on it: not added.
+                shown.append(
+                    f"the plan's elevation callouts point to {item_id}, but code does not find "
+                    "the vendor's piece on the views they point to, so it is not compared"
+                )
                 continue
             if tag_pair is not None and item_id == tag_pair.item:
                 # The views of the sheet that print the vendor's item tag, or that are titled as
@@ -2244,7 +2362,24 @@ def _pair_across(
                 <= MAX_SIZELESS_LABELS
             )
         ]
-        if sizeless and len(sizeless) == len(paired):
+        if (
+            sizeless
+            and len(sizeless) == len(paired)
+            and room_pair is not None
+            and (left := tuple(c for c in room_added if c not in chosen))
+        ):
+            # The rooms' plan prints no sizes of the piece, and its elevation callouts point to a
+            # sheet code does not find the piece on: never "drawing needed" (the drawing may be on
+            # that sheet). A person confirms, and the paid matcher is asked.
+            rivals = (room_pair.item, *left)
+            why = (
+                f"{pairing_module.UNPAIRED}: {room_pair.item} is about the vendor's rooms "
+                f"({_rooms_words(room_pair)}) but prints no sizes of the piece, and its elevation "
+                f"callouts point to {' and '.join(left)}, where code does not find the piece"
+            )
+            chosen, picked_views, code_paired = (), [], False
+            context.room_paired.pop(vendor.ref, None)
+        elif sizeless and len(sizeless) == len(paired):
             where = ", ".join(
                 (
                     f'"{drawings_of[r].titles[0]}" on {drawings_of[r].ref.split(".")[0]}'
@@ -2363,6 +2498,15 @@ def _pair_across(
                 }
             )
             for s in ranked
+        )
+        + (
+            (
+                by_id[room_pair.item].model_copy(
+                    update={"score": 0.0, "evidence": (_rooms_words(room_pair),), "strong": True}
+                ),
+            )
+            if room_pair is not None and all(s.ref != room_pair.item for s in ranked)
+            else ()
         ),
         code_pick=code_pick,
         asked=asked,
@@ -2530,7 +2674,8 @@ def _swap_audit(
                 )
                 strong = pairing_module.swap_is_strong(first, second)
                 for ref, other in ((one, two), (two, one)):
-                    if strong or context.tag_paired.get(ref) not in pairs[ref].chosen:
+                    printed = {context.tag_paired.get(ref), context.room_paired.get(ref)}
+                    if strong or not printed & set(pairs[ref].chosen):
                         crossed.setdefault(ref, (other, why))
     for ref, (other, why) in crossed.items():
         pair, theirs = pairs[ref], pairs[other]
@@ -3135,6 +3280,154 @@ def _room_page(
             callout=bool(near),
         ),
         None,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _RoomPair:
+    """The architect page the vendor's printed room numbers pair a drawing with
+    (`_room_numbers_page`)."""
+
+    item: str
+    """The architect item's id (its page)."""
+    rooms: tuple[str, ...]
+    """The vendor's rooms, all printed on the page."""
+    printed: int
+    """How many room numbers the page prints."""
+    sheets: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    """Another sheet the page's elevation callouts point to (its item's id), with the views they
+    point to: it is added when code finds the vendor's piece on one of them (`_pointed_view`)."""
+
+
+def _room_numbers(context: _Across, short: bool) -> dict[tuple[str, int], frozenset[str]]:
+    """Each page of `architect_text`'s room numbers (`rooms.printed_rooms`; `short`: a unit's short
+    numbers too), the title block's (`rooms.title_block`) left out. Kept in `context`."""
+    if short not in context.room_numbers:
+        found = {
+            key: rooms_module.printed_rooms(text, short)
+            for key, text in context.architect_text.items()
+        }
+        block = rooms_module.title_block(found)
+        context.room_numbers[short] = {key: numbers - block for key, numbers in found.items()}
+    return context.room_numbers[short]
+
+
+def _page_in_project(key: tuple[str, int], project: str | None, context: _Across) -> bool:
+    """Whether a page of the architect's file may be of the vendor drawing's project (`project`):
+    its page names no project, or the same job (`_same_project`'s test)."""
+    if project is None:
+        return True
+    place = context.places.get(key) or projects_module.Place()
+    own = projects_module.key(place.name) if place.name else None
+    return own is None or projects_module.same_job(own, project, context.projects)
+
+
+def _pointed_sheets(
+    plan: AcrossCandidate, pool: Mapping[str, AcrossCandidate], context: _Across
+) -> dict[str, tuple[str, ...]]:
+    """The other sheets of `pool` a plan's elevation callouts point to (`_Across.callouts`), each
+    with the views they point to. A callout's view is looked up in the plan's project, else in any
+    project of the file that has the sheet; a view two projects' sheets could be is left out."""
+    own = (context.places.get((plan.file, plan.page)) or projects_module.Place()).project
+    out: dict[str, list[str]] = {}
+    for mark in context.callouts.get(plan.id, ()):
+        for number in mark.numbers:
+            ref = context.sheets.get((own, mark.sheet, number))
+            if ref is None:
+                refs = {
+                    view
+                    for (_project, sheet, at), view in context.sheets.items()
+                    if sheet == mark.sheet and at == number
+                }
+                ref = refs.pop() if len(refs) == 1 else None
+            item = context.view_page.get(ref) if ref is not None else None
+            if item is not None and item != plan.id and item in pool and ref is not None:
+                views = out.setdefault(item, [])
+                if ref not in views:
+                    views.append(ref)
+    return {item: tuple(views) for item, views in out.items()}
+
+
+def _room_numbers_page(
+    vendor: Drawing,
+    mine: pairing_module.Facts,
+    everything: Sequence[AcrossCandidate],
+    pool: Sequence[AcrossCandidate],
+    project: str | None,
+    facts_of: Callable[[Drawing], pairing_module.Facts],
+    context: _Across,
+) -> _RoomPair | None:
+    """The architect's page of a vendor drawing by the room numbers both print (2026-11-04): the
+    vendor's sheet lists the rooms its piece is for (`_Across.vendor_rooms`, two or more, read
+    after a room or unit label), and exactly one page of the architect's file in the vendor's
+    project is about those rooms (`rooms.room_page`): it prints every one of them, they are at
+    least half of the room numbers it prints, and it lists at most half of the job's rooms (a room
+    schedule, a matrix, a floor or life-safety plan prints many; an enlarged plan of the room type
+    prints its few). Pages of the vendor's project only, a reference set's left out, the title
+    block's numbers (an address on every page) never rooms.
+
+    Refused (`None`) when the vendor's page prints a job room outside its lists (a list code read
+    only in part: never paired on part of it), the page is no architect item (a page with no
+    drawing), code rules it out (another variant, an accessible unit), or it is another project's.
+    The page may be a key or furniture plan (a suite's plan printing its tags), never paired by
+    `rank`; its elevation callouts' sheets (`_pointed_sheets`) go with it."""
+    read = context.vendor_rooms.get(vendor.ref)
+    if read is None:
+        return None
+    listed, printed = read
+    numbers = _room_numbers(context, rooms_module.has_short(listed))
+    mine_project = {
+        key: found for key, found in numbers.items() if _page_in_project(key, project, context)
+    }
+    printed_anywhere = frozenset().union(*mine_project.values()) if mine_project else frozenset()
+    if (printed - listed) & printed_anywhere:
+        return None
+    found, _why = rooms_module.room_page(listed, mine_project, rooms_module.job_rooms(mine_project))
+    if found is None:
+        return None
+    by_place = {(c.file, c.page): c for c in everything if not c.reference}
+    plan = by_place.get(found.page)
+    if plan is None or (project is not None and not _same_project(plan, project, context)):
+        return None
+    if any(
+        s.contradicts is not None
+        for s in pairing_module.rank(mine, [_item_facts(plan, facts_of, None)[0]])
+    ):
+        return None
+    return _RoomPair(
+        item=plan.id,
+        rooms=tuple(sorted(listed)),
+        printed=found.printed,
+        sheets=_pointed_sheets(plan, {c.id: c for c in pool}, context),
+    )
+
+
+def _pointed_view(
+    vendor: pairing_module.Facts, views: Sequence[pairing_module.Facts]
+) -> pairing_module.Scored | None:
+    """The view a room plan's callout points to that code finds the vendor's piece on: strong code
+    evidence of its own (`Scored.strong`: its sizes, its tag, its title), clearly ahead of the
+    other pointed views (`narrow`), or the vendor's overall printed on it alone
+    (`_view_by_sizes`). A callout pointing to a view says the view looks at a wall of the room,
+    not that the piece is on it (a bath vanity is not on the bedroom's walls): else `None`."""
+    if not views:
+        return None
+    if len(views) == 1:
+        (one,) = pairing_module.rank(vendor, views)
+        return one if one.contradicts is None and one.strong and one.score > 0 else None
+    best, _problem = pairing_module.narrow(vendor, views)
+    if best is not None and best.strong:
+        return best
+    return _view_by_sizes(vendor, views)
+
+
+def _rooms_words(paired: _RoomPair) -> str:
+    """How a drawing was paired by its room numbers (`_room_numbers_page`), in words."""
+    rooms = ", ".join(paired.rooms)
+    return (
+        f"it prints the vendor's room numbers {rooms}, every one, and they are {len(paired.rooms)} "
+        f"of the {paired.printed} room numbers it prints (no other architect page of the project "
+        "is about these rooms; a schedule or plan listing many rooms says nothing)"
     )
 
 
