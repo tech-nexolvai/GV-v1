@@ -2237,16 +2237,19 @@ def _label_key(side: object) -> str | None:
 
 def unlike_reason(finding: Mapping[str, Any]) -> str | None:
     """The plain reason two labels are never compared (their ends are unlike), while the item still
-    pairs those two labels; `None` otherwise."""
+    pairs those two labels; `None` otherwise. An architect dimension measured to a centre line
+    (`centre_lines`, 2026-11-04) is unlike the vendor's size it was set against too."""
     held = finding.get(FIELD)
-    if not isinstance(held, Mapping) or held.get("outcome") != "unlike":
-        return None
-    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
-    if _label_key((dims or {}).get("vendor")) != held.get("vendor"):
-        return None
-    if _label_key((dims or {}).get("architect")) != held.get("architect"):
-        return None
-    return str(held.get("why") or "") or None
+    if isinstance(held, Mapping) and held.get("outcome") == "unlike":
+        dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+        if _label_key((dims or {}).get("vendor")) == held.get("vendor") and _label_key(
+            (dims or {}).get("architect")
+        ) == held.get("architect"):
+            why = str(held.get("why") or "")
+            if why:
+                return why
+    centre: str | None = import_module("app.review.assistant.centre_lines").reason(finding)
+    return centre
 
 
 #: A Right's like-for-like record (final plan #4): {"proved": bool, "why": str, "vendor": key,

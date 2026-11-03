@@ -102,6 +102,7 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 from app.review.assistant import (
+    centre_lines,
     classification,
     dim_ends,
     drafting_notes,
@@ -1841,6 +1842,39 @@ def _mark_right_ends(
             result.changed.append(finding)
 
 
+def _mark_centre_lines(
+    live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
+) -> None:
+    """Each item that sets a vendor size against an architect dimension is checked for what the
+    architect's dimension measures (2026-11-04, `centre_lines`): one measured to a centre line (a
+    toilet's, a mirror's, a sink's) places a fixture; it is not a size of the vanity or the top.
+    Code records it for the two labels the item pairs, and the item is Not compared with that
+    reason (`dim_ends.unlike_reason`): never Right, Wrong or a please-check. Run before the ladder
+    (so no step settles such an item on that pair) and again after it (a step may pair other
+    labels). A record that no longer holds for the item's labels is taken off."""
+    if ctx.pages is None:
+        return
+    for finding in live:
+        if str(finding.get("id")) in result.absorbed:
+            continue
+        try:
+            record = centre_lines.judge(finding, ctx.pages, ctx.phrases)
+        except Exception:  # noqa: BLE001 - not judged: no record, the item as it was
+            _log.exception("escalation: centre-line check failed on %s", finding.get("id"))
+            continue
+        if record is None:
+            continue  # the rule does not apply, or code has no line to read: as it was
+        held = finding.get(centre_lines.FIELD)
+        if record is centre_lines.CLEAR:
+            if held is not None:
+                finding.pop(centre_lines.FIELD, None)
+                result.changed.append(finding)
+            continue
+        if held != record:
+            finding[centre_lines.FIELD] = dict(record)
+            result.changed.append(finding)
+
+
 def _mark_right_proof(
     live: Sequence[dict[str, Any]], ctx: EscalationContext, result: Escalation
 ) -> None:
@@ -2328,6 +2362,9 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     # How each Wrong's numbers were read, before any step groups them (final plan #2): kept with
     # the items the ladder tries and recorded on every item at the end (a Stop leaves the rest).
     _mark_reading(live, ctx, None)
+    # What each architect dimension measures (2026-11-04): one measured to a centre line is never
+    # set against a vendor size, so no step below settles an item on such a pair.
+    _mark_centre_lines(live, ctx, result)
     early = _before_ladder(live, ctx, result)
     by_id = {str(f["id"]): f for f in live}
     areas = _areas(ctx)
@@ -2384,6 +2421,7 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     _mark_row_places(live, ctx, result)
     _mark_right_ends(live, ctx, result)
     _mark_right_proof(live, ctx, result)
+    _mark_centre_lines(live, ctx, result)
     _mark_drafting_notes(live, ctx, result)
     _mark_reading(live, ctx, result)
     listed = {str(f["id"]) for f in result.changed}
