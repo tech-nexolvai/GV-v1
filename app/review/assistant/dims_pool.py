@@ -16,10 +16,23 @@ then the drawn ink), with time budgets shared by the whole set. Now each page is
   or a restart resumes with the pages already read. A page the reader marks unfinished is read
   again.
 - **Gentle on a shared machine:** at most `workers()` processes (`WORKERS_SETTING`, else
-  min(`MOST_WORKERS`, cores - 2)); Tesseract one thread inside each (`OMP_THREAD_LIMIT=1`); a
-  worker is replaced after `PAGES_PER_WORKER` pages or when it holds more than
-  `WORKER_MEMORY_MB`; no new page starts while the machine has less than `MIN_FREE_MB` free (one
-  worker always goes on).
+  min(`MOST_WORKERS`, (cores - `SPARE_CORES`) / threads a worker)); Tesseract one thread inside
+  each (`OMP_THREAD_LIMIT=1`); a worker is replaced after `PAGES_PER_WORKER` pages or when it
+  holds more than `WORKER_MEMORY_MB`; no new page starts while the machine has less than
+  `MIN_FREE_MB` free (one worker always goes on).
+- **One thread per library in each worker** (`threads()`, `THREADS_SETTING`, 2026-11-03): left
+  alone, each worker's OpenCV took a thread per core and each of RapidOCR's three ONNX models a
+  thread per performance core, so six workers held 30-50 threads each (the build up to 212 on 10
+  cores). Each worker now starts with Apple Accelerate / OpenBLAS / MKL at `threads()` (set
+  before the worker's Python starts, as they read it once) and sets OpenCV and RapidOCR's models
+  to it before it reads a page (`limit_threads`). Measured on 9 slow pages of a real set on a
+  busy machine: the same labels, at most 56 threads, about a fifth less CPU (1,835 -> 1,434 s),
+  and about the same time (the workers read at low priority, so they get what the machine
+  leaves); two threads a worker with four workers was slower. Most of a page's time is
+  pure-Python work on one core (the PDF's content and the text route's geometry), which threads
+  do not change.
+- **Each page's seconds** (worker start of the page to its answer) are in the reading table, so a
+  slow page shows which it is.
 - **The reading table** (`Table`): each page `waiting`, `reading`, `ready` or `failed` (with why),
   published whole on every change. The set pack writes it as `reading.json`; the full check waits
   for it (`full_check_plan.wait_for_reading`) and the screen shows its counts.
@@ -79,17 +92,111 @@ WORKER_MEMORY_MB: Final = 2500
 MIN_FREE_MB: Final = 1500
 #: The environment each worker sets before it reads anything.
 _WORKER_ENVIRONMENT: Final = {"OMP_THREAD_LIMIT": "1", "OMP_NUM_THREADS": "1"}
+#: How many threads each worker's native libraries may use (`threads`); `0`: as the libraries
+#: choose (a thread per core each, as before 2026-11-03).
+THREADS_SETTING: Final = "GV_DIM_LABELS_THREADS"
+#: The default threads a worker: the workers, not the libraries inside one, use the cores.
+THREADS_PER_WORKER: Final = 1
+#: Cores left to the API, the database, the chat and the page pictures when workers are counted.
+SPARE_CORES: Final = 2
+#: The math libraries' thread variables, read once when the library loads (before a worker's
+#: first page: its Python imports numpy as it starts), so they are set before it starts.
+_MATH_THREADS: Final = (
+    "VECLIB_MAXIMUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+)
+_ENVIRONMENT_LOCK: Final = threading.Lock()
+
+
+def _setting(name: str) -> int | None:
+    raw = os.environ.get(name, "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            _log.warning("%s is not a whole number: %r", name, raw)
+    return None
+
+
+def threads() -> int:
+    """How many threads each worker's native libraries may use (`THREADS_SETTING`, else
+    `THREADS_PER_WORKER`); 0: left as the libraries choose."""
+    found = _setting(THREADS_SETTING)
+    return THREADS_PER_WORKER if found is None else found
 
 
 def workers() -> int:
-    """How many worker processes read the pages (`WORKERS_SETTING`, else the default)."""
-    raw = os.environ.get(WORKERS_SETTING, "").strip()
-    if raw:
+    """How many worker processes read the pages (`WORKERS_SETTING`, else as many as the cores
+    hold at `threads()` each, `SPARE_CORES` left over, at most `MOST_WORKERS`)."""
+    found = _setting(WORKERS_SETTING)
+    if found is not None:
+        return max(1, found)
+    cores = (os.cpu_count() or 2) - SPARE_CORES
+    return max(1, min(MOST_WORKERS, cores // max(1, threads())))
+
+
+def limit_threads(count: int) -> None:
+    """In a worker, before it reads: OpenCV and RapidOCR's ONNX models at `count` threads (0: as
+    they choose). The math libraries' variables are set too, for one loaded later."""
+    if count <= 0:
+        return
+    os.environ.update(dict.fromkeys(_MATH_THREADS, str(count)))
+    from importlib import import_module
+
+    try:
+        import_module("cv2").setNumThreads(count)
+    except Exception as failed:  # noqa: BLE001 - OpenCV not installed: nothing to limit
+        _log.debug("page reading: OpenCV threads not set: %s", failed)
+    try:
+        rapid = import_module("rapidocr_onnxruntime")
+    except Exception:  # noqa: BLE001 - RapidOCR not installed: nothing to limit
+        return
+    made: Any = getattr(rapid, "RapidOCR", None)
+    if made is None or getattr(made, "gv_threads", None) == count:
+        return
+    base: Any = getattr(made, "gv_base", made)
+
+    class Limited(base):  # type: ignore[misc]
+        """RapidOCR whose three models (find, turn, read) run on `count` threads each."""
+
+        gv_threads = count
+        gv_base = base
+
+        def __init__(self, config_path: str | None = None, **kwargs: Any) -> None:
+            kwargs.setdefault("intra_op_num_threads", count)
+            kwargs.setdefault("inter_op_num_threads", 1)
+            super().__init__(config_path, **kwargs)
+
+    setattr(rapid, "RapidOCR", Limited)  # noqa: B010 - the package's own name, replaced here
+
+
+class _MathThreads:
+    """`os.environ` with the math libraries' thread variables at `count` while a worker process
+    starts (a `spawn` worker gets this process's environment), then as it was."""
+
+    def __init__(self, count: int) -> None:
+        self.count = count
+        self.saved: dict[str, str | None] = {}
+
+    def __enter__(self) -> None:
+        if self.count > 0:
+            _ENVIRONMENT_LOCK.acquire()
+            self.saved = {name: os.environ.get(name) for name in _MATH_THREADS}
+            os.environ.update(dict.fromkeys(_MATH_THREADS, str(self.count)))
+
+    def __exit__(self, *_exc: object) -> None:
+        if self.count <= 0:
+            return
         try:
-            return max(1, int(raw))
-        except ValueError:
-            _log.warning("%s is not a whole number: %r", WORKERS_SETTING, raw)
-    return max(1, min(MOST_WORKERS, (os.cpu_count() or 2) - 2))
+            for name, value in self.saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        finally:
+            _ENVIRONMENT_LOCK.release()
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +249,11 @@ class Table:
                 self._on_change(self.snapshot())
             except Exception as failed:  # noqa: BLE001 - the table never stops the reading
                 _log.warning("page reading: table not written: %s", failed)
+
+    def timed(self, index: int, seconds: float) -> None:
+        """The page's seconds (from its start in a worker to its answer), published with its
+        next state."""
+        self._rows[index]["seconds"] = round(seconds, 1)
 
     def snapshot(self) -> dict[str, Any]:
         states = [row["state"] for row in self._rows]
@@ -254,12 +366,14 @@ def read_pages(
     if count <= 1 or not todo:
         for index in todo:
             table.set(index, READING)
+            started = time.monotonic()
             try:
                 result = read_page(tasks[index], limits)
             except Exception as failed:  # noqa: BLE001 - the page says why; the rest is read
                 result = unreadable(tasks[index], type(failed).__name__)
             else:
                 _keep(keep, keys[index], result, finished)
+            table.timed(index, time.monotonic() - started)
             done(index, result)
         return
     _Pool(
@@ -277,10 +391,11 @@ def read_pages(
     ).run(todo)
 
 
-def _serve(connection: Connection, reader: str) -> None:
+def _serve(connection: Connection, reader: str, count: int = 0) -> None:
     """A worker: reads the pages it is sent with `reader` (`module:function`), one at a time,
-    until it is sent `None`."""
+    until it is sent `None`; its native libraries at `count` threads (`limit_threads`)."""
     os.environ.update(_WORKER_ENVIRONMENT)
+    limit_threads(count)
     try:
         os.nice(10)
     except OSError:  # a platform without it: read at normal priority
@@ -392,14 +507,18 @@ class _Pool:
             page_limit_s,
         )
         self.context = multiprocessing.get_context("spawn")
+        self.threads = threads()
         self.queue: list[int] = []
         self.crashes: dict[int, int] = {}
         self.pool: list[_Worker] = []
 
     def _start(self) -> _Worker:
         parent, child = self.context.Pipe()
-        process = self.context.Process(target=_serve, args=(child, self.reader), daemon=True)
-        process.start()
+        process = self.context.Process(
+            target=_serve, args=(child, self.reader, self.threads), daemon=True
+        )
+        with _MathThreads(self.threads):
+            process.start()
         child.close()
         return _Worker(process, parent)
 
@@ -511,6 +630,7 @@ class _Pool:
                         continue
                     else:
                         continue
+                    self.table.timed(index, now - worker.started)
                     if kind == "done":
                         _keep(self.keep, self.keys[index], value, self.finished)
                         self.done(index, value)
