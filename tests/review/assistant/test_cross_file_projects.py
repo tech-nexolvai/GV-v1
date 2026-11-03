@@ -579,7 +579,8 @@ def test_a_vendor_variant_marker_still_rules_out_a_page_printing_its_tag() -> No
     assert bench.chosen == () and not bench.code_paired
     # An opposite-hand unit is still paired by its tag, flagged: positions from an end not compared.
     index = _index()
-    index["pages"][f"{SHOP}#6"]["hand_words"] = ["MIRROR"]
+    # (MIRROR IMAGE: the word MIRROR alone is the mirror on the wall, never a hand.)
+    index["pages"][f"{SHOP}#6"]["hand_words"] = ["MIRROR IMAGE"]
     mirrored = _across(_work_with(found, index), 6)
     assert mirrored.chosen == ("p1004",) and mirrored.opposite_hand is not None
 

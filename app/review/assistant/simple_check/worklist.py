@@ -1783,10 +1783,16 @@ def _room_only(view: Drawing) -> bool:
 
 
 def _marked_words(read: Mapping[str, Any]) -> tuple[frozenset[str], frozenset[str]]:
-    """The variant and opposite-hand words of a set index read (checked printed), in capitals."""
+    """The variant and opposite-hand words of a set index read (checked printed), in capitals. A
+    hand word that only names the mirror on the wall ("MIRROR", "LED MIRROR") is left out
+    (`pairing.fixture_mirror`): a bathroom mirror never says the drawing is flipped."""
     return (
         frozenset(" ".join(str(w).upper().split()) for w in read.get("variant_words") or []),
-        frozenset(" ".join(str(w).upper().split()) for w in read.get("hand_words") or []),
+        frozenset(
+            " ".join(str(w).upper().split())
+            for w in read.get("hand_words") or []
+            if not pairing_module.fixture_mirror(str(w))
+        ),
     )
 
 
