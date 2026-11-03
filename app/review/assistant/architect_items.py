@@ -56,6 +56,7 @@ from typing import Any, Final
 
 from app.review.assistant.decision_resolver import OTHER_TRADE_FAMILIES
 from app.review.assistant.product_packs import material_pattern, part_kinds
+from vocabulary.dashes import dashes_to_hyphen
 from vocabulary.product_registry import Product, registry
 
 __all__ = [
@@ -128,9 +129,10 @@ class Code:
 
 
 def tag_codes(text: str) -> list[tuple[str, str, str]]:
-    """Every code in a printed phrase: (as printed, family, key)."""
+    """Every code in a printed phrase: (as printed, family, key). Any look-alike dash is the hyphen
+    (`vocabulary.dashes`: `FN−01` is printed `FN-01`, key `FN-1`)."""
     out: list[tuple[str, str, str]] = []
-    for found in _CODE.finditer(text or ""):
+    for found in _CODE.finditer(dashes_to_hyphen(text or "")):
         family, number, letter = found.group(1), found.group(2), found.group(3)
         out.append((found.group(0), family, f"{family}-{int(number)}{letter}"))
     return out

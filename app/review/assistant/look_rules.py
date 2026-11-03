@@ -52,6 +52,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Final
 
 from app.review.assistant import likely_problems
+from vocabulary.dashes import dashes_to_hyphen
 
 __all__ = [
     "ASK",
@@ -172,7 +173,8 @@ def _on_overlay(spot: Box, overlays: Iterable[Box]) -> bool:
 
 
 def _tags(text: object) -> set[str]:
-    return {t.replace("-", "") for t in _TAG.findall(" ".join(str(text or "").upper().split()))}
+    upper = " ".join(dashes_to_hyphen(str(text or "")).upper().split())
+    return {t.replace("-", "") for t in _TAG.findall(upper)}
 
 
 def has_tag(

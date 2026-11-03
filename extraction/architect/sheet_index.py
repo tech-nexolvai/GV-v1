@@ -40,6 +40,7 @@ from extraction.architect.text import (
 from extraction.geometry.rows import Box
 from extraction.reader import UnreadablePdf
 from extraction.stamp_text import drawing_ink, stamps_only
+from vocabulary.dashes import dashes_to_hyphen
 
 __all__ = [
     "SheetLabels",
@@ -51,7 +52,8 @@ __all__ = [
 ]
 
 #: A sheet number: one to three letters, an optional dash, dot or space, one to four digits, an
-#: optional decimal part and an optional letter (`A-401`, `ID 7.4`, `A501`, `A-401A`).
+#: optional decimal part and an optional letter (`A-401`, `ID 7.4`, `A501`, `A-401A`). Read through
+#: `dashes_to_hyphen`, so a look-alike dash (`A−401`, a minus sign) is the hyphen.
 _SHEET: Final = r"[A-Z]{1,3}[-. ]?\d{1,4}(?:\.\d{1,3})?[A-Z]?"
 _LABELLED: Final = re.compile(
     rf"\bSHEET(?:\s*(?:NO\.?|NUMBER|#))?\s*:?\s*({_SHEET})\b", re.IGNORECASE
@@ -185,7 +187,9 @@ def sheet_labels_on(page: Any, *, text: TextSettings) -> SheetLabels:
 def _labels(printed: Sequence[PrintedPhrase]) -> SheetLabels:
     phrases = [phrase for phrase in printed if phrase.orientation is Orientation.UPRIGHT]
     labelled = {
-        match.group(1).upper() for phrase in phrases for match in _LABELLED.finditer(phrase.text)
+        match.group(1).upper()
+        for phrase in phrases
+        for match in _LABELLED.finditer(dashes_to_hyphen(phrase.text))
     }
     if len(labelled) == 1:
         (number,) = labelled
@@ -198,7 +202,8 @@ def _labels(printed: Sequence[PrintedPhrase]) -> SheetLabels:
     near = {
         match.group(1).upper()
         for phrase in phrases
-        if (match := _ALONE.match(phrase.text)) is not None and _near_label(phrase, labels)
+        if (match := _ALONE.match(dashes_to_hyphen(phrase.text))) is not None
+        and _near_label(phrase, labels)
     }
     if len(near) == 1:
         (number,) = near

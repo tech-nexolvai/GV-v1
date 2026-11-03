@@ -82,6 +82,7 @@ from extraction.geometry.rows import (
 )
 from extraction.slot_reader.bedrock import ROW_BOX_COLOURS
 from extraction.slot_reader.claude_output import picture_fits, visual_tokens
+from vocabulary.dashes import dashes_to_hyphen
 
 if TYPE_CHECKING:
     from extraction.reader import PlumberFrame
@@ -250,6 +251,7 @@ class LabelSort(StrEnum):
 
 
 #: Letters, then digits, joined by a hyphen or a dot, with no inch mark: a material or finish tag.
+#: Read through `dashes_to_hyphen`, so a look-alike dash (`AB−12`, a minus sign) is the hyphen.
 _TAG: Final = re.compile(r"[A-Z]{1,5}[- ]?\d+[A-Z0-9.\-]*")
 #: Two separators between digits (`01.07.2025`, `4/3/2026`): a date, not a fraction.
 _DATE: Final = re.compile(r"\d+[./]\d+[./]\d+")
@@ -302,7 +304,7 @@ def label_sort(
     text = " ".join(label.lines).upper().strip()
     if _MARKS_ONLY.fullmatch(text):
         return LabelSort.NUMBER  # the inch mark of the number printed beside it
-    if _TAG.fullmatch(text) and '"' not in text:
+    if _TAG.fullmatch(dashes_to_hyphen(text)) and '"' not in text:
         return LabelSort.TAG
     if _DATE.search(text):
         return LabelSort.WORDS

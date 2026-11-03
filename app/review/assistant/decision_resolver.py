@@ -73,6 +73,7 @@ from app.review.assistant.finding_checks import (
 )
 from app.review.assistant.symbol_font import decoded
 from app.review.assistant.witness import disagreement, witnesses
+from vocabulary.dashes import dashes_to_hyphen
 
 __all__ = [
     "MILLWORK_FAMILIES",
@@ -255,7 +256,7 @@ def _leading_value(text: object) -> str | None:
 def _codes(text: object) -> list[tuple[str, str]]:
     """The finish tags written in `text`: (family, the tag as written)."""
     found: list[tuple[str, str]] = []
-    for match in _TAG_CODE.finditer(str(text or "")):
+    for match in _TAG_CODE.finditer(dashes_to_hyphen(str(text or ""))):
         found.append((match.group(1), match.group(0)))
     return found
 

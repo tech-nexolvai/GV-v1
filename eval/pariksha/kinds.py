@@ -100,6 +100,7 @@ from eval.pariksha.stored import StoredRunError, _choose_run, _read_only, _run_r
 from eval.pariksha.walls import canonical_hash, compare_translated, require_agent
 from eval.release_metrics import Direction
 from vocabulary.cabinet_codes import is_cabinet_code, is_finish_code
+from vocabulary.dashes import DASH
 
 __all__ = [
     "BALA",
@@ -180,7 +181,7 @@ _WORD: Final = re.compile(r"[a-z]+")
 _CABINET_WORDS: Final = frozenset({"cabinet", "cabinets", "vanity"})
 #: The kinds one key word may name together: a cabinet (of equal ones), or a filler or panel.
 _TOGETHER: Final = (frozenset({"cabinet", "equal_cabinets"}), frozenset({"filler", "panel"}))
-_TOKEN: Final = re.compile(r"[A-Za-z0-9]+(?:[-−][A-Za-z0-9]+)*")
+_TOKEN: Final = re.compile(rf"[A-Za-z0-9]+(?:{DASH}[A-Za-z0-9]+)*")
 _APPLIANCE_WORDS: Final = frozenset({"DW", "REF", "RANGE"})
 _FORM_READER: Final = "extraction.form_reader"
 _OVERALL: Final = "overall"

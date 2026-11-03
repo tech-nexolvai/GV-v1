@@ -50,6 +50,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any, Final
 
 from app.review.assistant.set_context import TAG, family_of
+from vocabulary.dashes import dashes_to_hyphen
 
 if TYPE_CHECKING:
     from app.review.assistant.set_context import SetContext
@@ -169,11 +170,13 @@ def _clean(text: str) -> str:
 
 def codes(description: str) -> frozenset[str]:
     """The product codes a description prints, spelled one way (`QZ-16` and `QZ16`: one)."""
-    return frozenset(re.sub(r"[-\s]", "", c).upper() for c in _CODE.findall(description))
+    return frozenset(
+        re.sub(r"[-\s]", "", c).upper() for c in _CODE.findall(dashes_to_hyphen(description))
+    )
 
 
 def _words(description: str) -> frozenset[str]:
-    plain = _CODE.sub(" ", description)
+    plain = _CODE.sub(" ", dashes_to_hyphen(description))
     return frozenset(w for w in re.findall(r"[a-z]{3,}", plain.lower()) if w not in _STOP)
 
 
@@ -202,7 +205,7 @@ def _grain(description: str) -> str:
 
 def _tag_of(text: str) -> str | None:
     """The tag a cell is (the whole cell; a family of two letters or more: never a cabinet code)."""
-    cleaned = _clean(text).strip(" :;,")
+    cleaned = dashes_to_hyphen(_clean(text)).strip(" :;,")
     if not cleaned or not TAG.fullmatch(cleaned):
         return None
     family = family_of(cleaned)

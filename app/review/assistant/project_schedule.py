@@ -67,6 +67,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from app.review.assistant.set_context import TAG, family_of, item_key, scope_notes, tags_in
+from vocabulary.dashes import dashes_to_hyphen
 
 if TYPE_CHECKING:
     from app.review.assistant.schedule_index import Row
@@ -355,7 +356,7 @@ class ItemEntry:
 
 def canon(tag: str) -> str:
     """A tag or item number spelled one way: `ST-02`, `ST-2` and `st02` are `ST-2`."""
-    text = re.sub(r"\s+", "", str(tag or "")).upper()
+    text = re.sub(r"\s+", "", dashes_to_hyphen(str(tag or ""))).upper()
     found = _PARTS.match(text)
     if found is None:
         return text
@@ -364,7 +365,7 @@ def canon(tag: str) -> str:
 
 def _finish_tag(text: str) -> str | None:
     """The cell as a finish tag (the whole cell; a family of two letters or more)."""
-    cleaned = _clean(text).upper().strip(" :;,")
+    cleaned = dashes_to_hyphen(_clean(text)).upper().strip(" :;,")
     if not cleaned or not TAG.fullmatch(cleaned):
         return None
     family = family_of(cleaned)
@@ -373,8 +374,8 @@ def _finish_tag(text: str) -> str | None:
 
 def _item_number(text: str) -> str | None:
     """The cell's item number: its first tag (`BOH-802`, `GRT-804T`), else a short code with a digit
-    (`101A`), else `None`."""
-    cleaned = _clean(text).upper()
+    (`101A`), else `None`. Any look-alike dash is the hyphen (`vocabulary.dashes`)."""
+    cleaned = dashes_to_hyphen(_clean(text)).upper()
     if not cleaned or _NONE.match(cleaned):
         return None
     found = TAG.search(cleaned)

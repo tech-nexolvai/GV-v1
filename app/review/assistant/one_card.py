@@ -84,6 +84,7 @@ from app.review.assistant.classification import SAME_ITEM, internal
 from app.review.assistant.decision_resolver import MILLWORK_FAMILIES
 from app.review.assistant.finding_checks import to_inches
 from app.review.assistant.round_reference import round_only
+from vocabulary.dashes import dashes_to_hyphen
 
 __all__ = ["RANK", "Folded", "OneCard", "compares_architect", "fold", "same_item"]
 
@@ -244,7 +245,7 @@ def _codes(text: object) -> frozenset[str]:
     """The millwork finish tags written in `text`, normalised ("SS 01", "SS-01" -> "SS-1")."""
     return frozenset(
         f"{m.group(1)}-{int(m.group(2))}"
-        for m in _TAG.finditer(str(text or ""))
+        for m in _TAG.finditer(dashes_to_hyphen(str(text or "")))
         if m.group(1) in MILLWORK_FAMILIES
     )
 

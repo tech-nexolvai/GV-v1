@@ -40,6 +40,8 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Final, Literal
 
+from vocabulary.dashes import dashes_to_hyphen
+
 __all__ = [
     "TAG_READ",
     "Decision",
@@ -78,8 +80,8 @@ type Outcome = Literal["right", "wrong", "not_compared"]
 
 def tag_keys(text: object) -> list[str]:
     """Every tag in `text`, spelled one way (`AB-012-CUST` is `AB-12-CUST`; `XY-01` and `XY01`
-    are `XY-1`), in order, each once."""
-    words = " ".join(str(text or "").upper().split())
+    are `XY-1`; any look-alike dash is the hyphen, `vocabulary.dashes`), in order, each once."""
+    words = " ".join(dashes_to_hyphen(str(text or "")).upper().split())
     out: list[str] = []
     for found in _TAG.finditer(words):
         letters, number, letter, suffix = found.groups()
