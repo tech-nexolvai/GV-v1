@@ -51,7 +51,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Final
 
-from app.review.assistant import dim_pairs, view_scales
+from app.review.assistant import dim_pairs, title_block, view_scales
 from app.review.assistant.full_check_plan import DIVIDER_NOTE, read_page_map
 from app.review.assistant.product_scope import named_products
 from app.review.assistant.sheet_revisions import exact_copies, older_copies
@@ -155,7 +155,9 @@ NUMBERS_UNREAD: Final = "numbers_unread"
 _UNIT: Final = re.compile(r"[\"'\u2032\u2033]|\bmm\b", re.IGNORECASE)
 #: An item-like tag (`pairing.item_tags_in`) names one piece when the vendor prints it on at most
 #: this share of its drawings (or `ITEM_TAG_MIN` drawings): `LM-004`, printed on a third of a real
-#: set's drawings, is a laminate; `XX-801`, on the few sheets of one piece, is the piece.
+#: set's drawings, is a laminate; `XX-801`, on the few sheets of one piece, is the piece. A tag the
+#: vendor's own title block names as its sheet's item, numbered as an item, names its piece however
+#: many sheets draw it (`_title_block_items`): one vanity drawn on 5 of a 9-sheet set's sheets.
 ITEM_TAG_SHARE: Final = 0.1
 ITEM_TAG_MIN: Final = 3
 #: A plan printing this many item-like tags is a key or furniture plan, not an item's drawing.
@@ -939,6 +941,9 @@ def worklist_from(
         across_context.tag_drawings.update(known_vendor.item_tags or ())
         across_context.word_drawings.update(known_vendor.words)
     across_context.item_limit = max(ITEM_TAG_MIN, ITEM_TAG_SHARE * len(mine_vendor))
+    across_context.named_items = _title_block_items(
+        {(drawings[h.ref].file, drawings[h.ref].own_page) for h in mine_vendor}, dims_pages
+    )
     per_page = Counter((h.file, h.file_page or h.page) for h in vendor_halves)
     for half in vendor_halves:
         page_read = read_index.get(f"{half.file}#{half.file_page or half.page}")
@@ -1383,7 +1388,14 @@ class _Across:
     tag_drawings: Counter[str] = field(default_factory=Counter)
     """How many of the vendor's drawings print each item-like tag."""
     item_limit: float = math.inf
-    """An item-like tag printed on more of the vendor's drawings than this names a finish."""
+    """An item-like tag printed on more of the vendor's drawings than this names a finish, unless
+    the vendor's title block names it as its sheet's item (`named_items`)."""
+    named_items: frozenset[str] = frozenset()
+    """The tags the vendor's own title blocks name as their sheet's item, numbered as items
+    (`_title_block_items`): the piece's number on every sheet that draws it."""
+    tag_paired: dict[str, str] = field(default_factory=dict)
+    """The vendor drawings the architect's own printed item tag paired (`_tag_page`), with the
+    architect item: the swap audit doubts them only on strong evidence (`pairing.swap_is_strong`)."""
     marked: dict[str, tuple[frozenset[str], frozenset[str]]] = field(default_factory=dict)
     """A drawing's variant and opposite-hand words the set index read on it (checked printed),
     by the drawing's ref: on top of code's own (`pairing.markers_in`)."""
@@ -1414,8 +1426,10 @@ class _Across:
 
     def item_tags(self) -> frozenset[str]:
         """The vendor's item tags (`ITEM_TAG_SHARE`): every item-like tag it prints on few of its
-        drawings."""
-        return frozenset(t for t, n in self.tag_drawings.items() if n <= self.item_limit)
+        drawings, or that its title blocks name as their sheet's item (`named_items`)."""
+        return frozenset(
+            t for t, n in self.tag_drawings.items() if n <= self.item_limit or t in self.named_items
+        )
 
 
 def _view_drawings(
@@ -1805,6 +1819,32 @@ def _project_of(item: AcrossCandidate) -> str | None:
     return projects_module.key(item.project) if item.project else None
 
 
+def _title_block_items(
+    pages: Iterable[tuple[str, int]], dims_pages: Mapping[tuple[str, int], Mapping[str, Any]]
+) -> frozenset[str]:
+    """The item tags the vendor's own title blocks name as their sheet's item: the ITEM cell code
+    reads on each of its `pages` (`title_block.cells`, the text layer), numbered as an item
+    (`pairing.numbered_as_item`: 100 or more; a finish or a material is numbered from 1). An item
+    is drawn on as many sheets as it needs (its elevation, its top, its frame, its countertop: a
+    real vanity on 5 of a 9-sheet set's sheets), so how many sheets print its number says nothing
+    against it; a finish (`LA-002`, on most of a set's sheets) or a product's model number (a sink
+    printed on five different vanities' sheets) is never in the item cell."""
+    out: set[str] = set()
+    for key in sorted(pages):
+        found = [
+            {"text": text, "box": list(box)}
+            for text, box in views_module.phrases_of(dims_pages.get(key))
+        ]
+        for cell in title_block.cells(found):
+            if cell.name == "item":
+                out.update(
+                    t
+                    for t in pairing_module.item_tags_in([cell.value])
+                    if pairing_module.numbered_as_item(t)
+                )
+    return frozenset(out)
+
+
 def _item_facts(
     item: AcrossCandidate, facts_of: Callable[[Drawing], pairing_module.Facts], section: str | None
 ) -> tuple[pairing_module.Facts, list[pairing_module.Facts]]:
@@ -1912,7 +1952,7 @@ def _pair_across(
         for c in everything
         if not c.reference
         and not c.key_plan
-        and (project is None or _project_of(c) in (project, None))
+        and (project is None or _same_project(c, project, context))
         and refused is None
     ]
     item_tags = (mine_facts.item_tags or frozenset()) & context.item_tags()
@@ -1930,7 +1970,7 @@ def _pair_across(
         why = (
             refused
             or (_needed(_tag_only_words(tag_plan)) if tag_plan is not None else None)
-            or _honest_unpaired(vendor, everything, item_tags, project, facts_of)
+            or _honest_unpaired(vendor, everything, item_tags, project, facts_of, context)
             or (
                 f"{pairing_module.UNPAIRED}: the architect's file holds no drawing it may be "
                 "compared with (only the brand prototype or key plans)"
@@ -2079,6 +2119,7 @@ def _pair_across(
         if chosen in ((), (tag_pair.item,)):
             # The architect's own printed tag decides: the paid matcher is not asked about it.
             chosen, code_pick, code_paired = (tag_pair.item,), tag_pair.item, True
+            context.tag_paired[vendor.ref] = tag_pair.item
             why = (
                 f"paired with {tag_pair.item}: it prints the vendor's item tag "
                 f"{tag_pair.printed}, the architect's own tag (no other elevation or section of "
@@ -2277,7 +2318,7 @@ def _pair_across(
         if shown_only is not None:
             why = _needed(f"{shown_only}; {why.removeprefix(f'{pairing_module.UNPAIRED}: ')}")
     if not chosen and not rivals and DRAWING_NEEDED not in why:
-        honest = _honest_unpaired(vendor, everything, item_tags, project, facts_of)
+        honest = _honest_unpaired(vendor, everything, item_tags, project, facts_of, context)
         prefix = f"{pairing_module.UNPAIRED}: "
         if honest is not None:
             why = f"{honest}; {why.removeprefix(prefix)}"
@@ -2436,7 +2477,12 @@ def _swap_audit(
     """The pair-swap audit (plan change 6c): two vendor drawings paired with two different
     architect pages of one title (the set index's item title, or one room's views), whose
     printed sizes fit each other's pages better (`pairing.swap_audit`), may be crossed: both
-    become "pairing unsure" naming both pages. In place."""
+    become "pairing unsure" naming both pages. A pair the architect's own printed item tag made
+    (`_Across.tag_paired`: the vendor's tag printed on that page and on no other elevation of the
+    architect's) stays, unless the sizes are strong evidence against it
+    (`pairing.swap_is_strong`: both drawings fit the other's page better, or one by more than one
+    shared size); the other pair, resting on weaker evidence, still becomes "pairing unsure". In
+    place."""
 
     def title(pair: AcrossPair) -> str | None:
         found = {
@@ -2467,18 +2513,19 @@ def _swap_audit(
             a, b = pairs[one], pairs[two]
             if key != other_key or set(a.chosen) & set(b.chosen):
                 continue
-            found = pairing_module.swap_audit(
-                (facts_of(a.vendor), [facts_of(d) for d in _paired_drawings(a, by_item)]),
-                (facts_of(b.vendor), [facts_of(d) for d in _paired_drawings(b, by_item)]),
-            )
+            first = (facts_of(a.vendor), [facts_of(d) for d in _paired_drawings(a, by_item)])
+            second = (facts_of(b.vendor), [facts_of(d) for d in _paired_drawings(b, by_item)])
+            found = pairing_module.swap_audit(first, second)
             if found is not None:
                 why = (
                     f"the swap audit: the sizes of vendor pages {a.vendor.own_page} and "
                     f"{b.vendor.own_page} fit each other's architect pages better ({found[0]} "
                     f"points against {found[1]})"
                 )
-                crossed.setdefault(one, (two, why))
-                crossed.setdefault(two, (one, why))
+                strong = pairing_module.swap_is_strong(first, second)
+                for ref, other in ((one, two), (two, one)):
+                    if strong or context.tag_paired.get(ref) not in pairs[ref].chosen:
+                        crossed.setdefault(ref, (other, why))
     for ref, (other, why) in crossed.items():
         pair, theirs = pairs[ref], pairs[other]
         pages = {c.id: c.page for c in pair.candidates}
@@ -2779,13 +2826,17 @@ class _TagPage:
     """Only a tag on a plan: what code found of the tag's room (`_room_page`), for the reason."""
 
 
-def _same_project(item: AcrossCandidate, project: str) -> bool:
-    """Whether an architect item may be of the vendor drawing's project (`project`, normalised):
-    its page names no project, the same one, or only part of its name (the brand alone, "HOTEL
-    NORTH" of "HOTEL NORTH, SPRINGFIELD", when the set index read the name in two pieces). A page
-    naming a word the vendor's project lacks is another project's."""
+def _same_project(item: AcrossCandidate, project: str, context: _Across) -> bool:
+    """Whether an architect item may be of the vendor drawing's project (`project`, normalised, one
+    of the architect's): its page names no project, or the same job (`projects.same_job`: the same
+    name, or the name read whole on some sheets and in part on others, "HOTEL NORTH" and "HOTEL
+    NORTH, SPRINGFIELD", when no third project of the file shares the part). The one test every
+    step uses (a real upload: the vendor's job matched the architect's full name, and the two
+    sheets drawing its vanities, whose title blocks print the brand's name alone, were no
+    candidates). A page naming a word the vendor's project lacks, on both sides, is another
+    project's."""
     own = _project_of(item)
-    return own is None or own == project or set(own.split()) <= set(project.split())
+    return own is None or projects_module.same_job(own, project, context.projects)
 
 
 def _tag_page(
@@ -2836,7 +2887,7 @@ def _tag_page(
         if len(pages) > TAG_PAGES_MAX:
             return None
         items = [by_place.get(key) for key in pages]
-        if any(item is None or not _same_project(item, project) for item in items):
+        if any(item is None or not _same_project(item, project, context) for item in items):
             return None
         printing = [item for item in items if item is not None]
         shows = [item for item in printing if not item.key_plan]
@@ -3146,7 +3197,10 @@ def _shown_only(
     if (
         project is None
         or len(named) != len(answer.matches)
-        or any(c.reference or _project_of(c) != project for c in named)
+        or any(
+            c.reference or _project_of(c) is None or not _same_project(c, project, context)
+            for c in named
+        )
     ):
         return None
     if all(c.key_plan for c in named):
@@ -3396,6 +3450,7 @@ def _honest_unpaired(
     item_tags: frozenset[str],
     project: str | None,
     facts_of: Callable[[Drawing], pairing_module.Facts],
+    context: _Across,
 ) -> str | None:
     """What code can say of an unpaired vendor drawing's item: no architect drawing of its
     project prints its item tag, but a key plan of the project does (a tag gives no sizes), or
@@ -3412,7 +3467,7 @@ def _honest_unpaired(
                 out.append((item, hits))
         return out
 
-    mine = [c for c in everything if project is None or _project_of(c) in (project, None)]
+    mine = [c for c in everything if project is None or _same_project(c, project, context)]
     if printing(c for c in mine if not c.reference and not c.key_plan):
         return None
     plans = printing(c for c in mine if c.key_plan and not c.reference)

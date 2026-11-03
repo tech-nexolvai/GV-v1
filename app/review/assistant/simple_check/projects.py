@@ -22,6 +22,8 @@ on.
   prototype is reference only, never the architect's design to compare against).
 - **The same project in both files** (`match`): the same letters and digits, or the words of a
   name that only one of the other file's projects uses.
+- **One job, two wordings** (`same_job`): within one file, a name whose words are all in another
+  name of the file (and in no third) is the same job read in part.
 
 Pure: plain values in and out. The work list (`worklist._pair_across`) uses it.
 """
@@ -39,6 +41,7 @@ __all__ = [
     "key",
     "match",
     "places",
+    "same_job",
     "siblings_of",
 ]
 
@@ -92,6 +95,22 @@ def match(project: str, candidates: Iterable[str], siblings: Iterable[str] = ())
     mine = set(_WORD.findall(project)) - shared
     found = [c for c in pool if mine & _own_words(c, pool)]
     return found[0] if len(found) == 1 else None
+
+
+def same_job(one: str, other: str, projects: Iterable[str] = ()) -> bool:
+    """Whether two project names (normalised, `key`) name one job: the same name, or every word of
+    one is in the other ("HOTEL NORTH" and "HOTEL NORTH, SPRINGFIELD": the set index read the
+    name whole on some sheets and in part on others, so code holds both as projects of the file),
+    when no other of the file's `projects` holds every word of the shorter one too (the brand
+    alone, in a file of two hotels of the brand, names neither). A word of one the other lacks on
+    both sides ("HOTEL NORTH" and "HOTEL SOUTH") is another job."""
+    if one == other:
+        return True
+    a, b = set(one.split()), set(other.split())
+    if not (a <= b or b <= a):
+        return False
+    shorter = a & b  # one holds every word of the other: the shorter name's words
+    return not any(shorter <= set(p.split()) for p in set(projects) - {one, other})
 
 
 def places(

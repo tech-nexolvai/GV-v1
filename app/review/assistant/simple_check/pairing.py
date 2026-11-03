@@ -95,6 +95,7 @@ __all__ = [
     "MIN_LAYOUT_VALUES",
     "MIN_WEAK_POOL",
     "NAMING_KINDS",
+    "ONE_SIZE_POINTS",
     "PAIRING_UNSURE",
     "TIER",
     "UNPAIRED",
@@ -113,6 +114,7 @@ __all__ = [
     "mirror_proof",
     "named_by",
     "narrow",
+    "numbered_as_item",
     "opposite_hand",
     "piece_words",
     "plan_and_elevation",
@@ -129,6 +131,7 @@ __all__ = [
     "size_words",
     "swap_audit",
     "swap_check",
+    "swap_is_strong",
     "tags_in",
     "title_key",
     "unit_title",
@@ -672,13 +675,31 @@ def item_tags_in(texts: Iterable[str]) -> frozenset[str]:
 _TAG_PARTS: Final = re.compile(r"^([A-Z]{1,4})(\d{1,4})$")
 
 
+def numbered_as_item(tag: str) -> bool:
+    """Whether a normalised tag (`tags_in`: `XX801`) is numbered as an item is (`_ITEM_TAG`: 100
+    or more), unlike a finish or material, which a schedule numbers from 1 (`PL7`, `LA2`)."""
+    return _ITEM_TAG.match(tag) is not None
+
+
+#: A part of an item the architect tags after the item's tag and a separator (owner, 2026-11-03,
+#: a real architect sheet tags its vanity only as `XX-213.C`, `XX-213-ST` and `XX-213-ACC`): the
+#: item's own pieces (its countertop, its stone, its accessories). Letters only: one to three after
+#: a dot (the `.X` suffix `set_context.TAG` reads, `XX-801.C`), two or three after a hyphen or an
+#: underscore (`XX-801-ST`; a single letter there, `XX-801-A`, may be a variant). A variant or hand
+#: word (`XX-801-ADA`, `XX-801.R`, `XX-801-LH`) names another unit, never this one.
+_NOT_A_PART: Final = r"(?:ADA|HC|REV|OPP|[LR]H?)(?![A-Z])"
+_SUB_PART: Final = rf"(?:\.(?!{_NOT_A_PART})[A-Z]{{1,3}}|[-_](?!{_NOT_A_PART})[A-Z]{{2,3}})"
+
+
 def printed_item_tag(texts: Iterable[str], tag: str) -> str | None:
     """The item tag `tag` (normalised, `item_tags_in`: `XX801`) as `texts` print it, when they
     print it exactly as an item code: its letters, a hyphen, its number of three or four digits
-    (`XX-801`), alone or with the suffix the architect adds for the item's top or its sink
-    (`XX-801-T`, `XX-801T`, `XX-801-SK`); else `None`. Another number (`XX-8010`), another
-    letter after it (`XX-801A`, a variant) or a further part (`XX-801-1`) is another item,
-    never this one. Any look-alike dash is the hyphen (`vocabulary.dashes`: an architect's
+    (`XX-801`), alone, with the suffix the architect adds for the item's top or its sink
+    (`XX-801-T`, `XX-801T`, `XX-801-SK`), or with one of the item's parts after a separator
+    (`_SUB_PART`: `XX-801.C`, `XX-801-ST`, `XX-801-ACC`); else `None`. Another number
+    (`XX-8010`), another letter glued to the number (`XX-801A`, a variant), a further numbered part
+    (`XX-801-1`), a variant or hand word (`XX-801-ADA`) or two parts (`XX-801-ST.C`) is another
+    item, never this one. Any look-alike dash is the hyphen (`vocabulary.dashes`: an architect's
     `XX−801`, printed with the minus sign, is `XX-801`), and the tag is given with the hyphen."""
     parts = _TAG_PARTS.match(tag)
     if parts is None:
@@ -686,7 +707,7 @@ def printed_item_tag(texts: Iterable[str], tag: str) -> str | None:
     letters, number = parts.group(1), int(parts.group(2))
     exact = re.compile(
         rf"(?<![A-Z0-9])(?P<tag>{letters}[-_](?=\d{{3,4}}(?!\d))0*{number})"
-        r"(?:[-_]?(?:T|SK))?(?![-_.]?[A-Z0-9])"
+        rf"(?:[-_]?(?:T|SK)|{_SUB_PART})?(?![-_.]?[A-Z0-9])"
     )
     for text in texts:
         found = exact.search(dashes_to_hyphen(str(text or "")).upper())
@@ -1824,14 +1845,41 @@ def swap_audit(
     drawings). When the vendor drawings' printed sizes fit the other's pages better
     (`size_match` points, summed), the pairs may be crossed: the points crossed and as paired;
     else `None`."""
-
-    def points(vendor: Facts, targets: Sequence[Facts]) -> int:
-        return max((size_match(vendor, t).points for t in targets), default=0)
-
     (one, mine), (two, theirs) = first, second
-    kept = points(one, mine) + points(two, theirs)
-    crossed = points(one, theirs) + points(two, mine)
+    kept = _fit(one, mine) + _fit(two, theirs)
+    crossed = _fit(one, theirs) + _fit(two, mine)
     return (crossed, kept) if crossed > kept else None
+
+
+def _fit(vendor: Facts, targets: Sequence[Facts]) -> int:
+    """How well the vendor drawing's printed sizes fit one of `targets`, the best (`size_match`)."""
+    return max((size_match(vendor, t).points for t in targets), default=0)
+
+
+#: The points one of the vendor's overall sizes printed on a sheet earns (`SizeMatch.points`): one
+#: size the two drawings share.
+ONE_SIZE_POINTS: Final = SizeMatch("", (Fraction(1),)).points
+
+
+def swap_is_strong(
+    first: tuple[Facts, Sequence[Facts]], second: tuple[Facts, Sequence[Facts]]
+) -> bool:
+    """Whether the swap audit's evidence (`swap_audit`, same arguments) is strong enough to doubt
+    a pair the architect's own printed item tag made (owner, 2026-11-03): BOTH vendor drawings fit
+    the other's architect drawings better than their own (two witnesses, as a real crossing
+    gives), or one of them by more than one shared size (`ONE_SIZE_POINTS`: two of its overall
+    sizes printed there, or one and its parts in order). One drawing's one overall printed on the
+    other page, the other drawing fitting neither, is weak: an architect who prints few sizes of
+    the pieces prints the room's (a wall's height, a mirror's), and one common size says nothing
+    against a tag printed on both sides (a real set: a 42" vanity's 42" against a wall height on
+    the 54" vanity's sheet, 2 points against 0)."""
+    (one, mine), (two, theirs) = first, second
+    gains = [
+        gain
+        for gain in (_fit(one, theirs) - _fit(one, mine), _fit(two, mine) - _fit(two, theirs))
+        if gain > 0
+    ]
+    return len(gains) == 2 or any(gain > ONE_SIZE_POINTS for gain in gains)
 
 
 def swap_check(vendor: Facts, pick: Facts, others: Sequence[Facts]) -> tuple[SizeMatch | None, str]:
