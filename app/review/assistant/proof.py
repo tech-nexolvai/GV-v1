@@ -53,6 +53,7 @@ from app.review.assistant import (
     classification,
     dim_ends,
     drafting_notes,
+    inch_figures,
     likely_problems,
     missing_items,
     reading_routes,
@@ -1082,12 +1083,35 @@ def _standard_agrees(finding: Mapping[str, Any]) -> bool:
 
 
 def should_be(finding: Mapping[str, Any]) -> str:
-    """The green words: `37" (architect 3'-1", page 28)`."""
+    """The green words: `37" (architect 3'-1", page 28)`. A string whose millimetres add up while
+    its inch figures do not points at the inch figures, never the overall (`inch_figures`):
+    `inch figures adding up to [20] (the millimetres add up: 36 + 436 + 36 = 508 mm)`."""
+    figures = inch_figures_of(finding)
+    if figures is not None:
+        hint = figures.suggestion_words()
+        return (
+            f"inch figures adding up to {figures.target} (the millimetres add up: "
+            f"{figures.mm_line()}" + (f"; {hint})" if hint else ")")
+        )
     value = should_be_value(finding)
     return f"{value} ({governs(finding)})"
 
 
+def inch_figures_of(finding: Mapping[str, Any]) -> inch_figures.InchFigures | None:
+    """A vendor string whose millimetres add up while its inch figures do not, when no value of GV's
+    reviewer stands in for code's (`inch_figures.of_finding`)."""
+    if reviewer_should_be(finding) is not None:
+        return None
+    return inch_figures.of_finding(finding)
+
+
 def _sum_words(finding: Mapping[str, Any]) -> str:
+    figures = inch_figures_of(finding)
+    if figures is not None:
+        return (
+            f"the millimetres add up ({figures.mm_line()}) but the inch figures add up to "
+            f"{figures.inch_sum_words}, printed {figures.target}"
+        )
     summed = _decimal(finding.get("parts_sum"))
     printed = _short(finding.get("printed_total") or finding.get("vendor"), 30)
     if summed is not None:

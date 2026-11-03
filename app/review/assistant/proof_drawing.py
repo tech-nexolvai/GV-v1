@@ -109,6 +109,7 @@ from app.review.assistant.proof import (
     RULE_LINE,
     architect_file,
     governs,
+    inch_figures_of,
     please_check_words,
     proof_counts,
     proof_group,
@@ -318,6 +319,15 @@ def note_lines(mark: Mark) -> list[list[_Run]]:
         ("  should be  ", _NOTE_FONT, _GREY),
         (value, _NOTE_BOLD, GREEN),
     ]
+    figures = inch_figures_of(finding)
+    if figures is not None:
+        # The millimetres add up; the inch figures do not (option A, 2026-11-03): the note points
+        # at the inch figures' sum, never at the overall, which is printed right.
+        pair = [
+            (f"inch figures {figures.inch_sum_words}", _NOTE_BOLD, RED),
+            ("  should add up to  ", _NOTE_FONT, _GREY),
+            (figures.target, _NOTE_BOLD, GREEN),
+        ]
     lines = _wrapped(head, room, rows=2)
     if sum(_measure(t, f) for t, f, _c in pair) <= room:
         return [*lines, pair]
@@ -1408,6 +1418,20 @@ def _sum_panel(
         rest = list(parts)
         rest.remove(printed)
         parts = [overall, *(f"- {part}" for part in rest)]
+    figures = inch_figures_of(finding)
+    if figures is not None:
+        # The millimetres add up, the inch figures do not (option A, 2026-11-03): both sums, the
+        # inch figures' sum in red and the printed figure they must add up to in green.
+        return _Panel(
+            [
+                Paragraph(escape(f"Millimetres: {figures.mm_note()}"), cs["line"]),
+                Paragraph(escape(f"Inch figures: {figures.inch_parts_words()}"), cs["line"]),
+                Paragraph(_coloured("= ", figures.inch_sum_words, RED), cs["big"]),
+                Paragraph(_coloured("must add up to ", figures.target, GREEN), cs["under"]),
+            ],
+            pw,
+            ph,
+        )
     story: list[Any] = []
     if parts and len(parts) * cs["line"].leading + 40 <= ph:
         story += [
@@ -1540,7 +1564,14 @@ def _card(
             [left, right],
             [
                 Paragraph(shown, cs["under"]),
-                Paragraph(_coloured(shows, proof_words.should_text(finding), GREEN), cs["under"]),
+                Paragraph(
+                    (
+                        _coloured("Inch figures must add up to ", figures.target, GREEN)
+                        if (figures := inch_figures_of(finding)) is not None
+                        else _coloured(shows, proof_words.should_text(finding), GREEN)
+                    ),
+                    cs["under"],
+                ),
             ],
         ],
         colWidths=[pw + _PANEL_GAP, pw],

@@ -2512,6 +2512,17 @@
             "description": "Source vendor_arithmetic: code's sum of the parts, in inches (#1554).",
             "title": "Parts Sum"
           },
+          "printed_string": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatFindingPrintedStringOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A vendor string code read as one whole row: its parts and overall as code's own labels print them (millimetres with their inch figures). Null when code did not match the labels."
+          },
           "printed_total": {
             "anyOf": [
               {
@@ -2878,6 +2889,30 @@
           "page"
         ],
         "title": "ChatFindingPageOut",
+        "type": "object"
+      },
+      "ChatFindingPrintedStringOut": {
+        "description": "A vendor string's row as code's own labels print it (`inch_figures.PRINTED_STRING`): the\nreading may type only the inches of `36 [1 1/2]`, and the words of a string whose millimetres\nadd up while its inch figures do not need the millimetres (option A, 2026-11-03).",
+        "properties": {
+          "parts": {
+            "description": "Each part's label as printed: 36 [1 1/2].",
+            "items": {
+              "type": "string"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
+          "total": {
+            "description": "The overall's label as printed: 508 [20].",
+            "title": "Total",
+            "type": "string"
+          }
+        },
+        "required": [
+          "parts",
+          "total"
+        ],
+        "title": "ChatFindingPrintedStringOut",
         "type": "object"
       },
       "ChatFindingProofOut": {

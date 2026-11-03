@@ -52,7 +52,9 @@ A string a reading grouped (the reading ledger's, a page reviewer's) is a "parts
 only when code reads it as one whole row (`judge_rows`, 2026-10-31): code's own string of that
 overall with the same parts, or a row of code's labels printing exactly those parts that fills the
 overall's line end to end (filler notes at its ends counted). Its parts are then code's
-(`parts_read: code`), so code's sum is a witness (`witness.py`). A string code sees is incomplete
+(`parts_read: code`), so code's sum is a witness (`witness.py`), and the row as code's labels print
+it is kept on the finding (`inch_figures.PRINTED_STRING`) for its words: a reading types only the
+inches of `36 [1 1/2]`. A string code sees is incomplete
 (its parts' lines stop short or leave a gap, the run prints other parts the list leaves out, the
 parts miss the overall by a whole part or more, a part that is not a size) is dropped with the
 reason: an AI-typed list that leaves a part out makes a row that adds up look wrong. A string code
@@ -100,6 +102,7 @@ from uuid import uuid4
 from app.review.assistant import field_cut, likely_problems, reading_routes, scale_fit
 from app.review.assistant.finding_checks import PARTS_READ, WRONG_PART
 from app.review.assistant.full_check_advocate import string_chain, string_extras
+from app.review.assistant.inch_figures import PRINTED_STRING
 from app.review.assistant.ledger import add_up, format_inches
 
 __all__ = [
@@ -2189,6 +2192,8 @@ class StringJudgement:
     dropped: Mapping[str, str] = field(default_factory=dict)
     """Findings code's own reading of the same span replaces, with the reason: it adds up, or code
     found other parts for it (its own finding is then added instead)."""
+    printed: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    """Each verified finding's row as code's labels print it (`inch_figures.PRINTED_STRING`)."""
 
 
 def _overlaps(box: Mapping[str, Any] | None, label: _Label, margin: float = 6.0) -> bool:
@@ -2219,6 +2224,7 @@ def judge_strings(
     to_inches = import_module("app.review.assistant.finding_checks").to_inches
     verified: list[str] = []
     dropped: dict[str, str] = {}
+    rows_printed: dict[str, Mapping[str, Any]] = {}
     for finding in findings:
         if finding.get("source") != "vendor_arithmetic" or finding.get("created_by") == CREATED_BY:
             continue
@@ -2252,12 +2258,19 @@ def judge_strings(
             )
         elif None not in read and parts == ours and check.wrong_part is None:
             verified.append(str(finding["id"]))
+            rows_printed[str(finding["id"])] = _printed(check.parts, check.overall)
         else:
             dropped[str(finding["id"])] = (
                 f"Code measured this string on the drawing as {listed} (printed {overall}); its "
                 "own finding replaces the reading's."
             )
-    return StringJudgement(tuple(verified), dropped)
+    return StringJudgement(tuple(verified), dropped, rows_printed)
+
+
+def _printed(parts: Sequence[_Label], overall: _Label) -> dict[str, Any]:
+    """A row as code's labels print it (`inch_figures.PRINTED_STRING`): the reading typed only the
+    inches of `36 [1 1/2]`, so the words of a string whose millimetres add up need code's own."""
+    return {"parts": [p.text for p in parts], "total": overall.text}
 
 
 # ---- a reading's string is a card only when it is a whole row code reads (2026-10-31) -------------
@@ -2286,6 +2299,9 @@ class RowJudgement:
     """Findings code cannot see as one row at all (no label of the overall at the spot, no row of
     its labels printing those parts), with what code could not confirm: a please-check, never red
     (M6, Anant 2026-11-01; `unproved_check`)."""
+    printed: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    """Each complete finding's row as code's labels print it, when code matched the labels
+    (`inch_figures.PRINTED_STRING`)."""
 
 
 def _padded(box: object) -> tuple[float, float, float, float] | None:
@@ -2313,9 +2329,9 @@ def _codes_own_row(
     checks: Sequence[StringCheck],
     printed: Fraction,
     parts: list[Fraction],
-) -> bool:
+) -> StringCheck | None:
     """Code's own string of that overall (`find_strings`, any verdict: a doubt is a whole row too)
-    at the string's spot, with these very parts."""
+    at the string's spot, with these very parts; None when there is none."""
     file, page = _where(finding)
     box = finding.get("vendor_box")
     for check in checks:
@@ -2325,8 +2341,8 @@ def _codes_own_row(
         if isinstance(box, Mapping) and not _overlaps(box, overall):
             continue
         if sorted(p.inches for p in check.parts) == parts:
-            return True
-    return False
+            return check
+    return None
 
 
 def _not_seen(
@@ -2392,6 +2408,7 @@ def judge_rows(
     complete: list[str] = []
     dropped: dict[str, str] = {}
     unproved: dict[str, str] = {}
+    rows_printed: dict[str, Mapping[str, Any]] = {}
     for finding in findings:
         if finding.get("source") != "vendor_arithmetic" or finding.get("created_by") == CREATED_BY:
             continue
@@ -2419,8 +2436,10 @@ def judge_rows(
             f"The reading's sum ({shown} against the {format_inches(printed)} printed) is not "
             "shown: "
         )
-        if _codes_own_row(finding, result.checks, printed, parts):
+        own = _codes_own_row(finding, result.checks, printed, parts)
+        if own is not None:
             complete.append(finding_id)
+            rows_printed[finding_id] = _printed(own.parts, own.overall)
             continue
         file, page = _where(finding)
         labels = [
@@ -2433,6 +2452,11 @@ def judge_rows(
         chain = string_chain(texts, printed_text, labels, box)
         if chain.outcome in ("tiles", "fillers"):
             complete.append(finding_id)
+            if chain.printed and chain.overall_printed:
+                rows_printed[finding_id] = {
+                    "parts": list(chain.printed),
+                    "total": chain.overall_printed,
+                }
             continue
         if chain.outcome == "gap":
             dropped[finding_id] = f"{lead}{chain.why}. {_WHOLE_ROW}"
@@ -2456,15 +2480,19 @@ def judge_rows(
             f"Code could not confirm these parts form one string on the drawing ({why}); "
             "please check. Never red: code reads only the AI's list of parts here."
         )
-    return RowJudgement(tuple(complete), dropped, unproved)
+    return RowJudgement(tuple(complete), dropped, unproved, rows_printed)
 
 
-def _read_by_code(finding: Mapping[str, Any]) -> dict[str, Any]:
+def _read_by_code(
+    finding: Mapping[str, Any], printed: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """A reading's string code reads as a whole row: its parts are code's (`PARTS_READ`), on the
-    finding and its checks, and its trust worked out again (code's sum is now a witness)."""
+    finding and its checks, and its trust worked out again (code's sum is now a witness). `printed`:
+    the row as code's labels print it, kept for the words (`inch_figures.PRINTED_STRING`)."""
     judged = import_module("app.review.assistant.chat_trust").judged
     checks = {**(finding.get("checks") or {}), PARTS_READ: "code"}
-    out: dict[str, Any] = judged({**finding, PARTS_READ: "code", "checks": checks})
+    kept = {PRINTED_STRING: dict(printed)} if printed else {}
+    out: dict[str, Any] = judged({**finding, PARTS_READ: "code", "checks": checks, **kept})
     return out
 
 
@@ -2698,6 +2726,9 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
         for finding in book.live():
             if str(finding.get("id")) in judged.verified:
                 proved = {**finding, "string_geometry": "verified"}
+                printed = judged.printed.get(str(finding.get("id")))
+                if printed:
+                    proved[PRINTED_STRING] = dict(printed)
                 if book.replace(proved):
                     engine._show_finding(proved)
         for finding_id, reason in judged.dropped.items():
@@ -2712,8 +2743,9 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
         # code cannot see as a row is a please-check (M6, 2026-11-01), after code's own items.
         rows = judge_rows(book.live(), result, keep=set(replaces))
         for finding in book.live():
-            if str(finding.get("id")) in rows.complete and finding.get(PARTS_READ) != "code":
-                read = _read_by_code(finding)
+            finding_id = str(finding.get("id"))
+            if finding_id in rows.complete and finding.get(PARTS_READ) != "code":
+                read = _read_by_code(finding, rows.printed.get(finding_id))
                 if book.replace(read):
                     engine._show_finding(read)
         for finding_id, reason in rows.dropped.items():

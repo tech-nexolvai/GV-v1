@@ -17,7 +17,13 @@ from app.review.assistant.chat_trust import cloud_kind
 from app.review.assistant.classification import not_compared_line
 from app.review.assistant.impact import by_impact
 from app.review.assistant.likely_problems import COUNT_WORDS as LIKELY_COUNT
-from app.review.assistant.proof import classified, proof_counts, proof_group, vendor_own
+from app.review.assistant.proof import (
+    classified,
+    inch_figures_of,
+    proof_counts,
+    proof_group,
+    vendor_own,
+)
 from app.review.assistant.review_action import CheckState, review_action
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.vendor_text import vendor_text
@@ -79,7 +85,7 @@ def _pages(pages: Sequence[int]) -> str:
 
 def _issue_words(findings: Sequence[Mapping[str, Any]]) -> list[str]:
     """The top issues, the same item and values on several pages said once."""
-    groups: dict[tuple[str, str, str, bool], list[int]] = {}
+    groups: dict[tuple[str, str, str, bool, str], list[int]] = {}
     for finding in top_issues(findings, limit=len(findings)):
         # The guard on internal words (#1622, `vendor_text`): no record id or "see GV Review's
         # record" in the summary either.
@@ -90,18 +96,37 @@ def _issue_words(findings: Sequence[Mapping[str, Any]]) -> list[str]:
             # A vendor string's "should be" is the sum of its own parts, never the architect's
             # (#1885): said as such.
             vendor_own(finding) == "sum",
+            # Its millimetres add up and only its inch figures do not (option A, 2026-11-03).
+            _figures_words(finding),
         )
         groups.setdefault(key, []).append(int(finding.get("page") or 0))
         if len(groups) > TOP_ISSUES:
             break
     return [
         (
-            f"{item}: vendor's parts add up to {other}, vendor prints {vendor} ({_pages(pages)})"
-            if own
-            else f"{item}: vendor {vendor}, architect {other} ({_pages(pages)})"
+            f"{item}: {figures} ({_pages(pages)})"
+            if figures
+            else (
+                f"{item}: vendor's parts add up to {other}, vendor prints {vendor} "
+                f"({_pages(pages)})"
+                if own
+                else f"{item}: vendor {vendor}, architect {other} ({_pages(pages)})"
+            )
         )
-        for (item, vendor, other, own), pages in list(groups.items())[:TOP_ISSUES]
+        for (item, vendor, other, own, figures), pages in list(groups.items())[:TOP_ISSUES]
     ]
+
+
+def _figures_words(finding: Mapping[str, Any]) -> str:
+    """A vendor string whose millimetres add up while its inch figures do not, in the summary's
+    words (`inch_figures`), else ""."""
+    figures = inch_figures_of(finding)
+    if figures is None:
+        return ""
+    return (
+        vendor_text(f"the millimetres add up, the inch figures do not ({figures.inch_line()})", "")
+        or ""
+    )
 
 
 def _stop_words(
