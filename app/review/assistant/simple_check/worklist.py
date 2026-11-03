@@ -154,6 +154,9 @@ NO_DRAWING_NOTE: Final = (
 #: (`set_pack.NUMBERS_UNREAD`): a drawing all the same, never "a table, notes or pictures page".
 NUMBERS_UNREAD: Final = "numbers_unread"
 _UNIT: Final = re.compile(r"[\"'\u2032\u2033]|\bmm\b", re.IGNORECASE)
+#: A number printed with no unit mark at all (`101`, `12`): on a room table's page it is a room
+#: number or a count, never a size (`_facts`).
+_BARE_NUMBER: Final = re.compile(r"\d{1,4}")
 #: An item-like tag (`pairing.item_tags_in`) names one piece when the vendor prints it on at most
 #: this share of its drawings (or `ITEM_TAG_MIN` drawings): `LM-004`, printed on a third of a real
 #: set's drawings, is a laminate; `XX-801`, on the few sheets of one piece, is the piece. A tag the
@@ -828,6 +831,18 @@ def worklist_from(
     typed = _typed_titles(annotations)
 
     known_facts: dict[str, pairing_module.Facts] = {}
+    # A room or vanity matrix, a room schedule (`rooms.table_rooms`): its numbers are rooms and
+    # counts. Read as inches they made a room matrix and the architect's room schedule look like
+    # one piece's drawings (rooms 301 and 302 as two 301" and 302" overall widths).
+    room_tables = {
+        key: table
+        for key, entry in dims_pages.items()
+        if (table := rooms_module.table_rooms(t for t, _b in views_module.phrases_of(entry)))
+    }
+
+    def sized(text: object, key: tuple[str, int]) -> bool:
+        """Whether a label may be a size: on a room table's page, never a bare number."""
+        return key not in room_tables or not _BARE_NUMBER.fullmatch(_plain(text))
 
     def facts_of(drawing: Drawing) -> pairing_module.Facts:
         if drawing.ref not in known_facts:
@@ -858,6 +873,7 @@ def worklist_from(
             for label in dims_page.get("labels") or []
             if isinstance(label, Mapping)
             and label.get("side") == side
+            and sized(label.get("text"), (drawing.file, own))
             and (box := _box(label.get("box"))) is not None
             and _distance(_centre(box), drawing.box) <= _LABEL_REACH_PT
             # A headed pasted picture's facts are only the labels read inside it (#1835).
@@ -875,7 +891,9 @@ def worklist_from(
         )
         return pairing_module.Facts(
             ref=drawing.ref,
-            values=pairing_module.values_of(drawing.labels),
+            values=pairing_module.values_of(
+                [lb for lb in drawing.labels if sized(lb.text, (drawing.file, own))]
+            ),
             references=pairing_module.references_in(texts),
             spans=_spans_with(raw, scales_page, side) if drawing.role == "vendor" else None,
             rows=(tuple(raw), scales_page, side),
@@ -967,12 +985,18 @@ def worklist_from(
             if page_text
             else [text for text, _box in views_module.phrases_of(dims_pages.get((half.file, own)))]
         )
-        listed = rooms_module.vendor_rooms(printed_text)
+        table = room_tables.get((half.file, own), frozenset())
+        listed = rooms_module.vendor_rooms(printed_text) | table
         if len(listed) >= rooms_module.MIN_ROOMS:
             across_context.vendor_rooms[half.ref] = (
                 listed,
-                rooms_module.printed_rooms(printed_text, rooms_module.has_short(listed)),
+                rooms_module.printed_rooms(printed_text, rooms_module.has_short(listed)) | table,
             )
+            if table:
+                across_context.room_list_tables.add(half.ref)
+    across_context.room_tables = {
+        key: found for key, found in room_tables.items() if key in across_context.architect_text
+    }
 
     def own_area(half: _Half) -> tuple[list[_Half], tuple[Drawing, ...]]:
         """The drawings of a vendor drawing's own area (GV's typed area, or its own page), and
@@ -1452,6 +1476,11 @@ class _Across:
     room_numbers: dict[bool, dict[tuple[str, int], frozenset[str]]] = field(default_factory=dict)
     """Each page of `architect_text`'s room numbers (`rooms.printed_rooms`, the title block's left
     out), with a unit's short numbers (`2A`) or not (the key), as `_room_numbers` found them."""
+    room_list_tables: set[str] = field(default_factory=set)
+    """The vendor drawings whose page is a room table (a room or vanity matrix, `rooms.table_rooms`):
+    their rooms are its cells'."""
+    room_tables: dict[tuple[str, int], frozenset[str]] = field(default_factory=dict)
+    """The architect's pages that are room tables (a room schedule), with their rooms."""
     room_paired: dict[str, str] = field(default_factory=dict)
     """The vendor drawings the room numbers paired (`_room_numbers_page`), with the architect item:
     like a pair by the printed item tag, the swap audit doubts them only on strong evidence."""
@@ -3297,6 +3326,9 @@ class _RoomPair:
     sheets: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     """Another sheet the page's elevation callouts point to (its item's id), with the views they
     point to: it is added when code finds the vendor's piece on one of them (`_pointed_view`)."""
+    lists: bool = False
+    """Both pages are room tables listing most of the job's rooms, the same rooms
+    (`rooms.room_list_page`): a vendor's room matrix and the architect's room schedule."""
 
 
 def _room_numbers(context: _Across, short: bool) -> dict[tuple[str, int], frozenset[str]]:
@@ -3382,7 +3414,19 @@ def _room_numbers_page(
     printed_anywhere = frozenset().union(*mine_project.values()) if mine_project else frozenset()
     if (printed - listed) & printed_anywhere:
         return None
-    found, _why = rooms_module.room_page(listed, mine_project, rooms_module.job_rooms(mine_project))
+    job = rooms_module.job_rooms(mine_project)
+    lists = (
+        rooms_module.room_list_page(
+            listed,
+            {k: v for k, v in context.room_tables.items() if _page_in_project(k, project, context)},
+            job,
+        )
+        if vendor.ref in context.room_list_tables
+        else None
+    )
+    # A room matrix listing most of the job's rooms is about the architect's room schedule
+    # listing the same rooms (two lists of the whole job); else the page about its rooms.
+    found = lists or rooms_module.room_page(listed, mine_project, job)[0]
     if found is None:
         return None
     by_place = {(c.file, c.page): c for c in everything if not c.reference}
@@ -3396,9 +3440,10 @@ def _room_numbers_page(
         return None
     return _RoomPair(
         item=plan.id,
-        rooms=tuple(sorted(listed)),
+        rooms=tuple(sorted(found.rooms)),
         printed=found.printed,
-        sheets=_pointed_sheets(plan, {c.id: c for c in pool}, context),
+        sheets={} if lists else _pointed_sheets(plan, {c.id: c for c in pool}, context),
+        lists=lists is not None,
     )
 
 
@@ -3423,6 +3468,12 @@ def _pointed_view(
 
 def _rooms_words(paired: _RoomPair) -> str:
     """How a drawing was paired by its room numbers (`_room_numbers_page`), in words."""
+    if paired.lists:
+        return (
+            "it is the architect's room table listing the same rooms as the vendor's room table "
+            f"({len(paired.rooms)} rooms on both of the {paired.printed} it lists; both list most "
+            "of the job's rooms: a room matrix and the room schedule)"
+        )
     rooms = ", ".join(paired.rooms)
     return (
         f"it prints the vendor's room numbers {rooms}, every one, and they are {len(paired.rooms)} "

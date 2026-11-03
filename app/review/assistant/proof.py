@@ -237,6 +237,12 @@ _SCHEDULE_PROOF_WORDS: Final = (
     "code read the vendor's material row from the drawing's text and the same tag's row in GV's "
     "project schedule; their product codes share none"
 )
+#: The `text` witness of the vendor's room matrix against the architect's room schedule
+#: (`room_matrix`).
+_ROOM_LIST_PROOF_WORDS: Final = (
+    "code read both room tables whole from the drawings' text: every room in a named row, every "
+    "row's count equal to its printed total"
+)
 #: A pairing proof in the proof line: code paired the two itself, or the advocate's checks.
 _PAIRED_BY_CODE: Final = "code paired the two dimensions itself"
 _PAIRED_BY_ADVOCATE: Final = (
@@ -1154,6 +1160,8 @@ def proof_line(finding: Mapping[str, Any]) -> str:
                 parts.append(missing_items.proof_words(_missing_item(finding) or {}))
             elif name == "text" and finding.get("source") == "project_schedule":
                 parts.append(_SCHEDULE_PROOF_WORDS)
+            elif name == "text" and finding.get("created_by") == "room_matrix":
+                parts.append(_ROOM_LIST_PROOF_WORDS)
             elif name in _PROOF_WORDS:
                 parts.append(_PROOF_WORDS[name])
     if witnesses:

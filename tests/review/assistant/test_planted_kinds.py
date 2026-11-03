@@ -99,6 +99,16 @@ PLANTED: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "test_architect_items:test_a_material_named_in_words_is_not_compared",
         ),
     },
+    "room_list": {
+        "mistake": (
+            "test_room_matrix:test_a_room_missing_from_one_list_is_a_wrong_only_when_both_are_read_whole",
+            "test_room_matrix:test_accessible_rooms_on_one_list_only_are_compared",
+        ),
+        "trap": (
+            "test_room_matrix:test_the_same_lists_give_no_finding",
+            "test_room_matrix:test_a_room_type_difference_is_one_please_check_per_pair_of_names",
+        ),
+    },
 }
 
 

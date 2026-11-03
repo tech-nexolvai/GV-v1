@@ -104,6 +104,8 @@ KINDS: Final[Mapping[str, str]] = {
     "gv_rule": "another GV rule check",
     "size_vs_architect": "a size differs from the architect's",
     "schedule": "a vendor's material row differs from GV's project schedule",
+    "room_list": "a vendor's room list (its rooms or accessible rooms) differs from the "
+    "architect's room schedule",
 }
 
 #: Each kind in a few plain words, for the accuracy line (`record_line`).
@@ -126,6 +128,7 @@ SHORT_NAMES: Final[Mapping[str, str]] = {
     "gv_rule": "other GV rules",
     "size_vs_architect": "sizes against the architect's",
     "schedule": "material rows against the project schedule",
+    "room_list": "room lists against the architect's room schedule",
 }
 #: The confidence of the bound the accuracy line states (95%).
 _BOUND_RISK: Final = 0.05
@@ -139,6 +142,7 @@ _CREATED_BY: Final[Mapping[str, str]] = {
     "splash_views": "splash",
     "architect_items": "finish_code",
     "project_schedule": "schedule",
+    "room_matrix": "room_list",
 }
 #: `missing_items.KIND`, stamped in a missing item's `text_proof`.
 _MISSING_KIND: Final = "missing_item"

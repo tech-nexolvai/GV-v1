@@ -149,6 +149,7 @@ CODE_ROOM_MAKERS: Final = frozenset(
         "gv_review",
         "code",
         "project_schedule",
+        "room_matrix",
     }
 )
 _MAX_ITEM: Final = 160
