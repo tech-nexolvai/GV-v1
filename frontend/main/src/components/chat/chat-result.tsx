@@ -6,7 +6,7 @@ import { Collapse, GVSpark } from '@/components/chat/chat-motion';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import type { ChatCoverage, ChatFile, ChatFinding, ChatPackageState, ChatReviewAction, ChatTimings, FindingCategory, FindingDecision } from '@/lib/chat-api';
 import { chatPaths } from '@/lib/chat-api';
-import { categoriesPresent, categoryWords, referenceValueWord, sideLabels } from '@/lib/chat-findings';
+import { categoriesPresent, categoryWords, referenceValueLabel, referenceValueWord, sideLabels } from '@/lib/chat-findings';
 import { fileSize, openHref } from '@/lib/chat-messages';
 import { isPairingUnsureItem,
   byPage,
@@ -855,7 +855,7 @@ function LikelyLine({ finding, claim }: { finding: ChatFinding; claim: string | 
       {(vendor || architect) && (
         <span className="flex min-w-0 flex-wrap items-baseline gap-x-3">
           {vendor && <span>Vendor <span className="num font-semibold text-foreground">{vendor}</span></span>}
-          {architect && <span>{finding.source === 'rules' || finding.rule_check_id ? 'GV rule' : finding.source === 'vendor_arithmetic' ? 'Parts add up to' : 'Architect'} <span className="num font-semibold text-foreground">{architect}</span></span>}
+          {architect && <span>{finding.source === 'rules' || finding.rule_check_id ? 'GV rule' : finding.source === 'vendor_arithmetic' || finding.reference_side === 'vendor' ? referenceValueLabel(finding) : 'Architect'} <span className="num font-semibold text-foreground">{architect}</span></span>}
         </span>
       )}
     </span>
