@@ -57,6 +57,7 @@ from app.review.assistant.proof import (
     NO_REQUIREMENT_REASON,
     REVIEWER,
     governs,
+    inch_figures_of,
     likely_words,
     proof_group,
     proof_of,
@@ -342,6 +343,13 @@ def requires_words(finding: Mapping[str, Any]) -> str:
         # vendor's own arithmetic.
         return f"GV's reviewer requires {value}"
     own = vendor_own(finding)
+    figures = inch_figures_of(finding) if own == "sum" else None
+    if figures is not None:
+        # The millimetres add up; the inch figures are what to correct (option A, 2026-11-03).
+        return (
+            f"The vendor's millimetres add up ({figures.mm_line()}); its inch figures must add "
+            f"up to the printed {figures.target}"
+        )
     if own == "sum":
         return f"The vendor's own parts add up to {value}"
     if own == "span":

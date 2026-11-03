@@ -1158,6 +1158,10 @@ class StringChain:
     why: str = ""
     before: tuple[Decimal, ...] = ()
     after: tuple[Decimal, ...] = ()
+    printed: tuple[str, ...] = ()
+    """`tiles` / `fillers`: the row's labels as printed, along the run (`36 [1 1/2]`, ...)."""
+    overall_printed: str = ""
+    """`tiles` / `fillers`: the overall's label as printed (`508 [20]`)."""
 
     @property
     def fillers(self) -> tuple[Decimal, ...]:
@@ -1223,6 +1227,7 @@ def string_chain(
             continue
         start, end, row = _line(overall)  # type: ignore[misc]
         found: list[tuple[float, float, float, Decimal]] = []
+        texts: dict[tuple[float, float, Decimal], str] = {}
         for label in lined:
             line = _line(label)
             value = _inches(label)
@@ -1233,10 +1238,13 @@ def string_chain(
             if line[0] < start - _TOUCH_PT or line[1] > end + _TOUCH_PT:
                 continue
             found.append((line[0], line[1], line[2], value))
+            texts[(line[0], line[1], value)] = " ".join(str(label.get("text") or "").split())
         for run in _rows_of(found):
             if sorted(value for _a, _b, value in run) != want:
                 continue
             run.sort()
+            printed = tuple(texts.get((a, b, value), "") for a, b, value in run)
+            overall_printed = " ".join(str(overall.get("text") or "").split())
             joints = [abs(later[0] - before[1]) for before, later in pairwise(run)]
             if any(joint > _JOINT_PT for joint in joints):
                 return StringChain("gap", _LEFT_OUT)
@@ -1244,14 +1252,16 @@ def string_chain(
             if abs(head) <= _TOUCH_PT and abs(tail) <= _TOUCH_PT:
                 # Tiled: the readings decide, so a joint must be as tight as ever.
                 tight = all(joint <= _TOUCH_PT for joint in joints)
-                return StringChain("tiles") if tight else StringChain("gap", _LEFT_OUT)
+                if not tight:
+                    return StringChain("gap", _LEFT_OUT)
+                return StringChain("tiles", printed=printed, overall_printed=overall_printed)
             scale = (end - start) / float(total)
             middle = (start + end) / 2
             along = 0 if overall.get("orientation") == "h" else 1
             before = _filled(head, scale, notes, along, middle, start=True)
             after = _filled(tail, scale, notes, along, middle, start=False)
             if before is not None and after is not None:
-                return StringChain("fillers", "", before, after)
+                return StringChain("fillers", "", before, after, printed, overall_printed)
             return StringChain("gap", _LEFT_OUT)
     return StringChain("unknown")
 

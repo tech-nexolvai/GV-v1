@@ -8,7 +8,9 @@ clear, simple and visible, explainable in the output". So every clouded item get
   97 1/2". Change it to 97 1/2" (1/2" over).` (`sentence`, and `sentence_runs` for the coloured
   print: the vendor's value red, the should-be green);
 - **the sum written out** when arithmetic is the proof: `2" + 86 1/2" + 2" = 90 1/2", not the
-  88 1/2" printed` (`sum_line`), or the rule's own working (`worked_line`);
+  88 1/2" printed` (`sum_line`), or the rule's own working (`worked_line`); a metric string whose
+  millimetres add up while its inch figures do not says so and points at the inch figures, never
+  the overall (`inch_figures`, option A 2026-11-03: still red, inches count);
 - **the reference**: "Architect drawing, page 28", "GV rule", "Reference: brand prototype (the
   architect gives no elevation of it)", "The vendor's own parts", "Decided by GV's reviewer: <note>"
   (`reference_words`);
@@ -269,6 +271,8 @@ def reference_words(finding: Mapping[str, Any], *, note: bool = True) -> str:
         said = _reviewer_note(finding) if note else None
         return f"{REVIEWER_WORDS}: {said}" if said else REVIEWER_WORDS
     if kind == "sum":
+        if rule.inch_figures_of(finding) is not None:
+            return "The vendor's own millimetres (they add up)"
         return "The vendor's own parts (their sum)"
     if kind == "span":
         return "The vendor's other dimension of the same span" + (f", {where}" if where else "")
@@ -325,6 +329,11 @@ def should_text(finding: Mapping[str, Any]) -> str:
     """The green should-be value, as the vendor may read it (the reviewer's value first). A vendor
     string whose drawing does not name the wrong number names both ways to fix it
     (`either_string`): `40 5/8" overall, or parts adding up to 40 1/2"`."""
+    figures = rule.inch_figures_of(finding)
+    if figures is not None:
+        # The millimetres add up, the inch figures do not: the inch figures are what to correct
+        # (option A, 2026-11-03), never the overall.
+        return vendor_text(figures.should_words(), "") or ""
     # `should_be_value` holds the reviewer's value (#1803), as code writes it when it is the same.
     value = vendor_text(rule.should_be_value(finding), "") or ""
     if value and either_string(finding):
@@ -408,6 +417,25 @@ def sentence_runs(finding: Mapping[str, Any]) -> list[Run]:
             (should, "should"),
             (f" ({gap})." if gap else ".", "plain"),
         ]
+    figures = rule.inch_figures_of(finding) if kind == "sum" else None
+    if figures is not None:
+        # The millimetres add up and only the inch figures do not (option A, 2026-11-03): the
+        # sentence says so and points at the inch figures; a figure to change only as a
+        # suggestion the millimetres alone give.
+        hint = figures.suggestion_words()
+        return [
+            (
+                f"{figures.mm_words()}, but the inch figures do not ({figures.inch_parts_words()} = ",
+                "plain",
+            ),
+            (figures.inch_sum_words, "vendor"),
+            (
+                f" vs {figures.target}). Correct the inch figures so they add up to the printed ",
+                "plain",
+            ),
+            (figures.target, "should"),
+            (f" ({hint})." if hint else ".", "plain"),
+        ]
     if kind == "sum":
         # The parts' sum (the green value alone); the drawing does not say which number is wrong,
         # so the sentence names both ways to correct it.
@@ -475,6 +503,13 @@ def sum_line(finding: Mapping[str, Any]) -> str | None:
     printed`; `None` when the proof is not the vendor's own sum."""
     if reference_kind(finding) != "sum":
         return None
+    figures = rule.inch_figures_of(finding)
+    if figures is not None:
+        # Both sums written out: the millimetres that add up, the inch figures that do not.
+        return (
+            f"{figures.mm_note()}; {figures.inch_parts_words()} = "
+            f"{figures.inch_sum_words}, not the {figures.target} printed"
+        )
     parts = [vendor_text(str(part), "") or "" for part in finding.get("parts") or []]
     parts = [part for part in parts if part]
     wrong = wrong_part(finding)

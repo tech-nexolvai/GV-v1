@@ -1103,6 +1103,17 @@ class ChatFindingStringReadsOut(BaseModel):
     why: str
 
 
+class ChatFindingPrintedStringOut(BaseModel):
+    """A vendor string's row as code's own labels print it (`inch_figures.PRINTED_STRING`): the
+    reading may type only the inches of `36 [1 1/2]`, and the words of a string whose millimetres
+    add up while its inch figures do not need the millimetres (option A, 2026-11-03)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    parts: list[str] = Field(description="Each part's label as printed: 36 [1 1/2].")
+    total: str = Field(description="The overall's label as printed: 508 [20].")
+
+
 class ChatFindingLaterOut(BaseModel):
     """The later answer of the same chat that corrected a finding (#1548)."""
 
@@ -1317,6 +1328,12 @@ class ChatFindingOut(BaseModel):
         description="A vendor string (#1641): the blind second reading's outcome, in code's words "
         "(proved: the same parts and overall, and code's sum is off; gap: code's lines show a part "
         "left out, so no reading was asked; not_verified: the fixed price did not reach it).",
+    )
+    printed_string: ChatFindingPrintedStringOut | None = Field(
+        default=None,
+        description="A vendor string code read as one whole row: its parts and overall as code's "
+        "own labels print them (millimetres with their inch figures). Null when code did not "
+        "match the labels.",
     )
 
 

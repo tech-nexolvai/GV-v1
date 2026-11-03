@@ -2154,6 +2154,8 @@ export interface components {
              * @description Source vendor_arithmetic: code's sum of the parts, in inches (#1554).
              */
             parts_sum?: string | null;
+            /** @description A vendor string code read as one whole row: its parts and overall as code's own labels print them (millimetres with their inch figures). Null when code did not match the labels. */
+            printed_string?: components["schemas"]["ChatFindingPrintedStringOut"] | null;
             /** Printed Total */
             printed_total?: string | null;
             /** @description Where the zero-click cloud drawing puts it, and why (#1581); worked out on read, so it follows the reviewer's latest decision. */
@@ -2245,6 +2247,24 @@ export interface components {
             file: string;
             /** Page */
             page: number;
+        };
+        /**
+         * ChatFindingPrintedStringOut
+         * @description A vendor string's row as code's own labels print it (`inch_figures.PRINTED_STRING`): the
+         *     reading may type only the inches of `36 [1 1/2]`, and the words of a string whose millimetres
+         *     add up while its inch figures do not need the millimetres (option A, 2026-11-03).
+         */
+        ChatFindingPrintedStringOut: {
+            /**
+             * Parts
+             * @description Each part's label as printed: 36 [1 1/2].
+             */
+            parts: string[];
+            /**
+             * Total
+             * @description The overall's label as printed: 508 [20].
+             */
+            total: string;
         };
         /**
          * ChatFindingProofOut
