@@ -645,6 +645,7 @@ function ResultsBody({ finding, kind, results, number, pictureUrl, pagePicture, 
     : pageReviewed(finding) && finding.source !== 'vendor_arithmetic' ? 'The vendor’s page, the spot ringed'
     : own && part?.drawn ? `Measured on the vendor’s own drawing: this line is drawn ${part.drawn} long`
     : own ? `Measured on the vendor’s own drawing${noDrawing ? ' (no architect drawing of this unit)' : ''}`
+      : finding.reference_side === 'vendor' && archBox ? `Vendor page ${archBox.page}${archBox.page === page ? '' : ' · the same item on another sheet'}`
       : rules && !archBox ? 'GV’s rule'
         : offPair && archPageNumber !== null ? `Architect${architectPageWords} · the item’s spot (page ${finding.arch_box?.page ?? '?'}) is not on its paired page`
         : !archPicture && !archBox && archPageNumber !== null ? `Architect${architectPageWords} · the spot is not marked`

@@ -165,6 +165,11 @@ export function referenceSide(finding: ChatFinding, kind: DrawerKind, decision: 
   if (finding.source === 'rules' || finding.rule_check_id) return { label: 'GV’s rule', value: architect, tone: kind === 'right' ? 'right' : null };
   // The page reviewer's please-check has no architect side: the right-hand card is where it is on the vendor's page.
   if (pageReviewed(finding) && finding.source !== 'vendor_arithmetic') return { label: 'Where on the vendor’s page', value: `p.${finding.page}`, tone: null };
+  // Code's cross-sheet check (2026-11-04): the other side is another of the vendor's sheets, never the architect's.
+  if (finding.reference_side === 'vendor' && finding.source !== 'vendor_arithmetic') {
+    const other = finding.arch_box?.page;
+    return { label: other && other !== finding.page ? `Vendor page ${other} shows` : 'Vendor’s own drawing', value: architect, tone: kind === 'right' || kind === 'dismissed' ? 'right' : null };
+  }
   // A vendor string's "architect" is code's sum of its own parts, never an architect value (Set A, 2026-11-04).
   const label = finding.source === 'vendor_arithmetic' ? 'Parts add up to' : vendorOnly(finding) ? 'Vendor’s own drawing' : 'Architect shows';
   return { label, value: architect, tone: kind === 'right' || kind === 'dismissed' ? 'right' : null };

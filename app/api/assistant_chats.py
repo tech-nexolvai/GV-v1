@@ -812,6 +812,18 @@ def get_full_check_plan(
     return ChatFullCheckPlanOut.model_validate(plan)
 
 
+def _set_chats(session: Session, package_id: UUID) -> list[UUID]:
+    """The set's chats, newest first: where a page's picture is when the plan check's copy of the
+    uploads is older than the chats' (`plan_page_picture`, 2026-11-04)."""
+    return list(
+        session.scalars(
+            select(AssistantChat.id)
+            .where(AssistantChat.package_id == package_id)
+            .order_by(AssistantChat.created_at.desc())
+        )
+    )
+
+
 @router.get(
     "/packages/{package_id}/plan-pages/{page}",
     response_class=FileResponse,
@@ -837,7 +849,14 @@ def plan_page(
     ] = None,
 ) -> FileResponse:
     _package(session, package_id, principal)
-    path = plan_page_picture(_chat_root(request.app), package_id, page, file=file, side=side)
+    path = plan_page_picture(
+        _chat_root(request.app),
+        package_id,
+        page,
+        file=file,
+        side=side,
+        chat_ids=_set_chats(session, package_id),
+    )
     if path is None:
         raise _not_found()
     return FileResponse(path, media_type="image/png")
@@ -858,7 +877,7 @@ def vendor_pages(
     """The result screen's "By page" headings and the drawings request (2026-10-23): what the set
     pack already knows of each vendor page; empty until the pack is made."""
     _package(session, package_id, principal)
-    pages = vendor_page_titles(_chat_root(request.app), package_id)
+    pages = vendor_page_titles(_chat_root(request.app), package_id, _set_chats(session, package_id))
     return ChatVendorPagesOut.model_validate({"pages": pages})
 
 
