@@ -1140,6 +1140,32 @@ def _picture(path: Path, shown: str, max_edge: int = _MAX_EDGE_PX) -> Viewed:
     return Viewed(text=note, png=out.getvalue(), width=size[0], height=size[1], original=original)
 
 
+#: A set pack's page picture (`set_pack`: every page at `PAGE_PICTURE_DPI`, drawings only).
+_PAGE_PICTURE: Final = re.compile(rf"^{re.escape(SET_PACK)}/pages/[^/]+/p-\d{{3}}\.png$")
+#: The dpi the set pack draws its page pictures at (`set_pack.RENDER_DPI`).
+PAGE_PICTURE_DPI: Final = 100
+
+
+def points_per_pixel(original: tuple[int, int], shown: tuple[int, int]) -> float:
+    """PDF points per pixel of a set pack page picture as the model sees it (shrunk to fit)."""
+    return (original[0] / max(shown[0], 1)) * 72 / PAGE_PICTURE_DPI
+
+
+def _points_note(shown: str, viewed: Viewed) -> str:
+    """A set pack page picture's pixels in PDF points: a box read off the picture is in its
+    pixels, and every box the check records is in points (Set A, 2026-11-04: a helper recorded a
+    schedule's box in the shrunk picture's pixels, about 0.6 of its points, so the box sat on
+    blank paper)."""
+    if not _PAGE_PICTURE.match(shown) or not viewed.original[0] or not viewed.width:
+        return ""
+    factor = points_per_pixel(viewed.original, (viewed.width, viewed.height or 1))
+    return (
+        f". Boxes are PDF points, not this picture's pixels: points = pixels x {factor:.3f} "
+        f"on this picture (the page is {viewed.original[0] * 72 / PAGE_PICTURE_DPI:.0f} x "
+        f"{viewed.original[1] * 72 / PAGE_PICTURE_DPI:.0f} pt)"
+    )
+
+
 def _text(path: Path, shown: str, view_range: object) -> Viewed:
     if path.stat().st_size > _MAX_TEXT_BYTES:
         raise SandboxRefused("the file is too large to view; use bash_tool (head, grep)")
@@ -1202,6 +1228,7 @@ def view_path(
         viewed = _listing(real, workspace)
     elif real.suffix.lower() in _IMAGE_SUFFIXES:
         viewed = _picture(real, shown, max_edge or _MAX_EDGE_PX)
+        viewed = replace(viewed, text=viewed.text + _points_note(shown, viewed))
     else:
         viewed = _text(real, shown, view_range)
     asked = path.strip().rstrip("/")

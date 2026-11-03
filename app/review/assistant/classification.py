@@ -941,6 +941,27 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
     ruled = _job_rule(finding)
     if ruled is not None:
         return ruled
+    if pairing_unsure(finding):
+        # The architect prints a value; the reading only could not be sure it is the one the
+        # vendor's pairs with (Set A, 2026-11-04: "architect gives no size or information" was
+        # said of a schedule that prints the count): a please-check (`proof.proof_group`).
+        return _not(
+            "not_proved",
+            f'the architect prints "{_short(finding.get("architect"), 60)}", but code could not '
+            f'be sure it is the value the vendor\'s "{_short(finding.get("vendor"), 30)}" pairs '
+            "with",
+            "which of the architect's values measures the same thing as {thing}",
+        )
+    if _architect_prints(finding):
+        # The same numbers on both sides, the pairing unsure: nothing to check, but never "the
+        # architect gives no size or information" either.
+        return _not(
+            "not_proved",
+            f'the architect prints "{_short(finding.get("architect"), 60)}", the same as the '
+            f'vendor\'s "{_short(finding.get("vendor"), 30)}", but code could not be sure the two '
+            "are the same thing",
+            "which of the architect's values measures the same thing as {thing}",
+        )
     if reason in ("architect_prints_nothing",) or named == "pairing_not_certain":
         why = f"architect gives no size or information for it{_measured(finding)}"
         return _not("nothing_to_compare", why, "the architect's size or note for {thing}")
@@ -1015,6 +1036,58 @@ def _check_item(finding: Mapping[str, Any]) -> Classified:
         _short(finding.get("why"), 120) or "the drawings do not settle it",
         "a printed value at both spots",
     )
+
+
+#: The reading says the architect prints nothing for it (the resolver's `_NOTHING_PRINTED`, and
+#: "no information").
+_ARCHITECT_SILENT: Final = re.compile(
+    r"\bno\b[^.;]*\b(?:printed|shown|given|dimension|dimensions|sizes?|widths?|depths?|heights?"
+    r"|information|info|value)\b|not printed|prints no|nothing to compare|\bn/a\b"
+    r"|\bno\s+[A-Z]{1,4}[-.]?\d",  # "no ML-007": the paired page does not show the item
+    re.IGNORECASE,
+)
+
+
+def _same_numbers(finding: Mapping[str, Any]) -> bool:
+    """The vendor's numbers are all among the architect's (`42` and "42 units"), or both sides
+    are the same size: no difference to check."""
+    vendor, architect = _flat(finding.get("vendor")), _flat(finding.get("architect"))
+    try:
+        v, a = to_inches(vendor), to_inches(architect)
+    except (ValueError, ArithmeticError):
+        v = a = None
+    if v is not None and a is not None:
+        return bool(v == a)
+    numbers_v = set(re.findall(r"\d+(?:\.\d+)?", vendor))
+    return bool(numbers_v) and numbers_v <= set(re.findall(r"\d+(?:\.\d+)?", architect))
+
+
+def _architect_prints(finding: Mapping[str, Any]) -> bool:
+    """A helper's "pairing not certain" whose architect side names a value the architect prints
+    (a number, and no words that it shows nothing)."""
+    if (
+        finding.get("check_reason") != "pairing_not_certain"
+        or finding.get("status") != "check"  # a difference has its own reasons (`_unproved`)
+        or not str(finding.get("created_by") or "").startswith("helper")
+    ):
+        return False
+    architect = _flat(finding.get("architect"))
+    return (
+        bool(re.search(r"\d", architect))
+        and not _ARCHITECT_SILENT.search(architect)
+        and not vendor_absent(architect)
+        and not vendor_absent(finding.get("vendor"))
+        and not _SCALES.search(architect)
+        and not _VIF.search(architect)
+    )
+
+
+def pairing_unsure(finding: Mapping[str, Any]) -> bool:
+    """A helper's reading could not be sure which architect value the vendor's pairs with
+    (`check_reason` "pairing_not_certain"), while it names one the architect prints that differs
+    from the vendor's: never "the architect gives no size or information" (that is only for what
+    the architect does not show, Anant 2026-10-19), but an unproved difference, a please-check."""
+    return _architect_prints(finding) and not _same_numbers(finding)
 
 
 #: The reading says no architect page was agreed for the item ("no agreed architect drawing").

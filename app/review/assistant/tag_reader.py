@@ -48,8 +48,10 @@ __all__ = [
     "SpotRead",
     "StrokeReader",
     "decide",
+    "decide_words",
     "family",
     "is_tag_item",
+    "printed_difference",
     "read_spot",
     "tag_keys",
     "words_only",
@@ -75,7 +77,7 @@ _UNREAD: Final = re.compile(
 )
 
 type Box = tuple[float, float, float, float]
-type Outcome = Literal["right", "wrong", "not_compared"]
+type Outcome = Literal["right", "wrong", "not_compared", "please_check"]
 
 
 def tag_keys(text: object) -> list[str]:
@@ -494,9 +496,57 @@ def decide(
     )
 
 
-def decide_words(vendor_claim: object, architect_claim: object, vendor: SpotRead) -> Decision:
+def _tokens(text: object) -> tuple[str, ...]:
+    """Printed words as code compares them: capitals, any look-alike dash a hyphen, split at
+    anything but letters, digits and a decimal point (`ADA K-C` is ADA, K, C; `ID 6.7B` is ID,
+    6.7B)."""
+    words = dashes_to_hyphen(str(text or "")).upper()
+    return tuple(t.strip(".") for t in re.split(r"[^A-Z0-9.]+", words) if t.strip("."))
+
+
+def _prints(read: SpotRead, claim: object) -> bool:
+    """Code read the claim's every word at the spot, from the drawing's own text."""
+    said, there = _tokens(claim), _tokens(read.words)
+    return read.route == "text" and bool(said) and all(t in there for t in said)
+
+
+def printed_difference(
+    vendor_claim: object, architect_claim: object, vendor: SpotRead, architect: SpotRead | None
+) -> Decision | None:
+    """Two notes, tags or callouts in words that code read itself, as printed text, at each side's
+    spot (the vendor's on a vendor drawing, the architect's on the architect's) and that differ:
+    a please-check with both spots, never red (words are compared by no rule) and never "not
+    compared" (Anant, 2026-10-19: an unproved difference is a please-check). `None` when code did
+    not read both, or the words are the same."""
+    if architect is None or architect.role != "architect" or vendor.role == "architect":
+        return None
+    if not (_prints(vendor, vendor_claim) and _prints(architect, architect_claim)):
+        return None
+    said_v, said_a = _tokens(vendor_claim), _tokens(architect_claim)
+    if said_v == said_a or _prints(vendor, architect_claim) or _prints(architect, vendor_claim):
+        return None
+    shown_v, shown_a = _short(vendor_claim, 40), _short(architect_claim, 40)
+    return Decision(
+        "please_check",
+        why=f'code read "{shown_v}" at the vendor\'s spot (page {vendor.page}) and "{shown_a}" at '
+        f"the architect's (page {architect.page}), both from the drawings' printed text: the "
+        "printed words differ",
+        settle=f'which is right: the vendor\'s "{shown_v}" or the architect\'s "{shown_a}"',
+    )
+
+
+def decide_words(
+    vendor_claim: object,
+    architect_claim: object,
+    vendor: SpotRead,
+    architect: SpotRead | None = None,
+) -> Decision:
     """An item whose vendor side is a note or model in words, not a tag comparison: never
-    "Illegible". Code says what it read at the vendor's spot; words are compared by no code."""
+    "Illegible". Words code read differ at both spots (`printed_difference`): a please-check. Else
+    code says what it read at the vendor's spot; words are compared by no code."""
+    differ = printed_difference(vendor_claim, architect_claim, vendor, architect)
+    if differ is not None:
+        return differ
     if vendor.route is None and vendor.ink:
         return _unread("vendor", vendor, str(vendor_claim))
     printed = (

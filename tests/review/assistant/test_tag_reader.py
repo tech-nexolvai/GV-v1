@@ -212,3 +212,64 @@ def test_words_never_fall_to_illegible(vendor: str, reason: str) -> None:
     finding = _tag_finding(vendor, "Felt pads", created_by="helper:1")
     finding.pop("arch_box")
     assert classification.classify(finding, proved=False).reason == reason
+
+
+# ---- a printed difference in words, read by code at both spots (2026-11-04) -----------------------
+
+
+def _words_read(words: str, role: str, page: int = 3) -> SpotRead:
+    return SpotRead(page, (0.0, 0.0, 10.0, 10.0), (), words, "text", role)
+
+
+def test_printed_words_that_differ_at_both_spots_are_a_please_check() -> None:
+    found = decide_words(
+        "ABC Q-R",
+        "ABC S-T",
+        _words_read("ABC Q-R", "vendor"),
+        _words_read("ABC S-T", "architect", 9),
+    )
+    assert found.outcome == "please_check"
+    assert '"ABC Q-R"' in found.why and '"ABC S-T"' in found.why and "page 9" in found.why
+
+
+@pytest.mark.parametrize(
+    ("vendor_read", "architect_read", "role"),
+    [
+        ("ABC Q-R", "ABC Q-R", "architect"),  # the same words: no difference
+        ("", "ABC S-T", "architect"),  # the vendor's spot prints nothing code read
+        ("ABC Q-R", "XYZ", "architect"),  # the architect's spot does not print the claim
+        ("ABC Q-R", "ABC S-T", "vendor"),  # the reference is the vendor's own drawing
+    ],
+)
+def test_words_code_did_not_read_differ_stay_a_note(
+    vendor_read: str, architect_read: str, role: str
+) -> None:
+    claim_a = "ABC Q-R" if vendor_read == architect_read else "ABC S-T"
+    found = decide_words(
+        "ABC Q-R",
+        claim_a,
+        _words_read(vendor_read, "vendor") if vendor_read else SpotRead(3, (0, 0, 1, 1)),
+        _words_read(architect_read, role, 9),
+    )
+    assert found.outcome == "not_compared"
+    assert found.reason == "words"
+
+
+def test_escalation_makes_a_printed_callout_difference_a_please_check_with_both_spots() -> None:
+    finding = _tag_finding("ID 1.2B", "ID 1.3B", created_by="helper:1")
+    found = escalation.escalate([finding], _ctx("ID 1.2B", "ID 1.3B")).changed[0]
+    assert proof.proof_group(found) == "likely_problem"
+    shown = proof.proof_of(found)
+    assert shown["likely_problem"]["kind"] == "labels"
+    assert '"ID 1.2B"' in shown["likely_problem"]["words"]
+    assert '"ID 1.3B"' in shown["likely_problem"]["words"]
+    assert "printed words differ" in shown["reason"]
+    assert found["vendor_box"]["page"] == 3 and found["arch_box"]["page"] == 3
+    assert not proof.code_proved(found)
+
+
+def test_escalation_keeps_a_callout_note_when_the_architect_spot_prints_other_words() -> None:
+    finding = _tag_finding("ID 1.2B", "ID 1.3B", created_by="helper:1")
+    found = escalation.escalate([finding], _ctx("ID 1.2B", "LOBBY")).changed[0]
+    assert proof.proof_group(found) == "not_compared"
+    assert proof.classified(found).reason == "words"
