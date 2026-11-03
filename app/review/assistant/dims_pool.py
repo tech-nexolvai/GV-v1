@@ -22,12 +22,17 @@ then the drawn ink), with time budgets shared by the whole set. Now each page is
   `MIN_FREE_MB` free (one worker always goes on).
 - **One thread per library in each worker** (`threads()`, `THREADS_SETTING`, 2026-11-03): left
   alone, each worker's OpenCV took a thread per core and each of RapidOCR's three ONNX models a
-  thread per performance core (busy-waiting between calls), so six workers ran ~120 threads on 10
-  cores (load average 87 while the Portage set was read). Each worker now starts with Apple
-  Accelerate / OpenBLAS / MKL at `threads()` (set before the worker's Python starts, as they read
-  it once) and sets OpenCV and RapidOCR's models to it before it reads a page (`limit_threads`).
-  The pages read are the same; they are read on the cores instead of fighting over them.
-- **Each page's seconds** (worker start of the page to its answer) are in the reading table.
+  thread per performance core, so six workers held 30-50 threads each (the build up to 212 on 10
+  cores). Each worker now starts with Apple Accelerate / OpenBLAS / MKL at `threads()` (set
+  before the worker's Python starts, as they read it once) and sets OpenCV and RapidOCR's models
+  to it before it reads a page (`limit_threads`). Measured on 9 slow pages of a real set on a
+  busy machine: the same labels, at most 56 threads, about a fifth less CPU (1,835 -> 1,434 s),
+  and about the same time (the workers read at low priority, so they get what the machine
+  leaves); two threads a worker with four workers was slower. Most of a page's time is
+  pure-Python work on one core (the PDF's content and the text route's geometry), which threads
+  do not change.
+- **Each page's seconds** (worker start of the page to its answer) are in the reading table, so a
+  slow page shows which it is.
 - **The reading table** (`Table`): each page `waiting`, `reading`, `ready` or `failed` (with why),
   published whole on every change. The set pack writes it as `reading.json`; the full check waits
   for it (`full_check_plan.wait_for_reading`) and the screen shows its counts.
