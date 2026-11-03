@@ -666,3 +666,22 @@ def test_a_wrong_is_never_folded_away_by_the_string_fold(monkeypatch: pytest.Mon
     # A copy that must stay (a recorded difference) is never folded away.
     reds.clear()
     assert len(_apply([reviewer, {**ledger, "record_id": "R1"}])) == 2
+
+
+def test_a_reviewer_copy_naming_the_overall_and_the_sum_is_the_same_string() -> None:
+    """A reviewer's words name the overall and what the parts add up to, not the parts (they
+    add up the millimetres instead): at the ledger's spot it is the same string, one card. Words
+    adding up another list of inches to that sum are another string (see the test above)."""
+    ledger = _ledger_sum("F20", _FRONT_PARTS, '50 3/4"', _spot(100, 300, 460, 340))
+    words = (
+        'The inch parts add up to 50 7/8", but the printed overall is 50 3/4" (1/8" over). '
+        "The inches are rounded from mm (19+1222+51 = 1292 mm)."
+    )
+    reviewer = _reviewer_sum("F5", words, _spot(120, 310, 470, 345))
+    assert [f["id"] for f in _apply([reviewer, ledger])] == ["F5"]
+    other = _reviewer_sum(
+        "F6",
+        words.replace("(19+1222+51", '(24 7/8" + 24" + 2" =  50 7/8"; mm 19+1222+51'),
+        _spot(120, 310, 470, 345),
+    )
+    assert len(_apply([other, ledger])) == 2

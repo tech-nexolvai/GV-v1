@@ -320,3 +320,142 @@ def test_a_reading_is_judged_by_codes_string_with_its_own_parts() -> None:
     # A reading of other parts is judged by the overall's nearest row (its own), not the far one.
     other = vc.judge_strings([_reading(['21"', '8 7/8"'])], checks)
     assert 'as 20 7/8" + 9" (printed 30")' in other.dropped["F7"]
+
+
+# ---- strings code now proves (Set A, 2026-11-04, second pass) -----------------------------------
+
+
+def _long_dim(x0: float, x1: float, y: float, text: str, *, tick: float = 3.5, off: float = 0.0):
+    """A horizontal dimension (PDF space) whose ticks are long slashes (`tick` each way, about
+    10 pt long), moved `off` along the slash from the line's end (0: centred on it)."""
+    body = _line(x0, y, x1, y) + _line(x0, y - 90, x0, y + 3) + _line(x1, y - 90, x1, y + 3)
+    for x in (x0, x1):
+        body += _line(x - tick + off, y - tick + off, x + tick + off, y + tick + off)
+    return body + _text((x0 + x1) / 2 - 5, y + 2, text)
+
+
+def test_a_long_tick_centred_on_the_end_is_an_end_mark(tmp_path: Path) -> None:
+    """A sheet drawn at a large scale ticks its ends with slashes about 10 pt long: centred on the
+    line's end, each is an end mark, so the string is proved; the same slash moved off the end (a
+    piece of the drawing passing near it) proves nothing."""
+    (tmp_path / "centred").mkdir()
+    (tmp_path / "off").mkdir()
+    sheet = (
+        _long_dim(300, 420, 300, '60"')
+        + _long_dim(300, 340, 280, '20"')
+        + _long_dim(340, 420, 280, '41"')
+        + _dim(450, 500, 150, '25"')
+    )
+    centred = _check(tmp_path / "centred", sheet)
+    assert centred.strings["does_not_add_up"] == 1 and len(centred.findings) == 1
+    off = (
+        _long_dim(300, 420, 300, '60"', off=2.5)
+        + _long_dim(300, 340, 280, '20"', off=2.5)
+        + _long_dim(340, 420, 280, '41"', off=2.5)
+        + _dim(450, 500, 150, '25"')
+    )
+    moved = _check(tmp_path / "off", off)
+    assert moved.strings["does_not_add_up"] == 0 and moved.findings == []
+
+
+def _inside_view(*, toward: bool = True) -> bytes:
+    """A 60" overall drawn inside a view (PDF y 300), its extension lines the view's sides running
+    down past it; its parts' row 100 pt below (y 200), ticked only at its joint, its extension
+    lines drawn up from it toward the overall (`toward`), else down away from it."""
+
+    def part(x0: float, x1: float, text: str, *, start: bool, end: bool) -> bytes:
+        y = 200
+        up = (y - 3, y + 12) if toward else (y - 90, y + 3)
+        body = _line(x0, y, x1, y) + _line(x0, up[0], x0, up[1]) + _line(x1, up[0], x1, up[1])
+        if start:
+            body += _line(x0 - 1.5, y - 1.5, x0 + 1.5, y + 1.5)
+        if end:
+            body += _line(x1 - 1.5, y - 1.5, x1 + 1.5, y + 1.5)
+        return body + _text((x0 + x1) / 2 - 5, y + 2, text)
+
+    overall = (
+        _line(300, 300, 420, 300)
+        + _line(300, 230, 300, 360)  # the view's sides, through the overall's line and down
+        + _line(420, 230, 420, 360)
+        + _line(298.5, 298.5, 301.5, 301.5)
+        + _line(418.5, 298.5, 421.5, 301.5)
+        + _text(355, 302, '60"')
+    )
+    return (
+        overall
+        + part(300, 340, '20"', start=False, end=True)
+        + part(340, 420, '41"', start=True, end=False)
+        + _dim(450, 500, 150, '25"')
+    )
+
+
+def test_a_row_far_from_its_overall_on_its_own_extension_lines_is_proved(tmp_path: Path) -> None:
+    """The overall sits inside the view between the sides it measures, its parts' row below the
+    view: the row's outer extension lines continue the overall's (one straight line at each end,
+    drawn toward each other), so the bare outer ends are the string's ends. Extension lines that
+    run away from the overall prove nothing (a doubt, as before)."""
+    (tmp_path / "shared").mkdir()
+    (tmp_path / "away").mkdir()
+    shared = _check(tmp_path / "shared", _inside_view())
+    assert shared.strings["does_not_add_up"] == 1 and len(shared.findings) == 1
+    away = _check(tmp_path / "away", _inside_view(toward=False))
+    assert away.strings["does_not_add_up"] == 0 and away.findings == []
+
+
+def test_millimetres_over_a_fraction_of_an_inch_read_cleanly() -> None:
+    """`13 [1/2]` (13 mm, half an inch) is one clean value, like `915 [36]`; a lost fraction is not."""
+    for text, clean in (
+        ("13 [1/2]", True),
+        ("915 [36]", True),
+        ("18 [3/4]", True),
+        ("13 [1/]", False),
+    ):
+        raw = {**_raw("D1", text, "0.5", (100.0, 101.3), 300.0), "text": text}
+        label = vc.read_label(raw, FILE, 1)
+        assert label is not None and label.clean is clean, text
+
+
+def test_other_parts_missing_the_same_overall_are_another_string(tmp_path: Path) -> None:
+    """Two views print 60 1/8" over two different rows (20" + 40" and 15" + 45"), both 1/8" short:
+    two slips, two findings (one per overall and parts, no longer one per overall)."""
+    result = _check(tmp_path, _two_views())
+    strings = sorted(tuple(f["parts"]) for f in result.findings)
+    assert strings == [('15"', '45"'), ('20"', '40"')]
+
+
+def test_a_reading_with_no_spot_is_judged_by_codes_string_with_its_very_parts(
+    tmp_path: Path,
+) -> None:
+    """Several labels print the reading's overall and it names none of them: code's string with
+    the reading's very parts is its string (verified, with that string's spot and overall label).
+    A list matching none of code's strings is left to the row check."""
+    result = _check(tmp_path, _two_views())
+    reading = _ledger_string(['15"', '45"'], '60 1/8"')
+    judged = vc.judge_strings([reading], result.checks)
+    assert judged.verified == ("F7",) and judged.dropped == {}
+    lower = next(c for c in result.checks if c.verdict != "doubt" and c.parts[0].text == '15"')
+    spot = judged.spots["F7"]
+    assert spot["label"]["id"] == lower.overall.id and spot["vendor_box"]["page"] == 1
+    assert spot["vendor_box"]["y0"] <= lower.overall.box[1]
+    other = vc.judge_strings([_ledger_string(['10"', '50"'], '60 1/8"')], result.checks)
+    assert other.verified == () and other.dropped == {}
+
+
+def test_codes_own_string_with_other_parts_is_not_hidden_by_a_reading_of_another(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A reading's string of one row does not hide code's own finding of the other row printing
+    the same overall: both are added to the answer."""
+    from tests.review.assistant.test_vendor_consistency import _hook
+
+    result = _check(tmp_path, _two_views())
+    upper = next(c for c in result.checks if c.verdict != "doubt" and c.parts[0].text == '20"')
+    x0, y0, x1, y1 = upper.overall.box
+    spot = {"x0": x0, "y0": y0, "x1": x1, "y1": y1, "page": 1, "file": FILE}
+    engine, _dropped = _hook(
+        monkeypatch, result, _ledger_string(['20"', '40"'], '60 1/8"', vendor_box=spot)
+    )
+    strings = sorted(
+        tuple(f["parts"]) for f in engine.book.live() if f.get("source") == "vendor_arithmetic"
+    )
+    assert strings == [('15"', '45"'), ('20"', '40"')]

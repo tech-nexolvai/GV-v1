@@ -59,7 +59,9 @@ the drawing"), so the list said it twice. They fold only when code knows it is o
   overlap by at least half of the smaller one (two strings of one page sit apart);
 - and either it records the same printed overall with parts that do not add up either, one copy's
   parts all among the other's (one reader missed a part), or it records no parts and no architect
-  side, and its own words name the ledger's overall and every one of the ledger's parts.
+  side, and its own words name the ledger's overall and every one of the ledger's parts, or the
+  ledger's overall and the sum its parts add up to (Set A, 2026-11-04: "the inch parts add up to
+  40 3/8", but the printed overall is 40 5/8"" at the string's spot).
 
 The card kept is the more severe (a Wrong, then a Likely problem, then Not compared), then code's
 own (the ledger's or the consistency check's) over the AI's; the other is kept inside it as
@@ -832,6 +834,22 @@ _OPEN_GROUPS: Final = frozenset({"clouded", "likely_problem", "not_compared"})
 _SIZE: Final = re.compile(r"(?<![\d./])(\d+)(?:\s+(\d+)/(\d+)|/(\d+)|(\.\d+))?(?![\d/])")
 
 
+#: A list of sizes the words add up ("24 7/8" + 24" + 2"", "30+153+30").
+_PLUS_LIST: Final = re.compile(
+    r"\d+(?:\s+\d+/\d+|/\d+|\.\d+)?\"?(?:\s*\+\s*\d+(?:\s+\d+/\d+|/\d+|\.\d+)?\"?)+"
+)
+
+
+def _lists_in(text: str) -> list[Counter[Decimal]]:
+    """Each list of sizes the words add up (`_PLUS_LIST`), its sizes counted."""
+    out: list[Counter[Decimal]] = []
+    for found in _PLUS_LIST.finditer(text):
+        sizes = [_sizes_in(term) for term in found.group(0).split("+")]
+        if all(len(size) == 1 for size in sizes):
+            out.append(Counter(next(iter(size)) for size in sizes))
+    return out
+
+
 def _sizes_in(text: str) -> frozenset[Decimal]:
     """Every size the words write, in inches (`_SIZE`; a zero denominator is no size)."""
     out: set[Decimal] = set()
@@ -909,8 +927,19 @@ def _same_string(ledger: Mapping[str, Any], other: Mapping[str, Any]) -> bool:
         return False  # its own string adds up, or it compares with a reference page
     if _inches(other, "architect") is not None:
         return False
-    sizes = _sizes_in(_said(other))
-    return total in sizes and set(parts) <= sizes
+    said = _said(other)
+    sizes = _sizes_in(said)
+    if total not in sizes:
+        return False
+    if set(parts) <= sizes:
+        return True
+    # Its words name the overall and the sum the ledger's parts add up to, and add up no other
+    # list of inches to either (a list adding up to another number is millimetres, say).
+    summed = sum(parts, Decimal(0))
+    return summed in sizes and not any(
+        sum(listed.elements(), Decimal(0)) in (total, summed) and listed != Counter(parts)
+        for listed in _lists_in(said)
+    )
 
 
 def _sum_order(finding: Mapping[str, Any]) -> tuple[Any, ...]:
