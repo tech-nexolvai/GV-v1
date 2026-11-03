@@ -70,8 +70,7 @@ export const SOURCE_WORDS: Record<FindingSource, string | null> = {
  */
 export function sideLabels(finding: Pick<ChatFinding, 'source'> & Partial<Pick<ChatFinding, 'reference_side' | 'created_by'>>): { architect: string; vendor: string; architectTag: string; vendorTag: string } {
   if (finding.source === 'vendor_arithmetic') return { architect: 'Vendor: the parts', vendor: 'Vendor: the printed total', architectTag: 'V', vendorTag: 'V' };
-  if (finding.source === 'cross_view' && finding.reference_side === 'vendor' && finding.created_by === 'consistency') return { architect: 'Vendor: the same span, elsewhere', vendor: 'Vendor: this dimension', architectTag: 'V', vendorTag: 'V' };
-  return finding.source === 'cross_view'
+  if (finding.source === 'cross_view' && finding.reference_side === 'vendor' && finding.created_by === 'consistency') return { architect: 'Vendor: the same span, elsewhere', vendor: 'Vendor: this dimension', architectTag: 'V', vendorTag: 'V' };  return finding.source === 'cross_view'
     ? { architect: 'Reference view', vendor: 'This view', architectTag: 'A', vendorTag: 'V' }
     : { architect: 'Architect', vendor: 'Vendor', architectTag: 'A', vendorTag: 'V' };
 }

@@ -839,15 +839,35 @@ def plan_page_picture(
     *,
     file: str | None = None,
     side: str | None = None,
+    chat_ids: Sequence[UUID] = (),
 ) -> Path | None:
     """A page's picture in the set's pack (drawings only, 100 dpi), if made: the vendor's file's
     page; with `file`, that upload's page (its name exactly as the set lists it, as a finding's
     box names it); with `side="architect"`, the architect's file's page (the result screen's
     drawer, 2026-10-23: the architect's side has its own whole page). An unknown file, no
     architect's file, or several (which one is not said: page N of the first is another drawing,
-    stream V), gives none (never the vendor's page, nor a guessed file's, in its place)."""
-    workspace = ChatWorkspace(_plan_root(chat_root, package_id))
-    listing = read_listing(workspace)
+    stream V), gives none (never the vendor's page, nor a guessed file's, in its place).
+
+    The plan check's copy of the uploads is read first, then each of `chat_ids`' copies (newest
+    first): a plan-check copy made before several shop-drawing files were joined into one
+    (2026-10-30) lists them apart, so the joined file a full check's findings name, and its pack,
+    are only in the chats' copies (2026-11-04: every whole page of a real set showed none)."""
+    roots = [_plan_root(chat_root, package_id), *(chat_root / str(chat) for chat in chat_ids)]
+    for root in roots:
+        picture = _page_picture(chat_root, read_listing(ChatWorkspace(root)), page, file, side)
+        if picture is not None:
+            return picture
+    return None
+
+
+def _page_picture(
+    chat_root: Path,
+    listing: Sequence[Mapping[str, Any]],
+    page: int,
+    file: str | None,
+    side: str | None,
+) -> Path | None:
+    """`plan_page_picture` in one copy of the uploads (`listing`), if its pack has it."""
     main: Mapping[str, Any] | None
     if file is not None:
         main = next((item for item in listing if str(item.get("name") or "") == file), None)
@@ -867,21 +887,32 @@ def plan_page_picture(
     return picture if picture.is_file() else None
 
 
-def vendor_page_titles(chat_root: Path, package_id: UUID) -> list[dict[str, Any]]:
+def vendor_page_titles(
+    chat_root: Path, package_id: UUID, chat_ids: Sequence[UUID] = ()
+) -> list[dict[str, Any]]:
     """What each page of the vendor's file shows, for the result screen's "By page" headings and
     the drawings request: the piece the page draws as printed in its title block (the set index,
     #1889), else its area as code's page map names it; the project printed on the page; its sheet
     number. Only what code already keeps in the set pack: never an AI call. Empty when the pack is
-    not made (yet)."""
-    workspace = ChatWorkspace(_plan_root(chat_root, package_id))
-    listing = read_listing(workspace)
+    not made (yet). The first copy of the uploads whose pack has its page map: the plan check's,
+    then `chat_ids`' (newest first), as `plan_page_picture`."""
+    pack = import_module("app.review.assistant.set_pack")
+    roots = [_plan_root(chat_root, package_id), *(chat_root / str(chat) for chat in chat_ids)]
+    listings = [read_listing(ChatWorkspace(root)) for root in roots]
+    listing = next(
+        (
+            one
+            for one in listings
+            if main_upload(one) is not None
+            and (pack.pack_folder(chat_root, one) / "page_map.json").is_file()
+        ),
+        listings[0],
+    )
     main = main_upload(listing)
     if main is None:
         return []
     try:
-        folder: Path = import_module("app.review.assistant.set_pack").pack_folder(
-            chat_root, listing
-        )
+        folder: Path = pack.pack_folder(chat_root, listing)
         page_map = read_page_map(folder) or {}
         index: Mapping[str, Mapping[str, Any]] = import_module(
             "app.review.assistant.set_index"

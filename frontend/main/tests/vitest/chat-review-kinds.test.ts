@@ -62,6 +62,15 @@ describe('the page reviewer item in the drawer', () => {
   });
 });
 
+describe('two of the vendor’s own sheets set against each other (2026-11-04)', () => {
+  it('names the other sheet as the vendor’s page, never the architect’s', async () => {
+    const { sideLabels } = await import('@/lib/chat-findings');
+    const item = finding('s1', { page: 17, status: 'different', source: 'cross_view', reference_side: 'vendor', created_by: 'sink_sheets', architect: '4"', vendor: '3 11/16"', arch_picture_id: 'pic-a', arch_box: { page: 12, x0: 1, y0: 1, x1: 9, y1: 9 } });
+    expect(referenceSide(item, 'likely_problem')).toEqual({ label: 'Vendor page 12 shows', value: '4″', tone: null });
+    expect(sideLabels(item).architect).not.toMatch(/architect/i);
+  });
+});
+
 describe('the same tag at other spots of its own page (2026-10-29)', () => {
   it('says "more spots on this page"; other pages stay "Also on"', async () => {
     const { alsoOnWords } = await import('@/lib/chat-findings');
