@@ -65,6 +65,15 @@ describe('the reading ledger in words', () => {
     expect(sideLabels({ source: 'architect' })).toEqual({ architect: 'Architect', vendor: 'Vendor', architectTag: 'A', vendorTag: 'V' });
   });
 
+  it('names another vendor sheet’s value by its page, never as the architect’s (2026-11-04)', () => {
+    const other = { source: 'cross_view' as const, reference_side: 'vendor' as const, created_by: 'sink_sheets', page: 17, arch_box: { page: 12, x0: 1, y0: 1, x1: 9, y1: 9 } };
+    expect(referenceValueLabel(other)).toBe('Vendor p.12');
+    expect(referenceValueWord(other)).toBe('vendor p.12');
+    // The same page (two views of one sheet) keeps its view words; an architect item stays the architect's.
+    expect(referenceValueLabel({ ...other, arch_box: { ...other.arch_box, page: 17 } })).toBe('Reference view');
+    expect(referenceValueWord({ source: 'architect' })).toBe('architect');
+  });
+
   it('names a vendor string’s sum as its parts adding up, never as an architect value (Set A, 2026-11-04)', () => {
     expect(referenceValueLabel(SUM)).toBe('Parts add up to');
     expect(referenceValueLabel({ source: 'architect' })).toBe('Architect');
