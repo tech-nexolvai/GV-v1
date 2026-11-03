@@ -233,6 +233,9 @@ class EscalationContext:
     typed: reading_routes.TypedOf | None = None
     """Both OCR engines on a typed number's own spot (`typed_ocr`): a typed number's second,
     independent reading before a red (final plan #2)."""
+    page_size: Callable[[str, int], tuple[float, float] | None] | None = None
+    """Each page's size in points (`picture_frame.sizes_for_pack`), for a helper box recorded in
+    a shrunk page picture's pixels (`picture_frame`)."""
 
 
 @dataclass(slots=True)
@@ -1378,10 +1381,12 @@ def _tag_step(item: _Item, ctx: EscalationContext) -> None:
     ):
         return
     tag_item = tags.is_tag_item(finding)
+    # A note in words, said "Illegible" or "a note in words": read at both spots (#1859; a printed
+    # difference code reads at both is a please-check, `tag_reader.printed_difference`).
     words = (
         not tag_item
         and tags.words_only(finding.get("vendor"))
-        and proof.classified(finding).reason == "unreadable"
+        and proof.classified(finding).reason in ("unreadable", "words")
     )
     if not tag_item and not words:
         return
@@ -1415,8 +1420,15 @@ def _tag_step(item: _Item, ctx: EscalationContext) -> None:
             changes=ctx.changes,
         )
     else:
-        architect = None
-        decision = tags.decide_words(finding.get("vendor"), finding.get("architect"), vendor)
+        arch_at = _box(finding.get("arch_box"))
+        architect = (
+            spot(arch_at)
+            if arch_at is not None and tags.words_only(finding.get("architect"))
+            else None
+        )
+        decision = tags.decide_words(
+            finding.get("vendor"), finding.get("architect"), vendor, architect
+        )
     finding[tags.TAG_READ] = {
         **decision.as_dict(),
         "vendor": vendor.as_dict(),
@@ -1428,7 +1440,31 @@ def _tag_step(item: _Item, ctx: EscalationContext) -> None:
     elif decision.outcome == "wrong" and decision.proof is not None:
         finding.update(status="different", paired_by="code", text_proof=dict(decision.proof))
         _check(item, "text", "agrees")
+    elif decision.outcome == "please_check":
+        _please_check_words(finding, decision)
     item.note("tags", decision.outcome, decision.why)
+
+
+def _please_check_words(finding: dict[str, Any], decision: Any) -> None:
+    """Two printed words code read at both spots that differ (`tag_reader.printed_difference`):
+    the look's please-check mark (`likely_problems`, `likely_only`: never clouded), with both
+    spots and plain words."""
+    likely_problems = import_module("app.review.assistant.likely_problems")
+    item = " ".join(str(finding.get("item") or "this item").split())
+    vendor = " ".join(str(finding.get("vendor") or "").split())
+    architect = " ".join(str(finding.get("architect") or "").split())
+    finding[likely_problems.FIELD] = {
+        "by": "whole_drawing_look",
+        "proof": "likely_only",
+        "kind": "labels",
+        "claim": "please_check",
+        "sure": "likely",
+        "why": decision.why[:400],
+        "words": (
+            f'{likely_problems.LETTER_LEAD}: {item}: the vendor\'s drawing prints "{vendor}"; '
+            f'the architect\'s prints "{architect}".'
+        )[:600],
+    }
 
 
 #: A claim about a notch (or a stepped end) in the top.
@@ -2359,6 +2395,13 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     # real Continue a vendor string lost its record that way: "no record of how the string's
     # other numbers were read", held back from red). Every record that differs is listed below.
     recorded = {str(f["id"]): f.get(reading_routes.FIELD) for f in live}
+    # A helper's box recorded in a shrunk page picture's pixels, not points (Set A, 2026-11-04):
+    # put back where code reads its value, before any step reads at the box (`picture_frame`).
+    framed = import_module("app.review.assistant.picture_frame").fix_boxes(
+        live, ctx.phrases, ctx.page_size, ctx.main_file
+    )
+    moved = {m.finding_id for m in framed}
+    result.changed.extend(judged(f) for f in live if str(f["id"]) in moved)
     # How each Wrong's numbers were read, before any step groups them (final plan #2): kept with
     # the items the ladder tries and recorded on every item at the end (a Stop leaves the rest).
     _mark_reading(live, ctx, None)
@@ -2618,6 +2661,7 @@ def context_from_pack(
         pasted=pasted,
         outlines=outlines if outlines is not None else _outlines_of(pasted),
         typed=import_module("app.review.assistant.typed_ocr").reader_for_pack(pack),
+        page_size=import_module("app.review.assistant.picture_frame").sizes_for_pack(pack),
     )
 
 
@@ -2634,17 +2678,20 @@ def _outlines_of(
     return reader
 
 
-def _repicture(book: Any, finding: dict[str, Any]) -> None:
-    """An item now compared at another architect spot shows that spot's picture, never the old
-    one's (no picture is never a failed step)."""
+def _repicture(book: Any, finding: dict[str, Any], side: str = "architect") -> None:
+    """An item now compared at another spot shows that spot's picture, never the old one's (no
+    picture is never a failed step)."""
+    box_key, picture_key = (
+        ("vendor_box", "vendor_picture_id") if side == "vendor" else ("arch_box", "arch_picture_id")
+    )
     picture = getattr(book, "_picture", None)
-    if not callable(picture) or not isinstance(finding.get("arch_box"), Mapping):
+    if not callable(picture) or not isinstance(finding.get(box_key), Mapping):
         return
     try:
-        made = picture(finding["arch_box"])
+        made = picture(finding[box_key])
     except (OSError, ValueError, TypeError):
         made = (None, None)
-    finding["arch_picture_id"] = made[0] if isinstance(made, tuple) and made else None
+    finding[picture_key] = made[0] if isinstance(made, tuple) and made else None
 
 
 def stickers_of_uploads(
@@ -2766,7 +2813,7 @@ def escalate_answer(engine: Any) -> Escalation | None:
         ),
     )
     with engine.finding_lock:
-        before = {str(f["id"]): f.get("arch_box") for f in book.live()}
+        before = {str(f["id"]): (f.get("arch_box"), f.get("vendor_box")) for f in book.live()}
         result = escalate(book.live(), ctx)
         for finding_id, reason in result.absorbed.items():
             if book.absorb(finding_id):
@@ -2774,8 +2821,11 @@ def escalate_answer(engine: Any) -> Escalation | None:
         for finding in result.changed:
             if finding["id"] in result.absorbed:
                 continue
-            if finding.get("arch_box") != before.get(str(finding["id"])):
+            was = before.get(str(finding["id"]), (None, None))
+            if finding.get("arch_box") != was[0]:
                 _repicture(book, finding)
+            if finding.get("vendor_box") != was[1]:
+                _repicture(book, finding, side="vendor")
             if book.replace(finding):
                 engine._show_finding(finding)
     items_counted = getattr(engine, "items_counted", None)

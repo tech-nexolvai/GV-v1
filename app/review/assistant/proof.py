@@ -839,6 +839,10 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
         return "likely_problem"  # the AI's pairing, ends not confirmed by code (option C)
     if pick_disagrees(finding):
         return "likely_problem"  # code's geometry pairs them; a blind AI pick did not
+    if classification.pairing_unsure(finding) and classified(finding).reason == "not_proved":
+        # The architect prints a value the reading could not be sure pairs with the vendor's
+        # (2026-11-04): an unproved difference is a please-check (Anant, 2026-10-19).
+        return "likely_problem"
     return "likely_problem" if likely_problems.likely(finding) else "not_compared"
 
 
