@@ -27,14 +27,33 @@ from fractions import Fraction
 from typing import Final
 
 __all__ = [
+    "PARTS_ADD_UP",
     "REVIEWER_RIGHT",
     "inches_first",
     "internal",
     "item_name",
+    "reference_value",
     "reviewer_right",
     "rule_requirement",
     "vendor_text",
 ]
+
+#: The words before code's sum of a vendor string's parts wherever that sum is shown (Set A,
+#: 2026-11-04): a string's `architect` field holds the sum of the vendor's own parts, never a value
+#: of the architect's.
+PARTS_ADD_UP: Final = "parts add up to"
+
+
+def reference_value(finding: Mapping[str, object]) -> str:
+    """The reference side's value as a person reads it: `parts add up to 52 3/8"` for the vendor's
+    own string (`source: vendor_arithmetic`, whose stored `architect` is code's sum of its parts),
+    else the stored `architect` value as it is. The stored field is unchanged (old answers read
+    the same)."""
+    value = " ".join(str(finding.get("architect") or "").split())
+    if finding.get("source") == "vendor_arithmetic" and value:
+        return f"{PARTS_ADD_UP} {value}"
+    return value
+
 
 #: Internal phrases, in any case.
 _PHRASES: Final = re.compile(

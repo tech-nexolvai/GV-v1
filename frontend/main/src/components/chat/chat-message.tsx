@@ -226,7 +226,7 @@ function Corrections({ corrections }: { corrections: readonly ChatFindingUpdate[
               <span>dropped ({update.dropped})</span>
             ) : (
               <span>
-                vendor {update.finding.vendor}, architect {update.finding.architect}
+                vendor {update.finding.vendor}, {update.finding.source === 'vendor_arithmetic' ? 'parts add up to' : 'architect'} {update.finding.architect}
               </span>
             )}
           </li>

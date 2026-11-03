@@ -8,7 +8,7 @@ import { RoundChip } from '@/components/chat/chat-trust';
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 import type { ChatFile, ChatFinding, CoveragePage, FindingBox, FindingDecision, FindingDecisionExtra, FindingDecisionValue, PagePicture, PageWhere } from '@/lib/chat-api';
 import { architectOnVendorPage, copyLines, drawerChips, drawerKind, howWeKnow, KIND_WORDS, noArchitectPictureWords, overallSpot, ownNumbers, ownSum, pageReviewed, reasonLine, referenceSide, ringInCrop, ringOnCrop, ringOnPage, unionBox, vendorOnly, vendorSide, type DrawerKind, type OwnSum, type ReasonLine, type Ring, type SideWords, type SumNumber } from '@/lib/chat-drawer';
-import { architectPage, decisionHelpRows, pageWords, referenceWhere, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
+import { architectPage, decisionHelpRows, pageWords, referenceValueLabel, referenceWhere, reviewerWords, sideLabels, vendorPage } from '@/lib/chat-findings';
 import { isInternal, proofGroup, ruleNoteWords, type RuleNoteWords } from '@/lib/chat-proof';
 import { boxOnPicture, decisionsWords, ENDS_NOT_PROVED_WORDS, endsNotProved, isDrawingNeededItem, isPairingUnsureItem, isRefusedString, itemParts, pageHeading, pagesWords, pairingUnsureWords, shortValue, shouldBeValue, suggestedShouldBe, vendorValue, wrongPartWords, type PageTitles, type ResultCard, type ResultTab } from '@/lib/chat-result';
 import { inchWords, plainChecks, sumWords, TRUST_WORDS, trustLevelOf } from '@/lib/chat-trust';
@@ -447,7 +447,7 @@ export function EvidenceViewer({ findings, openId, onOpen, pictureUrl, pagePictu
 
             <div className="grid min-w-0 grid-cols-2 gap-3 max-md:gap-2">
               <ValueCard side="vendor" finding={finding} label={sideLabels(finding).vendor} value={vendor.main} tone={group === 'clouded' ? 'wrong' : null} note={vendor.note ? `Printed ${finding.vendor}` : null} src={finding.vendor_picture_id ? pictureUrl(finding.vendor_picture_id) : null} />
-              <ValueCard side="architect" finding={finding} label={should ? 'Should be' : sideLabels(finding).architect} value={should ? should.main : finding.architect ? finding.architect.replace(/"/g, '″').replace(/'/g, '′') : '—'} tone={should ? 'right' : null} note={should?.note ? `From ${should.note}` : null} src={finding.arch_picture_id && !finding.reference_page?.outside ? pictureUrl(finding.arch_picture_id) : null} />
+              <ValueCard side="architect" finding={finding} label={should ? 'Should be' : referenceValueLabel(finding)} value={should ? should.main : finding.architect ? finding.architect.replace(/"/g, '″').replace(/'/g, '′') : '—'} tone={should ? 'right' : null} note={should?.note ? `From ${should.note}` : null} src={finding.arch_picture_id && !finding.reference_page?.outside ? pictureUrl(finding.arch_picture_id) : null} />
             </div>
 
             {pagePicture && (finding.vendor_box || (finding.arch_box && !finding.reference_page?.outside)) && <PageSpot finding={finding} src={finding.vendor_box ? pagePicture(finding.vendor_box.page, whereOf(finding.vendor_box, true)) : pagePicture(finding.arch_box!.page, whereOf(finding.arch_box!, false))} />}

@@ -130,6 +130,7 @@ __all__ = [
     "judge_unsized",
     "label_rows",
     "line_work",
+    "not_this_string",
     "proved_chain",
     "proved_run",
     "read_label",
@@ -501,6 +502,72 @@ def ends_marked(segments: Sequence[Segment] | None, label: _Label) -> bool | Non
     return _end_marked(segments, label, label.start) and _end_marked(segments, label, label.end)
 
 
+#: A piece of line work continues a dimension line past an end when it runs on at least this far
+#: (points) beyond it, on the same line.
+_RUN_ON_PT: Final = 1.0
+
+
+def _runs_on(segments: Sequence[Segment], label: _Label, at: float, outward: int) -> bool:
+    """Line work carries the label's dimension line on past `at` (`outward` +1: past its end, -1:
+    before its start): the line is cut there by a crossing line, it does not end there."""
+    flip = label.orientation == "v"
+    for (ax, ay), (bx, by) in segments:
+        a_along, a_across = (ay, ax) if flip else (ax, ay)
+        b_along, b_across = (by, bx) if flip else (bx, by)
+        if abs(a_across - label.across) > ROW_PT or abs(b_across - label.across) > ROW_PT:
+            continue  # not on the line (a tick is slanted, an extension line square to it)
+        low, high = min(a_along, b_along), max(a_along, b_along)
+        if outward > 0 and low <= at + GAP_PT and high >= at + _RUN_ON_PT:
+            return True
+        if outward < 0 and high >= at - GAP_PT and low <= at - _RUN_ON_PT:
+            return True
+    return False
+
+
+def _own_row(overall: _Label, parts: Sequence[_Label], drawing: Sequence[_Label]) -> bool:
+    """The parts' row is the overall's own: the next row of its stack (within `_STACK_PT`
+    across), with no other row of the drawing between them over the overall's span."""
+    if any(not ROW_APART_PT <= abs(p.across - overall.across) <= _STACK_PT for p in parts):
+        return False
+    low, high = sorted((parts[0].across, overall.across))
+    members = {id(overall), *(id(p) for p in parts)}
+    return not any(
+        id(other) not in members
+        and other.orientation == overall.orientation
+        and low + ROW_PT < other.across < high - ROW_PT
+        and other.start < overall.end
+        and other.end > overall.start
+        for other in drawing
+    )
+
+
+def _string_marked(
+    segments: Sequence[Segment],
+    overall: _Label,
+    parts: Sequence[_Label],
+    drawing: Sequence[_Label],
+) -> bool:
+    """Every end of a string's dimension lines carries its own end mark, as `ends_marked`, with one
+    allowance (Set A, 2026-11-04: a drafter who ticks only the joints): the parts' two OUTER ends
+    may stop bare on the overall's extension lines when the overall's own ends are marked, the
+    parts' row is the overall's own (`_own_row`) and nothing carries the part's line on past the
+    end (`_runs_on`). A line cut at a crossing line runs on past the cut, so it is still never
+    taken for a whole span; every joint between two parts still needs its mark."""
+    if not ends_marked(segments, overall):
+        return False
+    own = _own_row(overall, parts, drawing)
+    last = len(parts) - 1
+    for index, part in enumerate(parts):
+        for at, outward in ((part.start, -1), (part.end, 1)):
+            if _end_marked(segments, part, at):
+                continue
+            outer = (index == 0 and outward < 0) or (index == last and outward > 0)
+            if outer and own and not _runs_on(segments, part, at, outward):
+                continue
+            return False
+    return True
+
+
 # ---- strings -------------------------------------------------------------------------------------
 
 
@@ -626,10 +693,9 @@ def _judge(
     if not all(overall.extensions) or not parts[0].extensions[0] or not parts[-1].extensions[1]:
         return doubt("code did not find both extension lines the string ends on")
     lines = segments(overall.file, overall.page) if segments is not None else None
-    marked = [ends_marked(lines, m) for m in members]
-    if None in marked:
+    if lines is None:
         return doubt("the drawing's line work was not read, so its ends were not checked")
-    if not all(marked):
+    if not _string_marked(lines, overall, parts, drawing):
         return doubt("a dimension line has no end mark of its own (it may be cut at another line)")
     scale = _scale(members, drawing)
     if scale is None:
@@ -777,10 +843,13 @@ def find_strings(labels: Sequence[_Label], segments: Segments | None = None) -> 
                         parts = _chain(overall, row, joint_of(overall.file, overall.page))
                     if parts is None:
                         continue
+                    # Each overall label with each row: two views on one sheet that print the same
+                    # overall over the same parts are two strings (Set A, 2026-11-04: the front
+                    # view's 1337 was never judged on its own row, only the plan's).
                     key = (
                         overall.file,
                         overall.page,
-                        overall.inches,
+                        overall.id,
                         tuple(p.id for p in parts),
                     )
                     if key in seen:
@@ -2217,6 +2286,9 @@ def judge_strings(
     check's own), against code's strings of the same span: the same page, the same printed overall
     (at the finding's spot when it has one, else the only one with that value on the page).
 
+    Of code's strings of that overall at the spot, the one with the reading's very parts is taken,
+    else the overall's nearest row (an overall is judged with every row that tiles its span).
+
     - code's string does not add up and has the same parts: verified (the geometry is code's),
       unless the drawing names one part as the wrong number: dropped (code's own finding, red at
       that part with what it should be, replaces it);
@@ -2248,9 +2320,19 @@ def judge_strings(
             same = placed
         elif len(same) != 1:
             continue  # two strings with that overall and no spot to tell them apart
-        check = same[0]
         read = [to_inches(str(p)) for p in finding.get("parts") or []]
         parts = sorted(Fraction(v) for v in read if v is not None)
+        # An overall is judged with every row that tiles its span, another view's too (2026-11-04:
+        # a real sheet's two views of one height): the string with the reading's very parts is
+        # its string; else the overall's nearest row.
+        same = sorted(
+            same,
+            key=lambda c: (
+                sorted(p.inches for p in c.parts) != parts,
+                abs(c.parts[0].across - c.overall.across),
+            ),
+        )
+        check = same[0]
         ours = sorted(p.inches for p in check.parts)
         overall = check.overall.text
         listed = " + ".join(p.text for p in check.parts)
@@ -2305,6 +2387,116 @@ class RowJudgement:
     printed: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     """Each complete finding's row as code's labels print it, when code matched the labels
     (`inch_figures.PRINTED_STRING`)."""
+    not_this: Mapping[str, str] = field(default_factory=dict)
+    """Findings code shows are not the overall's string at all (a part as long as the overall, or
+    code's own row of the overall stopping short where the other parts cannot fill it), with the
+    plain reason: Not compared, never a please-check (Set A, 2026-11-04; `not_this_string`)."""
+
+
+#: Code's own row of an overall leaves a stretch the reading's other parts fill only when they
+#: are drawn that long at the overall's scale, within this many points or this share of the
+#: stretch (the larger): a rounded or misprinted part is a fraction of an inch, a part left out
+#: or one from another chain is a whole part.
+_SHORT_ROW_PT: Final = 3.0
+_SHORT_ROW_SHARE: Final = 0.2
+
+
+def _too_long(parts: Sequence[str], printed: Fraction, printed_text: str) -> str | None:
+    """A part as long as the overall or longer (the overall itself, or a size of another run): a
+    part of a string is always shorter than its overall, so the list is not this string."""
+    to_inches = import_module("app.review.assistant.finding_checks").to_inches
+    for text in parts:
+        value = to_inches(str(text))
+        if value is None or Fraction(value) < printed:
+            continue
+        if Fraction(value) == printed:
+            return (
+                f"the reading's parts include the overall itself ({printed_text}); a part is "
+                "always shorter than its overall, so they are not this string"
+            )
+        return (
+            f"the reading's part {text} is longer than the {printed_text} overall, so these "
+            "numbers are not one string"
+        )
+    return None
+
+
+def _row_stops_short(
+    parts: Sequence[Fraction],
+    printed: Fraction,
+    labels: Sequence[Mapping[str, Any]],
+    box: tuple[float, float, float, float] | None,
+) -> str | None:
+    """Code's own labels along the overall's line (the next row of its stack, `_own_row`) that
+    print some of the reading's parts, touching end to end from the overall's ends, stop short of
+    filling the line, and the reading's other parts drawn at the overall's own scale cannot fill
+    the rest (`_SHORT_ROW_PT`, `_SHORT_ROW_SHARE`): the reading left a part out or took one from
+    another run. The plain reason, else None (code cannot tell, or the row is filled)."""
+    made = [la for la in (_label(raw, "", 0, ()) for raw in labels) if la is not None]
+    vendor = [la for la in made if la.side == "vendor"]
+    for overall in vendor:
+        if overall.inches != printed or overall.raw.get("scale_ok") is not True:
+            continue
+        x0, y0, x1, y1 = overall.box
+        if box is not None and not (
+            box[0] <= (x0 + x1) / 2 <= box[2] and box[1] <= (y0 + y1) / 2 <= box[3]
+        ):
+            continue
+        near = [
+            la
+            for la in vendor
+            if la is not overall
+            and la.orientation == overall.orientation
+            and la.start >= overall.start - GAP_PT
+            and la.end <= overall.end + GAP_PT
+        ]
+        for row in _rows(near):
+            if not _own_row(overall, row, made):
+                continue
+            ordered = sorted(row, key=lambda la: la.start)
+            covered: list[_Label] = []
+            at = overall.start
+            for label in ordered:
+                if abs(label.start - at) > GAP_PT:
+                    break
+                covered.append(label)
+                at = label.end
+            at = overall.end
+            for label in reversed(ordered):
+                if label in covered or abs(label.end - at) > GAP_PT:
+                    break
+                covered.append(label)
+                at = label.start
+            left = list(parts)
+            listed = True
+            for label in covered:
+                if label.inches not in left:
+                    listed = False
+                    break
+                left.remove(label.inches)
+            if not covered or not listed:
+                continue  # a label the reading does not list: other rules judge that
+            rest = overall.span - sum(la.span for la in covered)
+            if rest <= 2 * GAP_PT:
+                continue  # code's row fills the line
+            scale = overall.span / float(overall.inches)
+            drawn = float(sum(left, Fraction(0))) * scale
+            if abs(rest - drawn) <= max(_SHORT_ROW_PT, _SHORT_ROW_SHARE * rest):
+                continue  # the other parts may fill it: code cannot tell
+            shown = " + ".join(la.text for la in sorted(covered, key=lambda la: la.start))
+            gap = format_inches(Fraction(round(rest / scale * 8), 8))
+            others = (
+                f"the reading's other parts ({' + '.join(format_inches(v) for v in left)}) "
+                "cannot fill it"
+                if left
+                else "the reading lists no part there"
+            )
+            return (
+                f"code's own labels along the {overall.text} overall's line print {shown} and "
+                f"leave about {gap} with no label code reads; {others}, so the reading left a "
+                "part out"
+            )
+    return None
 
 
 def _padded(box: object) -> tuple[float, float, float, float] | None:
@@ -2402,6 +2594,9 @@ def judge_rows(
       the parts leave a gap or stop short of the overall's ends, the run prints other parts the
       list leaves out, the parts miss the overall by a whole part or more (another chain, or a
       part left out), or a part or the overall is not a size code reads;
+    - not this string, with the plain reason, when code shows the list cannot be the overall's
+      string (a part as long as the overall, or code's own row of the overall stops short and the
+      other parts cannot fill it): Not compared, never a please-check (Set A, 2026-11-04);
     - unproved, with what code could not confirm, when code simply cannot see the row (no label
       of the overall with its line at the spot, no row of its labels printing those parts): a
       please-check, never red (M6, Anant 2026-11-01, softening the drop of 2026-10-31).
@@ -2411,6 +2606,7 @@ def judge_rows(
     complete: list[str] = []
     dropped: dict[str, str] = {}
     unproved: dict[str, str] = {}
+    not_this: dict[str, str] = {}
     rows_printed: dict[str, Mapping[str, Any]] = {}
     for finding in findings:
         if finding.get("source") != "vendor_arithmetic" or finding.get("created_by") == CREATED_BY:
@@ -2479,11 +2675,27 @@ def judge_rows(
                 f"{_WHOLE_ROW}"
             )
             continue
+        # Code shows the list is not this overall's string (Set A, 2026-11-04): Not compared with
+        # the reason, never a please-check built on numbers that are not one string.
+        too_long = _too_long(texts, printed, printed_text)
+        shorter = list(parts)
+        if too_long is not None:
+            # What code's own row says once the overall itself is taken out of the list.
+            if printed in shorter:
+                shorter.remove(printed)
+            shorter = [v for v in shorter if v < printed]
+        stops = _row_stops_short(shorter, printed, labels, box) if shorter else None
+        if too_long is not None or stops is not None:
+            said = "; ".join(w for w in (too_long, stops) if w)
+            not_this[finding_id] = (
+                f"Not compared: {said}. Code cannot add this string up from the reading's list."
+            )
+            continue
         unproved[finding_id] = (
             f"Code could not confirm these parts form one string on the drawing ({why}); "
             "please check. Never red: code reads only the AI's list of parts here."
         )
-    return RowJudgement(tuple(complete), dropped, unproved, rows_printed)
+    return RowJudgement(tuple(complete), dropped, unproved, rows_printed, not_this)
 
 
 def _read_by_code(
@@ -2503,13 +2715,16 @@ def _read_by_code(
 _MAX_WHY: Final = 600
 
 
-def unproved_check(finding: Mapping[str, Any], why: str) -> dict[str, Any]:
+def unproved_check(
+    finding: Mapping[str, Any], why: str, *, parts_read: str = "ai"
+) -> dict[str, Any]:
     """A reading's string code cannot see as one row, kept as a please-check (M6, Anant
     2026-11-01): status `check` (never Wrong, never red), the whole-drawing look's mark with
     `proof: likely_only` (never clouded, whatever a check says), code's reason as its why, and its
     trust worked out again with the parts the AI's (`parts_read: ai`: code's sum is no witness, so
     the evidence is the AI reading only). The page reviewer's own please-check words stay; any
-    other string gets code's."""
+    other string gets code's. `parts_read`: `code` for a row code reads whole but could not prove
+    one string (the full check's string step, Set A 2026-11-04): still never red."""
     judged = import_module("app.review.assistant.chat_trust").judged
     mark = finding.get(likely_problems.FIELD)
     mark = dict(mark) if isinstance(mark, Mapping) else {}
@@ -2532,7 +2747,7 @@ def unproved_check(finding: Mapping[str, Any], why: str) -> dict[str, Any]:
         }
     )
     reading = " ".join(str(finding.get("why") or "").split())
-    checks = {**(finding.get("checks") or {}), PARTS_READ: "ai"}
+    checks = {**(finding.get("checks") or {}), PARTS_READ: parts_read}
     out: dict[str, Any] = judged(
         {
             **finding,
@@ -2544,6 +2759,18 @@ def unproved_check(finding: Mapping[str, Any], why: str) -> dict[str, Any]:
         }
     )
     return out
+
+
+def not_this_string(finding: Mapping[str, Any], why: str) -> dict[str, Any]:
+    """A reading's string code shows is not the overall's string (`RowJudgement.not_this`): Not
+    compared with code's plain reason (Set A, 2026-11-04). Its status stays `different` and its
+    `string_reads` is a `gap` with the reason (classification: `string_not_verified`, the reason
+    shown); a please-check mark is taken off, so it is never a Likely problem; never red."""
+    judged = import_module("app.review.assistant.chat_trust").judged
+    out = {key: value for key, value in finding.items() if key != likely_problems.FIELD}
+    out["string_reads"] = {"outcome": "gap", "why": why}
+    made: dict[str, Any] = judged(out)
+    return made
 
 
 def _same_string(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
@@ -2670,10 +2897,11 @@ def replaced_by_own(
     }
 
 
-def _add_unproved(engine: Any, unproved: Mapping[str, str]) -> None:
+def _add_unproved(engine: Any, unproved: Mapping[str, str], not_this: Collection[str] = ()) -> None:
     """The reading's strings code cannot see as one row (`judge_rows`), each a please-check
     (`unproved_check`), unless a card of the same string is already in the answer (code's own
     item, a kept string, an earlier please-check of it): then it is dropped as that card's copy.
+    A string code showed is not the overall's (`not_this`, Not compared) is never such a card.
     Called under the finding lock, after code's own items are added."""
     book = engine.book
     for finding_id, why in unproved.items():
@@ -2687,6 +2915,7 @@ def _add_unproved(engine: Any, unproved: Mapping[str, str]) -> None:
                 other
                 for other in live
                 if str(other.get("id")) != finding_id
+                and str(other.get("id")) not in not_this
                 and (str(other.get("id")) not in waiting or other.get("status") == "check")
                 and other.get("status") in ("different", "check")
                 and _same_string(finding, other)
@@ -2754,6 +2983,14 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
         for finding_id, reason in rows.dropped.items():
             if book.absorb(finding_id):
                 engine._show_dropped(finding_id, reason)
+        # A list code shows is not the overall's string: Not compared with the reason, never a
+        # please-check (Set A, 2026-11-04).
+        for finding in book.live():
+            finding_id = str(finding.get("id"))
+            if finding_id in rows.not_this:
+                moved = not_this_string(finding, rows.not_this[finding_id])
+                if book.replace(moved):
+                    engine._show_finding(moved)
         live = book.live()
         for finding in result.findings:
             # Only the please-check of that very overall looks past the reading's string; for
@@ -2764,7 +3001,11 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
                 if _of_overall(finding, found)
             }
             # A string about to be a please-check never hides code's own item of it either.
-            looked = [f for f in live if str(f.get("id")) not in hidden | set(rows.unproved)]
+            looked = [
+                f
+                for f in live
+                if str(f.get("id")) not in hidden | set(rows.unproved) | set(rows.not_this)
+            ]
             if _already(finding, looked):
                 continue
             added = book.add_code_finding(finding, created_by=CREATED_BY)
@@ -2774,7 +3015,7 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
                 for finding_id in sorted(hidden):
                     if book.absorb(finding_id):
                         engine._show_dropped(finding_id, replaces[finding_id][1])
-        _add_unproved(engine, rows.unproved)
+        _add_unproved(engine, rows.unproved, set(rows.not_this))
     engine.consistency_gaps = list(result.unknowns)
     # The summary's line: code's own summary carries it, else it follows the AI's (the engine).
     engine.consistency_line = summary_line(result)

@@ -711,7 +711,16 @@ def _misread_words(entry: StringEntry, others: Sequence[StringEntry]) -> str | N
     """The hint for one vendor string that does not add up: the ONE change that makes it add up
     exactly, preferring a change another string confirms (the same part, off the same way), then
     a telling misread (a dropped fraction, swapped or look-alike digits) over a plain ±1/8" that
-    would fit any part. `None` when no change, or more than one equally good, fits."""
+    would fit any part. `None` when no change, or more than one equally good, fits.
+
+    A millimetre-first string whose millimetres add up (`inch_figures.figures`) is no misread:
+    each inch figure is the vendor's own rounding of its millimetres, so the hint says that
+    instead (Set A, 2026-11-04: "code cannot tell which value is misread" on printed text)."""
+    rounded = import_module("app.review.assistant.inch_figures").figures(
+        entry.parts, entry.printed_total
+    )
+    if rounded is not None:
+        return f"{rounded.mm_words()}; the inch figures, each rounded from its millimetres, do not."
     found = string_misreads(entry.parts, entry.printed_total)
     confirmed = {(m.printed, m.likely): m for m in found if _same_elsewhere(entry, m, others)}
     telling = {(m.printed, m.likely): m for m in found if m.how != _OFF_BY}

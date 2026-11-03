@@ -119,7 +119,13 @@ from app.review.assistant.proof import (
 )
 from app.review.assistant.rule_notes import HEADING as RULE_NOTE_HEADING
 from app.review.assistant.symbol_font import decoded
-from app.review.assistant.vendor_text import internal, item_name, reviewer_right, vendor_text
+from app.review.assistant.vendor_text import (
+    internal,
+    item_name,
+    reference_value,
+    reviewer_right,
+    vendor_text,
+)
 from extraction.pdfium_guard import pdfium
 
 __all__ = [
@@ -1701,9 +1707,12 @@ def _right_line(finding: Mapping[str, Any]) -> str:
 def _reviewer_right_line(finding: Mapping[str, Any]) -> str:
     """An item the reviewer marked not a problem, in the Right list (#1766): "vendor 46";
     architect 3'-1". Right (reviewer): <note>"."""
-    words = (
-        f"vendor {_vendor(finding.get('vendor'))}; architect {_vendor(finding.get('architect'))}. "
+    reference = (
+        _vendor(reference_value(finding))
+        if finding.get("source") == "vendor_arithmetic"
+        else f"architect {_vendor(finding.get('architect'))}"
     )
+    words = f"vendor {_vendor(finding.get('vendor'))}; {reference}. "
     return words + reviewer_right(dict(finding)) + "."
 
 

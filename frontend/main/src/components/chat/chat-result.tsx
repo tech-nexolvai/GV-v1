@@ -6,7 +6,7 @@ import { Collapse, GVSpark } from '@/components/chat/chat-motion';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import type { ChatCoverage, ChatFile, ChatFinding, ChatPackageState, ChatReviewAction, ChatTimings, FindingCategory, FindingDecision } from '@/lib/chat-api';
 import { chatPaths } from '@/lib/chat-api';
-import { categoriesPresent, categoryWords, sideLabels } from '@/lib/chat-findings';
+import { categoriesPresent, categoryWords, referenceValueWord, sideLabels } from '@/lib/chat-findings';
 import { fileSize, openHref } from '@/lib/chat-messages';
 import { isPairingUnsureItem,
   byPage,
@@ -855,7 +855,7 @@ function LikelyLine({ finding, claim }: { finding: ChatFinding; claim: string | 
       {(vendor || architect) && (
         <span className="flex min-w-0 flex-wrap items-baseline gap-x-3">
           {vendor && <span>Vendor <span className="num font-semibold text-foreground">{vendor}</span></span>}
-          {architect && <span>{finding.source === 'rules' || finding.rule_check_id ? 'GV rule' : 'Architect'} <span className="num font-semibold text-foreground">{architect}</span></span>}
+          {architect && <span>{finding.source === 'rules' || finding.rule_check_id ? 'GV rule' : finding.source === 'vendor_arithmetic' ? 'Parts add up to' : 'Architect'} <span className="num font-semibold text-foreground">{architect}</span></span>}
         </span>
       )}
     </span>
@@ -927,7 +927,7 @@ function CompactRow({ kind, finding, onOpen, underPage = false, pill = null }: {
       <span className="num text-right text-[13.5px] whitespace-nowrap text-foreground max-md:col-start-2 max-md:text-left">
         {/* A long value is said short here (the drawer shows it whole). */}
         {refused ? null : <span title={shortValue(vendor.main).full ?? undefined}>{shortValue(vendor.main, 24).short}</span>}
-        {architect && <span className="block text-xs text-muted-foreground" title={shortValue(architect).full ?? undefined}>architect {shortValue(architect, 24).short}</span>}
+        {architect && <span className="block text-xs text-muted-foreground" title={shortValue(architect).full ?? undefined}>{referenceValueWord(finding)} {shortValue(architect, 24).short}</span>}
       </span>
     </button>
   );

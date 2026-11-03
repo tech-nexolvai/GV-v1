@@ -515,9 +515,11 @@ def test_a_string_the_blind_reading_reads_as_another_run_is_dropped(tmp_path: Pa
     assert any(b["finding_id"] == finding_id and "add up" in b["reason"] for b in dropped)
 
 
-def test_a_string_reading_that_disagrees_stays_not_compared_and_code_only_asks_nothing(
+def test_a_string_reading_that_disagrees_is_a_please_check_and_code_only_asks_nothing(
     tmp_path: Path,
 ) -> None:
+    # A string nothing proves and nothing shows incomplete is flagged (Set A, 2026-11-04): a
+    # please-check with code's reason, never red and never hidden as Not compared.
     script = _Strings(_chains((['3"', '11"', '3/4"', '20 1/2"', '3"'], '38 1/2"')))
     harness = _roster(tmp_path, script)
     finding_id = _string(harness, FIVE, '38 1/2"')
@@ -525,7 +527,9 @@ def test_a_string_reading_that_disagrees_stays_not_compared_and_code_only_asks_n
     found = next(f for f in harness.engine.book.live() if f["id"] == finding_id)
     assert found.get("string_geometry") is None
     assert found["string_reads"]["outcome"] == "disagrees"
-    assert proof.proof_group(found) == "not_compared"
+    assert found["status"] == "check"
+    assert proof.proof_group(found) == "likely_problem"
+    assert "please check. Never red" in found["why"]
 
     script = _Strings(_chains((FIVE, '38 1/2"')))
     harness = _roster(tmp_path / "code-only", script, mode="code_only")
@@ -533,7 +537,8 @@ def test_a_string_reading_that_disagrees_stays_not_compared_and_code_only_asks_n
     _strings_run(harness)._strings()
     assert "string" not in script.calls  # D1's AI path is off under code_only
     found = next(f for f in harness.engine.book.live() if f["id"] == finding_id)
-    assert proof.proof_group(found) == "not_compared"
+    assert proof.proof_group(found) == "likely_problem"
+    assert found["string_reads"]["outcome"] == "not_verified"
 
 
 # ---- the lead review -------------------------------------------------------------------------------
