@@ -734,6 +734,11 @@ def _labels(chars: Sequence[_Char]) -> list[list[_Char]]:
         by_direction.setdefault(char.direction, []).append(char)
     labels: list[list[_Char]] = []
     for group in by_direction.values():
+        if len(group) >= _GRID_LABELS_MIN:
+            found = _grid_labels(group)
+            if found is not None:
+                labels.extend(found)
+                continue
         used = [False] * len(group)
         for first in range(len(group)):
             if used[first]:
@@ -758,6 +763,95 @@ def _labels(chars: Sequence[_Char]) -> list[list[_Char]]:
                             grew = True
                             break
             labels.append(label)
+    return labels
+
+
+#: A direction's characters at least this many are grouped through a grid (`_grid_labels`).
+_GRID_LABELS_MIN: Final = 64
+
+
+def _near_chars(member: _Char, candidate: _Char) -> bool:
+    """`_labels`' test: two characters of one direction near each other along and across."""
+    size = max(member.size, candidate.size)
+    return (
+        abs(candidate.across - member.across) <= 0.9 * size
+        and abs(candidate.along - member.along) <= 1.25 * size
+    )
+
+
+def _grid_labels(group: Sequence[_Char]) -> list[list[_Char]] | None:
+    """`_labels` of one direction's characters, the same labels with their characters in the same
+    order, without testing every character against every other (a sheet's 5,000 characters were
+    25 million tests, read twice per page).
+
+    Two characters are near when they lie within the larger one's reach of each other
+    (`_near_chars`: 1.25 sizes along, 0.9 across), so each pair is found by looking round the
+    larger one, in a grid. A label is then grown exactly as `_labels` grows it, pass after pass over its
+    characters in order, but only over the characters connected to its first one (no other can
+    ever join it). `None` (the caller groups them the plain way) when a place or size is not a
+    finite number."""
+    count = len(group)
+    sizes = [c.size for c in group]
+    if not all(math.isfinite(v) for c in group for v in (c.along, c.across, c.size)):
+        return None
+    cell = max(1.0, sorted(sizes)[count // 2] * 1.25)
+    grid: dict[tuple[int, int], list[int]] = {}
+    for i, char in enumerate(group):
+        grid.setdefault((math.floor(char.along / cell), math.floor(char.across / cell)), []).append(
+            i
+        )
+    near: list[set[int]] = [set() for _ in range(count)]
+    for i, char in enumerate(group):
+        reach_along = 1.25 * max(char.size, 0.0) + 1.0
+        reach_across = 0.9 * max(char.size, 0.0) + 1.0
+        columns = range(
+            math.floor((char.along - reach_along) / cell),
+            math.floor((char.along + reach_along) / cell) + 1,
+        )
+        rows = range(
+            math.floor((char.across - reach_across) / cell),
+            math.floor((char.across + reach_across) / cell) + 1,
+        )
+        if len(columns) * len(rows) > len(grid):
+            # A character far larger than most (a title): every other one is looked at.
+            others: Iterable[int] = range(count)
+        else:
+            others = (j for gx in columns for gy in rows for j in grid.get((gx, gy), ()))
+        for j in others:
+            if j != i and _near_chars(char, group[j]):
+                near[i].add(j)
+                near[j].add(i)
+    labels: list[list[_Char]] = []
+    used = [False] * count
+    for first in range(count):
+        if used[first]:
+            continue
+        # The characters connected to the first one, in their order.
+        connected = {first}
+        todo = [first]
+        while todo:
+            for j in near[todo.pop()]:
+                if j not in connected:
+                    connected.add(j)
+                    todo.append(j)
+        label = [first]
+        inside = {first}
+        used[first] = True
+        waiting = sorted(connected - inside)
+        grew = True
+        while grew:
+            grew = False
+            left: list[int] = []
+            for other in waiting:
+                if near[other] & inside:
+                    label.append(other)
+                    inside.add(other)
+                    used[other] = True
+                    grew = True
+                else:
+                    left.append(other)
+            waiting = left
+        labels.append([group[i] for i in label])
     return labels
 
 
@@ -1152,15 +1246,7 @@ def default_readers() -> list[InkReader]:
 
 
 def _ink_paths(page: _Page, spot: tuple[float, float, float, float]) -> list[_Path]:
-    x0, y0, x1, y1 = spot
-    return [
-        path
-        for path in page.paths
-        if path.box[0] >= x0 - _INK_PAD_PT
-        and path.box[2] <= x1 + _INK_PAD_PT
-        and path.box[1] >= y0 - _INK_PAD_PT
-        and path.box[3] <= y1 + _INK_PAD_PT
-    ]
+    return _paths_within(page.paths, spot, _INK_PAD_PT)
 
 
 def _draw(paths: Sequence[_Path], turn: int = 0, margin: float = 1.5) -> np.ndarray | None:
@@ -1689,18 +1775,64 @@ def _row_value(line: str, *, inch_mark: bool) -> Decimal | None:
     return to_inches(core)
 
 
+#: The boxes of the newest few pages' character-sized paths as arrays (`_path_boxes`):
+#: id(paths) -> (the paths, held so the id is never reused while kept; their boxes).
+_PATH_BOXES: OrderedDict[int, tuple[tuple[_Path, ...], np.ndarray]] = OrderedDict()
+_PATH_BOXES_LOCK: Final = threading.Lock()
+_PATH_BOXES_KEPT: Final = 8
+#: Fewer paths than this are looked through one by one.
+_PATH_BOXES_MIN: Final = 512
+
+
+def _path_boxes(paths: Sequence[_Path]) -> np.ndarray | None:
+    """The paths' boxes as one array (a row per path, in order), made once per page's paths; `None`
+    for a short sequence or a list (looked through one by one)."""
+    if not isinstance(paths, tuple) or len(paths) < _PATH_BOXES_MIN:
+        return None
+    key = id(paths)
+    with _PATH_BOXES_LOCK:
+        found = _PATH_BOXES.get(key)
+        if found is not None and found[0] is paths:
+            _PATH_BOXES.move_to_end(key)
+            return found[1]
+    boxes = np.array([path.box for path in paths], dtype=np.float64).reshape(-1, 4)
+    with _PATH_BOXES_LOCK:
+        _PATH_BOXES[key] = (paths, boxes)
+        _PATH_BOXES.move_to_end(key)
+        while len(_PATH_BOXES) > _PATH_BOXES_KEPT:
+            _PATH_BOXES.popitem(last=False)
+    return boxes
+
+
+def _paths_within(
+    paths: Sequence[_Path], spot: tuple[float, float, float, float], pad: float
+) -> list[_Path]:
+    """The paths lying wholly inside the spot widened by `pad` (in their order). A big sheet's
+    100,000 paths are tested at once on their boxes (`_path_boxes`): the same comparisons, made
+    for every path in one go instead of one by one."""
+    x0, y0, x1, y1 = spot
+    boxes = _path_boxes(paths)
+    if boxes is None:
+        return [
+            path
+            for path in paths
+            if path.box[0] >= x0 - pad
+            and path.box[2] <= x1 + pad
+            and path.box[1] >= y0 - pad
+            and path.box[3] <= y1 + pad
+        ]
+    inside = np.flatnonzero(
+        (boxes[:, 0] >= x0 - pad)
+        & (boxes[:, 2] <= x1 + pad)
+        & (boxes[:, 1] >= y0 - pad)
+        & (boxes[:, 3] <= y1 + pad)
+    )
+    return [paths[i] for i in inside.tolist()]
+
+
 def _ink_paths_near(page: _Page, spot: tuple[float, float, float, float]) -> list[_Path]:
     """The character-sized paths near the spot, wide enough for a label the box clips."""
-    reach = ink_labels.GATHER_PT
-    x0, y0, x1, y1 = spot
-    return [
-        path
-        for path in page.paths
-        if path.box[0] >= x0 - reach
-        and path.box[2] <= x1 + reach
-        and path.box[1] >= y0 - reach
-        and path.box[3] <= y1 + reach
-    ]
+    return _paths_within(page.paths, spot, ink_labels.GATHER_PT)
 
 
 def _label_match(reads: Sequence[_InkRead], wanted: Decimal) -> tuple[bool, str]:

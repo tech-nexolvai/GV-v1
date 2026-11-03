@@ -57,6 +57,8 @@ from importlib import import_module
 from itertools import pairwise
 from typing import Any, Final, Literal
 
+from app.review.assistant.segment_index import near as _segments_near
+
 __all__ = [
     "FIELD",
     "KINDS",
@@ -437,7 +439,7 @@ def small_span(
     def tick_rows(low: float, high: float) -> set[float]:
         return {
             round((my if axis == "h" else mx) * 2) / 2
-            for mx, my in lines.slanted
+            for mx, my in dim_anchors._slanted_near(lines, axis, low, high)
             if low <= (my if axis == "h" else mx) <= high
         }
 
@@ -509,7 +511,9 @@ def _leader_ends(lines: Any, box: Box, axis: str) -> list[tuple[float, float]]:
         )
 
     out: list[tuple[float, float]] = []
-    for a, b in lines.all:
+    # A leader starts at the box (within `LEADER_PAD_PT`).
+    pad = LEADER_PAD_PT
+    for a, b in _segments_near(lines.all, x0 - pad, y0 - pad, x1 + pad, y1 + pad):
         dx, dy = b[0] - a[0], b[1] - a[1]
         length = math.hypot(dx, dy)
         if not LEADER_MIN_PT <= length <= LEADER_MAX_PT:

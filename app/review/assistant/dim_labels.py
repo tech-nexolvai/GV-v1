@@ -123,7 +123,9 @@ import logging
 import math
 import re
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
@@ -157,6 +159,8 @@ from app.review.assistant.finding_checks import (
     value_flags,
 )
 from app.review.assistant.measure import _pieces
+from app.review.assistant.segment_index import flipped as _flipped_segments
+from app.review.assistant.segment_index import near as _segments_near
 from extraction.stamp_text import drawing_ink
 from extraction.visible_text import ink_picture
 
@@ -310,11 +314,47 @@ class _Parsed:
     the text route cannot read them, the OCR route reads them at their spot (#1750)."""
 
 
+#: The page parsed within `parsed_once` (its key and its `_Parsed`), or `None` outside one.
+_ONE_PARSE: ContextVar[dict[tuple[str, int, int, int], _Parsed] | None] = ContextVar(
+    "dim_labels_one_parse", default=None
+)
+
+
+@contextmanager
+def parsed_once() -> Iterator[None]:
+    """Within this block a page is parsed once (`_parse`): its text route, its drawn pass, its
+    `EQ` parts and its line work (`vendor_consistency.LineWork`) used to parse the same page
+    three or four times, 10 seconds each on a big architect's sheet. The newest page is kept
+    until the block ends (then let go: a big sheet's parse is hundreds of megabytes); outside
+    one, every call parses. The same file version (path, time, size) gives the same parse."""
+    if _ONE_PARSE.get() is not None:
+        yield
+        return
+    token = _ONE_PARSE.set({})
+    try:
+        yield
+    finally:
+        _ONE_PARSE.reset(token)
+
+
 def _parse(pdf: Path, page_index: int) -> _Parsed:
     """The page's vendor layer read once: `verify_value`'s characters and glyph paths, and
-    `measure`'s line work (both from the same pass)."""
+    `measure`'s line work (both from the same pass); within `parsed_once`, the page parsed
+    already when it is the same file version's same page."""
     stat = pdf.stat()
     key = (str(pdf.resolve()), stat.st_mtime_ns, stat.st_size, page_index)
+    held = _ONE_PARSE.get()
+    if held is not None and key in held:
+        return held[key]
+    found = _parse_page(pdf, page_index, key)
+    if held is not None:
+        held.clear()
+        held[key] = found
+    return found
+
+
+def _parse_page(pdf: Path, page_index: int, key: tuple[str, int, int, int]) -> _Parsed:
+    """`_parse`, read from the file."""
     data = pdf.read_bytes()
     colour_rule = vv.combined_sheet(data)  # the colour rule: GV's combined sheets only
     vendor = vv._vendor_page(data, page_index)
@@ -704,6 +744,36 @@ def _overlap(a: Box, b: Box) -> float:
     return w * h / smaller
 
 
+#: Fewer box pairs than this are tested one by one in `_covered`.
+_COVERED_PAIRS: Final = 20_000
+
+
+def _covered(boxes: Sequence[Box], skip: Sequence[Box]) -> list[bool]:
+    """For each box, whether it shares more than half with one of `skip` (`_overlap`), as
+    `[any(_overlap(box, s) > 0.5 for s in skip) for box in boxes]` says. A big sheet's 100,000
+    paths against a few hundred labels were millions of tests: here only the boxes that meet a
+    label's box (found for all of them at once) are tested against it, since boxes that do not
+    meet share nothing. Read one by one when there are few, or a place is not a finite number."""
+    if not skip or len(boxes) * len(skip) < _COVERED_PAIRS:
+        return [any(_overlap(box, s) > 0.5 for s in skip) for box in boxes]
+    held = np.array(boxes, dtype=np.float64).reshape(-1, 4)
+    shapes = np.array(skip, dtype=np.float64).reshape(-1, 4)
+    if not (np.isfinite(held).all() and np.isfinite(shapes).all()):
+        return [any(_overlap(box, s) > 0.5 for s in skip) for box in boxes]
+    out = [False] * len(boxes)
+    for s, (left, top, right, bottom) in zip(skip, shapes.tolist(), strict=True):
+        meeting = np.flatnonzero(
+            (held[:, 2] >= left)
+            & (held[:, 0] <= right)
+            & (held[:, 3] >= top)
+            & (held[:, 1] <= bottom)
+        )
+        for i in meeting.tolist():
+            if not out[i] and _overlap(boxes[i], s) > 0.5:
+                out[i] = True
+    return out
+
+
 # ---- dimension lines -----------------------------------------------------------------------------
 
 
@@ -736,7 +806,9 @@ def _boundaries(
     out = [lo, hi]
     uprights: list[tuple[float, float]] = []
     ticks: list[float] = []
-    for a, b in segments:
+    # Only a segment whose middle is within 1.5 points of lo..hi along, and that reaches within
+    # 1.5 points of the line across (an upright through it, a tick on it), is either.
+    for a, b in _segments_near(segments, lo - 1.5, y - 1.5, hi + 1.5, y + 1.5):
         dx, dy = b[0] - a[0], b[1] - a[1]
         length = math.hypot(dx, dy)
         mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
@@ -825,7 +897,9 @@ def _across_crossings(
 
     def crossing(at: float) -> bool:
         reach: list[tuple[float, float]] = []
-        for a, b in segments:
+        # Only an upright whose middle is within 0.8 points of `at`, reaching within 1.5 points
+        # of the line, counts below.
+        for a, b in _segments_near(segments, at - 0.8, y - 1.5, at + 0.8, y + 1.5):
             dx, dy = b[0] - a[0], b[1] - a[1]
             length = math.hypot(dx, dy)
             if length < 0.8 or abs(dx) > 0.05 * length or abs((a[0] + b[0]) / 2 - at) > 0.8:
@@ -857,7 +931,8 @@ def _extension(x: float, y: float, segments: Sequence[Segment], font: float) -> 
     """The extension line at `x` that reaches the dimension line at `y` (dashes followed): its far
     end first, then its end at the dimension line."""
     pieces: list[tuple[float, float]] = []
-    for a, b in segments:
+    # An upright piece's middle is within 0.8 points of `x` (anywhere up or down the page).
+    for a, b in _segments_near(segments, x - 0.8, -math.inf, x + 0.8, math.inf):
         dx, dy = b[0] - a[0], b[1] - a[1]
         length = math.hypot(dx, dy)
         if length < 0.8 or abs(dx) > 0.05 * length or abs((a[0] + b[0]) / 2 - x) > 0.8:
@@ -946,12 +1021,13 @@ def dimension_line(
     flip = orientation == "v"
     if flip:
         box = (box[1], box[0], box[3], box[2])
-        segments = [(_flip(a), _flip(b)) for a, b in segments]
+        segments = _flipped_segments(segments)
     x0, y0, x1, y1 = box
     width = x1 - x0
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     rows: dict[float, list[tuple[float, float]]] = {}
-    for a, b in segments:
+    # A row's piece has its middle within 0.7 text heights of the label across (anywhere along).
+    for a, b in _segments_near(segments, -math.inf, y0 - 0.7 * font, math.inf, y1 + 0.7 * font):
         dx, dy = b[0] - a[0], b[1] - a[1]
         length = math.hypot(dx, dy)
         if length < 2.0 or abs(dy) > 0.02 * length:
@@ -1067,7 +1143,9 @@ def _end_marks(
     falling, meeting on it at one point (an arrowhead's tip)."""
     ticks: list[float] = []
     tips: dict[tuple[float, float], set[int]] = {}
-    for a, b in segments:
+    # A mark's middle is within 1.5 points of lo..hi along, and it crosses the line or ends on it
+    # (within 0.3 points).
+    for a, b in _segments_near(segments, lo - 1.5, row - 1.5, hi + 1.5, row + 1.5):
         dx, dy = b[0] - a[0], b[1] - a[1]
         length = math.hypot(dx, dy)
         if length < 0.8 or length > 3 * font or dx == 0 or not 0.2 <= abs(dy / dx) <= 5.0:
@@ -1116,13 +1194,14 @@ def _ticked_line(
     flip = orientation == "v"
     if flip:
         box = (box[1], box[0], box[3], box[2])
-        segments = [(_flip(a), _flip(b)) for a, b in segments]
+        segments = _flipped_segments(segments)
     x0, y0, x1, y1 = box
     cx = (x0 + x1) / 2
     reach = _BESIDE_LETTERS * font
     rows: dict[float, list[tuple[float, float]]] = {}
     between: list[tuple[float, float, float]] = []
-    for a, b in segments:
+    # A row's piece has its middle within `reach` above or below the text (anywhere along).
+    for a, b in _segments_near(segments, -math.inf, y0 - reach, math.inf, y1 + reach):
         dx, dy = b[0] - a[0], b[1] - a[1]
         length = math.hypot(dx, dy)
         if length < 0.8 or abs(dy) > 0.02 * length:
@@ -1198,7 +1277,8 @@ def _clusters(paths: Sequence[Any], skip: Sequence[Box]) -> tuple[list[Box], lis
     the lone paths, with no other ink within the clusters' gap. A lone character-sized path seeds
     a label drawn with wide letter spacing (a `2"` whose inch mark is 1.8 points away, a large
     `90"`): `ink_labels` gathers its label with a gap relative to the characters' size."""
-    boxes = [p.box for p in paths if not any(_overlap(p.box, s) > 0.5 for s in skip)]
+    every = [p.box for p in paths]
+    boxes = [box for box, covered in zip(every, _covered(every, skip), strict=True) if not covered]
     parent = list(range(len(boxes)))
 
     def root(i: int) -> int:
@@ -3266,10 +3346,10 @@ def _short_lines(labels: Sequence[dict[str, Any]], segments: Sequence[Segment]) 
             line = [(a, row), (b, row)]
         else:
             font = box[2] - box[0]
-            flipped = [(_flip(p), _flip(q)) for p, q in segments]
+            mirror = _flipped_segments(segments)
             ends = [
                 None if found_end is None else [_flip(q) for q in found_end]
-                for found_end in (_extension(y, row, flipped, font) for y in (a, b))
+                for found_end in (_extension(y, row, mirror, font) for y in (a, b))
             ]
             line = [(row, a), (row, b)]
         if not all(ends):
@@ -3306,7 +3386,9 @@ def _inside_line(
     if axis == "v":
         x0, y0, x1, y1 = y0, x0, y1, x1
     found: set[tuple[float, float, float]] = set()
-    for p, q in segments:
+    # The line's middle lies inside the label's box (both ways round).
+    bx0, by0, bx1, by1 = (float(v) for v in raw)
+    for p, q in _segments_near(segments, bx0, by0, bx1, by1):
         if axis == "v":
             p, q = _flip(p), _flip(q)
         dx, dy = q[0] - p[0], q[1] - p[1]
@@ -3809,11 +3891,11 @@ def _add_lettered(
     fractions), on the architect's drawings only, within what is left of the time budget."""
     started = clock()
     skip = [tuple(label["box"]) for label in result.labels]
+    mine = [path for path in parsed.page.paths if _side(path.box, halves) == "architect"]
     paths = [
         path
-        for path in parsed.page.paths
-        if _side(path.box, halves) == "architect"
-        and not any(_overlap(path.box, box) > 0.5 for box in skip)
+        for path, covered in zip(mine, _covered([p.box for p in mine], skip), strict=True)
+        if not covered
     ]
     if not paths:
         return
@@ -4098,6 +4180,12 @@ def read_page(task: dims_pool.PageTask, given: Mapping[str, float]) -> PageRead:
     pictures (`given["pictures"]` seconds, when it shows one), then its drawn ink (`given["drawn"]`
     seconds, the OCR route within `min(given["ocr"], OCR_PAGE_S)`, the sweep within
     `given["sweep"]`)."""
+    with parsed_once():
+        return _read_page(task, given)
+
+
+def _read_page(task: dims_pool.PageTask, given: Mapping[str, float]) -> PageRead:
+    """`read_page`, the page parsed once."""
     pdf, name, number = Path(task.pdf), task.name, task.number
     halves = list(task.halves)
     spent: dict[str, float] = {}
