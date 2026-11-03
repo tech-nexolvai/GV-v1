@@ -41,6 +41,18 @@ Likely problem.
    problem on a height that matches (the vendor prints the same height elsewhere); the look's own
    instructions already say a size is named "as printed" and never invented.
 
+6. **An absence on the architect's drawing** (`architect_absence`, 2026-11-04): an extra piece, a
+   layout or a count claim whose architect side says the architect draws none of it ("no splash
+   visible above the top", "not shown", "none") rests on the look not seeing a piece, which code
+   cannot back: no text or line check here proves that a
+   piece is NOT drawn (a 4" band drawn with no word or size beside it is still a splash). Such a
+   claim is **Not compared**, asking for the architect's drawing to be checked for the piece; it
+   stays on the list, never dropped, and is never a Likely problem on the look's word alone. A real
+   set: the look said twice (two runs in a row) that the architect draws no back splash above a
+   vanity top, while the architect's elevations draw a band exactly 4" tall above the counter
+   line. A claim that the vendor LEAVES a piece out (`missing_piece`, the architect draws it) is
+   a presence on the architect's drawing and stays as it is.
+
 Pure code: no I/O, no AI call. Verification: `tests/review/assistant/test_look_rules.py` (made-up
 drawings and values).
 """
@@ -57,6 +69,7 @@ from vocabulary.dashes import dashes_to_hyphen
 __all__ = [
     "ASK",
     "PIECE",
+    "architect_absence",
     "changes",
     "has_tag",
     "own_sum",
@@ -96,6 +109,19 @@ _OVERLAY_NEEDS: Final = "the vendor's own drawing of {thing} without GV's markup
 _PLACE_NEEDS: Final = "whether {thing} is part of this millwork unit"
 _ASK_NEEDS: Final = "each difference of {thing} checked on its own"
 _SUM_NEEDS: Final = "a size printed on both drawings for {thing}"
+_ABSENCE_NEEDS: Final = (
+    "the architect's drawing checked for {thing} (code cannot see that it is not drawn)"
+)
+#: The claims rule 6 looks at: a piece, a layout or a count (a size claim is about a value, and
+#: a missing piece is drawn on the architect's side).
+_ABSENCE_KINDS: Final = frozenset({"extra_piece", "layout", "count"})
+#: An architect side that says the architect draws none of it (rule 6).
+_ARCHITECT_NONE: Final = re.compile(
+    r"\bno\b[^.;]*\b(?:visible|shown|drawn|seen|appears?)\b"
+    r"|\bnot\s+(?:shown|drawn|visible|seen|present)\b"
+    r"|\b(?:draws?|shows?)\s+(?:no|none)\b|\bnone\b|\babsent\b|\bomit",
+    re.IGNORECASE,
+)
 #: A value the look added up itself instead of reading it: numbers joined by "+" or "plus", a
 #: chain or a sum. An estimate or a size by scale is not one (see rule 5).
 _OWN_VALUE: Final = re.compile(
@@ -330,4 +356,39 @@ def changes(
                 out.append(
                     (fid, claim_rules.Change("not_compared", "piece_place", placed, _PLACE_NEEDS))
                 )
+                continue
+        absent = architect_absence(finding, kind)
+        if absent is not None:
+            out.append(
+                (
+                    fid,
+                    claim_rules.Change("not_compared", "architect_absence", absent, _ABSENCE_NEEDS),
+                )
+            )
     return out
+
+
+# ---- 6. an absence on the architect's drawing ----------------------------------------------------
+
+
+def architect_absence(finding: Mapping[str, Any], kind: str | None = None) -> str | None:
+    """Why a look claim rests on the architect drawing none of a piece (rule 6), else `None`: an
+    extra piece, or an architect side saying so, while the vendor's side draws something (a
+    vendor side that says the piece is not there is the vendor's absence, not this)."""
+    from app.review.assistant import classification
+
+    if kind is None:
+        mark = finding.get(likely_problems.FIELD)
+        kind = str(mark.get("kind") or "") if isinstance(mark, Mapping) else ""
+    architect = " ".join(str(finding.get("architect") or "").split())
+    vendor = " ".join(str(finding.get("vendor") or "").split())
+    if kind not in _ABSENCE_KINDS or classification.vendor_absent(vendor):
+        return None
+    if not _ARCHITECT_NONE.search(architect):
+        return None
+    said = architect if len(architect) <= 100 else f"{architect[:99]}…"
+    return (
+        f'the look says the architect\'s drawing does not draw it ("{said}"), which rests on the '
+        "look not seeing it: code finds nothing on the drawing that proves a piece is not there, "
+        "so it is asked, not claimed"
+    )
