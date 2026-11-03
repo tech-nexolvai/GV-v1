@@ -2290,7 +2290,7 @@ class ChatEngine:
             checks = {**(checked.get("checks") or {}), "adjudication": third[1]}
             checked = judged({**checked, "checks": checks, "reads": list(third[2])})
         # The resolver's fields (#1554) and the escalation's (#1619) are set only on the items
-        # they touch (and the round match, 2026-10-22).
+        # they touch (and the round match, 2026-10-22; code's printed string, 2026-11-03).
         for key in (
             "ledger_ids",
             "reference_side",
@@ -2304,6 +2304,7 @@ class ChatEngine:
             "escalation",
             "string_reads",
             "round_match",
+            "printed_string",
         ):
             checked.setdefault(key, None)
         return checked
