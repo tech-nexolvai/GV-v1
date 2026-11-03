@@ -77,6 +77,7 @@ from app.review.assistant.likely_problems import COUNT_WORDS as LIKELY_COUNT
 from app.review.assistant.likely_problems import HEADING as LIKELY_HEADING
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.rule_notes import HEADING as RULE_NOTE_HEADING
+from app.review.assistant.vendor_text import reference_value
 from extraction import gv_marks
 from extraction.pdfium_guard import PDFIUM_LOCK as GUARD_LOCK
 from extraction.pdfium_guard import pdfium
@@ -400,16 +401,25 @@ def note_text(number: int, finding: Mapping[str, Any]) -> str:
     after its sign: "× 12 Outlet height: vendor 46", make it 37" (architect 3'-1")"."""
     del number
     vendor, architect = finding.get("vendor"), str(finding.get("architect"))
+    # A vendor string's "architect" is code's sum of its own parts (Set A, 2026-11-04).
+    shown = _reference_shown(finding)
     if cloud_kind(finding) == "wrong":
         needs = needs_text(finding)
         if to_inches(needs) is None:
             # Not one value (a sentence, a chain): what the architect shows, not "make it".
-            return f"{finding.get('item')}: vendor {vendor}; architect {architect}"
+            return f"{finding.get('item')}: vendor {vendor}; {shown}"
         text = f"{finding.get('item')}: vendor {vendor}, make it {needs}"
         if needs != architect:
-            text += f" (architect {architect})"
+            text += f" ({shown})"
         return text
-    return f"Not compared: {finding.get('item')}: vendor {vendor}; architect {architect}"
+    return f"Not compared: {finding.get('item')}: vendor {vendor}; {shown}"
+
+
+def _reference_shown(finding: Mapping[str, Any]) -> str:
+    """`architect 3'-1"`, or `parts add up to 52 3/8"` for the vendor's own string."""
+    if finding.get("source") == "vendor_arithmetic":
+        return reference_value(finding) or "the vendor's own parts"
+    return f"architect {finding.get('architect')}"
 
 
 def _sign(kind: str | None) -> str:
@@ -938,11 +948,15 @@ def entry_lines(finding: Mapping[str, Any]) -> list[str]:
     """A finding's lines on the notes pages: vendor and what it needs (or the architect's), why,
     and a "Your decision" item's decision help."""
     vendor, architect = finding.get("vendor"), finding.get("architect")
+    own = finding.get("source") == "vendor_arithmetic"
     if cloud_kind(finding) == "wrong":
         needs = needs_text(finding)
         line = f"Vendor: {vendor}   Needs: {needs}"
         if needs != str(architect):
-            line += f"   (architect {architect})"
+            line += f"   ({_reference_shown(finding)})"
+    elif own:
+        # The vendor's own string: its parts' sum, never an architect value (Set A, 2026-11-04).
+        line = f"Vendor: {vendor}   Parts add up to: {architect}"
     else:
         line = f"Vendor: {vendor}   Architect: {architect}"
     lines = [line]

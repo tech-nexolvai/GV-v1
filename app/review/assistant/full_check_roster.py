@@ -4853,12 +4853,18 @@ class _Run:
         """Each vendor string an AI grouped that code's geometry could not verify, the biggest
         first, gets one blind second reading from the protected money (D1, `ai_pair_plus_code`
         only): the same parts and overall, and code's sum off, prove it; a reading of other parts
-        that add up drops it; else it stays Not compared. Code's lines come first ($0, #1802): a
-        part left out, or filler notes at the run's ends, settle it without a reading. A page with
-        no architect drawing paired with it gets no reading at all: two readings of a sum are not
-        a second check there, so the string is Not compared with no "should be". Under
-        `code_only` only the reading is skipped: code's own steps still run (a string that adds
-        up with its filler notes is dropped; one the architect prints the sum of is red)."""
+        that add up drops it. Code's lines come first ($0, #1802): a part left out, or filler
+        notes at the run's ends, settle it without a reading (Not compared: the string is shown
+        incomplete). A page with no architect drawing paired with it gets no reading at all: two
+        readings of a sum are not a second check there. Under `code_only` only the reading is
+        skipped: code's own steps still run (a string that adds up with its filler notes is
+        dropped; one the architect prints the sum of is red). A string nothing proves and nothing
+        shows incomplete (no paired drawing, no reading made, a reading that does not confirm it)
+        is a please-check with code's reason, never red and never Not compared (Set A,
+        2026-11-04: real 1/4" misses were hidden as Not compared); one whose overall's line code
+        sees is cut (the run's extent unknown) stays Not compared, as before (#1656). A string the
+        consistency check already showed is not the overall's (`string_reads` gap) is left as
+        it is."""
         engine = self.engine
         code_only = engine.settings.pairing_proof == "code_only"
         if page_map is None:
@@ -4871,6 +4877,7 @@ class _Run:
             and f.get("created_by") != "consistency"
             and self._in_scope(f)
             and not proof_rule.string_verified(f)
+            and (f.get("string_reads") or {}).get("outcome") != "gap"
             and f.get("parts")
             and f.get("printed_total")
             and isinstance(f.get("vendor_box"), Mapping)
@@ -4887,6 +4894,7 @@ class _Run:
             extent = self._string_extent(finding)
             if isinstance(extent, str):
                 # The run's whole extent is unknown: a reading of a cut view proves nothing (#1656).
+                # Code sees the overall's line is not whole, so the list may be a cut view's.
                 self._set_string(finding_id, "gap", extent)
                 continue
             overall, line_box = extent
@@ -4911,11 +4919,12 @@ class _Run:
                 continue
             extras = string_extras(finding["parts"], overall, self._page_labels(finding))
             if not extras and self._unpaired(finding, page_map):
-                self._set_string(
+                self._string_check(
                     finding_id,
-                    "gap",
-                    "the string does not add up, but no architect drawing is paired with this "
-                    "page, so its sum alone is never clouded and no correction is proposed",
+                    "not_verified",
+                    "the string does not add up, but code could not prove its parts form one "
+                    "string, and no architect drawing is paired with this page, so no second "
+                    "reading is made",
                 )
                 continue
             if extras:
@@ -4928,13 +4937,13 @@ class _Run:
                 continue
             if code_only:
                 # D1's AI path is off: no second reading proves the parts are one chain.
-                self._set_string(finding_id, "gap", CODE_ONLY_STRING)
+                self._string_check(finding_id, "not_verified", CODE_ONLY_STRING)
                 continue
             reply = self._blind_string(finding, line_box)
             if reply is None:
                 self.stopped_for_money = True
                 self._note("a vendor string's second reading: not verified within the fixed price")
-                self._set_string(finding_id, "not_verified", NOT_VERIFIED.lower())
+                self._string_check(finding_id, "not_verified", NOT_VERIFIED.lower())
                 continue
             outcome, why = compare_strings(finding["parts"], finding["printed_total"], reply)
             if outcome == "adds_up":
@@ -4942,6 +4951,10 @@ class _Run:
                     gone = engine.book.absorb(finding_id)
                 if gone:
                     engine._show_dropped(finding_id, f"Dropped: {why}.")
+                continue
+            if outcome in ("disagrees", "not_found"):
+                # The second reading does not confirm the parts; nothing shows them incomplete.
+                self._string_check(finding_id, outcome, why)
                 continue
             self._set_string(finding_id, outcome, why, proved=outcome == "proved")
 
@@ -5100,6 +5113,26 @@ class _Run:
                 return current
 
             engine._update_finding(str(finding["id"]), change)
+
+    def _string_check(self, finding_id: str, outcome: str, why: str) -> None:
+        """A vendor string code could not prove one string, with nothing showing it incomplete:
+        a please-check with code's reason (`vendor_consistency.unproved_check`): never red, never
+        Not compared (Set A, 2026-11-04). A row code reads whole keeps its parts as code's.
+        `outcome` is one the API knows (`ChatFindingStringReadsOut`): `not_verified`, or the
+        blind reading's `disagrees` / `not_found`."""
+        from app.review.assistant.vendor_consistency import unproved_check
+
+        def change(current: dict[str, Any]) -> dict[str, Any]:
+            checks = current.get("checks") if isinstance(current.get("checks"), Mapping) else {}
+            by_code = current.get(PARTS_READ) == "code" or (checks or {}).get(PARTS_READ) == "code"
+            reads = {"outcome": outcome, "why": why}
+            words = f"{why[:1].upper()}{why[1:]}; please check. Never red: code could not prove "
+            words += "these parts form one string."
+            return unproved_check(
+                {**current, "string_reads": reads}, words, parts_read="code" if by_code else "ai"
+            )
+
+        self.engine._update_finding(finding_id, change)
 
     def _set_string(self, finding_id: str, outcome: str, why: str, *, proved: bool = False) -> None:
         def change(current: dict[str, Any]) -> dict[str, Any]:

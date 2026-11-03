@@ -12,8 +12,9 @@ import { describe, expect, it } from 'vitest';
 import { AssistantMessage } from '@/components/chat/chat-message';
 import type { ChatTrust, LedgerReport } from '@/lib/chat-api';
 import type { ViewMessage } from '@/lib/chat-messages';
-import { gvChecksOf, ledgerWords, roundWords, sumWords } from '@/lib/chat-trust';
-import { sideLabels } from '@/lib/chat-findings';
+import { CSV_HEADER, findingsCsv, gvChecksOf, ledgerWords, roundWords, sumWords } from '@/lib/chat-trust';
+import { referenceValueLabel, referenceValueWord, sideLabels } from '@/lib/chat-findings';
+import { referenceSide } from '@/lib/chat-drawer';
 import { finding, OPUS } from './fixtures/chat';
 
 function answer(change: Partial<ViewMessage> = {}): ViewMessage {
@@ -62,6 +63,19 @@ describe('the reading ledger in words', () => {
     expect(sideLabels(SUM)).toEqual({ architect: 'Vendor: the parts', vendor: 'Vendor: the printed total', architectTag: 'V', vendorTag: 'V' });
     expect(sideLabels({ source: 'cross_view', reference_side: 'vendor', created_by: 'consistency' })).toMatchObject({ architect: 'Vendor: the same span, elsewhere', architectTag: 'V' });
     expect(sideLabels({ source: 'architect' })).toEqual({ architect: 'Architect', vendor: 'Vendor', architectTag: 'A', vendorTag: 'V' });
+  });
+
+  it('names a vendor string’s sum as its parts adding up, never as an architect value (Set A, 2026-11-04)', () => {
+    expect(referenceValueLabel(SUM)).toBe('Parts add up to');
+    expect(referenceValueLabel({ source: 'architect' })).toBe('Architect');
+    expect(referenceValueWord(SUM)).toBe('parts add up to');
+    expect(referenceValueWord({ source: 'architect' })).toBe('architect');
+    expect(referenceSide(SUM, 'likely_problem')).toMatchObject({ label: 'Parts add up to', value: '27 1/2″' });
+    const csv = findingsCsv([{ ...SUM, inches: { architect: '27.5', vendor: '27.25', difference: '-0.25' } }]);
+    const row = csv.replace(/^\uFEFF/, '').split('\r\n')[1] ?? csv.split('\n')[1];
+    expect(row).toContain('parts add up to 27 1/2');
+    expect(row).not.toContain('27.5');
+    expect(CSV_HEADER).toContain('Architect (as printed)');
   });
 
   it('reads GV Review’s own checks in the server’s shape, with the ledger’s extra left-out ones', () => {

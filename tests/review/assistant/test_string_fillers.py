@@ -271,11 +271,12 @@ def test_code_only_still_runs_codes_own_string_steps(tmp_path: Path) -> None:
     assert proof.should_be_value(found) == '56"'
 
 
-def test_code_only_leaves_a_string_codes_lines_cannot_settle_not_compared(
+def test_code_only_makes_a_string_codes_lines_cannot_settle_a_please_check(
     tmp_path: Path,
 ) -> None:
     """No filler notes, no gap code can see: the string would get the AI's second reading; under
-    `code_only` none is asked and it stays Not compared, saying why."""
+    `code_only` none is asked, and nothing shows it incomplete: a please-check saying why, never
+    red (Set A, 2026-11-04: never hidden as Not compared)."""
     script = _Strings(_chains((_parts(), '56"')))
     harness = _roster(tmp_path, script, mode="code_only")
     _pack(harness, vendor=_run("vendor", "56", lines=False, notes=False))
@@ -283,7 +284,7 @@ def test_code_only_leaves_a_string_codes_lines_cannot_settle_not_compared(
     _strings(harness)
     assert "string" not in script.calls
     found = _live(harness, finding_id)
-    assert found is not None and proof.proof_group(found) == "not_compared"
+    assert found is not None and proof.proof_group(found) == "likely_problem"
     assert found["string_reads"]["why"] == full_check_roster.CODE_ONLY_STRING
     assert found.get("string_geometry") is None
 
@@ -416,7 +417,8 @@ def _unpair_page_3(harness: Any) -> None:
 
 def test_a_vendor_only_sum_on_a_page_with_no_architect_pair_is_never_red(tmp_path: Path) -> None:
     """Two readings of a sum are not a second check on a page no architect drawing is paired
-    with: no reading is paid, Not compared, and no "should be" is given."""
+    with: no reading is paid. Nothing shows the string incomplete, so it is a please-check, never
+    red and never hidden as Not compared (Set A, 2026-11-04)."""
     five = ['3"', '11 1/8"', '3/4"', '20 3/4"', '3"']
     script = _Strings(_chains((five, '38 1/2"')))
     harness = _roster(tmp_path, script)
@@ -429,8 +431,9 @@ def test_a_vendor_only_sum_on_a_page_with_no_architect_pair_is_never_red(tmp_pat
     found = _live(harness, finding_id)
     assert found is not None and found.get("string_geometry") is None
     assert "no architect drawing is paired" in found["string_reads"]["why"]
-    assert proof.proof_group(found) == "not_compared"
-    assert "no correction is proposed" in proof.classified(found).why
+    assert found["status"] == "check"
+    assert proof.proof_group(found) == "likely_problem"
+    assert "no architect drawing is paired" in found["why"]
 
 
 def test_the_architects_own_run_with_filler_notes_is_safe_too() -> None:

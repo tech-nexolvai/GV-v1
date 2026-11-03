@@ -77,7 +77,12 @@ from app.review.assistant.review_action import (
 )
 from app.review.assistant.rule_notes import HEADING as RULE_NOTE_HEADING
 from app.review.assistant.rule_notes import SHORT_WORDS as RULE_NOTE_WORDS
-from app.review.assistant.vendor_text import item_name, reviewer_right, vendor_text
+from app.review.assistant.vendor_text import (
+    item_name,
+    reference_value,
+    reviewer_right,
+    vendor_text,
+)
 
 __all__ = [
     "LETTER_KIND",
@@ -1030,7 +1035,11 @@ def register_rows(
                         _rule_reference(finding)
                         if status == "rule_note"
                         else (
-                            f"architect {finding.get('architect')}"
+                            (
+                                reference_value(finding)
+                                if finding.get("source") == "vendor_arithmetic"
+                                else f"architect {finding.get('architect')}"
+                            )
                             if status == "likely_problem"
                             else governs(finding)
                         )

@@ -165,7 +165,9 @@ export function referenceSide(finding: ChatFinding, kind: DrawerKind, decision: 
   if (finding.source === 'rules' || finding.rule_check_id) return { label: 'GV’s rule', value: architect, tone: kind === 'right' ? 'right' : null };
   // The page reviewer's please-check has no architect side: the right-hand card is where it is on the vendor's page.
   if (pageReviewed(finding) && finding.source !== 'vendor_arithmetic') return { label: 'Where on the vendor’s page', value: `p.${finding.page}`, tone: null };
-  return { label: vendorOnly(finding) ? 'Vendor’s own drawing' : 'Architect shows', value: architect, tone: kind === 'right' || kind === 'dismissed' ? 'right' : null };
+  // A vendor string's "architect" is code's sum of its own parts, never an architect value (Set A, 2026-11-04).
+  const label = finding.source === 'vendor_arithmetic' ? 'Parts add up to' : vendorOnly(finding) ? 'Vendor’s own drawing' : 'Architect shows';
+  return { label, value: architect, tone: kind === 'right' || kind === 'dismissed' ? 'right' : null };
 }
 
 // ── How we know ────────────────────────────────────────────

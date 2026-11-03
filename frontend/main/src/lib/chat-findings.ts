@@ -76,6 +76,20 @@ export function sideLabels(finding: Pick<ChatFinding, 'source'> & Partial<Pick<C
     : { architect: 'Architect', vendor: 'Vendor', architectTag: 'A', vendorTag: 'V' };
 }
 
+/**
+ * The reference value's name where a value (not a picture) is shown (Set A, 2026-11-04): a vendor
+ * string's `architect` holds code's sum of the vendor's own parts, never an architect value, so it
+ * is "Parts add up to"; any other finding keeps its side's name.
+ */
+export function referenceValueLabel(finding: Pick<ChatFinding, 'source'> & Partial<Pick<ChatFinding, 'reference_side' | 'created_by'>>): string {
+  return finding.source === 'vendor_arithmetic' ? 'Parts add up to' : sideLabels(finding).architect;
+}
+
+/** The short word before a row's reference value: "parts add up to" for a vendor string, else "architect". */
+export function referenceValueWord(finding: Pick<ChatFinding, 'source'>): string {
+  return finding.source === 'vendor_arithmetic' ? 'parts add up to' : 'architect';
+}
+
 /** What the small tick means, said on hover and to a screen reader. */
 export function verifiedWords(verified: boolean): string {
   return verified ? 'Checked on the drawing' : 'Helper lead, not checked';

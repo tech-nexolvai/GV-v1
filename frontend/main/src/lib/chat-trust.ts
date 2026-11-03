@@ -785,10 +785,11 @@ export function findingsCsv(findings: readonly ChatFinding[]): string {
       categoryWords(categoryOf(finding)),
       pageWords(finding),
       finding.item,
-      finding.architect ?? '',
+      // A vendor string's "architect" is code's sum of its own parts (Set A, 2026-11-04): said as such, never as an architect value.
+      finding.source === 'vendor_arithmetic' && finding.architect ? `parts add up to ${finding.architect}` : finding.architect ?? '',
       finding.vendor ?? '',
       // Code's own decimal strings, as sent.
-      finding.inches?.architect ?? null,
+      finding.source === 'vendor_arithmetic' ? null : finding.inches?.architect ?? null,
       finding.inches?.vendor ?? null,
       finding.inches?.difference ?? null,
       STATUS_WORDS[finding.status] ?? finding.status,

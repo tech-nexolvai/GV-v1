@@ -60,7 +60,7 @@ from app.review.assistant.chat_findings import finding_categories, live_findings
 from app.review.assistant.classification import READER_ERROR, READER_ERROR_WORDS
 from app.review.assistant.dim_findings import label_checks
 from app.review.assistant.finding_checks import wrong_part
-from app.review.assistant.vendor_text import item_name
+from app.review.assistant.vendor_text import item_name, reference_value
 from app.review.assistant.work_pool import code_workers, run_ordered
 
 __all__ = [
@@ -1553,9 +1553,15 @@ def findings_csv(findings: Sequence[Mapping[str, Any]]) -> str:
                 finding.get("vs_page") or "",
                 _cell(finding.get("category")),
                 _cell(finding.get("item")),
-                _cell(finding.get("architect")),
+                # A vendor string's "architect" is code's sum of its own parts (Set A, 2026-11-04):
+                # said as such, never as an architect value.
+                _cell(reference_value(finding)),
                 _cell(finding.get("vendor")),
-                inches.get("architect") or "",
+                (
+                    ""
+                    if finding.get("source") == "vendor_arithmetic"
+                    else inches.get("architect") or ""
+                ),
                 inches.get("vendor") or "",
                 inches.get("difference") or "",
                 _status_cell(finding),
