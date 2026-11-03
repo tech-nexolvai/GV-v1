@@ -18,6 +18,10 @@ kitchenette top for one suite type, its architect plan printing exactly the vend
   unit word after it), a sheet or tag number (`A-301`, `XX-305`: a letter, dash, dot or slash
   glued to it), a scale or a date.
 - **A page's rooms** (`printed_rooms`): the same shapes printed on their own anywhere on a page.
+- **A room table** (`table_rooms`): a page printing a room-type column heading on its own (`ROOM
+  TYPE`, `ROOM DESCRIPTION`, `UNIT TYPE`) and at least `ROOM_TABLE_MIN` room numbers in cells of
+  their own (`cell_rooms`): a vendor's room or vanity matrix, an architect's room schedule. Its
+  numbers are rooms and counts, never sizes.
 - **The page about them** (`room_page`): the architect pages printing every one of the vendor's
   rooms (two or more), where they are a large part of what the page prints (`ROOM_SHARE`) and the
   page does not list a large part of the job's rooms (`ROOM_LIST_SHARE`: a room schedule, a
@@ -40,15 +44,21 @@ from vocabulary.dashes import dashes_to_hyphen
 
 __all__ = [
     "MIN_ROOMS",
+    "ROOM_LIST_MATCH",
     "ROOM_LIST_SHARE",
     "ROOM_SHARE",
+    "ROOM_TABLE_MIN",
     "TITLE_BLOCK_MIN_PAGES",
     "TITLE_BLOCK_SHARE",
+    "TYPE_HEADING",
     "RoomPage",
+    "cell_rooms",
     "has_short",
     "job_rooms",
     "printed_rooms",
+    "room_list_page",
     "room_page",
+    "table_rooms",
     "title_block",
     "vendor_rooms",
 ]
@@ -66,6 +76,14 @@ ROOM_LIST_SHARE: Final = 0.5
 #: room is printed on a few pages (its floor's plans, the schedule, its type's plan).
 TITLE_BLOCK_SHARE: Final = 0.8
 TITLE_BLOCK_MIN_PAGES: Final = 5
+#: A room table prints at least this many room numbers, each in a cell of its own (`table_rooms`).
+ROOM_TABLE_MIN: Final = 8
+#: A vendor's room table listing most of the job's rooms (a room or vanity matrix) is about the one
+#: architect room table whose rooms are the same as its own to this share (rooms on both over rooms
+#: on either, `room_list_page`): two lists of the whole job.
+ROOM_LIST_MATCH: Final = 0.9
+#: A room table's room-type column heading, printed on its own (`table_rooms`).
+TYPE_HEADING: Final = re.compile(r"(?:ROOM|UNIT|APARTMENT|APT)S?\s*(?:TYPES?|DESCRIPTIONS?)\s*:?")
 #: A job's room is printed on at least this many of its architect pages (a plan of the floor and a
 #: schedule, an enlarged plan): a number printed once is a size, a part number or a note.
 _JOB_MIN_PAGES: Final = 2
@@ -162,6 +180,31 @@ def printed_rooms(texts: Iterable[str], short: bool = False) -> frozenset[str]:
     return frozenset(out)
 
 
+#: A cell printing nothing but room numbers and list signs (`101`, `101, 201`, `101 & 201`).
+_CELL: Final = re.compile(rf"\s*{_ROOM}(?:\s*[,;&]?\s*{_ROOM})*\s*,?\s*")
+
+
+def cell_rooms(text: object) -> frozenset[str] | None:
+    """The room numbers of a cell that prints nothing else (list signs aside), else `None`."""
+    upper = _normal(text)
+    if not _CELL.fullmatch(upper):
+        return None
+    return frozenset(m.group("n") for m in _ROOM_TOKEN.finditer(upper))
+
+
+def table_rooms(texts: Iterable[str]) -> frozenset[str]:
+    """The room numbers of a page's room table (`texts`: its printed phrases, one cell each): the
+    page prints a room-type column heading on its own (`TYPE_HEADING`) and at least
+    `ROOM_TABLE_MIN` room numbers in cells of their own; else none."""
+    cells = list(texts)
+    if not any(TYPE_HEADING.fullmatch(" ".join(str(t).upper().split())) for t in cells):
+        return frozenset()
+    found: set[str] = set()
+    for text in cells:
+        found |= cell_rooms(text) or frozenset()
+    return frozenset(found) if len(found) >= ROOM_TABLE_MIN else frozenset()
+
+
 def title_block[K: Hashable](pages: Mapping[K, frozenset[str]]) -> frozenset[str]:
     """The numbers printed on `TITLE_BLOCK_SHARE` of the pages or more (`pages`: each page's
     room-shaped numbers), when there are `TITLE_BLOCK_MIN_PAGES` pages or more: the title block's
@@ -189,6 +232,25 @@ class RoomPage[K: Hashable]:
     """The vendor's rooms, all printed on it."""
     printed: int
     """How many room numbers the page prints."""
+
+
+def room_list_page[K: Hashable](
+    vendor: frozenset[str], tables: Mapping[K, frozenset[str]], job: frozenset[str]
+) -> RoomPage[K] | None:
+    """The one architect room table (`tables`: each page's `table_rooms`) that is the same list as
+    the vendor's room table (`vendor`), when both list most of the job's rooms (more than
+    `ROOM_LIST_SHARE` of `job`): a vendor's room or vanity matrix and the architect's room
+    schedule, two lists of the whole job, whose rooms are the same to `ROOM_LIST_MATCH` (rooms on
+    both over rooms on either). Exactly one table must be; else `None`."""
+    if not job or len(vendor & job) <= ROOM_LIST_SHARE * len(job):
+        return None
+    passed = [
+        RoomPage(key, vendor & found, len(found))
+        for key, found in tables.items()
+        if len(found & job) > ROOM_LIST_SHARE * len(job)
+        and len(vendor & found) >= ROOM_LIST_MATCH * len(vendor | found)
+    ]
+    return passed[0] if len(passed) == 1 else None
 
 
 def room_page[K: Hashable](

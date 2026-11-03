@@ -280,6 +280,7 @@ from app.review.assistant.product_scope import (
 from app.review.assistant.proof import proof_counts, vendor_facing
 from app.review.assistant.rate_limits import Limits, ModelLimiter, limiter_for
 from app.review.assistant.reading_routes import NOT_DOUBLE_READ, sides_needed
+from app.review.assistant.room_matrix import add_to_answer as add_room_matrix
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.run_fit import add_to_answer as add_run_fit
 from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
@@ -578,6 +579,7 @@ CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
     "sink_centre": "the sink centre on the sink base",
     "splash_views": "the splash sizes on the architect's other views",
     "scale_measure": "the measuring by scale where the architect prints no size",
+    "room_matrix": "the room list check",
     "set_check": "the cross-sheet tag check",
 }
 
@@ -3519,6 +3521,9 @@ class ChatEngine:
             # Where the architect prints no size: measured by its own scale (2026-10-23), last,
             # on every item the steps above left open.
             (CODE_CHECK_NAMES["scale_measure"], lambda: add_scale_measures(self)),
+            # The vendor's room matrix against the architect's room schedule (2026-11-04,
+            # `room_matrix`): the room set and the accessible rooms, and each room's type.
+            (CODE_CHECK_NAMES["room_matrix"], lambda: add_room_matrix(self)),
             # A tag only one sheet prints, or tagged differently on the item's other drawing
             # (2026-10-29, `set_context`): please-checks, never red.
             (CODE_CHECK_NAMES["set_check"], lambda: add_set_check(self)),

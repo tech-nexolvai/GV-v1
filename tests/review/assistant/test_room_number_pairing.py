@@ -70,6 +70,7 @@ def _set(
     vendor_marker: str = "",
     plan_sizes: bool = True,
     callout: bool = True,
+    tables: dict[int, list[str]] | None = None,
 ) -> Any:
     """A two-file set of PROJECT NORTH: each vendor page's printed text (77" by 24" each), the
     architect's file above (`legend`: the suite plan's room list; `plan_sizes`: it prints three
@@ -114,8 +115,24 @@ def _set(
         }
         for p in vendor
     ]
+    for entry in dims_pages:
+        if (tables or {}).get(entry["page"]) is not None and entry["file"] == SHOP:
+            # A vendor room matrix: its rooms in cells of their own, read as bare-number labels.
+            entry["phrases"] = _cells(tables[entry["page"]])
+            entry["labels"] = [
+                _label(n + 1, room, int(room), list(box), "vendor", "h")
+                for n, (room, box) in enumerate(_cell_boxes(tables[entry["page"]]))
+            ]
     for page in arch_text:
         entry: dict[str, Any] = {"file": ARCH, "page": page, "labels": [], "phrases": []}
+        if page == SCHEDULE and tables is not None:
+            # The schedule as a room table: its rooms in cells, read as bare-number labels too.
+            every = [str(r) for rs in FLOORS.values() for r in rs]
+            entry["phrases"] = _cells(every, heading="ROOM DESCRIPTION")
+            entry["labels"] = [
+                _label(n + 1, room, int(room), list(box), "architect", "h")
+                for n, (room, box) in enumerate(_cell_boxes(every))
+            ]
         if page == SUITE_PLAN:
             entry["labels"] = (
                 [
@@ -168,6 +185,30 @@ def _set(
         main_file=SHOP,
         texts=texts,
     )
+
+
+def _cell_boxes(rooms: list[str]) -> list[tuple[str, tuple[float, float, float, float]]]:
+    return [
+        (
+            room,
+            (
+                400.0 + 60 * (n % 6),
+                100.0 + 12 * (n // 6),
+                420.0 + 60 * (n % 6),
+                108.0 + 12 * (n // 6),
+            ),
+        )
+        for n, room in enumerate(rooms)
+    ]
+
+
+def _cells(rooms: list[str], heading: str = "Room Type") -> list[dict[str, Any]]:
+    """A room table's printed cells: its room-type heading, a type name, each room on its own."""
+    return [
+        _phrase(heading, [200, 85, 300, 95]),
+        _phrase("King", [200, 102, 260, 110]),
+        *(_phrase(room, list(box)) for room, box in _cell_boxes(rooms)),
+    ]
 
 
 def _pair(work: Any, page: int) -> Any:
@@ -362,3 +403,37 @@ def test_a_rooms_plan_with_no_sizes_is_never_a_drawing_needed_while_its_callouts
     assert pairing.PAIRING_UNSURE in pair.why and "prints no sizes of the piece" in pair.why
     pair = _pair(_set({1: KITCHENETTE}, plan_sizes=False, callout=False), 1)
     assert pair.chosen == () and pair.needed and pair.unsure == ()
+
+
+# ---- a room matrix and the room schedule (2026-11-04) -----------------------------------------
+
+
+EVERY_ROOM = [str(r) for rs in FLOORS.values() for r in rs]
+
+
+def test_a_room_matrix_pairs_with_the_room_schedule_listing_the_same_rooms() -> None:
+    """The vendor's room matrix and the architect's room schedule are both room tables listing
+    every room of the job: the one schedule listing the same rooms is its page, by code (two
+    lists of the whole job; the guard against lists holds for every other page)."""
+    pair = _pair(_set({1: "VANITY MATRIX"}, tables={1: EVERY_ROOM}), 1)
+    assert pair.chosen == (f"p100{SCHEDULE}",) and pair.code_paired, pair.why
+    assert "room table listing the same rooms" in pair.why
+    # A few rooms differ (the room check says which): still the same list.
+    pair = _pair(_set({1: "VANITY MATRIX"}, tables={1: [*EVERY_ROOM[:-1], "999"]}), 1)
+    assert pair.chosen == (f"p100{SCHEDULE}",)
+
+
+def test_a_drawing_listing_most_rooms_in_a_note_never_pairs_with_the_schedule() -> None:
+    """A vendor drawing (not a room table) noting most of the job's rooms: never the schedule."""
+    note = "Room Numbers :\n" + ", ".join(EVERY_ROOM)
+    pair = _pair(_set({1: note}, tables={}), 1)
+    assert pair.chosen == () and not pair.code_paired
+
+
+def test_a_room_tables_numbers_are_never_sizes_in_the_pairing() -> None:
+    """Read as inches, a matrix's room numbers matched the schedule's as dozens of "sizes". On a
+    room table's page a bare number is a room or a count: no size evidence."""
+    work = _set({1: "VANITY MATRIX"}, tables={1: EVERY_ROOM})
+    pair = _pair(work, 1)
+    schedule = next(c for c in pair.candidates if c.id == f"p100{SCHEDULE}")
+    assert not any("sizes" in e or '"' in e for e in schedule.evidence), schedule.evidence
