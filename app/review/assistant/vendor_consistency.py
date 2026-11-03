@@ -180,11 +180,11 @@ _SLIP_SHARE: Final = Fraction(1, 10)
 #: line kept clear at each end), so it is that line's own label.
 _MIDDLE_SHARE: Final = 0.2
 #: A cleanly read value: inches (`88 1/2"`), feet and inches (`3'-6 1/2"`), or millimetres over
-#: inches (`915 [36]`). Anything else (`25 "`, a fraction's lost part) is not used for a finding.
+#: inches (`915 [36]`, `13 [1/2]`). Anything else (`25 "`, a fraction's lost part) is not used for a finding.
 _CLEAN: Final = re.compile(
     r"^(?:\d{1,4}(?: \d{1,2}/\d{1,2})?\"|\d{1,2}/\d{1,2}\"|"
     r"\d{1,3}' ?-? ?\d{1,2}(?: \d{1,2}/\d{1,2})?\"|\d{1,3}'|"
-    r"\d{2,5} \[\d{1,4}(?: \d{1,2}/\d{1,2})?\])$"
+    r"\d{2,5} \[(?:\d{1,4}(?: \d{1,2}/\d{1,2})?|\d{1,2}/\d{1,2})\])$"
 )
 #: A CAD program prints each dimension rounded to the drawing's step (1/8", or 1/16" where the
 #: drawing prints sixteenths). A string that misses its overall is a Wrong even when that rounding
@@ -464,6 +464,10 @@ def _off_scale(members: Sequence[_Label], pt_per_inch: float) -> list[_Label]:
 _MARK_PT: Final = 0.8
 _MARK_MIN_PT: Final = 0.8
 _MARK_MAX_PT: Final = 8.0
+#: A longer slanted mark is still a tick when its middle sits on the line's end (a CAD tick is drawn
+#: centred on it; Set A, 2026-11-04: 8.5 pt ticks on a sheet drawn at a large scale). A piece of
+#: the drawing that only passes near the end is not centred on it.
+_MARK_CENTRED_MAX_PT: Final = 16.0
 
 
 def _tick_strokes(segments: Sequence[Segment], label: _Label, at: float) -> set[int]:
@@ -475,10 +479,15 @@ def _tick_strokes(segments: Sequence[Segment], label: _Label, at: float) -> set[
         (ax, ay), (bx, by) = a, b
         dx, dy = bx - ax, by - ay
         length = (dx * dx + dy * dy) ** 0.5
-        if not _MARK_MIN_PT <= length <= _MARK_MAX_PT:
+        if not _MARK_MIN_PT <= length <= _MARK_CENTRED_MAX_PT:
             continue
         along, square = (abs(dy), abs(dx)) if flip else (abs(dx), abs(dy))
         if square < 0.17 * length or along < 0.17 * length:
+            continue
+        if length > _MARK_MAX_PT:
+            mx, my = (ax + bx) / 2 - px, (ay + by) / 2 - py
+            if (mx * mx + my * my) ** 0.5 <= _MARK_PT:
+                found.add(index)  # a long tick centred on the end
             continue
         t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (length * length)))
         cx, cy = ax + t * dx - px, ay + t * dy - py
@@ -541,6 +550,43 @@ def _own_row(overall: _Label, parts: Sequence[_Label], drawing: Sequence[_Label]
     )
 
 
+def _reaches(segments: Sequence[Segment], label: _Label, at: float, toward: float) -> bool:
+    """A straight piece of line work on the extension line at `at` (along the label's axis, within
+    `END_PT`) crosses the label's dimension line and runs on from it toward `toward` (across)
+    further than past it: the label's own extension line, drawn from the other row's side (an
+    extension line runs from the thing measured and stops just past its dimension line)."""
+    flip = label.orientation == "v"
+    step = 1.0 if toward > label.across else -1.0
+    for (ax, ay), (bx, by) in segments:
+        a_along, a_across = (ay, ax) if flip else (ax, ay)
+        b_along, b_across = (by, bx) if flip else (bx, by)
+        if abs(a_along - at) > END_PT or abs(b_along - at) > END_PT:
+            continue
+        low, high = min(a_across, b_across), max(a_across, b_across)
+        if not low - _EXTENSION_PT <= label.across <= high + _EXTENSION_PT:
+            continue
+        reach, past = (high - label.across, label.across - low)
+        if step < 0:
+            reach, past = past, reach
+        if reach >= _RUN_ON_PT and reach > past:
+            return True
+    return False
+
+
+def _edges_shared(segments: Sequence[Segment], overall: _Label, parts: Sequence[_Label]) -> bool:
+    """The parts' row ends on the overall's own extension lines, though it is not the overall's
+    own row (Set A, 2026-11-04: an overall drawn inside the view between the legs' outer faces,
+    its parts' row below the view): at each outer end, the overall's extension line and the part's
+    lie on one straight line (the parts tile the overall, within `END_PT`) and face each other,
+    each drawn from its own dimension line toward the other row (`_reaches`)."""
+    first, last = parts[0], parts[-1]
+    return all(
+        _reaches(segments, overall, at, part.across)
+        and _reaches(segments, part, at, overall.across)
+        for part, at in ((first, first.start), (last, last.end))
+    )
+
+
 def _string_marked(
     segments: Sequence[Segment],
     overall: _Label,
@@ -550,12 +596,13 @@ def _string_marked(
     """Every end of a string's dimension lines carries its own end mark, as `ends_marked`, with one
     allowance (Set A, 2026-11-04: a drafter who ticks only the joints): the parts' two OUTER ends
     may stop bare on the overall's extension lines when the overall's own ends are marked, the
-    parts' row is the overall's own (`_own_row`) and nothing carries the part's line on past the
-    end (`_runs_on`). A line cut at a crossing line runs on past the cut, so it is still never
-    taken for a whole span; every joint between two parts still needs its mark."""
+    parts' row is the overall's own (`_own_row`) or ends on the overall's own extension lines
+    (`_edges_shared`), and nothing carries the part's line on past the end (`_runs_on`). A line
+    cut at a crossing line runs on past the cut, so it is still never taken for a whole span;
+    every joint between two parts still needs its mark."""
     if not ends_marked(segments, overall):
         return False
-    own = _own_row(overall, parts, drawing)
+    own = _own_row(overall, parts, drawing) or _edges_shared(segments, overall, parts)
     last = len(parts) - 1
     for index, part in enumerate(parts):
         for at, outward in ((part.start, -1), (part.end, 1)):
@@ -1859,12 +1906,30 @@ def check_set(
         "does_not_add_up": sum(1 for c in checks if c.verdict == "does_not_add_up"),
         "doubt": sum(1 for c in checks if c.verdict == "doubt"),
     }
-    reported: set[tuple[str, int, Fraction]] = set()
-    for check in checks:
+    reported: set[tuple[Any, ...]] = set()
+    # Page by page, the overall nearest its parts' row first: the card is drawn at the string's
+    # own overall.
+    nearest = sorted(
+        checks,
+        key=lambda c: (
+            c.overall.file,
+            c.overall.page,
+            abs(c.parts[0].across - c.overall.across),
+            c.overall.id,
+        ),
+    )
+    for check in nearest:
         if check.verdict != "does_not_add_up":
             continue
-        # One finding per printed overall: two strings that both miss it are the same slip.
-        key = (check.overall.file, check.overall.page, check.overall.inches)
+        # One finding per printed overall and parts: two views printing the same string are the
+        # same slip; other parts that miss the same overall are another (Set A, 2026-11-04: one
+        # sheet's 42" over a five-part and a seven-part string, 1/8" under and 1/8" over).
+        key = (
+            check.overall.file,
+            check.overall.page,
+            check.overall.inches,
+            tuple(sorted(p.inches for p in check.parts)),
+        )
         if key in reported:
             continue
         reported.add(key)
@@ -2236,18 +2301,32 @@ def judge_string(
 # ---- the full check's hook -----------------------------------------------------------------------
 
 
+def _parts_of(finding: Mapping[str, Any]) -> list[Any] | None:
+    """A string's parts in inches, sorted; None when it lists none or one code cannot read."""
+    to_inches = import_module("app.review.assistant.finding_checks").to_inches
+    read = [to_inches(str(p)) for p in finding.get("parts") or []]
+    if not read or None in read:
+        return None
+    return sorted(read)
+
+
 def _already(finding: Mapping[str, Any], live: Sequence[Mapping[str, Any]]) -> bool:
     """The answer already has this item: a vendor string on the same page with the same printed
-    overall, or a finding on the same page that names both values."""
+    overall (and the same parts, when both list parts code reads: other parts that miss the same
+    overall are another string), or a finding on the same page that names both values."""
     to_inches = import_module("app.review.assistant.finding_checks").to_inches
     page = finding.get("page")
     wanted = {to_inches(str(finding.get(side) or "")) for side in ("architect", "vendor")}
+    ours = _parts_of(finding)
     for other in live:
         if other.get("page") != page:
             continue
         strings = finding.get("source") == other.get("source") == "vendor_arithmetic"
         printed = to_inches(str(other.get("printed_total") or other.get("vendor") or ""))
         if strings and printed == to_inches(str(finding.get("printed_total") or "")):
+            theirs = _parts_of(other)
+            if ours is not None and theirs is not None and ours != theirs:
+                continue
             return True
         values = {to_inches(str(other.get(side) or "")) for side in ("architect", "vendor")}
         if None not in wanted and wanted == values:
@@ -2266,6 +2345,37 @@ class StringJudgement:
     found other parts for it (its own finding is then added instead)."""
     printed: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     """Each verified finding's row as code's labels print it (`inch_figures.PRINTED_STRING`)."""
+    spots: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    """A verified finding with no spot of its own: code's string's spot (`vendor_box`, its overall
+    and parts) and its overall's label (`dims.vendor`), so the red is drawn there, its numbers'
+    reading is recorded from code's label, and a copy at that spot folds onto it."""
+
+
+def _spot(check: StringCheck) -> dict[str, Any]:
+    """The spot of a string code found: the page box of its overall's and parts' labels, and its
+    overall's label (as `verify_vendor` stores the label it read)."""
+    boxes = [check.overall.box, *(p.box for p in check.parts)]
+    overall = check.overall
+    return {
+        "vendor_box": {
+            "page": overall.page,
+            "x0": min(b[0] for b in boxes),
+            "y0": min(b[1] for b in boxes),
+            "x1": max(b[2] for b in boxes),
+            "y1": max(b[3] for b in boxes),
+            "file": overall.file,
+        },
+        "label": {
+            "id": overall.id,
+            "page": overall.page,
+            "file": overall.file,
+            "text": overall.text,
+            "inches": str(overall.raw.get("inches")),
+            "route": overall.route,
+            "side": overall.side,
+            "box": list(overall.box),
+        },
+    }
 
 
 def _overlaps(box: Mapping[str, Any] | None, label: _Label, margin: float = 6.0) -> bool:
@@ -2288,6 +2398,10 @@ def judge_strings(
 
     Of code's strings of that overall at the spot, the one with the reading's very parts is taken,
     else the overall's nearest row (an overall is judged with every row that tiles its span).
+    With no spot and several of code's strings of that overall on the page (Set A, 2026-11-04: an
+    overall printed in three views), only code's strings with the reading's very parts count, and
+    only when they all say the same (all add up, or none does and none names a wrong part); else
+    it is left to `judge_rows`. A verified string with no spot takes code's string's spot.
 
     - code's string does not add up and has the same parts: verified (the geometry is code's),
       unless the drawing names one part as the wrong number: dropped (code's own finding, red at
@@ -2300,6 +2414,7 @@ def judge_strings(
     verified: list[str] = []
     dropped: dict[str, str] = {}
     rows_printed: dict[str, Mapping[str, Any]] = {}
+    spots: dict[str, Mapping[str, Any]] = {}
     for finding in findings:
         if finding.get("source") != "vendor_arithmetic" or finding.get("created_by") == CREATED_BY:
             continue
@@ -2315,13 +2430,24 @@ def judge_strings(
             and Fraction(printed) == check.overall.inches
             and check.verdict in ("adds_up", "does_not_add_up")
         ]
+        read = [to_inches(str(p)) for p in finding.get("parts") or []]
+        parts = sorted(Fraction(v) for v in read if v is not None)
         placed = [c for c in same if _overlaps(finding.get("vendor_box"), c.overall)]
         if placed:
             same = placed
         elif len(same) != 1:
-            continue  # two strings with that overall and no spot to tell them apart
-        read = [to_inches(str(p)) for p in finding.get("parts") or []]
-        parts = sorted(Fraction(v) for v in read if v is not None)
+            # Several strings with that overall and no spot: only code's strings with the
+            # reading's very parts, all saying the same, tell which string it is.
+            same = [
+                c for c in same if None not in read and sorted(p.inches for p in c.parts) == parts
+            ]
+            said = {(c.verdict, c.wrong_part is None) for c in same}
+            if not same or len(said) != 1:
+                continue
+        if not isinstance(finding.get("vendor_box"), Mapping):
+            spot: Mapping[str, Any] | None = None
+        else:
+            spot = finding["vendor_box"]
         # An overall is judged with every row that tiles its span, another view's too (2026-11-04:
         # a real sheet's two views of one height): the string with the reading's very parts is
         # its string; else the overall's nearest row.
@@ -2344,12 +2470,14 @@ def judge_strings(
         elif None not in read and parts == ours and check.wrong_part is None:
             verified.append(str(finding["id"]))
             rows_printed[str(finding["id"])] = _printed(check.parts, check.overall)
+            if spot is None:
+                spots[str(finding["id"])] = _spot(check)
         else:
             dropped[str(finding["id"])] = (
                 f"Code measured this string on the drawing as {listed} (printed {overall}); its "
                 "own finding replaces the reading's."
             )
-    return StringJudgement(tuple(verified), dropped, rows_printed)
+    return StringJudgement(tuple(verified), dropped, rows_printed, spots)
 
 
 def _printed(parts: Sequence[_Label], overall: _Label) -> dict[str, Any]:
@@ -2961,6 +3089,12 @@ def add_to_answer(engine: Any) -> ConsistencyResult | None:
                 printed = judged.printed.get(str(finding.get("id")))
                 if printed:
                     proved[PRINTED_STRING] = dict(printed)
+                spot = judged.spots.get(str(finding.get("id")))
+                if spot:
+                    # No spot of its own (several labels print its overall): code's string's.
+                    dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+                    proved["vendor_box"] = dict(spot["vendor_box"])
+                    proved["dims"] = {**(dims or {}), "vendor": dict(spot["label"])}
                 if book.replace(proved):
                     engine._show_finding(proved)
         for finding_id, reason in judged.dropped.items():
