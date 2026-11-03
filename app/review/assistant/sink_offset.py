@@ -1509,6 +1509,9 @@ def check_pack(
             Drawing, list[SinkPlan], list[tuple[Drawing, list[SinkPlan] | None]], str | None, bool
         ]
     ] = []
+    # The vendor drawings' sink plans with their round: where a vendor prints a top's front
+    # overhang (`sink_sheets.printed_overhangs`).
+    drawn: list[tuple[Drawing, list[SinkPlan], int | None]] = []
     alone = [item for item in getattr(work, "alone", ()) if item.newest_round]
     for item, by_itself in [*((i, False) for i in work.items), *((i, True) for i in alone)]:
         if stop is not None and stop():
@@ -1529,12 +1532,15 @@ def check_pack(
                     architects.append((found, drawing_plans(found, segments)))
             area = re.sub(r"^\s*\d{1,3}\s*[.)]\s*", "", item.area or "").strip() or None
             read.append((vendor, plans, architects, area, by_itself))
+            drawn.append((vendor, plans, getattr(item.vendor, "round", None)))
         except Exception:  # noqa: BLE001 - a drawing code cannot read gives no finding
             _log.exception("sink offset: work item %s could not be checked", item.id)
     doubt = (
         SIZES_DIFFER if _sizes_differ([p for _v, plans, *_rest in read for p in plans]) else None
     )
-    edge = _top_plans(Path(folder), uploads, main_file, segments, stop, work, rules, category)
+    edge = _top_plans(
+        Path(folder), uploads, main_file, segments, stop, work, rules, category, drawn, pages
+    )
     # GV's rule on a plan of the top alone (`sink_sheets`) speaks for its labels: this check's own
     # unsure note on the same label (no cabinets' front there) gives way to it, and it gives way to
     # this check's own decided item (the cabinets' front proved).
@@ -1583,17 +1589,25 @@ def _top_plans(
     work: Any,
     rules: Mapping[str, Setting],
     category: str,
+    drawn: Sequence[tuple[Drawing, Sequence[SinkPlan], int | None]] = (),
+    pages: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """GV's front offset rule on the plans of a top alone (`sink_sheets.edge_findings`): the
     offset there is printed from the top's front edge, so the job's overhang is added to the
-    rule's value. Never raises (a drawing code cannot read gives nothing)."""
+    rule's value; with none entered, the overhang the vendor's own drawing of the same top prints
+    (`sink_sheets.printed_overhangs`, from `drawn`: the vendor drawings' sink plans). Never raises
+    (a drawing code cannot read gives nothing)."""
     front = rules.get(FRONT.id)
     if front is None:
         return []
     try:
         sheets = import_module("app.review.assistant.sink_sheets")
         tops = sheets.read_pack(folder, uploads, main_file, segments, stop, work=work)
-        return list(sheets.edge_findings(tops, front, rules.get(TOP.setting), category))
+        overhang = rules.get(TOP.setting)
+        printed: list[Any] = []
+        if overhang is None and drawn and pages is not None:
+            printed = sheets.printed_overhangs(drawn, segments, pages, tops)
+        return list(sheets.edge_findings(tops, front, overhang, category, printed))
     except Exception:  # noqa: BLE001 - the rule's other items stand
         _log.exception("sink offset: the plans of the tops could not be read")
         return []
