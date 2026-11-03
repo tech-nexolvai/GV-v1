@@ -128,7 +128,13 @@ from app.review.assistant.chat_findings import UPDATE_FINDING
 from app.review.assistant.chat_findings import _architect_upload as architect_upload
 from app.review.assistant.chat_provider import CREDIT_STOP_WORDS
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
-from app.review.assistant.chat_summary import CODE_SUMMARY_NOTE, code_summary
+from app.review.assistant.chat_summary import (
+    CODE_SUMMARY_NOTE,
+    NOTHING_NO_DRAWING,
+    NOTHING_NO_SIZES,
+    NOTHING_TITLE,
+    code_summary,
+)
 from app.review.assistant.chat_tools import HELPER_TOOLS, new_step
 from app.review.assistant.chat_trust import judged
 from app.review.assistant.colour_rule import COLOUR_RULE
@@ -1406,6 +1412,83 @@ def carried_done(coverage: Mapping[str, Any] | None) -> frozenset[int]:
     return frozenset(done)
 
 
+# ---- pages with nothing to compare (2026-11-03) --------------------------------------------------
+
+#: Code's note on a page the AI marked not comparable and the passes after the lead agreed: it had
+#: nothing to compare (Anant, 2026-11-03: "count 'nothing to compare' as done").
+NOTHING_NOTE: Final = "nothing to compare: confirmed by {looks}"
+#: The same, with no count of looks (a Continue's page its earlier answer had settled).
+NOTHING_PLAIN_NOTE: Final = "nothing to compare"
+#: Its line in the Not-compared list: nothing is needed to settle it.
+NOTHING_NEEDS: Final = (
+    "nothing to settle: no size on this page to compare with the architect's drawing (a person "
+    "may look it over)"
+)
+#: Its reason when the AI's own words are not fit for the list (internal words).
+NOTHING_WHY: Final = "the page prints no size to compare with the architect's drawing"
+#: Code's own parts of a coverage note (`_say_looked`, `NOTHING_NOTE`), apart from the AI's words.
+_LOOKED_PART: Final = re.compile(rf"^not compared: still not compared after (\d+) {_MORE_LOOK}s?$")
+_NOTHING_PART: Final = re.compile(r"^nothing to compare(?:: confirmed by \d+ more looks?)?$")
+#: A line of what was not done that starts with its pages (`page_ranges_words`).
+_PAGES_LINE: Final = re.compile(r"^(pages? \d[\d, \-]*(?: and \d+)?): (.+)$")
+
+
+def ai_reason(note: object) -> str | None:
+    """The AI's own words in a page's coverage note: code's parts ("not compared: still not
+    compared after 3 more looks", `NOTHING_NOTE`) left out; `None` when there are none."""
+    parts = [part.strip() for part in str(note or "").split("; ")]
+    own = [
+        part
+        for part in parts
+        if part and not _LOOKED_PART.match(part) and not _NOTHING_PART.match(part)
+    ]
+    return "; ".join(own) or None
+
+
+def judged_nothing(entry: Mapping[str, Any], *, looked: bool, carried: bool) -> bool:
+    """Whether a page's coverage says it had nothing to compare by the AI's judgement (2026-11-03):
+    marked not comparable by a helper or the lead with its reason, after at least one pass after
+    the lead took it (`looked`: the closers agreed), or kept so from the earlier answer a Continue
+    goes on from (`carried`, `carried_done`). A note that says it was not reached, only partly
+    compared or left for money (`_unreached`), or code's pairing notes, never counts."""
+    if entry.get("status") != "not_comparable":
+        return False
+    by = str(entry.get("by") or "")
+    ai = by == "lead" or by.startswith("helper")
+    if not ((ai and looked) or (by == CARRIED_BY and carried)):
+        return False
+    note = " ".join(str(entry.get("note") or "").split())
+    if _unreached(note) or unpaired_note(note):
+        return False
+    return ai_reason(note) is not None
+
+
+def _pages_in(words: str) -> list[int]:
+    """The pages `page_ranges_words` said ("page 7", "pages 3-5", "pages 3, 5 and 9"); [] when the
+    words are not such a list."""
+    body = words.split(" ", 1)[1] if " " in words else ""
+    pages: list[int] = []
+    for part in body.replace(" and ", ", ").split(", "):
+        first, _dash, last = part.strip().partition("-")
+        if not first.isdigit() or (last and not last.isdigit()):
+            return []
+        pages += range(int(first), int(last or first) + 1)
+    return pages
+
+
+def line_without(line: str, pages: Collection[int]) -> str | None:
+    """A line of what was not done ("pages 3, 7 and 9: not compared, ...") without `pages`; `None`
+    when none of its pages is left. A line that names no pages stays as it is."""
+    match = _PAGES_LINE.match(line)
+    listed = _pages_in(match.group(1)) if match is not None else []
+    if match is None or not listed:
+        return line
+    keep = [page for page in listed if page not in pages]
+    if len(keep) == len(listed):
+        return line
+    return f"{page_ranges_words(keep)}: {match.group(2)}" if keep else None
+
+
 def unpaired_note(note: str) -> bool:
     """Whether a coverage note is the final "no architect drawing found" one (#1885), the final
     "pairing unsure" one (the matcher's pick code could not confirm), or the final tag-only one
@@ -2015,7 +2098,7 @@ class _Run:
         compared, red candidates not proved yet): said as that, never as the fixed price."""
         if self.service_seen is None or self.credit_seen:
             return False
-        return bool(self._pages_left(for_continue=True) or self._unproved())
+        return bool(self._pages_unfinished(for_continue=True) or self._unproved())
 
     def _credit_cut(self) -> bool:
         """The AI account ran out of credit and left work for Continue (pages not compared, red
@@ -2023,7 +2106,7 @@ class _Run:
         line (`chat_service._say_service_stop`): nothing is left to continue."""
         if not self.credit_seen:
             return False
-        return bool(self._pages_left(for_continue=True) or self._unproved())
+        return bool(self._pages_unfinished(for_continue=True) or self._unproved())
 
     def _halted(self) -> bool:
         """Stop pressed, or the AI account out of credit: no new paid step starts."""
@@ -2031,9 +2114,13 @@ class _Run:
 
     def _not_for_sending(self) -> str | None:
         """Why this check is not one to send (plain words), else `None`: a step broke, or vendor
-        pages the plan gave a helper were not compared (no architect drawing paired, not
-        reached, open). Code's own skipped pages (dividers, products out of scope) do not count.
-        A stop is said by `send_package.incomplete_reason` itself."""
+        pages are unfinished (`_pages_unfinished`): a pairing a person must confirm, a pairing the
+        page matcher did not answer in time, or pages not reached, open or left for money. A page
+        that had nothing to compare is done, never a reason (2026-11-03, Anant: "count 'nothing
+        to compare' as done"): no architect drawing of it in the upload, or a page the AI and the
+        passes after the lead judged not comparable (a key plan, a checklist); code's own skipped
+        pages (dividers, products out of scope) never were. A stop is said by
+        `send_package.incomplete_reason` itself."""
         if self.failed_steps:
             more = len(self.failed_steps) - 2
             return (
@@ -2053,14 +2140,13 @@ class _Run:
             return None
         if not self.engine.book.coverage_used:
             return "no page's comparison was recorded"
-        left = self._pages_left()
+        left = self._pages_unfinished()
         if not left:
             return None
-        lone = self._not_pairable()
         unsure = self._unsure_pages()
         picks = [page for page in left if page in unsure]
-        alone = [page for page in left if page in lone and page not in unsure]
-        others = [page for page in left if page not in lone]
+        again = [page for page in left if page in self.retry and page not in unsure]
+        others = [page for page in left if page not in unsure and page not in self.retry]
         parts: list[str] = []
         if picks:
             # The architect's drawing is in the upload: a person confirms which page it is.
@@ -2069,11 +2155,12 @@ class _Run:
                 f"compared, pairing unsure: a person confirms which architect page shows "
                 f"{'it' if len(picks) == 1 else 'each'} ({_page_list(picks)})"
             )
-        if alone:
-            # #1885: said apart; no more looks would compare them (no architect drawing).
+        if again:
+            # The page matcher had no answer for them in time: Continue asks again.
             parts.append(
-                f"{len(alone)} vendor {'page has' if len(alone) == 1 else 'pages have'} no "
-                f"architect drawing to compare with ({_page_list(alone)})"
+                f"{len(again)} vendor {'page was' if len(again) == 1 else 'pages were'} not "
+                f"matched to the architect's drawings in time ({_page_list(again)}): Continue "
+                "asks again"
             )
         if others:
             parts.append(
@@ -2104,6 +2191,146 @@ class _Run:
             for entry in coverage["pages"]
             if int(entry["page"]) not in skipped
             and (entry.get("status") not in ("same", "different") or entry["page"] in unfinished)
+        )
+
+    def _pages_unfinished(self, *, for_continue: bool = False) -> list[int]:
+        """The vendor pages left unfinished (`_pages_left` less the pages that had nothing to
+        compare, `_nothing_to_compare`): only these make the check incomplete and, with
+        `for_continue`, are what a Continue would compare (2026-11-03)."""
+        nothing = self._nothing_safe()
+        return [page for page in self._pages_left(for_continue=for_continue) if page not in nothing]
+
+    def _nothing_safe(self) -> dict[int, str]:
+        """`_nothing_to_compare`, or none when it cannot be worked out: every page not compared
+        then stays a page left (the check incomplete: the safe side)."""
+        try:
+            return self._nothing_to_compare()
+        except Exception:  # noqa: BLE001 - the pages stay left
+            _log.exception("assistant roster could not tell which pages had nothing to compare")
+            return {}
+
+    def _nothing_to_compare(self) -> dict[int, str]:
+        """The vendor pages that had nothing to compare and why (2026-11-03, Anant: "count
+        'nothing to compare' as done"), `{page: kind}`:
+
+        - `NOTHING_NO_DRAWING`: the final pairing found no architect drawing of it in the upload
+          (#1885), or the architect shows it only as a tag on a plan; never "pairing unsure" (its
+          drawing is in the upload: a person confirms it) and never a page the page matcher did
+          not answer in time (Continue asks again);
+        - `NOTHING_NO_SIZES`: the AI marked it not comparable with its reason, and the passes after
+          the lead took it again and left it so (`judged_nothing`: a key plan, a checklist, an
+          architect page that prints no size of it), or a Continue's earlier answer had.
+
+        A page left for money, not reached, or only partly compared is never one of them, nor are
+        code's own skipped pages (said apart, `_nothing_kinds`)."""
+        engine = self.engine
+        plan = getattr(engine, "_plan", None)
+        if plan is None or not engine.book.coverage_used:
+            return {}
+        unsure = self._unsure_pages()
+        out = {int(page): NOTHING_NO_DRAWING for page in self.unpaired if page not in unsure}
+        apart = (
+            {int(page) for page, _why in getattr(plan, "skipped", ())}
+            | set(self.no_vendor)
+            | set(self.own_checked)
+            | set(self._not_pairable())
+            | set(self.money_pages)
+        )
+        coverage = engine.book.coverage_map()
+        carried = carried_done(coverage)
+        for entry in coverage["pages"]:
+            page = int(entry["page"])
+            if page in out or page in apart:
+                continue
+            if judged_nothing(entry, looked=self.looks.get(page, 0) > 0, carried=page in carried):
+                out[page] = NOTHING_NO_SIZES
+        return out
+
+    def _nothing_kinds(self) -> dict[int, str] | None:
+        """Each vendor page not compared that had nothing to compare, and why, for the summary's
+        first line (`chat_summary.code_summary`'s `nothing_pages`): code's title, divider or
+        skipped pages, and `_nothing_to_compare`. `None` when no coverage was recorded."""
+        engine = self.engine
+        plan = getattr(engine, "_plan", None)
+        if plan is None or not engine.book.coverage_used:
+            return None
+        skipped = {int(page) for page, _why in getattr(plan, "skipped", ())} | set(self.no_vendor)
+        nothing = self._nothing_safe()
+        out: dict[int, str] = {}
+        for entry in engine.book.coverage_map()["pages"]:
+            if entry.get("status") in ("same", "different"):
+                continue
+            page = int(entry["page"])
+            if page in skipped:
+                out[page] = NOTHING_TITLE
+            elif page in nothing:
+                out[page] = nothing[page]
+        return out
+
+    def _settle_nothing_to_compare(self) -> None:
+        """At the finish (2026-11-03): the pages that had nothing to compare are done. They leave
+        what was not done; the review result learns how many had no architect drawing
+        (`ChatEngine.no_drawing_pages`: never an approval while one was not compared); and each page
+        the AI and the passes judged not comparable says so on its coverage (`NOTHING_NOTE`, in
+        place of "still not compared after N more looks") and is a row of the Not-compared list
+        with the AI's reason (the unpaired pages have theirs, `_settle_unpaired`)."""
+        from app.review.assistant.not_compared import vendor_why
+        from app.review.assistant.vendor_text import internal
+
+        engine = self.engine
+        nothing = self._nothing_to_compare()
+        engine.no_drawing_pages = sum(1 for kind in nothing.values() if kind == NOTHING_NO_DRAWING)
+        if not nothing:
+            return
+        self.not_done = [
+            kept for line in self.not_done if (kept := line_without(line, nothing)) is not None
+        ]
+        sizes = sorted(page for page, kind in nothing.items() if kind == NOTHING_NO_SIZES)
+        if not sizes:
+            return
+        entries = {int(e["page"]): e for e in engine.book.coverage_map()["pages"]}
+        for page in sizes:
+            note = str((entries.get(page) or {}).get("note") or "")
+            parts = [part.strip() for part in note.split("; ")]
+            looked = [part for part in parts if _LOOKED_PART.match(part)]
+            for part in looked:
+                engine.book.drop_coverage_note(page, part)
+            if not any(_NOTHING_PART.match(part) for part in parts):
+                counted = [self.looks.get(page, 0)] + [
+                    int(match.group(1)) for part in looked if (match := _LOOKED_PART.match(part))
+                ]
+                most = max(counted)
+                engine.book.note_coverage(
+                    page,
+                    (
+                        NOTHING_NOTE.format(looks=f"{most} {_MORE_LOOK}{'' if most == 1 else 's'}")
+                        if most
+                        else NOTHING_PLAIN_NOTE
+                    ),
+                )
+            reason = " ".join((ai_reason(note) or "").split())
+            if len(reason) > 120:
+                reason = reason[:120].rsplit(" ", 1)[0].rstrip(" ,;.") + " …"
+            if not reason or internal(reason) or vendor_why(reason) != reason:
+                reason = NOTHING_WHY
+            engine.extra_gaps.append(
+                {
+                    "page": page,
+                    "what": f"Vendor page {page}: nothing to compare ({reason})",
+                    "why": "nothing_to_compare",
+                    "needs": NOTHING_NEEDS,
+                    "scope": "set",
+                    "item": f"Page {page}: nothing to compare",
+                    "category": "other",
+                }
+            )
+        engine._show_coverage()
+        _log.warning(
+            "assistant roster: %d vendor pages had nothing to compare (%d no architect drawing, "
+            "%d judged not comparable after more looks)",
+            len(nothing),
+            engine.no_drawing_pages,
+            len(sizes),
         )
 
     def _class_no_vendor(self) -> None:
@@ -2350,8 +2577,9 @@ class _Run:
     def _unfinished(self, stopped: str | None) -> tuple[list[int], list[dict[str, Any]], str]:
         """What this check did not finish (#1821): the vendor pages not compared, the red
         candidates that never got their proof steps (only when it stopped or ran out of money:
-        a check that ran to its end gave each its one look), and why, in plain words."""
-        pages = self._pages_left(for_continue=True)
+        a check that ran to its end gave each its one look), and why, in plain words. A page that
+        had nothing to compare is done, never left (`_pages_unfinished`, 2026-11-03)."""
+        pages = self._pages_unfinished(for_continue=True)
         credit = self.credit_seen
         service = None if credit else self.service_seen
         short = (
@@ -5861,6 +6089,8 @@ class _Run:
             left_kinds=self._left_kinds(stopped),
             own_pages=sorted(self.own_checked),
             picked=settings.pages,
+            nothing_pages=self._nothing_kinds(),
+            no_drawing=engine.no_drawing_pages,
         )
         # Code's summary is the roster's own, not a fallback: its "AI did not finish" note goes.
         text = "\n".join(
@@ -5953,29 +6183,31 @@ class _Run:
         return "\n\n".join(parts)
 
     def _left_kinds(self, stopped: str | None) -> dict[int, str] | None:
-        """Each vendor page not compared and why, in a few words, for the summary's first line
-        (`chat_summary.code_summary`): code's skipped pages, a pairing that is unsure, no
-        architect drawing to compare with, or not finished and why (`_unfinished`: out of money,
-        stopped, still not compared after more looks). `None` when no coverage was recorded."""
+        """Each vendor page left not compared and why, in a few words, for the summary's first line
+        (`chat_summary.code_summary`): a pairing that is unsure, a pairing not answered in time, or
+        not finished and why (`_unfinished`: out of money, stopped, still not compared after more
+        looks). The pages that had nothing to compare (code's skipped pages, no architect drawing,
+        judged not comparable) are said apart (`_nothing_kinds`, 2026-11-03). `None` when no
+        coverage was recorded."""
         engine = self.engine
         plan = getattr(engine, "_plan", None)
         if plan is None or not engine.book.coverage_used:
             return None
         skipped = {int(page) for page, _why in getattr(plan, "skipped", ())} | set(self.no_vendor)
+        nothing = self._nothing_safe()
         unsure = self._unsure_pages()
-        alone = self._not_pairable() - unsure
         left, _items, why = self._unfinished(stopped)
         out: dict[int, str] = {}
         for entry in engine.book.coverage_map()["pages"]:
             if entry.get("status") in ("same", "different"):
                 continue
             page = int(entry["page"])
-            if page in skipped:
-                out[page] = "title, divider or skipped pages"
-            elif page in unsure:
+            if page in skipped or page in nothing:
+                continue
+            if page in unsure:
                 out[page] = "pairing unsure"
-            elif page in alone:
-                out[page] = "no drawing to compare with"
+            elif page in self.retry:
+                out[page] = "not matched to the architect's drawings in time"
             elif page in left:
                 out[page] = f"not finished: {why}"
             else:
@@ -6071,6 +6303,11 @@ class _Run:
             self._class_unpaired()
         except Exception:  # noqa: BLE001 - the pages keep their helpers' coverage
             _log.exception("assistant roster could not class the pages with no architect pair")
+        try:
+            # 2026-11-03: the pages that had nothing to compare are done (never "incomplete").
+            self._settle_nothing_to_compare()
+        except Exception:  # noqa: BLE001 - they stay pages left: incomplete, the safe side
+            _log.exception("assistant roster could not settle the pages with nothing to compare")
         if engine.incomplete_note is None and self._credit_cut():
             engine.incomplete_note = CREDIT_WHY
         if engine.incomplete_note is None and self._service_cut():

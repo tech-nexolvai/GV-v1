@@ -24,7 +24,9 @@ not, and a previous round's comment this round fixed is Closed, not a correction
   corrections: Revise and resubmit;
 - **RN** the result would be an approval (S5, S6 or S7) but more than `review_needed_share()` of
   all items (Wrong + Right + Ask the architect + Not compared, a reviewer's decided items included)
-  are Not compared: Review needed, "N items need a person before this can be approved". Ask the
+  are Not compared, or vendor pages had no architect drawing to compare with (`no_drawing`,
+  2026-11-03: such a page no longer makes the check incomplete, and it never makes it approved
+  either): Review needed, "N items need a person before this can be approved". Ask the
   architect items (#1839) are decided, so they never count as not checked. The reviewer's
   decisions on Not compared items (#1814) take them out of the Not compared count, so deciding
   enough of them turns it into Approved as noted (the result is worked out again on every read);
@@ -252,6 +254,9 @@ class CheckState:
     """Previous comments still wrong in this round (the round-2 check, S3)."""
     closed: tuple[str, ...] = ()
     """The finding ids of previous comments this round fixed: Closed, no longer corrections."""
+    no_drawing: int = 0
+    """Vendor pages with no architect drawing to compare with (2026-11-03): the check is complete
+    without them, but never an approval (RN): a person looks at them first."""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -260,6 +265,7 @@ class CheckState:
             "wrong_product": self.wrong_product,
             "still_open": self.still_open,
             "closed": list(self.closed),
+            "no_drawing": self.no_drawing,
         }
 
     @classmethod
@@ -273,6 +279,7 @@ class CheckState:
             wrong_product=raw.get("wrong_product") is True,
             still_open=_count(raw.get("still_open")),
             closed=tuple(str(c) for c in raw.get("closed") or () if isinstance(c, str)),
+            no_drawing=_count(raw.get("no_drawing")),
         )
 
 
@@ -405,6 +412,21 @@ def _review_needed_reason(
     return reason
 
 
+def _no_drawing_reason(pages: int, noted: int) -> str:
+    """ "2 vendor pages had no architect drawing to compare with: a person looks at them before
+    this can be approved." (`CheckState.no_drawing`, 2026-11-03). `noted`: the minor corrections,
+    said as well when no other reason says them."""
+    had = "page had" if pages == 1 else "pages had"
+    them = "it" if pages == 1 else "them"
+    reason = (
+        f"{pages} vendor {had} no architect drawing to compare with: a person looks at {them} "
+        "before this can be approved."
+    )
+    if noted:
+        reason += f" {_plural(noted, 'minor correction')} noted as well."
+    return reason
+
+
 def review_action(
     findings: Iterable[Mapping[str, Any]],
     state: CheckState | None = None,
@@ -480,16 +502,23 @@ def review_action(
     # The whole-drawing look's likely problems (2026-10-23) need a person as much as an item not
     # compared: never "Approved" while one is open.
     likely = sum(1 for finding in given if proof_group(finding) == "likely_problem")
-    if _review_needed(not_compared + likely, items, limit):
+    share_needed = _review_needed(not_compared + likely, items, limit)
+    if share_needed or state.no_drawing:
         notes = [NOT_REVIEWED_NOTE]
         if asked:
             notes.append(RULE_NOTE_NOTE)
-        return result(
-            "review_needed",
-            "RN",
-            _review_needed_reason(not_compared + likely, items, limit, len(sent), likely),
-            " ".join(notes),
-        )
+        reasons = []
+        if share_needed:
+            reasons.append(
+                _review_needed_reason(not_compared + likely, items, limit, len(sent), likely)
+            )
+        if state.no_drawing:
+            # 2026-11-03: a page with no architect drawing is done, never approved unseen
+            # (Anant, 2026-10-22: never "Approved" just because the system could not look).
+            reasons.append(
+                _no_drawing_reason(state.no_drawing, len(sent) if not share_needed else 0)
+            )
+        return result("review_needed", "RN", " ".join(reasons), " ".join(notes))
     if sent:
         return result(
             "approved_as_noted",

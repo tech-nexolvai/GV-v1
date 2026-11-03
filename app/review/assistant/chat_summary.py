@@ -18,7 +18,7 @@ from app.review.assistant.classification import not_compared_line
 from app.review.assistant.impact import by_impact
 from app.review.assistant.likely_problems import COUNT_WORDS as LIKELY_COUNT
 from app.review.assistant.proof import classified, proof_counts, proof_group, vendor_own
-from app.review.assistant.review_action import review_action
+from app.review.assistant.review_action import CheckState, review_action
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.vendor_text import vendor_text
 
@@ -169,6 +169,14 @@ def _own_only_set(
 #: The first line's reasons for the pages not compared, when the caller does not say them.
 LEFT_DEFAULT: Final = "title or divider sheets, pages with no drawing to compare, or not reached"
 
+#: Why a vendor page had nothing to compare (2026-11-03, Anant: "count 'nothing to compare' as
+#: done"), in the first line's words (`code_summary`'s `nothing_pages`). Such a page is done: it
+#: never makes the check incomplete. Code's title, divider and skipped pages are said on their
+#: own; the other two kinds are listed under Not compared, each with its reason.
+NOTHING_TITLE: Final = "title, divider or skipped pages"
+NOTHING_NO_DRAWING: Final = "no architect drawing"
+NOTHING_NO_SIZES: Final = "no sizes to compare, e.g. key plans or checklists"
+
 
 def _left_words(
     findings: Sequence[Mapping[str, Any]],
@@ -196,6 +204,43 @@ def _left_words(
     )
     words = list(dict.fromkeys(kinds[page] for page in sorted(kinds) if page not in own))
     return "; ".join(words) if words else LEFT_DEFAULT
+
+
+def _nothing_words(empty: Mapping[int, str], *, listed: bool) -> str:
+    """The first line's words on the pages that had nothing to compare (`code_summary`'s
+    `nothing_pages`): "6 had nothing to compare (no architect drawing: 2; no sizes to compare,
+    e.g. key plans or checklists: 4), listed under Not compared; 4 were title, divider or skipped
+    pages".
+    `listed`: the Not-compared list was made (its pages are rows there)."""
+    if not empty:
+        return ""
+    titles = sum(1 for kind in empty.values() if kind == NOTHING_TITLE)
+    kinds = Counter(
+        kind
+        for _page, kind in sorted(
+            empty.items(),
+            key=lambda item: (_NOTHING_ORDER.get(item[1], len(_NOTHING_ORDER)), item[0]),
+        )
+        if kind != NOTHING_TITLE
+    )
+    parts: list[str] = []
+    if kinds:
+        counted = "; ".join(f"{kind}: {count}" for kind, count in kinds.items())
+        parts.append(
+            f"{sum(kinds.values())} had nothing to compare ({counted})"
+            + (", listed under Not compared" if listed else "")
+        )
+    if titles:
+        parts.append(
+            "1 was a title, divider or skipped page"
+            if titles == 1
+            else f"{titles} were title, divider or skipped pages"
+        )
+    return "; ".join(parts)
+
+
+#: The order the kinds of "nothing to compare" are said in (others after, by page).
+_NOTHING_ORDER: Final[Mapping[str, int]] = {NOTHING_NO_DRAWING: 0, NOTHING_NO_SIZES: 1}
 
 
 def _plural(count: int, one: str, many: str) -> str:
@@ -234,6 +279,8 @@ def code_summary(
     left_kinds: Mapping[int, str] | None = None,
     own_pages: Collection[int] = (),
     picked: Collection[int] = (),
+    nothing_pages: Mapping[int, str] | None = None,
+    no_drawing: int = 0,
 ) -> str:
     """The 5-6 line summary: what was checked, the verdict, the biggest issues, the one line on
     what could not be compared (#1619), why it stopped (if it did) and the next step; then the
@@ -248,7 +295,14 @@ def code_summary(
     with no drawing to compare, or not reached" though every page had its drawing). `own_pages`:
     the pages checked within the vendor's own drawings with no architect drawing in the set
     (2026-10-29): said apart, never "compared with the architect" whatever their coverage says.
-    `picked`: a full check on picked pages (2026-10-31): the first line names them."""
+    `picked`: a full check on picked pages (2026-10-31): the first line names them.
+    `nothing_pages`: each page that had nothing to compare and why (`NOTHING_TITLE`,
+    `NOTHING_NO_DRAWING`, `NOTHING_NO_SIZES`; 2026-11-03, Anant: "count 'nothing to compare' as
+    done"): the first line counts them apart from the pages not compared, by kind, and says they
+    are listed under Not compared when the list was made; `left_kinds` then names only what is
+    left. `no_drawing`: the
+    vendor pages with no architect drawing to compare with, for the next step (`review_action`:
+    never an approval while one was not compared)."""
     # The cloud drawing's own counts (#1581, #1619): Wrong = proved by code (clouded), Right, and
     # what could not be compared; the screen and the files count the same final list.
     counts = proof_counts(findings)
@@ -271,14 +325,35 @@ def code_summary(
         if own_pages and compared_pages is not None:
             compared_pages = [page for page in compared_pages if page not in set(own_pages)]
             checked = len(compared_pages)
-        rest = max(0, total - checked)
         own_set = _own_only_set(findings, compared_pages, checked, own_pages)
         own = len(own_set)
+        # #1885: "Checked 0 of 109 pages ... 8 wrong" said two things at once; the pages with only
+        # the vendor's own checks are counted apart from those compared.
+        rest = max(0, total - checked - own)
+        done = ""
+        if nothing_pages is not None:
+            # 2026-11-03: the pages that had nothing to compare are done, said apart from the
+            # pages left (a page said as checked by code's own checks is not counted twice).
+            seen = set(compared_pages or ())
+            empty = {
+                int(page): kind
+                for page, kind in nothing_pages.items()
+                if int(page) not in own_set and int(page) not in seen
+            }
+            rest = max(0, rest - len(empty))
+            if left_kinds is not None:
+                left_kinds = {page: kind for page, kind in left_kinds.items() if page not in empty}
+            listed = any("not compared" in str(name).lower() for name in files)
+            done = _nothing_words(empty, listed=listed)
         why_left = _left_words(findings, compared_pages, left_kinds, own_pages)
+        other = "the other " if own or done else ""
+        tail = (f"; {done}" if done else "") + (
+            f"; {other}{rest} {'page was' if rest == 1 else 'pages were'} not compared "
+            f"({why_left})."
+            if rest
+            else "."
+        )
         if own:
-            # #1885: "Checked 0 of 109 pages ... 8 wrong" said two things at once; the pages with
-            # only the vendor's own checks are counted apart from those compared.
-            rest = max(0, rest - own)
             # Every one of them has no architect drawing in the set (2026-10-29), or not.
             how = (
                 "only within the vendor's own drawings (no architect drawing for them: "
@@ -290,20 +365,10 @@ def code_summary(
             first = (
                 _checked_words(checked + own, total, scope, picked)
                 + f": {checked} compared with the architect, {own} {how}"
-                + (
-                    f"; the other {rest} {'page was' if rest == 1 else 'pages were'} not "
-                    f"compared ({why_left})."
-                    if rest
-                    else "."
-                )
+                + tail
             )
         else:
-            first = _checked_words(checked, total, scope, picked) + (
-                f"; {rest} {'page was' if rest == 1 else 'pages were'} not compared "
-                f"({why_left})."
-                if rest
-                else "."
-            )
+            first = _checked_words(checked, total, scope, picked) + tail
     else:
         pages = len({f.get("page") for f in findings})
         of = f" of {page_count}" if page_count else ""
@@ -340,7 +405,7 @@ def code_summary(
     lines += [line for line in also if line]
     steps: list[str] = []
     drawing = any("cloud" in name.lower() for name in files)
-    action = review_action(findings)
+    action = review_action(findings, CheckState(no_drawing=no_drawing))
     if action.action == "review_needed":
         # Anant 2026-10-22: never approved because the system could not look; a person decides.
         # The likely problems count toward it too (`review_action`): named, never "the 0 Not
@@ -353,6 +418,15 @@ def code_summary(
             )
             if count
         ]
+        if no_drawing and not parts:
+            # 2026-11-03: approvable but for the pages with no architect drawing to compare with.
+            parts.append(
+                _plural(
+                    no_drawing,
+                    "page with no architect drawing",
+                    "pages with no architect drawing",
+                )
+            )
         things = " and the ".join(parts) or "open items"
         steps.append(f"a person decides the {things} before this can be approved")
     elif wrong and drawing:

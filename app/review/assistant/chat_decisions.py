@@ -304,6 +304,7 @@ def make_decided_files(
     identity: PackageIdentity | None = None,
     numbers: Mapping[str, str] | None = None,
     incomplete: str | None = None,
+    no_drawing: int = 0,
     extra: Sequence[tuple[str, Path]] = (),
     not_compared_out: tuple[Path, Path] | None = None,
     set_gaps: Sequence[Mapping[str, Any]] = (),
@@ -343,6 +344,7 @@ def make_decided_files(
             identity or PackageIdentity(),
             numbers=numbers,
             incomplete=incomplete,
+            no_drawing=no_drawing,
         )
     drawing = make_proof_file(workspace, findings, drawing_out, settled=settled, context=context)
     report = make_report_file(
