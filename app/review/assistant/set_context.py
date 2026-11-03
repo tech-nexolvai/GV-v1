@@ -109,6 +109,60 @@ def tags_in(text: str) -> list[str]:
     return TAG.findall(dashes_to_hyphen(text))
 
 
+#: A sheet header that numbers the drawing (`DRAWING # 2`, `DWG NO. 3`): a stone drawing's
+#: template prints its item number on the line under it, with no ITEM cell (Set A p16-p18).
+_HEADER: Final = re.compile(r"^(?:DRAWING|DWG)\.?\s*(?:#|NO\.?)\s*\d{1,3}$", re.IGNORECASE)
+#: The item number sits this close under the header (points), left edges this close.
+_UNDER_HEADER_PT: Final = 8.0
+_HEADER_LEFT_PT: Final = 20.0
+
+
+def _numbered_as_item(tag: str) -> bool:
+    """An item number (100 or more: `XX-801`, `XX-802.C`), never a finish or a material, which a
+    schedule numbers from 1 (`pairing.numbered_as_item`, #2066)."""
+    found = _split(tag)
+    return found is not None and int(found.group(2)) >= 100
+
+
+def own_items(found: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    """The item numbers a page's own title block names as its sheet's item, read by code from its
+    text layer: the ITEM cell (`title_block.cells`), or the tag printed alone on the line under a
+    `DRAWING #` header (a stone drawing's template). Numbered as an item only (`_numbered_as_item`):
+    a finish (`MT-002`) in a cell is never taken for the sheet's own item."""
+    from app.review.assistant import title_block
+
+    out: set[str] = set()
+    try:
+        for cell in title_block.cells(found):
+            if cell.name == "item":
+                out.update(t for t in tags_in(cell.value) if _numbered_as_item(t))
+    except Exception:  # noqa: BLE001 - the header below still counts
+        _log.warning("set context: a title block was not read", exc_info=True)
+    boxed: list[tuple[list[float], str]] = []
+    for phrase in found:
+        raw = phrase.get("box")
+        text = " ".join(str(phrase.get("text") or "").split())
+        if isinstance(raw, Sequence) and len(raw) == 4 and text:
+            try:
+                boxed.append(([float(v) for v in raw], text))
+            except (TypeError, ValueError):
+                continue
+    for box, text in boxed:
+        if not _HEADER.match(text):
+            continue
+        for under, value in boxed:
+            tags = tags_in(value)
+            if (
+                len(tags) == 1
+                and dashes_to_hyphen(value) == tags[0]
+                and 0 <= under[1] - box[3] <= _UNDER_HEADER_PT
+                and abs(under[0] - box[0]) <= _HEADER_LEFT_PT
+                and _numbered_as_item(tags[0])
+            ):
+                out.add(tags[0])
+    return frozenset(out)
+
+
 def scope_notes(phrases: Sequence[Mapping[str, Any]]) -> list[str]:
     """The phrases that say who supplies something, as printed (at most 80 characters each)."""
     out: list[str] = []
@@ -346,12 +400,23 @@ class SetContext:
             if tag in tags_in(str(phrase.get("text") or ""))
         ]
 
+    def own_items(self, page: int) -> frozenset[str]:
+        """The item numbers `page`'s own title block names as its sheet's item (`own_items`)."""
+        self.build()
+        return own_items(self.pages.get(page, []))
+
     def outliers(self, page: int) -> list[Outlier]:
-        """The tags only `page` prints, in a finish family of the set (`Outlier`)."""
+        """The tags only `page` prints, in a finish family of the set (`Outlier`). Never the
+        page's own item number (`own_items`): a one-off item (a kitchenette top on its own sheet)
+        has its own one-off number, which no other sheet prints (Set A p16 of 2026-11-04: its
+        number was "only this sheet prints it, a wrong code is likely")."""
         families, finish = self.families(), self.finish_families()
+        own = self.own_items(page)
         out: list[Outlier] = []
         for tag in self.tags_on(page):
             family = family_of(tag)
+            if tag in own:
+                continue
             if family in finish and self.tags.get(tag) == [page]:
                 others = {t: p for t, p in families[family].items() if t != tag}
                 out.append(Outlier(tag, family, others))
@@ -690,6 +755,217 @@ def _already(finding: Mapping[str, Any], live: Sequence[Mapping[str, Any]]) -> b
     return False
 
 
+# ---- a page's please-check the set's other sheets answer ---------------------------------------
+#
+# The page reviewer sees one page. Two of its claims are about what the page does not say, and the
+# set's other sheets of the same item can answer them (Set A of 2026-11-04, 4 false please-checks):
+#
+# - "the item cell names only <item>, although the sheet also draws the top, which has its own
+#   drawing": false when the top's own drawing is titled with the same item number (the set numbers
+#   the vanity and its top with one code, GV's own stone sheets included). Kept when that drawing
+#   has another number (a cabinet sheet `ABC-801.C` and its countertop drawing `ABC-801CT`: GV's
+#   reviewer writes the countertop number into the cell).
+# - "who supplies <product> is not stated on this sheet": false when another sheet of the same item
+#   prints the product's code with a "by ..." note (`SCOPE`): the vanity sheet's "QS-40-2 Vanity by
+#   GV" answers the stone sheet's "who supplies the QS-40-2 sink". Kept when no sheet of the item
+#   says it, or the page does not print the code (then nothing names the product on it).
+#
+# Code reads both answers from the text layer (title blocks, notes); the claim is dropped with the
+# answer as its reason. Never more than that: nothing is made red or a please-check here.
+
+#: A please-check about the title block's item cell.
+_ITEM_CELL: Final = re.compile(
+    r"\bitem\s*(?:cell|no\b|no\.|number|#|code)|\btitle\s*block|\bsheet\s*header", re.IGNORECASE
+)
+#: ...that says it lacks the number of a piece with its own drawing (the top's): "the sheet also
+#: draws the top, which has its own countertop drawing". A claim that the block has no item,
+#: description or size cell at all says something else and is never answered here.
+_ITEM_CELL_LACKS: Final = re.compile(
+    r"\bown\s+(?:\w+\s+){0,2}drawing|\balso\s+draws?\b", re.IGNORECASE
+)
+#: A page the claim names (`p12`, `page 17`).
+_PAGE_REF: Final = re.compile(r"\b(?:p\.?|pages?\s+)(\d{1,4})\b", re.IGNORECASE)
+#: A product's code as a claim names it (`QS-40-2`, `AB-UM-7`, `K-2210`): letters, then
+#: hyphenated parts, a digit among them.
+_PRODUCT: Final = re.compile(r"\b[A-Z]{1,6}(?:-[A-Z0-9]{1,8}){1,4}\b")
+#: A claim that the page does not say who supplies something.
+_SUPPLIER: Final = re.compile(
+    r"\bsuppl(?:y|ies|ier|ied)\b|\bfurnish|\bprovided?\b|\bwho\b|\bby\s+whom\b|\bnot\s+stated\b",
+    re.IGNORECASE,
+)
+#: A "by ..." note next to a product's code: on its line within this many points, or on the
+#: line right under or over it (overlapping it across, this far apart at most).
+_NEXT_TO_PT: Final = 40.0
+_LINE_GAP_PT: Final = 6.0
+
+
+def _page_reviewer_check(finding: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The page reviewer's please-check mark (`likely_only`, open), else `None`."""
+    from app.review.assistant import likely_problems
+
+    mark = finding.get(likely_problems.FIELD)
+    if (
+        not isinstance(mark, Mapping)
+        or mark.get("by") != "page_reviewer"
+        or mark.get("proof") != "likely_only"
+        or finding.get("status") != "check"
+        or not isinstance(finding.get("page"), int)
+    ):
+        return None
+    return mark
+
+
+def _claim_text(finding: Mapping[str, Any], mark: Mapping[str, Any]) -> str:
+    return " ".join(
+        " ".join(str(v or "").split())
+        for v in (finding.get("item"), finding.get("why"), mark.get("why"))
+    )
+
+
+def item_cell_answered(context: SetContext, finding: Mapping[str, Any]) -> str | None:
+    """Why a page reviewer's "the item cell names only <item>; the top has its own drawing"
+    please-check is not so (see above), else `None`: every other sheet it names (else every sheet
+    of the same item number) is titled with this page's own item number, and none with another
+    spelling of it (`ABC-801CT` beside `ABC-801.C`)."""
+    mark = _page_reviewer_check(finding)
+    if mark is None:
+        return None
+    item_words = " ".join(str(finding.get("item") or "").split())
+    text = _claim_text(finding, mark)
+    if not _ITEM_CELL.search(item_words) or not _ITEM_CELL_LACKS.search(text):
+        return None
+    page = int(finding["page"])
+    own = context.own_items(page)
+    named = [t for t in own if t in tags_in(text)]
+    if len(named) != 1:
+        return None
+    mine = named[0]
+    key = item_key(mine)
+    cited = sorted({int(n) for n in _PAGE_REF.findall(text)} - {page})
+    others = [p for p in cited if 1 <= p <= context.page_count] or [
+        p
+        for p in sorted(context.pages)
+        if p != page and any(item_key(t) == key for t in context.own_items(p))
+    ]
+    if not others:
+        return None
+    for other in others:
+        theirs = context.own_items(other)
+        if mine not in theirs or any(item_key(t) == key and t != mine for t in theirs):
+            return None
+    shown = ", ".join(f"p{p}" for p in others[:6])
+    return (
+        f"the set titles {'that drawing' if len(others) == 1 else 'those drawings'} ({shown}) "
+        f"{mine} too, read by code from the title block: the set numbers this item and its top "
+        f"with one code, so the item cell already names it"
+    )
+
+
+def _boxed(phrases: Sequence[Mapping[str, Any]]) -> list[tuple[list[float], str]]:
+    out: list[tuple[list[float], str]] = []
+    for phrase in phrases:
+        raw = phrase.get("box")
+        text = " ".join(str(phrase.get("text") or "").split())
+        if isinstance(raw, Sequence) and len(raw) == 4 and text:
+            try:
+                out.append(([float(v) for v in raw], text))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _next_to(a: Sequence[float], b: Sequence[float]) -> bool:
+    """`b` on `a`'s line close beside it, or on the line right under or over it."""
+    across = min(a[2], b[2]) - max(a[0], b[0])
+    tall = max(a[3] - a[1], b[3] - b[1], 1.0)
+    same_line = abs((a[1] + a[3]) / 2 - (b[1] + b[3]) / 2) <= tall / 2
+    if same_line:
+        gap = max(b[0] - a[2], a[0] - b[2], 0.0)
+        return gap <= _NEXT_TO_PT
+    vertical = max(b[1] - a[3], a[1] - b[3], 0.0)
+    return across > 0 and vertical <= min(_LINE_GAP_PT, tall)
+
+
+def supplier_note(phrases: Sequence[Mapping[str, Any]], code: str) -> str | None:
+    """The "by ..." note (`SCOPE`) a page prints with `code`: in the same phrase, or in the phrase
+    beside or right under/over it (as printed, `code` first), else `None`."""
+    boxed = _boxed(phrases)
+    want = dashes_to_hyphen(code).upper()
+    for box, text in boxed:
+        if want not in dashes_to_hyphen(text).upper():
+            continue
+        if SCOPE.search(text):
+            return text[:80]
+        for other, words in boxed:
+            if other is not box and SCOPE.search(words) and _next_to(box, other):
+                return f"{text} {words}"[:80]
+    return None
+
+
+def supplier_answered(context: SetContext, finding: Mapping[str, Any]) -> str | None:
+    """Why a page reviewer's "who supplies <product> is not stated" please-check is answered by
+    the set (see above), else `None`: the claim's item names a product code this page prints, and
+    another sheet of the same item (the same own item number, `own_items`) prints that code with a
+    "by ..." note."""
+    mark = _page_reviewer_check(finding)
+    if mark is None or mark.get("kind") != "scope":
+        return None
+    item_words = " ".join(str(finding.get("item") or "").split())
+    if not _SUPPLIER.search(_claim_text(finding, mark)):
+        return None
+    page = int(finding["page"])
+    own = context.own_items(page)
+    if not own:
+        return None
+    here = " ".join(str(p.get("text") or "") for p in context.pages.get(page, []))
+    here = dashes_to_hyphen(here).upper()
+    codes = [
+        c
+        for c in dict.fromkeys(_PRODUCT.findall(dashes_to_hyphen(item_words)))
+        if any(ch.isdigit() for ch in c) and c not in own and c.upper() in here
+    ]
+    if not codes:
+        return None
+    for code in codes:
+        for other in sorted(context.pages):
+            if other == page or not (context.own_items(other) & own):
+                continue
+            note = supplier_note(context.pages.get(other, []), code)
+            if note is not None:
+                return (
+                    f"p{other}, the same item's other sheet ({', '.join(sorted(own))}), says who "
+                    f'supplies {code}: "{note}" (read by code from its text)'
+                )
+    return None
+
+
+def drop_answered(engine: Any, context: SetContext) -> int:
+    """The page reviewer's please-checks the set's other sheets answer (`item_cell_answered`,
+    `supplier_answered`), dropped with the answer as their reason. Returns how many."""
+    book = engine.book
+    dropped = 0
+    with engine.finding_lock:
+        for finding in book.live():
+            try:
+                why = item_cell_answered(context, finding) or supplier_answered(context, finding)
+            except Exception:  # noqa: BLE001 - that card stays as the reviewer left it
+                _log.exception(
+                    "set check: finding %s not checked against the set", finding.get("id")
+                )
+                continue
+            if why is None:
+                continue
+            reason = f"Answered by the set's other sheets: {why}."
+            try:
+                book.drop({"finding_id": str(finding["id"]), "reason": reason[:400]})
+            except Exception:  # noqa: BLE001 - already gone: nothing to drop
+                _log.warning("set check: finding %s was not dropped", finding.get("id"))
+                continue
+            engine._show_dropped(str(finding["id"]), reason)
+            dropped += 1
+    return dropped
+
+
 #: A phrase names the same note on several sheets when it has at least this many words.
 _NOTE_WORDS: Final = 3
 #: Two cards on the same note are the same please-check only when their item names share at least
@@ -902,6 +1178,12 @@ def add_to_answer(engine: Any) -> int:
         added += project_schedule.add_reds(engine, context, pages)
     except Exception:  # noqa: BLE001 - the please-checks stand without them
         _log.exception("project schedule: its reds were not added")
+    try:
+        answered = drop_answered(engine, context)
+        if answered:
+            _log.warning("set check: %d please-checks answered by the set's other sheets", answered)
+    except Exception:  # noqa: BLE001 - the cards stay as the reviewers left them
+        _log.exception("set check: the please-checks were not checked against the set")
     # After code's own checks: their duplicate test (`_already`) sees every reviewer card first.
     try:
         folded = fold_repeats(engine, context)

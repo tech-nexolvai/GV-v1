@@ -461,3 +461,221 @@ def test_a_one_digit_finish_code_only_one_sheet_prints_is_an_outlier() -> None:
     context = _context(pages, 4)
     (outlier,) = context.outliers(2)
     assert outlier.tag == "ST-3" and outlier.others == {"ST-2": [1, 3, 4]}
+
+
+# ---- a page's please-check the set's other sheets answer (2026-11-04) --------------------------
+
+
+def _at(text: str, x0: float, y0: float, x1: float, y1: float) -> dict[str, Any]:
+    return {"text": text, "box": [x0, y0, x1, y1]}
+
+
+def _item_cell(code: str) -> list[dict[str, Any]]:
+    """A cabinet sheet's title block: the ITEM NO. anchor with its value under it."""
+    return [_at("ITEM NO.", 600, 700, 650, 712), _at(code, 610, 730, 640, 740)]
+
+
+def _stone_header(number: int, code: str) -> list[dict[str, Any]]:
+    """A stone drawing's template: `DRAWING # n` with the item number on the line under it."""
+    return [_at(f"DRAWING # {number}", 40, 20, 100, 30), _at(code, 40, 33, 72, 42)]
+
+
+def _one_code_set() -> dict[int, list[dict[str, Any]]]:
+    """Made-up: one vanity XY-310 (its cabinet sheets and its stone drawing all titled XY-310), a
+    second vanity XY-320, and a one-off kitchenette top XY-905 on its own stone drawing."""
+    return {
+        1: [*_item_cell("XY-310"), _at("ST-01 BY GV", 380, 236, 430, 245), _at("WD-02", 50, 50, 80, 60),
+            _at("QS-40-2", 380, 211, 418, 219), _at("Vanity by GV", 370, 220, 417, 229)],
+        2: [*_item_cell("XY-310"), _at("WD-02", 50, 50, 80, 60)],
+        3: [*_item_cell("XY-320"), _at("WD-02", 50, 50, 80, 60), _at("QS-40-2", 300, 200, 340, 210)],
+        4: [*_item_cell("XY-320"), _at("WD-02", 50, 50, 80, 60)],
+        5: [*_stone_header(1, "XY-905"), _at("HSK-UM-7", 300, 200, 340, 210)],
+        6: [*_stone_header(2, "XY-310"), _at("QS-40-2", 288, 258, 337, 268), _at("WD-02", 50, 50, 80, 60)],
+        7: [*_stone_header(3, "XY-320"), _at("QS-40-2", 288, 235, 337, 245)],
+    }  # fmt: skip
+
+
+def _built(pages: dict[int, list[dict[str, Any]]]) -> SetContext:
+    context = _context(pages, max(pages))
+    context.build()
+    return context
+
+
+def _reviewer_card(page: int, item: str, why: str, kind: str = "labels") -> dict[str, Any]:
+    from app.review.assistant import likely_problems
+
+    return {
+        "id": f"F{page}",
+        "page": page,
+        "item": item,
+        "why": why,
+        "status": "check",
+        likely_problems.FIELD: {"by": "page_reviewer", "proof": "likely_only", "kind": kind},
+    }
+
+
+def test_a_sheets_own_item_number_is_read_from_its_item_cell_or_its_drawing_header() -> None:
+    context = _built(_one_code_set())
+    assert context.own_items(1) == {"XY-310"}
+    assert context.own_items(5) == {"XY-905"}
+    assert context.own_items(6) == {"XY-310"}
+    # A finish in a cell is never the sheet's item (numbered from 1).
+    assert set_context.own_items(_item_cell("MT-002")) == frozenset()
+
+
+def test_a_one_off_item_number_on_its_own_sheet_is_never_an_outlier() -> None:
+    """Set A p16 of 2026-11-04: the kitchenette's own number, printed only on its own sheet, was
+    "only this sheet prints it, a wrong code is likely"."""
+    context = _built(_one_code_set())
+    assert "XY" in context.finish_families()  # the vanity's number is on many sheets
+    assert [o.tag for o in context.outliers(5)] == []
+    assert not [f for f in set_context.check_page(context, 5) if "XY-905" in f["item"]]
+
+
+def test_an_item_cell_claim_is_dropped_when_the_tops_drawing_has_the_same_number() -> None:
+    context = _built(_one_code_set())
+    card = _reviewer_card(
+        1,
+        "Title block item cell",
+        "This sheet also draws the ST-01 top by GV, which has its own countertop drawing (p6). "
+        "The item cell names only XY-310.",
+    )
+    why = set_context.item_cell_answered(context, card)
+    assert why is not None and "p6" in why and "XY-310" in why
+    # No page named: every other sheet of the item is titled XY-310 too.
+    card["why"] = "The sheet also draws the stone top, which has its own drawing. Only XY-310."
+    assert set_context.item_cell_answered(context, card) is not None
+
+
+def test_an_item_cell_claim_stays_when_the_tops_drawing_has_its_own_number() -> None:
+    """A cabinet sheet `XY-501.C` whose countertop drawing is `XY-501CT`: GV's reviewer writes the
+    countertop number into the cell, so the claim is kept."""
+    pages = {
+        1: [*_item_cell("XY-501.C")],
+        2: [*_stone_header(1, "XY-501CT")],
+    }
+    context = _built(pages)
+    card = _reviewer_card(
+        1,
+        "Title block: item cell",
+        "The sheet also draws the top, which has its own countertop drawing (p2), but the item "
+        "cell names only XY-501.C.",
+    )
+    assert set_context.item_cell_answered(context, card) is None
+
+
+def test_other_title_block_claims_are_never_answered_by_the_item_number() -> None:
+    context = _built(_one_code_set())
+    no_cells = _reviewer_card(
+        6,
+        "Vanity top XY-310: title block",
+        "The title block has no item number, description or overall size. XY-310 appears only "
+        "in the top-left note. The XY-310 sheets (p1/p2) give the description.",
+    )
+    assert set_context.item_cell_answered(context, no_cells) is None
+    one_off = _reviewer_card(
+        5,
+        "Sheet header: item number XY-905",
+        "XY-905 appears on this page only; p6 is XY-310. Please confirm the item number; if this "
+        "top has its own countertop drawing number it should be added.",
+    )
+    assert set_context.item_cell_answered(context, one_off) is None
+
+
+def test_a_supplier_claim_is_dropped_when_the_items_other_sheet_says_who_supplies_it() -> None:
+    context = _built(_one_code_set())
+    card = _reviewer_card(
+        6,
+        "Vanity top plan: sink QS-40-2 supply",
+        "The QS-40-2 sink is drawn, but the sheet does not say who supplies the sink.",
+        kind="scope",
+    )
+    why = set_context.supplier_answered(context, card)
+    assert why is not None and "p1" in why and "QS-40-2 Vanity by GV" in why
+
+
+def test_a_supplier_claim_stays_when_no_sheet_of_the_item_says_it() -> None:
+    context = _built(_one_code_set())
+    other_item = _reviewer_card(  # XY-320's sheets print the sink with no "by" note
+        7, "Sink QS-40-2: who supplies it", "Nothing says who supplies the sink.", kind="scope"
+    )
+    assert set_context.supplier_answered(context, other_item) is None
+    one_off = _reviewer_card(  # the only sheet of its item
+        5,
+        "Top plan: HSK-UM-7 sink supplier",
+        "The sheet does not say who supplies it.",
+        kind="scope",
+    )
+    assert set_context.supplier_answered(context, one_off) is None
+    no_code_here = _reviewer_card(  # the page names no sink: nothing says what it is
+        2, "Cut-out: sink QS-40-2 supplier", "The cut-out names no sink or supplier.", kind="scope"
+    )
+    assert set_context.supplier_answered(context, no_code_here) is None
+    faucet = _reviewer_card(
+        1,
+        "Faucet: who supplies it",
+        "A faucet is drawn; no note says who supplies it.",
+        kind="scope",
+    )
+    assert set_context.supplier_answered(context, faucet) is None
+
+
+def test_the_finish_hook_drops_the_answered_cards_with_their_reason(tmp_path: Path) -> None:
+    import threading
+    from types import SimpleNamespace
+
+    from app.review.assistant import likely_problems
+    from app.review.assistant.chat_findings import FindingBook
+    from app.review.assistant.sandbox import ChatWorkspace
+    from tests.review.assistant.test_page_reviewer import FILE, _pdf
+
+    context = _built(_one_code_set())
+    workspace = ChatWorkspace.open(tmp_path / "chat")
+    (workspace.uploads / FILE).write_bytes(_pdf())
+    listing = [{"name": FILE, "pages": 2, "kind": "the vendor's shop drawings"}]
+    (workspace.root / "uploads.json").write_text(json.dumps(listing), encoding="utf-8")
+    book = FindingBook(workspace=workspace, listing=listing, page_count=7)
+    dropped: list[tuple[str, str]] = []
+    engine = SimpleNamespace(
+        book=book, finding_lock=threading.RLock(),
+        _show_dropped=lambda fid, why: dropped.append((fid, why)),
+    )  # fmt: skip
+
+    def reviewer_item(page: int, item: str, why: str, kind: str) -> str:
+        book.report(
+            {
+                "page": page, "item": item, "category": "other",
+                "architect": "n/a", "vendor": "see the drawing", "status": "check",
+                "check_reason": "pairing_not_certain", "verified": False, "source": "architect",
+                "why": why,
+                "vendor_box": {"page": page, "x0": 12, "y0": 20, "x1": 120, "y1": 28, "file": FILE},
+            },
+            "page_reviewer",
+        )  # fmt: skip
+        found = book.live()[-1]
+        book.replace(
+            {
+                **found,
+                likely_problems.FIELD: {
+                    "by": "page_reviewer",
+                    "proof": "likely_only",
+                    "kind": kind,
+                },
+            }
+        )
+        return str(found["id"])
+
+    cell = reviewer_item(
+        1, "Title block item cell",
+        "This sheet also draws the top, which has its own countertop drawing (p6). Only XY-310.",
+        "labels",
+    )  # fmt: skip
+    sink = reviewer_item(
+        6, "Sink QS-40-2 supply", "The sheet does not say who supplies the sink.", "scope"
+    )
+    faucet = reviewer_item(1, "Faucet: who supplies it", "No note says who supplies it.", "scope")
+    assert set_context.drop_answered(engine, context) == 2
+    live = {f["id"] for f in book.live()}
+    assert cell not in live and sink not in live and faucet in live
+    assert [fid for fid, _ in dropped] == [cell, sink]
+    assert all(why.startswith("Answered by the set's other sheets: ") for _, why in dropped)

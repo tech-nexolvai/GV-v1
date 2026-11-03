@@ -305,3 +305,49 @@ def test_only_a_size_claim_is_judged_for_its_sum() -> None:
     count = _claim("F1", "Credenza: fronts", "count", (40, 300, 60, 420))
     count.update(vendor="2 doors + 1 bin", architect="3 doors")
     assert _changes([count]) == {}
+
+
+# ---- 6. an absence on the architect's drawing (2026-11-04) ---------------------------------------
+
+
+def test_a_claim_that_the_architect_draws_none_is_asked_never_a_likely_problem() -> None:
+    """A real set, two runs in a row: "the architect draws no back splash" while the architect's
+    elevations draw a band exactly 4" tall above the counter line. Code cannot see that a piece is
+    not drawn, so the claim is Not compared (still listed), never a Likely problem."""
+    claim = {
+        **_claim("F1", 'Vanity top: 4" back splash', "extra_piece", (10, 10, 60, 20)),
+        "architect": "no splash visible above the top in elevations 1 and 5",
+        "vendor": '4" back splash, 54" long',
+    }
+    found = dict(look_rules.changes([claim]))
+    assert found["F1"].outcome == "not_compared" and found["F1"].rule == "architect_absence"
+    assert "no splash visible" in found["F1"].why
+    for words in ("splash not shown on the elevation", "none drawn", "shows no splash"):
+        assert look_rules.architect_absence({**claim, "architect": words}, "layout") is not None
+
+
+def test_a_presence_on_the_architect_or_an_absence_on_the_vendor_is_left_as_it_is() -> None:
+    missing = {
+        **_claim("F2", "Vanity top: side splashes", "missing_piece", (10, 10, 60, 20)),
+        "architect": "elevations 2 and 8 draw a splash at each wall end",
+        "vendor": "no side splash",
+    }
+    assert look_rules.changes([missing]) == []
+    layout = {
+        **_claim("F3", "Top: wall ends", "layout", (10, 10, 60, 20)),
+        "architect": "a wall face at each end of the top",
+        "vendor": "both ends marked as finished edges",
+    }
+    assert look_rules.changes([layout]) == []
+    size = {
+        **_claim("F4", "Top: depth", "size", (10, 10, 60, 20)),
+        "architect": "no depth shown",
+        "vendor": '23"',
+    }
+    assert look_rules.architect_absence(size) is None
+    vendor_none = {
+        **_claim("F5", "Top: splash", "layout", (10, 10, 60, 20)),
+        "architect": "no splash shown",
+        "vendor": "no splash",
+    }
+    assert look_rules.architect_absence(vendor_none) is None
