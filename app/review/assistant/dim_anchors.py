@@ -57,6 +57,9 @@ Verification: `tests/review/assistant/test_dim_anchors.py` (hand-made line work)
 from __future__ import annotations
 
 import math
+import threading
+from bisect import bisect_left, bisect_right
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -145,12 +148,55 @@ def _lines(segments: Iterable[Segment], box: Box) -> _Lines:
     return _Lines(tuple(horizontal), tuple(vertical), tuple(slanted), tuple(kept))
 
 
+#: The slash ticks of the newest few line works sorted by their place across (`_slanted_near`):
+#: `(id(slanted), axis)` -> (the ticks, held so the id is never reused while kept; their places
+#: across, ascending; each one's position in the ticks).
+_BY_ACROSS: OrderedDict[
+    tuple[int, str], tuple[tuple[tuple[float, float], ...], list[float], list[int]]
+] = OrderedDict()
+_BY_ACROSS_LOCK: Final = threading.Lock()
+_BY_ACROSS_KEPT: Final = 8
+#: Fewer ticks than this are read whole.
+_BY_ACROSS_MIN: Final = 256
+
+
+def _slanted_near(
+    lines: _Lines, axis: str, low: float, high: float
+) -> Sequence[tuple[float, float]]:
+    """The slash ticks of `lines` (`slanted`, in their own order) whose place across (y for `h`,
+    x for `v`) is within `low..high`, widened by a point; all of them when there are few, or a
+    place or a bound is not a number. The caller applies its own exact test to each: a big
+    sheet's tens of thousands of ticks were read whole for every row asked about."""
+    slanted = lines.slanted
+    if len(slanted) < _BY_ACROSS_MIN or math.isnan(low) or math.isnan(high):
+        return slanted
+    key = (id(slanted), axis)
+    with _BY_ACROSS_LOCK:
+        kept = _BY_ACROSS.get(key)
+        if kept is not None and kept[0] is slanted:
+            _BY_ACROSS.move_to_end(key)
+    if kept is None or kept[0] is not slanted:
+        places = [my if axis == "h" else mx for mx, my in slanted]
+        if any(math.isnan(v) for v in places):
+            return slanted
+        order = sorted(range(len(places)), key=places.__getitem__)
+        kept = (slanted, [places[i] for i in order], order)
+        with _BY_ACROSS_LOCK:
+            _BY_ACROSS[key] = kept
+            _BY_ACROSS.move_to_end(key)
+            while len(_BY_ACROSS) > _BY_ACROSS_KEPT:
+                _BY_ACROSS.popitem(last=False)
+    _ticks_kept, places, order = kept
+    start, end = bisect_left(places, low - 1.0), bisect_right(places, high + 1.0)
+    return [slanted[i] for i in sorted(order[start:end])]
+
+
 def _ticks(lines: _Lines, axis: str, row: float, lo: float, hi: float) -> list[float]:
     """Slash ticks crossing the dimension line at `row` (y for a horizontal line, x for a vertical
     one): their places along it, from `lo` to `hi`, merged within `_SAME_PT`."""
     found = sorted(
         along
-        for mx, my in lines.slanted
+        for mx, my in _slanted_near(lines, axis, row - 0.9, row + 0.9)
         for along, across in ([(mx, my)] if axis == "h" else [(my, mx)])
         if abs(across - row) <= 0.9 and lo <= along <= hi
     )
@@ -233,7 +279,7 @@ def _candidates(lines: _Lines, label: Label, box: Box) -> list[tuple[float, floa
     near, far = (y0, y1) if axis == "h" else (x0, x1)
     rows = {
         round((my if axis == "h" else mx) * 2) / 2
-        for mx, my in lines.slanted
+        for mx, my in _slanted_near(lines, axis, near - _ROW_PT - 2, far + _ROW_PT + 2)
         if near - _ROW_PT - 2 <= (my if axis == "h" else mx) <= far + _ROW_PT + 2
     }
     lo, hi = (box[0], box[2]) if axis == "h" else (box[1], box[3])

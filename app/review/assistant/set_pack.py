@@ -1485,6 +1485,13 @@ def read_pack_page(task: Any, given: Mapping[str, float]) -> Any:
     """One page as the set pack reads it, in a worker process (#1872): its health check
     (`extraction/page_health`, #1745) and its labels (`dim_labels.read_page`)."""
     labels = import_module("app.review.assistant.dim_labels")
+    # The page's labels and its line work share one parse of the page (`parsed_once`).
+    with labels.parsed_once():
+        return _read_pack_page(labels, task, given)
+
+
+def _read_pack_page(labels: Any, task: Any, given: Mapping[str, float]) -> Any:
+    """`read_pack_page` within one parse of the page."""
     health: dict[str, Any] | None = None
     if task.health is not None and task.upload:
         try:

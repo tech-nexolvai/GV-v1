@@ -53,8 +53,10 @@ Verification: `tests/review/assistant/test_hand_labels.py`,
 
 from __future__ import annotations
 
+import math
 import re
-from collections.abc import Sequence
+from bisect import bisect_right
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from itertools import pairwise
@@ -203,12 +205,73 @@ def _characters(paths: Sequence[ink_labels.InkPath], turn: Turn) -> list[_Char]:
     return [_diagonal(char, turn) or char for char in _grouped(paths, turn)]
 
 
+#: Fewer frames than this are paired one by one (`_Columns`).
+_COLUMNS_MIN: Final = 256
+#: Fewer candidates than this after one frame are tested one by one.
+_SHORT_RUN: Final = 24
+#: Points added to the bounds `_Columns.across` asks about: a rounding difference never leaves
+#: a pair out (each pair it gives is still tested exactly).
+_COLUMNS_SLACK: Final = 0.5
+
+
+class _Columns:
+    """Frames sorted along the row (`(along start, top, along end, bottom)`), as arrays, so the
+    frames after one that could pair with it are found at once: those starting before a place
+    along (`until`, where the one-by-one scan stopped) whose extent across meets a band
+    (`across`). A big sheet's 50,000 characters, each scanned against every character in the
+    same column of the whole sheet, took minutes; the pairs tested and their answers are the
+    same."""
+
+    __slots__ = ("bottom", "end", "start", "starts", "tall", "top")
+
+    def __init__(self, frames: Sequence[Box]) -> None:
+        held = np.array(frames, dtype=np.float64).reshape(-1, 4)
+        self.starts = [frame[0] for frame in frames]
+        self.start, self.end = held[:, 0], held[:, 2]
+        self.top, self.bottom = held[:, 1], held[:, 3]
+        # As `_Char.tall`: the same subtraction, so `_marks_between` compares the same numbers.
+        self.tall = held[:, 3] - held[:, 1]
+
+    @staticmethod
+    def of(frames: Sequence[Box]) -> _Columns | None:
+        """The columns of `frames`, or `None` (paired one by one) when there are few, a place is
+        not a finite number, a frame is upside down or they are not sorted along the row."""
+        if len(frames) < _COLUMNS_MIN:
+            return None
+        if not all(math.isfinite(v) for frame in frames for v in frame):
+            return None
+        if any(frame[3] < frame[1] for frame in frames):
+            return None
+        if any(a[0] > b[0] for a, b in pairwise(frames)):
+            return None
+        return _Columns(frames)
+
+    def until(self, first: int, along: float) -> int:
+        """The first frame from `first` on that starts after `along` (where the scan stopped)."""
+        return bisect_right(self.starts, along, lo=first)
+
+    def across(
+        self, first: int, end: int, low: np.ndarray | float, high: np.ndarray | float
+    ) -> list[int]:
+        """The frames `first..end - 1` whose extent across meets `low..high`, in order."""
+        hits = (self.top[first:end] <= high) & (self.bottom[first:end] >= low)
+        return (np.flatnonzero(hits) + first).tolist()
+
+
 def _grouped(paths: Sequence[ink_labels.InkPath], turn: Turn) -> list[_Char]:
     """Strokes overlapping along the row and touching across it, as characters in reading order."""
     items = sorted(((p, _frame(p.box, turn)) for p in paths), key=lambda item: item[1][0])
     sets = ink_labels._Sets(len(items))
+    columns = _Columns.of([item[1] for item in items])
     for i, (_a, a) in enumerate(items):
-        for j in range(i + 1, len(items)):
+        others: Iterable[int] = range(i + 1, len(items))
+        if columns is not None:
+            end = columns.until(i + 1, a[2] + 0.01)
+            if end - i > _SHORT_RUN:
+                # Two strokes of one character lie at most `_ACROSS_PT` apart across.
+                reach = _ACROSS_PT + _COLUMNS_SLACK
+                others = columns.across(i + 1, end, a[1] - reach, a[3] + reach)
+        for j in others:
             b = items[j][1]
             if b[0] > a[2] + 0.01:
                 break
@@ -287,10 +350,25 @@ def _diagonal(char: _Char, turn: Turn) -> _Char | None:
 
 
 def _rows(chars: Sequence[_Char]) -> list[list[_Char]]:
-    """Characters side by side on one row (see the module's step 2), each row in reading order."""
+    """Characters side by side on one row (see the module's step 2), each row in reading order.
+
+    On a big sheet (`_Columns`) only the characters that could join one are tested against it:
+    two of a size overlap across, and a mark lies within its character's height, so a character
+    is tested only against those meeting its extent across widened by a quarter of the taller
+    one's height; the marks between two characters are looked for among the characters between
+    them all at once. The pairs joined, and so the rows, are the same."""
     sets = ink_labels._Sets(len(chars))
+    columns = _Columns.of([char.frame for char in chars])
     for i, a in enumerate(chars):
-        for j in range(i + 1, len(chars)):
+        others: Iterable[int] = range(i + 1, len(chars))
+        if columns is not None:
+            end = columns.until(i + 1, a.frame[2] + _REACH_PT)
+            if end - i > _SHORT_RUN:
+                # The taller of the two, as `tall` below, at least 0.3.
+                taller = np.maximum(columns.tall[i + 1 : end], max(a.tall, 0.3))
+                reach = 0.25 * taller + _COLUMNS_SLACK
+                others = columns.across(i + 1, end, a.frame[1] - reach, a.frame[3] + reach)
+        for j in others:
             b = chars[j]
             if b.frame[0] > a.frame[2] + _REACH_PT:
                 break
@@ -303,17 +381,9 @@ def _rows(chars: Sequence[_Char]) -> list[list[_Char]]:
                 over = min(a.frame[3], b.frame[3]) - max(a.frame[1], b.frame[1])
                 if over < 0.6 * low:
                     continue
-                top = min(a.frame[1], b.frame[1]) - 0.2 * tall
-                bottom = max(a.frame[3], b.frame[3]) + 0.2 * tall
-                marks = any(
-                    chars[k].tall < _MARK_RATIO * low
-                    and chars[k].frame[0] >= a.frame[2] - 0.1
-                    and chars[k].frame[2] <= b.frame[0] + 0.1
-                    and chars[k].frame[1] >= top
-                    and chars[k].frame[3] <= bottom
-                    for k in range(i + 1, j)
-                )
-                if gap <= _GAP * tall or (marks and gap <= _WIDE_GAP * tall):
+                if gap <= _GAP * tall or (
+                    gap <= _WIDE_GAP * tall and _marks_between(chars, columns, i, j, low, tall)
+                ):
                     sets.join(i, j)
             elif low < _MARK_RATIO * tall:
                 big, mark = (a, b) if a.tall > b.tall else (b, a)
@@ -325,6 +395,37 @@ def _rows(chars: Sequence[_Char]) -> list[list[_Char]]:
                 if inside and gap <= _GAP * big.tall:
                     sets.join(i, j)
     return [sorted((chars[i] for i in group), key=lambda c: c.frame[0]) for group in sets.groups()]
+
+
+def _marks_between(
+    chars: Sequence[_Char], columns: _Columns | None, i: int, j: int, low: float, tall: float
+) -> bool:
+    """Whether smaller marks (under `_MARK_RATIO` of `low`) lie between characters `i` and `j`
+    along the row, within their height across (widened by a fifth of `tall`): a foot or inch mark
+    between two digits lets them stand a wider gap apart."""
+    a, b = chars[i], chars[j]
+    top = min(a.frame[1], b.frame[1]) - 0.2 * tall
+    bottom = max(a.frame[3], b.frame[3]) + 0.2 * tall
+    if columns is None or j - i <= _SHORT_RUN:
+        return any(
+            chars[k].tall < _MARK_RATIO * low
+            and chars[k].frame[0] >= a.frame[2] - 0.1
+            and chars[k].frame[2] <= b.frame[0] + 0.1
+            and chars[k].frame[1] >= top
+            and chars[k].frame[3] <= bottom
+            for k in range(i + 1, j)
+        )
+    # The same tests, for every character between them at once.
+    between = slice(i + 1, j)
+    return bool(
+        np.any(
+            (columns.tall[between] < _MARK_RATIO * low)
+            & (columns.start[between] >= a.frame[2] - 0.1)
+            & (columns.end[between] <= b.frame[0] + 0.1)
+            & (columns.top[between] >= top)
+            & (columns.bottom[between] <= bottom)
+        )
+    )
 
 
 def _wedge(char: _Char) -> bool:
