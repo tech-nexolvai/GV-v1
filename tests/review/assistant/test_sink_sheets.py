@@ -21,6 +21,7 @@ from app.review.assistant import job_value_rules, likely_problems, proof
 from app.review.assistant import sink_offset as so
 from app.review.assistant import sink_sheets as ss
 from app.review.assistant.chat_trust import judged
+from app.review.assistant.ledger import format_inches
 from app.review.assistant.product_scope import ProductScope
 
 PPI = 4.0
@@ -405,6 +406,140 @@ def test_with_the_overhang_entered_the_rule_decides_where_no_architect_drawing_i
     assert _edge(4.5, '4 1/2"', "0.5") is None
 
 
+# ---- the overhang the vendor's own drawing prints (Fix K) -----------------------------------------
+
+
+def _vanity(
+    page: int = 11,
+    *,
+    depth: float = 23,
+    lip: float = 0.5,
+    texts: dict[str, tuple[str, str]] | None = None,
+    cabinet_front: bool = True,
+    lip_at_back: bool = False,
+) -> _Sheet:
+    """A vanity's plan: the wall at the back, the cabinets `depth - lip` deep with their front
+    drawn, the top's front edge `lip` in front of it, a sink cut-out with its faucet hole, and a
+    chain at the left: the whole top's depth split into the cabinets and the overhang."""
+    cabinet = depth - lip
+    words = {
+        "whole": (format_inches(Fraction(depth)), f"{depth:g}"),
+        "cabinet": (format_inches(Fraction(cabinet)), f"{cabinet:g}"),
+        "lip": (format_inches(Fraction(lip)), f"{lip:g}"),
+        **(texts or {}),
+    }
+    sheet = _Sheet(page)
+    x1 = X0 + 54 * PPI
+    yc, yt = Y0 + cabinet * PPI, Y0 + depth * PPI
+    sheet.lines += [((X0, Y0), (x1, Y0)), ((X0, yt), (x1, yt))]
+    sheet.lines += [((X0, Y0), (X0, yt)), ((x1, Y0), (x1, yt))]
+    if cabinet_front:
+        sheet.lines.append(((X0, yc), (x1, yc)))
+    mid = X0 + 27 * PPI
+    cl, cr = mid - 8.5 * PPI, mid + 8.5 * PPI
+    cf = yc - 4 * PPI
+    cb = cf - 12 * PPI
+    sheet.lines += [
+        ((cl, cb), (cr, cb)),
+        ((cl, cf), (cr, cf)),
+        ((cl, cb), (cl, cf)),
+        ((cr, cb), (cr, cf)),
+    ]
+    sheet.lines += _octagon(mid, cb - 2.5 * PPI, 0.7 * PPI)
+    x = X0 - 12
+    split = Y0 + lip * PPI if lip_at_back else yc
+    parts = [
+        (Y0, split, words["lip" if lip_at_back else "cabinet"]),
+        (split, yt, words["cabinet" if lip_at_back else "lip"]),
+    ]
+    for a, b, (text, inches) in parts:
+        sheet.deep(x, a, b, text, inches, dim_line=[[x, a], [x, b]])
+    sheet.deep(X0 - 30, Y0, yt, *words["whole"], dim_line=[[X0 - 30, Y0], [X0 - 30, yt]])
+    return sheet
+
+
+def _drawn(sheet: _Sheet, depth: float = 23) -> set[tuple[Fraction, Fraction, str]]:
+    box = (0.0, 0.0, 2000.0, 2000.0)
+    drawing = so.Drawing(FILE, sheet.page, box, tuple(sheet.labels), PPI, "SINK")
+    plans = so.plans_on(sheet.labels, sheet.lines, box, PPI)
+    assert plans, "the made-up vanity plan has a sink cut-out code proves"
+    found: set[tuple[Fraction, Fraction, str]] = set()
+    for plan in plans:
+        found |= ss._overhangs_on(drawing, plan, sheet.lines, Fraction(depth))
+    return found
+
+
+def test_the_overhang_is_read_from_the_vendors_chain_on_a_vanity_plan() -> None:
+    ((lip, cabinet, _id),) = _drawn(_vanity())
+    assert (lip, cabinet) == (Fraction(1, 2), Fraction(45, 2))
+    texts = {"lip": ("13 [1/2]", "0.5"), "cabinet": ("571 [22 1/2]", "22.5")}
+    assert {f[0] for f in _drawn(_vanity(texts=texts))} == {Fraction(1, 2)}
+
+
+def test_no_overhang_is_read_unless_every_step_is_proved() -> None:
+    assert _drawn(_vanity(cabinet_front=False)) == set()  # no cabinets' front drawn at the split
+    assert _drawn(_vanity(), depth=24) == set()  # the whole is not the top's depth
+    wrong_sum = {"cabinet": ('22 1/4"', "22.25")}
+    assert _drawn(_vanity(texts=wrong_sum)) == set()  # the parts do not add up
+    assert _drawn(_vanity(lip_at_back=True)) == set()  # the small part is at the back
+    words = {"lip": ('1/2" OVERHANG', "0.5")}
+    assert _drawn(_vanity(texts=words)) == set()  # words beside the number
+    assert _drawn(_vanity(lip=3)) == set()  # over 2": not a top's lip
+
+
+def _printed(page: int = 11, value: str = "0.5", tag: str = "XX-214", depth: int = 21) -> Any:
+    lip = Fraction(value)
+    return ss.PrintedOverhang(
+        FILE,
+        page,
+        frozenset({tag}),
+        None,
+        lip,
+        Fraction(depth),
+        depth - lip,
+        {"id": "D9", "text": f"13 [{value}]"},
+    )
+
+
+def _edge_drawn(
+    front: float, text: str, printed: Any, *, alone: bool = False, overhang: Any = None
+) -> Any:
+    sheet = _plan(18, width=42, depth=21, front=front, texts={"front_offset": (text, str(front))})
+    top = _top(sheet, alone=alone, tags=frozenset({"XX-214"}))
+    found = ss.edge_findings([top], STANDARD, overhang, printed=printed)
+    return found[0] if found else None
+
+
+def test_with_no_job_overhang_the_vendors_printed_overhang_is_used_and_named() -> None:
+    item = _edge_drawn(4, '4"', [_printed(14)])
+    assert item["status"] == "check" and item[likely_problems.FIELD]["proof"] == "likely_only"
+    assert "on page 14" in item["why"] and "3 1/2\" from the cabinets' front" in item["why"]
+    assert "should be 4 1/2\" from the top's front edge" in item["why"]
+    assert item["gv_standard"]["overhang_from"] == {"page": 14, "label": "13 [0.5]"}
+    assert "job_value_rule" not in item
+    found = proof.classified(judged({**item, "id": "R9"}))
+    assert proof.proof_group(judged({**item, "id": "R9"})) == "likely_problem", found
+    over = _edge_drawn(5.0625, '5 1/16" [129mm]', [_printed(14)])
+    assert over["status"] == "check" and "4 9/16\" from the cabinets' front" in over["why"]
+    # A match is Right only where no architect drawing is paired; never red either way.
+    right = _edge_drawn(4.5, '4 1/2"', [_printed(14)], alone=True)
+    assert right["status"] == "same" and "on page 14" in right["why"]
+    assert _edge_drawn(4.5, '4 1/2"', [_printed(14)]) is None
+    assert _edge_drawn(4, '4"', [_printed(14)], alone=True)["status"] == "check"
+
+
+def test_a_printed_overhang_is_used_only_for_the_same_item_and_when_all_agree() -> None:
+    plain = "does not overhang the cabinets at all"
+    assert plain in _edge_drawn(4, '4"', [_printed(14, tag="XX-999")])["why"]  # another item
+    assert plain in _edge_drawn(4, '4"', [_printed(14, depth=23)])["why"]  # another depth
+    two = [_printed(11), _printed(14, value="0.75")]
+    assert plain in _edge_drawn(4, '4"', two)["why"]  # two values: none is used
+    # An entered job overhang always wins.
+    entered = so.Setting(Fraction(1), '1"', "project value", "this project's value", "overhang")
+    item = _edge_drawn(4, '4"', [_printed(14)], overhang=entered)
+    assert "job's 1\" front overhang" in item["why"] and "page 14" not in item["why"]
+
+
 def test_the_overhang_is_passed_to_the_rule_only_when_entered() -> None:
     rules_md = (
         "| Setting | In force | Where it comes from | Used by |\n|---|---|---|---|\n"
@@ -602,3 +737,30 @@ def test_a_corner_drawn_as_one_chord_is_not_a_tick_with_a_margin() -> None:
     frame = so._Frame.of([((10.0, 0.0), (10.0, 20.0)), ((13.0, -3.0), (9.94, 0.06))], "bottom")
     assert so._crossed(frame, 10.0, 0.0)
     assert not so._crossed(frame, 10.0, 0.0, so._SAME_PT)
+
+
+def test_printed_overhangs_reads_a_vanity_sheet_of_the_same_item() -> None:
+    vanity = _vanity(11, depth=21)
+    top = _top(_plan(18, width=42, depth=21), tags=frozenset({"XX-214"}))
+    box = (0.0, 0.0, 2000.0, 2000.0)
+    drawing = so.Drawing(FILE, 11, box, tuple(vanity.labels), PPI, "SINK")
+    plans = so.plans_on(vanity.labels, vanity.lines, box, PPI)
+    pages = {
+        (FILE, 11): {"phrases": [{"text": "XX-214"}]},
+        (FILE, 18): {"phrases": [{"text": "XX-214"}]},
+    }
+    (found,) = ss.printed_overhangs(
+        [(drawing, plans, None)], lambda _f, _p: vanity.lines, pages, [top]
+    )
+    assert (found.page, found.value, found.depth, found.tags) == (
+        11,
+        Fraction(1, 2),
+        Fraction(21),
+        frozenset({"XX-214"}),
+    )
+    assert "page 11" in found.words() and '21" depth split into 20 1/2"' in found.words()
+    other = {**pages, (FILE, 11): {"phrases": [{"text": "XX-214 XX-215"}]}}
+    assert (
+        ss.printed_overhangs([(drawing, plans, None)], lambda _f, _p: vanity.lines, other, [top])
+        == []
+    )

@@ -61,6 +61,21 @@ offset under the rule's own value is under it whatever the overhang (a please-ch
 offset is "a job value is missing: the front overhang" (`job_value_rules`), with the overhang that
 would make it right.
 
+**The overhang the vendor's own drawing prints (`printed_overhangs`, Fix K, 2026-11-04).** With no
+job overhang entered (an entered one always wins), code may take the front overhang the vendor's
+own drawing of the same top prints, never a default. It reads it only on a vendor plan where
+`sink_offset` proved a sink cut-out and its front (the faucet hole behind it), from three of the
+drawing's own plain printed labels on one chain at right angles to the front: the whole (from
+behind the cut-out to in front of it) printing exactly the top's depth that the top's own plan
+proved, split into a back part (12" or more) and a front part (over 0 and at most
+`OVERHANG_MAX_IN`) that add up to it exactly, each drawn to its value. The split must stand on a
+solid line across the whole cut-out (the cabinets' front) in front of the cut-out, and the front
+part must end on a line across it (the top's front edge, solid or dashed). The drawing must print
+exactly the top's own item code (same round), and every such drawing of the item must agree on the
+value, else none is used. Then the rule's item says which page and which printed label it used;
+an offset that the rule plus that overhang does not give is a please-check (never red), one it
+gives is Right only where no architect drawing is paired.
+
 Pure code over the set pack (`dims.json`, the page map, the work list, the line work); no AI call.
 Findings in the chat finding shape (`created_by: "sink_sheets"`; the rule's items are
 `sink_offset`'s). Verification: `tests/review/assistant/test_sink_sheets.py` (made-up plans).
@@ -90,12 +105,14 @@ __all__ = [
     "END_PT",
     "FEATURES",
     "Measure",
+    "PrintedOverhang",
     "SheetTop",
     "SinkView",
     "add_to_answer",
     "check_pack",
     "edge_findings",
     "findings",
+    "printed_overhangs",
     "read_drawing",
     "read_pack",
     "same_top",
@@ -1457,21 +1474,214 @@ EDGE_PROVED: Final = (
 )
 
 
+#: The largest front overhang code reads from a vendor's chain (a top's lip, not a seat).
+OVERHANG_MAX_IN: Final = Fraction(2)
+#: The smallest back part of that chain (a cabinet's depth, not a splash or a reveal).
+CABINET_MIN_IN: Final = Fraction(12)
+#: How far from the cut-out (inches at the drawing's scale) the chain may stand.
+CHAIN_REACH_IN: Final = 30.0
+
+
+@dataclass(frozen=True, slots=True)
+class PrintedOverhang:
+    """A front overhang the vendor's own drawing prints for a top (`printed_overhangs`)."""
+
+    file: str
+    page: int
+    tags: frozenset[str]
+    round: int | None
+    value: Fraction
+    depth: Fraction
+    """The top's depth the chain's whole prints (= the top's own plan's)."""
+    cabinet: Fraction
+    label: Mapping[str, Any]
+    """The overhang's own printed label."""
+
+    @property
+    def text(self) -> str:
+        return " ".join(str(self.label.get("text") or "").split())
+
+    def words(self) -> str:
+        """Where it comes from, for the rule's item."""
+        return (
+            f"the vendor's own drawing on page {self.page} prints the top's front overhang "
+            f"{self.text} (its {format_inches(self.depth)} depth split into "
+            f"{format_inches(self.cabinet)} to the cabinets' front + {format_inches(self.value)})"
+        )
+
+
+def _chain_dims(
+    drawing: so.Drawing, front: so.Side
+) -> list[tuple[Mapping[str, Any], Fraction, float, float, float]]:
+    """The drawing's plain printed labels whose dimension line runs at right angles to the front:
+    (label, value, u, nearer v, farther v) in the cut-out's frame, each drawn to its value."""
+    out: list[tuple[Mapping[str, Any], Fraction, float, float, float]] = []
+    for label in drawing.labels:
+        line = label.get("dim_line")
+        value = _value(label)
+        if value is None or _label_doubt(label) is not None:
+            continue
+        if not (isinstance(line, Sequence) and len(line) == 2):
+            continue
+        try:
+            a = so._turn((float(line[0][0]), float(line[0][1])), front)
+            b = so._turn((float(line[1][0]), float(line[1][1])), front)
+        except (TypeError, ValueError, IndexError):
+            continue
+        if abs(a[0] - b[0]) > END_PT:
+            continue
+        span = abs(a[1] - b[1])
+        drawn = span / drawing.pt_per_in
+        if abs(drawn - float(value)) > max(OTHER_SHARE * float(value), float(DRAWN_IN)):
+            continue  # not drawn to its value: another line's label
+        out.append((label, value, (a[0] + b[0]) / 2, min(a[1], b[1]), max(a[1], b[1])))
+    return out
+
+
+def _overhangs_on(
+    drawing: so.Drawing, plan: so.SinkPlan, segments: Sequence[Segment], depth: Fraction
+) -> set[tuple[Fraction, Fraction, str]]:
+    """The front overhangs one proved sink plan's drawing prints for a top `depth` deep (see the
+    module): (overhang, cabinet part, the overhang label's id)."""
+    ppi = drawing.pt_per_in
+    if ppi <= 0:
+        return set()
+    x0, y0, x1, y1 = drawing.box
+    mine = [
+        (a, b)
+        for a, b in segments
+        if x0 - 2 <= a[0] <= x1 + 2
+        and y0 - 2 <= a[1] <= y1 + 2
+        and x0 - 2 <= b[0] <= x1 + 2
+        and y0 - 2 <= b[1] <= y1 + 2
+    ]
+    frame = so._Frame.of(mine, plan.front)
+    cu0, cv0, cu1, cv1 = so._turn_box(plan.box, plan.front)
+    reach = CHAIN_REACH_IN * ppi
+    dims = [d for d in _chain_dims(drawing, plan.front) if cu0 - reach <= d[2] <= cu1 + reach]
+    found: set[tuple[Fraction, Fraction, str]] = set()
+    for _whole, total, _uw, w0, w1 in dims:
+        if total != depth or not (w0 <= cv0 and w1 >= cv1):
+            continue
+        for front_label, lip, uf, f0, f1 in dims:
+            if not (0 < lip <= OVERHANG_MAX_IN) or abs(f1 - w1) > END_PT or f0 <= cv1 + END_PT:
+                continue
+            for _back, cabinet, ub, b0, b1 in dims:
+                if (
+                    cabinet < CABINET_MIN_IN
+                    or cabinet + lip != total
+                    or abs(ub - uf) > END_PT
+                    or abs(b0 - w0) > END_PT
+                    or abs(b1 - f0) > END_PT
+                ):
+                    continue
+                # The split stands on a solid line across the whole cut-out (the cabinets'
+                # front) and the front part ends on the top's edge (solid or dashed); no other
+                # solid line across the cut-out between them.
+                if not frame.lines_across(cu0, cu1, f0 - END_PT, f0 + END_PT):
+                    continue
+                if not frame.lines_across(cu0, cu1, f1 - END_PT, f1 + END_PT, GAPPED):
+                    continue
+                if frame.lines_across(cu0, cu1, f0 + END_PT, f1 - END_PT):
+                    continue
+                found.add((lip, cabinet, str(front_label.get("id"))))
+    return found
+
+
+def printed_overhangs(
+    drawings: Sequence[tuple[so.Drawing, Sequence[so.SinkPlan], int | None]],
+    segments: Callable[[str, int], Sequence[Segment] | None] | None,
+    pages: Mapping[tuple[str, int], Mapping[str, Any]],
+    tops: Sequence[SheetTop],
+) -> list[PrintedOverhang]:
+    """The front overhangs the vendor's drawings (`sink_offset`'s proved sink plans, with the
+    drawing's round) print for the tops' depths (see the module). Never raises."""
+    if segments is None:
+        return []
+    depths = {
+        m.value
+        for top in tops
+        if (m := top.values.get("top_depth")) is not None
+        and m.unsure is None
+        and "top_depth" not in top.conflicts
+    }
+    if not depths:
+        return []
+    items: dict[str, frozenset[str]] = {}
+    out: list[PrintedOverhang] = []
+    for drawing, plans, round_ in drawings:
+        try:
+            lines = segments(drawing.file, drawing.page)
+            if not lines or not plans:
+                continue
+            if drawing.file not in items:
+                items[drawing.file] = _set_items(drawing.file, pages)
+            tags = _item_tags(_texts(pages.get((drawing.file, drawing.page))), items[drawing.file])
+            if len(tags) != 1:
+                continue
+            by_id = {str(label.get("id")): label for label in drawing.labels}
+            for depth in sorted(depths):
+                found: set[tuple[Fraction, Fraction, str]] = set()
+                for plan in plans:
+                    found |= _overhangs_on(drawing, plan, lines, depth)
+                if len({lip for lip, _c, _id in found}) != 1:
+                    continue  # none, or two values on one drawing: none is used
+                lip, cabinet, label_id = min(found, key=lambda f: f[2])
+                out.append(
+                    PrintedOverhang(
+                        drawing.file,
+                        drawing.page,
+                        tags,
+                        round_,
+                        lip,
+                        depth,
+                        cabinet,
+                        by_id.get(label_id, {}),
+                    )
+                )
+        except Exception:  # noqa: BLE001 - a drawing code cannot read gives nothing
+            _log.exception("sink sheets: the overhang on p%s could not be read", drawing.page)
+    return out
+
+
+def _printed_for(top: SheetTop, printed: Sequence[PrintedOverhang]) -> PrintedOverhang | None:
+    """The one front overhang the vendor's own drawings of this top print: same file and round,
+    exactly the top's own item code, the top's proved depth; all of them agreeing."""
+    depth = top.values.get("top_depth")
+    if top.tag is None or depth is None or depth.unsure is not None or "top_depth" in top.conflicts:
+        return None
+    mine = [
+        p
+        for p in printed
+        if p.file == top.file
+        and p.tags == top.tags
+        and p.depth == depth.value
+        and (p.round is None or top.round is None or p.round == top.round)
+    ]
+    if len({p.value for p in mine}) != 1:
+        return None
+    # The top's own page first, else the nearest page.
+    return min(mine, key=lambda p: (abs(p.page - top.page), p.page))
+
+
 def edge_findings(
     tops: Sequence[SheetTop],
     setting: so.Setting,
     overhang: so.Setting | None = None,
     category: str = "countertop",
+    printed: Sequence[PrintedOverhang] = (),
 ) -> list[dict[str, Any]]:
     """GV's front offset rule on each top's plan whose front offset code proved from the top's
     front edge (see the module), as `sink_offset` items (`created_by: "sink_offset"`, the
-    `gv_standard` block, `edge: true`)."""
+    `gv_standard` block, `edge: true`). `printed`: the overhangs the vendor's own drawings print
+    (`printed_overhangs`), used only when no job overhang is entered."""
     out: list[dict[str, Any]] = []
     for top in tops:
         measure = top.values.get("front_offset")
         if measure is None or measure.unsure is not None or "front_offset" in top.conflicts:
             continue
-        made = _edge_item(top, measure, setting, overhang, category)
+        drawn = None if overhang is not None else _printed_for(top, printed)
+        made = _edge_item(top, measure, setting, overhang, category, drawn)
         if made is not None:
             out.append(made)
     return out
@@ -1483,6 +1693,7 @@ def _edge_item(
     setting: so.Setting,
     overhang: so.Setting | None,
     category: str,
+    drawn: PrintedOverhang | None = None,
 ) -> dict[str, Any] | None:
     printed, rule = measure.value, setting.value
     mine = format_inches(printed)
@@ -1548,6 +1759,8 @@ def _edge_item(
             "decide it"
         )
         return _edge_please_check(finding, why)
+    if drawn is not None and printed >= rule:
+        return _edge_drawn(finding, top, measure, setting, drawn, shown, cabinets, alone)
     if printed < rule:
         why = (
             f"the sink cut-out is {shown} from the top's front edge, so from the cabinets' front "
@@ -1579,6 +1792,47 @@ def _edge_item(
         "why": why,
     }
     return finding
+
+
+def _edge_drawn(
+    finding: dict[str, Any],
+    top: SheetTop,
+    measure: Measure,
+    setting: so.Setting,
+    drawn: PrintedOverhang,
+    shown: str,
+    cabinets: str,
+    alone: str,
+) -> dict[str, Any] | None:
+    """The rule with the overhang the vendor's own drawing prints (no job overhang entered): the
+    offset from the top's front edge must be the rule's value plus it. A match is Right only where
+    no architect drawing is paired; a difference is a please-check, never red (the overhang is
+    read from the vendor's drawing, not entered for the job)."""
+    required = setting.value + drawn.value
+    standard = finding["gv_standard"]
+    standard["overhang"] = format_inches(drawn.value)
+    standard["overhang_from"] = {"page": drawn.page, "label": drawn.text}
+    source = drawn.words()
+    should = (
+        f"{format_inches(required)} from the top's front edge: {cabinets}, plus the "
+        f"{format_inches(drawn.value)} front overhang ({source}; no job overhang is entered)"
+    )
+    if measure.value == required:
+        if not top.alone:
+            return None  # it may be right: the architect comparison speaks for the label
+        standard["value"] = format_inches(required)
+        finding["architect"] = standard["value"]
+        finding["status"] = "same"
+        finding["why"] = f"Matches {should}{alone}. The vendor prints {shown}; {EDGE_PROVED}."
+        return finding
+    from_cabinets = format_inches(measure.value - drawn.value)
+    why = (
+        f"the sink cut-out is {shown} from the top's front edge; {source}, so the cut-out is "
+        f"{from_cabinets} from the cabinets' front. {cabinets}, so with that overhang it should "
+        f"be {format_inches(required)} from the top's front edge. The overhang is read from the "
+        "vendor's drawing, not entered for the job, so code does not decide it"
+    )
+    return _edge_please_check(finding, why)
 
 
 def _edge_please_check(finding: dict[str, Any], why: str) -> dict[str, Any]:
