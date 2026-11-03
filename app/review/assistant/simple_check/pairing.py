@@ -109,6 +109,7 @@ __all__ = [
     "decide",
     "dense",
     "evidence_words",
+    "fixture_mirror",
     "item_tags_in",
     "markers_in",
     "mirror_proof",
@@ -235,8 +236,9 @@ class Facts:
     """The variant markers it prints (accessible: `ADA`, `ACCESSIBLE`; the set index's checked
     words too): printed on one side only, the two are different variants (`rank`)."""
     hand: frozenset[str] = frozenset()
-    """The opposite-hand markers it prints (`MIRROR`, `OPP. HAND`; the set index's checked words
-    too): printed on one side only, the pair is compared mirrored (`opposite_hand`)."""
+    """The opposite-hand markers it prints (`MIRROR IMAGE`, `OPP. HAND`; the set index's checked
+    words too, a bathroom mirror's word left out): printed on one side only, the pair is compared
+    mirrored (`opposite_hand`)."""
     index_title: str | None = None
     """The item title the set index read on its page, as printed (checked printed by code:
     `set_index.verify`): "PRIMARY EN SUITE VANITY - TYPE 1". Two pages naming the same item,
@@ -728,9 +730,21 @@ def dense(candidate: Sequence[object], matched: int) -> bool:
 #: words such as `HC` or `REV` are read there, where the model says what they mean). `HC` and `REV`
 #: alone are never read here: hollow core, revision.
 _ACCESSIBLE: Final = re.compile(r"\b(ADA|ACCESSIBLE|HANDICAP(?:PED)?)\b(?![-_.]?\d)")
+#: A note that the drawing is drawn the other way round. The word MIRROR alone is the bathroom
+#: mirror on the wall ("MIRROR", "LED MIRROR", "MIRROR ABOVE", "X-123 (MIRROR)", a furniture tag's
+#: name), never a hand: it counts only as MIRRORED, MIRROR IMAGE, MIRROR OF, MIRROR HAND or
+#: MIRROR UNIT(S), or closing a unit or type's name or a view's kind ("UNIT B (MIRROR)", "TYPE 2 -
+#: MIRROR", "ELEVATION (MIRROR)"). The name is a letter or carries a digit ("TYPE OF MIRROR" is a
+#: mirror), and MIRROR must end the text or its brackets ("TYPE 2 MIRROR ABOVE" is a mirror).
+_NAME: Final = r"(?:[A-Z]{1,2}[-.]?\d{1,3}[A-Z]?|\d{1,3}[A-Z]{0,2}|[A-Z])"
 _HAND: Final = re.compile(
-    r"\b(MIRROR(?:ED)?|OPP(?:OSITE|\.)?\s*HAND(?:ED)?|REVERSED?(?:\s+HAND)?|REVERSE)\b"
+    r"\b(MIRRORED|MIRROR(?:\s*-\s*|\s+)(?:IMAGE|OF|HAND(?:ED)?|UNITS?)"
+    r"|OPP(?:OSITE|\.)?\s*HAND(?:ED)?|REVERSED?(?:\s+HAND)?|REVERSE)\b"
+    rf"|(?:\b(?:UNIT|TYPE)\s*[-#.]?\s*{_NAME}(?:\s*[-(]\s*|\s+)"
+    r"|\b(?:ELEVATION|ELEV\.|PLAN|VIEW|SECTION|LAYOUT)\s*[-(]\s*)(MIRROR)(?=\s*\)|$)"
 )
+#: The word for the mirror itself (`fixture_mirror`).
+_MIRROR_WORD: Final = re.compile(r"\bMIRRORS?\b")
 
 
 def markers_in(texts: Iterable[str]) -> tuple[frozenset[str], frozenset[str]]:
@@ -740,8 +754,18 @@ def markers_in(texts: Iterable[str]) -> tuple[frozenset[str], frozenset[str]]:
     for text in texts:
         upper = " ".join(dashes_to_hyphen(str(text or "")).upper().split())
         variant.update(m.group(1) for m in _ACCESSIBLE.finditer(upper))
-        hand.update(" ".join(m.group(1).split()) for m in _HAND.finditer(upper))
+        hand.update(
+            " ".join(next(g for g in m.groups() if g).split()) for m in _HAND.finditer(upper)
+        )
     return frozenset(variant), frozenset(hand)
+
+
+def fixture_mirror(word: str) -> bool:
+    """Whether a printed word given as a hand (the set index's) names only the mirror on the wall
+    ("MIRROR", "LED MIRROR", "X-123 (MIRROR)"): it says MIRROR and none of code's hand notes
+    (`markers_in`). "MIRROR IMAGE", "MIRRORED", "REVERSE" and words with no MIRROR are kept."""
+    upper = " ".join(dashes_to_hyphen(str(word or "")).upper().split())
+    return bool(_MIRROR_WORD.search(upper)) and not markers_in([upper])[1]
 
 
 def opposite_hand(vendor: Facts, architect: Facts) -> str | None:
