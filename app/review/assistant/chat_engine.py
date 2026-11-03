@@ -1274,6 +1274,10 @@ class ChatEngine:
         #: could not be compared: review result S0), and its Not-compared rows that are not
         #: findings (an architect that gives no size), for the Not-compared PDF and workbook.
         self.incomplete_note: str | None = None
+        #: The vendor pages a roster full check found no architect drawing to compare with
+        #: (2026-11-03): they no longer make it incomplete, but its review result is never an
+        #: approval while there are any (`review_action.CheckState.no_drawing`).
+        self.no_drawing_pages = 0
         #: Code's own checks that crashed (`add_code_findings`), by name (#1768): each makes a
         #: full check "not for sending" (S0), never a quiet log line.
         self.code_checks_failed: list[str] = []
@@ -4059,6 +4063,7 @@ class ChatEngine:
                 self.settings.identity,
                 numbers=self._comment_numbers(findings),
                 incomplete=incomplete,
+                no_drawing=self.no_drawing_pages,
             )
             # The zero-click red/green proof drawing (#1581): only code-proved Wrongs clouded.
             return make_proof_file(

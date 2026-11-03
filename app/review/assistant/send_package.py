@@ -380,12 +380,14 @@ def check_state(
     page_map: Mapping[str, Any] | None,
     rounds: Any,
     comments: Collection[str] | None = None,
+    no_drawing: int = 0,
 ) -> CheckState:
     """What the review result needs beyond the findings: did the check finish (S0), the areas the
     architect draws with no vendor sheet (S1, `vendor_consistency.completeness`), and the previous
     comments still wrong (S3, the round-2 check). S3 counts the same list the letter shows: the
     round-1 comments (`comments`: this check's clouded finding ids) still wrong, one verdict per
-    item (a round-2 item already wrong in round 1 is its comment's, counted once)."""
+    item (a round-2 item already wrong in round 1 is its comment's, counted once). `no_drawing`:
+    the vendor pages with no architect drawing to compare with (never an approval, 2026-11-03)."""
     consistency = import_module("app.review.assistant.vendor_consistency")
     missing = sum(
         1
@@ -399,7 +401,13 @@ def check_state(
         if item.status == "still_wrong" and (comments is None or item.finding_id in comments)
     )
     closed = tuple(item.finding_id for item in items if item.status == "fixed")
-    return CheckState(incomplete=incomplete, missing_areas=missing, still_open=still, closed=closed)
+    return CheckState(
+        incomplete=incomplete,
+        missing_areas=missing,
+        still_open=still,
+        closed=closed,
+        no_drawing=max(0, int(no_drawing)),
+    )
 
 
 # ---- the context of one package ------------------------------------------------------------------
@@ -476,9 +484,11 @@ def package_context(
     numbers: Mapping[str, str] | None = None,
     incomplete: str | None = None,
     today: str | None = None,
+    no_drawing: int = 0,
 ) -> PackageContext:
     """The context of a full check's package: the page map's round and areas, the round-2 check
-    (worked out once here), the review result's state and the comment numbers. Raises
+    (worked out once here), the review result's state and the comment numbers. `no_drawing`: the
+    vendor pages with no architect drawing to compare with (`CheckState.no_drawing`). Raises
     `LookupError` when the chat has no copy of the set's PDFs."""
     from datetime import UTC, datetime
 
@@ -510,6 +520,7 @@ def package_context(
             page_map=page_map,
             rounds=rounds,
             comments={str(f.get("id")) for f in findings if proof_group(f) == "clouded"},
+            no_drawing=no_drawing,
         ),
         labels=comment_labels(findings, numbers),
         areas=_areas(page_map, name),

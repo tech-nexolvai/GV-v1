@@ -1273,6 +1273,7 @@ def cloud_drawing(
             identity=package_identity(session, package, tuple(row.products or ())),
             numbers=stored_numbers(session, package.id, message_id),
             incomplete=CheckState.from_dict(stored.get("state")).incomplete,
+            no_drawing=CheckState.from_dict(stored.get("state")).no_drawing,
             not_compared_out=(
                 (scratch[list_ids[0]], scratch[list_ids[1]]) if isinstance(set_gaps, list) else None
             ),

@@ -500,7 +500,12 @@ class _Roster:
     """Every call of a roster full check, answered from its parameters, with what each saw."""
 
     def __init__(
-        self, advocate_pick: str = "D2", *, fenced: bool = False, unpaired: int | None = None
+        self,
+        advocate_pick: str = "D2",
+        *,
+        fenced: bool = False,
+        unpaired: int | None = None,
+        unpaired_note: str = "no architect drawing in the set",
     ) -> None:
         self.lock = threading.Lock()
         self.calls: dict[str, int] = {}
@@ -508,8 +513,9 @@ class _Roster:
         self.advocate_pick = advocate_pick
         #: Every JSON answer wrapped as a route without structured outputs sends it (#1811).
         self.fenced = fenced
-        #: A page its numbers helper records as having no architect drawing to compare.
+        #: A page its numbers helper records as not comparable, with this note.
         self.unpaired = unpaired
+        self.unpaired_note = unpaired_note
 
     def _json(self, value: object) -> str:
         body = json.dumps(value)
@@ -587,7 +593,7 @@ class _Roster:
                 if p != self.unpaired
             ]
             covered = {"pages": [
-                {"page": p, "status": "not_comparable", "note": "no architect drawing in the set"}
+                {"page": p, "status": "not_comparable", "note": self.unpaired_note}
                 if p == self.unpaired else {"page": p, "status": "different"}
                 for p in pages
             ]}  # fmt: skip
@@ -1571,8 +1577,11 @@ def test_answers_in_a_code_block_give_the_same_check(
 def test_a_vendor_page_not_compared_is_never_send_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A page its helper and every pass after it left unfinished (not reached) is never "send it".
+    (A page they all judged not comparable had nothing to compare: done, 2026-11-03.)"""
     _clean_ink(monkeypatch)
-    outcome = _roster(tmp_path, _Roster(unpaired=3)).run()
+    script = _Roster(unpaired=3, unpaired_note="not reached within the fixed price")
+    outcome = _roster(tmp_path, script).run()
     assert "send the cloud drawing" not in outcome.text
     assert "send the wrong items" not in outcome.text
     assert full_check_roster.NOT_SENDABLE_NEXT in outcome.text
@@ -1933,17 +1942,21 @@ def test_a_vendor_only_page_its_helper_checked_is_done_not_sent_on(
                 assert "page 3" not in brief.split("\n", 1)[0]
 
 
-def test_a_combined_sheet_page_not_compared_is_still_a_page_left(
+def test_a_combined_sheet_page_judged_not_comparable_is_nothing_to_compare_not_own_checked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The architect's drawing is in the page's area: a helper's "not comparable" is not the
-    vendor-only case, and the page stays not compared (as before)."""
+    vendor-only case (never "checked within the vendor's own drawings"). Its helper and the
+    passes after the lead all judged it not comparable: it had nothing to compare (2026-11-03,
+    Anant: "count 'nothing to compare' as done"), so it no longer leaves the check incomplete."""
     _clean_ink(monkeypatch)
     harness = _roster(tmp_path, _Roster(unpaired=3))
     outcome = harness.run()
-    assert "Check incomplete: 1 vendor page was not compared (p3)" in outcome.text
+    assert "Check incomplete" not in outcome.text
+    assert "1 had nothing to compare (no sizes to compare" in outcome.text
     note = next(e for e in harness.engine.book.coverage_map()["pages"] if e["page"] == 3)["note"]
     assert not str(note or "").startswith("Checked within the vendor's own drawings")
+    assert "nothing to compare: confirmed by" in str(note)
 
 
 def test_a_continue_keeps_a_vendor_only_page_its_earlier_answer_checked(

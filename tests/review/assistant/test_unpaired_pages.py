@@ -213,19 +213,27 @@ def test_an_unpaired_page_is_not_compared_from_the_start_and_never_sent_on(
     rows = [g for g in engine.extra_gaps if g["page"] == 5]
     assert len(rows) == 1 and "upload it" in rows[0]["needs"]
     assert not internal(rows[0]["what"])
-    # Never sendable: the page was not compared with the architect, said apart.
-    assert "1 vendor page has no architect drawing to compare with (p5)" in outcome.text
+    # 2026-11-03 (Anant: "count 'nothing to compare' as done"): no architect drawing of it in the
+    # upload is nothing to compare, not unfinished work: the check is not incomplete for it...
+    assert "Check incomplete" not in outcome.text
+    assert full_check_roster.NOT_SENDABLE_NEXT not in outcome.text
+    # ...but never approved unseen: the review result knows the page had no architect drawing.
+    package = next(b for b in outcome.blocks if b["type"] == "package")["package"]
+    assert package["state"]["incomplete"] is None
+    assert package["state"]["no_drawing"] == 1
     # Continue is never offered to compare it again.
     resume = [b for b in outcome.blocks if b["type"] == "resume"]
     assert all("page 5" not in b["resume"]["redo"] for b in resume)
     assert "Not finished" not in outcome.text or "page 5 " not in outcome.text
     # A minority unpaired: no first-line warning.
     assert "vendor pages have an architect drawing in this upload" not in outcome.text
-    # The first line says the one true reason it was not compared (never a list of maybes).
+    # The first line counts it honestly, apart from the pages left (there are none).
     first = next(line for line in outcome.text.splitlines() if line.startswith("Checked "))
     assert first.endswith(
-        "3 pages were not compared (title, divider or skipped pages; no drawing to compare with)."
+        "; 1 had nothing to compare (no architect drawing: 1), listed under Not compared; 2 were "
+        "title, divider or skipped pages."
     ), first
+    assert "not compared (" not in first
 
 
 TAG_WHY = (
@@ -279,7 +287,10 @@ def test_most_pages_unpaired_are_said_first_and_the_check_still_runs(
         assert not set(pages) & {3, 4, 5}, seen
     coverage = _coverage(outcome)
     assert all(coverage[p]["status"] == "not_comparable" for p in (3, 4, 5))
-    assert "Check incomplete" in outcome.text
+    # 2026-11-03: the advice stays first, but it no longer blocks: nothing is left to finish.
+    assert "Check incomplete" not in outcome.text
+    assert "3 had nothing to compare (no architect drawing: 3)" in outcome.text
+    assert not [b for b in outcome.blocks if b["type"] == "resume"]
 
 
 def test_a_page_the_matcher_could_not_answer_is_asked_again_on_continue(
@@ -295,6 +306,11 @@ def test_a_page_the_matcher_could_not_answer_is_asked_again_on_continue(
     assert all(5 not in pages for pages in (*seen["close"], *seen["lead"]))
     resume = [b for b in outcome.blocks if b["type"] == "resume"]
     assert resume and "5" in resume[0]["resume"]["redo"]
+    # Unfinished work, not "nothing to compare" (2026-11-03): the check stays incomplete.
+    assert (
+        "Check incomplete: 1 vendor page was not matched to the architect's drawings in time "
+        "(p5): Continue asks again. Not for sending until it is." in outcome.text
+    )
 
 
 # ---- the words: a vendor string's sum is never the architect's --------------------------------------
