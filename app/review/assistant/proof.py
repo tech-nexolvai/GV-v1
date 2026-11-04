@@ -1071,6 +1071,8 @@ def _flag_how(finding: Mapping[str, Any]) -> Literal["reading", "maths"] | None:
     maths = maths_result(finding) == "differs"
     if status != "different" and not (maths and status == "check"):
         return None  # a please-check counts only by the maths step (the page reviewer's strings)
+    if slot_barred(finding):
+        return None  # a slot answer code could not take to a red (`slot_maths`, decision B)
     if _reader_error(finding) or classification.internal(finding):
         return None
     if text_values.identifier(finding) or maths_kind(finding) == "identifier":
@@ -1098,6 +1100,15 @@ def _flag_how(finding: Mapping[str, Any]) -> Literal["reading", "maths"] | None:
         # size measured off the drawing (R2). The page's best guess is `flag_notes`'.
         return None
     return "maths"
+
+
+def slot_barred(finding: Mapping[str, Any]) -> list[str]:
+    """What bars a slot answer from red (`slot_maths.SlotOutcome.red_barred`): a value code did
+    not read itself, parts not proved to run end to end, an overall not proved to span them.
+    Empty for an answer with no slot record."""
+    record = finding.get("slot")
+    barred = record.get("red_barred") if isinstance(record, Mapping) else None
+    return [str(why) for why in barred] if isinstance(barred, list) else []
 
 
 def flag_checked(finding: Mapping[str, Any]) -> bool:

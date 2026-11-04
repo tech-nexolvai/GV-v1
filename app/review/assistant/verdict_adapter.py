@@ -416,8 +416,25 @@ def _differs(finding: Mapping[str, Any], vendor: Fact, reference: Fact) -> bool:
     return proof.says_differs(finding)
 
 
+def _slot_pair(finding: Mapping[str, Any]) -> Pair | None:
+    """The facts a slot answer's code already decided (`slot_maths`, Step 4): the AI named marks,
+    code read and compared them, and its record holds both facts and the pair. `None` for every
+    other answer (loaded only then, so an answer without a slot record reads exactly as before)."""
+    record = finding.get("slot")
+    if not isinstance(record, Mapping):
+        return None
+    from app.review.assistant.slot_maths import pair_of
+
+    found = pair_of(record)
+    return None if found is None else Pair(*found)
+
+
 def facts_of(finding: Mapping[str, Any]) -> Pair:
-    """The answer's two facts and whether they measure the same thing."""
+    """The answer's two facts and whether they measure the same thing (a slot answer's own, as
+    code decided them, when it has a slot record)."""
+    slotted = _slot_pair(finding)
+    if slotted is not None:
+        return slotted
     vendor = _maths_fact(finding, "vendor", "vendor") or _fact(finding, "vendor", "vendor")
     reference = (
         _maths_fact(finding, "architect", _reference_source(finding))

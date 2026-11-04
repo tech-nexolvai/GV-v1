@@ -644,10 +644,13 @@ def check(finding: Mapping[str, Any], rules_md: str | None = None) -> dict[str, 
 
 def _left_alone(finding: Mapping[str, Any]) -> bool:
     """A finding the maths leaves as it is: the reviewer decided it (the reviewer is its witness),
-    or code compared both printed values itself and found them the same (code's Right)."""
+    a slot answer (code already read its marks and did its maths), or code compared both printed
+    values itself and found them the same (code's Right)."""
     decision = finding.get("decision")
     if isinstance(decision, Mapping) and decision.get("decision"):
         return True
+    if isinstance(finding.get("slot"), Mapping):
+        return True  # a slot answer: code read its marks and did its maths (`slot_maths`)
     return finding.get("status") == "same" and finding.get("compared") is True
 
 
