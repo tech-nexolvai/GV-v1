@@ -85,6 +85,13 @@ __all__ = [
     "ChatResumeOut",
     "ChatStepBlock",
     "ChatStepOut",
+    "ChatStuckFindingOut",
+    "ChatStuckPageOut",
+    "ChatStuckReadingOut",
+    "ChatStuckReadingPageOut",
+    "ChatStuckReadingSideOut",
+    "ChatStuckReportOut",
+    "ChatStuckStageOut",
     "ChatSummaryOut",
     "ChatSummaryReviewOut",
     "ChatSupervisorOut",
@@ -2927,6 +2934,113 @@ class ChatVendorPagesOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     pages: list[ChatVendorPageOut] = Field(default_factory=list)
+
+
+StuckStage = Literal[
+    "reading",
+    "string_not_seen",
+    "pairing",
+    "same_span",
+    "no_architect_value",
+    "second_look",
+    "not_proved",
+    "rule",
+    "ai_only",
+    "other",
+]
+StuckGroup = Literal["wrong", "right", "likely_problem", "not_compared", "rule_note", "dismissed"]
+
+
+class ChatStuckFindingOut(BaseModel):
+    """One answer that is not red or green, and the step that stopped it (`stuck_report`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    page: int | None = None
+    group: StuckGroup
+    stage: StuckStage
+    reason: str = Field(description="Why, in one plain line.")
+    evidence: dict[str, object] = Field(
+        default_factory=dict, description="The finding's fields that decided the stage."
+    )
+    card: str | None = Field(
+        default=None, description="A copy: the id of the card the screen shows it on."
+    )
+
+
+class ChatStuckStageOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    stage: StuckStage
+    words: str
+    answers: int
+    cards: int = Field(description="The answers counted once per card, as the screen shows them.")
+    by_group: dict[str, int]
+
+
+class ChatStuckPageOut(BaseModel):
+    """A vendor page with no architect comparison: its answers come from its own checks only."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page: int
+    stage: Literal["pairing", "no_architect_drawing", "nothing_to_compare", "not_opened"]
+    reason: str
+    answers: int
+
+
+class ChatStuckReadingSideOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    read: int
+    printed: int
+    percent: int
+    not_read: dict[str, int] = Field(description="The unread numbers by reason, most first.")
+
+
+class ChatStuckReadingPageOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    page: int
+    file: str | None = None
+    read: int
+    printed: int
+    not_read: dict[str, int]
+
+
+class ChatStuckReadingOut(BaseModel):
+    """The set pack's reading coverage (`reading_coverage.json`), with the vendor's count on each
+    page that has a stuck answer."""
+
+    model_config = ConfigDict(frozen=True)
+
+    vendor: ChatStuckReadingSideOut | None = None
+    architect: ChatStuckReadingSideOut | None = None
+    pages: list[ChatStuckReadingPageOut] = Field(default_factory=list)
+
+
+class ChatStuckReportOut(BaseModel):
+    """`GET /chats/{chat_id}/stuck-report` (2026-11-04): where the chat's newest full check got
+    stuck. For every answer that is not red or green, the step that stopped it, worked out by code
+    from the answer's own fields ($0, no AI call); never a verdict's input."""
+
+    model_config = ConfigDict(frozen=True)
+
+    message_id: UUID
+    created_at: datetime
+    stored: bool = Field(
+        description="True: saved with the check when it ended. False: an older check, worked out "
+        "now from its stored findings."
+    )
+    answers: int = Field(description="The check's findings, one per id.")
+    merged: int = Field(description="Repeated blocks of one finding id, merged into one answer.")
+    groups: dict[str, int] = Field(description="The answers by the result screen's group.")
+    stuck: int = Field(description="The answers that are not red, green or marked fine.")
+    stages: list[ChatStuckStageOut]
+    findings: list[ChatStuckFindingOut]
+    pages: list[ChatStuckPageOut]
+    reading: ChatStuckReadingOut | None = None
 
 
 class ChatFullCheckPlanOut(BaseModel):

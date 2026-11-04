@@ -7571,6 +7571,365 @@
         ],
         "type": "string"
       },
+      "ChatStuckFindingOut": {
+        "description": "One answer that is not red or green, and the step that stopped it (`stuck_report`).",
+        "properties": {
+          "card": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A copy: the id of the card the screen shows it on.",
+            "title": "Card"
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "description": "The finding's fields that decided the stage.",
+            "title": "Evidence",
+            "type": "object"
+          },
+          "group": {
+            "enum": [
+              "wrong",
+              "right",
+              "likely_problem",
+              "not_compared",
+              "rule_note",
+              "dismissed"
+            ],
+            "title": "Group",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "reason": {
+            "description": "Why, in one plain line.",
+            "title": "Reason",
+            "type": "string"
+          },
+          "stage": {
+            "enum": [
+              "reading",
+              "string_not_seen",
+              "pairing",
+              "same_span",
+              "no_architect_value",
+              "second_look",
+              "not_proved",
+              "rule",
+              "ai_only",
+              "other"
+            ],
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "group",
+          "stage",
+          "reason"
+        ],
+        "title": "ChatStuckFindingOut",
+        "type": "object"
+      },
+      "ChatStuckPageOut": {
+        "description": "A vendor page with no architect comparison: its answers come from its own checks only.",
+        "properties": {
+          "answers": {
+            "title": "Answers",
+            "type": "integer"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "stage": {
+            "enum": [
+              "pairing",
+              "no_architect_drawing",
+              "nothing_to_compare",
+              "not_opened"
+            ],
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page",
+          "stage",
+          "reason",
+          "answers"
+        ],
+        "title": "ChatStuckPageOut",
+        "type": "object"
+      },
+      "ChatStuckReadingOut": {
+        "description": "The set pack's reading coverage (`reading_coverage.json`), with the vendor's count on each\npage that has a stuck answer.",
+        "properties": {
+          "architect": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatStuckReadingSideOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatStuckReadingPageOut"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatStuckReadingSideOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "ChatStuckReadingOut",
+        "type": "object"
+      },
+      "ChatStuckReadingPageOut": {
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "not_read": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Not Read",
+            "type": "object"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "printed": {
+            "title": "Printed",
+            "type": "integer"
+          },
+          "read": {
+            "title": "Read",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "page",
+          "read",
+          "printed",
+          "not_read"
+        ],
+        "title": "ChatStuckReadingPageOut",
+        "type": "object"
+      },
+      "ChatStuckReadingSideOut": {
+        "properties": {
+          "not_read": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "The unread numbers by reason, most first.",
+            "title": "Not Read",
+            "type": "object"
+          },
+          "percent": {
+            "title": "Percent",
+            "type": "integer"
+          },
+          "printed": {
+            "title": "Printed",
+            "type": "integer"
+          },
+          "read": {
+            "title": "Read",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "read",
+          "printed",
+          "percent",
+          "not_read"
+        ],
+        "title": "ChatStuckReadingSideOut",
+        "type": "object"
+      },
+      "ChatStuckReportOut": {
+        "description": "`GET /chats/{chat_id}/stuck-report` (2026-11-04): where the chat's newest full check got\nstuck. For every answer that is not red or green, the step that stopped it, worked out by code\nfrom the answer's own fields ($0, no AI call); never a verdict's input.",
+        "properties": {
+          "answers": {
+            "description": "The check's findings, one per id.",
+            "title": "Answers",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/ChatStuckFindingOut"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "groups": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "The answers by the result screen's group.",
+            "title": "Groups",
+            "type": "object"
+          },
+          "merged": {
+            "description": "Repeated blocks of one finding id, merged into one answer.",
+            "title": "Merged",
+            "type": "integer"
+          },
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatStuckPageOut"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "reading": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatStuckReadingOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatStuckStageOut"
+            },
+            "title": "Stages",
+            "type": "array"
+          },
+          "stored": {
+            "description": "True: saved with the check when it ended. False: an older check, worked out now from its stored findings.",
+            "title": "Stored",
+            "type": "boolean"
+          },
+          "stuck": {
+            "description": "The answers that are not red, green or marked fine.",
+            "title": "Stuck",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "message_id",
+          "created_at",
+          "stored",
+          "answers",
+          "merged",
+          "groups",
+          "stuck",
+          "stages",
+          "findings",
+          "pages"
+        ],
+        "title": "ChatStuckReportOut",
+        "type": "object"
+      },
+      "ChatStuckStageOut": {
+        "properties": {
+          "answers": {
+            "title": "Answers",
+            "type": "integer"
+          },
+          "by_group": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Group",
+            "type": "object"
+          },
+          "cards": {
+            "description": "The answers counted once per card, as the screen shows them.",
+            "title": "Cards",
+            "type": "integer"
+          },
+          "stage": {
+            "enum": [
+              "reading",
+              "string_not_seen",
+              "pairing",
+              "same_span",
+              "no_architect_value",
+              "second_look",
+              "not_proved",
+              "rule",
+              "ai_only",
+              "other"
+            ],
+            "title": "Stage",
+            "type": "string"
+          },
+          "words": {
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage",
+          "words",
+          "answers",
+          "cards",
+          "by_group"
+        ],
+        "title": "ChatStuckStageOut",
+        "type": "object"
+      },
       "ChatSummaryOut": {
         "properties": {
           "created_at": {
@@ -13643,6 +14002,53 @@
           }
         },
         "summary": "A picture the assistant looked at",
+        "tags": [
+          "assistant chats"
+        ]
+      }
+    },
+    "/api/v1/chats/{chat_id}/stuck-report": {
+      "get": {
+        "description": "For every answer of the chat's newest full check that is not red or green, the step that\nstopped it (`stuck_report`), with the totals and the set pack's reading coverage: as the check\nstored it when it ended, else (a check stored before 2026-11-04) worked out now from its stored\nfindings, as code left them (no reviewer decision). Read only, $0: no AI call.",
+        "operationId": "stuck_report_of_api_v1_chats__chat_id__stuck_report_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Chat Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatStuckReportOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such chat (or no access), or no full check in it yet."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Where the newest full check got stuck: each open answer's blocking step (by code)",
         "tags": [
           "assistant chats"
         ]
