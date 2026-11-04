@@ -13,6 +13,9 @@ numbered labels (the set pack's `dims.json`, `dim_index.DimLabels`) and says whe
   names one by its id, `read_number`);
 - **none**: no label of that side prints it (or the page's labels are not known).
 
+A sheet number, revision number, callout, tag or date (`text_values`) is never looked up here: a
+dimension label printing the same number is not its spot (2026-11-04).
+
 `relocate` gives a seeded finding the one spot it found (its box and `dims` entry, so code's
 checks read it there) and records what it searched in `spot_search`, which the classification
 uses to say why a value still has no spot ("the value has no spot on the drawing").
@@ -26,10 +29,12 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
+from app.review.assistant import text_values
 from app.review.assistant.finding_checks import claim_value, to_inches
 from units.normalise import plain_marks
 
 __all__ = [
+    "IDENTIFIER_WHY",
     "SPOT_SEARCH",
     "VENDOR_SEARCH",
     "AreaSearch",
@@ -46,6 +51,8 @@ type Found = Literal["one", "several", "none"]
 
 #: The finding field that records what code searched for each side's spot.
 SPOT_SEARCH: Final = "spot_search"
+#: Why an identifier is never looked up among the page's dimension labels (`text_values`).
+IDENTIFIER_WHY: Final = "a sheet number, revision, callout, tag or date is text, not a size label"
 #: Millimetres with the inches beside them in brackets: `940 [37]`.
 _DUAL: Final = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(?:mm\.?)?\s*[\[(]\s*([^\])]+?)\s*[\])]\s*$")
 #: Each side's box field on a finding.
@@ -192,6 +199,11 @@ def relocate(
     dims: dict[str, Any] = dict(out.get("dims") or {})
     for side in sides:
         if out.get(_BOX[side]) or dims.get(side):
+            continue
+        if text_values.identifier(out):
+            # A sheet number, revision number, callout, tag or date is never a size: a dimension
+            # label that prints the same number somewhere on the page is not its spot (2026-11-04).
+            search[side] = Located("none", why=IDENTIFIER_WHY).as_dict()
             continue
         found = locate(labels, side, out.get(side), halves)
         search[side] = found.as_dict()

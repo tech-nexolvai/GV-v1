@@ -55,7 +55,7 @@ from time import monotonic
 from types import ModuleType
 from typing import Any, Final
 
-from app.review.assistant import check_record, round_reference, witness
+from app.review.assistant import check_record, round_reference, text_values, witness
 from app.review.assistant.chat_findings import finding_categories, live_findings, page_ranges
 from app.review.assistant.classification import READER_ERROR, READER_ERROR_WORDS
 from app.review.assistant.dim_findings import label_checks
@@ -484,7 +484,9 @@ def apply_checks(
     # Set for a "same" item at the finish (`mark_compared`): not seen is not right.
     out.setdefault("compared", None)
     out.setdefault("not_compared_why", None)
-    return judged(out)
+    # A sheet number, revision number, callout, tag or date is text (2026-11-04): no inches and no
+    # printed-size match (a lone digit found in its box proves nothing about it).
+    return judged(text_values.as_text(out))
 
 
 def _parts_sum(finding: Mapping[str, Any]) -> str | None:
@@ -807,7 +809,11 @@ def code_read_both(finding: Mapping[str, Any]) -> bool:
     code, however blurry the AI's own view was (a cabinet template: 41 Right items stayed Not
     compared because the architect's sheet was viewed whole at 139 dpi). Nothing else is
     loosened: the page pair must still be compared, and a value read only from drawn ink or a
-    typed value with a box never counts here."""
+    typed value with a box never counts here. A sheet number, revision number, callout, tag or
+    date counts only when code read the same text at both spots, each in its place
+    (`text_values.read_both`): never by its value read as inches."""
+    if text_values.identifier(finding):
+        return text_values.read_both(finding)
     checks = finding.get("checks") or {}
     if checks.get("printed_vendor") != "match" or checks.get("printed_architect") != "match":
         return False

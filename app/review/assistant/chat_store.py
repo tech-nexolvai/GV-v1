@@ -59,6 +59,7 @@ from app.review.assistant.code_version import code_version
 from app.review.assistant.impact import blocks_with_impacts
 from app.review.assistant.review_action import CheckState, review_action
 from app.review.assistant.string_spots import LabelsOf, blocks_with_spots
+from app.review.assistant.text_values import blocks_as_text
 
 __all__ = [
     "TITLE_CHARS",
@@ -521,8 +522,11 @@ def _assistant_payload(
     labels_of: LabelsOf | None = None,
 ) -> dict[str, Any]:
     """What `message_out` validates for an answer."""
+    # An identifier (a sheet or revision number, a callout, a tag, a date) is read as text, also in
+    # an answer stored before 2026-11-04 (`text_values.as_text`): never in inches on the screen.
     blocks = blocks_with_impacts(
-        with_decisions(with_corrections(message.blocks, corrections), decisions) or []
+        with_decisions(with_corrections(blocks_as_text(message.blocks), corrections), decisions)
+        or []
     )
     if labels_of is not None:
         # The drawer's "vendor's own numbers": each printed number's own spot (read only).

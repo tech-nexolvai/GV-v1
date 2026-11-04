@@ -61,6 +61,7 @@ from app.review.assistant import (
     rule_notes,
     same_item_pages,
     spot_guard,
+    text_values,
     witness,
 )
 from app.review.assistant import full_check_advocate as advocate
@@ -493,6 +494,8 @@ def _proved_but_reading(finding: Mapping[str, Any]) -> bool:
     """`code_proved` before the reading rule (`reading_routes`)."""
     if classification.internal(finding):
         return False  # read by the AI only, never at its spot (#1652)
+    if text_values.identifier(finding):
+        return False  # a sheet number, revision, callout, tag or date: text, never a size red
     if classification.same_item_conflict(finding) is not None:
         return False  # its copies pair the vendor's number with different architect numbers
     if round_only(finding):
