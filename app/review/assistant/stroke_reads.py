@@ -938,7 +938,7 @@ class _Routed:
             self._claude if output.is_claude_model(str(request.get("modelId"))) else self._bedrock
         )
         if provider is None:
-            raise ValueError("no Claude client is configured for a Claude reader")
+            raise ValueError("no client is configured for the Anthropic reader")
         answer: Mapping[str, Any] = provider.for_current_thread().converse(**request)
         return answer
 
@@ -1078,7 +1078,7 @@ def reader_from_environment(
     readers = named if len(named) == 2 else DEFAULT_READERS
     claude = [model for model in readers if is_claude_model(model)]
     if len(claude) > 1:
-        raise ValueError("two Claude readers are one maker: name a reader of another maker")
+        raise ValueError("two Anthropic readers are one maker: name a reader of another maker")
     rates = rates_from_environment()
     if rates is None:
         raise ValueError("stroke reads need the stated model prices (GV_MODEL_RATES_FILE)")
