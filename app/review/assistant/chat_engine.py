@@ -4643,7 +4643,7 @@ class ChatEngine:
         if job.reference:
             looked = "; ".join(f"{name} p.{number}" for name, number in job.reference)
             lines.append(f"LOOK AT, to compare with (another helper or file has them): {looked}.")
-        lines += pair_lines(job.pairs, job.unpaired, UPLOADS, dict(job.sheets))
+        lines += pair_lines(job.pairs, job.unpaired, UPLOADS, dict(job.sheets), dict(job.guesses))
         if rules:
             lines.append(
                 f"GV's rules for {products} (summary; all of them in {SKILLS}/rules.md):\n{rules}"
@@ -4918,13 +4918,15 @@ class ChatEngine:
         cross = self._cross
         if cross is None:
             return finding
-        return reference_page.stamp(
+        stamped = reference_page.stamp(
             finding,
             cross.pairs,
             references=cross.references,
             unpaired=cross.unpaired,
             vendor_file=cross.file,
         )
+        # Flag mode: an item compared on a best-guess pair says so (`CrossPairs.guesses`).
+        return reference_page.mark_guess(stamped, getattr(cross, "guesses", None))
 
     def scoped_jobs(
         self, page_map: Mapping[str, Any] | None, *, pairs: bool = True

@@ -52,8 +52,9 @@ from pathlib import Path
 from typing import Any, Final
 
 from app.review.assistant import dim_pairs, title_block, view_scales
-from app.review.assistant.full_check_plan import DIVIDER_NOTE, read_page_map
+from app.review.assistant.full_check_plan import DIVIDER_NOTE, flag_mode, read_page_map
 from app.review.assistant.product_scope import named_products
+from app.review.assistant.reference_page import guess_words
 from app.review.assistant.sheet_revisions import exact_copies, older_copies
 from app.review.assistant.simple_check import pairing as pairing_module
 from app.review.assistant.simple_check import projects as projects_module
@@ -514,12 +515,17 @@ def _main_file(page_map: Mapping[str, Any], main_file: str | None) -> str | None
 
 
 def build_worklist(
-    folder: Path, main_file: str | None = None, *, memo: RankMemo | None = None
+    folder: Path,
+    main_file: str | None = None,
+    *,
+    memo: RankMemo | None = None,
+    flag: bool | None = None,
 ) -> WorkList:
     """The work list of the set pack in `folder` (its page map with the plan check's answers and
     code's assumptions laid over it, its labels, scales and notes). Raises `FileNotFoundError` when
     the pack has no page map yet. `memo`: code's ranking across the uploads kept between builds of
-    one unchanged pack (`RankMemo`)."""
+    one unchanged pack (`RankMemo`). `flag`: flag mode's best guesses (`_best_guesses`); `None`:
+    the setting (`full_check_plan.flag_mode`)."""
     page_map = read_page_map(folder, assume=True, main_file=main_file)
     if page_map is None:
         raise FileNotFoundError(f"no page map in {folder}")
@@ -537,6 +543,7 @@ def build_worklist(
         main_file=main_file,
         combined=combined_files(page_map, annotations),
         memo=memo,
+        flag=flag_mode() if flag is None else flag,
     )
 
 
@@ -597,6 +604,7 @@ def worklist_from(
     health: Any = None,
     set_index: Any = None,
     texts: Mapping[tuple[str, int], str] | None = None,
+    flag: bool = False,
 ) -> WorkList:
     """The work list from the pack's documents (pure: `build_worklist` reads them). `annotations`
     (the pack's `annotations.json`): GV's typed item titles are read from it, only where one is
@@ -611,7 +619,8 @@ def worklist_from(
     architect item is a candidate (no project is known). `texts`: each page's printed text
     (`vendor_consistency.page_texts`): a vendor page that is an older copy of a sheet printed
     again later (an earlier revision, `sheet_revisions`) is skipped, said so; without it every
-    page is checked."""
+    page is checked. `flag` (flag mode, Anant 2026-11-04): a drawing whose pairing is unsure is
+    paired with its best guess (`_best_guesses`)."""
     file = _main_file(page_map, main_file)
     if file is None:
         return WorkList(file="", items=(), skipped=(), pages=())
@@ -1079,6 +1088,9 @@ def worklist_from(
         _swap_audit(across_pairs, marked, by_item, across_context)
         if _item_sheets(across_pairs, marked, across_context):
             _swap_audit(across_pairs, marked, by_item, across_context)
+        if flag:
+            # Last: a guess never lends its page to the vendor's other sheets nor joins the audit.
+            _best_guesses(across_pairs, marked, by_item)
     for half in vendor_halves:
         decided = across_pairs.get(half.ref)
         if decided is not None and decided.chosen and half.from_upload:
@@ -1203,6 +1215,7 @@ def worklist_from(
             views_disagree=(
                 across_pairs[half.ref].views_disagree if half.ref in across_pairs else None
             ),
+            pairing_guess=across_pairs[half.ref].guess if half.ref in across_pairs else False,
         )
         if alone_drawing:
             alone.append(made)
@@ -2852,6 +2865,70 @@ def _item_sheets(
             )
             took = True
     return took
+
+
+def _best_guesses(
+    pairs: dict[str, AcrossPair],
+    facts_of: Callable[[Drawing], pairing_module.Facts],
+    by_item: Mapping[str, AcrossCandidate],
+) -> None:
+    """Flag mode (Anant, 2026-11-04: "when not sure, the page is still compared and every flag
+    says 'best guess: architect page N'"): each vendor drawing left unpaired with a page named for
+    it is paired with that page as a best guess (`AcrossPair.guess`), compared whole:
+
+    - "pairing unsure": the first of `AcrossPair.unsure`, in its order (the AI page matcher's pick,
+      sure or not, else code's own; the page the architect's printed tag or the vendor's rooms
+      name before a page held against it);
+    - else the matcher's pick code rules out (another variant or section: code's rule-out never
+      blocks a flag; it is in the reason);
+    - else code's own clear pick.
+
+    Never a drawing code knows needs another drawing (`AcrossPair.needed`: the project is not in
+    the architect's file, the item is only a tag on a plan, its drawing prints no sizes), nor one
+    with no page named (the matcher and code found none, or the matcher has not answered yet:
+    Continue asks again). In place."""
+    for ref, pair in list(pairs.items()):
+        if pair.chosen or pair.needed:
+            continue
+        named = [
+            *pair.unsure,
+            *(pair.answer or ()),
+            *((pair.code_pick,) if pair.code_pick is not None else ()),
+        ]
+        offered = [c for c in dict.fromkeys(named) if c in by_item]
+        if not offered:
+            continue
+        pick = offered[0]
+        item = by_item[pick]
+        hand = pairing_module.opposite_hand(
+            facts_of(pair.vendor), _item_facts(item, facts_of, None)[0]
+        )
+        others = [f"architect page {by_item[c].page}" for c in offered if c != pick]
+        reason = pair.why.removeprefix(f"{pairing_module.UNPAIRED}: ")
+        if reason.startswith(f"{pairing_module.PAIRING_UNSURE}: ") and "?; " in reason:
+            # Its candidates are named apart; the rest is why code could not confirm it.
+            reason = reason.split("?; ", 1)[1]
+        why = (
+            f"{guess_words(item.page)} (not confirmed"
+            + (
+                f"; other candidate{'s' if len(others) > 1 else ''} {' and '.join(others)}"
+                if others
+                else ""
+            )
+            + f"): {reason}"
+            + (f"; {hand}: sizes are compared, positions from an end are not" if hand else "")
+        )
+        pairs[ref] = pair.model_copy(
+            update={
+                "chosen": (pick,),
+                "views": (),
+                "guess": True,
+                "unsure": tuple(offered),
+                "opposite_hand": hand,
+                "mirrored": False,
+                "why": why,
+            }
+        )
 
 
 def _swap_audit(

@@ -19,6 +19,9 @@ architect value on the vendor's page number in the vendor's file. On a set with 
 - `"pair"`: every (file, page) the item may be compared on (its pair, then its brand prototype
   drawings): `spot_guard` looks for an architect value on each of them.
 
+`mark_guess` then sets `finding["pairing_guess"]` (flag mode, Anant 2026-11-04) when that page is a
+best guess (`CrossPairs.guesses`): `{"page", "file", "words": "best guess: architect page N"}`.
+
 An item checked within the vendor's own drawings is never "outside": its boxes are on the vendor's
 own drawings by design. Nor is an item compared with the vendor's own earlier round, or one on
 another vendor file than the pairs' (an older round uploaded on its own): the pairing does not
@@ -38,10 +41,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 __all__ = [
+    "GUESS_KEY",
     "KEY",
     "Pairs",
     "allowed",
     "decided",
+    "guess_words",
+    "mark_guess",
     "outside_words",
     "stamp",
     "vendor_only",
@@ -50,6 +56,8 @@ __all__ = [
 
 #: The finding field.
 KEY: Final = "reference_page"
+#: The finding field of an item compared on a best-guess pair (flag mode, `mark_guess`).
+GUESS_KEY: Final = "pairing_guess"
 
 #: Vendor page -> the architect (file, page)s paired with it.
 type Pairs = Mapping[int, Sequence[tuple[str, int]]]
@@ -243,4 +251,30 @@ def stamp(
     # for pages ("A5", "p1009"), which are no page a person can find.
     record["why"] = f"No architect page is paired with vendor page {page}."
     out[KEY] = record
+    return out
+
+
+def guess_words(page: int) -> str:
+    """A best guess's words (flag mode), on a finding and in a pairing's reason."""
+    return f"best guess: architect page {page}"
+
+
+def mark_guess(finding: Mapping[str, Any], guesses: Pairs | None) -> dict[str, Any]:
+    """`finding` with its `pairing_guess` set from its stamped reference page (`stamp`): flag mode
+    (Anant, 2026-11-04) pairs a vendor page the pairing could not confirm with its best guess
+    (`full_check_plan.CrossPairs.guesses`), and every item compared on that architect page says
+    so, `{"page", "file", "words": "best guess: architect page N"}`, for the result builder (never
+    red). Cleared when its reference page is not a guess (any more): the vendor's own drawings,
+    GV's rule, a spot off its pair, or a pair that is confirmed now."""
+    out = dict(finding)
+    record = finding.get(KEY)
+    if not isinstance(record, Mapping):
+        return out  # a page the cross-file pairing does not decide: left as it is
+    page = vendor_page(finding)
+    file, number = record.get("file"), _int(record.get("page"))
+    guessed = {(str(f), int(n)) for f, n in (guesses or {}).get(page, ())} if page else set()
+    if file and number and not record.get("outside") and (str(file), number) in guessed:
+        out[GUESS_KEY] = {"page": number, "file": str(file), "words": guess_words(number)}
+    else:
+        out.pop(GUESS_KEY, None)
     return out

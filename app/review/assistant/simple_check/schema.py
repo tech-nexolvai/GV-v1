@@ -404,6 +404,9 @@ class WorkItem(_Frozen):
     paired_by: str | None = None
     """How code paired a vendor drawing of a separate file with its architect drawing (#1723);
     `None` for GV's combined sheets (the same page or GV's typed area)."""
+    pairing_guess: bool = False
+    """Flag mode (`AcrossPair.guess`): its architect drawings are a best guess, not a confirmed
+    pair; every finding compared on them says "best guess: architect page N"."""
 
     @property
     def vendor_refs(self) -> tuple[str, ...]:
@@ -533,7 +536,8 @@ class AcrossPair(_Frozen):
     """Not paired, but the AI page matcher names an architect item (sure or not) code could not
     confirm, or code's own clear pick the matcher did not name (`pairing.PAIRING_UNSURE`,
     `worklist._unsure`): the candidates in order. The drawing may be in the upload: never
-    "drawing needed"; a person confirms the page."""
+    "drawing needed"; a person confirms the page. In flag mode the first is paired as a best
+    guess (`guess`), and these stay the candidates."""
     mirrored: bool = False
     """Code proved the pair mirrored (`pairing.mirror_proof`: the vendor's run of widths reads
     backwards on the architect's drawing, never forwards): `opposite_hand` says so, and a
@@ -549,6 +553,10 @@ class AcrossPair(_Frozen):
     wrong_tag: WrongTag | None = None
     """The vendor's item number on this drawing does not fit the architect's item it names
     (`worklist._misleading_tag`): GV's please-check, and the number pairing went by instead."""
+    guess: bool = False
+    """Flag mode (Anant, 2026-11-04, `worklist._best_guesses`): `chosen` is a best guess, the
+    first of `unsure` (the AI page matcher's pick, sure or not, else code's own), not a pair code
+    and the matcher confirmed; it is compared, and every finding on it says so."""
 
 
 class WorkList(_Frozen):

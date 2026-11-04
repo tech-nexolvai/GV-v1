@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import threading
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -53,8 +54,10 @@ from app.review.assistant.product_scope import ProductScope, outside_unit
 from app.review.assistant.simple_check.pairing import PAIRING_UNSURE, UNPAIRED
 
 __all__ = [
+    "BEST_GUESS_LINE",
     "DRAWN_JOB_CAP_MICROS",
     "DRAWN_TOTAL_CAP_MICROS",
+    "FLAG_MODE_ENV",
     "MAX_JOB_PAGES",
     "MIN_JOB_PAGES",
     "NO_VENDOR_NOTE",
@@ -74,6 +77,7 @@ __all__ = [
     "HelperJob",
     "Reading",
     "drawn_job_cap",
+    "flag_mode",
     "mostly_unpaired",
     "no_vendor_pages",
     "own_check_pages",
@@ -153,6 +157,8 @@ class HelperJob:
     """Its pages no architect drawing was paired with across the uploads, and why (#1798)."""
     sheets: tuple[tuple[int, str], ...] = ()
     """Its pages paired by the sheet number both print (`CrossPairs.sheets`), with the number."""
+    guesses: tuple[tuple[int, tuple[tuple[str, int], ...]], ...] = ()
+    """Its pages paired with an architect page as a best guess (`CrossPairs.guesses`, flag mode)."""
 
     @property
     def description(self) -> str:
@@ -196,6 +202,11 @@ class CrossPairs:
     """The paired pages that are copies of the architect's sheet (the same sheet number and title,
     `worklist._sheet_pair`), with the number: a key plan with no size still has its printed words
     to compare, never "nothing to compare" (2026-11-04)."""
+    guesses: Mapping[int, tuple[tuple[str, int], ...]] = field(default_factory=dict)
+    """Flag mode (`flag_mode`): the paired pages' architect (file, page)s that are a best guess
+    (`schema.WorkItem.pairing_guess`: the AI page matcher's pick code could not confirm, or code's
+    own when the matcher named none), each also in `pairs`; every finding compared on one says
+    "best guess: architect page N" (`reference_page.mark_guess`)."""
 
     @classmethod
     def of(cls, work: Any) -> CrossPairs:
@@ -204,15 +215,25 @@ class CrossPairs:
         pairs: dict[int, list[tuple[str, int]]] = {}
         words: dict[int, str] = {}
         references: dict[int, list[tuple[str, int]]] = {}
+        guessed: dict[int, list[tuple[str, int]]] = {}
+        sure: set[tuple[int, str, int]] = set()
+        main = getattr(work, "file", None)
         for item in getattr(work, "items", ()):
             if item.paired_by is None:
                 continue
+            guess = bool(getattr(item, "pairing_guess", False))
+            if guess and item.vendor.file != main:
+                continue  # another vendor file's page N is another drawing: its guess is not ours
             page = item.vendor.own_page
             found = pairs.setdefault(page, [])
             for drawing in item.architect:
                 where = (drawing.file, drawing.own_page)
                 if where not in found:
                     found.append(where)
+                if guess:
+                    guessed.setdefault(page, []).append(where)
+                else:
+                    sure.add((page, *where))
             words.setdefault(page, item.paired_by)
             kept = references.setdefault(page, [])
             for drawing in getattr(item, "reference", ()):
@@ -220,7 +241,6 @@ class CrossPairs:
                 if where not in kept:
                     kept.append(where)
         unpaired: dict[int, str] = {}
-        main = getattr(work, "file", None)
         for skipped in getattr(work, "skipped", ()):
             if (
                 skipped.file == main
@@ -237,6 +257,12 @@ class CrossPairs:
             and pair.vendor.file == main
             and pair.vendor.own_page in pairs
         }
+        # A page another drawing of the same vendor page is surely paired with is no guess.
+        guesses = {
+            p: kept
+            for p, v in guessed.items()
+            if (kept := tuple(dict.fromkeys(w for w in v if (p, *w) not in sure)))
+        }
         return cls(
             {p: tuple(v) for p, v in pairs.items()},
             unpaired,
@@ -244,6 +270,7 @@ class CrossPairs:
             {p: tuple(v) for p, v in references.items() if v},
             str(main) if main else None,
             sheets,
+            guesses,
         )
 
 
@@ -666,6 +693,7 @@ def with_pairs(job: HelperJob, across: CrossPairs | None) -> HelperJob:
         pairs=tuple(paired_pages),
         unpaired=tuple(unpaired),
         sheets=tuple((page, across.sheets[page]) for page in job.pages if page in across.sheets),
+        guesses=tuple((page, across.guesses[page]) for page in job.pages if page in across.guesses),
     )
 
 
@@ -709,22 +737,45 @@ def pair_lines(
     unpaired: Sequence[tuple[int, str]],
     uploads: str,
     sheets: Mapping[int, str] | None = None,
+    guesses: Mapping[int, Sequence[tuple[str, int]]] | None = None,
 ) -> list[str]:
     """A helper's brief lines for its pages paired across separate uploads (#1798), and for those
     no architect drawing could be agreed on: empty when there are neither. `sheets`: the paired
     pages that are copies of the architect's sheet (`CrossPairs.sheets`): compared word by word,
-    a key plan with no size too (2026-11-04)."""
+    a key plan with no size too (2026-11-04). `guesses` (flag mode, `CrossPairs.guesses`): the
+    paired architect pages that are only a best guess, said apart (`BEST_GUESS_LINE`)."""
     lines: list[str] = []
-    if pairs:
+    guessed = {page: {tuple(w) for w in where} for page, where in (guesses or {}).items()}
+    sure = [
+        (page, kept)
+        for page, where in pairs
+        if (kept := [w for w in where if tuple(w) not in guessed.get(page, set())])
+    ]
+    best = [
+        (page, kept)
+        for page, where in pairs
+        if (kept := [w for w in where if tuple(w) in guessed.get(page, set())])
+    ]
+    if sure:
         paired = "; ".join(
             f"your p.{page} with "
             + ", ".join(f"{uploads}/{name} p.{number}" for name, number in where)
-            for page, where in pairs
+            for page, where in sure
         )
         lines.append(
             "PAIRED ACROSS THE UPLOADS (code and the AI page matcher agree on which architect "
             f"drawing shows the same piece): {paired}. Compare each of these pages only with its "
             "paired architect pages."
+        )
+    if best:
+        lines.append(
+            BEST_GUESS_LINE.format(
+                pages="; ".join(
+                    f"your p.{page} with "
+                    + ", ".join(f"{uploads}/{name} p.{number}" for name, number in where)
+                    for page, where in best
+                )
+            )
         )
     copies = [(page, sheets[page]) for page, _where in pairs if sheets and page in sheets]
     if copies:
@@ -740,6 +791,33 @@ def pair_lines(
             "overall) as usual."
         )
     return lines
+
+
+#: A helper's brief line for its pages paired as a best guess (flag mode, `CrossPairs.guesses`).
+BEST_GUESS_LINE: Final = (
+    "PAIRED AS A BEST GUESS (the likeliest architect page, the AI page matcher's pick or code's, "
+    "not confirmed; it may be a look-alike): {pages}. Compare each of these pages with that "
+    "architect page exactly as a paired page, and record every difference you find: code marks "
+    "each finding on it 'best guess: architect page N' for GV's reviewer, so never hold a "
+    "difference back because the pairing may be wrong. If that page plainly draws another item "
+    "(another unit type, hand or room), say so in the finding's words."
+)
+
+
+# ---- flag mode (Anant, 2026-11-04) ---------------------------------------------------------------
+
+#: The setting's environment variable (`app.config.Settings.assistant_flag_mode`).
+FLAG_MODE_ENV: Final = "GV_ASSISTANT_FLAG_MODE"
+
+
+def flag_mode() -> bool:
+    """Whether the check runs in flag mode (Anant, 2026-11-04, `assistant_flag_mode = "flag"`):
+    every problem found is flagged, and a vendor page whose architect page the pairing could not
+    confirm is still compared with its best guess (`simple_check.worklist`), never left "pairing
+    unsure". Read from the environment (`GV_ASSISTANT_FLAG_MODE`, as `page_cache` reads its
+    workers) so every work-list build in the process, the code checks' too, pairs alike; default
+    `proof`, the proof rules."""
+    return os.environ.get(FLAG_MODE_ENV, "proof").strip().lower() == "flag"
 
 
 #: A helper's brief line for its pages that are copies of the architect's sheet (2026-11-04: a key
@@ -1068,6 +1146,7 @@ def _smaller(job: HelperJob, most: int, page_map: Mapping[str, Any]) -> list[Hel
                 reference=tuple(dict.fromkeys((*job.reference, *((job.file, p) for p in looks)))),
                 pairs=tuple(pair for pair in job.pairs if pair[0] in pages),
                 unpaired=tuple(item for item in job.unpaired if item[0] in pages),
+                guesses=tuple(item for item in job.guesses if item[0] in pages),
             )
         )
     return out
