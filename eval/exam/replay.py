@@ -26,8 +26,9 @@ for a person to settle.
 from __future__ import annotations
 
 import os
+import re
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib import import_module
@@ -46,9 +47,17 @@ from eval.exam.truth import (
 __all__ = [
     "FLAG_MODE_ENV",
     "GROUPS",
+    "PAIRING_CLASSES",
+    "RIGHT_PAIRINGS",
     "Scores",
+    "coverage_of",
+    "diff_stage",
     "findings_of",
     "groups_of",
+    "guessed_pages",
+    "pairing_class",
+    "pairing_stage",
+    "right_paired_pages",
     "score_cases",
     "score_misses",
     "score_pairing",
@@ -106,6 +115,18 @@ def findings_of(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def coverage_of(path: Path) -> dict[str, Any] | None:
+    """The coverage block of a saved run's newest full check: one entry per vendor page with the
+    architect page it was compared with (`pair_page`) and whether code was unsure of that pairing
+    (`pairing_unsure`). `None` when the run has none."""
+    import json
+
+    stuck_report = import_module("app.review.assistant.stuck_report")
+    blocks, _ = stuck_report._blocks_of(json.loads(path.read_text(encoding="utf-8")))
+    found = stuck_report._coverage(blocks)
+    return dict(found) if found else None
+
+
 def groups_of(findings: list[dict[str, Any]], flag: bool) -> dict[str, tuple[str, str]]:
     """Each finding's (stored, today) group. `stored` is the group the live server wrote into the
     saved finding; `today` is what `proof.proof_group` gives for the same finding on this branch,
@@ -138,6 +159,8 @@ class Scores:
     leaks_agreement: int = 0
     reds: int = 0
     reds_true: int = 0
+    checks: int = 0
+    checks_true: int = 0
     per_group: dict[str, Counter[str]] = field(default_factory=dict)
     unknown: int = 0
 
@@ -155,22 +178,36 @@ class Scores:
 
     @property
     def red_precision(self) -> float | None:
+        """Of the reds, the share that belonged on the problems list."""
         return self.reds_true / self.reds if self.reds else None
 
+    @property
+    def check_precision(self) -> float | None:
+        """Of the please-checks, the share that belonged on the problems list."""
+        return self.checks_true / self.checks if self.checks else None
 
-def score_cases(cases: list[Case], groups: dict[str, dict[str, tuple[str, str]]]) -> list[Scores]:
+
+def score_cases(
+    cases: list[Case],
+    groups: dict[str, dict[str, tuple[str, str]]],
+    pages: Mapping[str, set[int]] | None = None,
+) -> list[Scores]:
     """Score every run on both sides. `groups` maps a run tag to its findings' (stored, today)
-    groups, as `groups_of` returns them."""
+    groups, as `groups_of` returns them. With `pages` (run tag to vendor pages), only the cases on
+    those pages are scored, and a run missing from it scores no case."""
     out: list[Scores] = []
     for run in sorted({case.run for case in cases}):
         found = groups.get(run)
         if found is None:
             continue
+        kept = None if pages is None else pages.get(run, set())
         for side, index in (("stored", 0), ("today", 1)):
             score = Scores(run=run, side=side)
             score.per_group = {group: Counter() for group in GROUPS}
             for case in cases:
                 if case.run != run or case.finding_id not in found:
+                    continue
+                if kept is not None and case.page not in kept:
                     continue
                 group = found[case.finding_id][index]
                 truth = truth_of(case.verdict, group)
@@ -184,6 +221,9 @@ def score_cases(cases: list[Case], groups: dict[str, dict[str, tuple[str, str]]]
                 if group == "wrong":
                     score.reds += 1
                     score.reds_true += int(truth.listed)
+                elif group == "likely_problem":
+                    score.checks += 1
+                    score.checks_true += int(truth.listed)
                 if truth.listed:
                     score.should_list += 1
                     if group not in LISTED_GROUPS:
@@ -202,6 +242,176 @@ def score_pairing(pairing: list[Pairing]) -> dict[str, Counter[str]]:
     out: dict[str, Counter[str]] = {}
     for row in pairing:
         out.setdefault(row.run, Counter())[row.correct] += 1
+    return out
+
+
+# ---- the pairing stage (rebuild plan Step 1A) ----------------------------------------------------
+
+#: How one audited vendor page was paired, in the order the stage table prints them:
+#:
+#: - `exact`: the right architect page, and the run did not mark the pairing as a guess;
+#: - `best_guess`: the right architect page, but the run marked it a best guess or code was
+#:   unsure of it (flag mode compares such a page with its guess; proof mode leaves it unsure);
+#: - `nothing_to_compare`: the audit says no architect page shows this one, and the run did not
+#:   compare it with a wrong one;
+#: - `wrong_view`: the right sheet, the wrong view on it;
+#: - `wrong_page`: another architect page;
+#: - `unpaired`: no architect page, where the audit names one.
+PAIRING_CLASSES: Final = (
+    "exact",
+    "best_guess",
+    "nothing_to_compare",
+    "wrong_view",
+    "wrong_page",
+    "unpaired",
+)
+
+#: The classes that compare the vendor's page with what the audit says it shows.
+RIGHT_PAIRINGS: Final = frozenset({"exact", "best_guess", "nothing_to_compare"})
+
+#: The words flag mode writes into a finding compared on a best-guess page
+#: (`reference_page.guess_words`), which runs saved before `pairing_guess` existed carry only in
+#: their stored group's reason.
+_GUESS_WORDS: Final = re.compile(r"best guess: architect page (\d+)")
+
+
+def guessed_pages(
+    findings: list[dict[str, Any]], coverage: Mapping[str, Any] | None
+) -> dict[int, set[int]]:
+    """The vendor pages a saved run paired only as a guess, each with the architect pages it
+    guessed (an empty set when the run did not say which).
+
+    Three signs, any one is enough: the coverage block says code was unsure of the page's pairing
+    (`pairing_unsure`, with its candidate pages); a finding on the page carries `pairing_guess`
+    (flag mode, `reference_page.mark_guess`); or a finding's stored reason carries flag mode's
+    words "best guess: architect page N"."""
+    out: dict[int, set[int]] = {}
+    for entry in (coverage or {}).get("pages") or []:
+        if not isinstance(entry, Mapping) or not entry.get("pairing_unsure"):
+            continue
+        page = entry.get("page")
+        if not isinstance(page, int):
+            continue
+        listed = out.setdefault(page, set())
+        for candidate in entry.get("pairing_unsure_pages") or []:
+            number = candidate.get("page") if isinstance(candidate, Mapping) else None
+            if isinstance(number, int):
+                listed.add(number)
+    for finding in findings:
+        page = finding.get("page")
+        if not isinstance(page, int):
+            continue
+        guess = finding.get("pairing_guess")
+        if isinstance(guess, Mapping):
+            number = guess.get("page")
+            listed = out.setdefault(page, set())
+            if isinstance(number, int):
+                listed.add(number)
+        proof = finding.get("proof")
+        reason = proof.get("reason") if isinstance(proof, Mapping) else None
+        for match in _GUESS_WORDS.finditer(str(reason or "")):
+            out.setdefault(page, set()).add(int(match.group(1)))
+    return out
+
+
+def pairing_class(row: Pairing, guessed: bool) -> str:
+    """Which of `PAIRING_CLASSES` one audited vendor page is. `guessed`: the run paired the page
+    only as a guess (`guessed_pages`). `unknown` for an audit value the exam does not know."""
+    if row.correct == "view":
+        return "wrong_view"
+    if row.correct == "no":
+        return "unpaired" if row.run_architect_page == "none" else "wrong_page"
+    if row.correct != "yes":
+        return "unknown"
+    if row.right_architect_page == "none":
+        return "nothing_to_compare"
+    return "best_guess" if guessed else "exact"
+
+
+def pairing_stage(
+    pairing: list[Pairing], guesses: Mapping[str, Mapping[int, set[int]]]
+) -> dict[str, dict[str, Any]]:
+    """The pairing exam, per run: how many audited vendor pages fell in each of
+    `PAIRING_CLASSES`, and how many of the wrong ones (wrong view, wrong page) the run had at least
+    marked a guess. `guesses` maps a run tag to `guessed_pages`; a run missing from it is scored
+    as if it marked no guess."""
+    out: dict[str, dict[str, Any]] = {}
+    for row in pairing:
+        guessed = row.vendor_page in guesses.get(row.run, {})
+        kind = pairing_class(row, guessed)
+        entry = out.setdefault(
+            row.run,
+            {"pages": 0, "wrong_marked_guess": 0, **{name: 0 for name in PAIRING_CLASSES}},
+        )
+        entry["pages"] += 1
+        entry[kind] = entry.get(kind, 0) + 1
+        if guessed and kind in {"wrong_view", "wrong_page"}:
+            entry["wrong_marked_guess"] += 1
+    return dict(sorted(out.items()))
+
+
+def right_paired_pages(
+    pairing: list[Pairing], guesses: Mapping[str, Mapping[int, set[int]]]
+) -> dict[str, set[int]]:
+    """Per run, the audited vendor pages compared with what the audit says they show
+    (`RIGHT_PAIRINGS`). The diff exam scores these on their own, so a pairing failure is never
+    counted as a finding failure."""
+    out: dict[str, set[int]] = {}
+    for row in pairing:
+        guessed = row.vendor_page in guesses.get(row.run, {})
+        if pairing_class(row, guessed) in RIGHT_PAIRINGS:
+            out.setdefault(row.run, set()).add(row.vendor_page)
+    return out
+
+
+# ---- the diff stage (rebuild plan Step 1A) -------------------------------------------------------
+
+
+def diff_stage(
+    scores: list[Scores],
+    right_pages: list[Scores],
+    recall: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """The diff exam, per run and side: red precision, please-check precision, and recall against
+    the miss list (found, partly, missed, unscored), on every audited answer and again on the
+    pages paired right only (`right_pages`, `score_cases` with `right_paired_pages`). The miss
+    list's recall is the run's whatever the side: the stored and today groups share one set of
+    answers."""
+    on_right = {(score.run, score.side): score for score in right_pages}
+    out: dict[str, dict[str, Any]] = {}
+    for score in scores:
+        clean = on_right.get((score.run, score.side))
+        misses = recall.get(score.run, {})
+        hand = misses.get("hand", {})
+        out.setdefault(score.run, {})[score.side] = {
+            "reds": score.reds,
+            "reds_true": score.reds_true,
+            "red_precision": score.red_precision,
+            "checks": score.checks,
+            "checks_true": score.checks_true,
+            "check_precision": score.check_precision,
+            "right_pages": (
+                None
+                if clean is None
+                else {
+                    "reds": clean.reds,
+                    "reds_true": clean.reds_true,
+                    "red_precision": clean.red_precision,
+                    "checks": clean.checks,
+                    "checks_true": clean.checks_true,
+                    "check_precision": clean.check_precision,
+                }
+            ),
+            "misses": {
+                "known": misses.get("known_problems", 0),
+                "found": hand.get("found", 0),
+                "partly": hand.get("partly", 0),
+                "missed": hand.get("missed", 0),
+                "unscored": hand.get("unscored", 0),
+                "recall": misses.get("recall"),
+                "recall_with_partial": misses.get("recall_with_partial"),
+            },
+        }
     return out
 
 

@@ -25,6 +25,17 @@ What it prints, in the order it matters:
 3. **Precision on the audited answers**, with the leaks: a real difference filed as Not compared,
    and an agreement filed the same way.
 4. **Pairing**, which is upstream of all of it.
+
+`--stage pairing` or `--stage diff` prints one stage exam alone (rebuild plan Step 1A), so a
+pairing failure is never read as a finding failure:
+
+- **pairing**: per run, the audited vendor pages paired exactly, paired right but only as a best
+  guess, rightly left with nothing to compare, on the right sheet but the wrong view, on a wrong
+  page, and left unpaired where the audit names a page;
+- **diff**: per run and side, red precision, please-check precision and recall against the miss
+  list (found, partly, missed), on every audited answer and on the pages paired right only.
+
+`--stage all` (the default) prints the whole report, then both stage tables.
 """
 
 from __future__ import annotations
@@ -58,19 +69,26 @@ def run(manifest_path: Path) -> dict[str, Any]:
 
     findings: dict[str, list[dict[str, Any]]] = {}
     groups: dict[str, dict[str, tuple[str, str]]] = {}
+    guesses: dict[str, dict[int, set[int]]] = {}
     for tag, entry in manifest.items():
         known = registry.get(tag, {})
         rows = replay.findings_of(base / entry["run"])
         findings[tag] = rows
         groups[tag] = replay.groups_of(rows, bool(known.get("flag_mode")))
+        guesses[tag] = replay.guessed_pages(rows, replay.coverage_of(base / entry["run"]))
 
     jobs = {tag: str(registry[tag]["job"]) for tag in manifest if tag in registry}
     scores = replay.score_cases(cases, groups)
+    recall = replay.score_misses(misses, status, findings, jobs)
+    saved_pairing = [row for row in pairing if row.run in manifest]
+    right_pages = replay.score_cases(
+        cases, groups, replay.right_paired_pages(saved_pairing, guesses)
+    )
     return {
         "cases": len(cases),
         "runs": sorted(manifest),
         "answers": {tag: len(rows) for tag, rows in findings.items()},
-        "recall": replay.score_misses(misses, status, findings, jobs),
+        "recall": recall,
         "stability": replay.stability(misses, status, jobs),
         "precision": [
             {
@@ -100,6 +118,8 @@ def run(manifest_path: Path) -> dict[str, Any]:
         "never_found": [miss.miss_id for miss in replay.never_found(misses, status)],
         "never_found_kinds": replay.never_found_kinds(misses, status),
         "moved": _moved(groups),
+        "pairing_stage": replay.pairing_stage(saved_pairing, guesses),
+        "diff_stage": replay.diff_stage(scores, right_pages, recall),
     }
 
 
@@ -181,14 +201,99 @@ def report(result: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _pct(numerator: int, denominator: int) -> str:
+    """`n/d (p%)`, or `-` when there is nothing to divide."""
+    if not denominator:
+        return "-"
+    return f"{numerator}/{denominator} ({numerator / denominator * 100:.0f}%)"
+
+
+def pairing_report(result: dict[str, Any]) -> list[str]:
+    """The pairing exam as a person reads it: one line per run."""
+    lines = [
+        "PAIRING EXAM: each audited vendor page, by how it was paired",
+        (
+            f"{'run':<11} {'pages':>5} {'exact':>5} {'guess':>5} {'none ok':>7} {'view':>5} "
+            f"{'wrong':>5} {'unpaired':>8}  wrong ones marked a guess"
+        ),
+        "-" * 84,
+    ]
+    for tag, row in result["pairing_stage"].items():
+        wrong = row["wrong_view"] + row["wrong_page"]
+        lines.append(
+            f"{tag:<11} {row['pages']:>5} {row['exact']:>5} {row['best_guess']:>5} "
+            f"{row['nothing_to_compare']:>7} {row['wrong_view']:>5} {row['wrong_page']:>5} "
+            f"{row['unpaired']:>8}  {row['wrong_marked_guess']} of {wrong}"
+        )
+    lines.append(
+        "exact = right page, not a guess; guess = right page, marked a best guess or unsure;"
+    )
+    lines.append(
+        "none ok = rightly nothing to compare; view = right sheet, wrong view; wrong = another page"
+    )
+    return lines
+
+
+def diff_report(result: dict[str, Any]) -> list[str]:
+    """The diff exam as a person reads it: one line per run and side, then the miss list."""
+    lines = [
+        "DIFF EXAM: red and please-check precision (all audited answers | pages paired right)",
+        (
+            f"{'run':<11} {'side':<7} {'red precision':>15} {'please-check':>15} "
+            f"{'red, right pages':>17} {'check, right pages':>19}"
+        ),
+        "-" * 90,
+    ]
+    for tag, sides in result["diff_stage"].items():
+        for side in ("stored", "today"):
+            row = sides.get(side)
+            if row is None:
+                continue
+            clean = row["right_pages"] or {}
+            lines.append(
+                f"{tag:<11} {side:<7} {_pct(row['reds_true'], row['reds']):>15} "
+                f"{_pct(row['checks_true'], row['checks']):>15} "
+                f"{_pct(clean.get('reds_true', 0), clean.get('reds', 0)):>17} "
+                f"{_pct(clean.get('checks_true', 0), clean.get('checks', 0)):>19}"
+            )
+    lines.append("")
+    lines.append("DIFF EXAM: recall against the miss list (hand-scored; a ceiling)")
+    lines.append(
+        f"{'run':<11} {'known':>5} {'found':>5} {'partly':>6} {'missed':>6} {'unscored':>8} "
+        f"{'recall':>7}"
+    )
+    lines.append("-" * 56)
+    for tag, sides in result["diff_stage"].items():
+        misses = sides.get("stored", next(iter(sides.values())))["misses"]
+        recall = misses["recall"]
+        lines.append(
+            f"{tag:<11} {misses['known']:>5} {misses['found']:>5} {misses['partly']:>6} "
+            f"{misses['missed']:>6} {misses['unscored']:>8} "
+            f"{'   -  ' if recall is None else f'{recall * 100:6.1f}%'}"
+        )
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", required=True, help="the local manifest of saved runs")
     parser.add_argument("--json", type=Path, help="also write the whole score as JSON, for CI")
+    parser.add_argument(
+        "--stage",
+        choices=("all", "pairing", "diff"),
+        default="all",
+        help="print one stage exam alone (default: the whole report, then both stages)",
+    )
     args = parser.parse_args(argv)
 
     result = run(Path(args.runs).expanduser())
-    print("\n".join(report(result)))
+    if args.stage == "pairing":
+        lines = pairing_report(result)
+    elif args.stage == "diff":
+        lines = diff_report(result)
+    else:
+        lines = [*report(result), "", *pairing_report(result), "", *diff_report(result)]
+    print("\n".join(lines))
     if args.json:
         args.json.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"\nwrote {args.json}")
