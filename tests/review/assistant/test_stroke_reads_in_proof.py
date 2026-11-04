@@ -213,6 +213,12 @@ def test_a_sealed_witnessed_reading_is_two_kinds_and_may_back_a_red() -> None:
     assert finding["trust_level"] == "confirmed"  # the independent read agrees
     assert proof.code_proved(finding)
     assert proof.proof_group(finding) == "clouded"
+    # Said as what it was: two separate readers and the drawn length, never "printed".
+    from app.review.assistant import proof_words
+
+    words = proof_words.checked_words(finding)
+    assert "two separate readers and agrees with its drawn length" in words
+    assert "printed on the drawings" not in words
 
 
 def test_a_sealed_unwitnessed_reading_alone_never_makes_red() -> None:
