@@ -156,5 +156,7 @@ def _check_record_off(monkeypatch: pytest.MonkeyPatch) -> None:
 def _proof_rules(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests run under the proof rules (the default), whatever the shell exports: flag mode
     (`GV_ASSISTANT_FLAG_MODE=flag`, 2026-11-04) is switched on only by its own tests
-    (`tests/review/assistant/test_flag_mode.py`)."""
+    (`tests/review/assistant/test_flag_mode.py`), and the stroke reads
+    (`GV_ASSISTANT_STROKE_READS`) only by theirs (`tests/review/assistant/test_stroke_reads.py`)."""
     monkeypatch.delenv("GV_ASSISTANT_FLAG_MODE", raising=False)
+    monkeypatch.delenv("GV_ASSISTANT_STROKE_READS", raising=False)

@@ -548,3 +548,224 @@ def test_the_spend_cap_holds_every_call_back() -> None:
     result = reader.read([sr.CropAsk("p3.S1@0", 2, png(40, 20))], sr.ReadBudget(Decimal(0)))
     assert seen == [] and all(a is None for a in result.answers.values())
     assert result.stopped == "budget"
+
+
+# ---- the full check's hook ------------------------------------------------------------------------
+
+
+def test_off_by_default_the_full_check_builds_no_reader_and_writes_nothing(tmp_path: Path) -> None:
+    write_pack(tmp_path, [spot([100, 100, 130, 110])])
+    made: list[int] = []
+
+    def factory() -> FakeReader:
+        made.append(1)
+        return FakeReader({"p3.S1@0": '24"'})
+
+    for environ in ({}, {sr.MODE_ENV: "off"}, {sr.MODE_ENV: "nonsense"}):
+        found = sr.full_check_reads(
+            pack=tmp_path,
+            uploads=None,
+            pages=None,
+            room_micros=10_000_000,
+            reader_factory=factory,
+            environ=environ,
+        )
+        assert found is None
+    assert made == [] and not (tmp_path / sr.FILE).exists()
+
+
+def test_no_money_or_no_readers_reads_nothing(tmp_path: Path) -> None:
+    write_pack(tmp_path, [spot([100, 100, 130, 110])])
+
+    def broken() -> FakeReader:
+        raise ValueError("no key")
+
+    made: list[int] = []
+
+    def factory() -> FakeReader:
+        made.append(1)
+        return FakeReader({})
+
+    on = {sr.MODE_ENV: "all"}
+    assert (
+        sr.full_check_reads(
+            pack=tmp_path,
+            uploads=None,
+            pages=None,
+            room_micros=0,
+            reader_factory=factory,
+            environ=on,
+        )
+        is None
+    )
+    assert (
+        sr.full_check_reads(
+            pack=tmp_path,
+            uploads=None,
+            pages=None,
+            room_micros=10**6,
+            reader_factory=factory,
+            environ={**on, sr.CAP_ENV: "0"},
+        )
+        is None
+    )
+    assert made == []
+    assert (
+        sr.full_check_reads(
+            pack=tmp_path,
+            uploads=None,
+            pages=None,
+            room_micros=10**6,
+            reader_factory=broken,
+            environ=on,
+        )
+        is None
+    )
+    assert not (tmp_path / sr.FILE).exists()
+
+
+def test_on_the_cap_is_the_smaller_of_the_setting_and_the_room_and_paired_reads_its_pages(
+    tmp_path: Path,
+) -> None:
+    write_pack(tmp_path, [spot([100, 100, 130, 110])], page=3)
+    reader = FakeReader({"p3.S1@0": '24"'})
+    pages = FakePages(drawn={"p3.S1": 24})
+    found = sr.full_check_reads(
+        pack=tmp_path,
+        uploads=None,
+        pages=frozenset({(FILE, 3)}),
+        room_micros=750_000,
+        reader_factory=lambda: reader,
+        environ={sr.MODE_ENV: "paired", sr.CAP_ENV: "2"},
+        geometry=pages,
+    )
+    assert found is not None and found.counts == {"sealed_witnessed": 1}
+    assert reader.budgets[0].cap_usd == Decimal("0.75")
+    reader = FakeReader({"p3.S1@0": '24"'})
+    found = sr.full_check_reads(
+        pack=tmp_path,
+        uploads=None,
+        pages=frozenset({(FILE, 9)}),
+        room_micros=10**7,
+        reader_factory=lambda: reader,
+        environ={sr.MODE_ENV: "paired", sr.CAP_ENV: "0.5"},
+        geometry=pages,
+    )
+    assert found is not None and found.document["labels"] == [] and reader.keys == []
+
+
+def test_the_settings_defaults_are_the_modules() -> None:
+    from app.config import Settings
+
+    fields = Settings.model_fields
+    assert fields["assistant_stroke_reads"].default == "off"
+    assert fields["assistant_stroke_reads_cap_usd"].default == sr.DEFAULT_CAP_USD
+    assert fields["assistant_stroke_readers"].default == ""
+    assert sr.MODE_ENV == "GV_ASSISTANT_STROKE_READS"
+    assert sr.CAP_ENV == "GV_ASSISTANT_STROKE_READS_CAP_USD"
+    assert sr.READERS_ENV == "GV_ASSISTANT_STROKE_READERS"
+
+
+def _roster_engine(pack: Path, charged: list[tuple[int, list[Any]]]) -> Any:
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    @contextmanager
+    def phase(name: str) -> Any:
+        yield
+
+    return SimpleNamespace(
+        tools=SimpleNamespace(workspace=SimpleNamespace(set_pack=pack, uploads=pack)),
+        book=SimpleNamespace(main_file=FILE),
+        _cross=None,
+        timings=SimpleNamespace(phase=phase),
+        charge_outside=lambda cost, calls: charged.append((cost, list(calls))),
+    )
+
+
+def test_the_roster_hook_does_nothing_when_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default off: the hook returns before it looks at the engine, so no reader is built, no
+    call is made, nothing is charged and nothing is written."""
+    from types import SimpleNamespace
+
+    from app.review.assistant import full_check_roster
+
+    def never(**_given: Any) -> None:
+        raise AssertionError("the stroke reads ran while off")
+
+    monkeypatch.setattr(sr, "full_check_reads", never)
+    run = full_check_roster._Run(engine=SimpleNamespace())  # type: ignore[arg-type]
+    run._stroke_reads()
+    assert run.stroke_block == {} and run.spent == {}
+
+
+def test_the_roster_hook_reads_the_paired_pages_in_the_gap_closers_room_and_charges_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from app.review.assistant import full_check_roster
+
+    monkeypatch.setenv(sr.MODE_ENV, "paired")
+    asked: list[dict[str, Any]] = []
+    attempt = SimpleNamespace(
+        model_id=QWEN, prompt_id="slot-crop-v1", input_tokens=900, output_tokens=40
+    )
+
+    def fake(**given: Any) -> sr.StrokeReadsRun:
+        asked.append(given)
+        document = {"labels": [{"state": "sealed_witnessed"}, {"state": "unread"}]}
+        return sr.StrokeReadsRun(document, 4_500, (attempt,), None)
+
+    monkeypatch.setattr(sr, "full_check_reads", fake)
+    monkeypatch.setattr(full_check_roster._Run, "_room", lambda self, phase: {"gaps": 333}[phase])
+    charged: list[tuple[int, list[Any]]] = []
+    run = full_check_roster._Run(engine=_roster_engine(tmp_path, charged))
+    run.plan = SimpleNamespace(price=5_000_000)  # type: ignore[assignment]
+    run.vendor_pages = frozenset({3, 4})
+    run._stroke_reads()
+    (given,) = asked
+    assert given["room_micros"] == 333 and given["pack"] == tmp_path
+    assert given["pages"] == frozenset({(FILE, 3), (FILE, 4)})
+    assert charged == [(4_500, [(QWEN, "slot-crop-v1", 900, 40)])]
+    assert run.spent == {"stroke_reads": 4_500}
+    assert run.stroke_block["sealed_witnessed"] == 1 and run.stroke_block["calls"] == 1
+
+
+def test_the_paired_pages_are_the_cross_file_pairs_when_there_are_some() -> None:
+    from types import SimpleNamespace
+
+    from app.review.assistant import full_check_roster
+
+    cross = SimpleNamespace(file="Vendor.pdf", pairs={5: (("Architect.pdf", 12),)})
+    engine = SimpleNamespace(_cross=cross, book=SimpleNamespace(main_file="Vendor.pdf"))
+    run = full_check_roster._Run(engine=engine)  # type: ignore[arg-type]
+    assert run._paired_pages() == frozenset({("Vendor.pdf", 5), ("Architect.pdf", 12)})
+
+
+def test_the_engine_counts_outside_spend_like_its_own_calls() -> None:
+    """`ChatEngine.charge_outside`: the money goes into `spent` (which every cap reads), onto the
+    current phase's timing, and each call onto the Usage page."""
+    import threading
+    from types import SimpleNamespace
+
+    from app.review.assistant.chat_engine import ChatEngine
+
+    recorded: list[dict[str, Any]] = []
+    timed: list[int] = []
+    emitted: list[tuple[str, Any]] = []
+    fake = SimpleNamespace(
+        _lock=threading.Lock(),
+        _spent=1_000,
+        timings=SimpleNamespace(charge=timed.append),
+        ledger=SimpleNamespace(record=lambda **row: recorded.append(row)),
+        emit=lambda kind, data: emitted.append((kind, data)),
+    )
+    ChatEngine.charge_outside(fake, 4_500, [(QWEN, "slot-crop-v1", 900, 40)])  # type: ignore[arg-type]
+    assert fake._spent == 5_500 and timed == [4_500]
+    assert [(r["model_key"], r["input_tokens"], r["output_tokens"]) for r in recorded] == [
+        (QWEN, 900, 40)
+    ]
+    assert emitted and emitted[0][0] == "usage"
+    ChatEngine.charge_outside(fake, -5)  # type: ignore[arg-type]
+    assert fake._spent == 5_500

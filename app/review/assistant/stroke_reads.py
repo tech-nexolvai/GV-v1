@@ -97,6 +97,7 @@ __all__ = [
     "StrokeReadsRun",
     "cap_from_environment",
     "ensure_stroke_reads",
+    "full_check_reads",
     "inches_text",
     "load",
     "mode_from_environment",
@@ -130,6 +131,9 @@ CROWDED: Final = "crowded"
 #: `_NEAR_PT`: a box drawn tight round a dimension often clips it).
 NEAR_PT: Final = 4.0
 _STICKER_WORDS: Final = "GV's sticker or markup over it"
+#: A label within this of the page's edge is cut by it (`rows.MEASURED_SETTINGS.edge_margin_pt`).
+_EDGE_MARGIN_PT: Final = Decimal("0.5")
+_MICROS: Final = 1_000_000
 
 type Box = tuple[float, float, float, float]
 type PageKey = tuple[str, int]
@@ -449,10 +453,6 @@ def _plan(spot: Spot, pages: PackPages) -> _Planned | dict[str, Any]:
     return _Planned(spot, label, png, ink, sideways, first, flip, drawn, scale)
 
 
-#: A label within this of the page's edge is cut by it (`rows.MEASURED_SETTINGS.edge_margin_pt`).
-_EDGE_MARGIN_PT: Final = Decimal("0.5")
-
-
 # ---- reading -------------------------------------------------------------------------------------
 
 
@@ -642,6 +642,46 @@ def ensure_stroke_reads(
     if write:
         _write(pack, document)
     return StrokeReadsRun(document, cost, tuple(attempts), stopped)
+
+
+def full_check_reads(
+    *,
+    pack: Path | None,
+    uploads: Path | None,
+    pages: frozenset[PageKey] | None,
+    room_micros: int,
+    reader_factory: Callable[[], StrokeReader] | None = None,
+    environ: Mapping[str, str] = os.environ,
+    geometry: PackPages | None = None,
+) -> StrokeReadsRun | None:
+    """The full check's stroke reads (`full_check_roster._stroke_reads`), or `None` when they do not
+    run. **Off** (`MODE_ENV` unset or `off`): returns at once; no reader is made, nothing is read,
+    spent or written. **On**: `paired` reads the spots on `pages` (the paired comparisons' pages),
+    `all` every spot; the cap is the setting's (`CAP_ENV`), at most `room_micros` (the money the
+    fixed price leaves for it); no money or no reader (a missing key, price or pacing) reads none.
+    `reader_factory`: the readers (default `reader_from_environment`); `geometry`: the pages
+    (default the pack's own, `PdfPackPages`)."""
+    mode = mode_from_environment(environ)
+    if mode == "off" or pack is None:
+        return None
+    cap_micros = min(int(cap_from_environment(environ) * _MICROS), max(0, int(room_micros)))
+    if cap_micros <= 0:
+        _log.warning("stroke reads: no money left for them under the fixed price; none read")
+        return None
+    try:
+        reader = (reader_factory or (lambda: reader_from_environment(environ)))()
+    except Exception as failed:  # noqa: BLE001 - no readers: nothing read, nothing spent
+        _log.warning("stroke reads not run: %s", failed)
+        return None
+    scope = None if mode == "all" else Scope(pages=pages or frozenset())
+    return ensure_stroke_reads(
+        Path(pack),
+        scope,
+        reader,
+        Decimal(cap_micros) / _MICROS,
+        pages=geometry,
+        uploads=uploads,
+    )
 
 
 def _read_json(path: Path) -> Any:
