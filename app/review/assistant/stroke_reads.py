@@ -24,7 +24,8 @@ paired views first, plan 2E). Each gets an id `p<page>.S<n>` (n from 1, in the c
 3. **Two readers of different makers** read each copy (`StrokeReader`; in production
    `slot_reader.bedrock.read_crops_parallel` with its request builder, pacer, concurrency cap, one
    re-ask and spend guard, inside a cap). A sideways spot read at one turn that did not seal and
-   fit is read at the other turn too (plan 2B step 2).
+   fit is read at the other turn too (plan 2B step 2). A sideways spot with no drawn length or no
+   view scale is not read at all: it could never seal, so no money goes on it.
 4. **Seal, parse, scale, turn** (`slot_reader.orientation`): `seal.seal_label` per turn (stacked
    fractions never, #762; code's own stacked finding counts; GV's sticker or coloured ink holds),
    the sealed text's inches by `units/`, the drawn length against the view's fit
