@@ -163,9 +163,10 @@ MIN_SPANS: Final = 3
 _VIEW_REF: Final = re.compile(
     r"\b(\d{1,3})\s*/\s*([A-Z]{1,3}\s*[-.]?\s*\d{1,3}(?:\.\d{1,3})?[A-Z]?)\b"
 )
-#: `A-501`, `A13.02`, `ID-201`, `A501`: a sheet number.
+#: `A-501`, `A13.02`, `ID-201`, `A501`: a sheet number, with a letter after its number when the
+#: set adds one (`A-401A`, `A3.10B`: a sheet added after `A-401`).
 _SHEET: Final = re.compile(
-    r"\b([A-Z]{1,3}-\d{1,3}(?:\.\d{1,3})?|[A-Z]{1,3}\d{1,3}\.\d{1,3}|A\d{3})\b"
+    r"\b([A-Z]{1,3}-\d{1,3}(?:\.\d{1,3})?[A-Z]?|[A-Z]{1,3}\d{1,3}\.\d{1,3}[A-Z]?|A\d{3}[A-Z]?)\b"
 )
 
 
@@ -729,7 +730,12 @@ def dense(candidate: Sequence[object], matched: int) -> bool:
 #: Code's own variant and hand markers (the set index's checked words come on top: an office's own
 #: words such as `HC` or `REV` are read there, where the model says what they mean). `HC` and `REV`
 #: alone are never read here: hollow core, revision.
-_ACCESSIBLE: Final = re.compile(r"\b(ADA|ACCESSIBLE|HANDICAP(?:PED)?)\b(?![-_.]?\d)")
+#: `ACC` is the architects' short form ("ACC KITCHEN PLAN"), counted only as a word of its own:
+#: never an item's part after its tag (`XX-213-ACC`, its accessories, `_SUB_PART`). `ACCESIBLE`
+#: is a spelling real sets print.
+_ACCESSIBLE: Final = re.compile(
+    r"\b(ADA|ACCESS?IBLE|HANDICAP(?:PED)?|(?<![-_.])ACC)\b(?![-_.]?\d)"
+)
 #: A note that the drawing is drawn the other way round. The word MIRROR alone is the bathroom
 #: mirror on the wall ("MIRROR", "LED MIRROR", "MIRROR ABOVE", "X-123 (MIRROR)", a furniture tag's
 #: name), never a hand: it counts only as MIRRORED, MIRROR IMAGE, MIRROR OF, MIRROR HAND or
@@ -984,13 +990,16 @@ def same_item(one: str | None, other: str | None) -> bool:
 
 
 def _one_titled_item(vendor: Facts, candidates: Sequence[Facts]) -> frozenset[str]:
-    """The candidate whose set index title is the vendor's item (`same_item`), when it is the only
-    one. Two pages of that title, even side by side in one file, could be two units drawn alike (a
+    """The candidates whose set index title is the vendor's item (`same_item`), when they are all
+    on one page (one candidate, or the views of one sheet, `Facts.place`). Two pages of that title, even side by side in one file, could be two units drawn alike (a
     new desk and an older one of the same building): then none, and the reviewer is asked, never
     a guess (review of #1913: a run of same-titled pages let the matcher alone choose among
     look-alikes)."""
     found = [c for c in candidates if same_item(vendor.index_title, c.index_title)]
-    return frozenset(c.ref for c in found) if len(found) == 1 else frozenset()
+    # The views of one page (one `place`) are one page of that title: the per-drawing targets of
+    # a sheet titled the vendor's item all carry it (`worklist`, per view).
+    places = {c.place if c.place is not None else c.ref for c in found}
+    return frozenset(c.ref for c in found) if len(places) == 1 else frozenset()
 
 
 @dataclass(frozen=True)
@@ -1031,11 +1040,22 @@ class Scored:
     view_titled: float = 0.0
     """The part of `score` its view titles gave it (`piece_words`): like the set index's title,
     never counted toward `clear_winner`'s pick (the code pass weighs it with a second kind)."""
+    signed: float = 0.0
+    """The part of `score` the page signature gave it (`signature.rerank`: room and unit words,
+    fixture order, overall widths): it re-ranks, so it is never counted toward code's own pick
+    (`clear_winner`, `code_pass`), and a size in it never decides a pair."""
 
     @property
     def own(self) -> float:
-        """Its score on code's own evidence: the titles' and the swap check's weights left out."""
-        return self.score - self.titled - self.sized - self.view_titled
+        """Its score on code's own evidence: the titles', the swap check's and the page
+        signature's weights left out."""
+        return self.score - self.titled - self.sized - self.view_titled - self.signed
+
+    @property
+    def lead(self) -> float:
+        """Its score for code's margins (`code_pass`, `_named_first`): the swap check's and the
+        page signature's weights left out."""
+        return self.score - self.sized - self.signed
 
 
 def _same_size(a: Fraction, b: Fraction) -> bool:
@@ -1389,9 +1409,7 @@ def code_pass(ranked: Sequence[Scored]) -> Scored | None:
 
     Never on one kind alone, however strong: one witness can be misread (a title the set index
     read on the wrong line, a callout beside another piece's tag)."""
-    open_ = sorted(
-        (s for s in ranked if s.contradicts is None), key=lambda s: s.score - s.sized, reverse=True
-    )
+    open_ = sorted((s for s in ranked if s.contradicts is None), key=lambda s: s.lead, reverse=True)
     if not open_:
         return None
     best = open_[0]
@@ -1399,7 +1417,7 @@ def code_pass(ranked: Sequence[Scored]) -> Scored | None:
         return None
     if len(open_) > 1:
         runner = open_[1]
-        if (best.score - best.sized) - (runner.score - runner.sized) < CODE_MARGIN:
+        if best.lead - runner.lead < CODE_MARGIN:
             return None
         if any(s.kinds & NAMING_KINDS for s in open_[1:]):
             return None
@@ -1607,14 +1625,12 @@ def _named_first(ranked: Sequence[Scored], pick: str) -> Scored | None:
     """The matcher's pick when code's own evidence names it (`CODE_NAMING_KINDS`: its title, or
     a printed pointer; never the set index's title alone) and puts it first, `CODE_MARGIN` ahead of every other item not ruled out,
     none of which code names (`code_pass` with the matcher's look as the second kind)."""
-    open_ = sorted(
-        (s for s in ranked if s.contradicts is None), key=lambda s: s.score - s.sized, reverse=True
-    )
+    open_ = sorted((s for s in ranked if s.contradicts is None), key=lambda s: s.lead, reverse=True)
     if not open_ or open_[0].ref != pick or not open_[0].kinds & CODE_NAMING_KINDS:
         return None
     if len(open_) > 1:
         runner = open_[1]
-        if (open_[0].score - open_[0].sized) - (runner.score - runner.sized) < CODE_MARGIN:
+        if open_[0].lead - runner.lead < CODE_MARGIN:
             return None
         if any(s.kinds & NAMING_KINDS for s in open_[1:]):
             return None

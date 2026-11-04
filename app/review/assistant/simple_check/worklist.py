@@ -886,6 +886,8 @@ def worklist_from(
             *(
                 str(s)
                 for s in (known_any.get((drawing.file, own)) or {}).get("sheet_numbers") or []
+                # A keynote code an older pack read as a sheet number (`views.keynote_code`).
+                if not views_module.keynote_code(str(s))
             ),
         ]
         side = _LABEL_SIDE.get(drawing.role, drawing.role)
