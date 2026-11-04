@@ -447,9 +447,12 @@ def test_an_architect_file_with_no_readable_size_is_a_warning_not_a_stop() -> No
 # ---- projects: exactly the pairing's own grouping of the set index ----------------------------
 
 
-def _messy_pack(tmp_path: Path) -> Path:
+def _messy_pack(
+    tmp_path: Path, reads: list[tuple[str, int, list[str], str, bool]] | None = None
+) -> Path:
     """A two-file pack whose set index prints many names for two projects (made-up names): the
-    vendor's company, a scope phrase, long and short forms, a prototype divider."""
+    vendor's company, a scope phrase, long and short forms, a prototype divider. `reads`: other
+    set index reads of the same pages (file, page, names, set kind, introduces)."""
     folder = tmp_path / "pack"
     folder.mkdir()
     drawn = [{"box": [0, 0, 100, 100], "role": "vendor", "heading": None, "round": None}]
@@ -469,7 +472,7 @@ def _messy_pack(tmp_path: Path) -> Path:
             {"file": ARCH, "page": 4, "halves": arch_half},
         ],
     }
-    reads = [
+    default = [
         (VENDOR, 1, ["NORTHFIELD GRAND HOTEL"], "shop drawing", True),
         (
             VENDOR,
@@ -486,6 +489,7 @@ def _messy_pack(tmp_path: Path) -> Path:
         (ARCH, 3, ["Brand Look Prototype"], "prototype", True),
         (ARCH, 4, [], "unknown", False),
     ]
+    reads = reads or default
     view = {"title": "ELEVATION 1", "kind": "elevation", "prints_sizes": True, "whole_floor": False}
     index = {
         f"{f}#{n}": {
@@ -537,6 +541,31 @@ def test_messy_names_group_into_the_pairings_projects_never_raw_names(tmp_path: 
     assert "Lakeview Inn" in missing.words and missing.pages == (4, 5) and missing.who == "GV"
     # The brand prototype is never a project of the architect's file.
     assert summary.architect == ("NORTHFIELD GRAND HOTEL, TEXAS",)
+
+
+def test_a_job_read_in_parts_beside_a_stamp_is_never_another_project(tmp_path: Path) -> None:
+    """The set index reads the architect's job as the brand and the town apart, beside GV's stamp
+    (a rebuild of the same files): still the vendor's job, so no whole-check stop."""
+    from app.review.assistant import preflight_pairs
+
+    reads = [
+        (VENDOR, 1, ["NG - Northfield, TX - Public Areas"], "shop drawing", False),
+        (VENDOR, 2, ["NG - Northfield, TX - Public Areas"], "shop drawing", False),
+        (VENDOR, 3, ["NG-LUXE - Northfield TX"], "shop drawing", False),
+        (VENDOR, 4, ["NG-LUXE - Northfield TX"], "shop drawing", False),
+        (VENDOR, 5, ["NG-LUXE - Northfield TX"], "shop drawing", False),
+        (ARCH, 1, ["GRAND HOTEL", "GRAND HOTEL AT NORTHFIELD , TX"], "architectural", True),
+        (ARCH, 2, ["GRAND HOTEL", "NORTHFIELD , TX", "GRANITI VICENTIA"], "architectural", False),
+        (ARCH, 3, ["GRAND HOTEL", "NORTHFIELD , TX"], "architectural", False),
+        (ARCH, 4, ["GRANITI VICENTIA", "GRAND HOTEL"], "architectural", False),
+    ]
+    summary = preflight_pairs.project_summary(_messy_pack(tmp_path, reads))
+    assert summary is not None and len(summary.architect) == 1
+    assert all(group.architect for group in summary.vendor) and len(summary.vendor) == 2
+    report = build(
+        Inputs(listing=_listing(), page_map=_page_map(), main_file=VENDOR, projects=summary)
+    )
+    assert report.stops == ()
 
 
 def test_the_grouping_finds_another_project_and_stops() -> None:

@@ -13,15 +13,28 @@ on.
   divider). A page
   printing names of two projects (a cover listing every project) is in none; a name that is no
   project of the file (an office's own stamp) is left out.
-- **Grouping names**: the names on the pages that introduce others are the file's projects (all
-  names, when no page introduces others). A name belongs to the project whose own words it holds:
-  a word of four letters or more that no other project's name uses (`NORTHFIELD`, never `HOTEL`),
-  or the same letters and digits (`GH NORTHFIELD`).
+- **One job, its names read whole and in parts** (`_jobs`): the set index reads one title block
+  differently from one sheet (and one build) to the next: "HOTEL NORTH, SPRINGFIELD" whole on
+  some, "HOTEL NORTH" and "SPRINGFIELD" as two names on others. A file's names are grouped into
+  jobs before anything is placed: two names are one job when every word of one is in the other,
+  step by step (so "HOTEL NORTH" and "SPRINGFIELD" join through "HOTEL NORTH SPRINGFIELD"), but
+  never two jobs (each printed on sheets of its own and never beside the other on one sheet: two
+  hotels a cover lists as "HOTEL NORTH + HOTEL SOUTH" stay two, and that name of both is no
+  project), and never a name a third job holds too (the brand alone, in a file of two hotels of
+  the brand, names neither).
+- **Grouping names**: the jobs of the names on the pages that introduce others are the file's
+  projects (every job, when no page introduces others). A page is in the project of its names.
+- **Never a project**: GV's own name (`OWN_NAMES`, its stamp on the drawings it sends on), and a
+  job printed only beside another project's name, never as a page's only one, while another
+  project is (an office's stamp on every sheet).
 - **Reference only**: a page whose own set kind (or, when it says none, the set kind of the page
   that introduced it) is a prototype, a brand standard or a reference (R1, Anant 2026-10-20: the
   prototype is reference only, never the architect's design to compare against).
 - **The same project in both files** (`match`): the same letters and digits, or the words of a
-  name that only one of the other file's projects uses.
+  job (every name the index read of it in its file, `vocabulary`) that only one of the other
+  file's projects uses. With one project in the other file, a job sharing a word of four letters
+  or more with it is in it, unless another job of its own file shares a word with it that this
+  one lacks (that one is the project's; this one is another job of the same town).
 - **One job, two wordings** (`same_job`): within one file, a name whose words are all in another
   name of the file (and in no third) is the same job read in part.
 
@@ -30,12 +43,15 @@ Pure: plain values in and out. The work list (`worklist._pair_across`) uses it.
 
 from __future__ import annotations
 
+import itertools
 import re
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Final
 
 __all__ = [
+    "OWN_NAMES",
     "REFERENCE_KINDS",
     "Place",
     "key",
@@ -43,10 +59,13 @@ __all__ = [
     "places",
     "same_job",
     "siblings_of",
+    "vocabulary",
 ]
 
 #: Set kinds (`set_index.SET_KINDS`) that are reference only.
 REFERENCE_KINDS: Final = frozenset({"prototype", "brand standard", "reference"})
+#: GV's own name (`key`): its stamp on the drawings it sends on, never a project of either file.
+OWN_NAMES: Final = frozenset({"graniti vicentia"})
 _NOT_WORD: Final = re.compile(r"[^a-z0-9]+")
 _TOKEN: Final = re.compile(r"[A-Z0-9]+")
 #: A project's own word: four letters or more.
@@ -66,6 +85,9 @@ class Place:
     source: str | None = None
     """The file a page of a joined upload came from (`set_pack._mark_sources`), else `None`:
     two names from different files are never rival projects of one file (`siblings_of`)."""
+    words: frozenset[str] = frozenset()
+    """Every word of the project's names the set index read in its file (`_jobs`: its name read
+    whole and in parts), what `match` compares; empty: the words of `project`."""
 
 
 def key(text: object) -> str:
@@ -83,18 +105,50 @@ def _own_words(project: str, others: Iterable[str]) -> set[str]:
     return {w for w in _WORD.findall(project) if w not in theirs}
 
 
-def match(project: str, candidates: Iterable[str], siblings: Iterable[str] = ()) -> str | None:
+def match(
+    project: str,
+    candidates: Iterable[str],
+    siblings: Iterable[str] = (),
+    words: Mapping[str, Iterable[str]] | None = None,
+) -> str | None:
     """The one project of `candidates` that `project` names (see the module), or `None`.
     `siblings`: the project names of `project`'s own file: a word two of them use names neither
-    ("PROJECT" in "PROJECT NORTH" and "PROJECT SOUTH")."""
+    ("PROJECT" in "PROJECT NORTH" and "PROJECT SOUTH"). `words`: each project's words
+    (`vocabulary`: its name read whole and in parts), else a name's own.
+
+    One project in the other file, and only words the siblings share with it ("HN - RIVERTON -
+    PUBLIC AREAS" and "HN-LUXE - RIVERTON", one job's two wordings, share only RIVERTON): it is
+    `project`'s when they share a word, unless a sibling shares a word with it that `project`
+    lacks (that sibling is its job; `project` is another job of the same town: "MAPLE SUITES
+    RIVERTON" beside "STAR SUITES RIVERTON", for the architect's "STAR SUITES RIVERTON")."""
     pool = sorted(set(candidates))
     same = [c for c in pool if _compact(c) == _compact(project)]
     if len(same) == 1:
         return same[0]
-    shared = {w for s in set(siblings) if s != project for w in _WORD.findall(s)}
-    mine = set(_WORD.findall(project)) - shared
-    found = [c for c in pool if mine & _own_words(c, pool)]
-    return found[0] if len(found) == 1 else None
+
+    def said(name: str) -> str:
+        return " ".join(sorted(words[name])) if words and words.get(name) else name
+
+    shared = {w for s in set(siblings) if s != project for w in _WORD.findall(said(s))}
+    mine = set(_WORD.findall(said(project))) - shared
+    found = [c for c in pool if mine & _own_words(said(c), [said(o) for o in pool if o != c])]
+    if found or len(pool) != 1:
+        return found[0] if len(found) == 1 else None
+    theirs = set(_WORD.findall(said(pool[0])))
+    every = set(_WORD.findall(said(project)))
+    rivals = [set(_WORD.findall(said(s))) for s in set(siblings) if s != project]
+    if every & theirs and not any((rival & theirs) - every for rival in rivals):
+        return pool[0]
+    return None
+
+
+def vocabulary(placed: Mapping[tuple[str, int], Place]) -> dict[str, frozenset[str]]:
+    """Each project's words (`Place.words`) by its name (`Place.project`): `match`'s `words`."""
+    out: dict[str, set[str]] = {}
+    for place in placed.values():
+        if place.project is not None:
+            out.setdefault(place.project, set()).update(place.words or place.project.split())
+    return {name: frozenset(found) for name, found in out.items()}
 
 
 def same_job(one: str, other: str, projects: Iterable[str] = ()) -> bool:
@@ -111,6 +165,76 @@ def same_job(one: str, other: str, projects: Iterable[str] = ()) -> bool:
         return False
     shorter = a & b  # one holds every word of the other: the shorter name's words
     return not any(shorter <= set(p.split()) for p in set(projects) - {one, other})
+
+
+def _jobs(pages: Sequence[tuple[frozenset[str], bool]]) -> dict[str, str]:
+    """One file's names (`key`) grouped into jobs (see the module): each name -> its job (one of its
+    names). `pages`: each page's names, and whether it introduces the pages after it (a cover's
+    list is no evidence that names are one job, nor that they are two)."""
+    names = sorted({name for found, _opens in pages for name in found})
+    words = {name: frozenset(name.split()) for name in names}
+    sheets = [found for found, opens in pages if not opens]
+    seen: dict[tuple[str, str], bool] = {}
+
+    def holds(name: str, part: str) -> bool:
+        return words[part] <= words[name]
+
+    def alone(one: str, other: str) -> bool:
+        # One is printed on a sheet that does not print the other.
+        return any(
+            any(holds(n, one) for n in found) and not any(holds(n, other) for n in found)
+            for found in sheets
+        )
+
+    def apart(one: str, other: str) -> bool:
+        # Two jobs: each printed on sheets of its own, never as two names of one sheet (a title
+        # block read "HOTEL NORTH" and "SPRINGFIELD" apart is one job's).
+        if (one, other) not in seen:
+            beside = any(
+                any(holds(n, one) and not holds(n, other) for n in found)
+                and any(holds(n, other) and not holds(n, one) for n in found)
+                for found in sheets
+            )
+            seen[(one, other)] = seen[(other, one)] = (
+                not beside and alone(one, other) and alone(other, one)
+            )
+        return seen[(one, other)]
+
+    job = {name: name for name in names}
+
+    def find(name: str) -> str:
+        while job[name] != name:
+            name = job[name]
+        return name
+
+    parts = [
+        (short, long)
+        for short, long in itertools.permutations(names, 2)
+        if words[short] < words[long]
+        or (short < long and (words[short] == words[long] or _compact(short) == _compact(long)))
+    ]
+    joined = True
+    while joined:
+        joined = False
+        for short, long in parts:
+            one, other = find(short), find(long)
+            if one == other:
+                continue
+            # A third job holding every word of the shorter names neither (the brand alone); a
+            # longer name holding another job's name too is both jobs' (a cover's), joining neither.
+            if any(
+                find(t) not in (one, other)
+                and ((holds(t, short) and apart(t, long)) or (holds(long, t) and apart(t, short)))
+                for t in names
+            ):
+                continue
+            mine = [n for n in names if find(n) == one]
+            theirs = [n for n in names if find(n) == other]
+            if any(apart(a, b) for a in mine for b in theirs):
+                continue
+            job[other] = one
+            joined = True
+    return {name: find(name) for name in names}
 
 
 def places(
@@ -157,16 +281,40 @@ def places(
     for file, pages in by_file.items():
         ordered = sorted(set(pages))
         mine = [(p, read[(file, p)]) for p in ordered if (file, p) in read]
-        anchors = sorted(
-            {
-                key(n)
-                for p, one in mine
-                if introduces(file, p, one)
-                for n in one.get("projects") or []
+        said = {
+            p: {
+                k: str(n) for n in one.get("projects") or [] if (k := key(n)) and k not in OWN_NAMES
             }
-            or {key(n) for _p, one in mine for n in one.get("projects") or []}
-        )
-        names = {key(n): n for _p, one in mine for n in one.get("projects") or []}
+            for p, one in mine
+        }
+        opens = {p for p, one in mine if introduces(file, p, one)}
+        job = _jobs([(frozenset(said[p]), p in opens) for p, _one in mine])
+        named = {k for p in opens for k in said[p]} or set(job)
+        anchors = {job[k] for k in named}
+        # A job printed only beside another project's name, while another project is printed
+        # alone, is no project (an office's stamp on the sheets of each job).
+        solo = {
+            next(iter(own))
+            for p, _one in mine
+            if len(own := {job[k] for k in said[p]} & anchors) == 1
+        }
+        anchors &= solo or anchors
+        # A name holding the names of two other projects is both projects' (a cover's or a shared
+        # sheet's "HOTEL NORTH + HOTEL SOUTH"): no project, and its page is in none.
+        both = {
+            job[k]
+            for k in job
+            if len({job[n] for n in job if set(n.split()) <= set(k.split())} & anchors - {job[k]})
+            >= 2
+        }
+        anchors -= both
+        printed_on = Counter(k for p, _one in mine for k in said[p])
+        names = {k: n for p, _one in mine for k, n in said[p].items()}
+        first: dict[str, str] = {}
+        words: dict[str, set[str]] = {}
+        for k in sorted(job, key=lambda k: (k not in named, -printed_on[k], -len(k.split()), k)):
+            first.setdefault(job[k], k)
+            words.setdefault(job[k], set()).update(k.split())
         current = Place()
         for page in ordered:
             found = read.get((file, page))
@@ -174,24 +322,25 @@ def places(
                 out[(file, page)] = Place()
                 continue
             one = found
-            # A name that is no project of the file (an office's stamp) is left out; names of two
+            # A name of no project of the file (an office's stamp) is left out; names of two
             # projects (a cover listing them) place the page in none.
-            own = {match(key(n), anchors, anchors) for n in one.get("projects") or []} - {None}
+            here = {job[k] for k in said.get(page, {})}
+            own = here & anchors
             kind = str(one.get("set_kind") or "unknown")
-            if len(own) == 1:
-                anchor = next(iter(own))
-                assert anchor is not None
+            if len(own) == 1 and not here & both:
+                anchor = first[next(iter(own))]
                 place = Place(
                     anchor,
                     names.get(anchor, anchor),
                     kind in REFERENCE_KINDS
                     or (kind == "unknown" and current.reference and current.project == anchor),
+                    words=frozenset(words[job[anchor]]),
                 )
-            elif own:
+            elif own or here & both:
                 place = Place(reference=kind in REFERENCE_KINDS)
             else:
                 reference = kind in REFERENCE_KINDS if kind != "unknown" else current.reference
-                place = Place(current.project, current.name, reference)
+                place = Place(current.project, current.name, reference, words=current.words)
             if introduces(file, page, one):
                 current = place
             out[(file, page)] = place

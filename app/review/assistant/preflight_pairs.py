@@ -65,9 +65,10 @@ _RUNNING: set[str] = set()
 _LOCK = threading.Lock()
 
 
-#: Changes when what is kept changes (2: the projects grouping, the pages not matched for sure):
-#: an older kept estimate is worked out again.
-VERSION: Final = 2
+#: Changes when what is kept changes (2: the projects grouping, the pages not matched for sure;
+#: 3: one job's names read whole and in parts are one project, `projects._jobs`): an older kept
+#: estimate is worked out again.
+VERSION: Final = 3
 
 
 def fingerprint(folder: Path) -> str:
@@ -180,6 +181,7 @@ def project_summary(folder: Path) -> ProjectSummary | None:
         worklist._by_page(read("dims.json")), read("annotations.json")
     )
     placed = projects.places(index, entries, printed)
+    words = projects.vocabulary(placed)
     architect: dict[str, str] = {}
     for (file, page), place in placed.items():
         if (
@@ -204,7 +206,7 @@ def project_summary(folder: Path) -> ProjectSummary | None:
             name=vendor_names[key],
             vendor_pages=tuple(sorted(pages)),
             architect=any(
-                projects.match(key, architect, projects.siblings_of(placed, main, source))
+                projects.match(key, architect, projects.siblings_of(placed, main, source), words)
                 is not None
                 for source in sorted(vendor_sources[key], key=str)
             ),

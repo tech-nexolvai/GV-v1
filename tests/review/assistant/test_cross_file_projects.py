@@ -450,6 +450,152 @@ def test_projects_come_from_the_pages_that_introduce_them() -> None:
     assert projects.match("hotel", ["city hotel", "grand hotel"]) is None
 
 
+def _file_of(file: str, pages: list[tuple[list[str], bool]]) -> tuple[dict, list[dict]]:
+    """A file's set index reads (each page's project names, whether it introduces the pages
+    after it) and its page map's entries."""
+    index = {
+        f"{file}#{n}": _read(file, n, projects=names, introduces=opens)
+        for n, (names, opens) in enumerate(pages, start=1)
+    }
+    return index, [{"file": file, "page": n} for n in range(1, len(pages) + 1)]
+
+
+def test_one_jobs_name_read_whole_and_in_parts_is_one_project() -> None:
+    """The set index reads one title block differently from one build to the next: the hotel and
+    its town as one name on some sheets, as two names on others, beside GV's stamp or an office's.
+    Every sheet is still in the one job, and the vendor's job (written "HN") still names it."""
+    index, entries = _file_of(
+        ARCH,
+        [
+            (["HOTEL NORTH", "HOTEL NORTH AT RIVERTON, ST"], True),
+            (["HOTEL NORTH", "RIVERTON , ST"], True),
+            (["HOTEL NORTH", "ACME STONE"], True),
+            (["ACME STONE", "HOTEL NORTH"], False),
+            (["HOTEL NORTH", "RIVERTON , ST"], False),
+            (["HOTEL NORTH RIVERTON, ST"], False),
+            (["HOTEL NORTH"], False),
+            (["GRANITI VICENTIA", "HOTEL NORTH RIVERTON , ST"], False),
+            (["GRANITI VICENTIA"], False),
+        ],
+    )
+    placed = projects.places(index, entries)
+    job = {placed[(ARCH, n)].project for n in range(1, 10)}
+    assert len(job) == 1 and None not in job, job
+    (name,) = job
+    assert name is not None
+    # The stamps are no project of the file; the job's words hold its town.
+    assert projects.vocabulary(placed) == {
+        name: frozenset(projects.key("HOTEL NORTH AT RIVERTON ST").split())
+    }
+    for vendor in ("hn luxe riverton st", "hn riverton st public areas"):
+        assert projects.match(vendor, {name}, {vendor}, projects.vocabulary(placed)) == name
+    # Without the job's words (the name alone), the town read apart is lost.
+    assert projects.match("hn luxe riverton st", {"hotel north"}, {"hn luxe riverton st"}) is None
+
+
+def test_one_architect_job_takes_the_vendors_two_wordings_never_another_job_of_its_town() -> None:
+    """One job in the architect's file; the vendor's one file words its job two ways that share
+    only the town. Both are the architect's job; a vendor job whose rival shares a word with the
+    architect's that it lacks is another job of the town (still a drawing needed)."""
+    public, luxe = "hn riverton st public areas", "hn luxe riverton st"
+    architect = ["hotel north riverton st"]
+    for name in (public, luxe):
+        assert projects.match(name, architect, {public, luxe}) == architect[0]
+    maple, star = "maple suites riverton", "star suites riverton"
+    assert projects.match(maple, [star], {maple, star}) is None
+    assert projects.match(star, [star], {maple, star}) == star
+    # Two architect jobs: the town names neither.
+    assert projects.match(luxe, [*architect, "hotel south riverton st"], {public, luxe}) is None
+
+
+def test_two_jobs_a_cover_lists_together_stay_two_projects() -> None:
+    """Two hotels in one architect's file, a cover and a shared sheet naming both: each hotel's
+    sheets stay its own, the name of both is no project (its page is in none), and the vendor's
+    hotel names only its own."""
+    index, entries = _file_of(
+        ARCH,
+        [
+            (["HOTEL NORTH + HOTEL SOUTH", "HOTEL NORTH", "HOTEL SOUTH"], True),
+            (["HOTEL NORTH + HOTEL SOUTH"], False),
+            (["HOTEL NORTH", "ACME STONE"], False),
+            (["HOTEL NORTH"], False),
+            (["HOTEL SOUTH", "ACME STONE"], False),
+            (["HOTEL SOUTH"], False),
+        ],
+    )
+    placed = projects.places(index, entries)
+    assert [placed[(ARCH, n)].project for n in range(1, 7)] == [
+        None,
+        None,
+        "hotel north",
+        "hotel north",
+        "hotel south",
+        "hotel south",
+    ]
+    words = projects.vocabulary(placed)
+    pool = {"hotel north", "hotel south"}
+    assert projects.match("hotel south public areas", pool, (), words) == "hotel south"
+    assert projects.match("hs riverton north wing", pool, (), words) == "hotel north"
+    # The brand alone, on sheets of both, names neither.
+    index[f"{ARCH}#7"] = _read(ARCH, 7, projects=["HOTEL"])
+    placed = projects.places(index, [*entries, {"file": ARCH, "page": 7}])
+    assert {p.project for p in placed.values()} == {None, "hotel north", "hotel south"}
+    assert projects.vocabulary(placed)["hotel south"] == {"hotel", "south"}
+
+
+def test_two_brands_in_one_building_and_a_scheme_suffix_are_one_job() -> None:
+    """One building of two brands: every architect sheet's title block names both brands (and the
+    town, read apart on some sheets, alone on one); the vendor's own sheets add their design
+    scheme's name. The vendor's brand and town name the architect's one job."""
+    arch, arch_entries = _file_of(
+        ARCH,
+        [
+            ([], False),
+            (
+                [
+                    "NORTHSTAR SUITES + EASTGATE INN",
+                    "TOWNVILLE, ST",
+                    "NORTHSTAR SUITES",
+                    "EASTGATE INN",
+                ],
+                True,
+            ),
+            (["NORTHSTAR SUITES + EASTGATE INN", "TOWNVILLE, ST", "A NEW 80 ROOM HOTEL"], False),
+            (["TOWNVILLE, ST"], False),
+            (["NORTHSTAR SUITES + EASTGATE INN"], False),
+            (["NORTHSTAR SUITES + EASTGATE INN TOWNVILLE, ST A NEW 80 ROOM HOTEL"], False),
+        ],
+    )
+    shop, shop_entries = _file_of(
+        SHOP,
+        [
+            (
+                [
+                    "Northstar Suites Townville, ST",
+                    "Northstar Suites Townville, ST GR- Kitchenette SD",
+                    "(BRIGHT LIVING SCHEME)",
+                ],
+                True,
+            ),
+            (["Northstar Suites Townville, ST (Bright Living Scheme)"], False),
+            (["Northstar Suites Townville, ST"], False),
+            (
+                ["Northstar Suites Townville, ST (Bright Living Scheme)", "GV_NS, Townville, ST"],
+                False,
+            ),
+        ],
+    )
+    placed = projects.places({**arch, **shop}, [*arch_entries, *shop_entries])
+    architect = projects.architect_projects(placed, [ARCH])
+    assert len(architect) == 1 and placed[(ARCH, 1)].project is None
+    assert {placed[(ARCH, n)].project for n in range(2, 7)} == architect
+    (vendor,) = {placed[(SHOP, n)].project for n in range(1, 5)}
+    assert vendor is not None
+    siblings = projects.siblings_of(placed, SHOP, None)
+    assert siblings == {vendor}
+    assert projects.match(vendor, architect, siblings, projects.vocabulary(placed)) in architect
+
+
 # ---- the work list: projects, reference sets, views, key plans, tables ------------------------------
 
 
