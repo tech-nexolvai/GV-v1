@@ -1,0 +1,1620 @@
+# GV Review's fixed question list, and the kinds of item the questions are asked about.
+#
+# Why this file exists: every finding in GV Review is made by an AI, and code only does arithmetic
+# on numbers the AI already wrote down. A problem the AI never notices is invisible to the whole
+# system. Asking an open question ("what looks wrong on this page?") gives a different answer every
+# run and carries no GV knowledge. A fixed question ("what is this top's finished depth, and what
+# does the architect give for it?") is answered the same way every run, and the question itself
+# carries the settled rule that governs the answer and the mistakes not to make.
+#
+# This file is generic millwork review knowledge. It holds no client, project or drawing names, and
+# no numbers taken from a client's drawing. Every rule in it is either GV's own company standard or
+# something settled with the client and recorded as settled; nothing here was invented.
+#
+# How to read one question:
+#   key               a short stable name; code and reports use it, it never changes
+#   asks              the question in plain English, as a person would ask it
+#   item_kinds        which kinds of item it is asked about ("*" means every kind)
+#   needs             the facts the answer needs: which side they come from, and the view that
+#                     normally carries each one
+#   rule              the settled rule that decides the answer, written so it cannot be read two ways
+#   problem_when      what makes the answer a problem
+#   not_a_problem_when  the things that look like a problem and are not (the anti-patterns)
+#   decided_by        "code" = code can prove it from numbers, so it can go red
+#                     "ai"   = only a person or the AI can judge it; it is always a please-check
+#   compares          what the answer is weighed against: "vendor_only" (the vendor's own sheets
+#                     answer it, no architect needed), "gv_rule" (a GV standard or job setting
+#                     decides it), or "architect" (it is weighed against the architect's drawing).
+#                     Left out, it is worked out from the facts the question needs.
+#   from              where the question came from: "true_answers" (a run found a real problem by
+#                     asking it), "misses" (a hand audit found a real problem nobody asked about),
+#                     "both", or "rulebook" (GV's own checklist or published rulebook)
+#   seen_as           measurement only: how an answer to this question looks in the old open-ended
+#                     runs, so coverage can be measured on saved runs. Not part of the question.
+#
+# Two things measured over 683 audited answers shape the whole list, and are written into it:
+#
+# 1. **What the question is weighed against predicts its quality far better than who asks it.**
+#    "Do this sheet's own parts add up to its own overall?" was right 98.6% of the time over 73
+#    audited answers on three jobs. Anything weighed against the architect was right 67% of the time
+#    and produced almost all of the noise. So the vendor-only and GV-rule questions come first, and
+#    the architect ones carry the longest rule text and the most anti-patterns; none of them is
+#    asked until the architect view has been settled (see `architect_view_for_this_item`).
+#
+# 2. **The unit of review is the item's sheet set, not the page.** Nearly a quarter of all false
+#    alarms were one sheet being asked for what another sheet of the same item already shows. Every
+#    question is answered from the item's whole sheet set; a fact printed on the item's first sheet
+#    closes the question for every later sheet of that item.
+
+schema: gv-review-questions/1
+
+# ---------------------------------------------------------------------------------------------
+# The item taxonomy: the kinds of thing GV reviews, and the views that carry their facts.
+# ---------------------------------------------------------------------------------------------
+item_kinds:
+  - key: countertop_piece
+    label: Countertop piece
+    what: >-
+      One piece of stone or quartz top, with its overhang, edges and splashes. A run split by a
+      range or a corner is more than one piece.
+    views:
+      stone_plan: the top drawn on its own sheet, with its overall sizes, cut-outs and edge marks
+      cabinet_plan: the same top drawn over the cabinet run, with the run's wall-to-wall string
+      section: the top's thickness, overhang and counter height
+      elevation: the splash height and the top's edge seen end-on
+
+  - key: sink_cutout_sheet
+    label: Sink or appliance cut-out sheet
+    what: >-
+      A sheet drawn for one sink, cooktop or waste hole, giving the cut-out's size, its offsets and
+      its holes. One cut-out sheet often serves several tops.
+    views:
+      cutout_plan: the cut-out's width, depth, front and back offsets and hole positions
+      section: the cut depth and any rebate
+      spec_sheet: the maker's sheet for the sink or appliance, with its outside and inside sizes
+
+  - key: base_cabinet_run
+    label: Base cabinet run
+    what: >-
+      The row of base cabinets, drawer banks, fillers and appliance openings along one wall, under
+      one countertop.
+    views:
+      plan: the run's wall-to-wall string and each part's width
+      elevation: the same widths, the toe kick, the fronts and their finish tags
+      section: the cabinet depth, the counter height and the box build-up
+
+  - key: upper_cabinet_run
+    label: Upper cabinet run
+    what: >-
+      The row of wall cabinets, open shelf bays, microwave bay and panels above a counter.
+    views:
+      elevation: the bay widths, the heights and the fronts
+      wall_plan: the same widths seen from above, with the cut-outs in the top below
+      section: the box height and depth
+
+  - key: vanity
+    label: Vanity
+    what: >-
+      A bathroom vanity: its top, its cabinet or steel frame, its sink and its splashes, usually one
+      item on one or two sheets.
+    views:
+      plan: the top's width and depth, the cut-out's position
+      elevation: the overall height, the fronts, the open shelf and the legs
+      section: the counter height, the top thickness, the frame and the clear space below
+
+  - key: filler
+    label: Filler or scribe
+    what: >-
+      A narrow piece that closes the gap between a cabinet and a wall, or between two units. It is
+      a part of a run, not a cabinet.
+    views:
+      plan: its width inside the run's string
+      elevation: its width and its finish tag
+
+  - key: splash
+    label: Splash
+    what: >-
+      A back splash along the wall behind a top, or a side splash against a wall at one end.
+    views:
+      stone_plan: its length and which end it is at
+      elevation: its height above the top
+      section: its thickness and whether it is mitred or set on
+
+  - key: accessory_detail
+    label: Accessory detail
+    what: >-
+      A hook rail, floating shelf, cup-hook shelf, rod, bracket, leg or metal support frame drawn as
+      its own detail.
+    views:
+      detail: its overall size and its parts
+      elevation: where it sits and how high
+      section: how it is fixed
+
+  - key: appliance_opening
+    label: Appliance opening
+    what: >-
+      The space left for a refrigerator, range, cooktop, dishwasher or microwave. It is an opening,
+      not a cabinet: it has no carcass and no filler of its own.
+    views:
+      plan: the opening's width and the gap held beside it
+      elevation: the opening's height and the appliance tag
+
+  - key: key_plan
+    label: Key plan or room matrix
+    what: >-
+      A floor plan or table that says which item goes in which room, with the room-type tags, the
+      detail callouts and the counts.
+    views:
+      key_plan: the room numbers, their type tags and the detail callouts
+      matrix: the per-floor and total counts for each item and hand
+
+  - key: cover_sheet
+    label: Cover, checklist or spec sheet
+    what: >-
+      A sheet that carries no item of its own: the cover, the general notes, a checklist, a material
+      board, a lighting layout or a maker's spec sheet.
+    views:
+      notes: the set-wide notes and who supplies what
+      board: the finish and stone swatches
+      spec_sheet: a sink's or appliance's own sizes
+
+# ---------------------------------------------------------------------------------------------
+# The questions.
+# ---------------------------------------------------------------------------------------------
+questions:
+
+  # --- asked about every item -----------------------------------------------------------------
+
+  - key: string_adds_up
+    asks: Do the printed parts of each dimension string add up to the printed overall of that string?
+    item_kinds: ["*"]
+    needs:
+      - side: vendor
+        fact: every part of one dimension string, in inches
+        view: any view that carries a dimension string
+      - side: vendor
+        fact: the printed overall of that same string
+        view: the same view
+    rule: >-
+      Inches are compared exactly and millimetres are ignored. Parts and overall belong to the same
+      string only when their outer ends land on the same extension lines. The inch figures must add
+      up even when the millimetres do: a part printed one sixteenth too large is still wrong.
+    problem_when: the inch parts do not add up to the inch overall.
+    not_a_problem_when:
+      - A part lies outside the overall's extension lines; it belongs to a neighbouring string.
+      - The millimetres add up but the inches do not; that is still a problem, because inches count.
+      - A label is printed outside a narrow gap; where the text sits does not move the dimension.
+      - A string could not be read well enough to add up; that is a reading gap to report as a gap, never a difference.
+    decided_by: code
+    compares: vendor_only
+    from: both
+    seen_as:
+      created_by: [string_check, consistency, vendor_arithmetic, page_reviewer]
+      words: ["add up", "adds to", "string", "parts sum", "overall", "does not add"]
+
+  - key: inch_labels_match_the_millimetres
+    asks: Does every millimetre value carry the same, correct inch figure everywhere it appears?
+    item_kinds: ["*"]
+    needs:
+      - side: vendor
+        fact: each dimension printed as a millimetre value with an inch figure beside it
+        view: any view, detail or note
+      - side: vendor
+        fact: the same millimetre value where it appears again, on this sheet or another sheet of the item
+        view: the item's other views and sheets
+    rule: >-
+      The vendor designs in millimetres and prints an inch figure beside each one. One millimetre
+      value has one right inch figure, and it must be the same figure every time that value appears.
+      Inches are what GV compares, so a wrong or inconsistent inch figure is a difference even when
+      the millimetres are right.
+    problem_when: one millimetre value is printed with two different inch figures, or an inch figure is not the right conversion of its millimetre value.
+    not_a_problem_when:
+      - A value is deliberately repeated above and below one view with the same figure.
+    decided_by: code
+    compares: vendor_only
+    from: misses
+    seen_as:
+      created_by: [page_reviewer, consistency, helper]
+      words: ["printed as", "rounded", "conversion", "millimetre", "mm", "both", "label slip", "[0]"]
+
+  - key: parts_have_an_inch_figure
+    asks: Does every part of a dimension string carry an inch figure at all?
+    item_kinds: ["*"]
+    needs:
+      - side: vendor
+        fact: each part of each dimension string, and whether it prints an inch figure
+        view: any view, detail or note
+    rule: >-
+      GV compares inches. A part printed in millimetres only, or printed as zero inches when the
+      piece plainly has a size, cannot be checked, and the honest answer is that it cannot be
+      checked, not that it agrees.
+    problem_when: a part of a string has no inch figure, or prints zero inches for a piece that has a size.
+    not_a_problem_when:
+      - The whole sheet is drawn in inches alone; there is nothing to convert.
+    decided_by: code
+    compares: vendor_only
+    from: misses
+    seen_as:
+      created_by: [page_reviewer, consistency, helper]
+      words: ["mm only", "no inch", "[0]", "zero", "cannot be checked", "not readable in inches"]
+
+  - key: same_value_across_sheets
+    asks: Does every sheet that draws this item print the same value for the same dimension?
+    item_kinds: ["*"]
+    needs:
+      - side: vendor
+        fact: one dimension of the item, as printed on its own sheet
+        view: any view on the item's sheet set
+      - side: vendor
+        fact: the same dimension as printed on the item's other sheets
+        view: the item's other sheets
+    rule: >-
+      A dimension that names the same two ends of the same item must read the same on every sheet of
+      that item, in inches, exactly. This covers a top's length on its stone sheet against the
+      cabinet plan, a cut-out size on the cut-out sheet against the top sheet, and a cabinet width
+      printed on both the plan and the elevation.
+    problem_when: two sheets of the same item print different inch values for the same dimension.
+    not_a_problem_when:
+      - The two values measure different spans; a run's length and a top's length are not the same span.
+      - One sheet shows the piece and the other shows the opening it sits in.
+    decided_by: code
+    from: both
+    seen_as:
+      created_by: [sink_sheets, page_reviewer, whole_look]
+      words: ["against the sheet", "on another sheet", "its own sheet", "two sheets", "disagree", "cross-sheet"]
+
+  - key: mirror_twin_sizes
+    asks: Where an item is made in a left hand and a right hand, do the two hands carry the same sizes?
+    item_kinds: ["*"]
+    needs:
+      - side: vendor
+        fact: each dimension of the left-hand item
+        view: the left-hand sheets
+      - side: vendor
+        fact: the same dimension of the right-hand item
+        view: the right-hand sheets
+    rule: >-
+      A mirrored pair is the same item made both ways round. Every size must match between the two
+      hands; only the side a feature sits on changes.
+    problem_when: the two hands print different sizes for the same part, or the two hands' counts are swapped.
+    not_a_problem_when:
+      - The layout is mirrored. A mirrored room is intended and is never itself a difference.
+      - A feature is on the opposite side in the opposite hand; that is what a mirror is.
+    decided_by: code
+    from: misses
+    seen_as:
+      created_by: [page_reviewer, whole_look]
+      words: ["opposite hand", "twin", "mirror", "left hand", "right hand", "L/R"]
+
+  - key: architect_view_for_this_item
+    asks: Which architect view is this item's design, and what makes it certain it is this item and not a look-alike?
+    item_kinds: ["*"]
+    needs:
+      - side: vendor
+        fact: the item's code, its room list and its wall-to-wall size
+        view: the title block and the plan
+      - side: architect
+        fact: the candidate view's own item tag, room type, overall size and hand
+        view: the architect plan, elevation or detail
+    rule: >-
+      An item is paired with an architect view only when something names it: the architect printing
+      the same item tag, the same room number, the same room type, or the same wall-to-wall size.
+      A view that merely looks like it is not a pair. Where no view names the item, the honest answer
+      is that there is nothing to compare, not a guess.
+    problem_when: no architect view can be named for an item the architect clearly draws, or the chosen view belongs to another room, another hand, another brand or another sheet of the set.
+    not_a_problem_when:
+      - One architect view legitimately serves several items; a cut-out sheet used by two kitchens pairs with both.
+      - The architect genuinely draws nothing for this item; that is "nothing to compare", not a miss.
+    decided_by: ai
+    from: misses
+    seen_as:
+      created_by: [pairing, lead, whole_look]
+      words: ["best guess", "architect page", "no architect drawing", "paired", "wrong page", "no sheet"]
+
+  - key: title_block_complete
+    asks: Is the title block filled in, and does every cell in it agree with the views on the sheet?
+    item_kinds: ["*"]
+    needs:
+      - side: vendor
+        fact: the item number, description, overall size, thickness, colour, quantity, page and date cells
+        view: the title block
+      - side: vendor
+        fact: the overall sizes drawn in the views on the same sheet
+        view: plan and elevation
+    rule: >-
+      Every cell the vendor's own template carries is either filled or deliberately blank, and a
+      filled cell must agree with what the views draw. An overall size cell that disagrees with the
+      drawn overall is a difference like any other.
+    problem_when: a cell is blank on a sheet that carries an item, or a filled cell disagrees with the drawn value.
+    not_a_problem_when:
+      - A cell is blank on a shared template sheet that serves several items, such as a cut-out sheet tied to its tops by the sink model.
+      - The stone sheet and the cabinet sheet of one item share one item number; neither is missing its own.
+    decided_by: ai
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer]
+      words: ["title block", "item no", "item number cell", "overall size", "blank", "quantity cell", "colour cell"]
+
+  - key: item_number_matches_architect_tag
+    asks: Is the item number on the sheet the tag the architect uses for this item?
+    item_kinds: ["*"]
+    needs:
+      - side: vendor
+        fact: the item code printed on the sheet and in the title block
+        view: the title block and the sheet heading
+      - side: architect
+        fact: the tag the architect prints on this item in the room
+        view: the architect plan or elevation
+    rule: >-
+      The vendor's item code must be the architect's tag for the same item. A suffix the architect
+      uses to separate the top from the cabinet (a trailing letter on the same code) is the same
+      item, not a different one.
+    problem_when: the vendor uses a code the architect gives to a different item, or the two codes name different rooms.
+    not_a_problem_when:
+      - The architect's code has a suffix for the stone and the vendor's does not; that is naming, not a different item.
+      - Two sheets of one item share one item number.
+    decided_by: code
+    from: both
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look]
+      words: ["item number", "item code", "tag", "named", "called"]
+
+  - key: sheet_revision_and_date
+    asks: Was this sheet drawn against the architect's current revision?
+    item_kinds: ["*"]
+    needs:
+      - side: vendor
+        fact: the sheet's date and revision
+        view: the title block
+      - side: architect
+        fact: the set's issue date and revision, and whether this item sits inside a revision cloud
+        view: the architect sheet's title block and the clouded area
+    rule: >-
+      A vendor sheet dated before the architect's current revision, for an item that sits inside that
+      revision's cloud, is drawn against superseded information and must be confirmed.
+    problem_when: the vendor sheet predates a revision that clouds this item.
+    not_a_problem_when:
+      - The dates differ but the item is outside every revision cloud.
+      - The whole vendor set carries one issue date; that alone is not a defect.
+    decided_by: ai
+    from: both
+    seen_as:
+      created_by: [page_reviewer, whole_look]
+      words: ["date", "revision", "rev 2", "cloud", "issued", "superseded"]
+
+  - key: view_titles_and_sheet_numbering
+    asks: Does each view have its own correct title, and are the sheets of this item numbered right?
+    item_kinds: ["*"]
+    needs:
+      - side: vendor
+        fact: every view title on the sheet and the cut markers they answer
+        view: all views on the sheet
+      - side: vendor
+        fact: the sheet-of-sheets numbering across the item's sheets
+        view: the title block
+    rule: >-
+      Each cut marker on a plan or elevation is answered by exactly one view with that letter or
+      number, and each sheet of an item carries its own place in the set.
+    problem_when: two views share one title, a view title is misspelt, or two sheets of one item carry the same sheet-of number.
+    not_a_problem_when:
+      - A view appears on a later sheet than its cut marker; sections on a second sheet are normal.
+    decided_by: ai
+    from: both
+    seen_as:
+      created_by: [page_reviewer]
+      words: ["view title", "both titled", "same title", "section", "sheet number", "misspelt", "typo"]
+
+  - key: material_table_covers_the_tags
+    asks: Is every finish, metal and stone tag used on this item's sheets defined in the item's material table, and is every row in the table used?
+    item_kinds: ["*"]
+    needs:
+      - side: vendor
+        fact: every finish or material tag used in any view of the item
+        view: plan, elevation, section and detail
+      - side: vendor
+        fact: the material table on the item's sheet set
+        view: the sheet that carries the table, usually the first sheet of the item
+    rule: >-
+      Asked once per item, over the item's whole sheet set, never per view. A tag defined on the
+      item's first sheet covers every later sheet of that item. Across four audited runs this topic
+      produced 57 answers and no first-time real problem: 31 were trivial repeats and 14 were wrong,
+      every one of them a view being asked to repeat what a sibling sheet already carried.
+    problem_when: a tag is used in a view and defined nowhere on the item's sheets, or a row in the table is never used.
+    not_a_problem_when:
+      - The tag is defined on another sheet of the same item.
+      - A view does not repeat a tag that the item's elevation already carries; views need not repeat each other.
+      - The sheet is GV's own stone sheet and names the stone in its own specification cell.
+      - The architect's set carries item codes but no finish or material schedule; an item code is not a finish code, so there is nothing to compare.
+    decided_by: ai
+    compares: vendor_only
+    from: rulebook
+    seen_as:
+      created_by: [page_reviewer, whole_look]
+      words: ["material table", "no tag", "not in the table", "untagged", "swatch", "legend", "finish tag", "stone tag"]
+
+  - key: quantity_and_room_list_agree
+    asks: Does the quantity box agree with the room list printed on the item's own sheets?
+    item_kinds: ["*"]
+    needs:
+      - side: vendor
+        fact: the quantity in the title block
+        view: the title block
+      - side: vendor
+        fact: the room list or total note on the item's sheets
+        view: the notes on the item's sheets
+    rule: >-
+      The quantity, the number of rooms listed and the printed total must be the same number on every
+      sheet of the item. The same holds for a part's own quantity note: a note calling for a number
+      of fillers or panels must match the parts the views draw.
+    problem_when: the quantity box, the room list and the printed total do not agree, or a part-quantity note calls for parts the views do not draw.
+    not_a_problem_when:
+      - The item's two hands have separate quantities; each is counted against its own room list.
+    decided_by: code
+    from: both
+    seen_as:
+      created_by: [page_reviewer]
+      words: ["quantity", "qty", "room list", "total qty", "rooms", "sets"]
+
+  - key: legible_text_and_values
+    asks: Is every dimension and note on this sheet readable, and does every value carry a real number?
+    item_kinds: ["*"]
+    needs:
+      - side: vendor
+        fact: dimension texts, notes and callouts, including ones that overlap
+        view: all views on the sheet
+    rule: >-
+      A value that reads as a question mark, as "TBD", or as zero inches when the piece clearly has a
+      size, is not a value. Text printed over text that cannot be separated is not a value either.
+    problem_when: a dimension or note cannot be read, or carries a placeholder instead of a size.
+    not_a_problem_when:
+      - Two labels overlap but both can still be read.
+      - A dimension is deliberately repeated above and below a view.
+    decided_by: ai
+    from: both
+    seen_as:
+      created_by: [page_reviewer]
+      words: ["overprint", "printed over the", "illegible", "TBD", "question mark", "unreadable", "overlap"]
+
+  # --- countertop piece -----------------------------------------------------------------------
+
+  - key: ct_overall_length
+    asks: What is this countertop piece's overall length, and what does the run under it, plus a field cut at each wall end, call for?
+    item_kinds: [countertop_piece]
+    needs:
+      - side: vendor
+        fact: the top's printed overall length
+        view: stone_plan
+      - side: vendor
+        fact: the cabinet run under the top, wall to wall, and which ends meet a wall
+        view: cabinet_plan
+      - side: gv_rule
+        fact: the field cut added per wall end, 1 inch as GV's company standard unless the job sets another
+        view: the job settings
+      - side: architect
+        fact: the same run's wall-to-wall length, or the parts that make it up
+        view: plan or elevation
+    rule: >-
+      A countertop is the cabinet run it sits on plus one field cut at each end that meets a wall.
+      A free or finished end gets the end overhang instead, which has no GV standard and must be
+      entered per job. Inches are compared exactly; millimetres are ignored. Where the architect
+      prints the parts of the run and not its total, the parts are added.
+    problem_when: the top's length is not the run plus a field cut at each wall end, or it differs from the architect's run.
+    not_a_problem_when:
+      - The run is split into more than one top; each piece is measured against its own part of the run.
+      - A field cut note calls for oversize stock to be trimmed on site; the note is stock, not a design size.
+    decided_by: code
+    compares: gv_rule
+    from: both
+    seen_as:
+      created_by: [field_cut, page_reviewer, helper, whole_look, formulas]
+      rule_ids: [CT-WIDTH-001, CT-ARCH-WIDTH-001]
+      words: ["field cut", "top length", "run + 1", "wall end", "overall length", "wall to wall"]
+
+  - key: ct_finished_depth
+    asks: What is this top's finished depth, and what does the architect give for it?
+    item_kinds: [countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the top's printed depth, front to back
+        view: stone_plan or section
+      - side: vendor
+        fact: the cabinet depth under it and the front overhang
+        view: section
+      - side: architect
+        fact: the depth from the wall to the top's front edge
+        view: plan or section
+      - side: gv_rule
+        fact: the job's cabinet depth and front overhang settings
+        view: the job settings
+    rule: >-
+      Countertop depth is the cabinet depth plus the front overhang. Cabinet depth is the carcass
+      depth plus the door thickness, three quarters of an inch being typical. Neither the overhang
+      nor the cabinet depth has a GV standard; both are entered per job, and without them the depth
+      is checked against the architect alone.
+    problem_when: the vendor's depth differs from the architect's, or from the cabinet depth plus the overhang.
+    not_a_problem_when:
+      - A side splash's length is compared with the whole top depth; those are different spans.
+      - A section measures to the carcass behind a fixed front panel; the panel's face is the cabinet face.
+    decided_by: code
+    from: both
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look, formulas, depth]
+      rule_ids: [CT-DEPTH-001]
+      words: ["top depth", "countertop depth", "front to back", "wall to front", "depth"]
+
+  - key: ct_thickness
+    asks: How thick is the top, and how thick does the architect draw it?
+    item_kinds: [countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the top's printed thickness
+        view: section or elevation
+      - side: architect
+        fact: the thickness printed on the architect's section or elevation
+        view: section or elevation
+    rule: >-
+      The thickness is compared in inches, exactly. A thickness given in centimetres is converted and
+      compared in inches like any other value.
+    problem_when: the vendor's thickness differs from the architect's.
+    not_a_problem_when:
+      - The architect prints the thickness only once for the set; one printed value governs every top of that set.
+    decided_by: code
+    from: both
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look]
+      words: ["thickness", "top thickness", "2 cm", "thick"]
+
+  - key: ct_counter_height
+    asks: How high is the finished counter above the floor, and what height does the architect give?
+    item_kinds: [countertop_piece, vanity, base_cabinet_run]
+    needs:
+      - side: vendor
+        fact: the floor-to-top-surface height
+        view: section or elevation
+      - side: architect
+        fact: the printed counter height
+        view: section or elevation
+    rule: >-
+      The counter height is measured to the top's finished surface, under any splash. A vendor height
+      that is the cabinet plus the top must be added before it is compared.
+    problem_when: the finished counter height differs from the architect's.
+    not_a_problem_when:
+      - The architect's height runs to the top surface and the vendor's includes the splash; add or subtract the splash before comparing.
+      - An accessible item has its own lower height; compare it with the accessible height, not the standard one.
+    decided_by: code
+    from: both
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look]
+      words: ["counter height", "floor to", "height above the floor", "34", "36"]
+
+  - key: ct_front_overhang
+    asks: How far does the top stand out past the cabinet front?
+    item_kinds: [countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the overhang printed between the cabinet face and the top's front edge
+        view: section or plan
+      - side: gv_rule
+        fact: the job's front overhang setting
+        view: the job settings
+    rule: >-
+      The front overhang is the distance from the cabinet's finished face, door included, to the
+      top's front edge. It has no GV standard; it is entered per job. It matters beyond its own size
+      because every offset measured from the top's edge is that much further from the cabinet.
+    problem_when: the overhang differs from the job's setting, or it changes along one continuous top.
+    not_a_problem_when:
+      - No job overhang has been entered; the answer is then that the setting is missing, not that the overhang is wrong.
+    decided_by: code
+    from: both
+    seen_as:
+      created_by: [page_reviewer, helper, sink_offset, formulas]
+      words: ["overhang", "past the cabinet", "front edge", "stands out"]
+
+  - key: ct_end_conditions
+    asks: Which ends of this top meet a wall, and which are free or finished?
+    item_kinds: [countertop_piece, vanity, splash]
+    needs:
+      - side: vendor
+        fact: the end marks on the top's own sheet, showing which ends are eased and polished
+        view: stone_plan
+      - side: vendor
+        fact: the walls drawn at each end of the run
+        view: cabinet_plan
+      - side: architect
+        fact: the walls or open bays at each end of the run
+        view: plan or elevation
+    rule: >-
+      A wall end takes a field cut; a free or finished end takes the end overhang. The end condition
+      must be the same on the top's sheet, on the cabinet sheet and on the architect's plan, because
+      every length check depends on it.
+    problem_when: the ends are drawn differently on two sheets of the same item, or differently from the architect.
+    not_a_problem_when:
+      - Both ends are free and polished, and the architect also draws them free.
+    decided_by: ai
+    compares: vendor_only
+    from: both
+    seen_as:
+      created_by: [field_cut, page_reviewer, whole_look, helper]
+      words: ["wall end", "free end", "polished", "eased", "open bay", "end condition", "scribe"]
+
+  - key: ct_pieces_and_seams
+    asks: How many pieces is this top made in, and where are the seams?
+    item_kinds: [countertop_piece]
+    needs:
+      - side: vendor
+        fact: the number of pieces and the printed position of each joint
+        view: stone_plan
+      - side: vendor
+        fact: the same joints as marked on the cabinet plan, and what is under them
+        view: cabinet_plan
+      - side: architect
+        fact: the pieces the architect draws, where the architect draws them
+        view: plan
+    rule: >-
+      A seam is supported by the cabinet or leg under it. The seam positions on the top's own sheet
+      and on the cabinet sheet must be the same, and the piece count must match the architect where
+      the architect draws it.
+    problem_when: a seam falls over an open knee space with nothing under it, or the two sheets of the item put the seams in different places.
+    not_a_problem_when:
+      - The architect's drawing is design intent and shows no seams at all; the vendor then decides them.
+    decided_by: ai
+    compares: vendor_only
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, whole_look, helper]
+      words: ["seam", "joint", "pieces", "split", "two pieces"]
+
+  - key: ct_edge_profile
+    asks: What edge profile does the top have, and which edges get it?
+    item_kinds: [countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the edge profile note and the per-edge marks
+        view: stone_plan and section
+      - side: architect
+        fact: the edge profile the architect calls for
+        view: section or finish notes
+    rule: >-
+      Every exposed edge of a piece carries a named profile. The profile is compared only when the
+      architect names one.
+    problem_when: an exposed edge has no profile, or the profile differs from the architect's.
+    not_a_problem_when:
+      - Both sides call for the same profile; agreement is an answer, not a please-check.
+      - The architect names no profile; there is then nothing to compare.
+    decided_by: ai
+    from: rulebook
+    seen_as:
+      created_by: [page_reviewer, whole_look]
+      words: ["edge profile", "eased", "chamfer", "bullnose", "mitred edge", "edge"]
+
+  - key: ct_stone_tag_and_supply
+    asks: Which stone is this top, and who supplies it?
+    item_kinds: [countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the stone tag, colour name and supply note
+        view: stone_plan, the material table or the specification cell
+      - side: architect
+        fact: the architect's finish code for this counter
+        view: finish plan or schedule
+    rule: >-
+      The item's own sheet set must name the stone once and say who supplies it. The architect's
+      finish code and the vendor's stone name are two different things and are compared only when the
+      architect's schedule ties a code to a named stone.
+    problem_when: no sheet of the item names the stone, or the named stone is not the one the architect's schedule calls for.
+    not_a_problem_when:
+      - The stone is named on another sheet of the same item, or in the sheet's own specification cell.
+      - The architect gives only a finish code with no named material; there is nothing to compare.
+      - The architect's set carries item codes but no stone or finish schedule at all; an item code is not a material.
+    decided_by: ai
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, whole_look, helper]
+      words: ["stone tag", "quartz", "by GV", "supplier", "who supplies", "colour", "provided by"]
+
+  # --- splash ---------------------------------------------------------------------------------
+
+  - key: splash_length
+    asks: How long is the back splash, and how long is the top's run from wall to wall?
+    item_kinds: [splash, countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the splash's printed length
+        view: stone_plan
+      - side: vendor
+        fact: the top's run from wall to wall
+        view: stone_plan or cabinet_plan
+    rule: >-
+      A back splash runs the top's full length from wall to wall, except where a bay deliberately has
+      no splash, and then the splash covers exactly the bays that do.
+    problem_when: the splash is shorter or longer than the length it should cover, or it is drawn flush at the wrong end so the bare end is the wrong one.
+    not_a_problem_when:
+      - A bay with a counter-height appliance under a low cabinet has no splash by design; the splash covers the rest exactly.
+    decided_by: code
+    compares: vendor_only
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look, formulas]
+      words: ["backsplash", "back splash", "splash length", "splash runs"]
+
+  - key: splash_height_and_thickness
+    asks: How high and how thick is the splash?
+    item_kinds: [splash, countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the splash height above the top and its thickness
+        view: elevation and section
+      - side: architect
+        fact: the splash height the architect calls for
+        view: elevation, section or notes
+    rule: >-
+      The splash height is measured from the top's surface. Its thickness is a job setting, entered
+      per job, with no GV standard.
+    problem_when: the height differs from the architect's, or no sheet of the item gives it.
+    not_a_problem_when:
+      - The height is printed on another sheet of the same item; a section need not repeat the elevation.
+      - The architect draws a band but prints no number; a scaled value never decides.
+    decided_by: code
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look]
+      words: ["splash height", "splash thickness", "4\" splash", "band above"]
+
+  - key: splash_which_ends
+    asks: Which ends of this top get a side splash, and do those ends meet a wall?
+    item_kinds: [splash, countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the side splashes drawn, and at which ends
+        view: stone_plan
+      - side: vendor
+        fact: which ends meet a wall
+        view: cabinet_plan
+      - side: architect
+        fact: the splashes the architect draws against each wall
+        view: elevation or section
+    rule: >-
+      A side splash belongs at an end that meets a wall, and only there. It is drawn on the top's own
+      sheet; an elevation can show it only edge-on.
+    problem_when: a wall end has no side splash, a free end has one, or the architect draws a side splash the vendor does not.
+    not_a_problem_when:
+      - The side splash is "missing" from an elevation; the item's stone sheet supplies it.
+      - Both ends meet an appliance rather than a wall and both are eased.
+    decided_by: ai
+    from: both
+    seen_as:
+      created_by: [page_reviewer, whole_look, helper]
+      words: ["side splash", "splash at the", "wrong end", "no splash"]
+
+  # --- sink and cut-outs ----------------------------------------------------------------------
+
+  - key: sink_cutout_size
+    asks: What size is the sink cut-out, and what does the sink's inside size less the clearance each side give?
+    item_kinds: [sink_cutout_sheet, countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the cut-out's printed width and depth
+        view: cutout_plan or stone_plan
+      - side: vendor
+        fact: the sink's inside width and depth
+        view: the sink note on the item's sheet, or the maker's spec sheet
+      - side: gv_rule
+        fact: the clearance held on each side, one quarter of an inch as GV's standard, editable per project
+        view: the job settings
+    rule: >-
+      A GV sink cut-out is the sink's inside size less the clearance on each side: the cut-out width
+      is the inside width less twice the clearance, and the cut-out depth is the inside depth less
+      twice the clearance. The clearance is one quarter of an inch unless the job sets another. The
+      sink's own maker's cut-out template is a hint, not the rule.
+    problem_when: the drawn cut-out is not the inside size less twice the clearance, in inches, exactly.
+    not_a_problem_when:
+      - The architect prints no cut-out size; GV's own rule still decides it, so the answer is never "nothing to compare".
+      - The millimetres work out and the inches do not; inches count.
+    decided_by: code
+    compares: gv_rule
+    from: both
+    seen_as:
+      created_by: [sink_offset, sink_sheets, page_reviewer, helper]
+      rule_ids: [CT-SINK-CUTOUT-WIDTH-001, CT-SINK-CUTOUT-DEPTH-001]
+      words: ["cut-out", "cutout", "clearance", "inside size", "bowl size", "cut out width", "cut out depth"]
+
+  - key: sink_front_offset
+    asks: How far is the cut-out from the cabinet front, and what is GV's front offset?
+    item_kinds: [sink_cutout_sheet, countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the printed offset from the front of the cut-out, and what its dimension line ends on
+        view: cutout_plan or stone_plan
+      - side: vendor
+        fact: the front overhang, so an offset measured from the stone's edge can be read
+        view: section
+      - side: gv_rule
+        fact: GV's front offset, 4 inches as the company standard, adjustable in special cases
+        view: the job settings
+      - side: architect
+        fact: the setback the architect gives from the front to the bowl
+        view: plan or section
+    rule: >-
+      GV's front offset is measured from the cabinet's front face, not from the stone's edge. An
+      offset printed from the stone's edge is held for a person and never adjusted by code: the
+      overhang is subtracted only to show the person what it means. The standard is 4 inches unless
+      the job sets another.
+    problem_when: the offset from the cabinet front is not GV's front offset, or the two sheets of one top print different offsets.
+    not_a_problem_when:
+      - The architect's setback runs to the bowl and the vendor's to the cut-out; those are different ends.
+      - The offset is measured from the stone's edge and no overhang is printed anywhere; the answer is then that it cannot be settled, held for a person.
+    decided_by: code
+    compares: gv_rule
+    from: both
+    seen_as:
+      created_by: [sink_offset, sink_sheets, page_reviewer, helper]
+      rule_ids: [CT-SINK-OFFSET-FRONT-001]
+      words: ["front offset", "from the front", "setback", "to the cut-out", "4\" from"]
+
+  - key: sink_back_offset
+    asks: How much top is left behind the cut-out?
+    item_kinds: [sink_cutout_sheet, countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the printed offset behind the cut-out, or the top depth and the front offset to work it out
+        view: cutout_plan or stone_plan
+      - side: gv_rule
+        fact: GV's minimum back offset, two and a half inches as the company standard
+        view: the job settings
+    rule: >-
+      The back offset is whatever the depth leaves behind the cut-out once the front offset and the
+      cut-out depth are taken off, and it must be at least GV's minimum.
+    problem_when: the back offset is less than the minimum.
+    not_a_problem_when:
+      - The back offset is larger than the minimum; the minimum is a floor, not a target.
+      - The top's depth is not known; the answer is then that the setting is missing.
+    decided_by: code
+    compares: gv_rule
+    from: rulebook
+    seen_as:
+      created_by: [sink_offset, page_reviewer]
+      rule_ids: [CT-BACK-OFFSET-MIN-001]
+      words: ["back offset", "behind the cut", "behind the sink"]
+
+  - key: sink_position_along_the_top
+    asks: Where along the top is the sink's centre, measured from a named end or wall?
+    item_kinds: [sink_cutout_sheet, countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the distance from a named end or wall to the cut-out's centre
+        view: stone_plan
+      - side: vendor
+        fact: the same distance as printed on the cabinet plan
+        view: cabinet_plan
+      - side: architect
+        fact: the architect's dimension to the sink or to the sink cabinet's centre
+        view: plan
+    rule: >-
+      The sink's centre is the sink base's centre. The distance must be measured from the same end on
+      both sheets of the item, and must agree with the architect where the architect prints it.
+    problem_when: the stone sheet and the cabinet plan put the sink in different places, or the position differs from the architect's.
+    not_a_problem_when:
+      - The two values are measured from opposite ends; convert before comparing.
+      - The architect gives the sink as a tag and a symbol with no dimension; there is nothing to compare.
+    decided_by: code
+    compares: vendor_only
+    from: both
+    seen_as:
+      created_by: [sink_sheets, page_reviewer, helper, formulas]
+      words: ["sink centre", "centre line", "from the end", "from the wall", "sink position"]
+
+  - key: sink_model_and_supply
+    asks: Does this set say, once, which sink and faucet are used and who supplies them?
+    item_kinds: [cover_sheet]
+    needs:
+      - side: vendor
+        fact: the set's general notes and any spec sheet naming the sinks and faucets and who supplies them
+        view: notes and spec_sheet
+    rule: >-
+      This is a set-level question, asked once for a whole job, on the set's notes or spec sheets.
+      It is never asked per item and never per view. Across four audited runs it produced 45 answers
+      and not one first-time real problem: 30 were trivial repeats of the same point on another
+      sheet and 12 were outright wrong. One set-level note answers it for the whole job.
+      A sink model name and an architect tag are different kinds of label and are never compared as
+      values: the architect names a tag, not a product.
+    problem_when: no sheet in the whole set names the sinks and faucets or says who supplies them.
+    not_a_problem_when:
+      - An item sheet does not name the supplier; the set's general notes answer it for every item.
+      - A vendor model name sits beside an architect tag; that is not a conflict.
+      - Two similar model names appear because the set uses two sinks, a standard one and an accessible one.
+      - A sink is named on one sheet of an item and not on another sheet of the same item.
+    decided_by: ai
+    compares: vendor_only
+    from: rulebook
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look]
+      words: ["sink model", "sink tag", "who supplies", "supplier", "by GV", "by others", "faucet"]
+
+  - key: sink_note_size_matches_the_sink
+    asks: Does the sink note printed on this sheet give the sink's own size, the right way round?
+    item_kinds: [sink_cutout_sheet, countertop_piece, vanity, base_cabinet_run]
+    needs:
+      - side: vendor
+        fact: the sink callout's quoted width, depth and height
+        view: elevation, plan or the sheet's sink note
+      - side: vendor
+        fact: the sink's real outside and inside sizes, and the cut-out's size
+        view: cutout_plan, the item's plan, or the maker's spec sheet
+    rule: >-
+      A sink callout quotes the sink's own size, not the cut-out's, and its width is the dimension
+      along the run while its depth is the dimension front to back. The same callout on every sheet
+      of the item must quote the same numbers.
+    problem_when: the callout quotes the cut-out's numbers as the sink's size, the width and depth are the wrong way round, or two sheets of the item quote different numbers.
+    not_a_problem_when:
+      - The callout quotes the sink's outside size on one sheet and its inside size on another, and says which is which.
+    decided_by: code
+    compares: vendor_only
+    from: misses
+    seen_as:
+      created_by: [sink_sheets, page_reviewer, helper]
+      words: ["swapped", "W x", "\"W", "\"D", "callout", "sink note", "sink size"]
+
+  - key: sink_bowl_count
+    asks: How many bowls does the sink have, and how many does the architect draw?
+    item_kinds: [sink_cutout_sheet, countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the bowls drawn in the cut-out and the bowls the sink note names
+        view: cutout_plan and cabinet_plan
+      - side: architect
+        fact: the sink symbol the architect draws
+        view: plan
+    rule: >-
+      The bowl count must be the same on every sheet of the item and the same as the architect's
+      symbol, because it changes the cut-out.
+    problem_when: one sheet draws a different number of bowls from another, or from the architect.
+    not_a_problem_when:
+      - The architect's symbol is generic and shows no bowls; there is nothing to compare.
+      - The drain sits on a different side; which side the drain is on does not change the stone.
+    decided_by: ai
+    from: misses
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look]
+      words: ["double bowl", "single bowl", "two bowls", "bowl"]
+
+  - key: faucet_and_accessory_holes
+    asks: How many holes are cut for the faucet and its accessories, what size are they, and where are they?
+    item_kinds: [sink_cutout_sheet, countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: each hole's diameter and its distance from the cut-out and from the back edge
+        view: cutout_plan
+      - side: vendor
+        fact: the same holes as printed on the item's other sheets
+        view: stone_plan and the maker's spec sheet
+      - side: architect
+        fact: any fitting the architect draws on the top beside the sink
+        view: plan
+    rule: >-
+      Every hole has a diameter and a position, and both must read the same on every sheet of the
+      item and on the sink's own spec sheet.
+    problem_when: a hole's size or position differs between two sheets of the item, a hole has no size, or the architect draws a fitting the vendor has not cut for.
+    not_a_problem_when:
+      - The architect prints no hole sizes; GV's check is then between the vendor's own sheets.
+    decided_by: code
+    compares: vendor_only
+    from: both
+    seen_as:
+      created_by: [sink_sheets, sink_offset, page_reviewer]
+      words: ["faucet hole", "hole", "grommet", "air switch", "soap", "diameter"]
+
+  - key: other_cutouts_and_holes
+    asks: What other cut-outs or holes are in this top, and are they in the design?
+    item_kinds: [sink_cutout_sheet, countertop_piece]
+    needs:
+      - side: vendor
+        fact: each cooktop, waste or service hole, with its size and its position in the top
+        view: stone_plan or cutout_plan
+      - side: architect
+        fact: the appliance or fitting the architect draws at that place
+        view: plan or elevation
+    rule: >-
+      A cut-out the vendor adds that the architect does not draw is a scope difference and must be
+      confirmed. A cut-out the architect draws that the vendor has not cut is a miss.
+    problem_when: the vendor adds a cut-out the design does not have, or omits one the design does.
+    not_a_problem_when:
+      - The item's other sheets explain the cut-out and its fitting.
+      - The architect draws the appliance but prints no cut-out size; there is then no size to compare.
+    decided_by: ai
+    from: both
+    seen_as:
+      created_by: [page_reviewer, whole_look, helper]
+      words: ["cooktop cut", "waste hole", "hole in the top", "ring", "partial cutout", "not in the design"]
+
+  # --- cabinet runs ---------------------------------------------------------------------------
+
+  - key: run_wall_to_wall
+    asks: How long is this run from wall to wall, and how long does the architect make it?
+    item_kinds: [base_cabinet_run, upper_cabinet_run, vanity]
+    needs:
+      - side: vendor
+        fact: the run's printed wall-to-wall overall
+        view: plan
+      - side: vendor
+        fact: the same overall as printed on the elevation and in the title block
+        view: elevation and title block
+      - side: architect
+        fact: the architect's wall-to-wall string for the same run, or its printed parts added up
+        view: plan or elevation
+    rule: >-
+      The run's wall-to-wall length is compared with the architect's, in inches, exactly. Where the
+      architect prints parts and no total, the parts are added. The site size governs: a difference
+      is a site difference to be absorbed, not automatically an error, but it is always raised.
+    problem_when: the vendor's wall-to-wall differs from the architect's, or from the vendor's own other views of the same run.
+    not_a_problem_when:
+      - The title block names the whole wall including an appliance opening while the run is only the cabinets; those are different spans.
+    decided_by: code
+    from: both
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look, run_fit]
+      rule_ids: [CAB-ARCH-VS-SHOP-001]
+      words: ["wall to wall", "overall width", "run length", "overall run", "whole wall"]
+
+  - key: cabinet_part_widths
+    asks: How wide is each cabinet, drawer bank and panel in this run, and how wide is the architect's part in the same place?
+    item_kinds: [base_cabinet_run, upper_cabinet_run, vanity]
+    needs:
+      - side: vendor
+        fact: each part's printed width, in order along the run
+        view: plan and elevation
+      - side: architect
+        fact: the architect's parts in the same order along the same run
+        view: plan or elevation
+      - side: gv_rule
+        fact: the job's cabinet width limits for a single door, a double door and a drawer bank
+        view: the job settings
+    rule: >-
+      Each part is matched to the architect's part at the same place along the run, and compared in
+      inches, exactly. Cabinet width limits are mandatory job entries with no GV standard.
+    problem_when: a part's width differs from the architect's part at the same place, or the parts are arranged differently.
+    not_a_problem_when:
+      - The run is mirrored; compare each part with its mirrored partner.
+      - A vendor panel of one thickness stands where the architect draws a box side of another; that is a construction detail, raised once, not per bay.
+      - The vendor's string holds a piece the architect does not draw; name what the piece is, usually a panel or a scribe, before calling it a difference.
+    decided_by: code
+    from: both
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look, run_fit]
+      rule_ids: [CAB-ARCH-VS-SHOP-001]
+      words: ["cabinet width", "base cabinet", "bay width", "drawer base", "sink base", "upper", "open shelf"]
+
+  - key: run_site_fit_share
+    asks: When this run's size differs from the architect's, which pieces absorb the difference?
+    item_kinds: [base_cabinet_run, upper_cabinet_run]
+    needs:
+      - side: vendor
+        fact: the run's overall and each part's width and kind
+        view: plan
+      - side: architect
+        fact: the architect's overall and each part's width
+        view: plan or elevation
+      - side: gv_rule
+        fact: which part kinds are fixed and which are flexible
+        view: the product registry
+    rule: >-
+      Fillers and drawer cabinets keep their design size. Door cabinets absorb the site difference
+      equally between them. Equipment cabinets and appliance openings are never resized. A share that
+      is not a whole sixteenth of an inch is not judged. The rule applies only when both sides' parts
+      are real cabinets of the same run.
+    problem_when: a door cabinet's width is not its architect width plus its equal share of the difference, or a fixed piece has been resized instead.
+    not_a_problem_when:
+      - A piece being compared is an appliance opening or a countertop length, not a door cabinet; the rule does not apply to it.
+      - The two overalls are the same; there is no difference to share.
+    decided_by: code
+    compares: gv_rule
+    from: rulebook
+    seen_as:
+      created_by: [run_fit, filler_range]
+      rule_ids: [CAB-FILLER-001]
+      words: ["should be", "site difference", "absorb", "share", "door cabinet"]
+
+  - key: cabinet_depth
+    asks: How deep is the cabinet, carcass and door together?
+    item_kinds: [base_cabinet_run, upper_cabinet_run, vanity]
+    needs:
+      - side: vendor
+        fact: the carcass depth, the front thickness and the finished depth
+        view: section
+      - side: architect
+        fact: the depth the architect prints for the same cabinet
+        view: section or plan
+      - side: gv_rule
+        fact: the job's cabinet depth setting
+        view: the job settings
+    rule: >-
+      Cabinet depth is the carcass depth plus the front's thickness, three quarters of an inch being
+      typical. A section that measures to the box behind a fixed front panel has not reached the
+      cabinet face.
+    problem_when: the finished depth differs from the architect's, or it changes between two sections of the same run without reason.
+    not_a_problem_when:
+      - One section measures to the carcass and another to the front face; add the front before comparing.
+      - The section is cut through an appliance column, so there is no cabinet to measure.
+    decided_by: code
+    from: both
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look]
+      words: ["cabinet depth", "carcass", "box depth", "deep"]
+
+  - key: run_overall_height
+    asks: How high is this run overall, and do the height strings add up to it?
+    item_kinds: [base_cabinet_run, upper_cabinet_run, vanity]
+    needs:
+      - side: vendor
+        fact: every part in each height string, and the printed overall height
+        view: elevation and section
+      - side: architect
+        fact: the architect's overall height for the same run
+        view: elevation
+    rule: >-
+      Each height string's parts must add to the printed overall, in inches. Where a sheet prints no
+      overall but a complete string on the same sheet adds up to a height printed in a section of the
+      same item, the overall is given.
+    problem_when: a height string does not add up, or the overall differs from the architect's.
+    not_a_problem_when:
+      - No overall is printed in the elevation but the sheet's own strings add up to the height a section of the same item prints; the height is not missing.
+      - A part height is mistaken for the tallest dimension; a part is not an overall.
+    decided_by: code
+    compares: vendor_only
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look, consistency]
+      words: ["overall height", "height string", "no overall", "tallest", "84", "add to"]
+
+  - key: toe_kick
+    asks: How high is the toe kick, and what finish does it carry?
+    item_kinds: [base_cabinet_run, vanity]
+    needs:
+      - side: vendor
+        fact: the toe-kick height and its finish tag
+        view: elevation and section
+      - side: architect
+        fact: the toe-kick height and finish the architect gives
+        view: elevation or section
+    rule: >-
+      The toe-kick height and its finish code are compared with the architect's, in inches and by
+      code, exactly.
+    problem_when: the height or the finish code differs from the architect's.
+    not_a_problem_when:
+      - The architect gives a height but no finish, or the other way round; only what is given is compared.
+    decided_by: code
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look]
+      words: ["toe kick", "toe-kick", "toe"]
+
+  - key: fronts_and_bays
+    asks: >-
+      What is in each bay of this run: doors, drawers, open shelves, a removable panel or an
+      appliance?
+    item_kinds: [base_cabinet_run, upper_cabinet_run, vanity]
+    needs:
+      - side: vendor
+        fact: what each bay holds, bay by bay along the run
+        view: elevation
+      - side: architect
+        fact: what the architect puts in each bay of the same run
+        view: elevation
+    rule: >-
+      The arrangement is compared bay by bay along the run: the number of doors, drawers and open
+      bays and what each one holds. A removable or false front is compared with the architect's
+      removable or false front, not with a drawer.
+    problem_when: a bay holds something different from the architect's bay at the same place, or the counts of doors, drawers or open bays differ.
+    not_a_problem_when:
+      - The vendor's open boxes with lights are the architect's open shelves; a box without doors is an open shelf.
+      - The count differs only because a bay at one end has been counted twice or missed; count from the same datum on both.
+      - The layout is the mirror of the architect's one typical room.
+    decided_by: ai
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, whole_look, helper]
+      words: ["doors", "drawers", "open shelf", "bays", "fronts", "false front", "removable panel", "cubby"]
+
+  - key: finish_tags_on_fronts
+    asks: What finish code does each front, panel and back carry, and what does the architect call for there?
+    item_kinds: [base_cabinet_run, upper_cabinet_run, vanity, accessory_detail]
+    needs:
+      - side: vendor
+        fact: the finish code on each front, panel, toe and back
+        view: elevation
+      - side: architect
+        fact: the architect's finish code at the same place
+        view: elevation or finish schedule
+    rule: >-
+      Finish codes are compared code against code. A vendor code that is the architect's code with a
+      suffix added is the same finish. A code that is a different number is a different finish.
+    problem_when: a surface carries a different finish code from the architect's at the same place, or carries none at all.
+    not_a_problem_when:
+      - The vendor's code is the architect's code with a suffix; that is the same finish.
+      - A section does not repeat a tag that the item's elevation already carries.
+      - Every exposed face is finished and only the words "finish exposed faces" are missing.
+      - The architect's set carries item codes but no finish schedule; an item code is not a finish code.
+    decided_by: ai
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, whole_look, helper]
+      words: ["finish tag", "finish code", "front finish", "laminate", "veneer", "grain"]
+
+  - key: hardware
+    asks: What pulls, hinges, legs and brackets does this item use, and what does the architect call for?
+    item_kinds: [base_cabinet_run, upper_cabinet_run, vanity, accessory_detail]
+    needs:
+      - side: vendor
+        fact: the pull type and size, the hinge type, the leg or bracket type and size
+        view: elevation, section and detail
+      - side: architect
+        fact: the hardware the architect specifies
+        view: elevation, detail or schedule
+    rule: >-
+      Hardware is compared only where the architect specifies it: the type, the material and the size.
+      A routed pull in place of a fitted pull, or a square tube in place of a round leg, is a design
+      difference.
+    problem_when: the hardware type, material or size differs from the architect's.
+    not_a_problem_when:
+      - The architect gives no hardware for this item; there is nothing to compare.
+    decided_by: ai
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, whole_look, helper]
+      words: ["pull", "hinge", "leg", "bracket", "hardware", "knob"]
+
+  - key: knee_space_kept_open
+    asks: Where the design leaves a knee space open, is it still open?
+    item_kinds: [base_cabinet_run, vanity]
+    needs:
+      - side: vendor
+        fact: what fills the span the architect leaves open, and its width
+        view: plan and elevation
+      - side: architect
+        fact: the open span's width and the note that calls for it to stay open
+        view: plan or elevation
+    rule: >-
+      A span the architect marks open for approach must stay open. Splitting it into bays, or filling
+      it with a drawer bank or fixed panels, is a design difference even when the total width matches.
+    problem_when: the open span is split, filled or narrowed.
+    not_a_problem_when:
+      - The panels are removable and the architect also calls for removable panels.
+    decided_by: ai
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, whole_look, helper]
+      words: ["knee space", "open for", "forward approach", "open bay", "clear space"]
+
+  - key: appliance_openings_sized
+    asks: How wide is each appliance opening, and what width does the architect hold for it?
+    item_kinds: [appliance_opening, base_cabinet_run]
+    needs:
+      - side: vendor
+        fact: each opening's printed width, and which appliance it is for
+        view: plan and elevation
+      - side: architect
+        fact: the architect's opening width, plus any side gap the architect's notes hold beside it
+        view: plan, elevation or notes
+    rule: >-
+      An opening is compared with the architect's opening plus any gap the architect's notes hold
+      beside it; both are part of the space the appliance needs. An opening is not a cabinet: it has
+      no carcass and needs no filler of its own.
+    problem_when: the opening is narrower or wider than the architect holds for it, including the gap.
+    not_a_problem_when:
+      - The opening at a wall end has no filler; an opening needs none.
+      - The opening is treated as a door cabinet in a site-fit sum; it is not one.
+      - The appliance still fits; the printed opening is still compared, but the gap is explained.
+    decided_by: code
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look, run_fit]
+      words: ["refrigerator", "fridge", "range", "dishwasher", "microwave", "cooktop", "opening", "appliance space"]
+
+  - key: lighting_and_outlets
+    asks: What lighting and electrical does this item carry, and does it match the design and the item's other sheets?
+    item_kinds: [base_cabinet_run, upper_cabinet_run, accessory_detail, countertop_piece]
+    needs:
+      - side: vendor
+        fact: strip and puck light lengths and positions, and any outlet or service cut-out
+        view: elevation, plan and the set's lighting layout
+      - side: architect
+        fact: the lights and outlets the architect draws, with their heights and positions
+        view: elevation or reflected ceiling plan
+    rule: >-
+      A light's length is compared with the bay it sits in and with the length the set's own lighting
+      layout gives it. An outlet or service position is compared with the architect's where the
+      architect prints one.
+    problem_when: a light length differs between the lighting layout and the item's own sheets, or the architect's outlets have no access in the vendor's cabinets.
+    not_a_problem_when:
+      - Outlets are the general contractor's work and marked for reference only; the position is still raised but as a confirm.
+    decided_by: ai
+    from: both
+    seen_as:
+      created_by: [page_reviewer, whole_look, helper]
+      words: ["LED", "strip light", "puck", "outlet", "GFI", "electrical", "lighting"]
+
+  # --- fillers --------------------------------------------------------------------------------
+
+  - key: filler_width
+    asks: How wide is each filler, and how wide is the architect's filler in the same place?
+    item_kinds: [filler, base_cabinet_run, upper_cabinet_run]
+    needs:
+      - side: vendor
+        fact: each filler's printed width
+        view: plan and elevation
+      - side: architect
+        fact: the architect's filler or scribe at the same place
+        view: plan or elevation
+      - side: gv_rule
+        fact: GV's filler range, one inch to two inches, changeable per project
+        view: the job settings
+    rule: >-
+      A filler is red only when it differs from the architect's design filler. GV's one-inch to
+      two-inch range is a note only and is never a red on its own: GV has accepted wider fillers, and
+      the architect governs. Where the vendor prints the architect's own filler size and that size is
+      outside GV's range, the item is not compared and needs GV's own call.
+    problem_when: the filler differs from the architect's filler at the same place.
+    not_a_problem_when:
+      - The filler is outside GV's one-to-two-inch range but matches the architect; that is a note, never a red.
+      - A note calls for oversize filler stock to be field cut on site; that is site stock, not a design size.
+      - The filler is paired with a box side or panel on the architect's drawing; those are different pieces.
+    decided_by: code
+    compares: architect
+    from: true_answers
+    seen_as:
+      created_by: [filler_range, filler_facts, page_reviewer, helper]
+      rule_ids: [CAB-FILLER-001]
+      words: ["filler", "scribe", "filler width", "field cut filler"]
+
+  - key: filler_at_each_wall_end
+    asks: Does every end of this run that meets a wall have a filler or scribe?
+    item_kinds: [filler, base_cabinet_run, upper_cabinet_run]
+    needs:
+      - side: vendor
+        fact: what sits at each end of the run, and whether that end meets a wall
+        view: plan and elevation
+      - side: architect
+        fact: the scribe or filler the architect draws at the same end
+        view: plan or elevation
+    rule: >-
+      A cabinet that meets a wall needs a filler or a scribe so it can be fitted on site. An appliance
+      opening at a wall needs none.
+    problem_when: a cabinet meets a wall with nothing to scribe to.
+    not_a_problem_when:
+      - The end at the wall is an appliance opening.
+      - The end piece is wide enough to be a cabinet rather than a filler; judge it as a cabinet.
+      - The filler is drawn and dimensioned but its label sits outside the overall's extension lines.
+    decided_by: ai
+    from: true_answers
+    seen_as:
+      created_by: [filler_facts, filler_range, page_reviewer, helper]
+      words: ["no filler", "filler at the wall", "wall end", "scribe at", "nothing to scribe"]
+
+  # --- vanity and support ----------------------------------------------------------------------
+
+  - key: clear_width_at_an_accessible_item
+    asks: How much clear width and clear space below does this accessible item leave?
+    item_kinds: [vanity, base_cabinet_run]
+    needs:
+      - side: vendor
+        fact: the clear width between walls or partitions and the clear height under the item
+        view: plan, elevation and section
+      - side: architect
+        fact: the clear dimension the architect prints for the same item
+        view: plan or section
+    rule: >-
+      A clear dimension is compared only with another clear dimension. A clear width printed by the
+      architect is the space that must be left, not the size of the piece that sits in it.
+    problem_when: the clear width or the clear height below is less than the architect's.
+    not_a_problem_when:
+      - The architect's clear width and the vendor's piece length are compared directly; the piece may be longer where it runs into the wall pockets.
+      - The item is a standard one, not an accessible one.
+    decided_by: code
+    from: rulebook
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look]
+      words: ["clear", "accessible", "ADA", "knee clearance", "clear width"]
+
+  - key: support_frame_or_legs
+    asks: What holds this item up, and are the support's own sizes right?
+    item_kinds: [vanity, accessory_detail, countertop_piece]
+    needs:
+      - side: vendor
+        fact: the frame, leg or bracket sizes, their spacing and the height to the underside
+        view: detail, elevation and section
+      - side: architect
+        fact: the support the architect calls for, with its material, shape and size
+        view: elevation, section or detail
+    rule: >-
+      The support's own dimension strings must add up, and its type, material and size are compared
+      with the architect's where the architect specifies them.
+    problem_when: the support's strings do not add up, or the support's type, material, size or height differs from the architect's.
+    not_a_problem_when:
+      - The architect shows a support but specifies nothing about it.
+    decided_by: code
+    compares: vendor_only
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look]
+      words: ["frame", "leg", "glide", "bracket", "support", "underside", "metal frame"]
+
+  # --- accessory details ------------------------------------------------------------------------
+
+  - key: accessory_overall_size
+    asks: What is this accessory's overall size, and what size does the architect give it?
+    item_kinds: [accessory_detail]
+    needs:
+      - side: vendor
+        fact: the accessory's printed overall length, depth and thickness
+        view: detail and elevation
+      - side: architect
+        fact: the architect's size for the same accessory
+        view: elevation or detail
+    rule: >-
+      The accessory's overall is compared with the architect's, in inches, exactly, and its own parts
+      must add up to it.
+    problem_when: the overall differs from the architect's, or the parts do not add to the overall.
+    not_a_problem_when:
+      - The detail is a typical detail shared by several items and the length is given on the item's own sheet.
+    decided_by: code
+    from: both
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look]
+      words: ["shelf", "hook rail", "rail", "rod", "floating shelf", "shelf length"]
+
+  - key: accessory_mounting_position
+    asks: Where does this accessory sit, and how high?
+    item_kinds: [accessory_detail]
+    needs:
+      - side: vendor
+        fact: the height above the floor or below the cabinet, and the position along the wall
+        view: elevation and section
+      - side: architect
+        fact: the architect's position and height for the same accessory
+        view: elevation
+    rule: >-
+      The mounting height and the position along the wall are compared with the architect's, in
+      inches, exactly.
+    problem_when: the height or the position differs from the architect's.
+    not_a_problem_when:
+      - The architect draws the accessory but prints no height; a scaled value never decides.
+    decided_by: code
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, helper, whole_look]
+      words: ["below the", "above the floor", "mounting height", "spacing", "centres"]
+
+  - key: accessory_finish_and_supply
+    asks: What finish does this accessory carry and who supplies it?
+    item_kinds: [accessory_detail]
+    needs:
+      - side: vendor
+        fact: the accessory's finish tag and supply note
+        view: detail, elevation and the material table
+      - side: architect
+        fact: the architect's finish or material for the accessory
+        view: elevation or schedule
+    rule: >-
+      The item's sheet set must tag the accessory and say who supplies it.
+    problem_when: the accessory is untagged on every sheet of the item, or no sheet says who supplies it.
+    not_a_problem_when:
+      - The tag is on another sheet of the same item.
+    decided_by: ai
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, helper]
+      words: ["untagged", "no finish tag", "who supplies", "by vendor"]
+
+  # --- key plan --------------------------------------------------------------------------------
+
+  - key: room_type_tags
+    asks: Does each room's type tag on this key plan match the architect's tag for the same room?
+    item_kinds: [key_plan]
+    needs:
+      - side: vendor
+        fact: each room number and the type tag printed with it
+        view: key_plan
+      - side: architect
+        fact: the same room number's type tag on the architect's sheet of the same id
+        view: key_plan
+    rule: >-
+      The key plans are paired by their sheet id, not by their page number in the file. Each room
+      number is then compared with the same room number on the architect's sheet, tag against tag.
+    problem_when: a room's type tag differs from the architect's for the same room number.
+    not_a_problem_when:
+      - The tag differs only in wording for the same room type and the item code is the same.
+    decided_by: code
+    from: both
+    seen_as:
+      created_by: [room_matrix, page_reviewer, whole_look, helper]
+      words: ["room type", "room tag", "key plan", "room number", "connecting", "suite"]
+
+  - key: detail_callout_ids
+    asks: Does each detail callout on this key plan point at the same detail the architect points at?
+    item_kinds: [key_plan]
+    needs:
+      - side: vendor
+        fact: each callout's detail id and the room it sits on
+        view: key_plan
+      - side: architect
+        fact: the same room's callout id on the architect's sheet of the same id
+        view: key_plan
+    rule: >-
+      Callout ids are compared id against id for the same room. A callout the architect has added or
+      moved since the vendor's issue is a change the vendor has not picked up.
+    problem_when: a callout id differs, a callout sits on a different room, or the architect has a callout the vendor does not.
+    not_a_problem_when:
+      - The vendor's sheet uses a different leader style for the same id.
+    decided_by: code
+    from: misses
+    seen_as:
+      created_by: [room_matrix, page_reviewer, whole_look]
+      words: ["callout", "detail id", "points at", "ID 6", "leader"]
+
+  - key: item_counts_per_hand
+    asks: Does the count of each item and each hand on the matrix match the counts on the item's own sheets?
+    item_kinds: [key_plan]
+    needs:
+      - side: vendor
+        fact: the per-item and per-hand counts on the matrix, and the per-floor and total rows
+        view: matrix
+      - side: vendor
+        fact: the quantity printed on each item's own sheets
+        view: the item's title block and room list
+    rule: >-
+      The matrix's count for an item and hand must equal that item's own quantity. The per-floor
+      counts must add to the printed total.
+    problem_when: a count differs from the item's own sheets, the two hands' counts are swapped, or the rows do not add to the total.
+    not_a_problem_when:
+      - The matrix counts sets and the item sheet counts pieces, and the note says so.
+    decided_by: code
+    from: misses
+    seen_as:
+      created_by: [room_matrix, page_reviewer, whole_look]
+      words: ["sets", "count", "matrix", "left:", "right:", "per floor", "sub total"]
+
+  # --- cover, checklist and spec sheets ----------------------------------------------------------
+
+  - key: spec_sheet_values_used
+    asks: Do the sizes this set's spec sheets give match the sizes the item sheets used?
+    item_kinds: [cover_sheet, sink_cutout_sheet, countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the outside and inside sizes a maker's spec sheet gives for a sink or appliance
+        view: spec_sheet
+      - side: vendor
+        fact: the same sizes as used or printed on the item sheets
+        view: cutout_plan and stone_plan
+    rule: >-
+      A size printed on the set's own spec sheet is the size the item sheets must use. Where a spec
+      sheet and an item sheet print the same size differently in inches, the inch values must still
+      agree exactly.
+    problem_when: an item sheet uses a size the spec sheet does not give, or the two print different inch values for the same size.
+    not_a_problem_when:
+      - The maker's own cut-out template differs from GV's cut-out rule; GV's rule decides the cut-out, and the template is a hint.
+    decided_by: code
+    from: both
+    seen_as:
+      created_by: [sink_sheets, page_reviewer, helper]
+      words: ["spec sheet", "inside size", "reference only", "sink sheet", "cut sheet"]
+
+  - key: set_notes_and_scope
+    asks: What do this set's own notes say about scope and supply, and is anything on them wrong or missing?
+    item_kinds: [cover_sheet]
+    needs:
+      - side: vendor
+        fact: the set's general notes, scope notes and checklists
+        view: notes
+      - side: architect
+        fact: the architect's scope and supply notes for the same work
+        view: notes or schedule
+    rule: >-
+      The set's own notes carry the answers to who supplies what and what is excluded, for the whole
+      set. A note that answers a question is checked once, at set level, not on every sheet.
+    problem_when: a note contradicts the architect's scope, a note is misspelt in a way that changes its meaning, or a checklist or matrix sheet is empty.
+    not_a_problem_when:
+      - A single item sheet does not repeat a set-level supply note.
+    decided_by: ai
+    from: true_answers
+    seen_as:
+      created_by: [page_reviewer, whole_look]
+      words: ["general notes", "scope", "by others", "exclusions", "checklist", "empty", "matrix sheet"]
