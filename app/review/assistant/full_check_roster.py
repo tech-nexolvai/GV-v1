@@ -3403,7 +3403,7 @@ class _Run:
         finally:
             self.only_ids = None
 
-    # -- P3b: the round-only leftovers' cheap picks (#1861) --
+    # -- Step 2 of the rebuild plan: the pen-stroke numbers (off by default) --
 
     def _paired_pages(self) -> frozenset[tuple[str, int]]:
         """The pages the paired comparisons are on (plan 2E, "paired views first"): each vendor
@@ -3467,6 +3467,8 @@ class _Run:
             "stopped": run.stopped,
         }
         _log.warning("assistant roster stroke reads: %s", self.stroke_block)
+
+    # -- P3b: the round-only leftovers' cheap picks (#1861) --
 
     def _round_picks(self, page_map: Mapping[str, Any] | None) -> None:
         """Layer 2 for the items compared only with the vendor's earlier round (Anant,
