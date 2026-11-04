@@ -10,11 +10,11 @@ The test is on the page as drawn, not on the text's colour: red, blue and black 
 
 **The one named exception: AutoCAD SHX text.** AutoCAD draws SHX lettering as strokes and keeps the
 real string in the file, either as invisible text over the strokes (`PDFSHX=2`, the default since
-2024) or as comments authored `AutoCAD SHX Text` (`PDFSHX=1`). Both are the vendor's text. The
-first needs nothing special: its strokes are ink at its spot, so the check above keeps it. The
-second is turned into invisible text at the comment's rectangle (`shx_comment_text`), so the same
-check keeps it **only where strokes are drawn under it**: a stale comment over an empty spot is not
-read, and its box is the comment's, over the strokes.
+2024) or as comments titled `AutoCAD SHX Text` (`PDFSHX=1`, `is_shx_comment`). Both are the
+vendor's text. The first needs nothing special: its strokes are ink at its spot, so the check above
+keeps it. The second is turned into invisible text at the comment's rectangle (`shx_comment_text`),
+so the same check keeps it **only where strokes are drawn under it**: a stale comment over an empty
+spot is not read, and its box is the comment's, over the strokes.
 
 **A scan's own OCR text is not typed text** (#1750, item 4). A scanned page is a picture; the
 scanner's software often lays its own reading of the picture over it as invisible text (render
@@ -50,6 +50,7 @@ from typing import Any, Final
 import numpy as np
 import pikepdf
 
+from extraction.annotations import decode_autocad_codes, is_autocad_shx_text
 from extraction.pdfium_guard import pdfium
 from extraction.pdfium_guard import pdfium_raw as pdfium_c
 
@@ -69,10 +70,14 @@ INK_DPI: Final = 100
 _INK_LEVEL: Final = 12
 #: How far round a character's box ink is looked for (points).
 _INK_PAD_PT: Final = 1.0
-#: The author AutoCAD writes on the comments that hold SHX text (`PDFSHX=1`).
+#: The author AutoCAD writes on the comments that hold SHX text (`PDFSHX=1`). Recognised by
+#: `annotations.is_autocad_shx_text`, in any case, in `/T` or `/Subj`.
 SHX_AUTHOR: Final = "AutoCAD SHX Text"
 #: The resource name of the font the SHX comments' text is set in.
 _SHX_FONT: Final = "/GVShxText"
+#: The code the SHX font gives `⌀`: one Windows Latin leaves unused, named `uni2300` in the font's
+#: encoding so a text reader gives back the diameter sign.
+_DIAMETER_CODE: Final = b"\x81"
 #: A page is a scan when its pictures cover at least this share of it (`page_health` says
 #: "scanned picture" from the same share): only there can text be the scanner's.
 SCAN_SHARE: Final = 0.5
@@ -353,20 +358,35 @@ def _line_work(page: Any, scale: float) -> np.ndarray | None:
 
 
 def is_shx_comment(annotation: Any) -> bool:
-    """Whether an annotation is one of AutoCAD's SHX text comments (its author says so)."""
-    author = annotation.get("/T")
-    return author is not None and str(author).strip() == SHX_AUTHOR and "/Rect" in annotation
+    """Whether an annotation is one of AutoCAD's SHX text comments with a rectangle to set it in.
+
+    The test is the annotation reader's (`annotations.is_autocad_shx_text`), so both readers agree
+    on every note: a comment this reads as the vendor's text is never the pipeline's reviewer markup.
+    """
+    return "/Rect" in annotation and is_autocad_shx_text(annotation)
+
+
+def _shx_bytes(text: str) -> bytes:
+    """`text` in the SHX font's encoding: Windows' Latin letters (`WinAnsiEncoding`), and `⌀` at
+    `_DIAMETER_CODE`. A character neither holds is `?`."""
+    return b"".join(
+        _DIAMETER_CODE if char == "⌀" else char.encode("cp1252", "replace") for char in text
+    )
 
 
 def shx_comment_text(pdf: pikepdf.Pdf, page: pikepdf.Page, comments: list[Any]) -> int:
     """Set each SHX comment's string as invisible text (render mode 3) filling its rectangle, on
     `page` of this copy, so it is read like AutoCAD's own hidden SHX text: only where the page
-    shows strokes under it. Returns how many were set."""
+    shows strokes under it. Returns how many were set.
+
+    AutoCAD's control codes are written as the characters it draws for them (`%%d` is `°`,
+    `annotations.decode_autocad_codes`), and the font's encoding gives `°`, `±` and `⌀` back to a
+    text reader as themselves."""
     from reportlab.pdfbase.pdfmetrics import stringWidth  # type: ignore[import-untyped]
 
     parts: list[bytes] = []
     for comment in comments:
-        text = str(comment.get("/Contents") or "").strip()
+        text = decode_autocad_codes(str(comment.get("/Contents") or "")).strip()
         try:
             rect = [float(v) for v in comment["/Rect"]]
         except (TypeError, ValueError, KeyError):
@@ -381,7 +401,7 @@ def shx_comment_text(pdf: pikepdf.Pdf, page: pikepdf.Page, comments: list[Any]) 
         size = height
         natural = stringWidth(text, "Helvetica", size)
         stretch = 100 * width / natural if natural > 0 else 100
-        words = text.encode("latin-1", "replace")
+        words = _shx_bytes(text)
         words = words.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
         parts.append(
             f"BT 3 Tr {_SHX_FONT} {size:.3f} Tf {stretch:.3f} Tz "
@@ -391,7 +411,14 @@ def shx_comment_text(pdf: pikepdf.Pdf, page: pikepdf.Page, comments: list[Any]) 
         return 0
     font = pdf.make_indirect(
         pikepdf.Dictionary(
-            Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type1, BaseFont=pikepdf.Name.Helvetica
+            Type=pikepdf.Name.Font,
+            Subtype=pikepdf.Name.Type1,
+            BaseFont=pikepdf.Name.Helvetica,
+            Encoding=pikepdf.Dictionary(
+                Type=pikepdf.Name.Encoding,
+                BaseEncoding=pikepdf.Name.WinAnsiEncoding,
+                Differences=pikepdf.Array([_DIAMETER_CODE[0], pikepdf.Name("/uni2300")]),
+            ),
         )
     )
     page.add_resource(font, pikepdf.Name.Font, name=pikepdf.Name(_SHX_FONT))

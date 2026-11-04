@@ -68,6 +68,8 @@ from evidence.coordinates import ImagePoint, PageTransform, PdfPoint
 from evidence.polygon import Polygon
 from extraction.geometry.containment import DimensionExtent
 from extraction.glyph_bands import FractionBarGeometry, FractionLayout, GlyphBox, stacked_fractions
+from extraction.gv_marks import LAYER_NAME as GV_LAYER_NAME
+from extraction.gv_marks import PIECE_KEY as GV_PIECE_KEY
 from extraction.pdfium_guard import pdfium, pdfium_raw
 from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
 from extraction.stamp_text import carries_drawing
@@ -84,7 +86,9 @@ __all__ = [
     "StackedFraction",
     "VectorPath",
     "VendorStamp",
+    "decode_autocad_codes",
     "glyph_runs",
+    "is_autocad_shx_text",
     "page_box_polygon",
     "read_annotation_layers",
     "read_drawing_segments",
@@ -118,11 +122,13 @@ class DrawingLayer(StrEnum):
     """`/Stamp` — what the vendor drew. Line-work plus outlined text."""
 
     REVIEWER_MARKUP = "reviewer_markup"
-    """`/FreeText` — what a reviewer wrote on top of it, as exact text."""
+    """`/FreeText` — what a reviewer wrote on top of it, as exact text. Not AutoCAD's own note held
+    as a `/FreeText`, which is `VENDOR_TEXT`."""
 
     VENDOR_TEXT = "vendor_text"
     """The vendor's own text, kept by its CAD program as exact strings: the invisible `/Square`
-    annotations AutoCAD writes for every string drawn in an SHX font, titled `AutoCAD SHX Text`.
+    annotations AutoCAD writes for every string drawn in an SHX font, titled `AutoCAD SHX Text`
+    (`is_autocad_shx_text`, which also knows the same note held as a `/Text` or a `/FreeText`).
 
     AutoCAD's SHX fonts cannot be embedded in a PDF, so its export draws each string as strokes —
     the same unreadable shapes #756 exists to read — and, with `PDFSHX=1` (its default), also writes
@@ -261,23 +267,119 @@ _LAYER_BY_SUBTYPE: Final = {
 #: authority.
 AUTOCAD_SHX_TEXT: Final = "autocad shx text"
 
+#: The annotation types an SHX note can be. AutoCAD writes a rectangle (`/Square`); a file passed
+#: through another program can hold the same note as a sticky note (`/Text`) or a typed text box
+#: (`/FreeText`). Any other type with AutoCAD's title is not one of its notes.
+AUTOCAD_SHX_SUBTYPES: Final = frozenset({"Square", "FreeText", "Text"})
+
 
 #: The intent a measuring tool writes on a length it measured (PDF 32000-1 §12.5.6.7, `/IT`).
 #: Bluebeam's measurement lines carry it, with the length and its explanation in `/Contents`.
 LINE_DIMENSION_INTENT: Final = "LineDimension"
 
+#: AutoCAD's text control codes and the characters they stand for: `%%c` diameter, `%%d` degree,
+#: `%%p` plus-or-minus, `%%%` a percent sign, and `%%u` / `%%o`, which switch underlining and
+#: overlining on or off and stand for no character at all. Either case is read.
+_AUTOCAD_CODES: Final = {"c": "⌀", "d": "°", "p": "±", "%": "%", "u": "", "o": ""}
+_AUTOCAD_CODE: Final = re.compile(r"%%([cdpuo%])", re.IGNORECASE)
+
+
+def decode_autocad_codes(text: str) -> str:
+    """`text` with AutoCAD's control codes written as the characters they stand for.
+
+    `%%c12` is `⌀12`, `90%%d` is `90°`, `36"%%p` is `36"±`, `50%%%` is `50%`, and `%%u` / `%%o`
+    are dropped. Read left to right, so `%%%c` is `%c`. Any other `%%` is left exactly as it is.
+    """
+    return _AUTOCAD_CODE.sub(lambda match: _AUTOCAD_CODES[match.group(1).lower()], text)
+
 
 def _name(value: object) -> str:
-    """A PDF name without its slash, or `""` when there is none."""
-    name = getattr(value, "name", None)
+    """A PDF name without its slash, or `""` when there is none: pdfminer's (`.name`) or pikepdf's
+    (its text, slash first)."""
+    try:
+        name = getattr(value, "name", None)
+    except ValueError:  # pikepdf looks an unknown attribute up as a key, and a name has no keys
+        name = None
     if isinstance(name, str):
         return name
     return str(value).lstrip("/").strip("'") if value is not None else ""
 
 
+def _field(dictionary: object, key: str) -> object | None:
+    """`dictionary[key]` from either reader's dictionary, or `None` when it has no such entry.
+
+    pikepdf names a key with its slash (`/T`), pdfplumber without (`T`); both are tried. A
+    pdfplumber reference to another object is followed, so the value is the object itself. Anything
+    that is not a dictionary or a stream has no entries.
+    """
+    from pdfminer.pdftypes import PDFStream, resolve1
+
+    if not isinstance(dictionary, (dict, PDFStream, pikepdf.Dictionary, pikepdf.Stream)):
+        return None
+    for name in (f"/{key}", key):
+        try:
+            value = dictionary.get(name)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if value is not None:
+            resolved: object = resolve1(value)
+            return resolved
+    return None
+
+
+def _in_gv_markup(annotation: object) -> bool:
+    """Whether an annotation is GV Review's own mark (`extraction/gv_marks.py`): it belongs to GV's
+    layer, `GV Review markup` (its `/OC` is that layer, or a membership dictionary listing it), or
+    its appearance is a drawing GV signed (`/PieceInfo /GVReview`)."""
+    from pdfminer.pdftypes import resolve1
+
+    group = _field(annotation, "OC")
+    members = _field(group, "OCGs")
+    layers: list[object]
+    if members is None:
+        layers = [group]
+    elif isinstance(members, (list, tuple, pikepdf.Array)):
+        layers = [resolve1(member) for member in members]
+    else:
+        layers = [members]
+    if any(_text(_field(layer, "Name")) == GV_LAYER_NAME for layer in layers):
+        return True
+    piece = _field(_field(_field(annotation, "AP"), "N"), "PieceInfo")
+    return _field(piece, GV_PIECE_KEY.lstrip("/")) is not None
+
+
+def is_autocad_shx_text(annotation: object) -> bool:
+    """Whether an annotation is one of the notes AutoCAD writes for each SHX-font string: the
+    vendor's own text, never a reviewer's.
+
+    It is when **all** of these hold, on a pikepdf or a pdfplumber dictionary alike:
+
+    - its `/T` or its `/Subj` is `AutoCAD SHX Text`, ignoring case and surrounding space;
+    - it is a rectangle, a sticky note or a typed text box (`AUTOCAD_SHX_SUBTYPES`);
+    - it is not a measurement (`/IT /LineDimension`), which is what a reviewer measured;
+    - it is not GV Review's own mark (`_in_gv_markup`), whatever it is titled.
+
+    The one test both readers use: `_layer_of` here, and `visible_text.is_shx_comment`.
+    """
+    if _name(_field(annotation, "Subtype")) not in AUTOCAD_SHX_SUBTYPES:
+        return False
+    if not any(
+        (_text(_field(annotation, key)) or "").strip().casefold() == AUTOCAD_SHX_TEXT
+        for key in ("T", "Subj")
+    ):
+        return False
+    if _name(_field(annotation, "IT")) == LINE_DIMENSION_INTENT:
+        return False
+    return not _in_gv_markup(annotation)
+
+
 def _layer_of(annotation: dict[str, Any], subtype: str) -> DrawingLayer:
     """Which authority an annotation carries: its subtype, except AutoCAD's own text notes and a
     reviewer's measurement lines.
+
+    **AutoCAD's notes are recognised before the subtype is looked at** (`is_autocad_shx_text`), so
+    one held as a `/FreeText` is the vendor's text while every other `/FreeText`, GV's or a
+    reviewer's, stays the reviewer's markup.
 
     **A measurement line with text is the reviewer's markup** (#805). On the first real set the
     reviewer drew 60 Bluebeam lines whose text is what they measured — `N"(Including fillers on both
@@ -291,10 +393,7 @@ def _layer_of(annotation: dict[str, Any], subtype: str) -> DrawingLayer:
         and (_text(annotation.get("Contents")) or "").strip()
     ):
         return DrawingLayer.REVIEWER_MARKUP
-    if subtype == "Square" and any(
-        (_text(annotation.get(key)) or "").strip().lower() == AUTOCAD_SHX_TEXT
-        for key in ("T", "Subj")
-    ):
+    if is_autocad_shx_text(annotation):
         return DrawingLayer.VENDOR_TEXT
     return _LAYER_BY_SUBTYPE.get(subtype, DrawingLayer.OTHER)
 
@@ -305,7 +404,9 @@ class MarkupNote:
 
     `text` is not a reading and not a candidate: it is what the file says, so there is no confidence,
     no unit guess and no semantic type on it. Whether it is a dimension, a tag, a note or a title is
-    a question for a later step that has reviewed answers to work from.
+    a question for a later step that has reviewed answers to work from. The one change is on the
+    vendor's CAD text: AutoCAD's control codes are written as the characters it draws for them
+    (`decode_autocad_codes`: `%%d` is `°`).
     """
 
     layer: DrawingLayer
@@ -1342,7 +1443,12 @@ def _read_layers(
                 note = MarkupNote(
                     layer=layer,
                     subtype=subtype,
-                    text=_text(annotation.get("Contents")) or "",
+                    # AutoCAD's control codes (`%%d`, `%%c`) as the characters it draws for them.
+                    text=(
+                        decode_autocad_codes(_text(annotation.get("Contents")) or "")
+                        if layer is DrawingLayer.VENDOR_TEXT
+                        else _text(annotation.get("Contents")) or ""
+                    ),
                     # AutoCAD's `/T` names its own export, not a person; the vendor's text has no
                     # author the way a reviewer's correction does.
                     author=(

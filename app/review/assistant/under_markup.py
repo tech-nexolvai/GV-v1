@@ -7,6 +7,9 @@ it emptied the small filled-rectangle forms inside that drawing. This module doe
 
 1. **The reviewers' annotations are removed** (every kind that is not a pasted drawing:
    `extraction.stamp_text.carries_drawing` keeps `/Stamp` and a `/Square` holding a drawing).
+   AutoCAD's SHX text comments are the vendor's text, not a reviewer's: each is set as invisible
+   text at its rectangle (`visible_text.shx_comment_text`), so step 3 lists it, and it is never
+   listed as removed markup.
 2. **Boxes baked inside a pasted drawing are hidden where code can tell them apart**: inside each
    kept drawing that meets the area, (a) a small sub-drawing (form XObject) that only fills
    rectangles in a colour is emptied, and (b) a small rectangle filled in a colour in the drawing's
@@ -46,6 +49,7 @@ from app.review.assistant.symbol_font import decoded
 from extraction.pdfium_guard import pdfium
 from extraction.reader import pixel_placement
 from extraction.stamp_text import carries_drawing
+from extraction.visible_text import is_shx_comment, shx_comment_text
 from extraction.working_copy import require_standard_page
 
 __all__ = ["UnderMarkup", "page_words", "read_under_markup"]
@@ -406,7 +410,11 @@ def read_under_markup(pdf: Path, page_number: int, box: Box, dpi: int | None = N
     removed: list[dict[str, Any]] = []
     elsewhere = forms = fills = drawings = 0
     kept = pikepdf.Array()
+    shx: list[Any] = []
     for annotation in page.obj.get("/Annots") or pikepdf.Array():
+        if is_shx_comment(annotation):
+            shx.append(annotation)  # the vendor's text, set as text below: not GV's markup
+            continue
         rect = annotation.get("/Rect")
         spot = _rect_shown(rect, height) if rect is not None and len(rect) == 4 else None
         over = spot is not None and _meets(spot, area)
@@ -429,6 +437,7 @@ def read_under_markup(pdf: Path, page_number: int, box: Box, dpi: int | None = N
         else:
             elsewhere += 1
     as_shown = _flat(data, page_number - 1)
+    shx_comment_text(original, page, shx)
     page.obj["/Annots"] = kept
     original.flatten_annotations(mode="all")
     buffer = io.BytesIO()
