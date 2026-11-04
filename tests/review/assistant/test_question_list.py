@@ -188,10 +188,12 @@ def test_the_shipped_list_names_no_client_project_or_drawing() -> None:
     whole = (Path(ql.__file__).resolve().parents[3] / "vocabulary" / ql.FILE).read_text("utf-8")
     # GV's own published rulebook ids are the one place a code is allowed.
     text = "\n".join(line for line in whole.splitlines() if "rule_ids:" not in line)
-    # A client's drawing number looks like two or more capitals, a dash and digits.
+    # A drawing number looks like two or more capitals, a dash and digits.
     assert not re.search(r"\b[A-Z]{2,}-\d{2,}\b", text)
-    # Proper nouns in the middle of a sentence would be a project or a person.
-    assert not re.search(r"(?<![.\n] )\b(?:Raj|Marriott|Portage|Colton|Bossier)\b", text)
+    # A capitalised word in the middle of a sentence would be a project, a brand or a person.
+    allowed = {"GV", "ADA", "AI", "A", "English"}
+    found = {one for one in re.findall(r"[a-z,;)]\s+([A-Z][A-Za-z]+)", text)} - allowed
+    assert not found, sorted(found)
 
 
 def test_code_and_vendor_only_helpers_pick_the_right_questions() -> None:
