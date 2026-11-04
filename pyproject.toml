@@ -36,6 +36,10 @@ dependencies = ["pydantic>=2.10", "shapely>=2"]
 dev = [
     "pytest==9.1.1", "pytest-split==0.11.0", "pytest-xdist==3.8.0",
     "ruff", "black", "mypy", "httpx", "jsonschema", "pyyaml",
+    # MPL-2.0. Property tests for the parts of the verdict table that are not a small enum: the
+    # inch comparison (`tests/review/assistant/test_verdict_facts.py`). The enum grid itself is
+    # walked exhaustively and needs no generator.
+    "hypothesis",
 ]
 
 # Phase 1-2 — extraction (all MIT / Apache / MPL)
