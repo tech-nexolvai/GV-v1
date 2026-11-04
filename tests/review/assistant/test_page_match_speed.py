@@ -178,7 +178,14 @@ def _answering(
             if gate is not None:
                 assert gate.wait(5)
             calls.append(1)
-            return page_match.AskReply(text, "end_turn", {"input_tokens": 10}, "fake", 0.01)
+            reply = text
+            if "matched_on" in schema.get("properties", {}):
+                # Shown drawings one by one (per-drawing pairing): the answer cites what it
+                # matched on.
+                found = json.loads(text)
+                found["matched_on"] = {"room_or_tag": "none", "overall_width": "none"}
+                reply = json.dumps(found)
+            return page_match.AskReply(reply, "end_turn", {"input_tokens": 10}, "fake", 0.01)
 
         return ask
 

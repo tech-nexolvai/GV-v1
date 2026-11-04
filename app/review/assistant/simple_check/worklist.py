@@ -43,6 +43,7 @@ import dataclasses
 import json
 import logging
 import math
+import os
 import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -59,6 +60,7 @@ from app.review.assistant.sheet_revisions import exact_copies, older_copies
 from app.review.assistant.simple_check import pairing as pairing_module
 from app.review.assistant.simple_check import projects as projects_module
 from app.review.assistant.simple_check import rooms as rooms_module
+from app.review.assistant.simple_check import signature as signature_module
 from app.review.assistant.simple_check import views as views_module
 from app.review.assistant.simple_check.schema import (
     AcrossCandidate,
@@ -88,7 +90,9 @@ INDEX_FILE: Final = "set_index.json"
 #: between builds of one unchanged set pack (a full check builds its work list again as each
 #: matcher answer lands): (vendor drawing, its candidates) -> (the ranking, code's own pick).
 type RankMemo = dict[
-    tuple[str, tuple[str, ...]], tuple[tuple[pairing_module.Scored, ...], str | None]
+    tuple[str, tuple[str, ...]],
+    tuple[tuple[pairing_module.Scored, ...], str | None]
+    | tuple[tuple[pairing_module.Scored, ...], str | None, Any],
 ]
 
 __all__ = [
@@ -103,10 +107,14 @@ __all__ = [
     "ITEM_TAG_SHARE",
     "KEY_PLAN_TAGS",
     "MATCH_FILE",
+    "MATCH_PER_PAGE",
+    "MATCH_TARGETS",
     "MIN_DRAWING_PT",
     "MIN_PAGE_DIMS",
     "NO_DRAWING_NOTE",
     "NUMBERS_UNREAD",
+    "ON_DRAWINGS",
+    "PAIRING_TARGETS_ENV",
     "ROOM_CLEAR",
     "ROOM_REACH_PT",
     "TAG_PAGES_MAX",
@@ -114,6 +122,8 @@ __all__ = [
     "architect_views_findings",
     "build_worklist",
     "combined_files",
+    "per_view_pairing",
+    "signature_words",
     "worklist_from",
 ]
 
@@ -520,12 +530,14 @@ def build_worklist(
     *,
     memo: RankMemo | None = None,
     flag: bool | None = None,
+    per_view: bool | None = None,
 ) -> WorkList:
     """The work list of the set pack in `folder` (its page map with the plan check's answers and
     code's assumptions laid over it, its labels, scales and notes). Raises `FileNotFoundError` when
     the pack has no page map yet. `memo`: code's ranking across the uploads kept between builds of
     one unchanged pack (`RankMemo`). `flag`: flag mode's best guesses (`_best_guesses`); `None`:
-    the setting (`full_check_plan.flag_mode`)."""
+    the setting (`full_check_plan.flag_mode`). `per_view`: pair with the architect's drawings one
+    by one (rebuild plan Step 3); `None`: the setting (`per_view_pairing`)."""
     page_map = read_page_map(folder, assume=True, main_file=main_file)
     if page_map is None:
         raise FileNotFoundError(f"no page map in {folder}")
@@ -544,6 +556,7 @@ def build_worklist(
         combined=combined_files(page_map, annotations),
         memo=memo,
         flag=flag_mode() if flag is None else flag,
+        per_view=per_view_pairing() if per_view is None else per_view,
     )
 
 
@@ -605,6 +618,7 @@ def worklist_from(
     set_index: Any = None,
     texts: Mapping[tuple[str, int], str] | None = None,
     flag: bool = False,
+    per_view: bool | None = None,
 ) -> WorkList:
     """The work list from the pack's documents (pure: `build_worklist` reads them). `annotations`
     (the pack's `annotations.json`): GV's typed item titles are read from it, only where one is
@@ -620,7 +634,11 @@ def worklist_from(
     (`vendor_consistency.page_texts`): a vendor page that is an older copy of a sheet printed
     again later (an earlier revision, `sheet_revisions`) is skipped, said so; without it every
     page is checked. `flag` (flag mode, Anant 2026-11-04): a drawing whose pairing is unsure is
-    paired with its best guess (`_best_guesses`)."""
+    paired with its best guess (`_best_guesses`). `per_view` (rebuild plan Step 3): each titled
+    view of an architect sheet is a target of its own (`_ranked_by_view`); `None`: the setting
+    (`per_view_pairing`), `False`: whole sheets, as before."""
+    if per_view is None:
+        per_view = per_view_pairing()
     file = _main_file(page_map, main_file)
     if file is None:
         return WorkList(file="", items=(), skipped=(), pages=())
@@ -961,6 +979,7 @@ def worklist_from(
     # the drawings of every round paired with one architect item are one area for their rounds
     # (#1728).
     answers = _saved_answers(matches)
+    on_drawings = _drawing_answers(matches)
     items_across, across_context = _enrich(
         _items_across(across, drawings, file, architect_files, by_set_page, facts_of),
         dims_pages,
@@ -998,7 +1017,21 @@ def worklist_from(
             if title and per_page[(half.file, half.file_page or half.page)] == 1:
                 # The page's item is this drawing's only when it is the page's one vendor drawing.
                 across_context.index_titles[half.ref] = title
+            if per_page[(half.file, half.file_page or half.page)] == 1:
+                across_context.index_views[half.ref] = tuple(
+                    str(v.get("title") or "")
+                    for v in page_read.get("views") or []
+                    if isinstance(v, Mapping)
+                )
     across_context.word_limit = max(COMMON_WORD_MIN, COMMON_WORD_SHARE * len(mine_vendor))
+    across_context.per_view = per_view
+    if per_view:
+        across_context.unit_aliases = signature_module.unit_aliases(
+            {h.ref: t for h in mine_vendor if (t := across_context.index_titles.get(h.ref))}
+        )
+        across_context.phrases_at = lambda drawing: views_module.phrases_of(
+            dims_pages.get((drawing.file, drawing.own_page)), drawing.crop_box
+        )
     vendor_tags = across_context.item_tags()
     for half in mine_vendor:
         named = across_context.index_titles.get(half.ref)
@@ -1072,6 +1105,7 @@ def worklist_from(
             _plain(by_set_page[half.page].get("section")) or None,
             memo=memo,
             context=across_context,
+            on_drawings=half.ref in on_drawings,
         )
         if half.page in kept_for_sheet and (decided is None or decided.sheet is None):
             continue  # no architect page pairs with it by its sheet number: skipped as before
@@ -1092,7 +1126,9 @@ def worklist_from(
             _swap_audit(across_pairs, marked, by_item, across_context)
         if flag:
             # Last: a guess never lends its page to the vendor's other sheets nor joins the audit.
-            _best_guesses(across_pairs, marked, by_item)
+            _best_guesses(across_pairs, marked, by_item, across_context)
+            if per_view:
+                _swap_guesses(across_pairs, marked, by_item, across_context)
     for half in vendor_halves:
         decided = across_pairs.get(half.ref)
         if decided is not None and decided.chosen and half.from_upload:
@@ -1371,6 +1407,21 @@ def _index_pages(document: Any) -> dict[str, Mapping[str, Any]]:
     """The set index's checked page reads (`set_index.load`'s shape), empty when there is none."""
     pages = document.get("pages") if isinstance(document, Mapping) else None
     return {str(k): v for k, v in (pages or {}).items() if isinstance(v, Mapping)}
+
+
+#: A saved matcher answer's `question` when it was shown drawings one by one, not whole pages
+#: (`page_match`, per drawing).
+ON_DRAWINGS: Final = "drawings"
+
+
+def _drawing_answers(document: Any) -> frozenset[str]:
+    """The vendor drawings whose saved matcher answer was given on drawings (`ON_DRAWINGS`)."""
+    found = document.get("answers") if isinstance(document, Mapping) else None
+    return frozenset(
+        str(ref)
+        for ref, entry in (found.items() if isinstance(found, Mapping) else ())
+        if isinstance(entry, Mapping) and entry.get("question") == ON_DRAWINGS
+    )
 
 
 def _saved_answers(document: Any) -> dict[str, tuple[tuple[str, ...], pairing_module.MatchAnswer]]:
@@ -1680,6 +1731,19 @@ class _Across:
     room_names: dict[str, str] | None = None
     """The rooms the architect's plans place item tags in (`_tag_rooms`), each room's letters
     (`_room_key`) to its name as printed; worked out once."""
+    per_view: bool = False
+    """Pair with the architect's drawings one by one (`per_view_pairing`, rebuild plan Step 3),
+    not whole sheets."""
+    signatures: dict[str, signature_module.Signature] = field(default_factory=dict)
+    """Each drawing's page signature, by its ref, as worked out (`_signature`)."""
+    unit_aliases: dict[str, str] = field(default_factory=dict)
+    """A vendor drawing's unit type its title gives only by the vendor's own type code
+    (`signature.unit_aliases`), by its ref."""
+    phrases_at: Callable[[Drawing], Sequence[views_module.Phrase]] | None = None
+    """A drawing's printed phrases with their boxes (the fixtures of its signature)."""
+    index_views: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    """The view titles the set index read on a vendor drawing's page (checked printed), by the
+    drawing's ref: the page's one vendor drawing only (the kinds of view it draws)."""
 
     def item_tags(self) -> frozenset[str]:
         """The vendor's item tags (`ITEM_TAG_SHARE`): every item-like tag it prints on few of its
@@ -2135,7 +2199,7 @@ def _item_facts(
         views=frozenset(v for m in members for v in m.views),
         section=section,
         title=title,
-        view_count=max(1, len(item.views)),
+        view_count=max(1, len(item.views), *(m.view_count for m in members)),
         whole_sheet=bool(item.views),
         markers=frozenset(w for m in members for w in m.markers),
         hand=frozenset(w for m in members for w in m.hand),
@@ -2203,6 +2267,7 @@ def _pair_across(
     *,
     memo: RankMemo | None = None,
     context: _Across | None = None,
+    on_drawings: bool = False,
 ) -> AcrossPair | None:
     """How a vendor drawing is paired across the uploads (#1798), or `None` when there is no
     architect item to pair it with. Code ranks every item (`pairing.rank`): a title GV typed or
@@ -2213,7 +2278,16 @@ def _pair_across(
     `pairing.agree`; a sheet of several titled views is then narrowed to one view
     (`pairing.narrow`). Only items of the vendor drawing's own project are candidates
     (`projects`), never the brand prototype (R1: reference only) nor a key plan. `memo`: the
-    ranking of an earlier build (only the answer is new: the agreement rule runs again on it)."""
+    ranking of an earlier build (only the answer is new: the agreement rule runs again on it).
+
+    Per drawing (`_Across.per_view`, rebuild plan Step 3): every titled view of a sheet is ranked
+    on its own facts and its page signature (`_ranked_by_view`), the page is decided as before on
+    its best view's evidence, and the views compared are chosen with the page, before the pick:
+    the matcher's picks on it, else code's best view and the views of the same piece
+    (`_view_group`), never narrowed after the pick. The matcher is shown at most
+    `MATCH_TARGETS` drawings (`AcrossPair.targets`). `on_drawings`: `saved` was given on those
+    drawings (`page_match`); else on whole pages, and it is read on pages as before, the views
+    then being code's."""
     context = context or _Across()
     facts_of = _with_marks(facts_of, context)
     mine_facts = facts_of(vendor)
@@ -2292,13 +2366,25 @@ def _pair_across(
             needed=True,
         )
     linked = _linked(item_tags, pool, context)
-    key = (vendor.ref, tuple(c.id for c in pool))
-    known = memo.get(key) if memo is not None else None
-    if known is None:
-        known = _ranked_across(vendor, pool, facts_of, typed, item_tags, linked, common, boiler)
-        if memo is not None:
-            memo[key] = known
-    ranked, code_pick = known
+    by_view: _ByView | None = None
+    if context.per_view:
+        key = (f"{vendor.ref}#views", tuple(c.id for c in pool))
+        found_view = memo.get(key) if memo is not None else None
+        if found_view is None:
+            found_view = _ranked_by_view(
+                vendor, pool, facts_of, typed, item_tags, linked, common, boiler, context
+            )
+            if memo is not None:
+                memo[key] = found_view
+        ranked, code_pick, by_view = found_view  # type: ignore[misc]
+    else:
+        key = (vendor.ref, tuple(c.id for c in pool))
+        known = memo.get(key) if memo is not None else None
+        if known is None:
+            known = _ranked_across(vendor, pool, facts_of, typed, item_tags, linked, common, boiler)
+            if memo is not None:
+                memo[key] = known
+        ranked, code_pick = known  # type: ignore[misc]
     # The $0 code pass (plan change 6): two kinds of code evidence, a clear margin, no rival
     # named by code. Its pick is code's own; the paid matcher is not asked about it
     # (`page_match.to_ask`), and a saved matcher answer naming another item still refuses it.
@@ -2308,7 +2394,16 @@ def _pair_across(
         code_pick = sure.ref
     asked = tuple(s.ref for s in ranked if s.contradicts is None)
     answer = None
-    if saved is not None:
+    answer_views: dict[str, tuple[str, ...]] = {}
+    """Per drawing: the views the matcher picked on each page it named."""
+    saved_answer = saved[1] if saved is not None else None
+    """The matcher's saved answer as it gave it, on pages (held when nothing confirms it)."""
+    saved_shown: tuple[str, ...] = saved[0] if saved is not None else ()
+    """The pages the matcher was shown whole (none when it was shown drawings)."""
+    if saved is not None and by_view is not None and on_drawings:
+        answer, answer_views, saved_answer = _drawing_answer(saved, by_view)
+        saved_shown = ()
+    elif saved is not None:
         answer = pairing_module.reuse(saved[0], saved[1], asked)
     disagree = _views_disagree(mine_facts, ranked, {c.id: c for c in pool}, facts_of)
     if disagree is not None and (
@@ -2339,7 +2434,7 @@ def _pair_across(
                 if (pool_item := {c.id: c for c in pool}.get(s.ref)) is not None
             ),
             code_pick=governing,
-            asked=asked,
+            asked=asked if by_view is None else by_view.asked,
             answer=None if answer is None else answer.matches,
             chosen=(governing,),
             why=_human_ids(
@@ -2351,6 +2446,7 @@ def _pair_across(
                 context,
             ),
             views_disagree=disagree,
+            **_by_view_fields(by_view, answer_views),
         )
     swap_why: str | None = None
     swapped: pairing_module.SizeMatch | None = None
@@ -2388,11 +2484,7 @@ def _pair_across(
         # Through the tag's room (not the architect's own tag on the drawing): a page the AI page
         # matcher is sure of, or code's own clear pick, is held against it (owner's rule, 25 Oct:
         # never a guessed pair), as is a page code and the matcher agreed on.
-        held_room = (
-            _held_page(ranked, code_pick, answer or (saved[1] if saved is not None else None))
-            if not chosen
-            else None
-        )
+        held_room = _held_page(ranked, code_pick, answer or saved_answer) if not chosen else None
         if _held_weakly(held_room, ranked, misled):
             why = f"{why}; {_NOT_HELD.format(page=held_room)}"
             held_room = None
@@ -2537,6 +2629,33 @@ def _pair_across(
                     )
                 )
                 continue
+            picked = (
+                answer_views.get(item_id) or by_view.views.get(item_id)
+                if by_view is not None
+                else None
+            )
+            if picked and by_view is not None:
+                # Per drawing: the views were chosen with the page (the matcher's picks on it,
+                # else code's best view and the views of the same piece), never after the pick.
+                kept.append(item_id)
+                picked_views.extend(picked)
+                drawn = {v.ref: v for v in item.views}
+                shown.append(
+                    "its "
+                    + ("view " if len(picked) == 1 else "views ")
+                    + ", ".join(
+                        f'"{drawn[r].titles[0]}"' if drawn[r].titles else r
+                        for r in picked
+                        if r in drawn
+                    )
+                    + f" on {item_id}"
+                    + (
+                        " (the AI page matcher's pick)"
+                        if item_id in answer_views
+                        else f" ({pairing_module.evidence_words(_scored_of(by_view, picked[0]))})"
+                    )
+                )
+                continue
             own = {v.ref for v in item.views}
             vendor_facts = dataclasses.replace(
                 mine_facts,
@@ -2670,13 +2789,16 @@ def _pair_across(
         ):
             # The vendor's parts read backwards on the paired drawing's line (too few to prove).
             hand = "the vendor's parts read in reverse order on the architect's: a mirrored unit"
+        if hand is None and not mirrored and by_view is not None:
+            # Per drawing: the vendor's fixtures read only backwards on a paired view.
+            hand = _hand_by_fixtures(vendor.ref, picked_views, by_view.signatures)
         if hand is not None and not mirrored:
             why = f"{why}; {hand}: sizes are compared, positions from an end are not"
     # A page the AI page matcher is sure of, or code's own clear pick, other than the tag's plan
     # (owner's rule, 25 Oct: "no drawing to compare with" only when code is sure): the vendor's
     # tag may be its wrong number for the piece, and that page may draw it.
     held = (
-        _held_page(ranked, code_pick, answer or (saved[1] if saved is not None else None))
+        _held_page(ranked, code_pick, answer or saved_answer)
         if tag_plan is not None and not chosen
         else None
     )
@@ -2704,7 +2826,7 @@ def _pair_across(
         # project and named only drawings that give no sizes of it, and code agrees.
         shown_only = (
             _shown_only(saved[1], everything, item_tags, context, by_id, project)
-            if set(by_id) <= set(saved[0])
+            if saved_shown and set(by_id) <= set(saved_shown)
             else None
         )
         if shown_only is not None:
@@ -2718,7 +2840,7 @@ def _pair_across(
     unsure = (
         ()
         if chosen or DRAWING_NEEDED in why
-        else _unsure(ranked, code_pick, answer or (saved[1] if saved is not None else None))
+        else _unsure(ranked, code_pick, answer or saved_answer)
     )
     if not unsure and not chosen and code_paired and DRAWING_NEEDED not in why:
         # Code's own pass named the item, and something later (which view) is unsure.
@@ -2760,7 +2882,7 @@ def _pair_across(
             else ()
         ),
         code_pick=code_pick,
-        asked=asked,
+        asked=asked if by_view is None else by_view.asked,
         answer=None if answer is None else answer.matches,
         chosen=chosen,
         views=tuple(picked_views),
@@ -2770,6 +2892,7 @@ def _pair_across(
         unsure=unsure,
         code_paired=code_paired,
         mirrored=mirrored,
+        **_by_view_fields(by_view, answer_views),
     )
 
 
@@ -2873,6 +2996,7 @@ def _best_guesses(
     pairs: dict[str, AcrossPair],
     facts_of: Callable[[Drawing], pairing_module.Facts],
     by_item: Mapping[str, AcrossCandidate],
+    context: _Across | None = None,
 ) -> None:
     """Flag mode (Anant, 2026-11-04: "when not sure, the page is still compared and every flag
     says 'best guess: architect page N'"): each vendor drawing left unpaired with a page named for
@@ -2888,7 +3012,14 @@ def _best_guesses(
     Never a drawing code knows needs another drawing (`AcrossPair.needed`: the project is not in
     the architect's file, the item is only a tag on a plan, its drawing prints no sizes), nor one
     with no page named (the matcher and code found none, or the matcher has not answered yet:
-    Continue asks again). In place."""
+    Continue asks again).
+
+    Per drawing (rebuild plan Step 3, `context.per_view`): the guess is narrowed to the page's
+    views (`AcrossPair.page_views`: the matcher's picks on it, else code's best view and the views
+    of the same piece), never the whole sheet when it holds several; and the mirror checks run on
+    it as on a pair: code's mirror proof (`pairing.mirror_proof`, one elevation against one) and
+    the fixtures read backwards (`signature.order_match`) flag it opposite-hand. Then the swap
+    audit runs on the guesses (`_swap_guesses`). In place."""
     for ref, pair in list(pairs.items()):
         if pair.chosen or pair.needed:
             continue
@@ -2902,9 +3033,26 @@ def _best_guesses(
             continue
         pick = offered[0]
         item = by_item[pick]
-        hand = pairing_module.opposite_hand(
-            facts_of(pair.vendor), _item_facts(item, facts_of, None)[0]
+        views = dict(pair.page_views).get(pick, ()) if context is not None else ()
+        drawn = {v.ref: v for v in item.views}
+        views = tuple(v for v in views if v in drawn)
+        vendor_facts = facts_of(pair.vendor)
+        targets = (
+            [facts_of(drawn[v]) for v in views] if views else [_item_facts(item, facts_of, None)[0]]
         )
+        hand = next(
+            (h for t in targets if (h := pairing_module.opposite_hand(vendor_facts, t))), None
+        )
+        if views and context is not None and context.per_view:
+            proof = pairing_module.mirror_proof(vendor_facts, targets)
+            if proof is not None:
+                run = ", ".join(pairing_module.size_words(v) for v in proof.parts)
+                hand = (
+                    f"code's mirror proof on the guess: the vendor's widths {run} read in reverse "
+                    "order on the architect's drawing (a mirrored unit)"
+                )
+            elif hand is None:
+                hand = _hand_by_fixtures(pair.vendor.ref, views, context.signatures)
         others = [f"architect page {by_item[c].page}" for c in offered if c != pick]
         reason = pair.why.removeprefix(f"{pairing_module.UNPAIRED}: ")
         if reason.startswith(f"{pairing_module.PAIRING_UNSURE}: ") and "?; " in reason:
@@ -2920,10 +3068,13 @@ def _best_guesses(
             + f"): {reason}"
             + (f"; {hand}: sizes are compared, positions from an end are not" if hand else "")
         )
+        if views:
+            on = ", ".join(f'"{drawn[v].titles[0]}"' if drawn[v].titles else v for v in views)
+            why = f"{why}; compared with its view{'s' if len(views) > 1 else ''} {on}"
         pairs[ref] = pair.model_copy(
             update={
                 "chosen": (pick,),
-                "views": (),
+                "views": views,
                 "guess": True,
                 "unsure": tuple(offered),
                 "opposite_hand": hand,
@@ -2931,6 +3082,71 @@ def _best_guesses(
                 "why": why,
             }
         )
+
+
+def _swap_guesses(
+    pairs: dict[str, AcrossPair],
+    facts_of: Callable[[Drawing], pairing_module.Facts],
+    by_item: Mapping[str, AcrossCandidate],
+    context: _Across,
+) -> None:
+    """The pair-swap audit on best guesses (per drawing, rebuild plan Step 3). The audit on pairs
+    (`_swap_audit`) makes two crossed pairs unsure; a guess is unsure already, so here it only
+    chooses which of two look-alikes each vendor drawing is guessed on. Two vendor drawings of
+    alike signatures (the same room words, unit type and accessible marker), guessed on two
+    different drawings, swap their guesses when their printed sizes fit each other's guess
+    better, strongly (`pairing.swap_audit` and `pairing.swap_is_strong`: both fit the other's
+    better, or one by more than one shared size). Each guess is swapped at most once; both stay
+    best guesses, and the reason says so. In place."""
+
+    def key(pair: AcrossPair) -> tuple[frozenset[str], str | None, bool] | None:
+        found = context.signatures.get(pair.vendor.ref)
+        return None if found is None else (found.rooms, found.unit, found.accessible)
+
+    guessed = [ref for ref, pair in pairs.items() if pair.guess and pair.chosen]
+    done: set[str] = set()
+    for n, one in enumerate(guessed):
+        for two in guessed[n + 1 :]:
+            if one in done or two in done:
+                continue
+            a, b = pairs[one], pairs[two]
+            if (a.chosen, a.views) == (b.chosen, b.views) or key(a) is None or key(a) != key(b):
+                continue
+            first = (facts_of(a.vendor), [facts_of(d) for d in _paired_drawings(a, by_item)])
+            second = (facts_of(b.vendor), [facts_of(d) for d in _paired_drawings(b, by_item)])
+            found = pairing_module.swap_audit(first, second)
+            if found is None or not pairing_module.swap_is_strong(first, second):
+                continue
+            words = (
+                f"the swap audit: the sizes of vendor pages {a.vendor.own_page} and "
+                f"{b.vendor.own_page} fit each other's guesses better ({found[0]} points against "
+                f"{found[1]}), so the guesses were swapped"
+            )
+            for ref, mine, theirs in ((one, a, b), (two, b, a)):
+                pairs[ref] = mine.model_copy(
+                    update={
+                        "chosen": theirs.chosen,
+                        "views": theirs.views,
+                        "unsure": tuple(dict.fromkeys((*theirs.chosen, *mine.unsure))),
+                        "opposite_hand": next(
+                            (
+                                h
+                                for d in _paired_drawings(theirs, by_item)
+                                if (
+                                    h := pairing_module.opposite_hand(
+                                        facts_of(mine.vendor), facts_of(d)
+                                    )
+                                )
+                            ),
+                            None,
+                        ),
+                        "why": (
+                            f"{guess_words(by_item[theirs.chosen[0]].page)} (not confirmed): "
+                            f"{words}; before the swap: {mine.why}"
+                        ),
+                    }
+                )
+            done.update((one, two))
 
 
 def _swap_audit(
@@ -4504,6 +4720,379 @@ def _ranked_across(
             if by_rank[owner].contradicts is None:
                 code_pick = owner
     return ranked, code_pick
+
+
+# ---- per-drawing pairing (rebuild plan Step 3, 2026-11-05) ---------------------------------------
+
+#: The setting that says what a vendor drawing is paired with: `view` (the default: each titled
+#: view of an architect sheet is a target of its own, `_ranked_by_view`) or `page` (the whole
+#: sheet, as before Step 3; kept for the before-and-after replay).
+PAIRING_TARGETS_ENV: Final = "GV_PAIRING_TARGETS"
+#: The AI page matcher is shown at most this many of the architect's drawings: code's best by the
+#: ranking and the page signature, at most `MATCH_PER_PAGE` of one sheet (so it sees several).
+MATCH_TARGETS: Final = 5
+MATCH_PER_PAGE: Final = 2
+
+
+def per_view_pairing() -> bool:
+    """Whether pairing ranks the architect's drawings one by one (`GV_PAIRING_TARGETS`: anything
+    but `page`), read from the environment as `full_check_plan.flag_mode` is, so every work-list
+    build in the process pairs alike."""
+    return os.environ.get(PAIRING_TARGETS_ENV, "view").strip().lower() != "page"
+
+
+@dataclass(frozen=True, slots=True)
+class _ByView:
+    """Code's ranking of the architect's drawings one by one for one vendor drawing
+    (`_ranked_by_view`)."""
+
+    ranked: tuple[pairing_module.Scored, ...]
+    """Every drawing target (a titled view, or a page with no titled views), code's best first,
+    with the page signature laid over it (`signature.rerank`)."""
+    targets: Mapping[str, AcrossCandidate]
+    """Each target by its id, its signature in words."""
+    page_of: Mapping[str, str]
+    """A target's id -> its page item's id."""
+    views: Mapping[str, tuple[str, ...]]
+    """A page item's id -> the views of it code compares a pair with (`_view_group`)."""
+    asked: tuple[str, ...]
+    """The targets the AI page matcher is shown (`_matcher_targets`)."""
+    signatures: Mapping[str, signature_module.Signature]
+    """Each target's page signature, and the vendor drawing's (by its ref)."""
+
+
+def _targets(pool: Sequence[AcrossCandidate]) -> list[AcrossCandidate]:
+    """The drawing targets of the candidate pages: each titled view of a sheet of several, else
+    the whole page; each linked to its page (`page_id`)."""
+    out: list[AcrossCandidate] = []
+    for item in pool:
+        if not item.views:
+            out.append(item.model_copy(update={"page_id": item.id}))
+            continue
+        out.extend(
+            AcrossCandidate(
+                id=view.ref,
+                file=item.file,
+                page=item.page,
+                drawings=(view,),
+                title=item.title,
+                section=item.section,
+                project=item.project,
+                reference=item.reference,
+                key_plan=item.key_plan,
+                page_id=item.id,
+            )
+            for view in item.views
+        )
+    return out
+
+
+def _page_title(item: AcrossCandidate, context: _Across) -> str | None:
+    """The item title the set index read on a page (checked printed), when there is one."""
+    return next(
+        (context.index_titles[d.ref] for d in item.drawings if d.ref in context.index_titles), None
+    )
+
+
+def _view_facts_of(
+    facts_of: Callable[[Drawing], pairing_module.Facts],
+    titles: Mapping[str, str],
+    counts: Mapping[str, int],
+) -> Callable[[Drawing], pairing_module.Facts]:
+    """`facts_of` for drawing targets: a view carries its page's item title (`titles`, by the
+    view's ref) and the title's variant and hand words (a sheet titled "ACCESSIBLE VANITY" draws
+    every view of it accessible), and how many titled views its sheet holds (`counts`): a view of
+    a sheet of several is never ruled out by its kind alone (`pairing.rank`'s plan against an
+    elevation), as the sheet was not; a vendor sheet titled "PLAN" often draws its elevation
+    too."""
+
+    def facts(drawing: Drawing) -> pairing_module.Facts:
+        found = facts_of(drawing)
+        if drawing.ref in counts:
+            found = dataclasses.replace(found, view_count=counts[drawing.ref])
+        title = titles.get(drawing.ref)
+        if not title:
+            return found
+        variant, hand = pairing_module.markers_in([title])
+        return dataclasses.replace(
+            found,
+            index_title=found.index_title or title,
+            markers=found.markers | variant,
+            hand=found.hand | hand,
+        )
+
+    return facts
+
+
+def _signature(
+    drawing: Drawing,
+    facts: pairing_module.Facts,
+    context: _Across,
+    titles: Sequence[str],
+    sheet: str | None = None,
+) -> signature_module.Signature:
+    """A drawing's page signature (`signature.signature_of`), worked out once per build."""
+    known = context.signatures.get(drawing.ref)
+    if known is None:
+        known = signature_module.signature_of(
+            facts,
+            [t for t in titles if t],
+            context.phrases_at(drawing) if context.phrases_at is not None else (),
+            unit=context.unit_aliases.get(drawing.ref),
+            sheets=(sheet,) if sheet else (),
+            views=context.index_views.get(drawing.ref, ()),
+        )
+        context.signatures[drawing.ref] = known
+    return known
+
+
+def signature_words(found: signature_module.Signature) -> tuple[str, ...]:
+    """A signature in words for the AI page matcher's caption: its room words, unit type, the
+    accessible marker and at most four item tags."""
+    words = [w.lower() for w in sorted(found.rooms)]
+    if found.unit:
+        words.append(found.unit.lower().replace("-", " "))
+    if found.accessible:
+        words.append("accessible")
+    words.extend(sorted(found.tags)[:4])
+    return tuple(words)
+
+
+def _view_group(
+    page_id: str,
+    ranked: Sequence[pairing_module.Scored],
+    page_of: Mapping[str, str],
+    signatures: Mapping[str, signature_module.Signature],
+) -> tuple[str, ...]:
+    """The views of a page code compares a pair with: its best view not ruled out, then every
+    other view of the page not ruled out that names the same room words, unit type and accessible
+    marker (the plan, elevation and sections of one piece: "KITCHEN PLAN" and "KITCHEN MILLWORK
+    ELEVATION", never the "ACC KITCHEN PLAN" beside them). A best view naming no room word is
+    compared alone. Empty for a page with no titled views, or every view ruled out."""
+    mine = [
+        s
+        for s in ranked
+        if page_of.get(s.ref) == page_id and s.ref != page_id and s.contradicts is None
+    ]
+    if not mine:
+        return ()
+    best = signatures.get(mine[0].ref)
+    if best is None or not best.rooms:
+        return (mine[0].ref,)
+    key = (best.rooms, best.unit, best.accessible)
+    return tuple(
+        s.ref
+        for s in mine
+        if (theirs := signatures.get(s.ref)) is not None
+        and (theirs.rooms, theirs.unit, theirs.accessible) == key
+    )
+
+
+def _project(
+    ranked: Sequence[pairing_module.Scored],
+    page_of: Mapping[str, str],
+    targets: Mapping[str, AcrossCandidate],
+) -> tuple[pairing_module.Scored, ...]:
+    """The pages' ranking from their drawings': each page scored as its best drawing not ruled
+    out (ruled out only when every drawing of it is), its evidence said on that drawing. The
+    agreement rule and the rules after it (an item tag's page, a room's page, the swap check)
+    decide pages; the drawings are chosen with the page (`_view_group`)."""
+    best: dict[str, pairing_module.Scored] = {}
+    for scored in ranked:
+        best.setdefault(page_of[scored.ref], scored)
+    out: list[pairing_module.Scored] = []
+    for page_id, scored in best.items():
+        target = targets[scored.ref]
+        drawn = target.drawings[0].titles if target.page_id != target.id else ()
+        out.append(
+            dataclasses.replace(
+                scored,
+                ref=page_id,
+                evidence=(
+                    (f'on its drawing "{drawn[0]}"', *scored.evidence) if drawn else scored.evidence
+                ),
+            )
+        )
+    order = {s.ref: n for n, s in enumerate(out)}
+    return tuple(
+        sorted(out, key=lambda s: (s.contradicts is None, s.score, -order[s.ref]), reverse=True)
+    )
+
+
+def _matcher_targets(
+    ranked: Sequence[pairing_module.Scored], page_of: Mapping[str, str]
+) -> tuple[str, ...]:
+    """The drawings the AI page matcher is shown: code's best not ruled out, at most
+    `MATCH_TARGETS`, at most `MATCH_PER_PAGE` of one page."""
+    out: list[str] = []
+    per_page: Counter[str] = Counter()
+    for scored in ranked:
+        if scored.contradicts is not None or per_page[page_of[scored.ref]] >= MATCH_PER_PAGE:
+            continue
+        out.append(scored.ref)
+        per_page[page_of[scored.ref]] += 1
+        if len(out) == MATCH_TARGETS:
+            break
+    return tuple(out)
+
+
+def _ranked_by_view(
+    vendor: Drawing,
+    pool: Sequence[AcrossCandidate],
+    facts_of: Callable[[Drawing], pairing_module.Facts],
+    typed: frozenset[str],
+    item_tags: frozenset[str],
+    linked: Mapping[str, str],
+    common: frozenset[str],
+    boiler: frozenset[str],
+    context: _Across,
+) -> tuple[tuple[pairing_module.Scored, ...], str | None, _ByView]:
+    """Code's ranking for a vendor drawing with each titled view of an architect sheet a target
+    of its own (rebuild plan Step 3): the view's own facts (its words, tags and sizes, its overall
+    width, the dense-sheet rule on its own sizes, its own accessible marker: `pairing.rank`),
+    then its page signature against the vendor drawing's (`signature.rerank`: another unit type
+    or accessible marker rules it out; room words, fixture order and widths re-rank). The pages'
+    ranking is projected from their drawings' (`_project`); code's own pick is the clear winner
+    among the pages (`pairing.clear_winner`), else the page of the drawing `pairing.decide` picks;
+    each page's drawings to compare are chosen with it (`_view_group`)."""
+    targets = _targets(pool)
+    page_of = {t.id: str(t.page_id) for t in targets}
+    by_id = {t.id: t for t in targets}
+    pages = {item.id: item for item in pool}
+    titles: dict[str, str] = {}
+    for item in pool:
+        title = _page_title(item, context)
+        if title:
+            titles.update({v.ref: title for v in item.views})
+    counts = {v.ref: len(item.views) for item in pool for v in item.views}
+    view_facts = _view_facts_of(facts_of, titles, counts)
+    ranked, pick = _ranked_across(
+        vendor, targets, view_facts, typed, item_tags, linked, common, boiler
+    )
+    vendor_sig = _signature(
+        vendor,
+        view_facts(vendor),
+        context,
+        [context.index_titles.get(vendor.ref) or "", *(vendor.titles or ()), vendor.heading or ""],
+    )
+    signatures: dict[str, signature_module.Signature] = {}
+    for target in targets:
+        page = pages[str(target.page_id)]
+        own = list(target.drawings[0].titles or ()) if target.page_id != target.id else []
+        sheet = context.sheet_ids.get((page.file, page.page))
+        signatures[target.id] = _signature(
+            target.drawings[0],
+            _item_facts(target, view_facts, None)[0],
+            context,
+            own if signature_module.room_words(own) else [*own, _page_title(page, context) or ""],
+            sheet.printed if sheet is not None else None,
+        )
+    ranked = signature_module.rerank(ranked, vendor_sig, signatures)
+    projected = _project(ranked, page_of, by_id)
+    winner = pairing_module.clear_winner(projected)
+    code_pick = winner.ref if winner is not None else None
+    if code_pick is None and pick is not None:
+        # The printed reference or the same printed values (`pairing.decide`), drawing by drawing.
+        page_id = page_of[pick]
+        if any(s.ref == page_id and s.contradicts is None for s in projected):
+            code_pick = page_id
+    views = {
+        item.id: group
+        for item in pool
+        if item.views and (group := _view_group(item.id, ranked, page_of, signatures))
+    }
+    return (
+        projected,
+        code_pick,
+        _ByView(
+            ranked=ranked,
+            targets={
+                t.id: t.model_copy(update={"signature": signature_words(signatures[t.id])})
+                for t in targets
+            },
+            page_of=page_of,
+            views=views,
+            asked=_matcher_targets(ranked, page_of),
+            signatures={**signatures, vendor.ref: vendor_sig},
+        ),
+    )
+
+
+def _drawing_answer(
+    saved: tuple[tuple[str, ...], pairing_module.MatchAnswer], by_view: _ByView
+) -> tuple[
+    pairing_module.MatchAnswer | None, dict[str, tuple[str, ...]], pairing_module.MatchAnswer
+]:
+    """A saved answer the AI page matcher gave on drawings (`page_match`, shown `_ByView.asked`):
+    its pages, for the agreement rule, when it still holds (`pairing.reuse`: the same drawings
+    shown, or fewer, its picks among them); the views it picked on each page; and its pages as
+    it gave them (held against another page when nothing confirms it, `_held_page`)."""
+    shown, answer = saved
+    as_given = pairing_module.MatchAnswer(
+        tuple(dict.fromkeys(by_view.page_of[m] for m in answer.matches if m in by_view.page_of)),
+        answer.confident,
+        answer.reason,
+    )
+    found = pairing_module.reuse(shown, answer, by_view.asked)
+    if found is None:
+        return None, {}, as_given
+    views: dict[str, list[str]] = {}
+    for ref in found.matches:
+        page_id = by_view.page_of[ref]
+        views.setdefault(page_id, [])
+        if ref != page_id:
+            views[page_id].append(ref)
+    pages = pairing_module.MatchAnswer(tuple(views), found.confident, found.reason)
+    return pages, {p: tuple(v) for p, v in views.items() if v}, as_given
+
+
+def _scored_of(by_view: _ByView, ref: str) -> pairing_module.Scored:
+    """A drawing target's code score (`_ByView.ranked`)."""
+    return next(s for s in by_view.ranked if s.ref == ref)
+
+
+def _by_view_fields(
+    by_view: _ByView | None, answer_views: Mapping[str, tuple[str, ...]]
+) -> dict[str, Any]:
+    """The per-drawing fields of a pair (`AcrossPair.targets`, `AcrossPair.page_views`): the
+    drawings the matcher is shown, scored, and each page's views to compare (the matcher's picks
+    on it, else code's); nothing when pairing by whole pages."""
+    if by_view is None:
+        return {}
+    scored = {s.ref: s for s in by_view.ranked}
+    return {
+        "targets": tuple(
+            by_view.targets[ref].model_copy(
+                update={
+                    "score": scored[ref].score,
+                    "evidence": scored[ref].evidence,
+                    "contradicts": scored[ref].contradicts,
+                    "strong": scored[ref].strong,
+                }
+            )
+            for ref in by_view.asked
+        ),
+        "page_views": tuple(sorted({**by_view.views, **answer_views}.items())),
+    }
+
+
+def _hand_by_fixtures(
+    vendor: str, views: Sequence[str], signatures: Mapping[str, signature_module.Signature]
+) -> str | None:
+    """Why a pair is compared opposite-hand by its fixtures (`signature.order_match`): the
+    vendor's fixtures read only in reverse order on one of the paired views, else `None`."""
+    mine = signatures.get(vendor)
+    if mine is None:
+        return None
+    for ref in views:
+        theirs = signatures.get(ref)
+        if theirs is not None and signature_module.mirrored(mine, theirs):
+            run = ", ".join(w.lower() for w in mine.order)
+            return (
+                f"the vendor's fixtures ({run}) read in reverse order on the architect's drawing: "
+                "drawn opposite-hand"
+            )
+    return None
 
 
 def _paired_drawings(pair: AcrossPair, by_item: Mapping[str, AcrossCandidate]) -> list[Drawing]:

@@ -602,8 +602,10 @@ def test_two_brands_in_one_building_and_a_scheme_suffix_are_one_job() -> None:
 def test_a_vendor_drawing_is_paired_only_within_its_project_by_view() -> None:
     work = _work(_index())
     desk = _across(work, 2)
-    # Never the brand prototype (R1), never the key plan: one candidate, the NORTH elevation sheet.
-    assert desk.asked == ("p1004",)
+    # Never the brand prototype (R1), never the key plan: one candidate, the NORTH elevation sheet,
+    # whose two titled views the matcher is shown one by one (per-drawing pairing).
+    assert desk.asked == ("p1004.a1.view1", "p1004.a1.view2")
+    assert {c.id for c in desk.candidates if c.contradicts is None} == {"p1004"}
     # The key plan prints RD-101 beside a callout to view 1 of A5.0: with the matcher naming the
     # sheet (even unsure), the pair is that view, not the whole sheet.
     work = _work(_index(), _answers(["p1004"], ["p1004"], sure=False))

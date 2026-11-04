@@ -733,9 +733,7 @@ def dense(candidate: Sequence[object], matched: int) -> bool:
 #: `ACC` is the architects' short form ("ACC KITCHEN PLAN"), counted only as a word of its own:
 #: never an item's part after its tag (`XX-213-ACC`, its accessories, `_SUB_PART`). `ACCESIBLE`
 #: is a spelling real sets print.
-_ACCESSIBLE: Final = re.compile(
-    r"\b(ADA|ACCESS?IBLE|HANDICAP(?:PED)?|(?<![-_.])ACC)\b(?![-_.]?\d)"
-)
+_ACCESSIBLE: Final = re.compile(r"\b(ADA|ACCESS?IBLE|HANDICAP(?:PED)?|(?<![-_.])ACC)\b(?![-_.]?\d)")
 #: A note that the drawing is drawn the other way round. The word MIRROR alone is the bathroom
 #: mirror on the wall ("MIRROR", "LED MIRROR", "MIRROR ABOVE", "X-123 (MIRROR)", a furniture tag's
 #: name), never a hand: it counts only as MIRRORED, MIRROR IMAGE, MIRROR OF, MIRROR HAND or
@@ -1043,7 +1041,8 @@ class Scored:
     signed: float = 0.0
     """The part of `score` the page signature gave it (`signature.rerank`: room and unit words,
     fixture order, overall widths): it re-ranks, so it is never counted toward code's own pick
-    (`clear_winner`, `code_pass`), and a size in it never decides a pair."""
+    (`clear_winner`, `code_pass`) nor the agreement rule's leads (`agree`), and a size in it
+    never decides a pair."""
 
     @property
     def own(self) -> float:
@@ -1485,6 +1484,8 @@ def agree(
     matcher answer naming the one item a key plan's callout points to (`Scored.linked`), sure or
     not, agrees on that one (two independent witnesses: the architect's printed pointer and the
     AI's look)."""
+    # The page signature re-ranks only: its weight never makes a lead here (`Scored.signed`).
+    ranked = [replace(s, score=s.score - s.signed, signed=0.0) if s.signed else s for s in ranked]
     by = {s.ref: s for s in ranked}
     open_ = sorted((s for s in ranked if s.contradicts is None), key=lambda s: -s.score)
     if answer is None:
