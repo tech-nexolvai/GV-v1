@@ -47,6 +47,7 @@ const WITNESS_WORDS: Record<string, string> = {
   units: 'the mm and inches printed together agree',
   ocr_ink: 'both values read from the vendor’s drawn ink by two OCR engines',
   text: 'code read the finish codes in the drawings’ text and searched every vendor sheet',
+  corroborated: 'a value read by two AI readers of different makers, its drawn length agreeing',
 };
 
 /** A finding's evidence kind, read safely; null on older answers. */
