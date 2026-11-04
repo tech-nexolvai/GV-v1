@@ -106,6 +106,9 @@ _PICK_WORDS: Final = (
 )
 _HELD_WORDS: Final = f"Code found a difference; {check_record.HELD_WORDS}"
 _UNSIZED_WORDS: Final = "The vendor's overall runs past its sized pieces at both ends: unsized ends"
+#: Flag mode's please-checks code checked (2026-11-04, `proof.flag_notes`).
+_READINGS_DIFFER_WORDS: Final = "Code checked the difference, but a second reading differs"
+_BEST_GUESS_WORDS: Final = "Code checked the difference against a best-guess architect page"
 
 
 @dataclass(slots=True)
@@ -203,10 +206,22 @@ def question_key(finding: Mapping[str, Any]) -> tuple[str, str]:
         if proof.held_back(finding) is not None:
             kind = check_record.kind_of(finding)
             return (f"held:{kind}", f"{_HELD_WORDS} ({check_record.KINDS.get(kind, kind)})")
+        flagged = proof.flag_mode()
+        if flagged and proof.flag_checked(finding):
+            # Flag mode (2026-11-04): code checked the maths, but a blind look disagrees or the
+            # page was paired only as a best guess (`proof.flag_notes`).
+            if proof.READINGS_DIFFER in proof.flag_notes(finding):
+                return ("flag:readings_differ", _READINGS_DIFFER_WORDS)
+            return ("flag:best_guess", _BEST_GUESS_WORDS)
         payload = likely_problems.payload(finding)
         if payload is not None:
             kind = str(payload.get("kind") or "size")
             return (f"look:{kind}", _LOOK_WORDS.get(kind, _LOOK_WORDS["size"]))
+        named = proof.classified(finding).reason if flagged else None
+        if named is not None:
+            # Flag mode: what code could not check, as the proof rules name it.
+            said = classification.REASON_WORDS.get(str(named), str(named))
+            return (f"flag:{named}", f"Please check: {said}")
         return ("likely", "Found, not proved: please check")
     if group == "not_compared":
         reason = str(proof.classified(finding).reason or "other")

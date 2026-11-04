@@ -106,14 +106,15 @@ from app.review.assistant.likely_problems import HEADING as LIKELY_HEADING
 from app.review.assistant.likely_problems import LETTER_LEAD as LIKELY_LEAD
 from app.review.assistant.likely_problems import SHORT_WORDS as LIKELY_SHORT
 from app.review.assistant.proof import (
-    RULE_LINE,
     architect_file,
+    flag_mode,
     governs,
     inch_figures_of,
     please_check_words,
     proof_counts,
     proof_group,
     proof_of,
+    rule_line,
     should_be_value,
     vendor_value,
 )
@@ -1118,8 +1119,14 @@ def _cover(
         ]
     tiles = [
         ("Wrong", counts["clouded"], RED, "red marks, each with a proof card"),
-        # The reviewer's "Not a problem" is Right on the vendor's files (#1766).
-        ("Right", counts["right"] + counts["dismissed"], GREEN, "matches the architect"),
+        # The reviewer's "Not a problem" is Right on the vendor's files (#1766). Flag mode
+        # (2026-11-04): a Right code found is never counted, only the reviewer's.
+        (
+            "Right",
+            (0 if flag_mode() else counts["right"]) + counts["dismissed"],
+            GREEN,
+            "matches the architect",
+        ),
         ("Not compared", counts["not_compared"], _LIST_GREY, "listed apart, with the reason"),
     ]
     if counts.get("rule_note"):
@@ -1169,7 +1176,7 @@ def _cover(
         )
     )
     story += [grid, Spacer(1, 14)]
-    story.append(Paragraph(f"<b>The rule:</b> {escape(RULE_LINE)}", body))
+    story.append(Paragraph(f"<b>The rule:</b> {escape(rule_line())}", body))
     story.append(Spacer(1, 4))
     story += [Spacer(1, 4), Legend(width - 72), Spacer(1, 4)]
     story.append(
@@ -2008,8 +2015,10 @@ def proof_markup_pdf(
         # a correction (no cloud, no "should be").
         notes += _list_entries(styles, LIKELY_HEADING, likely, _likely_line, _LIKELY_AMBER)
     # The reviewer's "Not a problem" is Right on the vendor's files, noted "(reviewer)" (#1766).
-    right = [*groups.get("right", []), *groups.get("dismissed", [])]
-    notes += _list_entries(styles, "Right", right, _right_or_reviewer_line, GREEN)
+    # Flag mode (2026-11-04): no Right list, only what the reviewer marked not a problem.
+    right = [*([] if flag_mode() else groups.get("right", [])), *groups.get("dismissed", [])]
+    if right or not flag_mode():
+        notes += _list_entries(styles, "Right", right, _right_or_reviewer_line, GREEN)
     unmatched = [
         i for i in (rounds.items if rounds is not None else []) if i.status == "not_compared"
     ]

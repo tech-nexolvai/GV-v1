@@ -1238,15 +1238,25 @@ def check_report_pdf(
         return sorted(chosen, key=lambda f: rank.get(str(f.get("category") or ""), last))
 
     groups = proof.proof_counts(findings)
+    flagged = proof.flag_mode()
+    noted_words = f"{groups['rule_note']} {RULE_NOTE_COUNT}, " if groups["rule_note"] else ""
+    if flagged:
+        # Flag mode (2026-11-04): the problems (code-checked or to check) and what was not
+        # compared; a Right code found is never counted.
+        cloud = (
+            f"{groups['clouded'] + groups['likely_problem']} problems: {groups['clouded']} "
+            f"code-checked (clouded), {groups['likely_problem']} to check; {noted_words}"
+        )
+    else:
+        cloud = (
+            f"{groups['clouded']} wrong clouded (proved by code), {groups['right']} right, "
+            + noted_words
+            + (f"{groups['likely_problem']} {LIKELY_COUNT}, " if groups["likely_problem"] else "")
+        )
     summary = {
         **summary,
-        "Cloud drawing": (
-            f"{groups['clouded']} wrong clouded (proved by code), {groups['right']} right, "
-            + (f"{groups['rule_note']} {RULE_NOTE_COUNT}, " if groups["rule_note"] else "")
-            + (f"{groups['likely_problem']} {LIKELY_COUNT}, " if groups["likely_problem"] else "")
-            + f"{groups['not_compared']} not compared (the Not-compared list)"
-        ),
-        "The rule": proof.RULE_LINE,
+        "Cloud drawing": f"{cloud}{groups['not_compared']} not compared (the Not-compared list)",
+        "The rule": proof.rule_line(),
     }
     story: list[Any] = [Paragraph(escape(REPORT_TITLE), styles["Title"])]
     for label, value in summary.items():
@@ -1256,7 +1266,7 @@ def check_report_pdf(
     # reviewer agreed), Right, and what could not be compared (with its reason).
     placed = {id(f): proof.proof_group(f) for f in findings}
     wrong = by_product([f for f in findings if placed[id(f)] == "clouded"])
-    right = by_product([f for f in findings if placed[id(f)] == "right"])
+    right = [] if flagged else by_product([f for f in findings if placed[id(f)] == "right"])
     unseen = by_product([f for f in findings if placed[id(f)] == "not_compared"])
     noted = by_product([f for f in findings if placed[id(f)] == "rule_note"])
     likely = by_product([f for f in findings if placed[id(f)] == "likely_problem"])
@@ -1309,6 +1319,8 @@ def check_report_pdf(
             [26, 70, 34, 210, 110, 190],
         ),
     ]
+    if flagged:
+        sections = sections[:1]  # flag mode: no Right list (2026-11-04)
     if noted:
         # #1839: decided, never red: the architect's size breaks a GV rule; GV asks the architect.
         sections.append(
@@ -1342,7 +1354,13 @@ def check_report_pdf(
                         f.get("page"),
                         f.get("item"),
                         f.get("vendor"),
-                        proof.likely_words(f),
+                        (
+                            # Flag mode: who checked it ("Found by AI: Please check ...").
+                            f"{proof.CHECKED_WORDS[proof.checked_by(f) or 'ai'].capitalize()}: "
+                            f"{proof.likely_words(f)}"
+                            if flagged
+                            else proof.likely_words(f)
+                        ),
                     ]
                     for f in likely
                 ],

@@ -79,10 +79,17 @@ The rules, in the order they are applied:
 The escalation ladder (`escalation.py`, then the roster's one deeper look) runs BEFORE an item
 falls to Not compared. Pure code: no I/O, no AI call. The full check, the resolver's leftovers and
 chat answers all classify through `classify`.
+
+**Flag mode** (Anant, DECIDED 2026-11-04; the setting `assistant_flag_mode`, read here from
+`GV_ASSISTANT_FLAG_MODE` by `flag_mode`): the reasons stay the same, but only the reasons that say
+nothing was compared (`NO_COMPARISON`) keep an item off the problems list (`proof.proof_group`);
+every other reason is a please-check's why. A short value (one or two letters or digits) is Right
+only when code read it at both spots: an AI's "6 = 6" is never green.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -97,6 +104,7 @@ from app.review.assistant import (
     right_proof,
     row_places,
     text_values,
+    witness,
 )
 from app.review.assistant.finding_checks import to_inches, wrong_part
 from app.review.assistant.ledger import format_inches
@@ -112,7 +120,9 @@ from app.review.assistant.span_ends import ends_apart
 from app.review.assistant.spot_locate import VENDOR_SEARCH, search_words, spot_words
 
 __all__ = [
+    "FLAG_MODE_ENV",
     "GV_STICKER",
+    "NO_COMPARISON",
     "PROTOTYPE_REFERENCE",
     "PROTOTYPE_REFERENCE_WORDS",
     "READER_ERROR",
@@ -124,13 +134,17 @@ __all__ = [
     "Classified",
     "architect_conflict",
     "classify",
+    "code_disagrees",
     "differing_values",
+    "flag_mode",
     "not_compared_line",
     "points_to_prototype",
     "prototype_governs",
     "prototype_reference",
     "rule_without_requirement",
     "same_item_conflict",
+    "same_unsure",
+    "short_unread",
 ]
 
 type Outcome = Literal["wrong", "right", "not_compared", "rule_note"]
@@ -249,6 +263,42 @@ TRADE_WORDS: Final[Mapping[str, str]] = {
     "words": "Not reviewed: note in words",
     "stroke_words": "Illegible: words drawn as strokes",
 }
+#: Flag mode's switch (`Settings.assistant_flag_mode`): `flag` on; anything else (`proof`, the
+#: default) keeps the proof rules.
+FLAG_MODE_ENV: Final = "GV_ASSISTANT_FLAG_MODE"
+
+
+def flag_mode() -> bool:
+    """Whether the server runs flag mode (`FLAG_MODE_ENV` = `flag`, Anant 2026-11-04): every
+    problem found is flagged, code does the maths, only "nothing to compare" is Not compared."""
+    return os.environ.get(FLAG_MODE_ENV, "proof").strip().lower() == "flag"
+
+
+#: Flag mode: the reasons that say nothing was compared, the only ones that keep an item off the
+#: problems list (`proof.proof_group`): the architect gives no drawing or value (or only a scaled
+#: one), a V.I.F. or +/- reference, a job value or GV setting missing, an item for GV's reviewer
+#: only, the architect's own drawings disagree, a size GV's rule only notes (settled with GV,
+#: 2026-10-20/21: the architect's filler outside GV's 1"-2" range is Not compared, never red), and
+#: a reference that is not the architect's (the brand prototype, the vendor's earlier round).
+#: Two dimensions code proved measure different things (`dim_ends.unlike_reason`, centre lines)
+#: and copies that disagree (`same_item_conflict`) are kept off by `proof` itself.
+NO_COMPARISON: Final[frozenset[str]] = frozenset(
+    {
+        "nothing_to_compare",
+        "no_sheet",
+        "ai_unsure",
+        "field_verify",
+        "missing_setting",
+        "internal",
+        "architect_disagrees",
+        "architect_outside_gv_rule",
+        "outside_gv_rule",
+        "prototype",
+        "prototype_only",
+        "round_only",
+    }
+)
+
 #: The rule each reason comes from.
 _RULES: Final[Mapping[str, str]] = {
     "nothing_to_compare": "R7",
@@ -1229,6 +1279,37 @@ def _code_disagrees(finding: Mapping[str, Any]) -> str | None:
     return None
 
 
+def code_disagrees(finding: Mapping[str, Any]) -> str | None:
+    """Why code's own checks contradict an item (`_code_disagrees`), else `None`."""
+    return _code_disagrees(finding)
+
+
+def same_unsure(finding: Mapping[str, Any]) -> bool:
+    """A helper's "pairing not certain" whose architect value is the vendor's own number
+    (`_architect_prints` and `_same_numbers`): no difference, only an unsure pairing."""
+    return _architect_prints(finding) and _same_numbers(finding)
+
+
+#: An inch or foot mark, or millimetres: the side is a size.
+_UNIT_MARK: Final = re.compile(r"[\"'″′”’]|\bmm\b", re.IGNORECASE)
+
+
+def short_unread(finding: Mapping[str, Any]) -> bool:
+    """A one- or two-character value on either side (`text_values.short`: `6`, `A`, `12`; never a
+    size with its mark, `36"`) that code did not read at both spots (no `printed`, `ocr_ink` or `text` witness, and not an identifier
+    code's own record proves the same)."""
+    sides = [_flat(finding.get(side)) for side in ("vendor", "architect")]
+    if not any(text_values.short(side) and not _UNIT_MARK.search(side) for side in sides):
+        return False  # a size with its inch or foot mark (36") is a size, not a short value
+    if text_values.identifier(finding) and text_values.read_both(finding):
+        return False
+    found = finding.get("witnesses")
+    if not isinstance(found, list):
+        checks = finding.get("checks")
+        found = witness.witnesses(checks, "same") if isinstance(checks, Mapping) else []
+    return not ({"printed", "ocr_ink", "text"} & {str(w) for w in found})
+
+
 #: A side that is one printed size: 28", 3' - 1", 711 [28], 33 1/4".
 _ONE_SIZE: Final = re.compile(r"[0-9][0-9 /'\-\".\[\]]*")
 
@@ -1482,6 +1563,16 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
                 "not_seen",
                 "not looked at on both drawings, so not counted as right",
                 "a look at both drawings of {thing}",
+            )
+        if flag_mode() and short_unread(finding):
+            # Flag mode (2026-11-04): a one- or two-character value is green only when code read
+            # it at both spots (a "6" found in a title block's address proves nothing).
+            return _not(
+                "not_proved",
+                f'a short value ("{_short(finding.get("vendor"), 12)}" = '
+                f'"{_short(finding.get("architect"), 12)}") is never counted as right unless code '
+                "read it at both spots",
+                "both values read by code at their spots",
             )
         return Classified("right", "R4")
     if status == "different":

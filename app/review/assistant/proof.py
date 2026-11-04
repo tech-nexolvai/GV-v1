@@ -36,6 +36,26 @@ whatever code proved (the reviewer is the witness), and an item marked not a pro
 clouded (`dismissed`, for GV's screen; the vendor's files show it as Right, noted "(reviewer)",
 #1766). Nobody has to click.
 
+**Flag mode** (Anant, DECIDED 2026-11-04, the setting `assistant_flag_mode` = `flag`,
+`classification.flag_mode`): "no problem hidden; false alarms allowed but marked". The same group
+names, so the screen, the files and the CSV keep working; only who goes where changes
+(`_flag_group`):
+
+- **clouded**: a difference code's maths checked (`flag_checked`): code-proved as above, with no
+  track-record hold (`check_record`) and no blind second look needed, or the maths step's own
+  `maths.result` "differs". A blind look that disagrees, or a page paired only as a best guess
+  (`pairing_guess`), keeps it a please-check with a short note (`flag_notes`).
+- **likely_problem**: every other item that says something differs or is wrong, whatever code
+  could not verify (a string not seen, a tag, a note in words, an unsure pairing, a held reading,
+  an AI's claim): the problems list, each with its why.
+- **not_compared**: only what had nothing to compare (`classification.NO_COMPARISON`, two
+  dimensions code proved measure different things, a V.I.F. or +/- reference, copies that
+  disagree, GV's reviewer-only items).
+- **right**: kept in the data, never counted or listed as a result (the letter, the register, the
+  Not-compared files and the cloud drawing leave it out).
+
+Each item says who checked it (`checked_by`): "code-checked", "found by AI", or GV's reviewer.
+
 Pure code (no PDF, no I/O): the drawing (`proof_drawing.py`), the check report, the CSV and the
 screen (each finding's `proof`, added on read) all group and count from here, so every count
 agrees.
@@ -46,6 +66,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
+from importlib import import_module
 from typing import Any, Final, Literal
 
 from app.review.assistant import (
@@ -72,13 +93,18 @@ from app.review.assistant.vendor_text import vendor_text
 
 __all__ = [
     "AI_ONLY_REASON",
+    "CHECKED_WORDS",
+    "FLAG_GROUP_WORDS",
+    "FLAG_RULE_LINE",
     "GROUPS",
     "GROUP_WORDS",
+    "GV_RULE_ON_AI",
     "KEEP_WORDS",
     "LEFT_CAPTIONS",
     "NO_REQUIREMENT_REASON",
     "PAIRING_REASON",
     "PROTOTYPE_PROOF",
+    "READINGS_DIFFER",
     "READING_LEAD",
     "REVIEWER",
     "REVIEWER_WRONG",
@@ -88,16 +114,23 @@ __all__ = [
     "ProofGroup",
     "architect_file",
     "blocks_with_proof",
+    "checked_by",
     "classified",
     "code_proved",
     "could_not_compare_reason",
     "ends_unconfirmed",
     "ends_words",
+    "flag_checked",
+    "flag_mode",
+    "flag_notes",
     "governs",
     "group_words",
     "gv_limits",
     "held_back",
     "likely_words",
+    "listed",
+    "maths_kind",
+    "maths_result",
     "needs_pairing",
     "no_stated_requirement",
     "pairing_proved",
@@ -115,6 +148,7 @@ __all__ = [
     "reviewer_should_be",
     "reviewer_value_refusal",
     "reviewer_wrong",
+    "rule_line",
     "scaled",
     "should_be",
     "should_be_value",
@@ -156,11 +190,28 @@ GROUP_WORDS: Final[Mapping[str, str]] = {
 REVIEWER_CLOUDED_WORDS: Final = "Wrong, decided by GV's reviewer (clouded)"
 
 
+#: Each group as flag mode names it (`flag_mode`): the problems list says who checked each one.
+FLAG_GROUP_WORDS: Final[Mapping[str, str]] = {
+    "clouded": "Problem, code-checked (clouded)",
+    "right": "Right (not listed)",
+    "rule_note": rule_notes.GROUP_WORDS,
+    "likely_problem": "Problem: please check",
+    "not_compared": "Not compared",
+    "dismissed": "Right (reviewer)",
+}
+
+
 def group_words(finding: Mapping[str, Any], group: str) -> str:
-    """The group's words for this item (`GROUP_WORDS`); a Wrong the reviewer made says so."""
+    """The group's words for this item (`GROUP_WORDS`); a Wrong the reviewer made says so. In flag
+    mode a problem says who checked it ("Problem: please check (found by AI)")."""
     if group == "clouded" and reviewer_decided(finding):
         return REVIEWER_CLOUDED_WORDS
-    return GROUP_WORDS[group]
+    if not flag_mode():
+        return GROUP_WORDS[group]
+    words = FLAG_GROUP_WORDS[group]
+    if group == "likely_problem":
+        return f"{words} ({CHECKED_WORDS[checked_by(finding) or 'ai']})"
+    return words
 
 
 #: The rule, in one line, on the drawing's cover and the report.
@@ -169,6 +220,20 @@ RULE_LINE: Final = (
     "the vendor's own sum, a finish code the vendor leaves out or changes, or two dimensions code proved measure the "
     "same thing); what could not be compared is listed apart, with the reason."
 )
+#: The rule in flag mode (Anant, 2026-11-04).
+FLAG_RULE_LINE: Final = (
+    "The architect's drawings govern. Every problem found is flagged: a difference code's maths "
+    "checked is clouded in red, every other one is listed to check, with its pictures and why "
+    "(a false alarm is possible, and each says who found it); only what had nothing to compare is "
+    "listed apart, with the reason."
+)
+
+
+def rule_line() -> str:
+    """The rule in one line for the drawing's cover and the report (`RULE_LINE`, or flag mode's)."""
+    return FLAG_RULE_LINE if flag_mode() else RULE_LINE
+
+
 #: Words saying a value was measured off the drawing or taken from a scale note, not printed.
 _SCALED: Final = re.compile(
     r"\bscal(?:e|es|ed|ing)\b|\bmeasured (?:off|on) the drawing\b",
@@ -490,8 +555,9 @@ def typed_over_words(finding: Mapping[str, Any]) -> str:
     return f"{likely_problems.LETTER_LEAD}: {item}: {typed_over(finding)}."
 
 
-def _proved_but_reading(finding: Mapping[str, Any]) -> bool:
-    """`code_proved` before the reading rule (`reading_routes`)."""
+def _proved_but_reading(finding: Mapping[str, Any], *, flag: bool = False) -> bool:
+    """`code_proved` before the reading rule (`reading_routes`). `flag`: flag mode's maths check
+    (`flag_checked`): the pairing is the AI's (or the best guess), so no pairing proof is asked."""
     if classification.internal(finding):
         return False  # read by the AI only, never at its spot (#1652)
     if text_values.identifier(finding):
@@ -528,7 +594,7 @@ def _proved_but_reading(finding: Mapping[str, Any]) -> bool:
         return False  # the reference marks its size V.I.F. / +/-, or the 1/2" convention (#9)
     if not _read_by_code(finding):
         return False
-    return not needs_pairing(finding) or pairing_proved(finding)
+    return flag or not needs_pairing(finding) or pairing_proved(finding)
 
 
 def vendor_facing(finding: Mapping[str, Any]) -> bool:
@@ -793,7 +859,15 @@ def proved_wrong(finding: Mapping[str, Any]) -> bool:
 
 def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
     """Where the finding goes on the zero-click drawing (see the module's rule). The reviewer's
-    decision, when there is one, overrides: agreed = clouded, not a problem = dismissed."""
+    decision, when there is one, overrides: agreed = clouded, not a problem = dismissed. In flag
+    mode, flag mode's rule (`_flag_group`)."""
+    if flag_mode():
+        return _flag_group(finding)
+    return _proof_group(finding)
+
+
+def _proof_group(finding: Mapping[str, Any]) -> ProofGroup:
+    """`proof_group` under the proof rules (see the module's rule)."""
     if classification.internal(finding):
         return "not_compared"  # GV's reviewer only (#1652): never clouded, whoever clicks
     decided = _decided(finding)
@@ -849,9 +923,324 @@ def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
     return "likely_problem" if likely_problems.likely(finding) else "not_compared"
 
 
+# ---- flag mode (Anant, DECIDED 2026-11-04) ----------------------------------------------------------
+
+
+def flag_mode() -> bool:
+    """Whether the server runs flag mode (`classification.flag_mode`, see the module)."""
+    return classification.flag_mode()
+
+
+#: The maths step's record on a finding (`maths`): code redid the maths on the AI's own numbers.
+MATHS: Final = "maths"
+#: The pairing step's record of a vendor page paired only as a best guess: {"page", "words"}.
+PAIRING_GUESS: Final = "pairing_guess"
+#: Flag mode's note on a code-checked difference a blind second look disagrees with.
+READINGS_DIFFER: Final = "readings differ"
+#: Flag mode's note on GV's rule worked out on the AI's numbers only: the AI chose which numbers
+#: the rule takes, and the architect's own size wins over GV's standard (settled with GV; a paid
+#: run of 2026-10-25 clouded a sink offset the reference printed), so it is never red by itself.
+GV_RULE_ON_AI: Final = "GV's rule worked out on the AI's reading"
+#: Who checked a problem (`checked_by`), as the report says it.
+CHECKED_WORDS: Final[Mapping[str, str]] = {
+    "code": "code-checked",
+    "code_check": "found by a code check that could not settle it",
+    "ai": "found by AI",
+    "reviewer": "decided by GV's reviewer",
+}
+#: The authors that are an AI (`chat_contract.ChatFindingOut.created_by`); the rest are code's.
+_AI_AUTHORS: Final = frozenset({"lead", "page_reviewer", "whole_look"})
+#: The advocate's answers that are code's own facts (`full_check_advocate.decide`): one that
+#: failed means the comparison itself was off (GV's markup, another drawing, an older round, a
+#: width against a height, a room's or a top's other face), never only a blind look's doubt.
+_CODE_FACTS: Final = (*_CODE_CHECKS, "axis", "trade", "faces")
+#: The blind second reading of a vendor string (`string_reads`) against a difference.
+_STRING_READ_AGAINST: Final = frozenset({"adds_up", "within_rounding", "disagrees"})
+#: Why a helper's two sizes are not one confirmed pairing (`check_reason`, `keep_reason`): the AI
+#: itself was unsure of the pair, or said they measure different things or the architect prints
+#: none, so the maths step's "differs" on them is never red by itself.
+_UNPAIRED_SIZES: Final = frozenset(
+    {
+        "pairing_not_certain",
+        "different_extent",
+        "measures_something_else",
+        "architect_prints_nothing",
+        "scaled",
+        "site_verify",
+        "which_governs",
+    }
+)
+
+
+def maths_result(finding: Mapping[str, Any]) -> str | None:
+    """The maths step's result (`MATHS`: "differs", "same" or "unreadable"), else `None`."""
+    record = finding.get(MATHS)
+    result = record.get("result") if isinstance(record, Mapping) else None
+    return str(result) if result in ("differs", "same", "unreadable") else None
+
+
+def _maths_words(finding: Mapping[str, Any]) -> str | None:
+    record = finding.get(MATHS)
+    words = " ".join(str(record.get("words") or "").split()) if isinstance(record, Mapping) else ""
+    return words or None
+
+
+def _blind_look(finding: Mapping[str, Any]) -> Literal["none", "disagrees", "code"]:
+    """What the blind second look said against the item: `disagrees` (the second reading or its
+    third, an AI critic, or the advocate's blind pick named another dimension or other ends),
+    `code` (the advocate objected on one of code's own facts, the ends code could not confirm, or
+    geometry showing other points: never set aside), else `none` (it agreed, was unsure or was not
+    made)."""
+    checks = finding.get("checks") if isinstance(finding.get("checks"), Mapping) else {}
+    verdict = _advocate(finding)
+    if verdict is not None and verdict.get("result") == "objects":
+        if str(verdict.get("note") or "").startswith(advocate.NOT_VERIFIED):
+            return "none"  # the blind pick was not made: nothing disagrees
+        answers = verdict.get("answers") if isinstance(verdict.get("answers"), Mapping) else {}
+        answers = answers or {}
+        if any(answers.get(name) == "fail" for name in _CODE_FACTS):
+            return "code"
+        pick = answers.get("advocate_pick")
+        if pick is not None and pick != answers.get("helper_pick") and not answers.get("twin"):
+            return "disagrees"
+        if answers.get("spans") in ("differ", "picks_differ"):
+            return "disagrees"
+        return "code"
+    if witness.read_result(checks or {}) == "disagrees":
+        return "disagrees"
+    if (checks or {}).get("critic") == "objects":
+        return "disagrees"  # a critic that is not the advocate is an AI's second look
+    reads = finding.get("string_reads")
+    outcome = reads.get("outcome") if isinstance(reads, Mapping) else None
+    if outcome == "gap":
+        return "code"  # code's own labels show the AI's parts are not the overall's string
+    if outcome in _STRING_READ_AGAINST and finding.get("status") == "different":
+        return "disagrees"  # the blind second reading of the string adds up, or reads it apart
+    return "none"
+
+
+def _without_blind_look(finding: Mapping[str, Any]) -> dict[str, Any]:
+    """The finding with the blind second look's disagreement set aside (flag mode: never needed for
+    a red), its trust worked out again from what is left."""
+    checks = dict(finding.get("checks") or {})
+    for key in ("second_read", "adjudication", "critic"):
+        if checks.get(key) in ("disagrees", "objects"):
+            checks.pop(key)
+    out = dict(finding)
+    out["checks"] = checks
+    out["trust_level"] = witness.trust_level(checks, "different")
+    out["witnesses"] = witness.witnesses(checks, "different")
+    return out
+
+
+def maths_kind(finding: Mapping[str, Any]) -> str | None:
+    """What the maths step checked (`MATHS`'s `kind`): "string" (the vendor's own parts against its
+    printed overall), "sizes" (two values), "rule" (GV's rule on the AI's numbers), "identifier"."""
+    record = finding.get(MATHS)
+    kind = record.get("kind") if isinstance(record, Mapping) else None
+    return str(kind) if kind else None
+
+
+def _flag_how(finding: Mapping[str, Any]) -> Literal["reading", "maths"] | None:
+    """How code checked a difference in flag mode (`flag_checked`): `reading` (code read the
+    numbers itself, `code_proved` with no pairing proof and no blind second look), `maths` (the
+    maths step's own record on the AI's numbers says they differ, `maths_result`), else `None`."""
+    status = finding.get("status")
+    maths = maths_result(finding) == "differs"
+    if status != "different" and not (maths and status == "check"):
+        return None  # a please-check counts only by the maths step (the page reviewer's strings)
+    if _reader_error(finding) or classification.internal(finding):
+        return None
+    if text_values.identifier(finding) or maths_kind(finding) == "identifier":
+        return None
+    if finding.get(classification.GV_STICKER) is not None or round_only(finding):
+        return None
+    if spot_guard.listed_only(finding):
+        return None
+    if _blind_look(finding) == "code":
+        return None
+    if finding.get("source") == "brand_prototype" and not classification.prototype_governs(finding):
+        return None
+    if status == "different" and not likely_problems.likely_only(finding):
+        judged = _without_blind_look(finding)
+        if _proved_but_reading(judged, flag=True) and reading_routes.held(judged) is None:
+            return "reading"
+    if not maths:
+        return None
+    if maths_kind(finding) == "sizes" and (
+        scaled(finding)
+        or status != "different"
+        or {finding.get("check_reason"), finding.get("keep_reason")} & _UNPAIRED_SIZES
+    ):
+        # Two sizes: red only on a pair the AI called a difference and was sure of; never on a
+        # size measured off the drawing (R2). The page's best guess is `flag_notes`'.
+        return None
+    return "maths"
+
+
+def flag_checked(finding: Mapping[str, Any]) -> bool:
+    """Flag mode's red (Anant, 2026-11-04): a difference code checked (`_flag_how`). Code-proved as
+    `code_proved` says (code read the numbers, the governing value is known, every reading rule
+    and code check passes), with no pairing proof and no blind second look needed; or the maths
+    step's own record on the AI's numbers (`maths_result` "differs"; for two sizes, never a scaled
+    one). Never on code's own facts against it: GV's reviewer-only item, an identifier, GV's
+    sticker, an older round, a value with no spot, a reader that failed, or an advocate's code
+    check that failed. `flag_notes` then keeps some a please-check."""
+    return _flag_how(finding) is not None
+
+
+def _compares_architect(finding: Mapping[str, Any]) -> bool:
+    found: bool = import_module("app.review.assistant.one_card").compares_architect(finding)
+    return found
+
+
+def flag_notes(finding: Mapping[str, Any]) -> list[str]:
+    """Flag mode's short notes on a problem: "best guess: architect page 12" when its page was
+    paired only as a best guess and it compares with the architect (`PAIRING_GUESS`), and
+    "readings differ" when a blind second look disagrees with what code checked."""
+    notes: list[str] = []
+    guess = finding.get(PAIRING_GUESS)
+    own_maths = maths_result(finding) == "differs" and maths_kind(finding) in ("string", "rule")
+    if isinstance(guess, Mapping) and _compares_architect(finding) and not own_maths:
+        # The vendor's own string and GV's rule do not rest on the architect's page.
+        words = " ".join(str(guess.get("words") or "").split())
+        page = guess.get("page")
+        if words or page is not None:
+            notes.append(words or f"best guess: architect page {page}")
+    if finding.get("status") == "different" and _blind_look(finding) == "disagrees":
+        notes.append(READINGS_DIFFER)
+    if _flag_how(finding) == "maths" and maths_kind(finding) == "rule":
+        notes.append(GV_RULE_ON_AI)
+    return notes
+
+
+def _flag_not_compared(finding: Mapping[str, Any]) -> bool:
+    """Code's own facts that nothing was compared, before any maths: a V.I.F. or +/- reference,
+    copies of the item that pair it with different architect sizes, two dimensions code proved
+    measure different things (centre lines too), and a pair of revision numbers (each drawing's
+    own numbering)."""
+    return (
+        drafting_notes.softened(finding) is not None
+        or classification.same_item_conflict(finding) is not None
+        or dim_ends.unlike_reason(finding) is not None
+        or text_values.kind(finding) == "revision"
+    )
+
+
+def _flag_same(finding: Mapping[str, Any]) -> bool:
+    """Compared and the same: a Right under the architect-first rules (never on a short value code
+    did not read, `classification`), or a please-check whose architect value is the vendor's own
+    number (the reading was only unsure of the pairing), unless that value is a short one code did
+    not read. Never on a "same" the maths step finds different."""
+    maths = maths_result(finding)
+    if maths == "differs":
+        return False
+    if classified(finding).outcome == "right":
+        return True
+    if maths == "same" and finding.get("status") in ("different", "check"):
+        # The AI's own numbers show no difference (its sum was wrong, or the two values are
+        # equal): not a problem. Never when code's own reading proved a difference.
+        return _flag_how(finding) is None and not classification.short_unread(finding)
+    return classification.same_unsure(finding) and not classification.short_unread(finding)
+
+
+def _says_differs(finding: Mapping[str, Any]) -> bool:
+    """The item says something differs or is wrong: a difference, a please-check (status check)
+    that is not the same numbers on both sides, or a "same" code's own check or maths contradicts.
+    """
+    status = finding.get("status")
+    if status == "different":
+        return True
+    if status == "check":
+        return not classification.same_unsure(finding)
+    return (
+        classification.code_disagrees(finding) is not None
+        or classification.differing_values(finding) is not None
+        or maths_result(finding) == "differs"
+    )
+
+
+def _flag_group(finding: Mapping[str, Any]) -> ProofGroup:
+    """`proof_group` in flag mode (see the module): a code-checked difference is clouded, every
+    other problem found is a please-check, and only what had nothing to compare is Not compared."""
+    if classification.internal(finding):
+        return "not_compared"  # GV's reviewer only (#1652): never clouded, whoever clicks
+    decided = _decided(finding)
+    checked = flag_checked(finding)
+    if not checked and _flag_same(finding):
+        return "right"  # compared and the same: kept in the data, never counted or listed
+    if decided == "agree" and stated_requirement(finding) is not None:
+        return "clouded"
+    if decided == "not_a_problem":
+        return "dismissed"
+    if likely_problems.unsized_ends(finding) is not None:
+        return "likely_problem"
+    if _flag_not_compared(finding):
+        return "not_compared"
+    if checked:
+        return "likely_problem" if flag_notes(finding) else "clouded"
+    # What the proof rules show as a problem is never hidden (a held reading, a typed-over number,
+    # unconfirmed ends, a blind pick against code's geometry, a track-record hold, an AI's claim).
+    was = _proof_group({key: value for key, value in finding.items() if key != "decision"})
+    if was in ("clouded", "likely_problem"):
+        return "likely_problem"
+    if was == "rule_note":
+        return "rule_note"  # decided (#1839): GV asks the architect
+    found = classified(finding)
+    nothing = found.outcome == "not_compared" and found.reason in classification.NO_COMPARISON
+    if nothing and finding.get("source") != "completeness":
+        return "not_compared"
+    return "likely_problem" if _says_differs(finding) else "not_compared"
+
+
+#: A why worded for the Not-compared list ("Not compared: code's own labels ..."), said as a
+#: please-check's why in flag mode without its lead.
+_NOT_COMPARED_LEAD: Final = re.compile(r"^\s*not compared\s*[:;,.-]\s*", re.IGNORECASE)
+
+
+def _flag_reason(finding: Mapping[str, Any], reason: str | None) -> str | None:
+    """A please-check's why in flag mode: its notes first ("best guess: architect page 12",
+    "readings differ"); for a difference code checked, the check (`proof_line`), else the why the
+    proof rules give, never led by "Not compared"."""
+    if flag_checked(finding):
+        reason = f"code-checked: {proof_line(finding)}"
+    elif reason:
+        reason = _NOT_COMPARED_LEAD.sub("", reason) or reason
+    return "; ".join([*flag_notes(finding), *([reason] if reason else [])]) or None
+
+
+def checked_by(
+    finding: Mapping[str, Any],
+) -> Literal["code", "code_check", "ai", "reviewer"] | None:
+    """Who checked a problem, for the report (`CHECKED_WORDS`): "code" for a difference code's
+    maths checked (clouded, or a please-check only for its notes, `flag_notes`); "code_check" for
+    a please-check one of code's own checks made but could not settle; "ai" for one an AI found
+    (a helper, the lead, the page reviewer, the whole-drawing look) that code could not check;
+    "reviewer" for a Wrong GV's reviewer made. `None` for an item that is not a problem (Right,
+    Not compared, a rule note)."""
+    group = proof_group(finding)
+    if group == "clouded":
+        return "reviewer" if reviewer_decided(finding) else "code"
+    if group != "likely_problem":
+        return None
+    if flag_mode() and flag_checked(finding):
+        return "code"
+    by = str(finding.get("created_by") or "")
+    return "ai" if by in _AI_AUTHORS or by.startswith("helper") else "code_check"
+
+
+def listed(finding: Mapping[str, Any]) -> bool:
+    """Whether an item is counted and listed as a result (the letter, the register, the
+    Not-compared files, the cloud drawing): every item, except in flag mode a Right."""
+    return not (flag_mode() and proof_group(finding) == "right")
+
+
 def held_back(finding: Mapping[str, Any]) -> str | None:
     """Why a Wrong code proved is a Likely problem, not a red (`check_record`: its kind of check has
-    no clean track record yet), in one plain line; `None` for any other item."""
+    no clean track record yet), in one plain line; `None` for any other item (and in flag mode,
+    where no kind of check is held back)."""
+    if flag_mode():
+        return None
     if proof_group(finding) != "likely_problem" or finding.get("status") != "different":
         return None
     if not code_proved(finding) or _reader_error(finding) or likely_problems.likely_only(finding):
@@ -870,6 +1259,10 @@ def likely_words(finding: Mapping[str, Any]) -> str:
             f"{words.rstrip().rstrip('.')}. The reference marks this size HOLD: a size that must "
             "be kept."
         )
+    notes = flag_notes(finding) if flag_mode() else []
+    if notes:
+        # Flag mode: "(best guess: architect page 12)" or "(readings differ)".
+        words = f"{words.rstrip().rstrip('.')} ({'; '.join(notes)})."
     if held_back(finding) is None:
         return words
     return f"{words.rstrip().rstrip('.')} ({check_record.HELD_WORDS})."
@@ -1005,6 +1398,9 @@ def should_be_value(finding: Mapping[str, Any]) -> str:
     inches = _decimal((finding.get("inches") or {}).get("architect"))
     if inches is not None:
         return inch_words(inches)
+    if flag_mode() and maths_result(finding) == "differs" and _maths_words(finding):
+        # Flag mode: the maths step's own sentence when no governing value was read as a size.
+        return _short(_maths_words(finding), 200)
     return _short(finding.get("architect"))
 
 
@@ -1043,6 +1439,13 @@ def governs(finding: Mapping[str, Any]) -> str:
         # The reviewer gave a value code does not know (#1803).
         return REVIEWER
     source = str(finding.get("source") or "architect")
+    if flag_mode() and maths_result(finding) == "differs" and _flag_how(finding) == "maths":
+        # Flag mode: what the maths step compared (the AI's reading, code's sum or rule).
+        kind = maths_kind(finding)
+        if kind == "string":
+            return "sum of the vendor's own parts, as read"
+        if kind == "rule":
+            return "GV rule, on the numbers as read"
     words = _SOURCE_WORDS.get(source, source.replace("_", " "))
     architect = _short(finding.get("architect"), 60)
     if source == "vendor_arithmetic":
@@ -1146,6 +1549,10 @@ def proof_line(finding: Mapping[str, Any]) -> str:
         parts.append(reviewer_wrong(finding))
     how = _settled_how(finding)
     witnesses = _witnesses(finding)
+    maths = _maths_words(finding) if maths_result(finding) == "differs" else None
+    if maths is not None:
+        # The maths step's own words (flag mode, 2026-11-04): code redid the maths.
+        parts.append(f"code's maths: {maths}")
     if needs_pairing(finding) and pairing_proved(finding):
         verdict = _advocate(finding)
         answers = verdict.get("answers") if verdict is not None else None
@@ -1256,6 +1663,8 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
         )
     elif group == "dismissed":
         reason = "The reviewer marked it Right."
+    if likely and flag_mode():
+        reason = _flag_reason(finding, reason)
     return {
         "group": group,
         "should_be": should_be(finding) if wrong else None,
@@ -1290,6 +1699,9 @@ def proof_of(finding: Mapping[str, Any]) -> dict[str, Any]:
         # kind's track record (plan change #10), so the screen offers both.
         # Worked out on the item as code left it, so it stays the same under the reviewer's click.
         "held": held_back({k: v for k, v in finding.items() if k != "decision"}) is not None,
+        # Flag mode's mark (2026-11-04): who checked a problem, "code", "ai" or "reviewer"
+        # (`checked_by`, `CHECKED_WORDS`); read by the report and the CSV, not the screen yet.
+        "checked_by": checked_by(finding) if flag_mode() else None,
     }
 
 

@@ -150,3 +150,11 @@ def _check_record_off(monkeypatch: pytest.MonkeyPatch) -> None:
     counts. `tests/review/assistant/test_check_record.py` switches it on and tests the gate itself.
     """
     monkeypatch.setenv("GV_ASSISTANT_CHECK_RECORD", "off")
+
+
+@pytest.fixture(autouse=True)
+def _proof_rules(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests run under the proof rules (the default), whatever the shell exports: flag mode
+    (`GV_ASSISTANT_FLAG_MODE=flag`, 2026-11-04) is switched on only by its own tests
+    (`tests/review/assistant/test_flag_mode.py`)."""
+    monkeypatch.delenv("GV_ASSISTANT_FLAG_MODE", raising=False)

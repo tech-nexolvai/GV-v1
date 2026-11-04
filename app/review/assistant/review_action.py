@@ -58,7 +58,7 @@ from decimal import Decimal
 from typing import Any, Final, Literal
 
 from app.review.assistant.impact import TOP_IMPACT, touches
-from app.review.assistant.proof import classified, proof_group
+from app.review.assistant.proof import UNDECIDED, classified, flag_mode, listed, proof_group
 
 __all__ = [
     "ACTION_REQUIRED_BY",
@@ -374,8 +374,10 @@ def _not_reviewed(findings: Sequence[Mapping[str, Any]]) -> int:
 
 
 def _illegible(findings: Sequence[Mapping[str, Any]]) -> bool:
+    # Flag mode (2026-11-04): a value code could not read is a please-check, still unreadable.
+    open_groups = UNDECIDED if flag_mode() else frozenset({"not_compared"})
     unreadable = sum(
-        1 for f in findings if proof_group(f) == "not_compared" and _reason(f) == "unreadable"
+        1 for f in findings if proof_group(f) in open_groups and _reason(f) == "unreadable"
     )
     return unreadable >= _ILLEGIBLE_MIN and unreadable > _ILLEGIBLE_SHARE * len(findings)
 
@@ -435,7 +437,8 @@ def review_action(
     """The review result for one final finding list and what the check knew (see the module's
     rules S0 to S7 and RN; the first that matches wins). `share`: the Review needed threshold
     (`review_needed_share()` when not given)."""
-    given = list(findings)
+    # Flag mode (2026-11-04): a Right code found is never counted as a result (`proof.listed`).
+    given = [finding for finding in findings if listed(finding)]
     state = state or CheckState()
     sent = corrections(given, state.closed)
     fabrication = sum(1 for finding in sent if changes_fabrication(finding))
@@ -547,4 +550,6 @@ def review_action(
             f"No correction; {'; '.join(parts)}.",
             " ".join(notes),
         )
+    if flag_mode():
+        return result("approved", "S7", "No correction: no problem found.")
     return result("approved", "S7", "No correction: every item compared matches.")
