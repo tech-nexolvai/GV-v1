@@ -44,6 +44,7 @@ __all__ = [
     "DrawnReading",
     "drawn_length_vetoes",
     "drawn_length_witnessed",
+    "outside_band",
 ]
 
 #: The admin's band (2026-10-07): a reading more than a tenth away from drawn × scale is rejected.
@@ -72,6 +73,17 @@ class DrawnReading:
             raise TypeError("a drawn reading is exact: Fraction value and drawn length")
         if self.drawn <= 0:
             raise ValueError("a drawn length is positive")
+
+
+def outside_band(value: Fraction, expected: Fraction) -> bool:
+    """Whether a reading is more than `DRAWN_LENGTH_BAND` away from the length the drawing expects
+    of it: the one comparison every drawn-length check makes (a reading exactly a tenth away is
+    still inside). Exact: both are `Fraction`s, and `expected` is positive."""
+    if not isinstance(value, Fraction) or not isinstance(expected, Fraction):
+        raise TypeError("a drawn-length check is exact: Fraction value and expected length")
+    if expected <= 0:
+        raise ValueError("an expected length is positive")
+    return abs(value - expected) > DRAWN_LENGTH_BAND * expected
 
 
 def _scale(reading: DrawnReading, pieces: Sequence[DrawnReading]) -> Fraction | None:
@@ -114,7 +126,7 @@ def drawn_length_vetoes(
     return {
         reading.index: DRAWN_LENGTH_REASON
         for reading, expected in _checked(pieces, overall)
-        if abs(reading.value - expected) > DRAWN_LENGTH_BAND * expected
+        if outside_band(reading.value, expected)
     }
 
 
