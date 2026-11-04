@@ -76,6 +76,9 @@ logged).
   vendor's own string (`source: vendor_arithmetic`): it takes the existing proof path (code's
   string geometry, the blind string reading, the check's track record), and is red only through
   those gates; unproved, it is a Likely problem;
+- every report's plain number fields (a string's parts and printed total, two sizes that should be
+  the same, the printed numbers one of GV's rules needs) are kept on its mark (`ai_maths.NUMBERS`):
+  code does the maths on them (`ai_maths`, flag mode 2026-11-04), never on the words;
 - an item a helper already recorded at the same spot (`one_card.same_item`), or a Likely problem of
   the same kind on the same spot with alike words or the same quoted numbers, is not recorded
   twice (each fold logged with both texts); two different problems at one spot stay two.
@@ -121,6 +124,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from app.review.assistant import (
+    ai_maths,
     filler_facts,
     likely_problems,
     reviewer_context,
@@ -427,11 +431,10 @@ tag itself, or anchor: the printed words, which code boxes; for something missin
 belongs: that end, that view; under about 200 points a side), its other spots in also_at (each \
 wall end, each view lacking it), a short item name, what is wrong, what it \
 should be (in GV's words), the exact text you read, and your confidence. A size issue quotes \
-the printed numbers it rests on (a red one, two), exactly as printed. claim = "wrong" only when \
-the page itself shows a contradiction you \
-quoted (two different numbers for the same thing, a string that does not add up); for a string, \
-also give its parts and printed total. claim = "please_check" for everything else, including \
-anything missing, unclear, or shown by a symbol.
+the printed numbers it rests on (a red one, two), exactly as printed, and fills its number \
+fields: code does the maths. claim = "wrong" only when the page itself shows a contradiction you \
+quoted (two different numbers for the same thing, a string that does not add up). claim = \
+"please_check" for everything else, including anything missing, unclear, or shown by a symbol.
 
 Examples
 - A, wrong: "Elevation shows 36 1/4" overall; the parts 12 + 12 + 11 3/4 = 35 3/4"."
@@ -553,11 +556,67 @@ _ISSUE_FIELDS: Final[Mapping[str, Any]] = {
         "type": "array",
         "items": {"type": "string"},
         "maxItems": 40,
-        "description": "Kind A, a string that does not add up: its parts as printed, in order",
+        "description": "Kind A, a string that does not add up (wrong or please_check): its parts "
+        "as printed, in order",
     },
     "printed_total": {
         "type": "string",
         "description": "Kind A, a string that does not add up: its printed overall",
+    },
+    # Plain numbers for code's maths (flag mode, 2026-11-04, `ai_maths`): code compares and applies
+    # GV's rules on them, never on the words.
+    "vendor_value": {
+        "type": "string",
+        "description": "Kind A, two sizes that should be the same: this page's size, one value "
+        "exactly as printed",
+    },
+    "other_value": {
+        "type": "string",
+        "description": "Kind A, two sizes that should be the same: the size it should match (the "
+        "architect's drawing or another sheet, named in wrong), one value exactly as printed",
+    },
+    "gv_rule": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["rule", "printed"],
+        "description": "Kind A, a size one of GV's rules sets: the rule and the printed numbers it "
+        "needs (never the rule's own value: code applies it with the job's values)",
+        "properties": {
+            "rule": {
+                "type": "string",
+                "enum": list(ai_maths.RULES),
+                "description": "field_cut: the top's length = the run it covers + the field cut "
+                "at each wall end; sink_front_offset: the cut-out's front edge to the cabinets' "
+                "front; sink_cutout: the cut-out's width (or depth) = the sink's inside width (or "
+                "depth) - the clearance each side",
+            },
+            "printed": {
+                "type": "string",
+                "description": "The size this page prints for it (the top's length, the front "
+                "offset, the cut-out's width or depth), exactly as printed",
+            },
+            "run": {
+                "type": "string",
+                "description": "field_cut: the length the top covers (wall to wall, or the "
+                "design's top length), exactly as printed",
+            },
+            "wall_ends": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2,
+                "description": "field_cut: how many of the top's ends meet a wall",
+            },
+            "sink_inside": {
+                "type": "string",
+                "description": "sink_cutout: the sink's inside width (or depth), exactly as "
+                "printed",
+            },
+            "overhang": {
+                "type": "string",
+                "description": "sink_front_offset printed from the top's front edge: the top's "
+                "front overhang, exactly as printed",
+            },
+        },
     },
 }
 _ISSUE_REQUIRED: Final = ["kind", "claim", "item", "wrong", "box", "confidence"]
@@ -1415,6 +1474,9 @@ class Draft:
     """Reported as an issue about a whole view (`_tight`): a fix keeps the allowance."""
     parts: list[str] | None = None
     """A string's parts as reported (kind A): a fix keeps the string's allowance."""
+    numbers: dict[str, Any] | None = None
+    """The report's plain number fields (`ai_maths.numbers_of`), kept on its mark for code's
+    maths (`ai_maths.NUMBERS`)."""
     snapped: bool = False
     """Code placed its box on printed phrases (an `anchor`, or a box too big snapped, `_tight`)."""
     related_to: str | None = None
@@ -2837,6 +2899,7 @@ class _Run:
             box=box,
             whole_view=given.get("whole_view") is True,
             parts=[str(p) for p in parts] if isinstance(parts, list) and parts else None,
+            numbers=ai_maths.numbers_of(given),
             item=item,
             wrong=wrong,
             should_be=_words(given.get("should_be"), 160) or None,
@@ -3230,7 +3293,7 @@ class _Run:
         if draft.should_be:
             words = f"{words.rstrip('.')}. It should be: {draft.should_be}."
         why = draft.wrong + (f" Read: {draft.read}." if draft.read else "")
-        mark = {
+        mark: dict[str, Any] = {
             "by": CREATED_BY,
             "proof": proof,
             "kind": KIND_OF[draft.kind],
@@ -3243,6 +3306,8 @@ class _Run:
         also = draft.also_kind
         if also is not None and also in KIND_OF:
             mark |= {"also_kind": KIND_OF[also], "also_letter": also}
+        if draft.numbers:
+            mark[ai_maths.NUMBERS] = dict(draft.numbers)
         return mark
 
     def _spot(self, box: Box) -> dict[str, Any]:
@@ -3313,6 +3378,7 @@ class _Run:
             # What the reported issue was accepted with (its box allowance, its other spots),
             # unless resent.
             "whole_view": draft.whole_view,
+            **(draft.numbers or {}),
             "parts": draft.parts,
             "also_at": [{"x0": b[0], "y0": b[1], "x1": b[2], "y1": b[3]} for b in draft.also_at],
             **{k: v for k, v in given.items() if k in _ISSUE_FIELDS and v is not None},

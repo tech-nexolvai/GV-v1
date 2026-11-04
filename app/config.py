@@ -335,6 +335,9 @@ class Settings(BaseSettings):
     # effort is lowered instead to keep its cost.
     assistant_simple_resolve_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     assistant_simple_resolve_web_search: bool = False
+    # Flag mode (Anant, 2026-11-04): `proof` (default) keeps the proof rules; `flag` is the simple
+    # mode: every problem found is flagged, code does the maths, only no-comparison is Not compared.
+    assistant_flag_mode: Literal["proof", "flag"] = "proof"
     # One sandbox command's time limit, and which sandbox runs it (`auto` and `docker`: the Docker
     # image `gv-assistant-sandbox` when built and Docker answers, else no shell: the chat says the
     # secure sandbox is not running; `macos`: `sandbox-exec`, only for tests on a Mac, never a

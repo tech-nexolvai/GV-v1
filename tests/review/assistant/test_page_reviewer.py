@@ -31,7 +31,7 @@ from typing import Any
 import pytest
 from reportlab.pdfgen import canvas  # type: ignore[import-untyped]
 
-from app.review.assistant import likely_problems, page_reviewer, proof
+from app.review.assistant import ai_maths, likely_problems, page_reviewer, proof
 from app.review.assistant.chat_engine import _Reply
 from app.review.assistant.chat_findings import FindingBook
 from app.review.assistant.chat_request import MODELS
@@ -973,6 +973,31 @@ def test_kinds_b_to_f_are_please_checks_and_never_red(
     # Whatever a later step says, never clouded by itself.
     monkeypatch.setattr(proof, "code_proved", lambda f: True)
     assert proof.proof_group({**found, "status": "different"}) == "likely_problem"
+
+
+def test_a_size_issues_plain_numbers_are_kept_for_codes_maths(tmp_path: Path) -> None:
+    """Flag mode (2026-11-04): a please-check's number fields (two sizes, GV's rule) are kept on its
+    mark, so code's maths (`ai_maths`) reads them, never the words; a red string keeps its parts."""
+    sizes = _tool(
+        "report_issue", kind="A", claim="please_check", item="Top: length against the run",
+        wrong="The top is longer than the run plus GV's field cut.", read='52" ; 48"',
+        box={"x0": 600, "y0": 380, "x1": 700, "y1": 420}, confidence="medium",
+        vendor_value='52"', other_value='50"',
+        gv_rule={"rule": "field_cut", "printed": '52"', "run": '48"', "wall_ends": 2},
+    )  # fmt: skip
+    engine, *_ = _review(
+        tmp_path,
+        [[_tiles(1, 2, 3, 4, 5, 6)], [_tiles(7, 8, 9), sizes, _string_issue()], [_text("ok")]],
+        cap=600_000,
+        cost=200_000,
+    )
+    found = {f["item"]: f for f in engine.book.live() if f["created_by"] == "page_reviewer"}
+    numbers = found["Top: length against the run"][likely_problems.FIELD][ai_maths.NUMBERS]
+    assert numbers["vendor_value"] == '52"' and numbers["gv_rule"]["wall_ends"] == 2
+    maths = ai_maths.check(found["Top: length against the run"])
+    assert maths is not None and maths["result"] == "differs" and maths["read_from"] == "fields"
+    string = found["Elevation: overall width"][likely_problems.FIELD][ai_maths.NUMBERS]
+    assert string["parts"] == ['12"', '12"', '11 3/4"'] and string["printed_total"] == '36 1/4"'
 
 
 def test_a_string_that_does_not_add_up_takes_the_existing_proof_path(tmp_path: Path) -> None:
