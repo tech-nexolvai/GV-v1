@@ -797,3 +797,21 @@ def test_witnessed_only_where_the_drawn_length_agrees_as_decision_b_counts_it(
     assert sr.drawn_agrees(Fraction(24), Fraction(24) / SCALE, SCALE)
     assert sr.drawn_agrees(Fraction(24), Fraction(49, 2) / SCALE, SCALE)  # 0.5" off: inside
     assert not sr.drawn_agrees(Fraction(23), Fraction(49, 2) / SCALE, SCALE)
+
+
+def test_a_dry_run_on_a_saved_pack_plans_without_a_reader_and_writes_only_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_pack(tmp_path, [spot([100, 100, 130, 110]), spot([200, 100, 208, 130], "sideways")])
+    monkeypatch.setattr(sr, "PdfPackPages", lambda *a: FakePages(drawn={"p3.S1": 24}))
+
+    def no_reader(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("a dry run makes no reader")
+
+    monkeypatch.setattr(sr, "reader_from_environment", no_reader)
+    out = tmp_path / "out.json"
+    assert sr.main([str(tmp_path), "--dry-run", "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    assert "copies that would be read (first turns): 1; spent $0" in printed
+    assert json.loads(out.read_text())["schema"] == sr.SCHEMA
+    assert not (tmp_path / sr.FILE).exists()

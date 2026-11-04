@@ -1122,3 +1122,67 @@ def reader_from_environment(
         rates=rates,
         calls_per_minute={model: int(rpm[model]) for model in readers if model in rpm},
     )
+
+
+# ---- trying it on a saved pack ---------------------------------------------------------------------
+
+
+class _DryRun:
+    """No reader: every copy is planned and counted, nothing is asked, nothing is spent."""
+
+    def __init__(self, models: Sequence[str]) -> None:
+        self.models = tuple(models)
+        self.asked = 0
+
+    @property
+    def readers(self) -> tuple[ReaderInfo, ...]:
+        return tuple(ReaderInfo(model, _maker(model)) for model in self.models)
+
+    def read(self, asks: Sequence[CropAsk], budget: ReadBudget) -> ReadResult:
+        self.asked += len(asks)
+        return ReadResult({})
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Read (or, with `--dry-run`, only plan) a saved pack's unread pen-stroke numbers.
+
+    `python -m app.review.assistant.stroke_reads <pack> [--pages 3,4] [--cap 2.00] [--dry-run]
+    [--out FILE]`: every page, or only the pages listed (in any file); the readers, prices, pacing
+    and keys from the environment (`reader_from_environment`), at most `--cap` dollars. The result
+    is written to `--out` when given (the pack's own `stroke_reads.json` only when `--out` names
+    it), and its counts are printed. `--dry-run` asks no reader and spends nothing."""
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m app.review.assistant.stroke_reads")
+    parser.add_argument("pack", type=Path)
+    parser.add_argument("--pages", default="", help="page numbers, e.g. 3,4 (default: every page)")
+    parser.add_argument("--cap", type=Decimal, default=None, help="dollars (default: the setting)")
+    parser.add_argument("--uploads", type=Path, default=None)
+    parser.add_argument("--dry-run", action="store_true", help="plan only: no reader, $0")
+    parser.add_argument("--out", type=Path, default=None)
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    numbers = {int(part) for part in args.pages.split(",") if part.strip()}
+    scope = None
+    if numbers:
+        coverage = _read_json(args.pack / "reading_coverage.json")
+        scope = Scope(pages=frozenset(s.key for s in spots_of(coverage) if s.page in numbers))
+    raw = os.environ.get(READERS_ENV, "")
+    named = tuple(part.strip() for part in raw.split(",") if part.strip())
+    dry = _DryRun(named if len(named) == 2 else DEFAULT_READERS) if args.dry_run else None
+    reader: StrokeReader = dry if dry is not None else reader_from_environment()
+    cap = args.cap if args.cap is not None else cap_from_environment()
+    run = ensure_stroke_reads(args.pack, scope, reader, cap, uploads=args.uploads, write=False)
+    if args.out is not None:
+        args.out.write_text(json.dumps(run.document, indent=1), encoding="utf-8")
+    print(f"labels: {len(run.document['labels'])}; by state: {run.counts}")
+    if dry is not None:
+        print(f"copies that would be read (first turns): {dry.asked}; spent $0")
+    else:
+        print(f"calls: {len(run.attempts)}; spent ${Decimal(run.cost_micros) / _MICROS:.4f}")
+        if run.stopped:
+            print(f"stopped: {run.stopped}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
