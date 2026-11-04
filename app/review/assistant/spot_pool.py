@@ -141,17 +141,25 @@ def verify_answer_at(
     """The proving tools' read of one spot (`ChatTools.verify_answer`, here so a worker process
     runs it without the chat's tools): `verify_value` at the spot (the drawing's text, else its
     drawn ink), and a spot it cannot read read again by `read_number` (#1746), whose answer
-    replaces it only when it reads the number. Raises when the spot cannot be read at all."""
+    replaces it only when it reads the number. Raises when the spot cannot be read at all.
+
+    Where the full check read the set's pen-stroke numbers (`stroke_reads`, off by default), a
+    sealed and witnessed one at the spot is `verify_value`'s route 3 (`sealed_answer`), laid over
+    the drawing's own reading without ever loosening it (`with_sealed`), before `read_number`."""
     module = import_module("app.review.assistant.verify_value")
+    spot = dict(zip(("x0", "y0", "x1", "y1"), box, strict=True))
     found = dict(
         module.verify_value(
             uploads / name,
             page,
-            dict(zip(("x0", "y0", "x1", "y1"), box, strict=True)),
+            spot,
             expected,
             page_cache=None if pack is None else pack / "hires",
         ).as_dict()
     )
+    reads = import_module("app.review.assistant.stroke_reads").load(pack)
+    if reads is not None:
+        found = module.with_sealed(found, module.sealed_answer(reads, name, page, spot, expected))
     if found["result"] == "cannot_read":
         try:
             numbers = import_module("app.review.assistant.read_number")

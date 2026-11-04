@@ -119,6 +119,7 @@ from app.review.assistant import (
     pick_cache,
     round_picks,
     spot_pool,
+    stroke_reads,
     verify_value,
     whole_look,
     witness,
@@ -319,6 +320,9 @@ NEED_STEPS: Final = ("advocate", "escalation", "round_picks")
 ROUND_PICK_SHARE: Final = 0.10
 #: The phase the cheap picks are charged to (their cap, not a share).
 ROUND_PHASE: Final = "round_picks"
+#: The phase the stroke reads are charged to (`_stroke_reads`: their cap, inside the gap closers'
+#: room).
+STROKE_PHASE: Final = "stroke_reads"
 #: Why a page code stopped sending on was left unchecked when the money was really short.
 OUT_OF_MONEY: Final = "out of money (the fixed price left too little for another look)"
 #: Why a check stopped part way when the AI account ran out of credit (a 402, change 11).
@@ -1745,6 +1749,9 @@ class _Run:
     pick_log: list[dict[str, Any]] = field(default_factory=list)
     #: What the cheap picks did (`_round_picks`): counted for the log and the answer's trust block.
     round_block: dict[str, Any] = field(default_factory=dict)
+    #: What the stroke reads did (`_stroke_reads`, off by default): each state's count, the money
+    #: and calls, and why they stopped; empty when they did not run.
+    stroke_block: dict[str, Any] = field(default_factory=dict)
     #: The proving reads already made this run (#1850), by spot, value, side and the pack's label
     #: files: the same read is never made twice (the look-again's, or one read ahead).
     proof_reads: dict[tuple[Any, ...], dict[str, Any]] = field(default_factory=dict)
@@ -2959,6 +2966,9 @@ class _Run:
                 self._settle_unpaired(matching)
             except Exception:  # noqa: BLE001 - the pages stay as their helpers left them
                 _log.exception("assistant roster could not settle the unpaired pages")
+            # The pairs are final: the unread pen-stroke numbers are read now (off by default),
+            # before the steps that read spots (gap closers, verifier, advocate) use them.
+            self._stroke_reads()
             tag_reports: list[tuple[Any, str, str | None]] = []
             looked: list[tuple[Any, Mapping[str, Any]]] = []
             for agent, entry in zip(agents, entries, strict=True):
@@ -3094,6 +3104,8 @@ class _Run:
                         self._settle_unpaired(matching)
                     except Exception:  # noqa: BLE001 - the pages stay as their helpers left them
                         _log.exception("assistant roster could not settle the unpaired pages")
+                    # As in one chain: the stroke reads once the pairs are final (off by default).
+                    self._stroke_reads()
 
         def tag_chain() -> None:
             if not tags and not loose:
@@ -3390,6 +3402,71 @@ class _Run:
                 self._judging_steps(plan, page_map, new)
         finally:
             self.only_ids = None
+
+    # -- Step 2 of the rebuild plan: the pen-stroke numbers (off by default) --
+
+    def _paired_pages(self) -> frozenset[tuple[str, int]]:
+        """The pages the paired comparisons are on (plan 2E, "paired views first"): each vendor
+        page the cross-file pairing paired and its architect pages; with no separate architect
+        file (GV's combined sheets), the vendor pages the plan compares."""
+        engine = self.engine
+        cross = getattr(engine, "_cross", None)
+        main = str(engine.book.main_file)
+        if cross is not None and cross.pairs:
+            vendor = str(cross.file or main)
+            found = {(vendor, int(page)) for page in cross.pairs}
+            found |= {(str(f), int(p)) for refs in cross.pairs.values() for f, p in refs}
+            return frozenset(found)
+        return frozenset((main, int(page)) for page in self.vendor_pages)
+
+    def _stroke_reads(self) -> None:
+        """Step 2 of the rebuild plan (LOCKED 2026-11-05): the set's unread pen-stroke numbers read
+        by two readers of different makers and checked by the drawing's scale (`stroke_reads`),
+        once the pairs are final. **Off by default** (`GV_ASSISTANT_STROKE_READS`): then nothing
+        is built, asked, charged or written. On, its money is inside the fixed price: at most its
+        own cap (`GV_ASSISTANT_STROKE_READS_CAP_USD`) and never more than the gap closers' room
+        (`_room("gaps")`: the later steps' money is kept); what it spends is charged to the check
+        (`ChatEngine.charge_outside`) under the `stroke_reads` phase. It writes only the pack's
+        `stroke_reads.json`, which `verify_value`'s sealed route reads; it changes no finding."""
+        if stroke_reads.mode_from_environment() == "off":
+            return
+        engine = self.engine
+        workspace = engine.tools.workspace
+        if self.plan is None or workspace.set_pack is None:
+            return
+        with engine.timings.phase(STROKE_PHASE):
+            try:
+                run = stroke_reads.full_check_reads(
+                    pack=workspace.set_pack,
+                    uploads=workspace.uploads,
+                    pages=self._paired_pages(),
+                    room_micros=self._room("gaps"),
+                )
+            except Exception:  # noqa: BLE001 - the check goes on as it would without them
+                _log.exception("assistant roster's stroke reads failed")
+                return
+            if run is None:
+                return
+            engine.charge_outside(
+                run.cost_micros,
+                [
+                    (
+                        str(a.model_id),
+                        str(a.prompt_id),
+                        int(a.input_tokens or 0),
+                        int(a.output_tokens or 0),
+                    )
+                    for a in run.attempts
+                ],
+            )
+            self._charge(STROKE_PHASE, run.cost_micros)
+        self.stroke_block = {
+            **run.counts,
+            "cost_usd": round(run.cost_micros / _MICROS, 4),
+            "calls": len(run.attempts),
+            "stopped": run.stopped,
+        }
+        _log.warning("assistant roster stroke reads: %s", self.stroke_block)
 
     # -- P3b: the round-only leftovers' cheap picks (#1861) --
 

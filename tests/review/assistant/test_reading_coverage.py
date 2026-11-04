@@ -95,6 +95,20 @@ def test_a_sideways_number_says_so(tmp_path: Path) -> None:
     assert spot["reasons"][0] == "sideways"
 
 
+def test_a_spots_turns_are_the_ones_the_count_decided(tmp_path: Path) -> None:
+    """`spot_turns` (Step 2's stroke reads) finds each spot's ink as the count grouped it: an
+    upright number reads upright only, one written up the page reads sideways (90 when its inch
+    mark tells, both sideways turns when nothing does)."""
+    body = READ + stroke_ops('48"', 450, 150) + stroke_ops('25"', 560, 100, turn=True)
+    path, found = _page(tmp_path, body)
+    spots = _spots(found)
+    turns = ri.spot_turns(dl._parse(path, 0), found.labels, [s["box"] for s in spots])
+    by_reason = {spot["reasons"][0]: turns[tuple(spot["box"])] for spot in spots}
+    assert by_reason["other"] == (0,)
+    assert by_reason["sideways"] and 0 not in by_reason["sideways"]
+    assert ri.spot_turns(dl._parse(path, 0), found.labels, [[1.0, 1.0, 2.0, 2.0]]) == {}
+
+
 def test_a_stacked_fraction_says_so(tmp_path: Path) -> None:
     _, found = _page(tmp_path, READ + stroke_ops('3{1/2}"', 450, 150))
     (spot,) = _spots(found)
@@ -403,3 +417,73 @@ def test_the_report_cover_made_again_keeps_the_numbers_read_line() -> None:
     message = SimpleNamespace(blocks=[{"type": "trust", "trust": trust}], model="m", effort="low")
     summary, _ = decided_summary(message, None, [], "set.pdf")  # type: ignore[arg-type]
     assert summary["Numbers read"].startswith("Numbers read: 3 of about 8 printed on the vendor's")
+
+
+# ---- the full check's sealed stroke reads (Step 2, 2026-11-05) ----------------------------------
+
+
+def _stroke_reads(*labels: tuple[str, list[float], str]) -> dict[str, Any]:
+    return {
+        "schema": rc.STROKE_READS_SCHEMA,
+        "pack_version": 26,
+        "readers": [],
+        "labels": [
+            {"file": "set.pdf", "page": 1, "side": side, "box": box, "state": state}
+            for state, box, side in labels
+        ],
+    }
+
+
+def test_sealed_stroke_reads_count_as_read_and_are_said_apart() -> None:
+    coverage = _coverage()
+    reads = _stroke_reads(
+        ("sealed_witnessed", [450, 150, 470, 158], "vendor"),
+        ("sealed_unwitnessed", [120, 200, 130, 208], "architect"),
+        ("held", [452, 200, 470, 208], "vendor"),
+    )
+    found = rc.with_stroke_reads(coverage, reads)
+    vendor = found["sides"]["vendor"]
+    assert (vendor["read"], vendor["printed"], vendor["ai_read"]) == (4, 8, 1)
+    assert vendor["strokes"] == {"read": 2, "printed": 3}
+    assert found["sides"]["architect"]["ai_read"] == 1
+    assert found["not_read_by_reason"]["vendor"] == {"gv_sticker": 1, "picture": 1, "in_note": 2}
+    page = found["pages"][0]
+    assert all(spot["box"] != [450, 150, 470, 158] for spot in page["not_read"])
+    assert page["sides"]["vendor"]["ai_read"] == 1
+    assert rc.summary_line(found, "vendor") == (
+        "Numbers read: 4 of about 8 printed on the vendor's drawings (50%), "
+        "1 of them read by two AI readers"
+    )
+    head = rc.headline(found)
+    assert head is not None and head["vendor_ai_read"] == 1 and head["vendor_strokes_read"] == 2
+    # The pack's own count is never changed.
+    assert coverage["sides"]["vendor"]["read"] == 3 and "ai_read" not in coverage["sides"]["vendor"]
+
+
+def test_held_unread_or_foreign_stroke_reads_change_nothing() -> None:
+    coverage = _coverage()
+    for reads in (
+        _stroke_reads(("held", [450, 150, 470, 158], "vendor")),
+        _stroke_reads(("unread", [450, 150, 470, 158], "vendor")),
+        {**_stroke_reads(("sealed_witnessed", [450, 150, 470, 158], "vendor")), "schema": "x"},
+        None,
+    ):
+        assert rc.with_stroke_reads(coverage, reads) == coverage
+    assert rc.headline(coverage)["vendor_ai_read"] == 0  # type: ignore[index]
+
+
+def test_load_lays_the_packs_stroke_reads_over_its_count(tmp_path: Path) -> None:
+    rc.write(tmp_path, _coverage())
+    assert rc.load(tmp_path)["sides"]["vendor"]["read"] == 3  # type: ignore[index]
+    reads = _stroke_reads(("sealed_witnessed", [450, 150, 470, 158], "vendor"))
+    (tmp_path / rc.STROKE_READS_FILE).write_text(json.dumps(reads))
+    loaded = rc.load(tmp_path)
+    assert loaded is not None and loaded["sides"]["vendor"]["read"] == 4
+    assert json.loads((tmp_path / rc.FILE).read_text())["sides"]["vendor"]["read"] == 3
+
+
+def test_the_stroke_reads_file_names_are_the_modules() -> None:
+    from app.review.assistant import stroke_reads
+
+    assert rc.STROKE_READS_FILE == stroke_reads.FILE
+    assert rc.STROKE_READS_SCHEMA == stroke_reads.SCHEMA

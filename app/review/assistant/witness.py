@@ -36,6 +36,16 @@ together with the independent read agreeing (the second read, or the third read'
 with the lead's own check or the critic alone (#756 D2: never alone, only with a second independent
 witness); with them it gives Likely.
 
+**The corroborated witness (`corroborated`, Step 2 of the rebuild plan, 2026-11-05) is neither AI
+alone nor code-observed**: both values read at their spots, at least one of them only by
+`verify_value`'s sealed route (two AI readers of different makers printed it, and code found its
+drawn length agrees at its view's scale, `stroke_reads`). It is kept apart from the code-observed
+witnesses (`printed`, `ocr_ink`), so a report says which it was, and it is never `observed` evidence
+(its evidence kind is `derived`: code checked the readers' seal against the drawing).
+Like the drawn-ink witness it gives Confirmed only with the independent read agreeing, never with
+the lead's own check or the critic alone; with them it gives Likely. A spot the sealed route read
+never counts towards `ocr_ink` or `printed`.
+
 Pure code, no imports beyond the standard library, so both `finding_checks` and `chat_trust` use it.
 """
 
@@ -71,6 +81,10 @@ WITNESS_WORDS: Final = {
     "units": "the millimetres and inches printed together agree",
     "ocr_ink": "both values read from the vendor's drawn ink by two OCR engines",
     "text": "code read the codes in the drawings' own text and searched every vendor sheet",
+    "corroborated": (
+        "a value read by two AI readers of different makers, its drawn length agreeing at its "
+        "view's scale, the other read at its spot"
+    ),
 }
 
 #: Each side's reading by `verify_value` in a finding's checks (#1531).
@@ -132,19 +146,38 @@ def _verified(checks: Mapping[str, Any], key: str) -> Mapping[str, Any] | None:
     return found if isinstance(found, Mapping) else None
 
 
+def _side_reads(checks: Mapping[str, Any]) -> list[str | None]:
+    """How each side was read at its spot: `printed` (its text printed there), `text` or `drawn`
+    (`verify_value`'s own routes), `sealed` (only its sealed route, `stroke_reads`), or `None`."""
+    out: list[str | None] = []
+    for key, printed in zip(_VERIFY_KEYS, ("printed_architect", "printed_vendor"), strict=True):
+        side = _verified(checks, key)
+        matched = side is not None and side.get("result") == "match"
+        route = side.get("route") if matched and side is not None else None
+        if route in ("text", "drawn"):
+            out.append(str(route))
+        elif checks.get(printed) == "match":
+            out.append("printed")
+        elif matched and route == "sealed":
+            out.append("sealed")
+        elif matched:
+            out.append("text")
+        else:
+            out.append(None)
+    return out
+
+
 def _ink_backs(checks: Mapping[str, Any]) -> bool:
-    """Both sides read at their spots by code, at least one from the vendor's drawn ink."""
-    sides = [_verified(checks, key) for key in _VERIFY_KEYS]
-    printed = (checks.get("printed_architect"), checks.get("printed_vendor"))
-    read = [
-        side is not None and side.get("result") == "match" or text == "match"
-        for side, text in zip(sides, printed, strict=True)
-    ]
-    drawn = any(
-        side is not None and side.get("result") == "match" and side.get("route") == "drawn"
-        for side in sides
-    )
-    return all(read) and drawn
+    """Both sides read at their spots by code, at least one from the vendor's drawn ink (a side read
+    only by the sealed route is not code's reading)."""
+    reads = _side_reads(checks)
+    return all(r is not None and r != "sealed" for r in reads) and "drawn" in reads
+
+
+def _sealed_backs(checks: Mapping[str, Any]) -> bool:
+    """Both sides read at their spots, at least one only by the sealed route (`corroborated`)."""
+    reads = _side_reads(checks)
+    return all(r is not None for r in reads) and "sealed" in reads
 
 
 def printed_elsewhere(checks: Mapping[str, Any]) -> str | None:
@@ -164,6 +197,8 @@ def witnesses(checks: Mapping[str, Any], status: object = None) -> list[str]:
         out.append("printed")
     elif _ink_backs(checks):
         out.append("ocr_ink")
+    elif _sealed_backs(checks):
+        out.append("corroborated")
     if checks.get("text") == "agrees":
         out.append("text")
     if checks.get("rule") == "agrees":
@@ -214,11 +249,12 @@ def trust_level(checks: Mapping[str, Any], status: object = None) -> str:
     found = witnesses(checks, status)
     non_ai = bool(found)
     ai = len(ai_witnesses(checks))
-    # The drawn-ink witness confirms only with the independent read (see the module's rule).
-    full = [w for w in found if w != "ocr_ink"]
+    # The drawn-ink and corroborated witnesses confirm only with the independent read (see the
+    # module's rules).
+    full = [w for w in found if w not in ("ocr_ink", "corroborated")]
     if full and ai:
         return "confirmed"
-    if "ocr_ink" in found and read_result(checks) == "agrees":
+    if ("ocr_ink" in found or "corroborated" in found) and read_result(checks) == "agrees":
         return "confirmed"
     if non_ai or ai >= 2:
         return "likely"

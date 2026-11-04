@@ -205,3 +205,36 @@ def test_a_cut_reader_line_with_two_runs_on_that_agree_gets_no_check() -> None:
     sheet.line((181.5, 197), (181.5, 203))
     fit = scale_fit.page_fit(sheet.labels, sheet.segments)
     assert fit.check(key) is None
+
+
+# ---- unread ink (Step 2's stroke reads) ----------------------------------------------------------
+
+
+def test_unread_ink_gets_its_own_line_and_the_views_fit_never_its_own() -> None:
+    """A depth whose text code did not read: its upright line is found with no value, and its view's
+    fit (the plan's, from the read widths) measures it: 24" at 4 points to the inch."""
+    sheet, ids = _plan()
+    depth = next(label for label in sheet.labels if label["id"] == ids["depth"])
+    sheet.labels.remove(depth)  # unread: not among the labels the fit is made from
+    lines = scale_fit.StrokeLines(sheet.labels, sheet.segments)
+    span = lines.line(depth["box"])
+    assert span is not None and span.axis == "v" and abs(span.length - 24 * PPI) < 1
+    scale = lines.scale("vendor", span)
+    assert scale is not None and abs(float(scale) - 1 / PPI) < 1e-6
+    assert lines.scale("architect", span) is None  # another side's drawing: no fit
+    assert scale_fit.StrokeLines(sheet.labels, None).line(depth["box"]) is None
+
+
+def test_unread_ink_between_two_lines_gets_neither() -> None:
+    """Two lines about as near: an unread value may not pick the one it agrees with."""
+    sheet, ids = _plan()
+    depth = next(label for label in sheet.labels if label["id"] == ids["depth"])
+    sheet.labels.remove(depth)
+    # A second ticked upright line as near on the text's other side.
+    column = depth["box"][0] - 6
+    sheet.line((column, 90), (column, 150))
+    for at in (90, 150):
+        sheet.ticks(column, at)
+        sheet.line((column - 3, at), (column + 3, at))
+    lines = scale_fit.StrokeLines(sheet.labels, sheet.segments)
+    assert lines.line(depth["box"]) is None

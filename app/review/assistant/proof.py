@@ -290,6 +290,8 @@ _SOURCE_WORDS: Final[Mapping[str, str]] = {
 _PROOF_WORDS: Final[Mapping[str, str]] = {
     "printed": "printed at both spots, read by code",
     "ocr_ink": "read at both spots from the drawn ink by two OCR engines",
+    "corroborated": "one number read by two AI readers of different makers, its drawn length "
+    "agreeing at its view's scale, the other read at its spot",
     "rule": "GV's rule check fails it",
     "ledger": "code's reading ledger backs it (the string adds up, or other views agree)",
     "units": "the millimetres and inches printed together agree",

@@ -1342,7 +1342,11 @@ class ChatTools:
             _log_failure(failed)
             return _refused(step, started, "the spot could not be read just now")
         self.note_proof("verify_value", name, page, box, expected, found)
-        how = {"text": "the drawing's text", "drawn": "the vendor's drawn ink (two OCR engines)"}
+        how = {
+            "text": "the drawing's text",
+            "drawn": "the vendor's drawn ink (two OCR engines)",
+            "sealed": "two AI readers of different makers, its drawn length agreeing",
+        }
         text = f"{found['result']}: {found['words']}."
         if found["result"] == "match":
             text = f"match: read from {how.get(found['route'], 'the drawing')}: {found['read']}."

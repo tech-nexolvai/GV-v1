@@ -899,11 +899,13 @@ export interface FindingChecks {
 /**
  * #1531: what code read at one spot for one value, $0 and no AI. `match` (by the drawing's text, or by
  * two OCR engines on the vendor's drawn ink), `mismatch` (the drawing prints another value there),
- * `cannot_read` (with why). `words` is the evidence detail's line, written by code.
+ * `cannot_read` (with why). `words` is the evidence detail's line, written by code. Route `sealed`
+ * (Step 2, 2026-11-05): a pen-stroke number two AI readers of different makers read identically, its
+ * drawn length agreeing at its view's scale, read from the full check's stroke reads (no call here).
  */
 export interface VerifiedValue {
   result: 'match' | 'mismatch' | 'cannot_read';
-  route: 'text' | 'drawn' | 'none';
+  route: 'text' | 'drawn' | 'sealed' | 'none';
   read: string | null;
   reads?: string[] | null;
   reason: string;

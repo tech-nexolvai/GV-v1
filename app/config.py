@@ -338,6 +338,16 @@ class Settings(BaseSettings):
     # Flag mode (Anant, 2026-11-04): `proof` (default) keeps the proof rules; `flag` is the simple
     # mode: every problem found is flagged, code does the maths, only no-comparison is Not compared.
     assistant_flag_mode: Literal["proof", "flag"] = "proof"
+    # Step 2 of the rebuild plan (LOCKED 2026-11-05; `review/assistant/stroke_reads.py` reads these
+    # three from the environment, as flag mode is read): after pairing, a full check reads the
+    # set's unread pen-stroke numbers with two readers of different makers and checks each against
+    # the drawing's scale. `off` (default) changes nothing and spends nothing; `paired` reads only
+    # the paired comparisons' pages, `all` every page. Its cap is reserved inside the fixed price,
+    # never above the money the gap closers would have; the readers are two model ids
+    # (`model,model`, of two makers; empty: Claude Sonnet and Qwen).
+    assistant_stroke_reads: Literal["off", "paired", "all"] = "off"
+    assistant_stroke_reads_cap_usd: Decimal = Field(default=Decimal(2), ge=0, allow_inf_nan=False)
+    assistant_stroke_readers: str = ""
     # One sandbox command's time limit, and which sandbox runs it (`auto` and `docker`: the Docker
     # image `gv-assistant-sandbox` when built and Docker answers, else no shell: the chat says the
     # secure sandbox is not running; `macos`: `sandbox-exec`, only for tests on a Mac, never a

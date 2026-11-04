@@ -47,6 +47,9 @@ __all__ = [
     "PlannedOwner",
     "SlotPlan",
     "choose_row",
+    "clip_short_of",
+    "crop_on_page",
+    "overlaps",
     "plan_slots",
 ]
 
@@ -473,6 +476,51 @@ def _touches_edge(box: Box, ink: PageInk, rows: RowSettings) -> bool:
     )
 
 
+def overlaps(first: Box, second: Box) -> bool:
+    """Whether two runs overlap with some area (touching edges is not overlapping): a run another
+    one overlaps is crowded, as no crop can show it alone."""
+    return _strict_overlap(first, second)
+
+
+def clip_short_of(
+    box: Box,
+    reach: tuple[Decimal, Decimal, Decimal, Decimal],
+    others: Sequence[Box],
+    settings: CropSettings,
+) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """The crop's reach `(x0, y0, x1, y1)` round the run `box`, stopped short of every other run:
+    first along x by `clip_gap_x_pt` (a run beside it on the same band), then along y by
+    `clip_gap_y_pt` (a run above or below it within the reach left), so no neighbouring label is
+    in the picture. Never makes the reach larger."""
+    x0, y0, x1, y1 = reach
+    for other in others:
+        if other.bottom > y0 and other.top < y1:
+            if other.x1 <= box.x0 and other.x1 + settings.clip_gap_x_pt > x0:
+                x0 = other.x1 + settings.clip_gap_x_pt
+            if other.x0 >= box.x1 and other.x0 - settings.clip_gap_x_pt < x1:
+                x1 = other.x0 - settings.clip_gap_x_pt
+    for other in others:
+        if other.x1 > x0 and other.x0 < x1:
+            if other.bottom <= box.top and other.bottom + settings.clip_gap_y_pt > y0:
+                y0 = other.bottom + settings.clip_gap_y_pt
+            if other.top >= box.bottom and other.top - settings.clip_gap_y_pt < y1:
+                y1 = other.top - settings.clip_gap_y_pt
+    return x0, y0, x1, y1
+
+
+def crop_on_page(
+    box: Box, reach: tuple[Decimal, Decimal, Decimal, Decimal], width: Decimal, height: Decimal
+) -> Box:
+    """The crop from its clipped reach: never smaller than the run itself, never off the page."""
+    x0, y0, x1, y1 = reach
+    return Box(
+        max(_ZERO, min(x0, box.x0)),
+        max(_ZERO, min(y0, box.top)),
+        min(width, max(x1, box.x1)),
+        min(height, max(y1, box.bottom)),
+    )
+
+
 @dataclass(slots=True)
 class _Placed:
     run: _Run
@@ -631,25 +679,9 @@ def plan_slots(
             x1 = max(x1, b + settings.tick_margin_pt)
         others = [other for other in every_run if other is not box]
         crowded = any(_strict_overlap(other, box) for other in others)
-        for other in others:
-            if other.bottom > y0 and other.top < y1:
-                if other.x1 <= box.x0 and other.x1 + settings.clip_gap_x_pt > x0:
-                    x0 = other.x1 + settings.clip_gap_x_pt
-                if other.x0 >= box.x1 and other.x0 - settings.clip_gap_x_pt < x1:
-                    x1 = other.x0 - settings.clip_gap_x_pt
-        for other in others:
-            if other.x1 > x0 and other.x0 < x1:
-                if other.bottom <= box.top and other.bottom + settings.clip_gap_y_pt > y0:
-                    y0 = other.bottom + settings.clip_gap_y_pt
-                if other.top >= box.bottom and other.top - settings.clip_gap_y_pt < y1:
-                    y1 = other.top - settings.clip_gap_y_pt
+        x0, y0, x1, y1 = clip_short_of(box, (x0, y0, x1, y1), others, settings)
         ticks_in = ticks_in and x0 <= a and x1 >= b
-        crop = Box(
-            max(_ZERO, min(x0, box.x0)),
-            max(_ZERO, min(y0, box.top)),
-            min(ink.width, max(x1, box.x1)),
-            min(ink.height, max(y1, box.bottom)),
-        )
+        crop = crop_on_page(box, (x0, y0, x1, y1), ink.width, ink.height)
         chars = [mark for mark in item.run.marks if mark.kind == "char"]
         all_text = len(chars) == item.run.count
         inside = [

@@ -1641,6 +1641,32 @@ class ChatEngine:
             self.timings.tokens(attempt)
         self.emit("usage", {"cost_usd": cost_text(total)})
 
+    def charge_outside(self, cost: int, calls: Sequence[tuple[str, str, int, int]] = ()) -> None:
+        """Money a step spent through readers that are not the engine's own calls (the full
+        check's stroke reads, `stroke_reads`, through the slot reader's adapters): counted like any
+        call (`spent`, so the fixed price, the message cap and the set's budget all hold it), on
+        the current phase's timing, and each call (`(model, prompt id, input tokens, output
+        tokens)`) recorded on the Usage page as the engine records its own."""
+        cost = max(0, int(cost))
+        with self._lock:
+            self._spent += cost
+            total = self._spent
+        self.timings.charge(cost)
+        for model, prompt_id, input_tokens, output_tokens in calls:
+            try:
+                self.ledger.record(
+                    model_key=model,
+                    prompt_id=prompt_id,
+                    started_ns=monotonic_ns(),
+                    input_tokens=max(0, int(input_tokens)),
+                    output_tokens=max(0, int(output_tokens)),
+                    stop_reason=None,
+                    error=None,
+                )
+            except Exception:  # noqa: BLE001 - the answer still goes on; the failure is logged
+                _log.exception("assistant chat outside call could not be recorded")
+        self.emit("usage", {"cost_usd": cost_text(total)})
+
     # ---- one call --------------------------------------------------------------------------------
 
     def _body(

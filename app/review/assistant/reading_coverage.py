@@ -21,6 +21,10 @@ look at it. It only COUNTS: it never makes, changes or drops a label, a finding 
   confirm there (`ocr.codes.unconfirmed`).
 
 **Read** (X): those that became labels. EQ parts code worked out are not printed, so not counted.
+A pen-stroke number the full check's stroke reads sealed (`stroke_reads.json`, Step 2 of the rebuild
+plan, off by default: two AI readers of different makers printed the same text) counts as read
+too, and is said apart: "N of them read by two AI readers" (`with_stroke_reads`, laid over the
+pack's count by `load`; the pack's own file is never changed).
 
 **How each page prints its numbers** (`printed_as`, per side, final-plan change #5): `typed` (a
 text layer), `codes` (text whose font has no letter map: Type3 or a broken map, from the page's
@@ -35,6 +39,7 @@ read it (`load`, `lines`, `headline`, `sheet_rows`).
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -46,6 +51,8 @@ __all__ = [
     "PRINTED_AS",
     "REASONS",
     "SCHEMA",
+    "STROKE_READS_FILE",
+    "STROKE_READS_SCHEMA",
     "build",
     "headline",
     "lines",
@@ -56,10 +63,18 @@ __all__ = [
     "report",
     "sheet_rows",
     "summary_line",
+    "with_stroke_reads",
 ]
 
 FILE: Final = "reading_coverage.json"
 SCHEMA: Final = "gv-reading-coverage/1"
+#: The full check's stroke reads (`stroke_reads.FILE` and `SCHEMA`, written out here so this module
+#: stays light), and the states that are a reading.
+STROKE_READS_FILE: Final = "stroke_reads.json"
+STROKE_READS_SCHEMA: Final = "gv-stroke-reads/1"
+_SEALED: Final = frozenset({"sealed_witnessed", "sealed_unwitnessed"})
+#: How a count says the numbers the stroke reads sealed.
+AI_READ_WORDS: Final = "read by two AI readers"
 
 #: Why a printed number was not read, in plain words (the order is the order shown).
 REASONS: Final[dict[str, str]] = {
@@ -371,14 +386,84 @@ def write(folder: Path, coverage: Mapping[str, Any]) -> None:
 
 
 def load(folder: Path | None) -> dict[str, Any] | None:
-    """A pack's reading coverage, or `None` (no pack, or a pack made before it was counted)."""
+    """A pack's reading coverage, or `None` (no pack, or a pack made before it was counted), with
+    the full check's sealed stroke reads counted as read (`with_stroke_reads`) when it made them."""
     if folder is None:
         return None
     try:
         value = json.loads((Path(folder) / FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return value if isinstance(value, dict) and value.get("schema") == SCHEMA else None
+    if not isinstance(value, dict) or value.get("schema") != SCHEMA:
+        return None
+    try:
+        reads = json.loads((Path(folder) / STROKE_READS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return value
+    return with_stroke_reads(value, reads)
+
+
+def _spot_key(file: object, page: object, box: object) -> tuple[str, int, tuple[float, ...]] | None:
+    found = _box(box)
+    if found is None:
+        return None
+    try:
+        number = int(page)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return None
+    return (str(file), number, tuple(round(v, 2) for v in found))
+
+
+def with_stroke_reads(
+    coverage: Mapping[str, Any], reads: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """The coverage with each pen-stroke spot the stroke reads sealed (`sealed_witnessed` or
+    `sealed_unwitnessed`, same file, page and box) counted as read: off its page's unread list and
+    its reason's count, into its side's read numbers (and the strokes' read), and counted apart as
+    `ai_read`. A copy; anything else (another schema, no sealed spot) leaves it as it was."""
+    out = copy.deepcopy(dict(coverage))
+    if not isinstance(reads, Mapping) or reads.get("schema") != STROKE_READS_SCHEMA:
+        return out
+    sealed = {
+        key
+        for label in reads.get("labels") or []
+        if isinstance(label, Mapping)
+        and label.get("state") in _SEALED
+        and (key := _spot_key(label.get("file"), label.get("page"), label.get("box"))) is not None
+    }
+    if not sealed:
+        return out
+    totals = out.get("sides") or {}
+    reasons = out.get("not_read_by_reason") or {}
+    for entry in out.get("pages") or []:
+        if not isinstance(entry, dict):
+            continue
+        kept: list[Any] = []
+        for spot in entry.get("not_read") or []:
+            key = (
+                _spot_key(entry.get("file"), entry.get("page"), spot.get("box"))
+                if isinstance(spot, Mapping) and spot.get("kind") == "strokes"
+                else None
+            )
+            if key is None or key not in sealed:
+                kept.append(spot)
+                continue
+            side = str(spot.get("side") or "unknown")
+            for counts in ((entry.get("sides") or {}).get(side), totals.get(side)):
+                if isinstance(counts, dict):
+                    counts["read"] = int(counts.get("read") or 0) + 1
+                    strokes = counts.get("strokes")
+                    if isinstance(strokes, dict):
+                        strokes["read"] = int(strokes.get("read") or 0) + 1
+                    counts["ai_read"] = int(counts.get("ai_read") or 0) + 1
+            by = reasons.get(side)
+            reason = str(spot.get("reason"))
+            if isinstance(by, dict) and by.get(reason):
+                by[reason] = int(by[reason]) - 1
+                if not by[reason]:
+                    del by[reason]
+        entry["not_read"] = kept
+    return out
 
 
 # ---- words ------------------------------------------------------------------------------------
@@ -395,10 +480,12 @@ def summary_line(coverage: Mapping[str, Any] | None, side: str) -> str | None:
     if not isinstance(counts, Mapping) or not counts.get("printed"):
         return None
     read, printed = int(counts["read"]), int(counts["printed"])
-    return (
+    line = (
         f"Numbers read: {read:,} of about {printed:,} printed on {SIDES[side]} "
         f"({_percent(read, printed)}%)"
     )
+    by_ai = int(counts.get("ai_read") or 0)
+    return f"{line}, {by_ai:,} of them {AI_READ_WORDS}" if by_ai else line
 
 
 def printed_as_line(coverage: Mapping[str, Any] | None, side: str) -> str | None:
@@ -451,6 +538,7 @@ def headline(coverage: Mapping[str, Any] | None) -> dict[str, Any] | None:
         out[f"{side}_printed"] = int(counts["printed"])
         out[f"{side}_percent"] = _percent(int(counts["read"]), int(counts["printed"]))
         out[f"{side}_strokes_read"] = int(counts["strokes"]["read"])
+        out[f"{side}_ai_read"] = int(counts.get("ai_read") or 0)
         out[f"{side}_strokes_printed"] = int(counts["strokes"]["printed"])
         codes = counts.get("codes") or {}
         out[f"{side}_codes_read"] = int(codes.get("read") or 0)

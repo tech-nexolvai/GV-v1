@@ -70,6 +70,8 @@ _PROVED: Final = "Proved by code"
 _WITNESS_WORDS: Final[Mapping[str, str]] = {
     "printed": "both numbers are printed on the drawings and were read from the drawings' text",
     "ocr_ink": "both numbers were read from the drawn lines by two separate readers",
+    "corroborated": "one number was read by two separate readers and agrees with its drawn length "
+    "at the drawing's scale; the other was read from the drawing",
     "rule": "GV's rule check fails it",
     "arithmetic": "the vendor's own parts were added up",
     "ledger": "the vendor's other views of it agree",

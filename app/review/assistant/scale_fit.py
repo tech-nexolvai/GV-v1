@@ -64,6 +64,7 @@ __all__ = [
     "Check",
     "Drawn",
     "PageFit",
+    "StrokeLines",
     "page_fit",
 ]
 
@@ -493,10 +494,30 @@ def _text_gap(length: float) -> float:
 def _candidates(lines: _Lines, label: Mapping[str, Any], box: Box) -> list[tuple[float, Drawn]]:
     """(distance across from the text, line) for each dimension line near the label, either
     axis, nearest first."""
-    key = str(label.get("id"))
     value = _inches(label)
     if value is None:
         return []
+    return _lines_near(lines, str(label.get("id")), value, box)
+
+
+def _rivals(found: Sequence[tuple[float, Drawn]]) -> list[Drawn]:
+    """The different lines about as near as the nearest one (within `RIVAL_PT`)."""
+    nearest = found[0][0]
+    rivals: list[Drawn] = []
+    for distance, span in found:
+        if distance > nearest + RIVAL_PT:
+            break
+        if not any(
+            r.axis == span.axis and abs(r.a - span.a) <= MARK_PT and abs(r.b - span.b) <= MARK_PT
+            for r in rivals
+        ):
+            rivals.append(span)
+    return rivals
+
+
+def _lines_near(lines: _Lines, key: str, value: Fraction, box: Box) -> list[tuple[float, Drawn]]:
+    """`_candidates` for a text `box` named `key` whose value is `value` (kept on each line found;
+    finding the lines never reads it)."""
     out: list[tuple[float, Drawn]] = []
     for axis in ("h", "v"):
         lo, hi = (box[0], box[2]) if axis == "h" else (box[1], box[3])
@@ -734,11 +755,21 @@ def page_fit(labels: Sequence[Mapping[str, Any]], segments: Sequence[Segment] | 
     """One page's labels (as `dims.json` holds them) with their lines, the page's fits across and
     up, and each label's check against its view's fit (see the module). Without line work only the
     reader's own lines are used."""
+    return _page_fit(
+        labels,
+        _Lines(segments) if segments else None,
+        _Views(segments) if segments else None,
+    )
+
+
+def _page_fit(
+    labels: Sequence[Mapping[str, Any]], lines: _Lines | None, views: _Views | None
+) -> PageFit:
+    """`page_fit` on the page's line work already split (`_Lines`) and grouped (`_Views`)."""
     out = PageFit()
     boxes: dict[str, Box] = {}
     candidates: dict[str, list[Drawn]] = {}
     by_key: dict[str, Mapping[str, Any]] = {}
-    lines = _Lines(segments) if segments else None
     for label in labels:
         if not isinstance(label, Mapping) or not label.get("id"):
             continue
@@ -758,23 +789,11 @@ def page_fit(labels: Sequence[Mapping[str, Any]], segments: Sequence[Segment] | 
         found = _candidates(lines, label, box)
         if not found:
             continue
-        nearest = found[0][0]
-        rivals: list[Drawn] = []
-        for distance, span in found:
-            if distance > nearest + RIVAL_PT:
-                break
-            if not any(
-                r.axis == span.axis
-                and abs(r.a - span.a) <= MARK_PT
-                and abs(r.b - span.b) <= MARK_PT
-                for r in rivals
-            ):
-                rivals.append(span)
+        rivals = _rivals(found)
         if len(rivals) == 1:
             out.spans[key] = rivals[0]
         else:
             candidates[key] = rivals
-    views = _Views(segments) if segments else None
 
     def view_of(span: Drawn) -> int | None:
         return views.of_span(span) if views is not None else 0
@@ -835,3 +854,51 @@ def page_fit(labels: Sequence[Mapping[str, Any]], segments: Sequence[Segment] | 
             continue
         out.checks[key] = Check(key, span.axis, span.inches, drawn, agrees, fit[1])
     return out
+
+
+# ---- unread ink ----------------------------------------------------------------------------------
+
+
+class StrokeLines:
+    """The lines and fits of one page, for numbers code has not read (Step 2 of the rebuild plan,
+    `stroke_reads`): a pen-stroke label's own dimension line, found by step 1's finder before its
+    value is known, and its view's fit along that line.
+
+    **Stricter than a read label's line.** A read label with several lines near it keeps the one its
+    value agrees with (step 3). An unread label's value is what the line is to check, so it may not
+    pick its own line: with two lines near it (`RIVAL_PT`) it has none, and so no drawn length.
+
+    The fits are the page's (`page_fit` on the page's read labels and its line work), so an unread
+    label is measured against the scale its read neighbours set, never one it helped to make."""
+
+    def __init__(
+        self, labels: Sequence[Mapping[str, Any]], segments: Sequence[Segment] | None
+    ) -> None:
+        self._lines = _Lines(segments) if segments else None
+        self._views = _Views(segments) if segments else None
+        # The same split line work and views as the fits, so a view's number means one drawing.
+        self.fit = _page_fit(labels, self._lines, self._views)
+
+    def line(self, box: Sequence[float]) -> Drawn | None:
+        """The one dimension line of the ink in `box` (either axis), or `None` when there is none
+        or several lie about as near (within `RIVAL_PT` of the nearest)."""
+        own = _box(box)
+        if own is None or self._lines is None:
+            return None
+        found = _lines_near(self._lines, "unread", Fraction(0), own)
+        if not found:
+            return None
+        rivals = _rivals(found)
+        return rivals[0] if len(rivals) == 1 else None
+
+    def scale(self, side: str, span: Drawn) -> Fraction | None:
+        """The fit of the view `span` lies in, along its axis (or the other axis, as `fit_at`), in
+        inches per point as the fit holds it written out (`Fraction` of its decimal text); `None`
+        when the view has no fit, two that disagree, or the line lies in no one view."""
+        view = None if self._views is None else self._views.of_span(span)
+        if view is None:
+            return None
+        found = self.fit.fit_at(side, view, span.axis)
+        if found is None or not math.isfinite(found[0].in_per_pt) or found[0].in_per_pt <= 0:
+            return None
+        return Fraction(Decimal(repr(found[0].in_per_pt)))
