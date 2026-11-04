@@ -2159,15 +2159,18 @@ def _needed(why: str) -> str:
 def _vendor_project(vendor: Drawing, context: _Across) -> tuple[str | None, str | None]:
     """The architect's project the vendor drawing is in (normalised), from the set index (the
     project its page prints, or the page introducing it prints), matched to the architect's
-    projects (`projects.match`); or `None`, and the reason when its project is in the vendor's
-    file but not in the architect's (a drawing needed)."""
+    projects by every word each file's index read of the job (`projects.match`, `vocabulary`); or
+    `None`, and the reason when its project is in the vendor's file but not in the architect's (a
+    drawing needed)."""
     if not context.projects:
         return None, None
     place = context.places.get((vendor.file, vendor.own_page)) or projects_module.Place()
     if place.project is None:
         return None, None
     siblings = projects_module.siblings_of(context.places, vendor.file, place.source)
-    mine = projects_module.match(place.project, context.projects, siblings)
+    mine = projects_module.match(
+        place.project, context.projects, siblings, projects_module.vocabulary(context.places)
+    )
     if mine is None:
         return None, _needed(
             f"its page is in {place.name}, and the architect's file has no drawings of that project"
