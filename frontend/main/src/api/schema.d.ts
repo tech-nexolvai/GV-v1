@@ -273,6 +273,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chats/{chat_id}/stuck-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where the newest full check got stuck: each open answer's blocking step (by code)
+         * @description For every answer of the chat's newest full check that is not red or green, the step that
+         *     stopped it (`stuck_report`), with the totals and the set pack's reading coverage: as the check
+         *     stored it when it ended, else (a check stored before 2026-11-04) worked out now from its stored
+         *     findings, as code left them (no reviewer decision). Read only, $0: no AI call.
+         */
+        get: operations["stuck_report_of_api_v1_chats__chat_id__stuck_report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/company-settings": {
         parameters: {
             query?: never;
@@ -4399,6 +4422,175 @@ export interface components {
         ChatStepTool: "bash_tool" | "view" | "create_file" | "str_replace" | "present_files" | "TaskCreate" | "TaskUpdate" | "Agent" | "review_results" | "compare_rounds" | "verify_value" | "read_number" | "measure_on_drawing" | "zoom" | "read_under_markup" | "remember" | "drawing_facts";
         /** @enum {string} */
         ChatStopped: "cost_cap" | "cancelled" | "error" | "turn_limit" | "interrupted";
+        /**
+         * ChatStuckFindingOut
+         * @description One answer that is not red or green, and the step that stopped it (`stuck_report`).
+         */
+        ChatStuckFindingOut: {
+            /**
+             * Card
+             * @description A copy: the id of the card the screen shows it on.
+             */
+            card?: string | null;
+            /**
+             * Evidence
+             * @description The finding's fields that decided the stage.
+             */
+            evidence?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Group
+             * @enum {string}
+             */
+            group: "wrong" | "right" | "likely_problem" | "not_compared" | "rule_note" | "dismissed";
+            /** Id */
+            id: string;
+            /** Page */
+            page?: number | null;
+            /**
+             * Reason
+             * @description Why, in one plain line.
+             */
+            reason: string;
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "reading" | "string_not_seen" | "pairing" | "same_span" | "no_architect_value" | "second_look" | "not_proved" | "rule" | "ai_only" | "other";
+        };
+        /**
+         * ChatStuckPageOut
+         * @description A vendor page with no architect comparison: its answers come from its own checks only.
+         */
+        ChatStuckPageOut: {
+            /** Answers */
+            answers: number;
+            /** Page */
+            page: number;
+            /** Reason */
+            reason: string;
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "pairing" | "no_architect_drawing" | "nothing_to_compare" | "not_opened";
+        };
+        /**
+         * ChatStuckReadingOut
+         * @description The set pack's reading coverage (`reading_coverage.json`), with the vendor's count on each
+         *     page that has a stuck answer.
+         */
+        ChatStuckReadingOut: {
+            architect?: components["schemas"]["ChatStuckReadingSideOut"] | null;
+            /** Pages */
+            pages?: components["schemas"]["ChatStuckReadingPageOut"][];
+            vendor?: components["schemas"]["ChatStuckReadingSideOut"] | null;
+        };
+        /** ChatStuckReadingPageOut */
+        ChatStuckReadingPageOut: {
+            /** File */
+            file?: string | null;
+            /** Not Read */
+            not_read: {
+                [key: string]: number;
+            };
+            /** Page */
+            page: number;
+            /** Printed */
+            printed: number;
+            /** Read */
+            read: number;
+        };
+        /** ChatStuckReadingSideOut */
+        ChatStuckReadingSideOut: {
+            /**
+             * Not Read
+             * @description The unread numbers by reason, most first.
+             */
+            not_read: {
+                [key: string]: number;
+            };
+            /** Percent */
+            percent: number;
+            /** Printed */
+            printed: number;
+            /** Read */
+            read: number;
+        };
+        /**
+         * ChatStuckReportOut
+         * @description `GET /chats/{chat_id}/stuck-report` (2026-11-04): where the chat's newest full check got
+         *     stuck. For every answer that is not red or green, the step that stopped it, worked out by code
+         *     from the answer's own fields ($0, no AI call); never a verdict's input.
+         */
+        ChatStuckReportOut: {
+            /**
+             * Answers
+             * @description The check's findings, one per id.
+             */
+            answers: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Findings */
+            findings: components["schemas"]["ChatStuckFindingOut"][];
+            /**
+             * Groups
+             * @description The answers by the result screen's group.
+             */
+            groups: {
+                [key: string]: number;
+            };
+            /**
+             * Merged
+             * @description Repeated blocks of one finding id, merged into one answer.
+             */
+            merged: number;
+            /**
+             * Message Id
+             * Format: uuid
+             */
+            message_id: string;
+            /** Pages */
+            pages: components["schemas"]["ChatStuckPageOut"][];
+            reading?: components["schemas"]["ChatStuckReadingOut"] | null;
+            /** Stages */
+            stages: components["schemas"]["ChatStuckStageOut"][];
+            /**
+             * Stored
+             * @description True: saved with the check when it ended. False: an older check, worked out now from its stored findings.
+             */
+            stored: boolean;
+            /**
+             * Stuck
+             * @description The answers that are not red, green or marked fine.
+             */
+            stuck: number;
+        };
+        /** ChatStuckStageOut */
+        ChatStuckStageOut: {
+            /** Answers */
+            answers: number;
+            /** By Group */
+            by_group: {
+                [key: string]: number;
+            };
+            /**
+             * Cards
+             * @description The answers counted once per card, as the screen shows them.
+             */
+            cards: number;
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "reading" | "string_not_seen" | "pairing" | "same_span" | "no_architect_value" | "second_look" | "not_proved" | "rule" | "ai_only" | "other";
+            /** Words */
+            words: string;
+        };
         /** ChatSummaryOut */
         ChatSummaryOut: {
             /**
@@ -7375,6 +7567,44 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stuck_report_of_api_v1_chats__chat_id__stuck_report_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chat_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatStuckReportOut"];
+                };
+            };
+            /** @description No such chat (or no access), or no full check in it yet. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

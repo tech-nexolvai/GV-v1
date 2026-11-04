@@ -6387,6 +6387,10 @@ class _Run:
         except Exception:  # noqa: BLE001 - stored without its problems list
             _log.exception("assistant roster could not list what went wrong")
         engine._finish_timings()
+        # Where the check got stuck (2026-11-04): each open answer's blocking step, stored last.
+        from app.review.assistant import stuck_report
+
+        stuck_report.attach(engine)
         api_content = [
             {"role": "user", "content": engine.user_content},
             {"role": "assistant", "content": [{"type": "text", "text": text}]},

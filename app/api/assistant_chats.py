@@ -19,6 +19,8 @@ anything else is a 404 that says nothing. The routes, under `/api/v1`:
   copy of the vendor's PDF (clouds, notes, the draft stamp, a notes page), kept as a chat file; the
   same file every time for the same answer. `GET .../findings.csv`: the findings with their checks
   and decisions.
+- `GET  /chats/{chat_id}/stuck-report` (2026-11-04): where the chat's newest full check got stuck,
+  each open answer's blocking step (`stuck_report`), by code, read only.
 - `POST /chats/{chat_id}/messages/{message_id}/findings/{finding_id}/decision` (#1521): the
   reviewer's ✓ Agree / ✗ Not a problem, kept append-only; the latest per finding counts and comes
   back on the finding (`decision`) in `GET /chats/{chat_id}` and the follow feed.
@@ -57,6 +59,7 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
+from importlib import import_module
 from pathlib import Path
 from typing import Annotated, Any, Final, Literal
 from uuid import UUID, uuid4
@@ -84,7 +87,7 @@ from app.models import (
     PackageRevision,
 )
 from app.models.document import Document, DocumentVersion, PackageRevisionDocument
-from app.review.assistant import classification, not_compared
+from app.review.assistant import classification, not_compared, reading_coverage, stuck_report
 from app.review.assistant.chat_contract import (
     AssistantModelOut,
     AssistantModelsOut,
@@ -101,6 +104,7 @@ from app.review.assistant.chat_contract import (
     ChatMessageOut,
     ChatOut,
     ChatRemadeOut,
+    ChatStuckReportOut,
     ChatVendorPagesOut,
 )
 from app.review.assistant.chat_corrections import corrections_by_answer, with_corrections
@@ -118,7 +122,7 @@ from app.review.assistant.chat_decisions import (
 )
 from app.review.assistant.chat_engine import cost_text
 from app.review.assistant.chat_feed import MessageFeed
-from app.review.assistant.chat_findings import live_findings, make_markup_file
+from app.review.assistant.chat_findings import live_findings, make_markup_file, read_listing
 from app.review.assistant.chat_memory import add_note, decision_note
 from app.review.assistant.chat_provider import (
     AnthropicSdkProvider,
@@ -995,6 +999,55 @@ def findings_spreadsheet(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="findings.csv"'},
     )
+
+
+@router.get(
+    "/chats/{chat_id}/stuck-report",
+    response_model=ChatStuckReportOut,
+    summary="Where the newest full check got stuck: each open answer's blocking step (by code)",
+    responses={404: {"description": "No such chat (or no access), or no full check in it yet."}},
+)
+def stuck_report_of(
+    request: Request,
+    chat_id: UUID,
+    principal: Authenticated,
+    session: Annotated[Session, Depends(get_session)],
+) -> ChatStuckReportOut:
+    """For every answer of the chat's newest full check that is not red or green, the step that
+    stopped it (`stuck_report`), with the totals and the set pack's reading coverage: as the check
+    stored it when it ended, else (a check stored before 2026-11-04) worked out now from its stored
+    findings, as code left them (no reviewer decision). Read only, $0: no AI call."""
+    _chat(session, chat_id, principal)
+    rows = [
+        row
+        for row in messages_of(session, chat_id)
+        if row.role == "assistant" and row.mode == "full_check" and stuck_report.checked(row.blocks)
+    ]
+    if not rows:
+        raise _not_found()
+    row = rows[-1]
+    report = stuck_report.stored(row.blocks)
+    kept = report is not None
+    if report is None:
+        report = stuck_report.from_blocks(row.blocks or [], reading=_pack_reading(request, chat_id))
+    body = {key: value for key, value in report.items() if key != "schema"}
+    return ChatStuckReportOut.model_validate(
+        {**body, "message_id": row.id, "created_at": row.created_at, "stored": kept}
+    )
+
+
+def _pack_reading(request: Request, chat_id: UUID) -> dict[str, Any] | None:
+    """The reading coverage of the chat's set pack, or `None` (no uploads, no pack yet)."""
+    try:
+        listing = read_listing(ChatWorkspace(_chat_folder(request, chat_id)))
+        if not listing:
+            return None
+        pack = import_module("app.review.assistant.set_pack")
+        folder: Path = pack.pack_folder(_chat_root(request.app), listing)
+    except Exception:  # noqa: BLE001 - the report goes without the reading coverage
+        _log.warning("stuck report: the chat's set pack could not be found")
+        return None
+    return reading_coverage.load(folder)
 
 
 # ---- the reviewer's decisions (#1521) -------------------------------------------------------------

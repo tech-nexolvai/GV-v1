@@ -99,6 +99,7 @@ from app.review.assistant import (
     reference_page,
     same_item_pages,
     set_proofs,
+    stuck_report,
 )
 from app.review.assistant.account_credit import ACCOUNT_CREDIT
 from app.review.assistant.agent import (
@@ -5979,6 +5980,9 @@ class ChatEngine:
             _log.exception("assistant chat accuracy failed")
         text = self._agree_counts(text)
         self._finish_timings()
+        # Where the check got stuck (2026-11-04): code's report of each open answer's blocking
+        # step, stored in the trust block last, so it sees every finding as stored ($0).
+        stuck_report.attach(self)
         if not answered:
             api_content: list[dict[str, Any]] = []
         else:
