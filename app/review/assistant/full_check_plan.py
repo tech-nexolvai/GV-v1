@@ -60,6 +60,7 @@ __all__ = [
     "NO_VENDOR_NOTE",
     "OWN_CHECK_NOTE",
     "PAGE_MAP_WAIT_SECONDS",
+    "SAME_SHEET_LINE",
     "TAG_ONLY_NEEDS",
     "TAG_ONLY_NOTE",
     "UNPAIRED_NEEDS",
@@ -150,6 +151,8 @@ class HelperJob:
     """Its pages paired across separate uploads (#1798): (page, the architect's (file, page)s)."""
     unpaired: tuple[tuple[int, str], ...] = ()
     """Its pages no architect drawing was paired with across the uploads, and why (#1798)."""
+    sheets: tuple[tuple[int, str], ...] = ()
+    """Its pages paired by the sheet number both print (`CrossPairs.sheets`), with the number."""
 
     @property
     def description(self) -> str:
@@ -189,6 +192,10 @@ class CrossPairs:
     file: str | None = None
     """The vendor's file the pairs' page numbers are of (the work list's file): an item on another
     vendor file (an older round uploaded on its own) is not on these pages."""
+    sheets: Mapping[int, str] = field(default_factory=dict)
+    """The paired pages that are copies of the architect's sheet (the same sheet number and title,
+    `worklist._sheet_pair`), with the number: a key plan with no size still has its printed words
+    to compare, never "nothing to compare" (2026-11-04)."""
 
     @classmethod
     def of(cls, work: Any) -> CrossPairs:
@@ -222,12 +229,21 @@ class CrossPairs:
                 and skipped.page not in pairs
             ):
                 unpaired.setdefault(skipped.page, skipped.reason)
+        sheets = {
+            pair.vendor.own_page: pair.sheet
+            for pair in getattr(work, "across", ())
+            if getattr(pair, "sheet", None)
+            and pair.chosen
+            and pair.vendor.file == main
+            and pair.vendor.own_page in pairs
+        }
         return cls(
             {p: tuple(v) for p, v in pairs.items()},
             unpaired,
             words,
             {p: tuple(v) for p, v in references.items() if v},
             str(main) if main else None,
+            sheets,
         )
 
 
@@ -649,6 +665,7 @@ def with_pairs(job: HelperJob, across: CrossPairs | None) -> HelperJob:
         reference=tuple(dict.fromkeys(reference)),
         pairs=tuple(paired_pages),
         unpaired=tuple(unpaired),
+        sheets=tuple((page, across.sheets[page]) for page in job.pages if page in across.sheets),
     )
 
 
@@ -691,9 +708,12 @@ def pair_lines(
     pairs: Sequence[tuple[int, Sequence[tuple[str, int]]]],
     unpaired: Sequence[tuple[int, str]],
     uploads: str,
+    sheets: Mapping[int, str] | None = None,
 ) -> list[str]:
     """A helper's brief lines for its pages paired across separate uploads (#1798), and for those
-    no architect drawing could be agreed on: empty when there are neither."""
+    no architect drawing could be agreed on: empty when there are neither. `sheets`: the paired
+    pages that are copies of the architect's sheet (`CrossPairs.sheets`): compared word by word,
+    a key plan with no size too (2026-11-04)."""
     lines: list[str] = []
     if pairs:
         paired = "; ".join(
@@ -706,6 +726,9 @@ def pair_lines(
             f"drawing shows the same piece): {paired}. Compare each of these pages only with its "
             "paired architect pages."
         )
+    copies = [(page, sheets[page]) for page, _where in pairs if sheets and page in sheets]
+    if copies:
+        lines.append(SAME_SHEET_LINE.format(pages=", ".join(f"p.{p} ({n})" for p, n in copies)))
     if unpaired:
         left = "; ".join(f"p.{page}: {why}" for page, why in unpaired)
         lines.append(
@@ -717,6 +740,19 @@ def pair_lines(
             "overall) as usual."
         )
     return lines
+
+
+#: A helper's brief line for its pages that are copies of the architect's sheet (2026-11-04: a key
+#: plan pairs by its printed sheet number and must be compared).
+SAME_SHEET_LINE: Final = (
+    "SAME SHEET (code paired these by the sheet number both print, under the same title: the "
+    "vendor's page is a copy of the architect's sheet, maybe an older issue): {pages}. A sheet with "
+    "no sizes still has its printed words to compare: compare every room name and number, "
+    "room-type or item tag, detail, section and elevation callout, note, and the title block's "
+    "sheet number, date and revision with the paired architect page, and record each difference "
+    "as a finding with a box on each side. If nothing differs, record the page as the same, never "
+    "as not comparable."
+)
 
 
 # ---- pages checked only within the vendor's own drawings (2026-10-29) ----------------------------

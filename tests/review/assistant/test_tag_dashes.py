@@ -300,6 +300,7 @@ READ_THROUGH_THE_HELPER = {
     ("app/review/assistant/simple_check/pairing.py", "_TAG"),
     ("app/review/assistant/simple_check/pairing.py", "_PADDED_TAG"),
     ("app/review/assistant/simple_check/views.py", "_SHEET"),
+    ("app/review/assistant/simple_check/worklist.py", "_TITLE_TAG"),
     ("app/review/assistant/tag_reader.py", "_TAG"),
     ("app/review/assistant/vendor_consistency.py", "_SHEET_CODE"),
     ("extraction/architect/sheet_index.py", "_SHEET"),
