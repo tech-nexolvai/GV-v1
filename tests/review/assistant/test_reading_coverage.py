@@ -95,6 +95,20 @@ def test_a_sideways_number_says_so(tmp_path: Path) -> None:
     assert spot["reasons"][0] == "sideways"
 
 
+def test_a_spots_turns_are_the_ones_the_count_decided(tmp_path: Path) -> None:
+    """`spot_turns` (Step 2's stroke reads) finds each spot's ink as the count grouped it: an
+    upright number reads upright only, one written up the page reads sideways (90 when its inch
+    mark tells, both sideways turns when nothing does)."""
+    body = READ + stroke_ops('48"', 450, 150) + stroke_ops('25"', 560, 100, turn=True)
+    path, found = _page(tmp_path, body)
+    spots = _spots(found)
+    turns = ri.spot_turns(dl._parse(path, 0), found.labels, [s["box"] for s in spots])
+    by_reason = {spot["reasons"][0]: turns[tuple(spot["box"])] for spot in spots}
+    assert by_reason["other"] == (0,)
+    assert by_reason["sideways"] and 0 not in by_reason["sideways"]
+    assert ri.spot_turns(dl._parse(path, 0), found.labels, [[1.0, 1.0, 2.0, 2.0]]) == {}
+
+
 def test_a_stacked_fraction_says_so(tmp_path: Path) -> None:
     _, found = _page(tmp_path, READ + stroke_ops('3{1/2}"', 450, 150))
     (spot,) = _spots(found)

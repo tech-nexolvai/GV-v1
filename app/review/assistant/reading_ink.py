@@ -32,7 +32,14 @@ import numpy as np
 from app.review.assistant import dim_labels as dl
 from app.review.assistant import ink_labels as il
 
-__all__ = ["Candidate", "PageInk", "looks_like_number", "page_ink", "unread_spots"]
+__all__ = [
+    "Candidate",
+    "PageInk",
+    "looks_like_number",
+    "page_ink",
+    "spot_turns",
+    "unread_spots",
+]
 
 type Box = tuple[float, float, float, float]
 type Shape = tuple[np.ndarray, float]
@@ -651,10 +658,7 @@ def _candidate(
     through", "too small" or "crowded" (it has no inch mark of its own), so those are not looked
     for: the count stays cheap."""
     box = ink.box
-    marked_turns = dl._marked_turns(ink)
-    mm = None if marked_turns else dl._mm_rows(ink)
-    marked = bool(marked_turns) or mm is not None
-    turns = marked_turns or ((mm,) if mm is not None else il.turns(ink))
+    turns, marked, mm = _reading_turns(ink)
     rows = il.rows(ink, turns[0])
     tallest = max(g.size for g in ink.glyphs)
     digit_sized = [g for g in ink.glyphs if g.size >= 0.42 * tallest]
@@ -680,6 +684,45 @@ def _candidate(
     reasons = tuple(r for r in REASON_ORDER if flags.get(r)) or ("other",)
     x0, y0, x1, y1 = (round(v, 2) for v in box)
     return Candidate((x0, y0, x1, y1), side, marked, reasons, shapes)
+
+
+def _reading_turns(ink: il.Label) -> tuple[tuple[il.Turn, ...], bool, il.Turn | None]:
+    """The ways a candidate may read, whether its own strokes mark it as a dimension, and the turn
+    of its millimetres-over-[inches] rows if it has them: the turns its inch marks give, else its
+    millimetre rows' turn, else `ink_labels.turns` (both sideways turns when nothing tells)."""
+    marked_turns = dl._marked_turns(ink)
+    mm = None if marked_turns else dl._mm_rows(ink)
+    turns = marked_turns or ((mm,) if mm is not None else il.turns(ink))
+    return turns, bool(marked_turns) or mm is not None, mm
+
+
+def spot_turns(
+    parsed: Any,
+    labels: Sequence[Mapping[str, Any]],
+    boxes: Sequence[Sequence[float]],
+) -> dict[Box, tuple[il.Turn, ...]]:
+    """The ways the ink at each unread spot may read (`_reading_turns`), for spots the count found
+    (`unread_spots`' boxes, rounded to two places as it rounds them), on the page `parsed`
+    (`dim_labels._parse`) with its `labels`: the page's ink is grouped exactly as `page_ink`
+    groups it, so a spot is the same ink the count looked at. A spot no group matches is left
+    out (the page's labels changed since the count)."""
+    wanted = {tuple(round(float(v), 2) for v in box) for box in boxes if len(box) == 4}
+    page = parsed.page
+    if not wanted or not page.paths:
+        return {}
+    near = _Near(page.paths)
+    read: list[Box] = [
+        (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
+        for b in (label.get("box") for label in labels)
+        if isinstance(b, Sequence) and len(b) == 4
+    ]
+    free = ~_covered(near.boxes, read, 0.5)
+    out: dict[Box, tuple[il.Turn, ...]] = {}
+    for ink in _page_labels(near, free):
+        x0, y0, x1, y1 = (round(v, 2) for v in ink.box)
+        if (x0, y0, x1, y1) in wanted:
+            out[(x0, y0, x1, y1)] = _reading_turns(ink)[0]
+    return out
 
 
 def _meets(a: Sequence[float], b: Sequence[float]) -> bool:
