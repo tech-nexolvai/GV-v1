@@ -8,7 +8,10 @@ every message records, per phase, the seconds it took and what its model calls c
   span, never a sum of parallel work, and a phase that ran in pieces (the lead's turns) shows the
   pieces added up.
 - **Cost** is charged to the phase of the thread that made the call (`phase()` marks it), so a
-  helper's calls, a second read and the lead's turns are told apart even when they overlap.
+  helper's calls, a second read and the lead's turns are told apart even when they overlap. The
+  open phases are kept in a context variable, so work a pool runs in a copy of the submitting
+  thread's context (`work_pool.ContextPool`, `work_pool.run_ordered`) is charged to the
+  submitter's phase, not to "other" (rebuild Step 1B: the advocate's calls were lost so).
 - **Helpers** get a row each: the pages they had, their model calls, seconds and cost, and why they
   stopped.
 - **Tool calls** (#1805): each phase counts the tools its agents (and code's own proving step)
@@ -28,9 +31,11 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from time import monotonic
+from types import MappingProxyType
 from typing import Any, Final
 
 __all__ = ["PHASES", "PHASE_LABELS", "Timings"]
@@ -79,6 +84,14 @@ TOKEN_FIELDS: Final = (
     ("output_tokens", "out"),
     ("cache_read_input_tokens", "read"),
     ("cache_creation_input_tokens", "write"),
+)
+
+
+#: The open phases of every `Timings`, by its `id`: each a tuple of (phase, helper), innermost
+#: last. Immutable values set and reset per block, so a copied context (a pool's task) sees the
+#: phases open when it was copied and its own blocks never change the submitter's.
+_OPEN: ContextVar[Mapping[int, tuple[tuple[str, int | None], ...]]] = ContextVar(
+    "gv_timings_open", default=MappingProxyType({})
 )
 
 
@@ -131,7 +144,6 @@ class Timings:
     def __init__(self, clock: Any = monotonic) -> None:
         self._clock = clock
         self._lock = threading.Lock()
-        self._local = threading.local()
         self._started = clock()
         self._phases: dict[str, _Phase] = {}
         self._helpers: dict[int, _Helper] = {}
@@ -140,24 +152,26 @@ class Timings:
 
     @contextmanager
     def phase(self, name: str, helper: int | None = None) -> Iterator[None]:
-        """Marks the work in this block (on this thread) as `name`, and a helper's own calls."""
-        stack: list[tuple[str, int | None]] = self._local.__dict__.setdefault("stack", [])
+        """Marks the work in this block (on this thread, and in the pool tasks it starts in a copy
+        of its context) as `name`, and a helper's own calls."""
         with self._lock:
             entry = self._entries
             self._entries += 1
             self._phases.setdefault(name, _Phase()).open[entry] = self._clock()
-        stack.append((name, helper))
+        stacks = _OPEN.get()
+        token = _OPEN.set({**stacks, id(self): (*stacks.get(id(self), ()), (name, helper))})
         try:
             yield
         finally:
-            stack.pop()
+            _OPEN.reset(token)
             with self._lock:
                 phase = self._phases[name]
                 started = phase.open.pop(entry)
                 phase.intervals.append((started, self._clock()))
 
     def current(self) -> tuple[str, int | None] | None:
-        stack: list[tuple[str, int | None]] = self._local.__dict__.get("stack", [])
+        """The innermost phase open here (and its helper), or `None`."""
+        stack = _OPEN.get().get(id(self), ())
         return stack[-1] if stack else None
 
     def charge(self, micros: int) -> None:

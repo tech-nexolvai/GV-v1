@@ -90,6 +90,7 @@ from time import monotonic, monotonic_ns
 from typing import Any, Final, Protocol
 from uuid import uuid4
 
+from app.review.assistant import call_log as calls
 from app.review.assistant import (
     likely_problems,
     not_compared,
@@ -827,6 +828,19 @@ class _NoRoom(Exception):
     """A second read would pass the message's caps: it is not made."""
 
 
+@dataclass(slots=True)
+class _Try:
+    """One try of a call, for the call log (`call_log`): its request as sent, its number (1, then
+    2 and on each time it is asked again), when it began waiting for a place and when its stream
+    was opened (`monotonic_ns`), and the host that answered (`_accumulate`'s `served`)."""
+
+    params: Mapping[str, Any]
+    number: int
+    started_ns: int
+    opened_ns: int | None = None
+    served: dict[str, Any] = field(default_factory=dict)
+
+
 #: The display side of a streamed call (the lead's): called with each raw event.
 type _Display = Callable[[Mapping[str, Any]], None]
 
@@ -849,9 +863,12 @@ def _accumulate(
     display: _Display | None,
     cancelled: Callable[[], bool],
     usage: dict[str, Any],
+    served: dict[str, Any] | None = None,
 ) -> _Reply:
     """A call's reply, built from its raw stream events exactly as they arrived. `usage` is filled
-    as the events come, so a cancelled call's usage so far is known."""
+    as the events come, so a cancelled call's usage so far is known; so is `served["provider"]`:
+    the host that answered, when the first message names one (OpenRouter's `provider`), for the
+    call log."""
     content: list[dict[str, Any]] = []
     buffers: dict[int, str] = {}
     stop_reason: str | None = None
@@ -867,6 +884,9 @@ def _accumulate(
         if kind == "message_start":
             message = event.get("message") or {}
             model = message.get("model") if isinstance(message.get("model"), str) else None
+            host = message.get("provider")
+            if served is not None and isinstance(host, str) and host:
+                served["provider"] = host
             _merge_usage(usage, message.get("usage"))
             transformations = _transformations(
                 message.get("input_transformations"), transformations
@@ -1104,8 +1124,11 @@ class ChatEngine:
         sleep: Callable[[float], bool] | None = None,
         lead_system: str = LEAD_SYSTEM_PROMPT,
         lead_tools: Sequence[Mapping[str, Any]] = LEAD_TOOLS,
+        call_log: calls.CallLog | None = None,
     ) -> None:
         self.settings = settings
+        #: Every model call's line (`call_log`, rebuild Step 1B); `None`: not logged.
+        self.call_log = call_log
         # The lead's system prompt and tools: the chat's own, kept since its first answer
         # (`chat_harness`, #1577), so the replayed history's thinking stays valid.
         self.lead_system = lead_system
@@ -1690,7 +1713,9 @@ class ChatEngine:
         model = self.run_model(model)
         attempts = 0
         busy = 0
+        tries = 0
         while True:
+            tries += 1
             try:
                 inlined = inline_pictures(messages, self.read_picture)
             except OSError:
@@ -1715,6 +1740,7 @@ class ChatEngine:
                 enforce_format=enforce_format,
             )
             started = monotonic_ns()
+            tried = _Try(params, tries, started)
             shown = display() if display is not None else None
             reply: _Reply | None = None
             failure: ProviderFailure | None = None
@@ -1737,7 +1763,7 @@ class ChatEngine:
             limiter = self._limiter(model)
             own = limiter.call_slot()
             if not limiter.acquire(self.cancel, slot=own):
-                self._cancelled_call(model, prompt_id, started, usage)
+                self._cancelled_call(model, prompt_id, started, usage, tried)
                 raise _Cancelled
             # Held once it has its place (one waiting for a place holds no money, #1874); the
             # calls holding the credit are running, so they end and let it go.
@@ -1748,22 +1774,23 @@ class ChatEngine:
                 raise
             busy_answer = False
             try:
+                tried.opened_ns = monotonic_ns()
                 stream = self.provider.open_stream(params)
                 with self._lock:
                     self._streams.add(stream)
                 try:
-                    reply = _accumulate(stream, shown, self.cancel.is_set, usage)
+                    reply = _accumulate(stream, shown, self.cancel.is_set, usage, tried.served)
                 finally:
                     with self._lock:
                         self._streams.discard(stream)
                     stream.close()
             except _Cancelled:
-                self._cancelled_call(model, prompt_id, started, usage)
+                self._cancelled_call(model, prompt_id, started, usage, tried)
                 raise
             except Exception as raised:  # noqa: BLE001 - every provider failure is told plainly
                 if self.cancel.is_set():
                     # Cancel closed the stream under the read: a stop, not a failure.
-                    self._cancelled_call(model, prompt_id, started, usage)
+                    self._cancelled_call(model, prompt_id, started, usage, tried)
                     raise _Cancelled from None
                 failure = failure_from(raised)
                 busy_answer = failure.kind == "busy"
@@ -1780,7 +1807,7 @@ class ChatEngine:
                 # It broke after its stream started: its prompt is billed already (harness
                 # audit 2026-10-19: such calls were recorded as $0 and the guard missed them).
                 partial = _Reply([], None, None, usage, None)
-                self._record(model, prompt_id, started, partial, failure)
+                self._record(model, prompt_id, started, partial, failure, tried)
                 self._charge(model, usage, own_share)
                 if shown is not None:
                     self._discard_attempt()
@@ -1810,7 +1837,7 @@ class ChatEngine:
                 failure = ProviderFailure(RETENTION_WORDS, status=404, retryable=False)
             if reply is not None and model.extra:
                 reply.content = _without_unsigned_thinking(reply.content)
-            self._record(model, prompt_id, started, reply, failure)
+            self._record(model, prompt_id, started, reply, failure, tried)
             if reply is not None:
                 self._charge(model, reply.usage, own_share)
                 self._note_transformations(reply, prompt_id)
@@ -1888,10 +1915,15 @@ class ChatEngine:
             self.emit("fallback", {"index": index, "fallback": dict(fallback)})
 
     def _cancelled_call(
-        self, model: ChatModel, prompt_id: str, started: int, usage: dict[str, Any]
+        self,
+        model: ChatModel,
+        prompt_id: str,
+        started: int,
+        usage: dict[str, Any],
+        tried: _Try | None = None,
     ) -> None:
         """A call stopped by cancel: recorded and charged for what it used so far."""
-        self._record(model, prompt_id, started, _Reply([], None, None, usage, None), None)
+        self._record(model, prompt_id, started, _Reply([], None, None, usage, None), None, tried)
         self._charge(model, usage)
 
     def track_stream(self, stream: Any) -> None:
@@ -1926,9 +1958,11 @@ class ChatEngine:
         started: int,
         reply: _Reply | None,
         error: BaseException | None,
+        tried: _Try | None = None,
     ) -> None:
         """One Usage row per attempt (#1577: a refusal fallback's declined and answering attempts
-        each on its own model); the call's stop reason and error go on the last."""
+        each on its own model); the call's stop reason and error go on the last. With `tried`,
+        the same try's lines go in the call log too (`log_call`)."""
         attempts = [(model.rates_key, {})] if reply is None else self._attempts(model, reply.usage)
         for number, (key, part) in enumerate(attempts, start=1):
             last = number == len(attempts)
@@ -1945,6 +1979,91 @@ class ChatEngine:
                 )
             except Exception:  # noqa: BLE001 - the answer still goes on; the failure is logged
                 _log.exception("assistant chat call could not be recorded")
+        if tried is not None:
+            now = monotonic_ns()
+            self.log_call(
+                model,
+                prompt_id,
+                {} if reply is None else reply.usage,
+                params=tried.params,
+                attempt=tried.number,
+                latency_ms=(
+                    None if tried.opened_ns is None else (now - tried.opened_ns) // 1_000_000
+                ),
+                queued_ms=(
+                    None
+                    if tried.opened_ns is None
+                    else (tried.opened_ns - tried.started_ns) // 1_000_000
+                ),
+                provider_answered=tried.served.get("provider"),
+                model_answered=None if reply is None else reply.model,
+                stop_reason=None if reply is None else reply.stop_reason,
+                error=error,
+            )
+
+    def log_call(
+        self,
+        model: ChatModel,
+        prompt_id: str,
+        usage: Mapping[str, Any],
+        *,
+        params: Mapping[str, Any],
+        attempt: int,
+        latency_ms: int | None,
+        queued_ms: int | None = None,
+        provider_answered: str | None = None,
+        model_answered: str | None = None,
+        stop_reason: str | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        """One try's lines in the call log (`call_log.records`), when there is one: each attempt
+        of `usage` (`_attempts`) priced as `_cost` prices it, charged to this thread's phase and
+        tags. Never raises: a line that cannot be made or written is logged and the answer goes
+        on. Also called for the simple check's compare calls, which stream on their own."""
+        log = self.call_log
+        if log is None:
+            return
+        try:
+            parts = []
+            for key, part in self._attempts(model, usage) if usage else [(model.rates_key, {})]:
+                cost = self._price_key(key, *self._weighted(key, part))
+                # What its cache writes added: its price less its price without them.
+                write: int | None = 0
+                if int(part.get("cache_creation_input_tokens") or 0):
+                    bare = self._price_key(
+                        key, *self._weighted(key, {**part, "cache_creation_input_tokens": 0})
+                    )
+                    write = None if cost is None or bare is None else cost - bare
+                parts.append(calls.Part(key, part, cost, write))
+            where = self.timings.current()
+            phase, helper = where if where is not None else ("other", None)
+            facts = calls.CallFacts(
+                prompt_id=prompt_id,
+                purpose=calls.purpose_of(prompt_id, self.provider.name),
+                attempt=attempt,
+                provider_requested=calls.requested_provider(self.provider.name, params),
+                provider_answered=provider_answered,
+                model_answered=model_answered,
+                prefix_hash=calls.prefix_hash(params),
+                latency_ms=latency_ms,
+                queued_ms=queued_ms,
+                stop_reason=stop_reason,
+                error=error,
+            )
+            lines = calls.records(
+                facts,
+                parts,
+                chat_id=log.chat_id,
+                message_id=log.message_id,
+                phase=phase,
+                helper=helper,
+                tags=calls.current_tags(),
+                ts=datetime.now(UTC),
+            )
+        except Exception:  # noqa: BLE001 - the answer still goes on; the failure is logged
+            _log.exception("assistant chat call could not be logged")
+            return
+        log.append(lines)
 
     # ---- the lead's stream on the screen ---------------------------------------------------------
 
@@ -4464,7 +4583,14 @@ class ChatEngine:
                 # for a place holds no money and makes no call.
                 with self._limiter(agent.model).agent_slot(self.cancel):
                     self.timings.helper_started(agent.number, agent.description, pages)
-                    with self.timings.phase(agent.phase, helper=agent.number):
+                    with (
+                        self.timings.phase(agent.phase, helper=agent.number),
+                        calls.tagged(
+                            kind=agent.lens,
+                            agent=agent.call_id,
+                            page=",".join(str(page) for page in pages) or None,
+                        ),
+                    ):
                         try:
                             report, ok, stopped = self._helper(agent, index, entry, share)
                         except Exception as failed:  # noqa: BLE001 - one never stops the others

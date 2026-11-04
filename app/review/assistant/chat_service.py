@@ -51,6 +51,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import AssistantChatMessage
+from app.review.assistant.call_log import CallLog
 from app.review.assistant.chat_contract import ChatMessageOut
 from app.review.assistant.chat_corrections import earlier_findings, earlier_findings_note
 from app.review.assistant.chat_engine import (
@@ -1935,6 +1936,9 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
         cancel=run.cancel,
         lead_system=harness.system,
         lead_tools=harness.tools,
+        # Every model call's tokens, cache use and price, one line each, in the chat's own folder
+        # (`call_log`, rebuild Step 1B): `calls/<message id>.jsonl`.
+        call_log=CallLog.for_message(workspace.root, job.chat_id, run.message_id),
     )
     run.engine = engine
     engine.live = getattr(run, "live", None)

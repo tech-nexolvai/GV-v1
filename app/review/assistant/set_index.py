@@ -35,7 +35,6 @@ import os
 import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import import_module
@@ -43,6 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from app.review.assistant.reply_json import json_of_reply
+from app.review.assistant.work_pool import ContextPool
 
 if TYPE_CHECKING:
     from app.review.assistant.chat_engine import ChatEngine
@@ -547,7 +547,8 @@ def read_set(
             report.answered += 1
         _save(folder, _key(one.file, one.page), entry)
 
-    with ThreadPoolExecutor(max_workers=PARALLEL, thread_name_prefix="gv-set-index") as pool:
+    # In copies of this thread's context: the calls keep its timings phase (`work_pool`).
+    with ContextPool(max_workers=PARALLEL, thread_name_prefix="gv-set-index") as pool:
         list(pool.map(task, todo))
     return report
 
