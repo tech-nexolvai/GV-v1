@@ -264,7 +264,7 @@ def group_of(finding: Mapping[str, Any]) -> str:
         return _SCREEN[key]
     if key in classification.REASONS or key.startswith("missing_setting"):
         return "not_compared"
-    if key in _LIKELY_KEYS or key.startswith(("look:", "held:")):
+    if key in _LIKELY_KEYS or key.startswith(("look:", "held:", "flag:")):
         return "likely_problem"
     return "not_compared"
 

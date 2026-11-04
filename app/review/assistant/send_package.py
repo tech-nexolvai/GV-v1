@@ -59,6 +59,7 @@ from app.review.assistant.proof import (
     governs,
     inch_figures_of,
     likely_words,
+    listed,
     proof_group,
     proof_of,
     should_be_value,
@@ -993,7 +994,8 @@ def register_rows(
     first. Impact rank: the row's place in
     that order (1 = matters most), Right rows none. "Vendor response" is left blank for the
     vendor. Every cell is text and vendor-facing (no internal "check before sending" words)."""
-    ordered = by_impact(findings)
+    # Flag mode (2026-11-04): a Right code found is never a row (`proof.listed`).
+    ordered = [finding for finding in by_impact(findings) if listed(finding)]
     by_round = context.rounds.by_finding() if context.rounds is not None else {}
     closed = context.state.closed
     groups: dict[Status, list[list[str]]] = {

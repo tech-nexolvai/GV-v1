@@ -19,6 +19,7 @@ from app.review.assistant.impact import by_impact
 from app.review.assistant.likely_problems import COUNT_WORDS as LIKELY_COUNT
 from app.review.assistant.proof import (
     classified,
+    flag_mode,
     inch_figures_of,
     proof_counts,
     proof_group,
@@ -400,15 +401,24 @@ def code_summary(
         first = f"Checked items on {pages}{of} pages ({scope}); pages were not all recorded."
     noted = counts["rule_note"]
     likely = counts["likely_problem"]
-    lines = [
-        first,
+    noted_words = f"{noted} {RULE_NOTE_COUNT}, " if noted else ""
+    if flag_mode():
+        # Flag mode (2026-11-04): two lists, the problems and what was not compared; a Right code
+        # found is never counted.
+        problems = wrong + likely
+        counted = (
+            f"{problems} {'problem' if problems == 1 else 'problems'} found ({wrong} code-checked, "
+            f"{likely} to check), {noted_words}"
+        )
+    else:
         # #1717: the screen's words (one meaning each): Wrong / Right / Not compared; #1839: what
         # breaks a GV rule at the architect's size is decided, never "not compared".
-        f"{wrong} wrong (proved by code), {right} right, "
-        + (f"{noted} {RULE_NOTE_COUNT}, " if noted else "")
-        + (f"{likely} {LIKELY_COUNT}, " if likely else "")
-        + f"{nothing} not compared.",
-    ]
+        counted = (
+            f"{wrong} wrong (proved by code), {right} right, "
+            + noted_words
+            + (f"{likely} {LIKELY_COUNT}, " if likely else "")
+        )
+    lines = [first, f"{counted}{nothing} not compared."]
     issues = _issue_words([f for f in findings if proof_group(f) == "clouded"])
     lines.append(
         f"Biggest issues: {'; '.join(issues)}."
