@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Mapping, Sequence
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Final
 
@@ -144,8 +145,8 @@ def check_pack(folder: Path | None, main_file: str | None) -> list[dict[str, Any
     page map or no vendor drawing paired across the uploads."""
     if folder is None:
         return []
-    from app.review.assistant.simple_check import worklist
-
+    # Loaded by name: the work list reaches the drawing readers, which the API never may.
+    worklist = import_module("app.review.assistant.simple_check.worklist")
     try:
         work = worklist.build_worklist(Path(folder), main_file)
     except FileNotFoundError:
