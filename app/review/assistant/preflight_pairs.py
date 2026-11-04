@@ -72,7 +72,10 @@ VERSION: Final = 3
 
 
 def fingerprint(folder: Path) -> str:
-    parts = [f"v{VERSION}"]
+    from app.review.assistant.full_check_plan import flag_mode
+
+    # Flag mode pairs a page code could not confirm with its best guess: another estimate.
+    parts = [f"v{VERSION}", *(["flag"] if flag_mode() else [])]
     for name in INPUTS:
         try:
             stat = (folder / name).stat()

@@ -1004,13 +1004,20 @@ def tag_pair_lines(
     vendor_file: str,
     architect_file: str,
     uploads: str,
+    guesses: Mapping[int, Sequence[tuple[str, int]]] | None = None,
 ) -> str:
     """The tag reader's line for a two-file set: which architect pages each of its pages is paired
-    with (`full_check_plan.CrossPairs`), "none" for a page with none."""
+    with (`full_check_plan.CrossPairs`), "none" for a page with none; a best guess (flag mode,
+    `CrossPairs.guesses`) says so."""
+    guessed = {(page, tuple(w)) for page, where in (guesses or {}).items() for w in where}
     paired = "; ".join(
         f"your p.{page} with "
         + (
-            ", ".join(f"{uploads}/{name} p.{number}" for name, number in pairs.get(page, ()))
+            ", ".join(
+                f"{uploads}/{name} p.{number}"
+                + (" (best guess)" if (page, (name, number)) in guessed else "")
+                for name, number in pairs.get(page, ())
+            )
             or "none"
         )
         for page in pages
@@ -1574,6 +1581,7 @@ def remaining_plan(plan: Any, done: Collection[int], *, look: bool = True) -> An
                 reference=tuple(dict.fromkeys((*job.reference, *kept))),
                 pairs=tuple(pair for pair in job.pairs if pair[0] in pages),
                 unpaired=tuple(item for item in job.unpaired if item[0] in pages),
+                guesses=tuple(item for item in job.guesses if item[0] in pages),
             )
         )
     return FanOutPlan(tuple(jobs), plan.skipped)
@@ -2362,9 +2370,13 @@ class _Run:
 
     def _unsure_pages(self) -> frozenset[int]:
         """The unpaired pages whose AI page matcher pick code could not confirm ("pairing
-        unsure"): their architect drawing is in the upload."""
-        from app.review.assistant.full_check_plan import unsure_words
+        unsure"): their architect drawing is in the upload. None in flag mode (Anant, 2026-11-04):
+        such a page is compared with its best guess (`CrossPairs.guesses`), and one still left
+        unpaired is Not compared with its reason, never what makes the check "not for sending"."""
+        from app.review.assistant.full_check_plan import flag_mode, unsure_words
 
+        if flag_mode():
+            return frozenset()
         return frozenset(p for p, why in self.unpaired.items() if unsure_words(why) is not None)
 
     def _not_pairable(self) -> frozenset[int]:
@@ -3672,7 +3684,12 @@ class _Run:
                 [
                     text,
                     tag_pair_lines(
-                        pages, pairs, vendor_file=files[0], architect_file=files[1], uploads=UPLOADS
+                        pages,
+                        pairs,
+                        vendor_file=files[0],
+                        architect_file=files[1],
+                        uploads=UPLOADS,
+                        guesses=getattr(across, "guesses", None),
                     ),
                 ]
             )
@@ -3903,7 +3920,8 @@ class _Run:
                 # Separate uploads (#1798): the run's pages' agreed architect pages, or why none.
                 paired = [(p, across.pairs[p]) for p in run if p in across.pairs]
                 unpaired = [(p, across.unpaired[p]) for p in run if p in across.unpaired]
-                brief = "\n\n".join([brief, *pair_lines(paired, unpaired, UPLOADS, across.sheets)])
+                lines = pair_lines(paired, unpaired, UPLOADS, across.sheets, across.guesses)
+                brief = "\n\n".join([brief, *lines])
             where = page_ranges_words(run)
             agents.append(
                 pool.add(
