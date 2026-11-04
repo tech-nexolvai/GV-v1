@@ -106,6 +106,7 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 from app.review.assistant import (
+    ai_maths,
     centre_lines,
     classification,
     dim_ends,
@@ -2525,6 +2526,7 @@ def escalate(findings: Sequence[Mapping[str, Any]], ctx: EscalationContext) -> E
     _mark_right_proof(live, ctx, result)
     _mark_centre_lines(live, ctx, result)
     _mark_drafting_notes(live, ctx, result)
+    ai_maths.mark_answer(live, result, ctx.rules_md, stop=ctx.stop)  # maths on the AI's numbers
     _mark_reading(live, ctx, result)
     listed = {str(f["id"]) for f in result.changed}
     stopped = ctx.stop is not None and ctx.stop()
