@@ -58,6 +58,10 @@ inside the full check and its fixed price, it climbs a ladder, the biggest items
      code (`tag_reader`): exactly the same tags at both spots is Right, a change code's finish check
      proved is Wrong, anything else Not compared with its true reason; a note in words that would
      otherwise be "Illegible" gets its true reason (a note in words, or words drawn as strokes);
+   - `text_values` (2026-11-04): a sheet number, revision number, callout, tag or date is read as
+     printed text at both spots, never as a size (`text_values`), a value of one or two
+     characters only in its labelled field: the same text is Right, text that differs is a
+     please-check, never red; a pair of revision numbers is never Right or Wrong (PROPOSED);
    - `claim_rules`: GV's settled rules and code's facts on every open claim, then the look rules
      (`look_rules`, 2026-10-27) on the whole-drawing look's words-only claims: GV's own symbol
      at an extra piece's spot (withdrawn), a spot on line work flattened in as markup that may be
@@ -116,6 +120,7 @@ from app.review.assistant import (
     right_proof,
     row_places,
     sink_centre,
+    text_values,
 )
 from app.review.assistant.chat_trust import inch_words, judged, round_item_key
 from app.review.assistant.full_check_advocate import code_pairs
@@ -150,6 +155,7 @@ type StepName = Literal[
     "vendor_search",
     "gv_sticker",
     "tags",
+    "text_values",
     "ends",
     "pasted_views",
     "claim_rules",
@@ -1378,6 +1384,7 @@ def _tag_step(item: _Item, ctx: EscalationContext) -> None:
         or classification.internal(finding)
         or proof.reviewer_decided(finding)
         or finding.get("status") not in ("same", "different", "check")
+        or text_values.identifier(finding)  # read as text in its place (`_text_value_step`)
     ):
         return
     tag_item = tags.is_tag_item(finding)
@@ -1453,18 +1460,68 @@ def _please_check_words(finding: dict[str, Any], decision: Any) -> None:
     item = " ".join(str(finding.get("item") or "this item").split())
     vendor = " ".join(str(finding.get("vendor") or "").split())
     architect = " ".join(str(finding.get("architect") or "").split())
+    _labels_please_check(
+        finding,
+        decision.why,
+        f'{likely_problems.LETTER_LEAD}: {item}: the vendor\'s drawing prints "{vendor}"; '
+        f'the architect\'s prints "{architect}".',
+    )
+
+
+def _labels_please_check(finding: dict[str, Any], why: str, words: str) -> None:
+    """The look's please-check mark of kind `labels` (`likely_problems`, `likely_only`: never
+    clouded), for printed words or text code read at both spots that differ."""
     finding[likely_problems.FIELD] = {
         "by": "whole_drawing_look",
         "proof": "likely_only",
         "kind": "labels",
         "claim": "please_check",
         "sure": "likely",
-        "why": decision.why[:400],
-        "words": (
-            f'{likely_problems.LETTER_LEAD}: {item}: the vendor\'s drawing prints "{vendor}"; '
-            f'the architect\'s prints "{architect}".'
-        )[:600],
+        "why": why[:400],
+        "words": words[:600],
     }
+
+
+def _text_value_step(item: _Item, ctx: EscalationContext) -> None:
+    """A sheet number, revision number, callout, tag or date (`text_values`): code reads it as
+    printed text at both spots, never as a size, and a short value only in its labelled field.
+    The same text, each in its place, is Right; text that differs is a please-check (never red);
+    else the item keeps its status and the classification says why it is not proved."""
+    finding = item.finding
+    if (
+        finding.get(GV_STICKER) is not None
+        or classification.internal(finding)
+        or proof.reviewer_decided(finding)
+        or finding.get("status") not in ("same", "different")
+        or not text_values.identifier(finding)
+    ):
+        return
+
+    def phrases(file: str | None, page: int) -> Sequence[Mapping[str, Any]]:
+        return ctx.phrases.get((file or ctx.main_file or "", page), ())
+
+    record = text_values.mark(finding, phrases)
+    if record is None:
+        return
+    finding[text_values.FIELD] = record
+    item.changed = True
+    found = text_values.outcome(finding)
+    if found == "right":
+        why = (
+            f'code read "{record["vendor"].get("phrase")}" at the vendor\'s spot and '
+            f'"{record["architect"].get("phrase")}" at the architect\'s, each in its place: the '
+            "same text"
+        )
+        _settle_right(item, "text_values", why)
+        item.note("text_values", "right", why)
+        return
+    words = text_values.please_check_words(finding)
+    if found == "please_check" and words is not None:
+        _labels_please_check(finding, *words)
+        item.note("text_values", "please_check", words[0])
+        return
+    held = text_values.held(finding)
+    item.note("text_values", "not_proved", held[0] if held is not None else "not proved")
 
 
 #: A claim about a notch (or a stepped end) in the top.
@@ -2020,6 +2077,7 @@ def _before_ladder(
             # Stop: GV's stickers are still told apart (that only ever takes a red away); the tag
             # reader, which can decide an item, waits for a Continue (2026-10-23).
             _tag_step(item, ctx)
+            _text_value_step(item, ctx)
         if not item.changed:
             continue
         item.finding.update(judged(item.finding))
@@ -2028,7 +2086,8 @@ def _before_ladder(
             "wrong" if group == "clouded" else "right" if group == "right" else item.outcome
         )
         if item.outcome is not None:
-            result.settled["tags"] = result.settled.get("tags", 0) + 1
+            step = "text_values" if text_values.FIELD in item.finding else "tags"
+            result.settled[step] = result.settled.get(step, 0) + 1
         item.finding["escalation"] = {"outcome": item.outcome or "undecided", "steps": item.steps}
         result.log[str(item.finding["id"])] = item.steps
         result.changed.append(item.finding)

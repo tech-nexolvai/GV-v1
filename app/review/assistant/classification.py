@@ -45,6 +45,12 @@ The rules, in the order they are applied:
 - **The architect guard, for every rule** (#1802, `architect_conflict`): a vendor value that
   equals the architect's printed value for the same item is never Wrong, and a "should be" that
   differs from the architect's printed value for the same item is never proposed: Not compared.
+- **Identifiers are text** (2026-11-04, `text_values`): a sheet number, revision number, callout,
+  tag or date is never a size. It is Right only when code read the same text at both spots, each
+  in its place (a one- or two-character value only in its labelled field: a `6` that is part of
+  an address proves nothing); else Not compared, a difference code read at both spots being a
+  please-check. A pair of revision numbers is each drawing's own numbering, never Right or Wrong
+  (PROPOSED 2026-11-04).
 - **R6, GV's rule** (from GV's rulebook) broken: Wrong.
 - **A rule note** (#1839, the owner 2026-10-21): the architect specifies a size that breaks a GV
   rule and the vendor prints that same size, both read by code at their spots (`rule_notes`): a
@@ -90,6 +96,7 @@ from app.review.assistant import (
     job_value_rules,
     right_proof,
     row_places,
+    text_values,
 )
 from app.review.assistant.finding_checks import to_inches, wrong_part
 from app.review.assistant.ledger import format_inches
@@ -1052,6 +1059,8 @@ def _same_numbers(finding: Mapping[str, Any]) -> bool:
     """The vendor's numbers are all among the architect's (`42` and "42 units"), or both sides
     are the same size: no difference to check."""
     vendor, architect = _flat(finding.get("vendor")), _flat(finding.get("architect"))
+    if text_values.identifier(finding):
+        return text_values.same_text(vendor, architect, text_values.kind(finding))
     try:
         v, a = to_inches(vendor), to_inches(architect)
     except (ValueError, ArithmeticError):
@@ -1384,6 +1393,11 @@ def _classify(finding: Mapping[str, Any], *, proved: bool) -> Classified:
     held = _tag_read(finding)
     if held is not None:
         return held
+    text = text_values.held(finding)
+    if text is not None:
+        # A sheet number, revision number, callout, tag or date is text, never a size
+        # (2026-11-04): Right only when code read the same text at both spots, each in its place.
+        return _not("not_proved", _short(text[0], 300), _short(text[1], 200))
     rule = finding.get("claim_rule")
     if (
         not proved
