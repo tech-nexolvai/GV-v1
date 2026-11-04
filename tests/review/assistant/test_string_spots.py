@@ -18,7 +18,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from app.review.assistant.chat_contract import ChatFindingOut
-from app.review.assistant.string_spots import PART_BOXES, TOTAL_BOX, blocks_with_spots, spots_of
+from app.review.assistant.string_spots import (
+    FAR_REACH_PT,
+    PART_BOXES,
+    TOTAL_BOX,
+    blocks_with_spots,
+    spots_of,
+)
 
 FILE = "vendor.pdf"
 PAGE = 4
@@ -192,3 +198,54 @@ def test_the_read_model_accepts_the_spots() -> None:
     assert [part.box is not None for part in shown.part_boxes] == [False, True, False]
     assert [part.text for part in shown.part_boxes] == ['3"', '50"', '3"']
     assert shown.part_boxes[1].turned is True and shown.part_boxes[0].inches == "3"
+
+
+# A made-up section (2026-11-04): the overall printed between two legs, its parts at the foot,
+# about 100 pt from the overall's line; the overall's own line has two small sizes beside it.
+def _far(across: float, start: float = 100.0, end: float = 520.0) -> list[dict[str, Any]]:
+    split = (start + 20.0, end - 20.0)
+    return [
+        _label(
+            "F1",
+            '3"',
+            "3",
+            (across - 14, 100.0, across - 2, 112.0),
+            ((across, start), (across, split[0])),
+        ),
+        _label(
+            "F2",
+            '50"',
+            "50",
+            (across - 14, 300.0, across - 2, 316.0),
+            ((across, split[0]), (across, split[1])),
+        ),
+        _label(
+            "F3",
+            '3"',
+            "3",
+            (across - 14, 504.0, across - 2, 516.0),
+            ((across, split[1]), (across, end)),
+        ),
+    ]
+
+
+def test_a_row_drawn_further_away_that_fills_the_overall_end_to_end_is_its_row() -> None:
+    far = _far(110.0)  # 100 pt from the overall's line (x 210)
+    found = spots_of(_finding(), _labels_of([*far, OVERALL, ELSEWHERE]))
+    assert found is not None
+    assert _boxes(found) == [(96.0, 100.0), (96.0, 300.0), (96.0, 504.0)]
+    # A row near the overall still wins: the far one is looked for only when there is none.
+    found = spots_of(_finding(), _labels_of([*far, *LABELS]))
+    assert found is not None and _boxes(found) == [(186.0, 100.0), (186.0, 300.0), (186.0, 504.0)]
+
+
+def test_a_far_row_that_misses_an_end_or_is_not_alone_is_never_its_row() -> None:
+    short = _far(110.0, end=516.0)  # stops 4 pt short of the overall's end
+    found = spots_of(_finding(), _labels_of([*short, OVERALL]))
+    assert found is not None and _boxes(found) == [None, None, None]
+    twins = [*_far(110.0), *[{**one, "id": f"T{one['id']}"} for one in _far(120.0)]]
+    found = spots_of(_finding(), _labels_of([*twins, OVERALL]))
+    assert found is not None and _boxes(found) == [None, None, None]
+    too_far = _far(210.0 - FAR_REACH_PT - 1)
+    found = spots_of(_finding(), _labels_of([*too_far, OVERALL]))
+    assert found is not None and _boxes(found) == [None, None, None]

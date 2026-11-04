@@ -22,7 +22,10 @@ How a label is found, by code facts only:
 2. **The row on the drawing.** The parts are the labels whose dimension lines run along the
    overall's own dimension line, inside its two ends, touching end to end on one line, with the
    same values in the same order (either way along the line). Exactly one such row, or none is
-   used.
+   used. With no such row near the overall (`ACROSS_REACH_PT`), a row drawn further from it (a
+   section's overall printed between the legs, its parts at the foot: 2026-11-04, about 100 pt
+   apart) is used only when it fills the overall's line end to end, at most `FAR_REACH_PT` away,
+   and is the one such row.
 3. **Else, inside the finding's box.** A value is placed only when the box holds exactly as many
    labels of that value as the row has parts of it.
 
@@ -41,6 +44,7 @@ from typing import Any, Final
 from app.review.assistant.finding_checks import to_inches
 
 __all__ = [
+    "FAR_REACH_PT",
     "PART_BOXES",
     "TOTAL_BOX",
     "LabelsOf",
@@ -60,6 +64,12 @@ vendor's main file."""
 #: How far a part's dimension line may sit from the overall's, across the line (points): a row of
 #: parts is drawn just inside its overall (on GV's sets 10-20 pt).
 ACROSS_REACH_PT: Final = 48.0
+#: How far a row drawn further from its overall may sit (points), when it fills the overall's line
+#: end to end (both its ends within `END_SLACK_PT` of the overall's): a section's overall printed
+#: between the legs with its parts at the foot (2026-11-04, about 100 pt apart; the second reading
+#: was shown the overall without its parts, which were cut off at the picture's edge, and was
+#: unsure).
+FAR_REACH_PT: Final = 144.0
 #: Two dimension lines on one row: their positions across the line differ by at most this (points).
 SAME_ROW_PT: Final = 2.0
 #: How far past the overall's ends a part's line may run (points: arrowheads and rounding).
@@ -190,10 +200,29 @@ def _row_parts(
     overall: Mapping[str, Any], labels: Sequence[Mapping[str, Any]], values: Sequence[Decimal]
 ) -> list[Mapping[str, Any]] | None:
     """The labels of the one row of parts along the overall's dimension line (see the module),
-    in the finding's order; `None` when there is no such row, or more than one."""
+    in the finding's order; `None` when there is no such row, or more than one. A row near the
+    overall first (`ACROSS_REACH_PT`); with none, the one row further away that fills the
+    overall's line end to end (`FAR_REACH_PT`)."""
+    near = _rows_along(overall, labels, values, ACROSS_REACH_PT, fill=False)
+    if not near:
+        near = _rows_along(overall, labels, values, FAR_REACH_PT, fill=True)
+    return near[0] if len(near) == 1 else None
+
+
+def _rows_along(
+    overall: Mapping[str, Any],
+    labels: Sequence[Mapping[str, Any]],
+    values: Sequence[Decimal],
+    reach: float,
+    *,
+    fill: bool,
+) -> list[list[Mapping[str, Any]]]:
+    """Every row of labels along the overall's dimension line, at most `reach` across from it,
+    inside its two ends, touching end to end, with the finding's values in order (either way);
+    `fill`: only a row that starts and ends at the overall's own ends."""
     line = _line(overall)
     if line is None:
-        return None
+        return []
     axis, start, end, across = line
     rows: list[list[tuple[float, float, float, Mapping[str, Any]]]] = []
     for label in labels:
@@ -203,7 +232,7 @@ def _row_parts(
         if own is None or own[0] != axis:
             continue
         _axis, s, e, a = own
-        if abs(a - across) > ACROSS_REACH_PT or s < start - END_SLACK_PT or e > end + END_SLACK_PT:
+        if abs(a - across) > reach or s < start - END_SLACK_PT or e > end + END_SLACK_PT:
             continue
         if e - s >= end - start - END_SLACK_PT:
             continue  # as long as the overall: another overall, not a part
@@ -218,13 +247,15 @@ def _row_parts(
         row.sort(key=lambda one: one[0])
         if any(b[0] - a[1] > TOUCH_PT or a[1] - b[0] > TOUCH_PT for a, b in pairwise(row)):
             continue
+        if fill and (abs(row[0][0] - start) > END_SLACK_PT or abs(row[-1][1] - end) > END_SLACK_PT):
+            continue
         chain = [one[3] for one in row]
         read = [_label_inches(label) for label in chain]
         if read == list(values):
             found.append(chain)
         elif read == list(reversed(values)):
             found.append(list(reversed(chain)))
-    return found[0] if len(found) == 1 else None
+    return found
 
 
 def _row_axis(overall: Mapping[str, Any] | None, row: Box) -> str | None:
