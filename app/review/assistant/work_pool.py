@@ -24,6 +24,14 @@ threads at once and changes nothing else:
 
 Each item runs in a copy of the caller's context (`contextvars`), so a step that reads a context
 variable sees what the caller set.
+
+**Pools that keep the caller's context.** A plain `ThreadPoolExecutor` runs its tasks in its
+worker thread's own context, not the submitter's, so the timings phase
+(`chat_timings.Timings.phase`) and the call log's tags (`call_log.tagged`) set by the thread that
+submits are lost: the advocate's model calls were all charged to "other" (rebuild Step 1B).
+`ContextPool` is that pool with each task run in a copy of the submitting thread's context (one
+copy per task: a context can run on one thread at a time); `in_context` does the same for one
+function handed to a new thread.
 """
 
 from __future__ import annotations
@@ -34,9 +42,16 @@ import os
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
-__all__ = ["DEFAULT_MAX_WORKERS", "Done", "code_workers", "run_ordered"]
+__all__ = [
+    "DEFAULT_MAX_WORKERS",
+    "ContextPool",
+    "Done",
+    "code_workers",
+    "in_context",
+    "run_ordered",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -58,6 +73,26 @@ class Done[R]:
     value: R | None = None
     error: BaseException | None = None
     ran: bool = True
+
+
+class ContextPool(ThreadPoolExecutor):
+    """A `ThreadPoolExecutor` whose every task runs in a copy of the submitting thread's context,
+    taken when it is submitted (`map` submits too)."""
+
+    def submit[R](self, fn: Callable[..., R], /, *args: Any, **kwargs: Any) -> Future[R]:
+        context = contextvars.copy_context()
+        return super().submit(context.run, fn, *args, **kwargs)
+
+
+def in_context[R](fn: Callable[..., R]) -> Callable[..., R]:
+    """`fn` to run in a copy of this thread's context, taken now: for one new thread's target
+    (one copy may run on one thread at a time, so never hand it to a pool)."""
+    context = contextvars.copy_context()
+
+    def run(*args: Any, **kwargs: Any) -> R:
+        return context.run(fn, *args, **kwargs)
+
+    return run
 
 
 def code_workers() -> int:

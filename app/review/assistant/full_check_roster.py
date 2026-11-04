@@ -110,6 +110,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
+from app.review.assistant import call_log as calls
 from app.review.assistant import (
     classification,
     dim_anchors,
@@ -189,7 +190,7 @@ from app.review.assistant.splash_views import (
 )
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.untrusted import fence
-from app.review.assistant.work_pool import code_workers, run_ordered
+from app.review.assistant.work_pool import ContextPool, code_workers, run_ordered
 
 if TYPE_CHECKING:
     from app.review.assistant.chat_engine import ChatEngine, MessageOutcome
@@ -3443,20 +3444,22 @@ class _Run:
                     return None
                 question = ordered[index]
                 finding = by_id.get(question.findings[0]) or {"item": question.item}
-                return self._blind_pick(
-                    finding,
-                    question.vendor,
-                    question.architect,
-                    page_map,
-                    kind=round_picks.CHEAP_LINK,
-                    on_hold=done,
-                )
+                with calls.tagged(page=finding.get("page")):
+                    return self._blind_pick(
+                        finding,
+                        question.vendor,
+                        question.architect,
+                        page_map,
+                        kind=round_picks.CHEAP_LINK,
+                        on_hold=done,
+                    )
             finally:
                 done()
 
         self.pick_phase = ROUND_PHASE
         try:
-            with ThreadPoolExecutor(max_workers=_ADVOCATE_WORKERS) as pool:
+            # In copies of this thread's context: the picks' calls keep its timings phase.
+            with ContextPool(max_workers=_ADVOCATE_WORKERS) as pool:
                 answers = list(pool.map(ask, range(len(ordered))))
         finally:
             self.pick_phase = "advocate"
@@ -5344,11 +5347,14 @@ class _Run:
             if engine.cancel.is_set():
                 return None  # Stop: not judged now (never proved: Continue judges it)
             try:
-                return self._judge(finding, page_map, annotations)
+                with calls.tagged(page=finding.get("page")):
+                    return self._judge(finding, page_map, annotations)
             finally:
                 counted()
 
-        with ThreadPoolExecutor(max_workers=_ADVOCATE_WORKERS) as pool:
+        # In copies of this thread's context: the advocate's calls keep its timings phase
+        # ("advocate"); in a plain pool they were all charged to "other" (rebuild Step 1B).
+        with ContextPool(max_workers=_ADVOCATE_WORKERS) as pool:
             verdicts = list(pool.map(judge, jobs))
         engine.items_counted()
         for finding, verdict in zip(jobs, verdicts, strict=True):

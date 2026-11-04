@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from app.review.assistant.full_check_plan import _partition
+from app.review.assistant.work_pool import in_context
 
 __all__ = [
     "BANDS_FROM",
@@ -150,7 +151,8 @@ def expected_minutes(content_pages: int, at_once: int = 32) -> int:
 
 def run_chains(chains: Sequence[Callable[[], None]], name: str = "gv-roster-band") -> list[str]:
     """Runs each chain on its own thread and waits for all; a chain that raises is logged and
-    named in the list returned (the others go on)."""
+    named in the list returned (the others go on). Each thread runs in a copy of the caller's
+    context (`work_pool.in_context`), so its calls keep the caller's timings phase and tags."""
     failed: list[str] = []
     lock = threading.Lock()
 
@@ -163,7 +165,9 @@ def run_chains(chains: Sequence[Callable[[], None]], name: str = "gv-roster-band
                 failed.append(f"band {index + 1}: {type(error).__name__}")
 
     threads = [
-        threading.Thread(target=guarded, args=(index, chain), name=f"{name}-{index + 1}")
+        threading.Thread(
+            target=in_context(guarded), args=(index, chain), name=f"{name}-{index + 1}"
+        )
         for index, chain in enumerate(chains)
     ]
     for thread in threads:

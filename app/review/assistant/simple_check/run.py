@@ -742,6 +742,8 @@ class _Run:
                     # A Stop closes the calls streaming now (`ChatEngine.stop_streams`, #1769).
                     streams=engine,
                     before_attempt=self._again(settings),
+                    # Every try in the chat's call log (rebuild Step 1B).
+                    on_attempt=self._log_try,
                 )
         finally:
             self.stop.set()
@@ -883,6 +885,28 @@ class _Run:
             outcome.work_item,
             "answered" if ok else "failed",
             None if ok else outcome.reason,
+        )
+
+    def _log_try(self, tried: Any) -> None:
+        """One compare try in the chat's call log (`ChatEngine.log_call`), priced at the model
+        that answered when it is known, as `_charge` prices the drawing."""
+        from app.review.assistant.chat_engine import HARNESS_ID
+
+        engine = self.engine
+        model = _model(tried.model) or _model(tried.asked_model)
+        if model is None:
+            return
+        engine.log_call(
+            model,
+            COMPARE_PROMPT_ID.format(provider=engine.provider.name, harness=HARNESS_ID),
+            tried.usage,
+            params=tried.params,
+            attempt=tried.number,
+            latency_ms=tried.latency_ms,
+            provider_answered=tried.provider,
+            model_answered=tried.model,
+            stop_reason=tried.stop_reason,
+            error=tried.error,
         )
 
     def _charge(self, model: ChatModel, outcome: CompareOutcome) -> None:
@@ -1043,9 +1067,10 @@ class _Run:
                     name = "not_finished"
                 self.resolved[name] = self.resolved.get(name, 0) + 1
 
-        from concurrent.futures import ThreadPoolExecutor
+        from app.review.assistant.work_pool import ContextPool
 
-        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="gv-simple-resolve") as pool:
+        # In copies of this thread's context: the calls keep the resolve phase (`work_pool`).
+        with ContextPool(max_workers=4, thread_name_prefix="gv-simple-resolve") as pool:
             list(pool.map(one, entering))
         if settings.web_search and not self.options.replay:
             routes = []

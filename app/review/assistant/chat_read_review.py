@@ -28,7 +28,6 @@ import base64
 import logging
 import threading
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor
 from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -37,6 +36,7 @@ from app.review.assistant import chat_trust
 from app.review.assistant.agent import prompt_tokens_upper
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
 from app.review.assistant.chat_trust import trust_level
+from app.review.assistant.work_pool import ContextPool
 
 if TYPE_CHECKING:
     from app.review.assistant import finding_critic, read_adjudication
@@ -394,7 +394,8 @@ def review_reads(engine: Any) -> None:
     jobs += critic_jobs(engine, findings, budget, update)
     if not jobs:
         return
-    with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
+    # In copies of this thread's context: the calls keep its timings phase (`work_pool`).
+    with ContextPool(max_workers=_WORKERS) as pool:
         for future in [pool.submit(job) for job in jobs]:
             future.result()
 

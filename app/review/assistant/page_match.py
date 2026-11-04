@@ -54,7 +54,6 @@ import os
 import re
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -62,11 +61,13 @@ from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
+from app.review.assistant.call_log import tagged
 from app.review.assistant.full_check_plan import CrossPairs
 from app.review.assistant.reply_json import json_of_reply
 from app.review.assistant.simple_check.pairing import MatchAnswer, reuse
 from app.review.assistant.simple_check.schema import AcrossCandidate, AcrossPair, Drawing
 from app.review.assistant.simple_check.worklist import MATCH_FILE
+from app.review.assistant.work_pool import ContextPool
 
 if TYPE_CHECKING:
     from app.review.assistant.chat_engine import ChatEngine
@@ -519,7 +520,8 @@ def match_pairs(
         with lock:
             report.asked += 1
         try:
-            entry, why, cost = ask_one(pair, ask, pictures)
+            with tagged(page=pair.vendor.ref):
+                entry, why, cost = ask_one(pair, ask, pictures)
         except Exception as failed:  # noqa: BLE001 - code then decides alone, said in the reason
             _log.warning("page matcher: %s failed: %s", pair.vendor.ref, type(failed).__name__)
             with lock:
@@ -574,7 +576,9 @@ def _dispatch(
                 except Exception:  # noqa: BLE001 - the answer is saved; only the news is lost
                     _log.exception("page matcher: the answer's follow-up failed")
 
-    with ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="gv-page-match") as pool:
+    # Each answer in a copy of this thread's context: its calls keep the matcher's timings phase
+    # and tags (`work_pool.ContextPool`, rebuild Step 1B).
+    with ContextPool(max_workers=parallel, thread_name_prefix="gv-page-match") as pool:
         while True:
             with ready:
                 while True:

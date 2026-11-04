@@ -36,6 +36,12 @@ breakpoint: a call is asked once, so a cache write on them would only cost more.
 stream that fails midway, an overloaded or rate-limited service, or a 5xx is asked again here, up to
 `retries` times with growing waits. A refusal is not retried.
 
+**Every try logged.** Each try's usage (with its cache-write split), the host that answered, its
+request (for the prompt-prefix hash) and how it ended go to `on_attempt` (`Tried`), which the
+simple check hands to the chat's call log (`ChatEngine.log_call`, rebuild Step 1B); never its
+content. The calls run in copies of the caller's context (`work_pool.ContextPool`), so they keep
+its timings phase, each tagged with its drawing's ref (`call_log.tagged`).
+
 **Pictures exactly as sent.** Each picture is pre-sized by code with Anthropic's own resize rule and
 marked `transformations.oversized_image: "error"` (Anthropic's API), so the server never shrinks
 it silently and a pixel box maps back 1:1.
@@ -54,7 +60,6 @@ import random
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from decimal import Decimal
 from importlib import import_module
@@ -63,6 +68,7 @@ from typing import Any, Final, Protocol
 
 from pydantic import ValidationError
 
+from app.review.assistant.call_log import tagged
 from app.review.assistant.chat_provider import ChatProvider, ProviderFailure, failure_from
 from app.review.assistant.chat_request import (
     MODELS,
@@ -89,6 +95,7 @@ from app.review.assistant.simple_check.schema import (
     canonical_ref,
     check_result,
 )
+from app.review.assistant.work_pool import ContextPool
 
 __all__ = [
     "DOWN_AFTER",
@@ -96,9 +103,11 @@ __all__ = [
     "MAX_IMAGES",
     "MIN_LEGIBLE_DPI",
     "PRICES",
+    "AttemptLog",
     "CompareSettings",
     "PictureSource",
     "SentPicture",
+    "Tried",
     "compare_all",
     "compare_item",
     "estimate_cost_usd",
@@ -501,6 +510,11 @@ class _Answer:
     stop_reason: str | None = None
     model: str | None = None
     fell_back: bool = False
+    cache_creation: dict[str, int] = field(default_factory=dict)
+    """The usage's `cache_creation` object (the 5-minute and 1-hour cache writes) when the stream
+    reported one, for the call log; `usage` keeps whole numbers only."""
+    provider: str | None = None
+    """The host that answered, when the first message names one (OpenRouter's `provider`)."""
 
     def text(self) -> str:
         return "".join(str(b.get("text") or "") for b in self.content if b.get("type") == "text")
@@ -535,6 +549,39 @@ def _merge(usage: dict[str, int], update: object) -> None:
             usage["thinking_tokens"] = thought
 
 
+def _creation(answer: _Answer, update: object) -> None:
+    creation = update.get("cache_creation") if isinstance(update, Mapping) else None
+    if isinstance(creation, Mapping):
+        answer.cache_creation = {
+            str(key): value
+            for key, value in creation.items()
+            if isinstance(value, int) and not isinstance(value, bool)
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Tried:
+    """One try of a compare call, for the call log (`call_log`): its request as sent (for the
+    prompt-prefix hash only), its usage (with `cache_creation` when the stream reported it; empty
+    when it failed before any), the model asked and the one that answered, the host that
+    answered, its stop reason or failure, its number (the drawing's tries so far, the repair
+    turn's included) and the milliseconds from opening its stream to its end."""
+
+    params: Mapping[str, Any]
+    usage: Mapping[str, Any]
+    asked_model: str
+    model: str | None
+    provider: str | None
+    stop_reason: str | None
+    error: BaseException | None
+    number: int
+    latency_ms: int
+
+
+#: Called with every try of a compare call (`compare_item`'s `on_attempt`).
+AttemptLog = Callable[[Tried], None]
+
+
 class StreamTracker(Protocol):
     """Where the compare calls' open streams are kept while they run (`ChatEngine`: its
     `stop_streams` closes them on a Stop, #1769)."""
@@ -555,11 +602,13 @@ def _stream(
     *,
     streams: StreamTracker | None = None,
     spent: dict[str, int] | None = None,
+    answer: _Answer | None = None,
 ) -> _Answer:
     """One streamed call, its events gathered. Raises `ProviderFailure`. `streams`: its stream is
     kept there while it runs (a Stop closes it); `spent`: on a failure, the usage the stream had
-    already reported is added there (its prompt is billed already, #1769)."""
-    answer = _Answer()
+    already reported is added there (its prompt is billed already, #1769); `answer`: the answer to
+    fill, so what a broken stream reported is still known to the caller."""
+    answer = _Answer() if answer is None else answer
     stream = provider.open_stream(params)
     if streams is not None:
         streams.track_stream(stream)
@@ -574,7 +623,10 @@ def _stream(
                 answer.model = (
                     message.get("model") if isinstance(message.get("model"), str) else None
                 )
+                host = message.get("provider")
+                answer.provider = host if isinstance(host, str) and host else answer.provider
                 _merge(answer.usage, message.get("usage"))
+                _creation(answer, message.get("usage"))
             elif kind == "content_block_start":
                 index = int(event.get("index", len(answer.content)))
                 block = dict(event.get("content_block") or {})
@@ -604,6 +656,7 @@ def _stream(
                 delta = event.get("delta") or {}
                 answer.stop_reason = delta.get("stop_reason") or answer.stop_reason
                 _merge(answer.usage, event.get("usage"))
+                _creation(answer, event.get("usage"))
     except ProviderFailure:
         if spent is not None:
             _add(spent, _broken_usage(answer))
@@ -924,12 +977,15 @@ def compare_item(
     down: threading.Event | None = None,
     streams: StreamTracker | None = None,
     before_attempt: AttemptGuard | None = None,
+    on_attempt: AttemptLog | None = None,
 ) -> CompareOutcome:
     """One work item's compare call, its retries and its one repair turn. `down`: set when the AI
     service is taken as down (`compare_all`): no more tries. `streams`: where its open stream is
     kept (a Stop closes it). `before_attempt(item, attempts so far, repair)`: asked before every
     attempt after the first (a retry or the repair turn), so its cost is held too; a reason ends
-    the drawing (failed, never dropped) (#1769). A failed attempt's usage is kept and charged."""
+    the drawing (failed, never dropped) (#1769). A failed attempt's usage is kept and charged.
+    `on_attempt`: told every try as it ends (`Tried`); a listener that raises is logged and the
+    drawing goes on."""
     started = time.monotonic()
     model, effort = settings.for_item(item)
     usage: dict[str, int] = {}
@@ -937,6 +993,35 @@ def compare_item(
     attempts = 0
     answered_by: str | None = None
     pictures: tuple[Picture, ...] = ()
+
+    def tell(
+        params: Mapping[str, Any],
+        answer: _Answer,
+        usage: Mapping[str, Any],
+        failure: ProviderFailure | None,
+        opened: float,
+    ) -> None:
+        if on_attempt is None:
+            return
+        logged: dict[str, Any] = dict(usage)
+        if answer.cache_creation:
+            logged["cache_creation"] = dict(answer.cache_creation)
+        try:
+            on_attempt(
+                Tried(
+                    params=params,
+                    usage=logged,
+                    asked_model=model.id,
+                    model=answer.model,
+                    provider=answer.provider,
+                    stop_reason=answer.stop_reason,
+                    error=failure,
+                    number=attempts,
+                    latency_ms=int((time.monotonic() - opened) * 1000),
+                )
+            )
+        except Exception:  # noqa: BLE001 - the log is never worth a drawing
+            _log.exception("simple check: a compare try could not be logged")
 
     def outcome(**fields: Any) -> CompareOutcome:
         return CompareOutcome(
@@ -1015,10 +1100,15 @@ def compare_item(
                     )
             attempts += 1
             partial: dict[str, int] = {}
+            filling = _Answer()
+            opened = time.monotonic()
             try:
-                answer = _stream(provider, params, first_event, streams=streams, spent=partial)
+                answer = _stream(
+                    provider, params, first_event, streams=streams, spent=partial, answer=filling
+                )
                 break
             except ProviderFailure as failure:
+                tell(params, filling, partial, failure, opened)
                 if partial:
                     # Paid, though no answer came: recorded and charged (#1769).
                     _add(usage, partial)
@@ -1062,6 +1152,7 @@ def compare_item(
         assert answer is not None
         # A stream that ended with no stop reason was cut short: its output was not reported.
         used = answer.usage if answer.stop_reason else _broken_usage(answer)
+        tell(params, answer, used, None, opened)
         _add(usage, used)
         answered_by = answer.model or model.id
         cost += estimate_cost_usd(answered_by, used)
@@ -1144,11 +1235,14 @@ def compare_all(
     warm_wait_s: float = WARM_WAIT_S,
     streams: StreamTracker | None = None,
     before_attempt: AttemptGuard | None = None,
+    on_attempt: AttemptLog | None = None,
 ) -> list[CompareOutcome]:
     """Every item's outcome, in the items' order, `settings.parallel` calls at a time. The first
     call starts alone; the others start once its first event has come (its prompt cache entry is
     then readable), `warm_wait_s` has passed or `stop` is set. An item left when `stop` is set is
-    `failed` ("stopped"), never dropped. `streams` and `before_attempt`: `compare_item`'s."""
+    `failed` ("stopped"), never dropped. `streams`, `before_attempt` and `on_attempt`:
+    `compare_item`'s. Each item runs in a copy of the caller's context (its timings phase), tagged
+    with its ref (`call_log.tagged`)."""
     warmed = threading.Event()
     results: list[CompareOutcome | None] = [None] * len(items)
     lock = threading.Lock()
@@ -1185,20 +1279,22 @@ def compare_all(
             )
         else:
             first = index == 0
-            done = compare_item(
-                item,
-                provider=provider,
-                source=source,
-                system=system,
-                settings=settings,
-                first_event=warmed.set if first else None,
-                before_call=None if first else wait_for_warm,
-                stop=stop,
-                sleep=sleep,
-                down=down,
-                streams=streams,
-                before_attempt=before_attempt,
-            )
+            with tagged(page=item.id):
+                done = compare_item(
+                    item,
+                    provider=provider,
+                    source=source,
+                    system=system,
+                    settings=settings,
+                    first_event=warmed.set if first else None,
+                    before_call=None if first else wait_for_warm,
+                    stop=stop,
+                    sleep=sleep,
+                    down=down,
+                    streams=streams,
+                    before_attempt=before_attempt,
+                    on_attempt=on_attempt,
+                )
             if first:
                 warmed.set()
         with lock:
@@ -1219,7 +1315,7 @@ def compare_all(
 
     if not items:
         return []
-    with ThreadPoolExecutor(
+    with ContextPool(
         max_workers=max(1, settings.parallel), thread_name_prefix="gv-simple-compare"
     ) as pool:
         futures = [pool.submit(run, n) for n in range(len(items))]
