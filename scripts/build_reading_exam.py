@@ -13,8 +13,8 @@ Step 1 writes `crops/` (per label: the code-cut crop at 300 dpi, the 90 and 270 
 sideways one, and a wider context picture with the label's box in red), `candidates.tsv` (the key
 with no proposal yet), `sheets/` (the crops in numbered rows, to read the proposals from) and
 `README.txt` (which packs, how many of each kind). Step 2 joins `proposals.tsv` (`id`,
-`proposed_text`, `proposed_turn`, `confidence`) to the candidates and writes `key.tsv` and
-`index.html`.
+`proposed_text`, `proposed_turn`, `confidence`; read as typed, so a quote mark is part of the
+text) to the candidates and writes `key.tsv` and `index.html`.
 
 The labels, crops and key hold the client's printed values and file names, so `--out` must be
 outside this repository (it refuses one inside it), and no file there is ever replaced: step 1
@@ -264,7 +264,9 @@ def finish(out: Path, proposals: Path) -> int:
             raise SystemExit(f"{path} exists; a reading key is never overwritten")
     rows = reading.read_key(out / "candidates.tsv")
     with proposals.open(encoding="utf-8", newline="") as handle:
-        read = {row["id"]: row for row in csv.DictReader(handle, delimiter="\t")}
+        read = {
+            row["id"]: row for row in csv.DictReader(handle, delimiter="\t", quoting=csv.QUOTE_NONE)
+        }
     unknown = sorted(set(read) - {row.id for row in rows})
     if unknown:
         raise SystemExit(f"proposals for ids not in the exam: {unknown[:5]}")

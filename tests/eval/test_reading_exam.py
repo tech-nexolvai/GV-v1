@@ -236,15 +236,18 @@ def test_the_confirmation_page_escapes_every_printed_value():
 
 def test_finishing_joins_the_proposals_and_refuses_a_second_key(tmp_path):
     script = _script("build_reading_exam")
-    reading.write_key(tmp_path / "candidates.tsv", [_row(), _row(id="rd-2")])
+    reading.write_key(tmp_path / "candidates.tsv", [_row(), _row(id="rd-2"), _row(id="rd-3")])
     proposals = tmp_path / "proposals.tsv"
     proposals.write_text(
-        "id\tproposed_text\tproposed_turn\tconfidence\nrd-1\t68\t270\tsure\n", encoding="utf-8"
+        "id\tproposed_text\tproposed_turn\tconfidence\nrd-1\t68\t270\tsure\n"
+        'rd-3\t"7"\t0\tunsure\n',
+        encoding="utf-8",
     )
     assert script.finish(tmp_path, proposals) == 0
     rows = {row.id: row for row in reading.read_key(tmp_path / "key.tsv")}
     assert rows["rd-1"].proposed_text == "68" and rows["rd-1"].proposed_turn == 270
     assert rows["rd-2"].proposed_text == "" and rows["rd-2"].confidence == ""
+    assert rows["rd-3"].proposed_text == '"7"'  # typed text: its quote marks are printed ones
     assert (tmp_path / "index.html").is_file()
     with pytest.raises(SystemExit):
         script.finish(tmp_path, proposals)

@@ -3,8 +3,8 @@
     python scripts/score_reading_exam.py --key ~/gv-local/exam/reading/<date>/key.tsv \\
         --reads <pack>/stroke_reads.json [--reads ...] [--answers answers.tsv] [--job setA]
 
-`--answers` is the two-column TSV `index.html` copies (`id`, `confirmed`); it fills the key's
-`confirmed` column where given. `--job` keeps only that job's key rows (one pack's reads cover one
+`--answers` is the two-column TSV `index.html` copies (`id`, `confirmed`), read as typed (a
+quote mark is part of the text); it fills the key's `confirmed` column where given. `--job` keeps only that job's key rows (one pack's reads cover one
 job, so the other jobs' rows would all be unmatched). `--pack TAG=FOLDER` names a pack whose
 `dims.json` gives a key row's file name when the key has no `file` column.
 
@@ -34,7 +34,7 @@ def _answers(path: Path) -> dict[str, str]:
     with path.open(encoding="utf-8", newline="") as handle:
         return {
             row["id"]: row.get("confirmed") or ""
-            for row in csv.DictReader(handle, delimiter="\t")
+            for row in csv.DictReader(handle, delimiter="\t", quoting=csv.QUOTE_NONE)
             if row.get("id")
         }
 
