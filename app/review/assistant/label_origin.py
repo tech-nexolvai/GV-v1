@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Final
 
-__all__ = ["OCR", "OCR_ORIGINS", "PICTURE", "SCAN", "ocr_read"]
+__all__ = ["OCR", "OCR_ORIGINS", "PICTURE", "READ_NUMBER", "SCAN", "ocr_read"]
 
 #: Read inside a pasted picture (`picture_labels.ORIGIN`).
 PICTURE: Final = "picture"
@@ -27,6 +27,11 @@ OCR: Final = "ocr"
 #: Read from a scan's own OCR text, the scanner's software's reading (`dim_labels._scan_labels`).
 SCAN: Final = "scan"
 OCR_ORIGINS: Final = frozenset({PICTURE, OCR, SCAN})
+#: A drawn size the drawn route rejected (a note it does not know after its inch mark, a row
+#: gathered with other ink) that code's number reader proved on its own dimension line (two
+#: readers agree, the ruler does not block it: `dim_labels._read_fallback`, 2026-11-04). Not an
+#: OCR reading of pixels: it has its line, and is the drawn-ink witness like any drawn label.
+READ_NUMBER: Final = "read_number"
 
 
 def ocr_read(label: Mapping[str, Any]) -> bool:

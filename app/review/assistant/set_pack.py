@@ -138,8 +138,11 @@ _log = logging.getLogger(__name__)
 
 #: Changes when what the pack holds changes: an older pack is built again. 25: a sheet number
 #: (`page_map.json`) and a tag (`notes.json`) printed with a look-alike dash (`A−501`, a minus
-#: sign) are read, written with the hyphen (`vocabulary.dashes`).
-PACK_VERSION: Final = 25
+#: sign) are read, written with the hyphen (`vocabulary.dashes`). 26: a drawn size with a note
+#: that leaves it the span (`36 5/8"(4EQ)`) keeps its number, a size the drawn route rejects goes
+#: to the read-number fallback, and a drawn label's line runs the way its text reads and is
+#: drawn to its value where the drawing's scale can tell (`dim_labels`, labels version 4).
+PACK_VERSION: Final = 26
 #: `status.json`'s state when the labels step broke or ran out of time (#1768): the page map and
 #: pictures are made, `dims.json` is missing or partial. Never "ready".
 READY_WITHOUT_LABELS: Final = "ready_without_labels"
