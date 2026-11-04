@@ -14,7 +14,13 @@ Code reads a printed number in several ways that do not share their mistakes. Th
   scale (`scale_fit`, final plan #3; `read_number`'s ruler);
 - `units`: the millimetres printed with the inches agree with them (`units_check`);
 - `strokes`: the pen-stroke reader names every character from known stroke shapes
-  (`read_number`'s shape matcher, the vendor's own alphabet).
+  (`read_number`'s shape matcher, the vendor's own alphabet);
+- `ai_seal`: two AI readers of different makers printed the same text at exactly one turn of a
+  code-cut crop (`stroke_reads`, Step 2 of the rebuild plan, 2026-11-05). One kind, however many
+  readers: the plan counts a sealed two-reader reading as ONE kind of reading. It reaches a value
+  only through `verify_value`'s sealed route, which answers `match` only where the drawn length
+  also agrees at its view's scale (`sealed_witnessed`), so that answer is two kinds (`ai_seal` and
+  `drawn_length`); an unwitnessed seal never reaches a value at all.
 
 **The rule.** A number may feed a red only when at least two different kinds of route agree on
 it, and no route and no reader names a doubt:
@@ -63,6 +69,7 @@ from app.review.assistant.finding_checks import units_check
 from app.review.assistant.label_origin import SCAN, ocr_read
 
 __all__ = [
+    "AI_SEAL",
     "DRAWN",
     "DRAWN_DOUBT",
     "FIELD",
@@ -98,8 +105,9 @@ OCR: Final = "ocr"
 DRAWN: Final = "drawn_length"
 UNITS: Final = "units"
 STROKES: Final = "strokes"
+AI_SEAL: Final = "ai_seal"
 #: Every kind of route, in the order a record lists them.
-KINDS: Final = (TEXT, OCR, DRAWN, UNITS, STROKES)
+KINDS: Final = (TEXT, OCR, DRAWN, UNITS, STROKES, AI_SEAL)
 #: Each route as a sentence says it ("read 23" from the PDF's text and ...").
 ROUTE_WORDS: Final[Mapping[str, str]] = {
     TEXT: "the PDF's text",
@@ -107,6 +115,7 @@ ROUTE_WORDS: Final[Mapping[str, str]] = {
     DRAWN: "its drawn length at its view's scale",
     UNITS: "the millimetres printed with it",
     STROKES: "the pen-stroke reader",
+    AI_SEAL: "two AI readers of different makers",
 }
 #: The doubt a value that does not agree with its drawn length names, before that length.
 DRAWN_DOUBT: Final = "its drawn length at its view's own scale is "
@@ -497,7 +506,14 @@ def _spot_routes(checks: Mapping[str, Any], side: str) -> tuple[list[str], list[
     if checks.get(f"printed_{side}") == "match":
         routes.append(TEXT)
     verified = checks.get(f"verify_{side}")
-    if isinstance(verified, Mapping):
+    if isinstance(verified, Mapping) and verified.get("route") == "sealed":
+        # `verify_value`'s route 3 (`stroke_reads`): a match is the AI seal and the drawn length
+        # at its view's scale, two kinds; a mismatch is a doubt, as any reading of another value.
+        if verified.get("result") == "match":
+            routes += [AI_SEAL, DRAWN]
+        elif verified.get("result") == "mismatch":
+            doubts.append(f"two AI readers read {verified.get('read')} at its spot")
+    elif isinstance(verified, Mapping):
         result = verified.get("result")
         if result == "match":
             by_number = _read_number_routes(verified.get("words"))

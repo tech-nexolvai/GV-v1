@@ -769,3 +769,31 @@ def test_the_engine_counts_outside_spend_like_its_own_calls() -> None:
     assert emitted and emitted[0][0] == "usage"
     ChatEngine.charge_outside(fake, -5)  # type: ignore[arg-type]
     assert fake._spent == 5_500
+
+
+class LongLine(FakePages):
+    """Every spot's line drawn 24 1/2" long at SCALE."""
+
+    def line(self, spot: sr.Spot) -> sr.LineFound | None:
+        return sr.LineFound("h", 115.0, 100.0, 100.0 + float(Fraction(49, 2) / SCALE))
+
+
+def test_witnessed_only_where_the_drawn_length_agrees_as_decision_b_counts_it(
+    tmp_path: Path,
+) -> None:
+    """23" drawn 24 1/2" long is inside the misread band (6.5%) but past scale_fit's tolerance
+    (0.69" here): never a second reading, so sealed but unwitnessed, said why."""
+    write_pack(tmp_path, [spot([100, 100, 130, 110])])
+    pages = LongLine()
+    run = sr.ensure_stroke_reads(
+        tmp_path, None, FakeReader({"p3.S1@0": '23"'}), Decimal(1), pages=pages
+    )
+    label = labels_of(run)["p3.S1"]
+    assert (label["state"], label["why"], label["inches"]) == (
+        "sealed_unwitnessed",
+        sr.NOT_CLOSE,
+        "23",
+    )
+    assert sr.drawn_agrees(Fraction(24), Fraction(24) / SCALE, SCALE)
+    assert sr.drawn_agrees(Fraction(24), Fraction(49, 2) / SCALE, SCALE)  # 0.5" off: inside
+    assert not sr.drawn_agrees(Fraction(23), Fraction(49, 2) / SCALE, SCALE)

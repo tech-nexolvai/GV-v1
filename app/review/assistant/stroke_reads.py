@@ -29,6 +29,9 @@ paired views first, plan 2E). Each gets an id `p<page>.S<n>` (n from 1, in the c
    fractions never, #762; code's own stacked finding counts; GV's sticker or coloured ink holds),
    the sealed text's inches by `units/`, the drawn length against the view's fit
    (`scale_fit.StrokeLines`, `slot_reader.view_scale`: ±10%), and the upside-down guard.
+5. **Witnessed only as decision B counts a drawn length** (`drawn_agrees`): the ±10% band only
+   rejects misreads; a sealed value is `sealed_witnessed` only where its drawn length also agrees
+   as a printed value's must (`scale_fit`'s tolerance), else `sealed_unwitnessed` with the reason.
 
 **Output** (`FILE`, `SCHEMA`): every label planned, with each reader's text per turn and its state:
 `sealed_witnessed` (two makers, one turn, the drawing agrees: two different kinds of reading, as
@@ -83,6 +86,7 @@ __all__ = [
     "FILE",
     "MODES",
     "MODE_ENV",
+    "NOT_CLOSE",
     "READERS_ENV",
     "SCHEMA",
     "CropAsk",
@@ -96,6 +100,7 @@ __all__ = [
     "StrokeReader",
     "StrokeReadsRun",
     "cap_from_environment",
+    "drawn_agrees",
     "ensure_stroke_reads",
     "full_check_reads",
     "inches_text",
@@ -492,6 +497,43 @@ def _read_round(
     return result
 
 
+#: Why a sealed value its drawing did not veto still is not witnessed (`_as_b_counts`).
+NOT_CLOSE: Final = (
+    "its drawn length is inside the misread band but not close enough to count as a second reading"
+)
+
+
+def drawn_agrees(value: Fraction, drawn: Fraction, scale: Fraction) -> bool:
+    """Whether a value agrees with its drawn length as decision B's drawn-length route counts it
+    (`scale_fit`'s check: within `AGREE_IN` inches, `AGREE_SHARE` of the value, or `AGREE_PT` drawn
+    points, whichever is larger), exactly: the same rule a printed value's drawn length is held to,
+    tighter than the ±10% band that only rejects misreads."""
+    fit = import_module("app.review.assistant.scale_fit")
+    allowed = max(
+        Fraction(str(fit.AGREE_IN)),
+        Fraction(str(fit.AGREE_SHARE)) * value,
+        Fraction(str(fit.AGREE_PT)) * scale,
+    )
+    return abs(drawn * scale - value) <= allowed
+
+
+def _as_b_counts(outcome: GuardOutcome, item: _Planned) -> GuardOutcome:
+    """A `sealed_witnessed` reading is two kinds of reading (decision B) only when its drawn length
+    agrees as a printed value's must (`drawn_agrees`); one the ±10% band let through but that rule
+    does not is `sealed_unwitnessed`, said why (`NOT_CLOSE`): a please-check at most, never red."""
+    if (
+        outcome.state is not GuardState.SEALED_WITNESSED
+        or outcome.inches is None
+        or item.drawn is None
+        or item.scale is None
+        or drawn_agrees(outcome.inches, item.drawn, item.scale)
+    ):
+        return outcome
+    return GuardOutcome(
+        GuardState.SEALED_UNWITNESSED, NOT_CLOSE, outcome.turn, outcome.text, outcome.inches
+    )
+
+
 def inches_text(value: Fraction | None) -> str | None:
     """An exact inch value as the file writes it: `"69/2"`, or `"68"` for a whole number."""
     if value is None:
@@ -632,7 +674,7 @@ def ensure_stroke_reads(
                 None,
                 None,
             )
-        entries[item.spot.id] = _entry(item.spot, tried, item.answers, outcome)
+        entries[item.spot.id] = _entry(item.spot, tried, item.answers, _as_b_counts(outcome, item))
     document = {
         "schema": SCHEMA,
         "pack_version": _pack_version(pack),
@@ -699,12 +741,29 @@ def _write(pack: Path, document: Mapping[str, Any]) -> None:
     temporary.replace(target)
 
 
+#: The last stroke reads loaded per file, by its change time and size (`load`): every proving read
+#: of a check asks for them, and the file changes only when a check writes it.
+_LOADED: dict[str, tuple[int, int, dict[str, Any] | None]] = {}
+
+
 def load(pack: Path | None) -> dict[str, Any] | None:
-    """A pack's stroke reads, or `None` (no pack, none made, or another schema)."""
+    """A pack's stroke reads, or `None` (no pack, none made, or another schema). Read once per
+    version of the file; the document returned is shared, never to be changed by the caller."""
     if pack is None:
         return None
-    found = _read_json(Path(pack) / FILE)
-    return found if isinstance(found, dict) and found.get("schema") == SCHEMA else None
+    path = Path(pack) / FILE
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = str(path.resolve())
+    kept = _LOADED.get(key)
+    if kept is not None and kept[:2] == (stat.st_mtime_ns, stat.st_size):
+        return kept[2]
+    found = _read_json(path)
+    document = found if isinstance(found, dict) and found.get("schema") == SCHEMA else None
+    _LOADED[key] = (stat.st_mtime_ns, stat.st_size, document)
+    return document
 
 
 # ---- production: the pack's own pages ------------------------------------------------------------

@@ -54,6 +54,18 @@ apart (`_Page.scanned`) and never read by route 1, so they never give a text `ma
 `mismatch`. The spot is then a picture's, read as any pasted picture is (`cannot_read` with the
 picture's reason here; only the picture route makes a label of it).
 
+**Route 3: the sealed stroke reads (Step 2 of the rebuild plan, 2026-11-05).** When a full check
+read the set's unread pen-stroke numbers (`stroke_reads`, off by default), a number two AI readers
+of different makers printed identically at exactly one turn, and whose drawn length agrees at its
+view's scale (`sealed_witnessed`), answers for its spot (`sealed_answer`, route `sealed`): `match`
+when its inches equal the claimed value's, `mismatch` when they differ (only in a box of one
+dimension's size, `BIG_BOX_PT2`). Only when the box holds exactly that one stroke label; any other
+state (`sealed_unwitnessed`, `held`, `unread`) says nothing, and the routes above answer as before.
+It never overrides them where they read the spot (`with_sealed`): their `mismatch` stands, and a
+`match` the sealed reading contradicts becomes a `mismatch` (two readings that disagree are held,
+never resolved). Its `match` is two kinds of reading (the AI seal and the drawn length), as decision
+B counts them (`reading_routes`); no model is called here, the reads are the pack's file.
+
 **What it never does.** It never calls a model, never reads GV's coloured markup as a value, and
 never says `mismatch` from OCR alone: only when the box's text was read, none of it is the value,
 and no ink reader read the value. A `match` proves the number is on the drawing at that spot, not
@@ -114,13 +126,15 @@ __all__ = [
     "lenient_tesseract",
     "near_miss",
     "printed_spots",
+    "sealed_answer",
     "verify_value",
+    "with_sealed",
 ]
 
 _log = logging.getLogger(__name__)
 
 type VerifyResult = Literal["match", "mismatch", "cannot_read"]
-type Route = Literal["text", "drawn", "none"]
+type Route = Literal["text", "drawn", "sealed", "none"]
 
 #: A box larger than this (square points) that holds several numbers is refused by the drawn route.
 BIG_BOX_PT2: Final = 2500.0
@@ -169,7 +183,8 @@ class Verified:
 
     result: VerifyResult
     route: Route
-    """`text` (the drawing's characters), `drawn` (the vendor's ink, by OCR) or `none`."""
+    """`text` (the drawing's characters), `drawn` (the vendor's ink, by OCR), `sealed` (two AI
+    readers of different makers and the drawn length, `stroke_reads`) or `none`."""
     read: str | None
     """What code read there: the matching label, or on a mismatch what the drawing prints."""
     reads: tuple[str, ...] = ()
@@ -185,6 +200,16 @@ class Verified:
         """The evidence detail's words."""
         if self.result == "match" and self.route == "text":
             return f"Read from the drawing's text: {self.read}"
+        if self.result == "match" and self.route == "sealed":
+            return (
+                "Read by two AI readers of different makers, its drawn length agreeing at its "
+                f"view's scale: {self.read}"
+            )
+        if self.result == "mismatch" and self.route == "sealed":
+            return (
+                f"Two AI readers of different makers read {self.read} here (its drawn length "
+                f"agreeing), not {self.value}"
+            )
         if self.result == "match":
             return f"Read from the vendor's ink by two OCR engines: {self.read}"
         if self.result == "mismatch":
@@ -1916,6 +1941,102 @@ def verify_value(
         return verified
     finally:
         _CACHE_FOLDER.reset(token)
+
+
+# ---- route 3: the sealed stroke reads (Step 2, 2026-11-05) ----------------------------------------
+
+#: The stroke reads' state that may answer for a spot (`stroke_reads`): two makers, one turn, and
+#: the drawn length agreeing at the view's scale.
+SEALED_WITNESSED: Final = "sealed_witnessed"
+
+
+def _centre_in(box: Sequence[float], area: tuple[float, float, float, float]) -> bool:
+    cx, cy = (float(box[0]) + float(box[2])) / 2, (float(box[1]) + float(box[3])) / 2
+    return (
+        area[0] - _NEAR_PT <= cx <= area[2] + _NEAR_PT
+        and area[1] - _NEAR_PT <= cy <= area[3] + _NEAR_PT
+    )
+
+
+def sealed_answer(
+    reads: Mapping[str, Any] | None,
+    file: str,
+    page: int,
+    box: Mapping[str, Any],
+    expected: str,
+) -> Verified | None:
+    """Route 3 (see the module): the pack's stroke reads (`stroke_reads.load`) at `box` on `page`
+    of `file`, for the claimed `expected`. `None` (the other routes answer as before) unless the
+    box holds exactly one stroke label, that label is `sealed_witnessed`, and `expected` is one
+    value in inches; then `match` when its inches are equal, `mismatch` when they differ and the
+    box is one dimension's size (at most `BIG_BOX_PT2`)."""
+    if not isinstance(reads, Mapping):
+        return None
+    try:
+        area = (float(box["x0"]), float(box["y0"]), float(box["x1"]), float(box["y1"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    here = [
+        label
+        for label in reads.get("labels") or []
+        if isinstance(label, Mapping)
+        and str(label.get("file")) == file
+        and label.get("page") == page
+        and isinstance(label.get("box"), Sequence)
+        and len(label["box"]) == 4
+        and _centre_in(label["box"], area)
+    ]
+    if len(here) != 1 or here[0].get("state") != SEALED_WITNESSED:
+        return None
+    label = here[0]
+    value = claim_value(expected)
+    wanted = to_inches(value) if value is not None else None
+    try:
+        sealed = Fraction(str(label.get("inches")))
+    except (ValueError, ZeroDivisionError):
+        return None
+    if wanted is None or sealed <= 0:
+        return None
+    text = str(label.get("text") or "")
+    turn = label.get("turn")
+    reads_out = tuple(
+        f"sealed: {answer.get('model')} at turn {answer.get('turn')}: {answer.get('text')}"
+        for answer in label.get("answers") or []
+        if isinstance(answer, Mapping) and answer.get("turn") == turn
+    ) + (f"sealed: drawn length agrees at its view's scale ({label.get('id')})",)
+    if Fraction(wanted) == sealed:
+        return Verified(
+            "match",
+            "sealed",
+            text,
+            reads_out,
+            "two AI readers of different makers printed it, and its drawn length agrees",
+            value,
+        )
+    if (area[2] - area[0]) * (area[3] - area[1]) > BIG_BOX_PT2:
+        return None  # a big box: which number the claim names is not known
+    return Verified(
+        "mismatch",
+        "sealed",
+        text,
+        reads_out,
+        f"two AI readers of different makers read {text} here, its drawn length agreeing",
+        value,
+    )
+
+
+def with_sealed(found: Mapping[str, Any], sealed: Verified | None) -> dict[str, Any]:
+    """A spot's answer (`Verified.as_dict`) with route 3 laid over it, never loosening it: with no
+    sealed answer, or where the other routes said `mismatch`, theirs stands; where they could not
+    read the spot, the sealed answer; where they said `match` and the sealed reading disagrees,
+    the sealed `mismatch` (two readings that disagree are held, never resolved); where both agree,
+    theirs."""
+    out = dict(found)
+    if sealed is None or out.get("result") == "mismatch":
+        return out
+    if out.get("result") == "cannot_read" or sealed.result == "mismatch":
+        return sealed.as_dict()
+    return out
 
 
 # ---- reads kept in the set pack (2026-10-23) -----------------------------------------------------
