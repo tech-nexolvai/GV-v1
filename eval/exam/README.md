@@ -24,6 +24,24 @@ The rule now (Anant, 2026-11-04) is that a change is scored here before anything
 `labels.py` gives the neutral word for what an answer is about, and `replay.py` does the scoring.
 `scripts/build_exam.py` rebuilds `cases.tsv` when new audits arrive.
 
+## The stage exams
+
+`scripts/exam_replay.py --stage pairing` and `--stage diff` print one stage alone (rebuild plan
+Step 1A), so a pairing failure is never read as a finding failure.
+
+- **Pairing**: each audited vendor page is `exact` (the right architect page, not a guess),
+  `best_guess` (the right page, but the run marked it a best guess or code was unsure of it),
+  `nothing_to_compare` (rightly no architect page), `wrong_view` (the right sheet, the wrong
+  view), `wrong_page` or `unpaired` (no page, where the audit names one). The guess signs are
+  read from the saved run: the coverage block's `pairing_unsure`, a finding's `pairing_guess`,
+  or flag mode's words "best guess: architect page N" in a stored reason.
+- **Diff**: per run and side, red precision, please-check precision and recall against the miss
+  list (found, partly, missed, unscored), on every audited answer and again on the pages the
+  pairing exam calls right.
+
+The reading exam (`reading.py`, `reading_score.py`) is the third stage. Its key holds the printed
+values, so it lives under `~/gv-local/exam/reading/`, never here.
+
 ## No client text
 
 A case is a run tag, a finding id, a page number, who raised it and a label from a fixed list
