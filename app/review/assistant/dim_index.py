@@ -95,8 +95,12 @@ def label_line(label: Mapping[str, Any]) -> str:
         bits.append("read at its spot, two OCR engines")  # #1848
         if label.get("no_letter_map"):
             bits.append("printed in text with no letter map")  # #1750
+    elif label.get("origin") == "read_number":
+        bits.append("drawn ink, code's number reader")  # the read-number fallback, 2026-11-04
     elif label.get("route") == "drawn":
         bits.append("drawn ink, OCR")
+    if label.get("note"):
+        bits.append(f"printed with {label.get('note')}")  # `(4EQ)`, `TYP`: the number is the span
     if label.get("units") == "disagrees":
         bits.append("mm and inches disagree")
     elif mm_off(label):

@@ -36,8 +36,14 @@ is read only when it is on the vendor's drawing, sits beside a dimension line of
 other ink in line with it a word space away, and is a dimension by its vectors: a row ending in an
 inch mark whose two ticks are twins (one the other moved along the row; never two pieces of a
 circle), read in the direction that mark gives; or one such row per dimension when a chain stacks
-two labels into one; or the value before its inch mark when only words follow (`48" (FIELD TRIM)`,
-the note read as words by RapidOCR); or millimetres over inches in brackets (`305` over `[12]`).
+two labels into one (an overall over a part with its note, `150"` over `102 3/8"(6EQ)`, too); or
+the value before its inch mark when only words follow (`48" (FIELD TRIM)`, the note read as words
+by RapidOCR) or a note that leaves the number the span it measures (2026-11-04: an equal split
+`EQ`, `(EQ)`, `4EQ`, `(4EQ)`, the run split into n equal parts; `TYP`, `REF`, `CLR`, `O.A.`), kept
+as the label's `note` (`REF` also flags it `reference`); or millimetres over inches in brackets
+(`305` over `[12]`). A note that changes what the number means (`MIN`, `MAX`, `NOM`, `±`, `+/-`,
+`APPROX`, `VIF`, `HOLD`, `NTS`, `TBD`, another size: a bound, a tolerance, a size to verify) leaves
+no label, on this route or the fallback below: such a number is never an exact size.
 Each row is re-typeset on one line and read by two OCR engines (RapidOCR's recogniser alone,
 `LineReader`, then Tesseract). A stacked fraction's digits are placed by the vectors (how many
 characters the whole number, the numerator and the denominator have), so a row with one is also
@@ -51,6 +57,22 @@ read the same by both engines, and the two agreeing (`units_check`). On this rou
 ends at its ticks (a centre line's dash or a letter's stroke does not cut it), a label stacked over
 a span narrower than itself (a `3/4"` of a chain) takes that span, and one line has one label (the
 one centred on it). A label read this way is the drawn-ink witness, never more (#756 D2).
+
+Which line is a drawn label's (2026-11-04): the way its text reads decides, when its inch mark reads
+it one way only: its line runs that way, standing off the text if it must (`_ticked_line`), and a
+line across the text is taken last and kept only where its view's scale does not say otherwise.
+Of the lines beside the text, the nearest is taken, but when it is not drawn to the value at the
+drawing's scale (its view's fitted scale, else the page's) and exactly one other line beside it is
+(of several, the one whose ends carry the dimension's ticks), that one is the label's: a size
+printed between a top's edge and its own dimension line no longer takes the edge.
+
+**The read-number fallback** (Anant, 2026-11-04): a drawn size the route above rejects but can place
+on a line of its own (a note after its inch mark the rules do not know, a row gathered with a centre
+line's dash) does not vanish: its value's own ink is read by `read_number`'s routes (the OCR pair and
+the shape matcher, the ruler on its own line at its view's scale), and it is a label only when two
+readers agree and the ruler does not block it (DECIDED 2026-10-22). It is the drawn route's trust
+class, with its line, marked `origin: "read_number"` and `read_by` its readers (`_read_fallback`); a
+spot only the OCR pair read waits for the vendor's alphabet to second it, its line kept.
 
 **An architect's hand lettering** (#1662): on the architect's drawings the drawn route reads
 dimensions lettered on one line in a CAD hand-lettering font (`2'-6 1/2"`, `3'-10"`, `5 3/8"`),
@@ -181,8 +203,10 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-#: Changes when what a label holds or how ids are given changes.
-LABELS_VERSION: Final = 3
+#: Changes when what a label holds or how ids are given changes. 4: a drawn label may hold its
+#: `note` (`(4EQ)`, `TYP`) and `origin: "read_number"` (the read-number fallback), and a page read
+#: by an earlier version is read again (`dims_pool` keeps finished pages by this version).
+LABELS_VERSION: Final = 4
 #: The most labels one page lists (a schedule page can print hundreds of numbers).
 MAX_LABELS: Final = 400
 #: Time limits for ONE page (seconds; #1872: per page, so a set of any size reads in about its
@@ -1006,6 +1030,7 @@ def dimension_line(
     *,
     drawn: bool = False,
     taken: Sequence[tuple[float, float, float]] = (),
+    choices: bool = False,
 ) -> dict[str, Any] | None:
     """The dimension line a label sits on (or in a gap of), cut at the extension lines or ticks
     on each side of the label, and its two extension lines when code finds them: `{dim_line:
@@ -1015,7 +1040,15 @@ def dimension_line(
     `drawn` (the drawn route): a centre line's dashes do not cut a line (`_boundaries`), and a
     span between two ticks narrower than the label (a `3/4"` of a chain, its label stacked over
     its ticks) is its line when the label's middle is over it. `taken`: spans (`(across, start,
-    end)`, the frame of `orientation`) another label is centred on, never this one's."""
+    end)`, the frame of `orientation`) another label is centred on, never this one's.
+
+    `choices` (the vendor's drawn labels, 2026-11-04): the nearest line is still the answer, and
+    the lines found on the other rows beside the label are kept with it (`_ALTERNATIVES`, never
+    listed), so its drawing's scale can pick the one drawn to its value once every label is read
+    (`_beside_on_scale`: a size printed between an object's edge and its own dimension line took
+    the edge, the nearer). A row longer than `_LINE_MAX_RATIO` label widths is a candidate too,
+    when only a piece of it cut at its ticks on both sides is taken (a `3"` at the end of a
+    chain whose line runs on through every tick of the chain)."""
     if orientation not in ("h", "v"):
         return None
     flip = orientation == "v"
@@ -1036,7 +1069,8 @@ def dimension_line(
         if not y0 - 0.7 * font <= y <= y1 + 0.7 * font:
             continue
         rows.setdefault(round(y * 2) / 2, []).append((min(a[0], b[0]), max(a[0], b[0])))
-    candidates: list[tuple[float, float, float, float]] = []
+    longest = _LINE_MAX_RATIO * max(width, font)
+    candidates: list[tuple[float, float, float, float, bool]] = []
     for y, pieces in rows.items():
         merged: list[list[float]] = []
         for lo, hi in sorted(pieces):
@@ -1047,17 +1081,22 @@ def dimension_line(
         for lo, hi in merged:
             if hi < cx - 0.25 * width or lo > cx + 0.25 * width:
                 continue
-            if hi - lo < 0.9 * width or hi - lo > _LINE_MAX_RATIO * max(width, font):
+            long = hi - lo > longest
+            if hi - lo < 0.9 * width or (long and not (drawn and choices)):
                 continue
-            candidates.append((abs(y - cy), y, lo, hi))
+            candidates.append((abs(y - cy), y, lo, hi, long))
 
-    def line_at(y: float, lo: float, hi: float, cuts: Sequence[float]) -> dict[str, Any] | None:
+    def line_at(
+        y: float, lo: float, hi: float, cuts: Sequence[float], long: bool = False
+    ) -> dict[str, Any] | None:
         found = _span_at(
             cuts, cx, x0, x1, lo, hi, width, drawn, [t[1:] for t in taken if abs(y - t[0]) <= 0.6]
         )
         if found is None:
             return None
         left, right = found
+        if long and right - left > longest:
+            return None  # a row too long for the label: only a piece of it cut at its ticks
         ends = [_extension(x, y, segments, font) for x in (left, right)]
         inner = len(cuts) > 2 and (left != lo or right != hi)
         if not any(ends) and not inner:
@@ -1074,10 +1113,11 @@ def dimension_line(
             "span_pt": round(right - left, 2),
         }
 
-    for _score, y, lo, hi in sorted(candidates):
+    lines: list[dict[str, Any]] = []
+    for _score, y, lo, hi, long in sorted(candidates):
         cuts = _boundaries(y, lo, hi, segments, font, drawn)
         joined = cuts if drawn else _across_crossings(y, cx, cuts, rows[y], segments, font)
-        found = line_at(y, lo, hi, joined)
+        found = line_at(y, lo, hi, joined, long)
         if joined != cuts:
             plain = line_at(y, lo, hi, cuts)
             if found is None:
@@ -1087,13 +1127,28 @@ def dimension_line(
                 # scale to choose by (`_joins_on_scale`).
                 found[_UNJOINED] = plain
         if found is not None:
-            return found
-    return None
+            if not choices:
+                return found
+            lines.append(found)
+            if len(lines) > _MAX_ALTERNATIVES:
+                break
+    if not lines:
+        return None
+    if len(lines) > 1:
+        lines[0][_ALTERNATIVES] = lines[1:]
+    return lines[0]
 
 
 #: A line joined over a crossing (`_across_crossings`) keeps the line as cut under this key until
 #: the drawing's scale has had its say (`_joins_on_scale`); it is never listed.
 _UNJOINED: Final = "_unjoined"
+#: The other lines beside a drawn label (`dimension_line(choices=True)`), kept under this key until
+#: the drawing's scale has had its say (`_beside_on_scale`); never listed. At most this many.
+_ALTERNATIVES: Final = "_alternatives"
+_MAX_ALTERNATIVES: Final = 3
+#: A drawn label whose text reads one way and whose line runs the other (`_line_of`): kept only
+#: where its view's scale does not say the line is drawn to another length (`_beside_on_scale`).
+_ACROSS: Final = "_across"
 
 
 def _joins_on_scale(
@@ -1705,7 +1760,9 @@ def _without_line_work(label: ink_labels.Label, lines: np.ndarray) -> ink_labels
     is left. A dimension line cut short by its ticks leaves pieces as small as a character, so they
     join the label they pass beside: a straight stroke on a line that runs on past the label (the
     line work continues it, touching or overlapping it) is line work, and so is a small mark
-    centred on such a line (a tick)."""
+    centred on such a line (a tick). So is a stroke at one end of a label much longer than it that
+    way, when the line resumes just past the label's other end (2026-11-04: a `3"` written in the
+    gap of its own line, at a chain's end, held the stub of its line and that end's tick)."""
     x0, y0, x1, y1 = label.box
     if not len(lines):
         return label
@@ -1726,6 +1783,12 @@ def _without_line_work(label: ink_labels.Label, lines: np.ndarray) -> ink_labels
         if length < 0.5:
             continue
         unit = (end - start) / length
+        # The label's extent along the stroke, from its start: a stroke at one end of a label
+        # much longer than it that way may be its line's stub, the label sitting in the gap.
+        corners = [np.array((cx, cy)) for cx in (x0, x1) for cy in (y0, y1)]
+        reach_along = [float(np.dot(corner - start, unit)) for corner in corners]
+        first, last = min(reach_along), max(reach_along)
+        at_end = last - first >= 2.5 * length and (first >= -0.6 or last <= length + 0.6)
         runs_on = False
         for sx, sy, ex, ey in near:
             a, b = np.array((sx, sy)), np.array((ex, ey))
@@ -1736,7 +1799,11 @@ def _without_line_work(label: ink_labels.Label, lines: np.ndarray) -> ink_labels
                 continue
             ta, tb = float(np.dot(a - start, unit)), float(np.dot(b - start, unit))
             low, high = min(ta, tb), max(ta, tb)
-            if high < -0.6 or low > length + 0.6:  # not touching the stroke
+            resumes = at_end and (
+                (first >= -0.6 and last - 0.6 <= low <= last + 1.5)
+                or (last <= length + 0.6 and first - 1.5 <= high <= first + 0.6)
+            )
+            if (high < -0.6 or low > length + 0.6) and not resumes:  # not touching the stroke
                 continue
             reach = max(abs(ta), abs(tb), abs(ta - length), abs(tb - length))
             outside = [start + unit * t for t in (low, high)]
@@ -1884,10 +1951,48 @@ def _inch_mark_inside(row: Sequence[ink_labels.Token], turn: ink_labels.Turn) ->
     return 0
 
 
+def _noted_part(
+    label: ink_labels.Label, row: Sequence[ink_labels.Token], turn: ink_labels.Turn, end: int
+) -> _Part:
+    """The value of a row whose inch mark a note follows (`end`: `_inch_mark_inside`), the note
+    kept beside it: its tokens to read, its glyphs as the label's own ink (never a crowding word),
+    and the row (value and note) as where its line is looked for."""
+    head, tail = row[:end], row[end:]
+    value = _row_label(label, head, turn)
+    whole = _row_label(label, row, turn)
+    rest = tuple(g for g in whole.glyphs if g not in value.glyphs)
+    return _Part(value, note=tuple(tail), turn=turn, also=rest, spot=whole.box)
+
+
+def _value_rows(
+    label: ink_labels.Label,
+) -> list[tuple[_Part, tuple[tuple[ink_labels.Token, ...], ...]]]:
+    """Every row of a label that is a dimension of its own, in the one direction the label reads:
+    a row ending in its inch mark, or a value with a note after its inch mark (`102 3/8"(6EQ)`),
+    each with the label's other rows (a centre line's dash gathered with the text, a stray mark,
+    a word): for the read-number fallback, which reads those rows too, so a size over `MIN` is
+    never taken for an exact size (`_read_fallback`). Code's own parts need every row a size."""
+    turns = ink_labels.turns(label)
+    if len(turns) != 1:
+        return []
+    turn = turns[0]
+    rows = ink_labels.rows(label, turn)
+    out: list[tuple[_Part, tuple[tuple[ink_labels.Token, ...], ...]]] = []
+    for index, row in enumerate(rows):
+        others = tuple(tuple(other) for n, other in enumerate(rows) if n != index)
+        if _twin_ticks(row, turn):
+            out.append((_Part(_row_label(label, row, turn), turn=turn), others))
+        elif end := _inch_mark_inside(row, turn):
+            out.append((_noted_part(label, row, turn, end), others))
+    return out
+
+
 def _parts(label: ink_labels.Label) -> list[_Part]:
     """The dimensions to read in a drawn label: millimetres over inches; one per row when two or
-    more rows each end in their own inch mark (labels a chain stacks closely); the value before
-    its note; or the label itself when it ends in an inch mark. Anything else: none."""
+    more rows each end in their own inch mark (labels a chain stacks closely), or when every row
+    is a dimension and one has a note after its inch mark (an overall stacked over a part with its
+    equal-split note: `150"` over `102 3/8"(6EQ)`); the value before its note; or the label itself
+    when it ends in an inch mark. Anything else: none."""
     mm = _mm_rows(label)
     if mm is not None:
         return [_Part(label, "mm", turn=mm)]
@@ -1896,6 +2001,20 @@ def _parts(label: ink_labels.Label) -> list[_Part]:
         marked = [row for row in rows if _twin_ticks(row, turn)]
         if len(rows) >= 2 and len(marked) >= 2:
             return [_Part(_row_label(label, row, turn), turn=turn) for row in marked]
+    for turn in ink_labels.turns(label):
+        rows = ink_labels.rows(label, turn)
+        if len(rows) < 2:
+            continue
+        stacked: list[_Part] = []
+        for row in rows:
+            if _twin_ticks(row, turn):
+                stacked.append(_Part(_row_label(label, row, turn), turn=turn))
+            elif end := _inch_mark_inside(row, turn):
+                stacked.append(_noted_part(label, row, turn, end))
+            else:
+                break
+        if len(stacked) == len(rows) and any(part.note for part in stacked):
+            return stacked
     if _inch_marked(label):
         return [_Part(label)]
     for turn in ink_labels.turns(label):
@@ -1913,11 +2032,53 @@ def _parts(label: ink_labels.Label) -> list[_Part]:
 
 
 _NOTE_WORDS: Final = re.compile(r"[A-Za-z]{2,}")
+#: A note after a drawn size that leaves the number the span it measures, so the size keeps its
+#: value: an equal split (`EQ`, `(EQ)`, `4EQ`, `(4EQ)`, `EQ. SP.`: the run split into n equal
+#: parts, the number still the whole run), typical, a reference size, a clear opening, an overall.
+_SPAN_NOTE: Final = re.compile(
+    r"^\(?(?:\d{1,2}\s*)?(?:EQ(?:UAL)?\.?(?:\s*SP(?:ACES?|CS)?\.?)?|TYP(?:ICAL)?\.?|REF\.?"
+    r"|CLR\.?|CLEAR|O\.?\s?A\.?|OVERALL)\)?$",
+    re.IGNORECASE,
+)
+#: A note that changes what the number means (a bound, an approximation, a size to verify or
+#: hold, a drawing not to scale): the number is never an exact size then (`36" MIN`).
+_MEANING_NOTE: Final = re.compile(
+    r"\bMIN\b|\bMAX\b|MINIMUM|MAXIMUM|\bNOM\b|NOMINAL|\+\s*/\s*-|\+-|±|APPROX|V\.?I\.?F\b"
+    r"|VERIFY|\bF\.?V\.?\b|\bHOLD\b|\bN\.?T\.?S\b|NOT TO SCALE|\bTBD\b|\bTBV\b|\bUP\s*TO\b"
+    # another size in the note: a range or a sum (`36" TO 42"`, `+2"`)
+    r"|\d\s*[\"'/\u201d\u2033]",
+    re.IGNORECASE,
+)
+#: Digits and signs an engine reads in place of letters (`M1N` or `MlN` for `MIN`, `0A` for `OA`),
+#: put back before a note is checked for words that change its number.
+_AS_LETTERS: Final = str.maketrans({"1": "I", "l": "I", "0": "O", "5": "S", "|": "I", "!": "I"})
+#: A sign no note prints that an engine reads in place of a letter (`(4E@)` for `(4EQ)`).
+_LOOKALIKE: Final = str.maketrans({"@": "Q"})
 
 
-def _note_is_words(part: _Part, engines: Sequence[Any]) -> bool:
-    """Whether the note after a drawn value reads as words only, by the engine that knows letters
-    (RapidOCR): at least one word, no digit and no `+` (`3"+2" FILLER` is a sum, not a note)."""
+def _note_kind(line: str) -> str:
+    """What one reading of a note says: `changes` (a word that changes the number's meaning:
+    `MIN`, `MAX`, `±`, `VIF`, `HOLD`, `NTS`...; read also with digits taken for letters, `M1N`),
+    `span` (a note that leaves the number the span: `_SPAN_NOTE`), `words` (words only: no digit,
+    no `+`), else `other` (a count, a sum, a misread)."""
+    flat = " ".join(line.split())
+    if _MEANING_NOTE.search(flat) or _MEANING_NOTE.search(flat.translate(_AS_LETTERS)):
+        return "changes"
+    plain = flat.translate(_LOOKALIKE)
+    if _SPAN_NOTE.match(plain.replace(" ", "")) or _SPAN_NOTE.match(plain):
+        return "span"
+    if _NOTE_WORDS.search(flat) and not re.search(r"[\d+]", flat):
+        return "words"
+    return "other"
+
+
+def _note_reading(part: _Part, engines: Sequence[Any]) -> tuple[str, str | None]:
+    """What the note after a drawn value says, by the engine that knows letters (RapidOCR), read
+    at each picture size: `(kind, note)`. `changes` when any reading is a word that changes the
+    number (never an exact size then); `words` when every reading is words only (`(FIELD TRIM)`);
+    `span` when every reading is words or a note that leaves the number the span, one at least
+    the latter (`(4EQ)`, `TYP.`), `note` its plainest reading; else `unknown` (a digit or sign
+    the rules do not know: the number goes to the read-number fallback, `_read_fallback`)."""
     for reader in engines:
         if reader.name != "RapidOCR":
             continue
@@ -1925,14 +2086,27 @@ def _note_is_words(part: _Part, engines: Sequence[Any]) -> bool:
         for height in ink_labels.HEIGHTS_PX:
             picture = ink_labels.row_picture(part.note, part.turn or 0, height)
             if picture is not None:
-                lines.append(" ".join(reader(picture, single_line=True)))
-        text = " ".join(lines)
-        return (
-            bool(lines)
-            and all(_NOTE_WORDS.search(line) and not re.search(r"[\d+]", line) for line in lines)
-            and bool(text)
-        )
-    return False
+                lines.append(" ".join(reader(picture, single_line=True)).strip())
+        read = [(line, _note_kind(line)) for line in lines if line]
+        kinds = {kind for _line, kind in read}
+        if not kinds:
+            return "unknown", None
+        if "changes" in kinds:
+            return "changes", None
+        if kinds == {"words"}:
+            return "words", None
+        if kinds <= {"span", "words"}:
+            spans = [line.translate(_LOOKALIKE) for line, kind in read if kind == "span"]
+            return "span", min(spans, key=len).replace(" ", "").upper()
+        return "unknown", None
+    return "unknown", None
+
+
+def _note_is_words(part: _Part, engines: Sequence[Any]) -> bool:
+    """Whether the note after a drawn value reads as words only, by the engine that knows letters
+    (RapidOCR): at least one word, no digit and no `+` (`3"+2" FILLER` is a sum, not a note), and
+    no word that changes the number (`MIN`, `VIF`: `_note_reading`)."""
+    return _note_reading(part, engines)[0] == "words"
 
 
 _MM_LINE: Final = re.compile(r"\d{2,5}")
@@ -2322,7 +2496,7 @@ def drawn_labels(
     )
     parsed = _parse(Path(pdf), page - 1)
     missed: list[ink_labels.Label] = []
-    _add_drawn(result, parsed, halves, budget_s, readers, clock, missed)
+    _add_drawn(result, parsed, halves, budget_s, readers, clock, missed, (Path(pdf).name, page))
     _number(result.labels)
     if ocr_budget_s > 0 and result.drawn in ("done", "partial"):
         read = PageLabels(labels=list(result.labels), phrases=[dict(p) for p in phrases])
@@ -2344,7 +2518,7 @@ def drawn_labels(
                 _log.warning("dimension labels: number sweep failed: %s", type(failed).__name__)
                 found, held, said = [], [], {"status": "failed"}
             result.ocr_labels += found
-            result.sweep_held = held
+            result.sweep_held += held
             result.ocr = {**read.ocr, "sweep": said}
     if alphabet:
         result.alphabet = alphabet_samples(parsed, result.labels, page)
@@ -2391,6 +2565,11 @@ class SweepHeld:
     ruler: float | None
     ink: Any
     turns: tuple[int, ...]
+    line: Mapping[str, Any] | None = None
+    """The size's own dimension line, when the read-number fallback found it (`_read_fallback`):
+    a seconded reading then keeps it (`origin: "read_number"`), else the spot has none."""
+    orientation: str | None = None
+    note: str | None = None
 
 
 def _sweep(
@@ -2515,8 +2694,11 @@ def seconded(
         decided = read_number.decide(
             ocr=item.ocr, shape=item.shape, ruler=item.ruler, alphabet=values.pop()
         )
-        if decided.value is not None:
-            out.append((item, decided.value))
+        if decided.value is None:
+            continue
+        if item.line is not None and read_number.ruler_blocks(decided.value, item.ruler):
+            continue  # a size on its own line: its line must not say otherwise (2026-10-22)
+        out.append((item, decided.value))
     return out
 
 
@@ -3447,7 +3629,14 @@ def _line_of(
     parsed: _Parsed, part: _Part, taken: Sequence[_Taken] = ()
 ) -> tuple[dict[str, Any], str] | None:
     """A drawn label's dimension line and its orientation (`dimension_line`, `drawn=True`), or
-    `None`. `taken`: spans another label is centred on."""
+    `None`. `taken`: spans another label is centred on.
+
+    The text decides the way (2026-11-04): a vendor's size whose inch mark reads it one way only
+    (every reading direction across the page, or every one up or down it) looks for its line that
+    way first, then for a line standing off its text that way (`_ticked_line`: a `2"` lettered a
+    letter height above its line), and only then across it (`_ACROSS`: a horizontal `2"` beside
+    a vertical extension line took that line). The answer keeps the other lines beside the text
+    (`_ALTERNATIVES`) for the drawing's scale to choose from (`_beside_on_scale`)."""
     box = part.label.box
     # A dimension's number reads along its line (upright on a horizontal line, up or down the
     # page on a vertical one): that line is looked for first.
@@ -3469,30 +3658,48 @@ def _line_of(
                 x0 - 0.3 <= q[0] <= x1 + 0.3 and y0 - 0.3 <= q[1] <= y1 + 0.3 for q in (a, b)
             )
         ]
+    one_way = (
+        part.kind != "mm"
+        and not part.lettered
+        and bool(turns)
+        and len({t == 0 for t in turns}) == 1
+    )
     # A label's own strokes along a line are never that line (#1629: a drawn `4"`'s upright, a
     # few points long, was taken for its chain's line); its ticks and crossings still cut it.
     own = _own_strokes(part.label) if part.kind != "mm" else set()
     spot = part.spot or box
     for orientation, axis in ways:
         font = spot[axis] - spot[axis - 2]
+        lines = _without_own(segments, own, orientation) if own else segments
+        others = [(t[1], t[2], t[3]) for t in taken if t[0] == orientation]
         found = dimension_line(
             spot,
             orientation,
-            _without_own(segments, own, orientation) if own else segments,
+            lines,
             font,
             drawn=True,
-            taken=[(t[1], t[2], t[3]) for t in taken if t[0] == orientation],
+            taken=others,
+            choices=not part.lettered,
         )
         if found is not None:
+            if one_way and orientation != ways[0][0]:
+                found[_ACROSS] = True
+            elif one_way:
+                # A ticked line standing off the text is one more for the scale to choose from
+                # (a `2"` lettered over a hidden line's dashes, its own line a letter height off).
+                beside = _ticked_line(spot, orientation, lines, font, taken=others)
+                more = [] if beside is None else beside.get("options") or [beside]
+                more = [
+                    line
+                    for line in more
+                    if line.get("dim_line")
+                    and not _line_taken(line, [found, *(found.get(_ALTERNATIVES) or ())])
+                ]
+                if more:
+                    found[_ALTERNATIVES] = [*(found.get(_ALTERNATIVES) or ()), *more]
             return found, orientation
-        if part.lettered and orientation == ways[0][0]:
-            beside = _ticked_line(
-                spot,
-                orientation,
-                _without_own(segments, own, orientation) if own else segments,
-                font,
-                taken=[(t[1], t[2], t[3]) for t in taken if t[0] == orientation],
-            )
+        if (part.lettered or one_way) and orientation == ways[0][0]:
+            beside = _ticked_line(spot, orientation, lines, font, taken=others)
             if beside is not None:
                 return beside, orientation
     return None
@@ -3558,9 +3765,9 @@ def _settle_lines(
                 span_pt=line["span_pt"],
                 orientation=orientation,
             )
-            label.pop(_BESIDE, None)
-            if line.get("beside"):
-                label[_BESIDE] = True
+            for key in (_BESIDE, _ACROSS, _ALTERNATIVES):
+                label.pop(key, None)
+            _lined(label, line)
             kept.append((label, part))
         found = kept
         if not moved:
@@ -3584,8 +3791,14 @@ def _beside_on_scale(
     and the label is dropped. With no fit there is nothing to disagree with, and the label keeps
     its line. A label with several such lines (`_OPTIONS`) takes the one drawn to its value at its
     view's fitted scale, when exactly one is and no other label has that line; with none, or no
-    fit to tell, it is dropped. Every other label is kept as it is."""
-    if not any(label.get(_BESIDE) or label.get(_OPTIONS) for label in found):
+    fit to tell, it is dropped. A drawn label whose line runs across its text (`_ACROSS`) is
+    judged as one standing off it. A drawn label whose line is not drawn to its value at its
+    view's fitted scale takes the one other line beside it that is (`_ALTERNATIVES`), when exactly
+    one is and no other label has it (2026-11-04: a `18 3/8"` printed between a top's edge and its
+    own dimension line took the edge's full width); otherwise it keeps its line. Every other label
+    is kept as it is."""
+    keys_of = (_BESIDE, _OPTIONS, _ACROSS, _ALTERNATIVES)
+    if not any(label.get(key) for label in found for key in keys_of):
         return found
     scale_fit = import_module("app.review.assistant.scale_fit")
     every = [
@@ -3597,8 +3810,67 @@ def _beside_on_scale(
     fit = scale_fit.page_fit(every, segments)
     views: Any = None
     kept: list[dict[str, Any]] = []
+
+    def off_its_view(label: Mapping[str, Any]) -> bool:
+        """Whether the label's line is drawn to another length at its view's fitted scale (no
+        fit: nothing to disagree with)."""
+        key = keys[id(label)]
+        span = fit.spans.get(key)
+        view = fit.views.get(key)
+        at = None if span is None or view is None else fit.fit_at(fit.sides[key], view, span.axis)
+        return at is not None and not scale_fit._agrees(span, at[0].in_per_pt)[1]
+
+    ratios: dict[str, list[float]] = {}
+    for label in every:
+        inches = float(label["inches"])
+        if label.get("span_pt") and inches >= 2:
+            ratios.setdefault(str(label["side"]), []).append(float(label["span_pt"]) / inches)
+
+    def drawn_to_value(label: Mapping[str, Any], line: Mapping[str, Any]) -> bool | None:
+        """Whether `line` is drawn to the label's value at its view's fitted scale; in a view with
+        no fit, by the page's median scale for the label's side, as `_scale_checks` judges it (at
+        least three labels; a line across two views has no view). `None`: nothing to tell."""
+        nonlocal views
+        if views is None:
+            views = scale_fit._Views(segments)
+        (x0, y0), (x1, y1) = line["dim_line"]
+        inches = Fraction(Decimal(str(label["inches"])))
+        if abs(y0 - y1) <= 0.5:
+            span = scale_fit.Drawn("", "h", (y0 + y1) / 2, min(x0, x1), max(x0, x1), inches, "")
+        else:
+            span = scale_fit.Drawn("", "v", (x0 + x1) / 2, min(y0, y1), max(y0, y1), inches, "")
+        view = views.of_span(span)
+        at = None if view is None else fit.fit_at(str(label["side"]), view, span.axis)
+        if at is not None:
+            return bool(scale_fit._agrees(span, at[0].in_per_pt)[1])
+        found = sorted(ratios.get(str(label["side"]), []))
+        if len(found) < 3 or inches < 2 or span.b <= span.a:
+            return None
+        middle = found[len(found) // 2]
+        return abs((span.b - span.a) / float(inches) / middle - 1) <= _SCALE_TOLERANCE
+
+    def other_line(label: Mapping[str, Any], alternatives: Sequence[Mapping[str, Any]]) -> Any:
+        """The one other line beside the label drawn to its value (of several, the one whose ends
+        are marked as a dimension's: `_marked_ends`), when no other label has it; else `None`. A
+        line with no such marks never replaces one that has them (a ticked dimension line drawn
+        off its scale keeps it)."""
+        box = label["box"]
+        font = min(float(box[2]) - float(box[0]), float(box[3]) - float(box[1]))
+        fitting: list[Mapping[str, Any]] = []
+        for line in alternatives:
+            if drawn_to_value(label, line) and not _line_taken(line, fitting):
+                fitting.append(line)  # one line found twice (beside its text, and under it)
+        if len(fitting) > 1:
+            fitting = [a for a in fitting if _marked_ends(a, segments, font)]
+        if len(fitting) != 1 or _line_taken(fitting[0], every):
+            return None
+        if _marked_ends(label, segments, font) and not _marked_ends(fitting[0], segments, font):
+            return None
+        return fitting[0]
+
     for label in found:
         options = label.pop(_OPTIONS, None)
+        alternatives = label.pop(_ALTERNATIVES, None)
         if options is not None:
             if views is None:
                 views = scale_fit._Views(segments)
@@ -3611,17 +3883,34 @@ def _beside_on_scale(
                 )
                 kept.append(label)
             continue
-        if not label.pop(_BESIDE, False):
-            kept.append(label)
-            continue
-        key = keys[id(label)]
-        span = fit.spans.get(key)
-        view = fit.views.get(key)
-        at = None if span is None or view is None else fit.fit_at(fit.sides[key], view, span.axis)
-        if at is not None and not scale_fit._agrees(span, at[0].in_per_pt)[1]:
+        beside = label.pop(_BESIDE, False)
+        across = label.pop(_ACROSS, False)
+        if alternatives and drawn_to_value(label, label) is False:
+            chosen = other_line(label, alternatives)
+            if chosen is not None:
+                label.update(
+                    dim_line=chosen["dim_line"],
+                    extension=chosen["extension"],
+                    span_pt=chosen["span_pt"],
+                )
+                kept.append(label)
+                continue
+        if (beside or across) and off_its_view(label):
             continue  # drawn to another length at its view's scale: not its line
         kept.append(label)
     return kept
+
+
+def _marked_ends(option: Mapping[str, Any], segments: Sequence[Segment], font: float) -> bool:
+    """Whether a line's two ends are each marked as a dimension's end (a slash tick across it or
+    an arrowhead's tip: `_end_marks`): a dimension line, not an object's edge of the same length."""
+    (x0, y0), (x1, y1) = option["dim_line"]
+    if abs(y0 - y1) <= 0.5:
+        row, lo, hi, lines = (y0 + y1) / 2, min(x0, x1), max(x0, x1), segments
+    else:
+        row, lo, hi, lines = (x0 + x1) / 2, min(y0, y1), max(y0, y1), _flipped_segments(segments)
+    marks = _end_marks(row, lo - 1.0, hi + 1.0, lines, font)
+    return all(any(abs(m - end) <= _MARK_AT_CUT_PT for m in marks) for end in (lo, hi))
 
 
 def _scaled_option(
@@ -3662,12 +3951,48 @@ def _scaled_option(
     return fitting[0]
 
 
+@dataclass(frozen=True, slots=True)
+class _Rejected:
+    """A drawn size the drawn route did not take as it is, with its own dimension line: the value
+    before a note the rules do not know (`24" (2 PLCS)`), or a row of a label gathered with other
+    ink (`30"(2EQ)` with a centre line's dash). The read-number fallback reads it
+    (`_read_fallback`)."""
+
+    part: _Part
+    line: dict[str, Any]
+    orientation: str
+    others: tuple[tuple[ink_labels.Token, ...], ...] = ()
+    """The label's other rows, gathered with the size (`_value_rows`): read for a word that changes
+    the size (`MIN` written under it) before it is read."""
+
+
+def _lined(label: dict[str, Any], found: Mapping[str, Any]) -> dict[str, Any]:
+    """`label` with what its line search kept for the drawing's scale to decide (never listed):
+    a line standing off its text (`_BESIDE`) or several such (`_OPTIONS`), a line across its
+    text (`_ACROSS`), the other lines beside it (`_ALTERNATIVES`)."""
+    if found.get("options"):
+        label[_OPTIONS] = found["options"]
+    elif found.get("beside"):
+        label[_BESIDE] = True
+    for key in (_ACROSS, _ALTERNATIVES):
+        if found.get(key):
+            label[key] = found[key]
+    return label
+
+
 def _drawn_label(
-    parsed: _Parsed, part: _Part, engines: Sequence[Any], side: str
+    parsed: _Parsed,
+    part: _Part,
+    engines: Sequence[Any],
+    side: str,
+    rejected: list[_Rejected] | None = None,
 ) -> dict[str, Any] | None:
     """One part of a drawn label read as a label, or `None`: room round it (`_crowded`), a
     dimension line of its own (`_line_of`), and its value read (`_drawn_value`, or `_mm_value`
-    for millimetres over inches; a note after the value must read as words only)."""
+    for millimetres over inches). A note after the value must read as words only, or as a note
+    that leaves the number the span (`(4EQ)`, `TYP`, `REF`, `CLR`, `O.A.`: kept as `note`; `REF`
+    flags it `reference`); a note that changes the number (`MIN`, `MAX`, `±`, `VIF`) leaves no
+    label, and one the rules do not know goes to `rejected` for the read-number fallback."""
     label = part.label
     if _crowded(parsed.page, label, part.also, part.turn):
         return None
@@ -3678,6 +4003,7 @@ def _drawn_label(
     box = label.box
     width, height = box[2] - box[0], box[3] - box[1]
     mm: str | None = None
+    note: str | None = None
     try:
         if part.kind == "mm":
             both = _mm_value(part, engines)
@@ -3688,8 +4014,12 @@ def _drawn_label(
                 _label_reads(label, engines, part.turn),
                 lambda v: _vector_ones(label, v, part.turn),
             )
-            if value is not None and part.note and not _note_is_words(part, engines):
-                value = None
+            if value is not None and part.note:
+                kind, note = _note_reading(part, engines)
+                if kind == "unknown" and rejected is not None and found.get("dim_line"):
+                    rejected.append(_Rejected(part, found, orientation))
+                if kind not in ("words", "span"):
+                    value = None
     except Exception as failed:  # noqa: BLE001 - an unread label is left out
         _log.warning("dimension labels: drawn read failed: %s", type(failed).__name__)
         return None
@@ -3709,8 +4039,12 @@ def _drawn_label(
         mm=mm,
         units=None if mm is None else units_check(text),
         route="drawn",
+        flags=value_flags(note or ""),
     )
-    return _label(reading, found, side)
+    out = _lined(_label(reading, None if found.get("options") else found, side), found)
+    if note:
+        out["note"] = note
+    return out
 
 
 def _add_drawn(
@@ -3721,11 +4055,15 @@ def _add_drawn(
     readers: Sequence[Any] | None,
     clock: Callable[[], float],
     missed: list[ink_labels.Label] | None = None,
+    place: tuple[str, int] = ("", 0),
 ) -> None:
     """The drawn route: character-sized ink outside the text labels, grouped into clusters, each
     split into labels by its vectors (`ink_labels`); a label beside a dimension line of its own is
     read (`_label_reads`) and kept when `_drawn_value` gives its one value. Added after the text
-    labels (sorted among themselves), so a text label's id never moves."""
+    labels (sorted among themselves), so a text label's id never moves. What it rejected but can
+    place on a line of its own (`_Rejected`) is read by the read-number fallback
+    (`_read_fallback`), among the rest before each line is settled; `place`: the page's file name
+    and number, for the spots the fallback holds for the vendor's alphabet (`SweepHeld`)."""
     started = clock()
     if not parsed.page.paths:
         result.drawn = "done"
@@ -3743,6 +4081,10 @@ def _add_drawn(
     skip = [tuple(label["box"]) for label in labels]
     seen: list[Box] = []
     drawn: list[tuple[dict[str, Any], _Part]] = []
+    rejected: list[_Rejected] = []
+    # Each vendor label read here and the ink it was read from: a label that loses its line when
+    # the lines are settled goes back to the OCR route like any unread ink.
+    source: dict[int, ink_labels.Label] = {}
     clusters, lone = _clusters(parsed.page.paths, skip)
     lines = _line_ends(parsed.segments)
     for cluster in [*clusters, *lone]:
@@ -3774,15 +4116,36 @@ def _add_drawn(
             if bare is None:
                 continue
             read = False
-            for part in _parts(bare):
-                found_label = _drawn_label(parsed, part, engines, side)
+            parts = _parts(bare)
+            for part in parts:
+                found_label = _drawn_label(parsed, part, engines, side, rejected)
                 if found_label is not None:
                     drawn.append((found_label, part))
+                    source[id(found_label)] = label
                     read = True
+            if not read:
+                # An odd shape (a size gathered with a centre line's dash, or a word under it):
+                # each row that is a size of its own and was not read as such, on a line of its
+                # own, goes to the read-number fallback with the label's other rows.
+                tried = {part.label.box for part in parts}
+                for part, others in _value_rows(bare):
+                    if part.label.box in tried or _crowded(
+                        parsed.page, part.label, part.also, part.turn
+                    ):
+                        continue
+                    line = _line_of(parsed, part)
+                    if line is not None and line[0].get("dim_line"):
+                        rejected.append(_Rejected(part, line[0], line[1], others))
             if not read and missed is not None:
                 missed.append(label)  # the OCR route's (#1848): no part of it was read
         if result.drawn == "partial" or len(labels) + len(drawn) >= MAX_LABELS:
             break
+    if rejected and result.drawn != "partial":
+        fallback, held = _read_fallback(
+            parsed, rejected, [*labels, *(label for label, _part in drawn)], engines, place
+        )
+        drawn += fallback
+        result.sweep_held += held
     if result.drawn != "partial":
         _add_lettered(result, parsed, halves, engines, budget_s - (clock() - started), clock, drawn)
     optioned = [label for label, _part in drawn if label.get(_OPTIONS)]
@@ -3790,8 +4153,105 @@ def _add_drawn(
     settled = _beside_on_scale(
         [*_settle_lines(parsed, lined, labels), *optioned], labels, parsed.segments
     )
+    if missed is not None:
+        # A vendor label with no line of its own after all (another label's, several beside it,
+        # or one its drawing's scale says is not its) is unread ink again: the OCR route's.
+        kept = {id(label) for label in settled}
+        for label, _part in drawn:
+            piece = source.get(id(label))
+            if piece is not None and id(label) not in kept and piece not in missed:
+                missed.append(piece)
     settled.sort(key=lambda label: (round(label["box"][1] / 4), label["box"][0]))
     labels += settled
+
+
+#: A label the read-number fallback proved (`_read_fallback`): read by code's own number reader,
+#: with a dimension line of its own (never an OCR reading of pixels: `label_origin.READ_NUMBER`).
+_FALLBACK_ORIGIN: Final = label_origin.READ_NUMBER
+
+
+def _read_fallback(
+    parsed: _Parsed,
+    rejected: Sequence[_Rejected],
+    labels: Sequence[Mapping[str, Any]],
+    engines: Sequence[Any],
+    place: tuple[str, int] = ("", 0),
+) -> tuple[list[tuple[dict[str, Any], _Part]], list[SweepHeld]]:
+    """The read-number fallback (Anant, 2026-11-04): a drawn size the drawn route rejected (a note
+    it does not know after its inch mark, a row gathered with other ink) does not vanish. Its value
+    alone is read by `read_number`'s own routes (`read_number.read_ink`): the OCR pair and the
+    shape matcher on its ink, and the ruler (its own dimension line at its view's scale, from the
+    page's labels so far: `view_scales`). It is a label only when two readers agree and the ruler
+    does not block it (the rule DECIDED 2026-10-22), and never when its note changes what the
+    number means (`MIN`, `±`: `_note_reading`). Such a label is the drawn route's (`route:
+    "drawn"`, the drawn-ink witness), with its line, `origin: "read_number"` and `read_by` its
+    readers; it is settled with the others (`_settle_lines`, `_beside_on_scale`). A spot only the
+    OCR pair read is held for the vendor's alphabet with its line (`SweepHeld`, `seconded`)."""
+    read_number = import_module("app.review.assistant.read_number")
+    view_scales = import_module("app.review.assistant.view_scales")
+    scales, _checks = view_scales.page_scales(place[1], [la for la in labels if la.get("dim_line")])
+    out: list[tuple[dict[str, Any], _Part]] = []
+    held: list[SweepHeld] = []
+    seen: list[Box] = []
+    for item in rejected:
+        part, line = item.part, item.line
+        box = part.label.box
+        if any(_overlap(box, other) > 0.5 for other in seen):
+            continue
+        seen.append(box)
+        note: str | None = None
+        try:
+            if part.note:
+                kind, note = _note_reading(part, engines)
+                if kind == "changes":
+                    continue  # a bound, a tolerance, a size to verify: never an exact size
+            if any(
+                _note_reading(replace(part, note=row), engines)[0] == "changes"
+                for row in item.others
+            ):
+                continue  # a word gathered with it changes it (`MIN` written under it)
+            scale = view_scales.scale_at(scales, box, side="vendor")
+            ruler = None if scale is None else round(float(line["span_pt"]) * scale.in_per_pt, 2)
+            decided, ocr, shape = read_number.read_ink(part.label, engines, ruler)
+        except Exception as failed:  # noqa: BLE001 - an unread size stays unread
+            _log.warning("dimension labels: read-number fallback failed: %s", type(failed).__name__)
+            continue
+        if decided.value is None:
+            if decided.code == "one_route" and ocr is not None and shape is None and place[0]:
+                held.append(
+                    SweepHeld(
+                        place[0],
+                        place[1],
+                        box,
+                        ocr,
+                        None,
+                        ruler,
+                        part.label,
+                        tuple(read_number._turns(part.label)),
+                        line=line,
+                        orientation=item.orientation,
+                        note=note,
+                    )
+                )
+            continue
+        value = Decimal(str(decided.value))
+        reading = _Reading(
+            text=vv._inches_text(value),
+            inches=value,
+            box=box,
+            along=(1.0, 0.0) if item.orientation == "h" else (0.0, 1.0),
+            font=min(box[2] - box[0], box[3] - box[1]),
+            bare=False,
+            route="drawn",
+            flags=value_flags(note or ""),
+        )
+        label = _lined(_label(reading, line, "vendor"), line)
+        label["origin"] = _FALLBACK_ORIGIN
+        label["read_by"] = list(decided.agreed)
+        if note:
+            label["note"] = note
+        out.append((label, part))
+    return out, held
 
 
 def _lettered_value(item: hand_labels.Lettered, engines: Sequence[Any]) -> Decimal | None:
@@ -4275,6 +4735,22 @@ def _finish_page(read: PageRead, pdf: Path, halves: Sequence[Mapping[str, Any]])
     return read
 
 
+def _line_taken(line: Mapping[str, Any], labels: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether a label of `labels` already has this dimension line (to 0.6 pt at both ends)."""
+    mine = line.get("dim_line")
+    if not mine:
+        return False
+    for label in labels:
+        theirs = label.get("dim_line")
+        if theirs and all(
+            abs(float(a) - float(b)) <= 0.6
+            for p, q in zip(mine, theirs, strict=True)
+            for a, b in zip(p, q, strict=True)
+        ):
+            return True
+    return False
+
+
 def _number_ocr(entry: dict[str, Any], labels: Sequence[Mapping[str, Any]]) -> None:
     """`labels` (the OCR route's) added to the page's, numbered after them, up to `MAX_LABELS`."""
     page = entry["labels"]
@@ -4426,9 +4902,17 @@ def build_dims(
         for (name, number), found in pending.items():
             if number != item.page or Path(pdfs[name]).name != item.file:
                 continue
-            if not any(_overlap(item.box, tuple(lab["box"])) > 0.3 for lab in found.ocr_labels):
+            page_labels_now = entries[(name, number)]["labels"]
+            if item.line is not None and _line_taken(item.line, page_labels_now):
+                break  # another label's line: one line, one label
+            if not any(
+                _overlap(item.box, tuple(lab["box"])) > 0.3
+                for lab in [*found.ocr_labels, *page_labels_now]
+            ):
                 turns = item.turns
                 sideways = bool(turns) and all(t != 0 for t in turns)
+                if item.orientation is not None:
+                    sideways = item.orientation == "v"
                 label = _label(
                     _Reading(
                         text=vv._inches_text(value),
@@ -4438,12 +4922,17 @@ def build_dims(
                         font=min(item.box[2] - item.box[0], item.box[3] - item.box[1]),
                         bare=False,
                         route="drawn",
+                        flags=value_flags(item.note or ""),
                     ),
-                    None,
+                    None if item.line is None else dict(item.line),
                     "vendor",
                 )
-                label["origin"] = ocr_labels.ORIGIN
+                # A spot with its own line is the read-number fallback's (`_read_fallback`);
+                # one without is the sweep's, an OCR reading with no line.
+                label["origin"] = ocr_labels.ORIGIN if item.line is None else _FALLBACK_ORIGIN
                 label["read_by"] = ["ocr", "alphabet"]
+                if item.note:
+                    label["note"] = item.note
                 found.ocr_labels.append(label)
                 _number_ocr(entries[(name, number)], [label])
                 if on_page is not None:

@@ -35,6 +35,9 @@ swing, hatch) running through the number are not part of it.
   1/2" and 3% off blocks it; otherwise unread ("one route only");
 - a number whose strokes stop on its drawing's clipped edge is cut off in the file: unread.
 
+The set pack's read-number fallback (`read_ink`, 2026-11-04: a drawn size the label reader rejected,
+read on its own dimension line) is stricter: two readers must agree, and the ruler may block them.
+
 **4. Stored in the set pack** (`readings.json`, by the request), so a check never pays twice.
 
 Measured ($0, local, two person-checked keys and Set 3, client values kept local): see the PR.
@@ -70,8 +73,10 @@ __all__ = [
     "Route",
     "decide",
     "label_routes",
+    "read_ink",
     "read_number",
     "reader_for_pack",
+    "ruler_blocks",
     "seed_page",
 ]
 
@@ -251,6 +256,12 @@ def _ruler_says(value: Decimal, ruler: float | None) -> str:
     return "silent"
 
 
+def ruler_blocks(value: Decimal, ruler: float | None) -> bool:
+    """Whether the ruler (a dimension line's length at its drawing's scale) says `value` is not
+    what the line measures: more than max(1/2", 3%) off."""
+    return _ruler_says(value, ruler) == "blocks"
+
+
 @dataclass(frozen=True, slots=True)
 class Decision:
     value: Decimal | None
@@ -328,6 +339,50 @@ def decide(
         "one_route",
         f"only the {only} reading gives a value ({_inch_words(value)}); a second route is needed",
     )
+
+
+def read_ink(
+    label: Any, engines: Sequence[Any], ruler: float | None
+) -> tuple[Decision, Decimal | None, Decimal | None]:
+    """A drawn size the drawn route could not take as it is (`dim_labels._read_fallback`: a note
+    it does not know after its inch mark, a row gathered with other ink), its value's own ink
+    (`label`, an `ink_labels.Label`) read by this tool's routes: the OCR pair and the shape
+    matcher, with `ruler`, its own dimension line's length at its drawing's scale (`None`: not
+    known). `(decision, ocr, shape)`: a value only when two readers agree and the ruler does not
+    block it (the rule DECIDED 2026-10-22; `decide` alone lets the ruler second one reader, and
+    lets two readers stand against it). The ruler never supplies a value."""
+    ocr, _why = _ocr(label, engines)
+    shape, _how = _shape(label)
+    decided = decide(ocr=ocr, shape=shape, ruler=ruler)
+    if decided.value is None:
+        return decided, ocr, shape
+    readers = [name for name in decided.agreed if name != "ruler"]
+    if len(readers) < 2:
+        only = readers[0] if readers else "one"
+        return (
+            Decision(
+                None,
+                (),
+                "one_route",
+                f"only the {only} reading gives a value ({_inch_words(decided.value)}); a second "
+                "reader is needed",
+            ),
+            ocr,
+            shape,
+        )
+    if ruler_blocks(decided.value, ruler):
+        return (
+            Decision(
+                None,
+                (),
+                "ruler_blocks",
+                f"the readers' {_inch_words(decided.value)} is not what its dimension line "
+                f"measures ({ruler:.2f}\" at the drawing's scale)",
+            ),
+            ocr,
+            shape,
+        )
+    return decided, ocr, shape
 
 
 # ---- the ink at a spot ------------------------------------------------------------------------------
@@ -506,8 +561,8 @@ def _ruler_of_ink(
             found = dim_labels._line_of(parsed, dim_labels._Part(label=label, turn=turn))
         except Exception:  # noqa: BLE001 - no line: the ruler is silent
             found = None
-        if found is None:
-            continue
+        if found is None or not found[0].get("dim_line"):
+            continue  # no line, or several beside it for the drawing's scale to pick from
         line, _orientation = found
         span = float(line["span_pt"])
         scale = _scale(scales, label.box, side)
