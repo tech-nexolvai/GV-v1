@@ -1066,17 +1066,19 @@ def test_the_title_may_be_in_the_subject() -> None:
     assert [note.text for note in layers.vendor_text] == ["12"]
 
 
-def test_only_a_square_can_be_the_vendors_text() -> None:
-    """Outcome: a `/FreeText` titled like AutoCAD's notes is still a reviewer's note — the title
-    alone never moves a note between authorities."""
+def test_autocads_note_held_as_free_text_is_the_vendors_text() -> None:
+    """Outcome: AutoCAD's note held as a `/FreeText` is the vendor's text, not a reviewer's note,
+    because the label reader reads it as the vendor's too (rebuild plan 2A; until then only a
+    `/Square` could be, and the two readers disagreed). GV's own notes and every other type are
+    held apart in `tests/extraction/test_shx_detector.py`."""
     note = (
         b"<< /Type /Annot /Subtype /FreeText /Rect [40 40 120 60] "
         b"/T (AutoCAD SHX Text) /Contents (40) >>"
     )
     layers = _markup_only(_pdf(annotations=[note]))
 
-    assert layers.vendor_text == ()
-    assert [markup.text for markup in layers.markup] == ["40"]
+    assert [text.text for text in layers.vendor_text] == ["40"]
+    assert layers.markup == ()
 
 
 def test_a_page_with_only_vendor_text_is_readable() -> None:

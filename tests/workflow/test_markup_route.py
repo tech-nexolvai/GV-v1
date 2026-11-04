@@ -465,6 +465,28 @@ def test_autocad_text_is_valued_exactly(session: Session, store: LocalStore) -> 
     assert values == {'36"': Fraction(36), "2' -5\"": Fraction(29)}
 
 
+def test_autocad_text_held_as_free_text_is_the_vendors_and_decoded(
+    session: Session, store: LocalStore
+) -> None:
+    """Rebuild plan 2A. Outcome: AutoCAD's note held as a `/FreeText` is recorded under the CAD-text
+    route, never the markup route, with its control codes decoded; the degree it states is no
+    dimension, so it carries no value. The reviewer's note is still the only markup."""
+    note = (
+        b"<< /Type /Annot /Subtype /FreeText /Rect [200 40 230 55] "
+        b"/T (AutoCAD SHX Text) /Contents (90%%d) >>"
+    )
+    _extract(
+        session,
+        store,
+        data=_pdf(annotations=[note, _free_text(KNOWN_MARKUP, rect=b"[40 40 120 60]")]),
+    )
+
+    (cad,) = _route_rows(session, CAD_TEXT_EXTRACTOR)
+    assert cad.raw_text == "90°" and cad.source_author is None
+    assert cad.value_numerator is None
+    assert [row.raw_text for row in _route_rows(session, MARKUP_EXTRACTOR)] == [KNOWN_MARKUP]
+
+
 def test_a_page_without_cad_text_opens_no_cad_text_run(session: Session, store: LocalStore) -> None:
     _extract(session, store, data=ANNOTATED)
 

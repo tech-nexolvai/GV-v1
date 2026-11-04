@@ -142,6 +142,35 @@ def test_the_reviewers_marks_go_and_the_vendors_values_show(tmp_path: Path) -> N
         assert len(again.pages[0].obj.Annots) == 4
 
 
+def test_autocads_shx_text_is_listed_as_the_drawings_text_not_as_removed_markup(
+    tmp_path: Path,
+) -> None:
+    """Rebuild plan 2A. Outcome: an AutoCAD SHX text comment over the area is the vendor's text,
+    so it is among the words read under the markup (its `%%c` as the diameter sign), and never
+    among the reviewer annotations said to be removed."""
+    pdf = _page_pdf(tmp_path / "set.pdf")
+    with pikepdf.open(pdf, allow_overwriting_input=True) as opened:
+        comment = opened.make_indirect(
+            pikepdf.Dictionary(
+                Type=pikepdf.Name.Annot,
+                Subtype=pikepdf.Name.Square,
+                Rect=[300, 120, 340, 132],
+                T=pikepdf.String("AutoCAD SHX Text"),
+                Contents=pikepdf.String('%%c2"'),
+                F=2,  # hidden: AutoCAD writes them so
+            )
+        )
+        opened.pages[0].obj.Annots.append(comment)
+        opened.save(pdf)
+
+    found = read_under_markup(pdf, 1, (100, 100, 400, 300))
+
+    assert sorted(item["kind"] for item in found.removed) == ["FreeText", "Square"]
+    assert all(item["author"] != "AutoCAD SHX Text" for item in found.removed)
+    assert found.removed_elsewhere == 1
+    assert '⌀2"' in [word["text"] for word in found.words]
+
+
 def test_a_page_or_box_not_on_the_file_is_told_plainly(tmp_path: Path) -> None:
     pdf = _page_pdf(tmp_path / "set.pdf")
     with pytest.raises(ValueError, match="no page 2"):

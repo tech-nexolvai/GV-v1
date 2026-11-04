@@ -18,6 +18,7 @@ import pytest
 
 from app.review.assistant import dim_labels
 from app.review.assistant import verify_value as vv
+from extraction.gv_marks import LAYER_NAME
 
 WIDTH, HEIGHT = 600.0, 400.0
 
@@ -146,3 +147,28 @@ def test_any_other_comment_is_never_read(tmp_path: Path) -> None:
 
     sheet = _sheet(tmp_path / "sheet.pdf", _strokes(300, 200), annotate)
     assert _labels(sheet) == ['36"']
+
+
+def test_an_shx_note_held_as_free_text_is_read_and_a_gv_one_never_is(tmp_path: Path) -> None:
+    """Rebuild plan 2A: the label reader uses the annotation reader's test
+    (`annotations.is_autocad_shx_text`). Outcome: AutoCAD's note titled in any case and held as a
+    `/FreeText` is read over its strokes; the same note on GV Review's own layer is not."""
+
+    def free_text(gv_layer: bool) -> Any:
+        def annotate(pdf: pikepdf.Pdf, page: pikepdf.Page) -> None:
+            _shx_comment([300, 200, 322, 209], '18"')(pdf, page)
+            note = page.obj["/Annots"][0]
+            note["/Subtype"] = pikepdf.Name.FreeText
+            note["/T"] = pikepdf.String(" autocad shx text ")
+            if gv_layer:
+                note["/OC"] = pdf.make_indirect(
+                    pikepdf.Dictionary(Type=pikepdf.Name.OCG, Name=pikepdf.String(LAYER_NAME))
+                )
+
+        return annotate
+
+    vendors = _sheet(tmp_path / "vendors.pdf", _strokes(300, 200), free_text(gv_layer=False))
+    gvs = _sheet(tmp_path / "gvs.pdf", _strokes(300, 200), free_text(gv_layer=True))
+
+    assert _labels(vendors) == ['18"', '36"']
+    assert _labels(gvs) == ['36"']
