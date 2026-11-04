@@ -1,0 +1,50 @@
+{
+  "note": "The exam's run registry. Neutral tags only: a saved run is the client's drawings turned into findings, so neither the runs nor their file paths live in this repository. scripts/exam_replay.py is told where they are with --runs.",
+  "runs": {
+    "setA-run1": {
+      "job": "setA",
+      "flag_mode": false,
+      "answers": 148,
+      "audits": ["pA", "pB", "pC"],
+      "audited": 148,
+      "covers": "every answer of the run"
+    },
+    "setA-flag": {
+      "job": "setA",
+      "flag_mode": true,
+      "answers": 427,
+      "audits": ["fA", "fB"],
+      "audited": 344,
+      "covers": "every please-check and Not-compared answer, and the reds on the later pages"
+    },
+    "setB-run2": {
+      "job": "setB",
+      "flag_mode": false,
+      "answers": 108,
+      "audits": ["h1", "h2", "h3", "h4", "h5"],
+      "audited": 108,
+      "covers": "every answer of the run"
+    },
+    "setB-run3": {
+      "job": "setB",
+      "flag_mode": false,
+      "answers": 102,
+      "audits": ["hA", "hB", "hC"],
+      "audited": 102,
+      "covers": "every answer of the run"
+    },
+    "setC-run1": {
+      "job": "setC",
+      "flag_mode": false,
+      "answers": 89,
+      "audits": ["c1", "c2", "c3"],
+      "audited": 89,
+      "covers": "every answer of the run"
+    }
+  },
+  "jobs": {
+    "setA": {"vendor_pages": 52, "runs": ["setA-run1", "setA-flag"]},
+    "setB": {"vendor_pages": 18, "runs": ["setB-run2", "setB-run3"]},
+    "setC": {"vendor_pages": 18, "runs": ["setC-run1"]}
+  }
+}

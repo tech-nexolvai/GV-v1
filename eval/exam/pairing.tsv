@@ -1,0 +1,96 @@
+run	vendor_page	run_architect_page	right_architect_page	right_view	correct	audit
+setA-run1	1	17	17	plan and elevation	yes	pA
+setA-run1	2	17	17	plan and elevation, opposite hand	yes	pA
+setA-run1	3	18	18	plan, elevation, sections	yes	pA
+setA-run1	4	18	18	plan and elevation	yes	pA
+setA-run1	5	19	17	views 3-4	no	pA
+setA-run1	6	19	19	views 1, 2, 4	yes	pA
+setA-run1	7	20	20	views 1-3	yes	pA
+setA-run1	8	20	20	views 1-3	yes	pA
+setA-run1	9	9	16	views 2, 4, 5	no	pA
+setA-run1	10	17	17 or 18	either; one sheet serves two kitchens	yes	pA
+setA-run1	11	17	17 or 19	either; one sheet serves two kitchens	yes	pA
+setA-run1	12	none	none	nothing to compare	yes	pA
+setA-run1	13	20	20	plus 16 for the accessible one	yes	pA
+setA-run1	18	none	none	nothing to compare	yes	pA
+setA-run1	21	none	17, 18, 19	shelf lengths only, no lighting layout	no	pA
+setA-run1	23	none	17	elevation, plus 18 sections	no	pA
+setA-run1	29	none	18	elevation	no	pA
+setA-run1	36	none	17	views 3-4	no	pA
+setA-run1	40	none	19	views 1, 2, 4	no	pA
+setA-run1	50	none	20	plan, elevation, section	no	pA
+setA-run1	52	none	16	views 2, 4, 5	no	pA
+setA-flag	1	17	17	plan and elevation	yes	fA
+setA-flag	2	17	17	plan and elevation, opposite hand	yes	fA
+setA-flag	3	18	18	plan, elevation, sections	yes	fA
+setA-flag	4	18	18	plan and elevation	yes	fA
+setA-flag	5	19	17	views 3-4	no	fA
+setA-flag	6	19	19	views 1, 2, 4	yes	fA
+setA-flag	7	20	20	views 1-3	yes	fA
+setA-flag	8	20	20	views 1-3	yes	fA
+setA-flag	9	9	16	views 2, 4, 5	no	fA
+setA-flag	10	17	17	standard sink view, not the accessible one	view	fA
+setA-flag	11	17	17 or 19	either; one sheet serves two kitchens	yes	fA
+setA-flag	12	17	none	nothing to compare	yes	fA
+setA-flag	13	20	20	plus 16 for the accessible one	yes	fA
+setA-flag	18	17	none	nothing to compare	yes	fA
+setA-flag	22	17	17	plan and elevation	yes	fA
+setA-flag	23	17	17	elevation, plus 18 sections	yes	fA
+setA-flag	24	17	17	sections	yes	fA
+setA-flag	25	17	17	plan and elevation	yes	fA
+setA-flag	26	17	17	elevation	yes	fA
+setA-flag	27	17	17	sections	yes	fA
+setA-flag	28	17	18	plan	no	fA
+setA-flag	29	17	18	elevation	no	fA
+setA-flag	30	17	18	sections	no	fA
+setA-flag	31	17	17	typical shelf detail; length is on 18	yes	fB
+setA-flag	32	17	18	views 1-2	no	fB
+setA-flag	33	17	18	view 2	no	fB
+setA-flag	34	17	18	sections 3-5	no	fB
+setA-flag	35	17	17	typical shelf detail; length is on 18	yes	fB
+setA-flag	36	17	17	views 3-4; the run used view 1	view	fB
+setA-flag	37	19	17	views 3-4	no	fB
+setA-flag	38	19	18	view 6, plus 17 view 4	no	fB
+setA-flag	39	17	17	view 4, or 18 view 6	yes	fB
+setA-flag	40	19	19	plans	yes	fB
+setA-flag	41	17	19	elevation	no	fB
+setA-flag	42	17	19	section	no	fB
+setA-flag	43	19	19	details	yes	fB
+setA-flag	50	20	20	plan, elevation, section	yes	fB
+setA-flag	51	20	20	plan, elevation, section	yes	fB
+setA-flag	52	9	16	views 2, 4, 5	no	fB
+setB-run2	6	3	3	room schedule	yes	hC
+setB-run2	7	9	9	first-level key plan	yes	h1
+setB-run2	11	52	52	elevation 5, plan B	yes	h1
+setB-run2	13	52	52	elevation 5	yes	h5
+setB-run2	14	53	53	elevations 2 and 8	yes	h5
+setB-run2	17	52	52	elevation 5	yes	h5
+setB-run2	18	53	53	elevations 2 and 8	yes	h5
+setB-run3	6	3	3	room schedule	yes	hC
+setB-run3	7	none	9	first-level key plan	no	hB
+setB-run3	8	none	10	second-level key plan	no	hB
+setB-run3	9	none	11	third-level key plan	no	hB
+setB-run3	10	10	12	fourth-level key plan	no	hB
+setB-run3	11	52	52	elevation 5, plan B	yes	hA
+setB-run3	12	none	52	elevation 5	yes	hA
+setB-run3	13	none	52	elevation 5	yes	hA
+setB-run3	17	52	52	elevation 5	yes	hC
+setB-run3	18	53	53	elevations 2 and 8	yes	hC
+setC-run1	1	19	19	tag only; no elevation exists	yes	c1
+setC-run1	2	19	19	tag only; no elevation exists	yes	c1
+setC-run1	3	20	20	tag only; no elevation exists	yes	c1
+setC-run1	4	23	23 and 28	elevation 8, plus the detail it calls up	view	c1
+setC-run1	5	23	23	elevation 6, plus the plan	yes	c1
+setC-run1	6	20	20	tag only; no cabinet sizes drawn	yes	c1
+setC-run1	7	19	19	tag only	yes	c1
+setC-run1	8	19	19	tag only; no sizes drawn	yes	c2
+setC-run1	9	19	19	tag only; no sizes drawn	yes	c2
+setC-run1	10	19	19	tag only; no sizes drawn	yes	c2
+setC-run1	11	19	19	tag only; no sizes drawn	yes	c2
+setC-run1	12	28	20	tag only; no sizes drawn	no	c2
+setC-run1	13	19	20	tag only; no sizes drawn	no	c2
+setC-run1	14	23	23 and 28	elevation 8, plus the detail it calls up	view	c3
+setC-run1	15	23	23	elevation 6	yes	c3
+setC-run1	16	20	25	boardroom elevation 5	no	c3
+setC-run1	17	19	19	tag only; no elevation exists	yes	c3
+setC-run1	18	19	19	tag only; no elevation exists	yes	c3
