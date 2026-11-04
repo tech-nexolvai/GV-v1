@@ -1146,7 +1146,8 @@ def _flag_same(finding: Mapping[str, Any]) -> bool:
 
 def _says_differs(finding: Mapping[str, Any]) -> bool:
     """The item says something differs or is wrong: a difference, a please-check (status check)
-    that is not the same numbers on both sides, or a "same" code's own check or maths contradicts."""
+    that is not the same numbers on both sides, or a "same" code's own check or maths contradicts.
+    """
     status = finding.get("status")
     if status == "different":
         return True
