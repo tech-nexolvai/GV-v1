@@ -52,6 +52,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Final
 
+from app.review.assistant.cache_layout import one_off
 from app.review.assistant.chat_findings import page_ranges, products_words
 from app.review.assistant.chat_scope import area_pages, load_page_map, question_scope
 from vocabulary.product_registry import registry
@@ -798,6 +799,7 @@ def _engine_ask(engine: ChatEngine) -> Ask:
             prompt_id=SHARPEN_PROMPT_ID.format(provider=engine.provider.name),
             display=None,
             output_format=SPEC_SCHEMA,
+            cache=one_off(engine),
         )
         if reply.stop_reason == "refusal":
             raise ProviderFailure("declined", status=None, retryable=False)

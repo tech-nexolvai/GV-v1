@@ -47,6 +47,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
 
+from app.review.assistant.cache_layout import one_off
 from app.review.assistant.chat_request import MODELS, ChatModel, thinking_config, thinking_tokens
 from app.review.assistant.chat_tools import new_step
 from app.review.assistant.reply_json import json_of_reply, log_unreadable
@@ -469,6 +470,7 @@ def look(
             prompt_id=PROMPT_ID.format(provider=engine.provider.name, harness=HARNESS_ID),
             display=None,
             output_format=BLIND_SCHEMA,
+            cache=one_off(engine),
         )
     except Exception as failed:  # noqa: BLE001 - not looked at: the item stays Not compared
         if engine.cancel.is_set():

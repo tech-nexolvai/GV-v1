@@ -41,6 +41,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+from app.review.assistant.cache_layout import one_off
 from app.review.assistant.reply_json import json_of_reply
 from app.review.assistant.work_pool import ContextPool
 
@@ -644,6 +645,7 @@ def engine_asker(engine: ChatEngine, model_name: str, effort: str = "low") -> As
             prompt_id=prompt_id,
             display=None,
             output_format=schema,
+            cache=one_off(engine),
         )
         usage = dict(reply.usage)
         answered = reply.model or model.id

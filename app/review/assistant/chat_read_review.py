@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from app.review.assistant import chat_trust
 from app.review.assistant.agent import prompt_tokens_upper
+from app.review.assistant.cache_layout import one_off
 from app.review.assistant.chat_request import BY_SHORT, thinking_config
 from app.review.assistant.chat_trust import trust_level
 from app.review.assistant.work_pool import ContextPool
@@ -191,6 +192,7 @@ def _model_call(
                 prompt_id=prompt_id,
                 display=None,
                 output_format=output_format,
+                cache=one_off(engine),
                 **({"enforce_format": True} if enforce_format else {}),
             )
         finally:

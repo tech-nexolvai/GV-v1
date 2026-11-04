@@ -511,7 +511,8 @@ def inline_pictures(
     messages: Sequence[Mapping[str, Any]], read: Callable[[str], bytes]
 ) -> list[dict[str, Any]]:
     """The messages with each picture reference replaced by the picture's bytes (base64), read with
-    `read(picture_id)`. Every other value is copied as it is."""
+    `read(picture_id)`; a reference's other keys (a cache breakpoint) are kept after its source.
+    Every other value is copied as it is."""
 
     def walk(value: Any) -> Any:
         if _is_picture_ref(value):
@@ -523,6 +524,7 @@ def inline_pictures(
                     "media_type": "image/png",
                     "data": base64.b64encode(read(str(source["picture_id"]))).decode("ascii"),
                 },
+                **{key: item for key, item in value.items() if key not in ("type", "source")},
             }
         if isinstance(value, Mapping):
             return {key: walk(item) for key, item in value.items()}

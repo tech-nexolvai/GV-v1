@@ -87,7 +87,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from importlib import import_module
 from pathlib import Path
 from time import monotonic, monotonic_ns
-from typing import Any, Final, Protocol
+from typing import Any, Final, Literal, Protocol
 from uuid import uuid4
 
 from app.review.assistant import call_log as calls
@@ -110,6 +110,15 @@ from app.review.assistant.agent import (
     prompt_tokens_upper,
 )
 from app.review.assistant.architect_items import add_to_answer as add_architect_items
+from app.review.assistant.cache_layout import (
+    SPECIALIST_CACHE,
+    cache_layout,
+    is_shared,
+    job_text,
+    refused,
+    shared_opening,
+)
+from app.review.assistant.cache_layout import specialist_system as shared_system
 from app.review.assistant.chat_context import (
     NEAR_SHARE,
     context_edits,
@@ -162,8 +171,12 @@ from app.review.assistant.chat_request import (
     EXTRA_MODELS,
     HELPER_MAX_TOKENS,
     LEAD_MAX_TOKENS,
+    LEGACY_CACHE,
     MODELS,
+    SINGLE_SHOT,
+    CachePlan,
     ChatModel,
+    cache_shared,
     call_params,
     full_check_helper_effort,
     helper_effort,
@@ -285,7 +298,7 @@ from app.review.assistant.reading_routes import NOT_DOUBLE_READ, sides_needed
 from app.review.assistant.room_matrix import add_to_answer as add_room_matrix
 from app.review.assistant.rule_notes import COUNT_WORDS as RULE_NOTE_COUNT
 from app.review.assistant.run_fit import add_to_answer as add_run_fit
-from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused
+from app.review.assistant.sandbox import SET_PACK, SKILLS, UPLOADS, SandboxRefused, page_folder
 from app.review.assistant.scale_measure import add_to_answer as add_scale_measures
 from app.review.assistant.send_package import (
     ZIP_MIME,
@@ -402,6 +415,18 @@ FULL_CHECK_LEAD_MAX_TOKENS: Final = 32000
 #: The prompt-cache warm-up call before a full check's helpers start: the helpers' exact system
 #: prompt and tools, one word asked, a few tokens back.
 PREWARM_MAX_TOKENS: Final = 16
+#: The shared prefixes' warm-up (`ChatEngine.warm_prefix`): a breakpoint on the system prompt (it
+#: caches the tools with it) and none on its one-word question.
+_WARM_CACHE: Final = CachePlan(tools=None, system="5m", newest=None)
+#: A prefix is warmed again for agents started this long after its last warm-up (seconds): the
+#: 5-minute cache may have ended if nothing read it since.
+WARM_AGAIN_S: Final = 240.0
+#: The most an agent waits for its prefix's warm-up to start answering (seconds): only a guard,
+#: the warm-up's event is set when it starts answering or ends.
+WARM_CEILING_S: Final = 600.0
+_WARM_POLL_S: Final = 1.0
+#: The key of the specialists' shared system prompt among the kinds' prompts (`_kind_system`).
+_SHARED_SYSTEM: Final = "<shared>"
 #: Reading tools a full check's helper's call budget counts.
 _READING_TOOLS: Final = frozenset({"bash_tool", "view", "zoom", "create_file", "str_replace"})
 #: The lead's tools that run at the same time within one reply (its finding and ledger tools stay
@@ -498,6 +523,13 @@ TURN_LIMIT_NOTE: Final = (
 WRAP_UP_NOTE: Final = (
     "Wrap up now ({why}). Do not use any more tools: report what you found, and which pages or "
     "parts you did not get to."
+)
+#: Under the `shared` layout a wrap-up keeps its tools (`ChatEngine._call`): a tool it asks for
+#: is answered with this, never run, and a wrap-up with only tool calls is asked once more.
+WRAP_UP_NOT_RUN: Final = "your tools are closed: write your answer now"
+WRAP_UP_TOOLS_NOTE: Final = (
+    "Your tools are closed, so the tool calls in your last reply were not run. Write your answer "
+    "now, from what you found, without tools."
 )
 #: A roster page helper's or gap closer's one turn to record before it wraps up (#1641).
 RECORD_NOTE: Final = (
@@ -867,11 +899,13 @@ def _accumulate(
     cancelled: Callable[[], bool],
     usage: dict[str, Any],
     served: dict[str, Any] | None = None,
+    on_start: Callable[[], None] | None = None,
 ) -> _Reply:
     """A call's reply, built from its raw stream events exactly as they arrived. `usage` is filled
     as the events come, so a cancelled call's usage so far is known; so is `served["provider"]`:
     the host that answered, when the first message names one (OpenRouter's `provider`), for the
-    call log."""
+    call log. `on_start` is called once, at the reply's first message (`message_start`): from
+    then on the prompt cache this call writes can be read (a warm-up's signal, `warm_prefix`)."""
     content: list[dict[str, Any]] = []
     buffers: dict[int, str] = {}
     stop_reason: str | None = None
@@ -885,6 +919,9 @@ def _accumulate(
             raise _Cancelled
         kind = event.get("type")
         if kind == "message_start":
+            if on_start is not None:
+                on_start()
+                on_start = None
             message = event.get("message") or {}
             model = message.get("model") if isinstance(message.get("model"), str) else None
             host = message.get("provider")
@@ -1093,6 +1130,20 @@ class _Agent:
     loop: Callable[..., tuple[str, bool, str | None]] | None = None
     """Its own loop instead of the helpers' (the page reviewer, `page_reviewer.review`): called
     as `loop(engine, agent, step_index, entry, share)`, returning (report, ok, stopped)."""
+    job: str | None = None
+    """Under the `shared` layout (`cache_layout`): its kind's job, first in its first message
+    (`cache_layout.job_text`), after its opening; its system prompt and tools are then the
+    specialists' shared ones. `None`: its own system prompt carries its job."""
+    allowed: frozenset[str] | None = None
+    """The tools it may use when it is given more (the shared tool list): code refuses any other
+    (`_helper_tool`). `None`: every tool it is given."""
+    warm: str | None = None
+    """The shared prompt prefix it reads (`cache_layout`): under `shared`, two or more agents
+    started together with the same one wait for one warm-up call to start answering before they
+    take their places (`warm_prefix`)."""
+    warm_event: threading.Event | None = None
+    """Set when the warm-up of its prefix has started answering (or ended): it waits for it
+    before it takes a place of its model's limiter (`_await_warm`)."""
 
 
 @dataclass(slots=True)
@@ -1289,6 +1340,10 @@ class ChatEngine:
         self.task_spec: dict[str, Any] | None = None
         #: Each helper kind's system prompt, made once (`_kind_system`).
         self._kind_systems: dict[str, str] = {}
+        #: Each shared prompt prefix's last warm-up: when it started and its event (`warm_prefix`).
+        self._warms: dict[str, tuple[float, threading.Event]] = {}
+        #: The overview pictures given to specialists, by file and pages (`page_group`).
+        self._page_groups: dict[tuple[str, tuple[int, ...]], list[dict[str, Any]]] = {}
         #: The share of what is left that one delegation's helpers may spend (a roster full check
         #: has no lead to keep money for: each specialist has its own cap instead).
         self.helper_share_percent = HELPER_SHARE_PERCENT
@@ -1707,13 +1762,25 @@ class ChatEngine:
         output_format: Mapping[str, Any] | None = None,
         enforce_format: bool = False,
         own_share: bool = False,
+        cache: CachePlan | None = None,
+        on_start: Callable[[], None] | None = None,
     ) -> _Reply:
         """One call, streamed, asked once more after a provider failure worth retrying. Raises
         `ProviderFailure` or `_Cancelled`. Under a lead from outside Claude it runs on the lead's
         model (`run_model`). `enforce_format`: `output_format` is enforced on OpenRouter too
         (`call_params`; the readings). `own_share`: charged to a step's own share (the page
-        reviewer), never to the fixed price's other shares (`counted_spent`)."""
+        reviewer), never to the fixed price's other shares (`counted_spent`). `cache`: where its
+        cache breakpoints go (`chat_request.CachePlan`; `None`: the legacy three). `on_start`:
+        called once when a reply starts (`_accumulate`).
+
+        Under the `shared` layout (`cache_layout`) a final call that has history to keep (more
+        than one message) keeps `tool_choice` as it was (`final_choice="keep"`): changing it
+        would make the API write the whole history to the cache again; the caller runs no tool
+        such a reply asks for. On OpenRouter a reply shape goes in the first message, never in
+        the system prompt (`schema_in`)."""
         model = self.run_model(model)
+        shared = cache_layout(self) == "shared"
+        final_choice: Literal["none", "keep"] = "keep" if shared and len(messages) > 1 else "none"
         attempts = 0
         busy = 0
         tries = 0
@@ -1741,6 +1808,9 @@ class ChatEngine:
                 context_management=context_management,
                 output_format=output_format,
                 enforce_format=enforce_format,
+                cache=LEGACY_CACHE if cache is None else cache,
+                final_choice=final_choice,
+                schema_in="first_message" if shared else "system",
             )
             started = monotonic_ns()
             tried = _Try(params, tries, started)
@@ -1782,7 +1852,9 @@ class ChatEngine:
                 with self._lock:
                     self._streams.add(stream)
                 try:
-                    reply = _accumulate(stream, shown, self.cancel.is_set, usage, tried.served)
+                    reply = _accumulate(
+                        stream, shown, self.cancel.is_set, usage, tried.served, on_start
+                    )
                 finally:
                     with self._lock:
                         self._streams.discard(stream)
@@ -3175,6 +3247,7 @@ class ChatEngine:
                 display=None,
                 output_format=getattr(load_module(SECOND_READ_MODULE), "READ_SCHEMA", None),
                 enforce_format=True,
+                cache=SINGLE_SHOT if is_shared(self) else None,
             )
         finally:
             self._release(share, estimate or 0)
@@ -4535,6 +4608,7 @@ class ChatEngine:
             for agent in agents:
                 self._helpers_started += 1
                 agent.number = self._helpers_started
+        self._plan_warm_ups(agents)
         first = agents[0]
         count = len(agents)
         entries: list[dict[str, Any]] = [
@@ -4582,6 +4656,9 @@ class ChatEngine:
                 # what is done is kept and Continue does the rest after a top-up.
                 report, ok, stopped = CREDIT_NOT_STARTED, False, "error"
             else:
+                # Its shared prefix's warm-up first (`shared` layout), before it takes a place:
+                # the warm-up needs a place of its own.
+                self._await_warm(agent)
                 # One place of its model's limiter for the whole specialist (#1874): one waiting
                 # for a place holds no money and makes no call.
                 with self._limiter(agent.model).agent_slot(self.cancel):
@@ -4656,7 +4733,7 @@ class ChatEngine:
         if made is not None:
             return made
         try:
-            made = specialist_system(kind)
+            made = shared_system() if kind == _SHARED_SYSTEM else specialist_system(kind)
         except Exception:  # noqa: BLE001 - the helper still runs, with the shared prompt
             _log.exception("assistant chat could not make the %s helpers' prompt", kind)
             made = HELPER_SYSTEM_PROMPT
@@ -4666,7 +4743,9 @@ class ChatEngine:
     def _prewarm(self) -> None:
         """One tiny call per helper kind with its exact system prompt and tools, so the helpers
         that start together read that prefix from the prompt cache instead of each writing it.
-        Only on Anthropic's own API; a failure is only logged."""
+        Only on Anthropic's own API; a failure is only logged. (Under the `shared` layout the
+        roster does not call it: its specialists are warmed as they start, on either route,
+        `warm_prefix`.)"""
         kinds = ("numbers", "drawn") if self.settings.drawn_helpers else ("both",)
         for kind in kinds:
             if self.provider.name != "anthropic" or self.cancel.is_set():
@@ -4706,6 +4785,38 @@ class ChatEngine:
             except (_Cancelled, ProviderFailure) as failed:
                 _log.info("assistant chat prompt cache not warmed: %s", type(failed).__name__)
 
+    def page_group(self, file: str, pages: Sequence[int]) -> list[dict[str, Any]]:
+        """The overview pictures of `pages` of `file` as message blocks, each exactly what the
+        `view` tool gives a helper for it (its words, then the picture at the helpers' size),
+        in page order: made once per answer for each file and page list, so every specialist
+        given them sends the very same blocks. Empty when any of them cannot be shown (the
+        helper then views them itself)."""
+        key = (str(file), tuple(int(page) for page in pages))
+        with self._lock:
+            made = self._page_groups.get(key)
+        if made is not None:
+            return [dict(block) for block in made]
+        blocks: list[dict[str, Any]] = []
+        for page in key[1]:
+            path = overview_path(key[0], page)
+            try:
+                shown = self.tools.view(
+                    {"path": path, "description": f"Overview of page {page}"},
+                    new_step(f"overview-{page}", "view", {"path": path}),
+                    HELPER_PICTURE_EDGE_PX,
+                )
+            except Exception:  # noqa: BLE001 - the helper views its pages itself
+                _log.warning("assistant chat: the overview of page %s was not shown", page)
+                blocks = []
+                break
+            if shown.is_error or not any(b.get("type") == "image" for b in shown.content):
+                blocks = []
+                break
+            blocks += [dict(block) for block in shown.content]
+        with self._lock:
+            made = self._page_groups.setdefault(key, blocks)
+        return [dict(block) for block in made]
+
     def _rules_summary(self) -> str:
         try:
             text = (self.tools.workspace.skills / "rules.md").read_text(encoding="utf-8")
@@ -4720,14 +4831,15 @@ class ChatEngine:
         helpers: int,
         pictures_made: bool,
         page_map: Mapping[str, Any] | None,
+        preloaded: bool = False,
     ) -> str:
         """A code-planned helper's brief: the recall brief (`full_check_brief.helper_brief`: its
         pages with their areas, GV's recorded results and leads on them, the per-page checklist),
         then where to start, the products, pages to look at and the rules summary (the app's
-        footer follows)."""
+        footer follows). `preloaded`: its pages' overview pictures are already in its message
+        (`page_group`), so it is told to start from them instead of viewing them."""
         products = products_words(self.settings.products).lower()
-        stem = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(job.file).stem).strip("._") or "file"
-        pictures = ", ".join(f"{SET_PACK}/pages/{stem}/p-{page:03d}.png" for page in job.pages)
+        pictures = ", ".join(overview_path(job.file, page) for page in job.pages)
         with self._lock:
             document = self._recorded_document
         brief = helper_brief(
@@ -4740,10 +4852,14 @@ class ChatEngine:
             products=self.settings.products,
         )
         overview = (
-            f"view your pages' overview pictures, all in one reply ({pictures})"
-            if pictures_made
-            else "zoom on each of your whole pages at 72 dpi, all in one call (the page pictures "
-            "are still being made)"
+            "look at your pages' overview pictures, above in this message"
+            if preloaded
+            else (
+                f"view your pages' overview pictures, all in one reply ({pictures})"
+                if pictures_made
+                else "zoom on each of your whole pages at 72 dpi, all in one call (the page "
+                "pictures are still being made)"
+            )
         )
         others = (
             "one other has the same pages for the "
@@ -5211,6 +5327,10 @@ class ChatEngine:
             return lambda: cut
         name = str(call.get("name"))
         by = f"helper:{agent.number}"
+        if refused(agent.allowed, name):
+            # A tool of the shared list another kind uses (`cache_layout`): never run for it.
+            other = self._not_run(call, "it is not one of your tools for this job")
+            return lambda: other
         self.timings.tool(name)
         if name == "set_coverage" and agent.lens == "drawn":
             skipped = self._not_run(call, "the numbers helper records these pages' coverage")
@@ -5287,6 +5407,111 @@ class ChatEngine:
             except Exception:  # noqa: BLE001 - the report still goes on
                 _log.warning("assistant chat helper page note failed: page %s", page)
 
+    def _agent_effort(self, agent: _Agent) -> str:
+        """A helper's effort: its own, else the full check's helper effort, else the chat's."""
+        if agent.effort:
+            return agent.effort
+        if self.settings.mode == "full_check":
+            return full_check_helper_effort(self.settings.effort)
+        return helper_effort(self.settings.effort)
+
+    # ---- the shared prefixes' warm-up (`cache_layout`) -------------------------------------------
+
+    def specialist_system(self) -> str:
+        """The specialists' one system prompt under `shared` (`cache_layout.specialist_system`),
+        made once per message so every specialist sends the very same text."""
+        return self._kind_system(_SHARED_SYSTEM)
+
+    def warm_prefix(self, key: str, agent: _Agent) -> threading.Event:
+        """One warm-up call for the shared prompt prefix `key` (`agent`'s model, effort, thinking,
+        system prompt and tools; a breakpoint on the system prompt, none on its one-word
+        question), on Anthropic's own API and on OpenRouter alike, started once per `key` (again
+        when the last one started more than `WARM_AGAIN_S` ago); no call where calls do not share
+        one cache (`chat_request.cache_shared`). The event it returns is set when
+        the warm-up's reply starts, which is when the API says a cache entry can be read
+        ("a cache entry only becomes available after the first response starts"), or when the
+        warm-up ends without one (a failure, the money, a stop): agents never wait for nothing."""
+        with self._lock:
+            known = self._warms.get(key)
+            if known is not None and monotonic() - known[0] < WARM_AGAIN_S:
+                return known[1]
+            event = threading.Event()
+            self._warms[key] = (monotonic(), event)
+
+        def warm() -> None:
+            try:
+                self._warm_one(agent, event)
+            except Exception:  # noqa: BLE001 - the agents start all the same
+                _log.exception("assistant chat: the %s prefix was not warmed", key)
+            finally:
+                event.set()
+
+        threading.Thread(target=warm, name=f"gv-warm-{key}", daemon=True).start()
+        return event
+
+    def _warm_one(self, agent: _Agent, event: threading.Event) -> None:
+        model = agent.model
+        if not cache_shared(self.provider.name, self.run_model(model)):
+            return  # several hosts, each with its own cache: a warm-up would warm one of them
+        effort = self._agent_effort(agent)
+        thinking = helper_thinking(model, effort, self.settings.thinking)
+        system = agent.system or helper_system_prompt(agent.kit)
+        tools = agent.tools or helper_tools(agent.kit)
+        messages = [{"role": "user", "content": [{"type": "text", "text": "Reply with OK."}]}]
+        body = self._body(
+            model=model,
+            thinking=thinking,
+            system=system,
+            tools=tools,
+            messages=messages,
+            final=False,
+            max_tokens=PREWARM_MAX_TOKENS,
+        )
+        if self.cancel.is_set() or not self._fits(self._estimate(model, body, 0, 0)):
+            return
+        with self.timings.phase("prewarm"):
+            try:
+                self._call(
+                    model=model,
+                    effort=effort,
+                    thinking=thinking,
+                    system=system,
+                    tools=tools,
+                    messages=messages,
+                    final=False,
+                    max_tokens=PREWARM_MAX_TOKENS,
+                    prompt_id=self.helper_prompt_id,
+                    display=None,
+                    cache=_WARM_CACHE,
+                    on_start=event.set,
+                )
+            except (_Cancelled, ProviderFailure) as failed:
+                _log.info("assistant chat prompt cache not warmed: %s", type(failed).__name__)
+
+    def _await_warm(self, agent: _Agent) -> None:
+        """Waits, before the agent takes a place of its model's limiter (the warm-up needs one of
+        its own), until its prefix's warm-up has started answering (`warm_prefix`); at most
+        `WARM_CEILING_S`, a guard for a warm-up thread that never ends. A stop ends the wait."""
+        event = agent.warm_event
+        if event is None:
+            return
+        waited = 0.0
+        while not event.wait(_WARM_POLL_S) and not self.cancel.is_set():
+            waited += _WARM_POLL_S
+            if waited >= WARM_CEILING_S:
+                _log.warning("assistant chat: %s started before its warm-up", agent.call_id)
+                return
+
+    def _plan_warm_ups(self, agents: Sequence[_Agent]) -> None:
+        """Under `shared`: one warm-up per shared prefix that two or more of these agents read
+        (`_Agent.warm`), before they start together; each such agent waits for it."""
+        if not is_shared(self):
+            return
+        counts = Counter(agent.warm for agent in agents if agent.warm)
+        for agent in agents:
+            if agent.warm and counts[agent.warm] >= 2 and agent.warm_event is None:
+                agent.warm_event = self.warm_prefix(agent.warm, agent)
+
     def _helper(
         self, agent: _Agent, step_index: int, entry: dict[str, Any], share: _Share
     ) -> tuple[str, bool, str | None]:
@@ -5298,11 +5523,7 @@ class ChatEngine:
             return agent.loop(self, agent, step_index, entry, share)
         model = agent.model
         full_check = self.settings.mode == "full_check"
-        effort = agent.effort or (
-            full_check_helper_effort(self.settings.effort)
-            if full_check
-            else helper_effort(self.settings.effort)
-        )
+        effort = self._agent_effort(agent)
         thinking = helper_thinking(model, effort, self.settings.thinking)
         system = agent.system or helper_system_prompt(agent.kit)
         tools = agent.tools or helper_tools(agent.kit)
@@ -5338,15 +5559,21 @@ class ChatEngine:
             footer = ""
         if agent.skip:
             return "Nothing to compare: no architect drawing is paired with it.", True, None
+        brief = agent.prompt + helper_lines(self.task_spec) + footer
+        opening = [dict(block) for block in agent.opening]
+        plan: CachePlan | None = None
+        if agent.job is not None and is_shared(self):
+            # The specialists' shared prefix (`cache_layout`): the pictures several kinds share,
+            # marked, then this kind's job and tools, then its brief.
+            brief = f"{job_text(agent.job, agent.allowed)}\n\n{brief}"
+            opening = shared_opening(opening)
+            plan = SPECIALIST_CACHE
         messages: list[dict[str, Any]] = [
-            {
-                "role": "user",
-                "content": [
-                    *(dict(block) for block in agent.opening),
-                    {"type": "text", "text": agent.prompt + helper_lines(self.task_spec) + footer},
-                ],
-            }
+            {"role": "user", "content": [*opening, {"type": "text", "text": brief}]}
         ]
+        # Under `shared` a wrap-up keeps its tools (`_call`): asked once more when it only called
+        # tools, which are never run.
+        wrap_asked = False
         turns = reading = 0
         sent_back = False
         #: A cut answer or report asked for again once (#1817).
@@ -5468,6 +5695,7 @@ class ChatEngine:
                     prompt_id=self.helper_prompt_id,
                     display=None,
                     output_format=agent.output_format,
+                    cache=plan,
                 )
             except _Cancelled:
                 return (
@@ -5503,6 +5731,20 @@ class ChatEngine:
             if replayable:
                 messages.append({"role": "assistant", "content": content})
             calls = reply.tool_uses() if replayable else []
+            if final and calls and is_shared(self):
+                # A wrap-up keeps its tools under `shared` (`_call`), so it may ask for some:
+                # none is run, each is answered so (the API needs an answer to every call).
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [self._not_run(call, WRAP_UP_NOT_RUN) for call in calls],
+                    }
+                )
+                if not reply.text().strip() and not wrap_asked:
+                    wrap_asked = True
+                    _append_note(messages, WRAP_UP_TOOLS_NOTE)
+                    turns += 1
+                    continue
             cut = reply.stop_reason == "max_tokens"
             if (
                 (roster_pages or (shaped and not cut_retried))
@@ -5896,6 +6138,8 @@ class ChatEngine:
         guard_sent = False
         # Asked once more after a reply with no words (`EMPTY_REPLY_NOTE`).
         nudged = False
+        # Asked once more after a final reply with only tool calls (`shared` layout).
+        wrap_asked = False
         self._room_for_history()
         if settings.mode == "full_check":
             # Never an AI step before the drawings are read (#1872): wait (no money is spent),
@@ -6062,6 +6306,12 @@ class ChatEngine:
                         ],
                     }
                 )
+                if final and is_shared(self) and not reply.text().strip() and not wrap_asked:
+                    # Under `shared` the final call keeps its tools (`_call`): one that only
+                    # asked for tools (none run) is asked once more for its words.
+                    wrap_asked = True
+                    _append_note(turn, WRAP_UP_TOOLS_NOTE)
+                    continue
             text = reply.text()
             if reply.stop_reason == "max_tokens":
                 note = "*The answer reached its length limit and was cut off here.*"
@@ -6133,6 +6383,11 @@ class ChatEngine:
             cap_hit=cap_hit if stopped == "cost_cap" else None,
             seen=[dict(entry) for entry in self.tools.seen],
         )
+
+
+def overview_path(file: str, page: int) -> str:
+    """A page's overview picture in the set pack, as the helpers' sandbox names it."""
+    return f"{SET_PACK}/pages/{page_folder(file)}/p-{page:03d}.png"
 
 
 def _append_note(messages: list[dict[str, Any]], note: str) -> None:

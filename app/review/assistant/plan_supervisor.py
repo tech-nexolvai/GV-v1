@@ -55,6 +55,7 @@ from decimal import Decimal
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, Final
 
+from app.review.assistant.cache_layout import one_off
 from app.review.assistant.preflight import (
     STOP_KINDS,
     Line,
@@ -242,6 +243,7 @@ def _engine_call(engine: ChatEngine, model_name: str) -> tuple[Call, Callable[[i
             prompt_id=prompt_id,
             display=None,
             output_format=schema,
+            cache=one_off(engine),
         )
         return reply.text(), max(0, engine.spent - before)
 

@@ -125,6 +125,13 @@ from app.review.assistant import (
     witness,
 )
 from app.review.assistant import proof as proof_rule
+from app.review.assistant.cache_layout import (
+    SPECIALIST_TOOLS,
+    is_shared,
+    kind_job,
+    one_off,
+    specialist_effort,
+)
 from app.review.assistant.chat_findings import UPDATE_FINDING
 from app.review.assistant.chat_findings import _architect_upload as architect_upload
 from app.review.assistant.chat_provider import CREDIT_STOP_WORDS
@@ -633,6 +640,12 @@ _PROVER_TOOLS: Final = frozenset(
     }
 )
 _TAG_TOOLS: Final = frozenset({"bash_tool", "view", "zoom"})
+#: Every helper tool's name (a page helper's, a gap closer's own tools under `shared`).
+_HELPER_TOOL_NAMES: Final = frozenset(str(tool["name"]) for tool in HELPER_TOOLS)
+#: The efforts the roster's specialist kinds of the helpers' family ran at before `shared`
+#: (drawn things and tags low, gap closers and verifiers medium; the numbers helpers' own is a
+#: setting): under `shared` they all run at the highest (`_Run._shared_effort`).
+SHARED_EFFORTS: Final = frozenset({"low", "medium"})
 
 PROVER_JOB: Final = (
     "find, for each item below, the exact spots of the two values it claims, so code can read "
@@ -2688,6 +2701,49 @@ class _Run:
     def _tools(self, names: frozenset[str]) -> tuple[Mapping[str, Any], ...]:
         return tuple(tool for tool in HELPER_TOOLS if tool["name"] in names)
 
+    def _prefix(
+        self,
+        *,
+        model: Any,
+        job: str,
+        own_system: Callable[[], str],
+        effort: str,
+        allowed: Collection[str] | None = None,
+        tools: tuple[Mapping[str, Any], ...] | None = None,
+        own_effort: bool = False,
+    ) -> dict[str, Any]:
+        """A specialist's system prompt, tools and effort. `legacy`: its own (`own_system()`,
+        `tools`, `effort`). `shared` (`cache_layout`): the specialists' one prefix on its model,
+        the shared system prompt and tool list, its job and its own tools (`allowed`, by default
+        the helpers' tools) named in its first message, the specialists' one effort
+        (`SHARED_EFFORTS`; `own_effort`: its own, for a kind alone on its model, the lead
+        review), and the warm-up of that prefix it reads."""
+        if not is_shared(self.engine):
+            return {"system": own_system(), "tools": tools, "effort": effort}
+        names = frozenset(allowed) if allowed is not None else _HELPER_TOOL_NAMES
+        return {
+            "system": self.engine.specialist_system(),
+            "tools": SPECIALIST_TOOLS,
+            "allowed": names,
+            "job": job,
+            "effort": effort if own_effort else self._shared_effort(),
+            "warm": f"specialists:{model.id}",
+        }
+
+    def _shared_effort(self) -> str:
+        """The roster specialists' one effort under `shared`: the highest their kinds ran at
+        (`SHARED_EFFORTS`, with the numbers helpers' own setting), so none thinks less."""
+        numbers = str(getattr(self.engine.settings, "numbers_effort", "low"))
+        return specialist_effort({*SHARED_EFFORTS, numbers})
+
+    def _page_group(self, file: str, pages: Sequence[int]) -> tuple[Mapping[str, Any], ...]:
+        """Under `shared`: the overview pictures of `pages` that a page helper's brief told it to
+        view first, as its first message's opening (`ChatEngine.page_group`); empty when they
+        cannot be shown."""
+        if not is_shared(self.engine):
+            return ()
+        return tuple(self.engine.page_group(file, pages))
+
     def _system(self, job: str, knowledge: Sequence[tuple[str, str | None]]) -> str:
         return "\n\n".join(
             [
@@ -2721,7 +2777,8 @@ class _Run:
         spot_pool.use_processes(getattr(settings, "spot_processes", 0))
         verify_value.keep_reads_in(workspace.set_pack, engine.book.pdf_paths().values())
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="gv-roster-warm") as warm_pool:
-            warm = warm_pool.submit(engine._prewarm)
+            # Under `shared` the specialists' prefix is warmed as they start (`warm_prefix`).
+            warm = None if is_shared(engine) else warm_pool.submit(engine._prewarm)
             with engine.timings.phase("set_pack"):
                 page_map = wait_for_page_map(workspace.set_pack, engine.cancel)
             with engine.timings.phase("page_match"):
@@ -2736,7 +2793,8 @@ class _Run:
                 plan, _pages_all = engine.scoped_jobs(page_map, pairs=False)
                 rules = engine._rules_summary() if plan is not None else ""
                 pictures = pack_ready(workspace.set_pack)
-            warm.result()
+            if warm is not None:
+                warm.result()
         if plan is None:
             return None  # no page map: the lead plans, as before (nothing was done yet)
         if settings.pages:
@@ -2884,23 +2942,40 @@ class _Run:
         waiting = matching.to_answer if matching is not None else frozenset()
         for job in plan.jobs:
             kind = "drawn" if job.lens == "drawn" else "numbers"
+            job_model = BY_SHORT["sonnet"] if job.lens == "drawn" else model
+            # Under `shared` the overview pictures its brief says to view first come with it, in
+            # the opening the kinds on the same pages share (`_page_group`).
+            overview = self._page_group(job.file, job.pages) if pictures else ()
             agent = self._agent(
                 call_id=f"plan-{job.number}",
                 description=job.description,
                 prompt=engine._job_brief(
-                    with_pairs(job, engine._cross), rules, len(plan.jobs), pictures, page_map
+                    with_pairs(job, engine._cross),
+                    rules,
+                    len(plan.jobs),
+                    pictures,
+                    page_map,
+                    bool(overview),
                 ),
-                model=BY_SHORT["sonnet"] if job.lens == "drawn" else model,
+                model=job_model,
                 pages=job.pages,
                 lens=job.lens,
-                effort=settings.numbers_effort if job.lens == "numbers" else "low",
                 cap_micros=self.plan.cap_for(kind, len(job.pages)),
                 soft_cap=True,
-                system=engine._kind_system(job.lens),
+                opening=overview,
+                **self._prefix(
+                    model=job_model,
+                    job=kind_job(job.lens),
+                    own_system=partial(engine._kind_system, job.lens),
+                    effort=settings.numbers_effort if job.lens == "numbers" else "low",
+                ),
             )
             if waiting.intersection(job.pages):
                 agent.ready = _paired_brief(
-                    engine, matching, job, (rules, len(plan.jobs), pictures, page_map)
+                    engine,
+                    matching,
+                    job,
+                    (rules, len(plan.jobs), pictures, page_map, bool(overview)),
                 )
             agents.append(agent)
         by_job = {job.number: agent for job, agent in zip(plan.jobs, agents, strict=True)}
@@ -3708,12 +3783,19 @@ class _Run:
             model=BY_SHORT["sonnet"],
             pages=tuple(pages),
             lens="tags",
-            effort="low",
             cap_micros=cap,
             soft_cap=True,
-            system=self._system(TAG_JOB, [("glossary.md", "Materials and finishes")]),
-            tools=self._tools(_TAG_TOOLS),
             output_format=TAG_SCHEMA,
+            **self._prefix(
+                model=BY_SHORT["sonnet"],
+                job=TAG_JOB,
+                own_system=partial(
+                    self._system, TAG_JOB, [("glossary.md", "Materials and finishes")]
+                ),
+                effort="low",
+                allowed=_TAG_TOOLS,
+                tools=self._tools(_TAG_TOOLS),
+            ),
         )
         if files is not None and matching is not None and set(matching.to_answer) & set(pages):
             agent.ready = lambda: brief(matching.wait_pages(pages, engine.cancel))
@@ -3940,11 +4022,15 @@ class _Run:
                         model=BY_SHORT["sonnet"],
                         pages=tuple(run),
                         lens="gap",
-                        effort="medium",
                         phase="gap_closers",
                         cap_micros=budget * len(run) // len(chosen),
                         soft_cap=True,
-                        system=engine._kind_system("numbers"),
+                        **self._prefix(
+                            model=BY_SHORT["sonnet"],
+                            job=kind_job("numbers"),
+                            own_system=partial(engine._kind_system, "numbers"),
+                            effort="medium",
+                        ),
                     )
                 )
             )
@@ -4576,12 +4662,17 @@ class _Run:
                     model=BY_SHORT["sonnet"],
                     pages=pages,
                     lens="prover",
-                    effort="medium",
                     cap_micros=cap,
                     soft_cap=True,
-                    system=system,
-                    tools=self._tools(_PROVER_TOOLS),
                     output_format=PROVER_SCHEMA,
+                    **self._prefix(
+                        model=BY_SHORT["sonnet"],
+                        job=PROVER_JOB,
+                        own_system=lambda: system,
+                        effort="medium",
+                        allowed=_PROVER_TOOLS,
+                        tools=self._tools(_PROVER_TOOLS),
+                    ),
                 )
             )
             pool.add(agents[-1])
@@ -4814,14 +4905,21 @@ class _Run:
             model=model,
             pages=tuple(pages),
             lens="lead",
-            # Low: the paid run of 2026-10-19 spent the whole lead share on two calls of
-            # whole-page views and a long think, and wrote nothing (#1652).
-            effort="low",
             phase="lead_review",
             cap_micros=cap,
             soft_cap=True,
-            system=engine._kind_system("numbers"),
-            tools=(*HELPER_TOOLS, UPDATE_FINDING),
+            **self._prefix(
+                model=model,
+                job=kind_job("numbers"),
+                own_system=partial(engine._kind_system, "numbers"),
+                # Low: the paid run of 2026-10-19 spent the whole lead share on two calls of
+                # whole-page views and a long think, and wrote nothing (#1652). It is the only
+                # specialist on its model, so it keeps its own effort under `shared` too.
+                effort="low",
+                own_effort=True,
+                allowed=_HELPER_TOOL_NAMES | {str(UPDATE_FINDING["name"])},
+                tools=(*HELPER_TOOLS, UPDATE_FINDING),
+            ),
         )
         if band is not None:
             band.agents.append(agent)
@@ -5262,6 +5360,7 @@ class _Run:
                 ),
                 display=None,
                 output_format=STRING_SCHEMA,
+                cache=one_off(engine),
             )
         except Exception as failed:  # noqa: BLE001 - not read: the item stays Not compared
             _log.warning("assistant roster string reading failed: %s", type(failed).__name__)
@@ -5890,6 +5989,7 @@ class _Run:
                 ).format(provider=engine.provider.name, harness=HARNESS_ID),
                 display=None,
                 output_format=ADVOCATE_SCHEMA,
+                cache=one_off(engine),
             )
         except Exception as failed:  # noqa: BLE001 - not checked: the item stays grey
             _log.warning("assistant roster advocate call failed: %s", type(failed).__name__)
@@ -6090,12 +6190,17 @@ class _Run:
                     model=BY_SHORT["sonnet"],
                     pages=pages,
                     lens="prover",
-                    effort="medium",
                     cap_micros=cap,
                     soft_cap=True,
-                    system=system,
-                    tools=self._tools(_PROVER_TOOLS),
                     output_format=PROVER_SCHEMA,
+                    **self._prefix(
+                        model=BY_SHORT["sonnet"],
+                        job=PROVER_JOB,
+                        own_system=lambda: system,
+                        effort="medium",
+                        allowed=_PROVER_TOOLS,
+                        tools=self._tools(_PROVER_TOOLS),
+                    ),
                 )
             )
             pool.add(agents[-1])
@@ -6322,6 +6427,7 @@ class _Run:
                 ),
                 display=None,
                 output_format=SUMMARY_SCHEMA,
+                cache=one_off(engine),
             )
             lines = object_of_reply(reply.text()).get("lines") or []
         except Exception as failed:  # noqa: BLE001 - code's own summary stands
