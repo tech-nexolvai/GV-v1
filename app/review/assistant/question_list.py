@@ -18,8 +18,14 @@ What is in the file:
   says which of its views carries which facts.
 - **The questions.** Each one has a stable key, the question in plain English, the item kinds it is
   asked about, the facts it needs and the side each comes from, the settled rule that governs the
-  answer, what makes an answer a problem, what explicitly does not (the anti-patterns), and whether
-  code can prove it (so it can go red) or only the AI can judge it.
+  answer, one line of provenance saying exactly where that rule comes from, what makes an answer a
+  problem, what explicitly does not (the anti-patterns), and whether code can prove it (so it can go
+  red) or only the AI can judge it.
+
+Some questions are governed by a value the reviewer enters per job rather than by a GV standard: the
+front overhang, the end overhang at a free end, the cabinet depth, the splash thickness, the sink's
+inside size and the cabinet width limits. Those carry `missing_fact_when`, and when the job has not
+set the value the honest answer is a missing fact, never a defect and never a silent pass.
 
 A question whose `item_kinds` is `["*"]` is asked about every item, whatever its kind. That matters
 for the coverage ledger: a sheet whose item was never identified is still charged those questions,
@@ -131,7 +137,9 @@ class Question:
     item_kinds: tuple[str, ...]
     needs: tuple[Need, ...]
     rule: str
+    source: str
     problem_when: str
+    missing_fact_when: str
     not_a_problem_when: tuple[str, ...]
     decided_by: str
     compares: str
@@ -148,6 +156,11 @@ class Question:
         if self.every_kind:
             return True
         return kind is not None and kind in self.item_kinds
+
+    @property
+    def governed_by_a_job_value(self) -> bool:
+        """Does a job setting govern the answer, so its absence is a missing fact, not a defect?"""
+        return bool(self.missing_fact_when)
 
     @property
     def needs_the_architect(self) -> bool:
@@ -264,7 +277,9 @@ def _question(raw: object, kind_keys: Sequence[str]) -> Question:
         item_kinds=kinds,
         needs=tuple(_need(one, key) for one in needs),
         rule=_text(raw.get("rule"), key, "rule"),
+        source=_text(raw.get("source"), key, "source"),
         problem_when=_text(raw.get("problem_when"), key, "problem_when"),
+        missing_fact_when=str(raw.get("missing_fact_when") or "").strip(),
         not_a_problem_when=_lines(raw.get("not_a_problem_when"), key, "not_a_problem_when"),
         decided_by=_one_of(raw.get("decided_by"), DECIDED_BY, key, "decided_by"),
         compares=_compares(raw, key),

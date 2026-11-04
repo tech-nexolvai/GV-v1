@@ -8,6 +8,8 @@ Mirrors `app/review/assistant/question_list.py`:
   those questions and shows as a hole in the coverage ledger;
 - `compares` says what the answer is weighed against, stated in the file or worked out from the
   facts the question needs;
+- every question carries one line of `source` provenance, and a question governed by a job setting
+  carries `missing_fact_when`, so an unset job value is a missing fact rather than a defect;
 - a list that repeats a key, names an item kind the taxonomy does not hold, or declares the wrong
   schema is refused by name rather than half-read.
 
@@ -51,6 +53,7 @@ questions:
         fact: the designed length
         view: plan
     rule: The lengths are compared in inches, exactly.
+    source: Made up for the tests; derived from nothing real.
     problem_when: the two lengths differ.
     not_a_problem_when:
       - The two are measured from different ends.
@@ -66,6 +69,7 @@ questions:
         fact: every label
         view: plan
     rule: Every piece carries a label.
+    source: Made up for the tests.
     problem_when: a piece has no label.
     decided_by: ai
     from: misses
@@ -138,6 +142,7 @@ def test_compares_is_worked_out_from_the_facts_unless_the_file_says(
         (MADE_UP.replace("    decided_by: code", "    decided_by: maybe"), "decided_by"),
         (MADE_UP.replace("      - side: vendor", "      - side: nobody"), "needs.side"),
         (MADE_UP.replace("    from: true_answers", "    from: a hunch"), "from"),
+        (MADE_UP.replace("    source: Made up for the tests.\n", ""), "source"),
     ],
 )
 def test_a_list_that_does_not_hold_together_is_refused_by_name(
@@ -156,6 +161,8 @@ def test_the_shipped_list_loads_and_every_question_is_whole() -> None:
         assert question.asks.endswith("?"), question.key
         assert question.needs, question.key
         assert question.rule and question.problem_when, question.key
+        # Provenance: every rule says where it comes from, so the list can be audited.
+        assert len(question.source) > 25, question.key
         assert question.decided_by in ql.DECIDED_BY
         assert question.compares in ql.COMPARES
         assert question.came_from in ql.FROM
@@ -186,14 +193,38 @@ def test_every_item_kind_is_asked_at_least_the_shared_questions() -> None:
 def test_the_shipped_list_names_no_client_project_or_drawing() -> None:
     """The list is generic millwork knowledge: that is what makes it vendor-agnostic."""
     whole = (Path(ql.__file__).resolve().parents[3] / "vocabulary" / ql.FILE).read_text("utf-8")
-    # GV's own published rulebook ids are the one place a code is allowed.
-    text = "\n".join(line for line in whole.splitlines() if "rule_ids:" not in line)
-    # A drawing number looks like two or more capitals, a dash and digits.
+    # GV's own published rulebook ids are the one code the list is allowed to name.
+    text = re.sub(r"\b(?:CT|CAB)-[A-Z-]*\d{3}\b", "", whole)
+    # A client's drawing or item number looks like capitals, a dash and digits.
     assert not re.search(r"\b[A-Z]{2,}-\d{2,}\b", text)
-    # A capitalised word in the middle of a sentence would be a project, a brand or a person.
-    allowed = {"GV", "ADA", "AI", "A", "English"}
-    found = {one for one in re.findall(r"[a-z,;)]\s+([A-Z][A-Za-z]+)", text)} - allowed
-    assert not found, sorted(found)
+    # A job number or a drawing's millimetre value would be a long run of digits. Dated decisions
+    # are the one exception, so drop a bare four-digit year first.
+    text = re.sub(r"\b(?:19|20)\d{2}\b", "", text)
+    assert not re.search(r"\b\d{4,}\b", text)
+
+
+def test_a_job_value_question_says_what_absence_looks_like() -> None:
+    """The overhang at a free end is a job entry, not a GV rule: unset is a missing fact."""
+    for key in ("ct_end_overhang", "ct_front_overhang", "cabinet_depth", "sink_cutout_size"):
+        governed = ql.question(key)
+        assert governed is not None, key
+        assert governed.governed_by_a_job_value, key
+        assert governed.missing_fact_when, key
+    held = ql.question("ct_overall_length")
+    assert held is not None
+    # The 1" field cut at a wall end is a settled rule, so it is never a missing job value.
+    assert not held.governed_by_a_job_value
+
+
+def test_the_sink_front_offset_is_read_from_the_stone_s_own_edge() -> None:
+    """Settled: the plan carries the offset, and a countertop plan dimensions from the stone."""
+    offset = ql.question("sink_front_offset")
+    assert offset is not None
+    assert "front edge" in offset.asks
+    assert "never adjusted" in offset.rule
+    assert any("never converted" in one for one in offset.not_a_problem_when)
+    assert "cabinet front" not in offset.rule
+    assert "cabinet front" not in offset.problem_when
 
 
 def test_code_and_vendor_only_helpers_pick_the_right_questions() -> None:

@@ -19,6 +19,9 @@
 #                     normally carries each one
 #   rule              the settled rule that decides the answer, written so it cannot be read two ways
 #   problem_when      what makes the answer a problem
+#   missing_fact_when   when the question's governing value is a job setting, what absence looks
+#                     like. A missing job value is reported as a missing fact, never as a defect
+#                     and never as a silent pass.
 #   not_a_problem_when  the things that look like a problem and are not (the anti-patterns)
 #   decided_by        "code" = code can prove it from numbers, so it can go red
 #                     "ai"   = only a person or the AI can judge it; it is always a please-check
@@ -29,6 +32,10 @@
 #   from              where the question came from: "true_answers" (a run found a real problem by
 #                     asking it), "misses" (a hand audit found a real problem nobody asked about),
 #                     "both", or "rulebook" (GV's own checklist or published rulebook)
+#   source            one line naming exactly where the rule comes from: which section of GV's
+#                     settled rules, which rulebook id, which checklist, and how many real findings
+#                     it is derived from. It is there so the next person can audit this list
+#                     without redoing the work that built it.
 #   seen_as           measurement only: how an answer to this question looks in the old open-ended
 #                     runs, so coverage can be measured on saved runs. Not part of the question.
 #
@@ -188,6 +195,10 @@ questions:
     decided_by: code
     compares: vendor_only
     from: both
+    source: >-
+      GV's settled rules, Units and matching (inches count, millimetres are ignored, exact
+      match); derived from 71 real findings across three audited jobs, the highest-yield
+      question in the product.
     seen_as:
       created_by: [string_check, consistency, vendor_arithmetic, page_reviewer]
       words: ["add up", "adds to", "string", "parts sum", "overall", "does not add"]
@@ -213,6 +224,9 @@ questions:
     decided_by: code
     compares: vendor_only
     from: misses
+    source: >-
+      GV's settled rules, Units and matching; derived from the hand audits' miss lists (one
+      millimetre value printed with two different inch figures, on four sheets).
     seen_as:
       created_by: [page_reviewer, consistency, helper]
       words: ["printed as", "rounded", "conversion", "millimetre", "mm", "both", "label slip", "[0]"]
@@ -234,6 +248,9 @@ questions:
     decided_by: code
     compares: vendor_only
     from: misses
+    source: >-
+      GV's settled rules, Units and matching; derived from the hand audits' miss lists (details
+      printed in millimetres only, and parts printed as zero inches).
     seen_as:
       created_by: [page_reviewer, consistency, helper]
       words: ["mm only", "no inch", "[0]", "zero", "cannot be checked", "not readable in inches"]
@@ -259,6 +276,9 @@ questions:
       - One sheet shows the piece and the other shows the opening it sits in.
     decided_by: code
     from: both
+    source: >-
+      GV's practice of reviewing an item by its whole sheet set; derived from 2 real findings
+      and the largest single family in the hand audits' miss lists.
     seen_as:
       created_by: [sink_sheets, page_reviewer, whole_look]
       words: ["against the sheet", "on another sheet", "its own sheet", "two sheets", "disagree", "cross-sheet"]
@@ -282,6 +302,9 @@ questions:
       - A feature is on the opposite side in the opposite hand; that is what a mirror is.
     decided_by: code
     from: misses
+    source: >-
+      GV's practice; derived from the hand audits' miss lists (two hands of one item printing
+      different sizes on identical cabinets, and swapped per-hand counts).
     seen_as:
       created_by: [page_reviewer, whole_look]
       words: ["opposite hand", "twin", "mirror", "left hand", "right hand", "L/R"]
@@ -307,6 +330,9 @@ questions:
       - The architect genuinely draws nothing for this item; that is "nothing to compare", not a miss.
     decided_by: ai
     from: misses
+    source: >-
+      Derived from the false-alarm ledger: 37 of 164 false alarms came from the wrong architect
+      view, the largest mechanical cause of all.
     seen_as:
       created_by: [pairing, lead, whole_look]
       words: ["best guess", "architect page", "no architect drawing", "paired", "wrong page", "no sheet"]
@@ -331,6 +357,8 @@ questions:
       - The stone sheet and the cabinet sheet of one item share one item number; neither is missing its own.
     decided_by: ai
     from: true_answers
+    source: >-
+      GV's product checklist; derived from 10 real findings in the title-block topic.
     seen_as:
       created_by: [page_reviewer]
       words: ["title block", "item no", "item number cell", "overall size", "blank", "quantity cell", "colour cell"]
@@ -355,6 +383,9 @@ questions:
       - Two sheets of one item share one item number.
     decided_by: code
     from: both
+    source: >-
+      GV's product checklist; derived from 10 real findings in the title-block topic, two of
+      them an item code that names another item on the architect's plan.
     seen_as:
       created_by: [page_reviewer, helper, whole_look]
       words: ["item number", "item code", "tag", "named", "called"]
@@ -378,6 +409,9 @@ questions:
       - The whole vendor set carries one issue date; that alone is not a defect.
     decided_by: ai
     from: both
+    source: >-
+      GV's product checklist; derived from 1 real finding and the hand audits' miss lists
+      (sheets inside a revision cloud never flagged).
     seen_as:
       created_by: [page_reviewer, whole_look]
       words: ["date", "revision", "rev 2", "cloud", "issued", "superseded"]
@@ -400,6 +434,9 @@ questions:
       - A view appears on a later sheet than its cut marker; sections on a second sheet are normal.
     decided_by: ai
     from: both
+    source: >-
+      GV's product checklist; derived from 11 real findings and the hand audits' miss lists (an
+      item's four sheets numbered 3 of 3 twice).
     seen_as:
       created_by: [page_reviewer]
       words: ["view title", "both titled", "same title", "section", "sheet number", "misspelt", "typo"]
@@ -428,6 +465,9 @@ questions:
     decided_by: ai
     compares: vendor_only
     from: rulebook
+    source: >-
+      GV's product checklist; 57 audited answers produced no first-time real problem (31
+      trivial, 14 false), which is why the rule limits it to once per item.
     seen_as:
       created_by: [page_reviewer, whole_look]
       words: ["material table", "no tag", "not in the table", "untagged", "swatch", "legend", "finish tag", "stone tag"]
@@ -451,6 +491,9 @@ questions:
       - The item's two hands have separate quantities; each is counted against its own room list.
     decided_by: code
     from: both
+    source: >-
+      GV's product checklist; derived from 2 real findings and the hand audits' miss lists (room
+      lists clashing between an item's own sheets).
     seen_as:
       created_by: [page_reviewer]
       words: ["quantity", "qty", "room list", "total qty", "rooms", "sets"]
@@ -471,6 +514,9 @@ questions:
       - A dimension is deliberately repeated above and below a view.
     decided_by: ai
     from: both
+    source: >-
+      GV's product checklist; derived from real findings on unreadable values and the hand
+      audits' miss lists (parts printed as zero inches).
     seen_as:
       created_by: [page_reviewer]
       words: ["overprint", "printed over the", "illegible", "TBD", "question mark", "unreadable", "overlap"]
@@ -495,20 +541,56 @@ questions:
         view: plan or elevation
     rule: >-
       A countertop is the cabinet run it sits on plus one field cut at each end that meets a wall.
-      A free or finished end gets the end overhang instead, which has no GV standard and must be
-      entered per job. Inches are compared exactly; millimetres are ignored. Where the architect
-      prints the parts of the run and not its total, the parts are added.
+      The field cut is 1 inch per wall end as GV's company standard, unless the job sets another.
+      A free or finished end takes the end overhang instead, which is a separate question because it
+      is a job value, not a rule. Inches are compared exactly; millimetres are ignored. Where the
+      architect prints the parts of the run and not its total, the parts are added.
     problem_when: the top's length is not the run plus a field cut at each wall end, or it differs from the architect's run.
     not_a_problem_when:
       - The run is split into more than one top; each piece is measured against its own part of the run.
       - A field cut note calls for oversize stock to be trimmed on site; the note is stock, not a design size.
+      - An end of this top is free or finished rather than at a wall; that end takes the job's end overhang, never a field cut.
     decided_by: code
     compares: gv_rule
     from: both
+    source: >-
+      GV's settled rules, Countertop and sink (field cut 1 inch typical, per project, counted
+      per wall end); rulebook CT-WIDTH-001; derived from 18 real findings across three audited
+      jobs.
     seen_as:
       created_by: [field_cut, page_reviewer, helper, whole_look, formulas]
       rule_ids: [CT-WIDTH-001, CT-ARCH-WIDTH-001]
       words: ["field cut", "top length", "run + 1", "wall end", "overall length", "wall to wall"]
+
+  - key: ct_end_overhang
+    asks: How far does the top run past the cabinet at a free or finished end?
+    item_kinds: [countertop_piece, vanity]
+    needs:
+      - side: vendor
+        fact: the stone's own end position against the end of the run under it, at each end that is not at a wall
+        view: stone_plan and cabinet_plan
+      - side: gv_rule
+        fact: the job's end overhang setting
+        view: the job settings
+    rule: >-
+      A free or finished end takes an end overhang, not a field cut. The overhang at an end is one
+      of the values the reviewer enters per job, in the same family as the side panel thickness, the
+      front overhang and the splash thickness: GV has no company value for it and there is no
+      default. Where the job has not set one, this question has no governing value and must say so.
+    problem_when: the stone runs past its end by something other than the job's end overhang.
+    missing_fact_when: no end overhang has been entered for the job, so nothing governs this end.
+    not_a_problem_when:
+      - The end meets a wall; a wall end takes the 1 inch field cut, which is a settled rule, not a job value.
+      - No end overhang is set for the job; that is a missing job value to report as missing, never a defect and never a silent pass.
+    decided_by: code
+    compares: gv_rule
+    from: rulebook
+    source: >-
+      GV's settled rules, Countertop and sink (side panel thickness, overhang and backsplash
+      thickness are project specific, so the reviewer enters them per job).
+    seen_as:
+      created_by: [field_cut, page_reviewer, helper, formulas]
+      words: ["end overhang", "free end", "finished end", "past the run", "overhang at the end"]
 
   - key: ct_finished_depth
     asks: What is this top's finished depth, and what does the architect give for it?
@@ -532,11 +614,18 @@ questions:
       nor the cabinet depth has a GV standard; both are entered per job, and without them the depth
       is checked against the architect alone.
     problem_when: the vendor's depth differs from the architect's, or from the cabinet depth plus the overhang.
+    missing_fact_when: >-
+      no cabinet depth or front overhang has been entered for the job, so only the architect's
+      value can be weighed.
     not_a_problem_when:
       - A side splash's length is compared with the whole top depth; those are different spans.
       - A section measures to the carcass behind a fixed front panel; the panel's face is the cabinet face.
     decided_by: code
     from: both
+    source: >-
+      GV's settled rules, Countertop and sink (countertop depth = cabinet depth + overhang;
+      cabinet depth = carcass depth + door thickness, three quarters of an inch typical);
+      rulebook CT-DEPTH-001; derived from 5 real findings.
     seen_as:
       created_by: [page_reviewer, helper, whole_look, formulas, depth]
       rule_ids: [CT-DEPTH-001]
@@ -560,6 +649,8 @@ questions:
       - The architect prints the thickness only once for the set; one printed value governs every top of that set.
     decided_by: code
     from: both
+    source: >-
+      GV's product checklist, sizes; derived from 2 real findings.
     seen_as:
       created_by: [page_reviewer, helper, whole_look]
       words: ["thickness", "top thickness", "2 cm", "thick"]
@@ -583,6 +674,8 @@ questions:
       - An accessible item has its own lower height; compare it with the accessible height, not the standard one.
     decided_by: code
     from: both
+    source: >-
+      GV's product checklist, sizes; derived from 3 real findings in the heights topic.
     seen_as:
       created_by: [page_reviewer, helper, whole_look]
       words: ["counter height", "floor to", "height above the floor", "34", "36"]
@@ -599,13 +692,18 @@ questions:
         view: the job settings
     rule: >-
       The front overhang is the distance from the cabinet's finished face, door included, to the
-      top's front edge. It has no GV standard; it is entered per job. It matters beyond its own size
-      because every offset measured from the top's edge is that much further from the cabinet.
+      top's front edge. It is one of the values the reviewer enters per job: it has no GV standard
+      and no default. It matters because the top's finished depth is the cabinet depth plus this
+      overhang.
     problem_when: the overhang differs from the job's setting, or it changes along one continuous top.
+    missing_fact_when: no front overhang has been entered for the job.
     not_a_problem_when:
-      - No job overhang has been entered; the answer is then that the setting is missing, not that the overhang is wrong.
+      - The top's front edge stands ahead of the cabinet face; that is what an overhang is, and it never moves the sink's front offset, which is read from the stone's edge.
     decided_by: code
     from: both
+    source: >-
+      GV's settled rules, Countertop and sink (the overhang is project specific, entered per
+      job) and Layouts and views (the section is the view that carries the overhang).
     seen_as:
       created_by: [page_reviewer, helper, sink_offset, formulas]
       words: ["overhang", "past the cabinet", "front edge", "stands out"]
@@ -633,6 +731,10 @@ questions:
     decided_by: ai
     compares: vendor_only
     from: both
+    source: >-
+      GV's settled rules, Countertop and sink (the field cut is counted per wall end, so the end
+      condition decides it); derived from the hand audits' miss lists (two sheets of one item
+      drawing different ends).
     seen_as:
       created_by: [field_cut, page_reviewer, whole_look, helper]
       words: ["wall end", "free end", "polished", "eased", "open bay", "end condition", "scribe"]
@@ -660,6 +762,9 @@ questions:
     decided_by: ai
     compares: vendor_only
     from: true_answers
+    source: >-
+      GV's product checklist, edges and seams; derived from real findings on a seam placed over
+      an unsupported bay.
     seen_as:
       created_by: [page_reviewer, whole_look, helper]
       words: ["seam", "joint", "pieces", "split", "two pieces"]
@@ -683,6 +788,9 @@ questions:
       - The architect names no profile; there is then nothing to compare.
     decided_by: ai
     from: rulebook
+    source: >-
+      GV's product checklist, edges; the audits produced only false alarms on this question, so
+      its anti-patterns are what the evidence gives.
     seen_as:
       created_by: [page_reviewer, whole_look]
       words: ["edge profile", "eased", "chamfer", "bullnose", "mitred edge", "edge"]
@@ -708,6 +816,9 @@ questions:
       - The architect's set carries item codes but no stone or finish schedule at all; an item code is not a material.
     decided_by: ai
     from: true_answers
+    source: >-
+      GV's product checklist, material; 57 audited answers in the tag topic produced no first-
+      time real problem, so the rule keeps it to the item's sheet set.
     seen_as:
       created_by: [page_reviewer, whole_look, helper]
       words: ["stone tag", "quartz", "by GV", "supplier", "who supplies", "colour", "provided by"]
@@ -733,6 +844,9 @@ questions:
     decided_by: code
     compares: vendor_only
     from: true_answers
+    source: >-
+      GV's product checklist, splashes; the rulebook formula 'back splash length = the top's run
+      from wall to wall'; derived from 1 real finding (a splash drawn flush at the wrong end).
     seen_as:
       created_by: [page_reviewer, helper, whole_look, formulas]
       words: ["backsplash", "back splash", "splash length", "splash runs"]
@@ -751,11 +865,16 @@ questions:
       The splash height is measured from the top's surface. Its thickness is a job setting, entered
       per job, with no GV standard.
     problem_when: the height differs from the architect's, or no sheet of the item gives it.
+    missing_fact_when: >-
+      no splash thickness has been entered for the job.
     not_a_problem_when:
       - The height is printed on another sheet of the same item; a section need not repeat the elevation.
       - The architect draws a band but prints no number; a scaled value never decides.
     decided_by: code
     from: true_answers
+    source: >-
+      GV's settled rules, Countertop and sink (backsplash thickness is project specific, entered
+      per job); GV's product checklist, splashes.
     seen_as:
       created_by: [page_reviewer, helper, whole_look]
       words: ["splash height", "splash thickness", "4\" splash", "band above"]
@@ -782,6 +901,9 @@ questions:
       - Both ends meet an appliance rather than a wall and both are eased.
     decided_by: ai
     from: both
+    source: >-
+      GV's product checklist, splashes; derived from 1 real finding and the hand audits' miss
+      lists (side splashes the architect draws and the vendor does not).
     seen_as:
       created_by: [page_reviewer, whole_look, helper]
       words: ["side splash", "splash at the", "wrong end", "no splash"]
@@ -807,27 +929,31 @@ questions:
       twice the clearance. The clearance is one quarter of an inch unless the job sets another. The
       sink's own maker's cut-out template is a hint, not the rule.
     problem_when: the drawn cut-out is not the inside size less twice the clearance, in inches, exactly.
+    missing_fact_when: >-
+      the sink's inside size is given neither by the job nor by a spec sheet in the set.
     not_a_problem_when:
       - The architect prints no cut-out size; GV's own rule still decides it, so the answer is never "nothing to compare".
       - The millimetres work out and the inches do not; inches count.
     decided_by: code
     compares: gv_rule
     from: both
+    source: >-
+      GV's settled rules, Countertop and sink (cut-out width = the sink's inside width less the
+      clearance each side, depth likewise; clearance a quarter of an inch, editable per
+      project); rulebook CT-SINK-CUTOUT-WIDTH-001 and CT-SINK-CUTOUT-DEPTH-001; derived from 22
+      real findings across three audited jobs.
     seen_as:
       created_by: [sink_offset, sink_sheets, page_reviewer, helper]
       rule_ids: [CT-SINK-CUTOUT-WIDTH-001, CT-SINK-CUTOUT-DEPTH-001]
       words: ["cut-out", "cutout", "clearance", "inside size", "bowl size", "cut out width", "cut out depth"]
 
   - key: sink_front_offset
-    asks: How far is the cut-out from the cabinet front, and what is GV's front offset?
+    asks: How far is the cut-out from the top's own front edge, and what is GV's front offset?
     item_kinds: [sink_cutout_sheet, countertop_piece, vanity]
     needs:
       - side: vendor
-        fact: the printed offset from the front of the cut-out, and what its dimension line ends on
+        fact: the printed offset from the top's front edge to the front of the cut-out
         view: cutout_plan or stone_plan
-      - side: vendor
-        fact: the front overhang, so an offset measured from the stone's edge can be read
-        view: section
       - side: gv_rule
         fact: GV's front offset, 4 inches as the company standard, adjustable in special cases
         view: the job settings
@@ -835,17 +961,25 @@ questions:
         fact: the setback the architect gives from the front to the bowl
         view: plan or section
     rule: >-
-      GV's front offset is measured from the cabinet's front face, not from the stone's edge. An
-      offset printed from the stone's edge is held for a person and never adjusted by code: the
-      overhang is subtracted only to show the person what it means. The standard is 4 inches unless
-      the job sets another.
-    problem_when: the offset from the cabinet front is not GV's front offset, or the two sheets of one top print different offsets.
+      The front offset is measured from the top's own front edge, which is what a countertop plan
+      dimensions from, and the plan is the view this check reads. The standard is 4 inches unless
+      the job sets another; a person may deviate in a special case, but code never recomputes the
+      offset. A printed front offset is held exactly as printed and is never adjusted by subtracting
+      the front overhang or anything else.
+    problem_when: the printed offset from the top's front edge is not GV's front offset, or the two sheets of one top print different offsets.
     not_a_problem_when:
       - The architect's setback runs to the bowl and the vendor's to the cut-out; those are different ends.
-      - The offset is measured from the stone's edge and no overhang is printed anywhere; the answer is then that it cannot be settled, held for a person.
+      - The offset is not 4 inches because a person deviated for this job; a person's deviation stands.
+      - The top overhangs the cabinet, so the cut-out is nearer the cabinet face than the printed offset; the offset is read from the stone's edge, not from the cabinet, and is never converted.
     decided_by: code
     compares: gv_rule
     from: both
+    source: >-
+      GV's settled rules, Countertop and sink (front offset 4 inches as standard, adjustable in
+      special cases) and Layouts and views (the plan carries the cut-out position and its
+      offsets, and a countertop plan dimensions from the stone's own edges); the decision of
+      2026-10-14 that a printed front offset is held for a person and never adjusted; rulebook
+      CT-SINK-OFFSET-FRONT-001; derived from 10 real findings.
     seen_as:
       created_by: [sink_offset, sink_sheets, page_reviewer, helper]
       rule_ids: [CT-SINK-OFFSET-FRONT-001]
@@ -871,6 +1005,9 @@ questions:
     decided_by: code
     compares: gv_rule
     from: rulebook
+    source: >-
+      GV's settled rules, Countertop and sink (the back offset is whatever is left, with a
+      company minimum of two and a half inches); rulebook CT-BACK-OFFSET-MIN-001.
     seen_as:
       created_by: [sink_offset, page_reviewer]
       rule_ids: [CT-BACK-OFFSET-MIN-001]
@@ -899,6 +1036,10 @@ questions:
     decided_by: code
     compares: vendor_only
     from: both
+    source: >-
+      The rulebook formula 'sink centre = the sink base's centre'; derived from the hand audits'
+      miss lists (an item's stone sheets and cabinet plans placing one sink an eighth to three
+      eighths of an inch apart).
     seen_as:
       created_by: [sink_sheets, page_reviewer, helper, formulas]
       words: ["sink centre", "centre line", "from the end", "from the wall", "sink position"]
@@ -926,6 +1067,9 @@ questions:
     decided_by: ai
     compares: vendor_only
     from: rulebook
+    source: >-
+      GV's product checklist, sink; 45 audited answers produced no first-time real problem (30
+      trivial repeats, 12 wrong), which is why it is asked once for a whole job.
     seen_as:
       created_by: [page_reviewer, helper, whole_look]
       words: ["sink model", "sink tag", "who supplies", "supplier", "by GV", "by others", "faucet"]
@@ -950,6 +1094,9 @@ questions:
     decided_by: code
     compares: vendor_only
     from: misses
+    source: >-
+      Derived from the hand audits' miss lists: sink callouts quoting the cut-out's numbers,
+      with width and depth swapped, on four sheets of two jobs.
     seen_as:
       created_by: [sink_sheets, page_reviewer, helper]
       words: ["swapped", "W x", "\"W", "\"D", "callout", "sink note", "sink size"]
@@ -973,6 +1120,9 @@ questions:
       - The drain sits on a different side; which side the drain is on does not change the stone.
     decided_by: ai
     from: misses
+    source: >-
+      Derived from the hand audits' miss lists (a double bowl drawn where the architect and GV's
+      own top sheet both have a single sink).
     seen_as:
       created_by: [page_reviewer, helper, whole_look]
       words: ["double bowl", "single bowl", "two bowls", "bowl"]
@@ -999,6 +1149,9 @@ questions:
     decided_by: code
     compares: vendor_only
     from: both
+    source: >-
+      GV's product checklist, cut-outs; derived from 2 real findings and the hand audits' miss
+      lists (a hole's size and position differing between two sheets of one top).
     seen_as:
       created_by: [sink_sheets, sink_offset, page_reviewer]
       words: ["faucet hole", "hole", "grommet", "air switch", "soap", "diameter"]
@@ -1022,6 +1175,9 @@ questions:
       - The architect draws the appliance but prints no cut-out size; there is then no size to compare.
     decided_by: ai
     from: both
+    source: >-
+      GV's product checklist, cut-outs; derived from real findings on cut-outs the vendor added
+      that the design does not have.
     seen_as:
       created_by: [page_reviewer, whole_look, helper]
       words: ["cooktop cut", "waste hole", "hole in the top", "ring", "partial cutout", "not in the design"]
@@ -1050,6 +1206,9 @@ questions:
       - The title block names the whole wall including an appliance opening while the run is only the cabinets; those are different spans.
     decided_by: code
     from: both
+    source: >-
+      Rulebook CAB-ARCH-VS-SHOP-001; derived from real findings and the hand audits' miss lists
+      (an architect wall-to-wall string four inches from the vendor's run).
     seen_as:
       created_by: [page_reviewer, helper, whole_look, run_fit]
       rule_ids: [CAB-ARCH-VS-SHOP-001]
@@ -1072,12 +1231,18 @@ questions:
       Each part is matched to the architect's part at the same place along the run, and compared in
       inches, exactly. Cabinet width limits are mandatory job entries with no GV standard.
     problem_when: a part's width differs from the architect's part at the same place, or the parts are arranged differently.
+    missing_fact_when: >-
+      no cabinet width limits have been entered for the job.
     not_a_problem_when:
       - The run is mirrored; compare each part with its mirrored partner.
       - A vendor panel of one thickness stands where the architect draws a box side of another; that is a construction detail, raised once, not per bay.
       - The vendor's string holds a piece the architect does not draw; name what the piece is, usually a panel or a scribe, before calling it a difference.
     decided_by: code
     from: both
+    source: >-
+      GV's settled rules, Layouts and views (the elevation carries cabinet widths) and Cabinets
+      and fillers (cabinet width limits are mandatory reviewer entries per project, with no
+      company value); rulebook CAB-ARCH-VS-SHOP-001; derived from 18 real findings.
     seen_as:
       created_by: [page_reviewer, helper, whole_look, run_fit]
       rule_ids: [CAB-ARCH-VS-SHOP-001]
@@ -1108,6 +1273,10 @@ questions:
     decided_by: code
     compares: gv_rule
     from: rulebook
+    source: >-
+      GV's settled rules, Cabinets and fillers (2026-10-20: fillers and the drawer cabinet keep
+      their design size and the door cabinets absorb the site difference equally; equipment
+      cabinets are marked by the reviewer and never resized); rulebook CAB-FILLER-001.
     seen_as:
       created_by: [run_fit, filler_range]
       rule_ids: [CAB-FILLER-001]
@@ -1131,11 +1300,17 @@ questions:
       typical. A section that measures to the box behind a fixed front panel has not reached the
       cabinet face.
     problem_when: the finished depth differs from the architect's, or it changes between two sections of the same run without reason.
+    missing_fact_when: >-
+      no cabinet depth has been entered for the job.
     not_a_problem_when:
       - One section measures to the carcass and another to the front face; add the front before comparing.
       - The section is cut through an appliance column, so there is no cabinet to measure.
     decided_by: code
     from: both
+    source: >-
+      GV's settled rules, Countertop and sink (cabinet depth = carcass depth + door thickness,
+      three quarters of an inch typical); derived from real findings on a top depth that steps
+      along one run.
     seen_as:
       created_by: [page_reviewer, helper, whole_look]
       words: ["cabinet depth", "carcass", "box depth", "deep"]
@@ -1161,6 +1336,10 @@ questions:
     decided_by: code
     compares: vendor_only
     from: true_answers
+    source: >-
+      GV's product checklist; derived from 3 real findings in the heights topic, and from the
+      false-alarm ledger, where 6 false alarms said there was no overall height when the sheet's
+      own strings added up to it.
     seen_as:
       created_by: [page_reviewer, helper, whole_look, consistency]
       words: ["overall height", "height string", "no overall", "tallest", "84", "add to"]
@@ -1183,6 +1362,8 @@ questions:
       - The architect gives a height but no finish, or the other way round; only what is given is compared.
     decided_by: code
     from: true_answers
+    source: >-
+      GV's product checklist; derived from 2 real findings.
     seen_as:
       created_by: [page_reviewer, helper, whole_look]
       words: ["toe kick", "toe-kick", "toe"]
@@ -1210,6 +1391,9 @@ questions:
       - The layout is the mirror of the architect's one typical room.
     decided_by: ai
     from: true_answers
+    source: >-
+      GV's product checklist; derived from real findings on drawers drawn as open cubbies and a
+      hinged door where a removable panel was called for.
     seen_as:
       created_by: [page_reviewer, whole_look, helper]
       words: ["doors", "drawers", "open shelf", "bays", "fronts", "false front", "removable panel", "cubby"]
@@ -1235,6 +1419,10 @@ questions:
       - The architect's set carries item codes but no finish schedule; an item code is not a finish code.
     decided_by: ai
     from: true_answers
+    source: >-
+      GV's settled rules, Layouts and views (the elevation carries the tags); derived from a
+      real finding on a toe-kick finish code, and from the false-alarm ledger, where 6 of 6
+      answers calling a suffixed code a difference were wrong.
     seen_as:
       created_by: [page_reviewer, whole_look, helper]
       words: ["finish tag", "finish code", "front finish", "laminate", "veneer", "grain"]
@@ -1258,6 +1446,8 @@ questions:
       - The architect gives no hardware for this item; there is nothing to compare.
     decided_by: ai
     from: true_answers
+    source: >-
+      GV's product checklist; derived from 3 real findings.
     seen_as:
       created_by: [page_reviewer, whole_look, helper]
       words: ["pull", "hinge", "leg", "bracket", "hardware", "knob"]
@@ -1280,6 +1470,9 @@ questions:
       - The panels are removable and the architect also calls for removable panels.
     decided_by: ai
     from: true_answers
+    source: >-
+      GV's product checklist; derived from real findings on an open approach space split into
+      bays and filled with a drawer bank.
     seen_as:
       created_by: [page_reviewer, whole_look, helper]
       words: ["knee space", "open for", "forward approach", "open bay", "clear space"]
@@ -1305,6 +1498,10 @@ questions:
       - The appliance still fits; the printed opening is still compared, but the gap is explained.
     decided_by: code
     from: true_answers
+    source: >-
+      Derived from 1 real finding, and from the false-alarm ledger, where 6 false alarms treated
+      an appliance opening as a cabinet missing its filler or as a door cabinet in a site-fit
+      sum.
     seen_as:
       created_by: [page_reviewer, helper, whole_look, run_fit]
       words: ["refrigerator", "fridge", "range", "dishwasher", "microwave", "cooktop", "opening", "appliance space"]
@@ -1328,6 +1525,9 @@ questions:
       - Outlets are the general contractor's work and marked for reference only; the position is still raised but as a confirm.
     decided_by: ai
     from: both
+    source: >-
+      GV's product checklist; derived from 3 real findings and the hand audits' miss lists
+      (architect outlets inside the base cabinets with no access drawn).
     seen_as:
       created_by: [page_reviewer, whole_look, helper]
       words: ["LED", "strip light", "puck", "outlet", "GFI", "electrical", "lighting"]
@@ -1360,6 +1560,11 @@ questions:
     decided_by: code
     compares: architect
     from: true_answers
+    source: >-
+      GV's settled rules, Cabinets and fillers (fillers min 1 inch, max 2 inches, changeable per
+      project; 2026-10-20 the range is a GV NOTE only and never a red, a filler being red only
+      when it differs from the architect's design filler; 2026-10-21 an architect filler outside
+      the range is Not compared and needs GV's own call); rulebook CAB-FILLER-001.
     seen_as:
       created_by: [filler_range, filler_facts, page_reviewer, helper]
       rule_ids: [CAB-FILLER-001]
@@ -1385,6 +1590,10 @@ questions:
       - The filler is drawn and dimensioned but its label sits outside the overall's extension lines.
     decided_by: ai
     from: true_answers
+    source: >-
+      GV's settled rules, Cabinets and fillers; derived from a real finding on a cabinet meeting
+      a wall with nothing to scribe to, and from the false-alarm ledger, where 13 false alarms
+      came from the filler conventions.
     seen_as:
       created_by: [filler_facts, filler_range, page_reviewer, helper]
       words: ["no filler", "filler at the wall", "wall end", "scribe at", "nothing to scribe"]
@@ -1410,6 +1619,9 @@ questions:
       - The item is a standard one, not an accessible one.
     decided_by: code
     from: rulebook
+    source: >-
+      GV's product checklist; GV's settled rules defer ADA judgements to later, so this asks
+      only what the architect prints and compares clear against clear.
     seen_as:
       created_by: [page_reviewer, helper, whole_look]
       words: ["clear", "accessible", "ADA", "knee clearance", "clear width"]
@@ -1433,6 +1645,9 @@ questions:
     decided_by: code
     compares: vendor_only
     from: true_answers
+    source: >-
+      GV's product checklist; derived from real findings on a support frame's own dimension
+      strings and on legs that differ from the architect's in shape and size.
     seen_as:
       created_by: [page_reviewer, helper, whole_look]
       words: ["frame", "leg", "glide", "bracket", "support", "underside", "metal frame"]
@@ -1457,6 +1672,9 @@ questions:
       - The detail is a typical detail shared by several items and the length is given on the item's own sheet.
     decided_by: code
     from: both
+    source: >-
+      GV's product checklist, accessories; derived from 3 real findings and the hand audits'
+      miss lists (a shelf three inches short of the architect's).
     seen_as:
       created_by: [page_reviewer, helper, whole_look]
       words: ["shelf", "hook rail", "rail", "rod", "floating shelf", "shelf length"]
@@ -1479,6 +1697,8 @@ questions:
       - The architect draws the accessory but prints no height; a scaled value never decides.
     decided_by: code
     from: true_answers
+    source: >-
+      GV's product checklist, accessories; derived from real findings on mounting heights.
     seen_as:
       created_by: [page_reviewer, helper, whole_look]
       words: ["below the", "above the floor", "mounting height", "spacing", "centres"]
@@ -1500,6 +1720,9 @@ questions:
       - The tag is on another sheet of the same item.
     decided_by: ai
     from: true_answers
+    source: >-
+      GV's product checklist, accessories; derived from real findings on untagged frames and
+      rails.
     seen_as:
       created_by: [page_reviewer, helper]
       words: ["untagged", "no finish tag", "who supplies", "by vendor"]
@@ -1524,6 +1747,9 @@ questions:
       - The tag differs only in wording for the same room type and the item code is the same.
     decided_by: code
     from: both
+    source: >-
+      Derived from the hand audits' miss lists: four key plans paired with the wrong architect
+      sheet or not compared at all, with room-type tags differing on more than a dozen rooms.
     seen_as:
       created_by: [room_matrix, page_reviewer, whole_look, helper]
       words: ["room type", "room tag", "key plan", "room number", "connecting", "suite"]
@@ -1546,6 +1772,9 @@ questions:
       - The vendor's sheet uses a different leader style for the same id.
     decided_by: code
     from: misses
+    source: >-
+      Derived from the hand audits' miss lists: five detail callouts moved or renumbered between
+      issues and flagged nowhere, on any key plan.
     seen_as:
       created_by: [room_matrix, page_reviewer, whole_look]
       words: ["callout", "detail id", "points at", "ID 6", "leader"]
@@ -1568,6 +1797,9 @@ questions:
       - The matrix counts sets and the item sheet counts pieces, and the note says so.
     decided_by: code
     from: misses
+    source: >-
+      Derived from the hand audits' miss lists (a matrix sheet swapping the left-hand and right-
+      hand counts of two items).
     seen_as:
       created_by: [room_matrix, page_reviewer, whole_look]
       words: ["sets", "count", "matrix", "left:", "right:", "per floor", "sub total"]
@@ -1593,6 +1825,9 @@ questions:
       - The maker's own cut-out template differs from GV's cut-out rule; GV's rule decides the cut-out, and the template is a hint.
     decided_by: code
     from: both
+    source: >-
+      GV's settled rules, Countertop and sink (sink sizes come from the reviewer per project, or
+      from the spec sheet); derived from real findings and the hand audits' miss lists.
     seen_as:
       created_by: [sink_sheets, page_reviewer, helper]
       words: ["spec sheet", "inside size", "reference only", "sink sheet", "cut sheet"]
@@ -1615,6 +1850,9 @@ questions:
       - A single item sheet does not repeat a set-level supply note.
     decided_by: ai
     from: true_answers
+    source: >-
+      GV's product checklist; derived from real findings on the set's own notes and from the
+      hand audits' miss lists (an empty matrix sheet).
     seen_as:
       created_by: [page_reviewer, whole_look]
       words: ["general notes", "scope", "by others", "exclusions", "checklist", "empty", "matrix sheet"]
