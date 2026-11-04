@@ -2238,9 +2238,12 @@ class _Run:
         )
         coverage = engine.book.coverage_map()
         carried = carried_done(coverage)
+        # A copy of the architect's sheet (the same sheet number and title, a key plan): its
+        # printed words are there to compare, so it never had nothing to compare (2026-11-04).
+        copies = getattr(getattr(engine, "_cross", None), "sheets", None) or {}
         for entry in coverage["pages"]:
             page = int(entry["page"])
-            if page in out or page in apart:
+            if page in out or page in apart or page in copies:
                 continue
             if judged_nothing(entry, looked=self.looks.get(page, 0) > 0, carried=page in carried):
                 out[page] = NOTHING_NO_SIZES
@@ -3900,7 +3903,7 @@ class _Run:
                 # Separate uploads (#1798): the run's pages' agreed architect pages, or why none.
                 paired = [(p, across.pairs[p]) for p in run if p in across.pairs]
                 unpaired = [(p, across.unpaired[p]) for p in run if p in across.unpaired]
-                brief = "\n\n".join([brief, *pair_lines(paired, unpaired, UPLOADS)])
+                brief = "\n\n".join([brief, *pair_lines(paired, unpaired, UPLOADS, across.sheets)])
             where = page_ranges_words(run)
             agents.append(
                 pool.add(
@@ -4135,7 +4138,17 @@ class _Run:
 
     def _same_sheet(self, page: int) -> str:
         """`; the architect's drawing is on this same sheet …` when the page map puts an architect
-        drawing on the page itself (a combined sheet, #1825), else nothing."""
+        drawing on the page itself (a combined sheet, #1825); `; it is a copy of …` when code
+        paired it by the sheet number both print (`CrossPairs.sheets`, a key plan); else
+        nothing."""
+        across = getattr(self.engine, "_cross", None)
+        number = (getattr(across, "sheets", None) or {}).get(page)
+        if number is not None:
+            return (
+                f"; it is a copy of the architect's sheet {number} (paired by the sheet number both "
+                "print): compare every printed word both show (room names and numbers, tags, "
+                "callouts, notes, date and revision), never 'not comparable' for want of sizes"
+            )
         page_map = self._stored_page_map()
         for entry in (page_map or {}).get("pages") or []:
             if not isinstance(entry, Mapping) or entry.get("page") != page:

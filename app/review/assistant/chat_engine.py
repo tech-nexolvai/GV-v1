@@ -302,6 +302,7 @@ from app.review.assistant.spot_guard import dropped as spot_dropped
 from app.review.assistant.spot_locate import code_spotted
 from app.review.assistant.vendor_consistency import add_to_answer as add_consistency
 from app.review.assistant.vendor_consistency import page_texts
+from app.review.assistant.wrong_item_tag import add_to_answer as add_wrong_item_tag
 from app.runs.rates import ModelRates, call_cost_micros
 
 __all__ = [
@@ -581,6 +582,7 @@ CODE_CHECK_NAMES: Final[Mapping[str, str]] = {
     "splash_views": "the splash sizes on the architect's other views",
     "scale_measure": "the measuring by scale where the architect prints no size",
     "room_matrix": "the room list check",
+    "wrong_item_tag": "the item number check",
     "set_check": "the cross-sheet tag check",
     "sink_sheets": "the sink cut-out on two sheets of the same top",
 }
@@ -3526,6 +3528,9 @@ class ChatEngine:
             # The vendor's room matrix against the architect's room schedule (2026-11-04,
             # `room_matrix`): the room set and the accessible rooms, and each room's type.
             (CODE_CHECK_NAMES["room_matrix"], lambda: add_room_matrix(self)),
+            # A vendor's item number that does not fit the room and its own other sheet of the item
+            # (2026-11-04, `wrong_item_tag`): please-checks, never red.
+            (CODE_CHECK_NAMES["wrong_item_tag"], lambda: add_wrong_item_tag(self)),
             # A tag only one sheet prints, or tagged differently on the item's other drawing
             # (2026-10-29, `set_context`): please-checks, never red.
             (CODE_CHECK_NAMES["set_check"], lambda: add_set_check(self)),
@@ -4637,7 +4642,7 @@ class ChatEngine:
         if job.reference:
             looked = "; ".join(f"{name} p.{number}" for name, number in job.reference)
             lines.append(f"LOOK AT, to compare with (another helper or file has them): {looked}.")
-        lines += pair_lines(job.pairs, job.unpaired, UPLOADS)
+        lines += pair_lines(job.pairs, job.unpaired, UPLOADS, dict(job.sheets))
         if rules:
             lines.append(
                 f"GV's rules for {products} (summary; all of them in {SKILLS}/rules.md):\n{rules}"

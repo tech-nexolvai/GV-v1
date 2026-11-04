@@ -40,6 +40,7 @@ _BREAK = {
     "room_matrix": "add_room_matrix",
     "set_check": "add_set_check",
     "sink_sheets": "add_sink_sheets",
+    "wrong_item_tag": "add_wrong_item_tag",
 }
 
 

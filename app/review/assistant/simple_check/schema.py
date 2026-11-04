@@ -68,6 +68,7 @@ __all__ = [
     "ViewsDisagree",
     "WorkItem",
     "WorkList",
+    "WrongTag",
     "canonical_ref",
     "check_result",
     "claimed_verdict",
@@ -468,6 +469,37 @@ class AcrossCandidate(_Frozen):
     """Code holds strong evidence for it (`pairing.Scored.strong`)."""
 
 
+class WrongTag(_Frozen):
+    """The vendor's item number on a drawing that points to an architect item that does not fit
+    (`worklist._misleading_tag`): the architect prints it in another room than the one the
+    vendor's sheet names, or the vendor prints it on another item's sheet, while the vendor's own
+    other sheet of the same item prints another number. Never red: what the architect calls the
+    item is code's reading of its plan, not a printed value both sides give."""
+
+    printed: str
+    """The vendor's item number on this drawing, as printed (`XX-512`)."""
+    room: str
+    """The room the vendor's sheet names, as the architect's plan prints it."""
+    tag_rooms: tuple[str, ...] = ()
+    """The rooms the architect prints the vendor's number in (the room names nearest it)."""
+    tag_page: int | None = None
+    """The architect's page (its own number) printing the vendor's number on a plan."""
+    elsewhere: tuple[int, ...] = ()
+    """The vendor's pages (its own numbers) of another item printing the same number."""
+    other: str | None = None
+    """The number the vendor's own other sheet of the same item prints, as printed."""
+    other_pages: tuple[int, ...] = ()
+    """The vendor's pages (its own numbers) of the same item printing `other`."""
+    confirmed: bool = False
+    """The architect prints `other` in `room` (and in no other room): pairing went by it."""
+    arch_file: str | None = None
+    arch_page: int | None = None
+    """Where the architect prints `other` in the room (its own page number), when `confirmed`."""
+    arch_box: Box | None = None
+    why: str
+    """In plain words, for the reason and GV's please-check."""
+
+
 class AcrossPair(_Frozen):
     """How a vendor drawing with no architect drawing of its own area was paired across the
     uploads (#1798): code's candidates, code's own pick, the AI page matcher's answer (when
@@ -510,6 +542,13 @@ class AcrossPair(_Frozen):
     """Code's own $0 pass named the architect item (`pairing.code_pass`: two kinds of code
     evidence, a clear margin): the paid AI page matcher is not asked about this drawing
     (`page_match.to_ask`)."""
+    sheet: str | None = None
+    """The sheet number both pages print under the same title, when code paired the drawing by
+    it (`worklist._sheet_pair`: the vendor's copy of the architect's sheet, a key plan often an
+    older issue): compared whole, its printed words too, never "nothing to compare"."""
+    wrong_tag: WrongTag | None = None
+    """The vendor's item number on this drawing does not fit the architect's item it names
+    (`worklist._misleading_tag`): GV's please-check, and the number pairing went by instead."""
 
 
 class WorkList(_Frozen):

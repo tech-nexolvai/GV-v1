@@ -71,9 +71,11 @@ from app.review.assistant.simple_check.schema import (
     ViewsDisagree,
     WorkItem,
     WorkList,
+    WrongTag,
     label_ref,
 )
 from app.review.assistant.simple_check.set_pages import set_pages
+from vocabulary.dashes import dashes_to_hyphen
 
 #: The AI page matcher's saved answers in the set pack (`page_match.py`, #1798).
 MATCH_FILE: Final = "page_match.json"
@@ -671,6 +673,14 @@ def worklist_from(
     upload_roles = dict(roles) if isinstance(roles, Mapping) else {}
     architect_files = frozenset(n for n, r in upload_roles.items() if r == "architect")
     by_set_page: dict[int, Mapping[str, Any]] = {}
+    read_index = _index_pages(set_index)
+    # A vendor page that is a copy of an architect's sheet (the same sheet number and title, a key
+    # plan of an older issue): paired with it by code (`_sheet_pair`), even with no dimension.
+    sheet_ids = _sheet_ids(read_index, dims_pages)
+    sheet_twins = _sheet_twins(file, sheet_ids, architect_files)
+    kept_for_sheet: set[int] = set()
+    """The vendor's pages with no drawing to compare but its copy of an architect's sheet: skipped
+    after all when no architect page pairs with them by the sheet number."""
 
     def wanted(entry_file: str, half: Mapping[str, Any]) -> bool:
         """A separate file's drawing the work list reads: the architect's; and the vendor's of an
@@ -725,9 +735,11 @@ def worklist_from(
                 dims_pages.get((entry_file, own)), health_pages.get((entry_file, own)), raw_halves
             )
         ):
-            skip(page, NO_DRAWING_NOTE)
-            cover[page] = PageCover(page=page, how="skipped", reason=NO_DRAWING_NOTE)
-            continue
+            if (entry_file, own) not in sheet_twins:
+                skip(page, NO_DRAWING_NOTE)
+                cover[page] = PageCover(page=page, how="skipped", reason=NO_DRAWING_NOTE)
+                continue
+            kept_for_sheet.add(page)
         halves: list[_Half] = []
         counts: dict[str, int] = {}
         for index, raw in enumerate(raw_halves):
@@ -938,7 +950,6 @@ def worklist_from(
     # the drawings of every round paired with one architect item are one area for their rounds
     # (#1728).
     answers = _saved_answers(matches)
-    read_index = _index_pages(set_index)
     items_across, across_context = _enrich(
         _items_across(across, drawings, file, architect_files, by_set_page, facts_of),
         dims_pages,
@@ -953,8 +964,12 @@ def worklist_from(
     across_context.architect_text = _architect_text(
         entries, architect_files, dims_pages, notes_pages, read_index, texts or {}, across_context
     )
+    across_context.sheet_ids = sheet_ids
+    across_context.sheet_twins = sheet_twins
     separate_items = any(c.file != file for c in items_across)
-    mine_vendor = [h for h in vendor_halves if h.file == file]
+    # A copy of an architect's sheet with no drawing to compare (a key plan) counts in no share
+    # of the vendor's drawings (which tags and words are its title block's).
+    mine_vendor = [h for h in vendor_halves if h.file == file and h.page not in kept_for_sheet]
     for half in mine_vendor:
         known_vendor = facts_of(drawings[half.ref])
         across_context.tag_drawings.update(known_vendor.item_tags or ())
@@ -973,6 +988,19 @@ def worklist_from(
                 # The page's item is this drawing's only when it is the page's one vendor drawing.
                 across_context.index_titles[half.ref] = title
     across_context.word_limit = max(COMMON_WORD_MIN, COMMON_WORD_SHARE * len(mine_vendor))
+    vendor_tags = across_context.item_tags()
+    for half in mine_vendor:
+        named = across_context.index_titles.get(half.ref)
+        if not named:
+            continue
+        drawn = drawings[half.ref]
+        place = across_context.places.get((drawn.file, drawn.own_page)) or projects_module.Place()
+        across_context.vendor_items[half.ref] = _VendorItem(
+            page=drawn.own_page,
+            title=named,
+            words=_item_words(named, place.name),
+            tags=(facts_of(drawn).item_tags or frozenset()) & vendor_tags,
+        )
     for half in vendor_halves:
         # The room or unit numbers a vendor page lists (`_room_numbers_page`): its text layer
         # (`page_texts`), else its printed phrases; only the page's one vendor drawing's.
@@ -1034,8 +1062,15 @@ def worklist_from(
             memo=memo,
             context=across_context,
         )
+        if half.page in kept_for_sheet and (decided is None or decided.sheet is None):
+            continue  # no architect page pairs with it by its sheet number: skipped as before
         if decided is None:
             continue
+        misled = across_context.misled.get(half.ref)
+        if misled is not None:
+            decided = decided.model_copy(
+                update={"wrong_tag": misled, "why": f"{decided.why}; {misled.why}"}
+            )
         across_pairs[half.ref] = decided
     if across_pairs:
         marked = _with_marks(facts_of, across_context)
@@ -1059,6 +1094,11 @@ def worklist_from(
     used_architect: dict[int, list[str]] = {}
     used_reference: dict[int, list[str]] = {}
     for half in vendor_halves:
+        if half.page in kept_for_sheet and half.ref not in across_pairs:
+            if half.page not in cover:
+                skip(half.page, NO_DRAWING_NOTE)
+                cover[half.page] = PageCover(page=half.page, how="skipped", reason=NO_DRAWING_NOTE)
+            continue
         entry = by_set_page[half.page]
         key = _area_key(entry, known)
         same_area, architect = own_area(half)
@@ -1411,6 +1451,132 @@ class _KeyPlan:
     tags: tuple[tuple[str, str, Box], ...]
     """Each tag printed on it: normalised (`pairing.item_tags_in`), as printed, where."""
     marks: tuple[views_module.Callout, ...]
+    file: str | None = None
+    """Its file (`page` is its page there)."""
+
+
+@dataclass(frozen=True, slots=True)
+class _SheetId:
+    """A page's own sheet number and titles (`_sheet_ids`)."""
+
+    number: str
+    """Normalised (`views.normal_sheet`): `A 2.1` is `A2.1`."""
+    printed: str
+    """As the page prints it."""
+    titles: Mapping[frozenset[str], str]
+    """Each of its titles (its views', its item's) as a set of words, to the title as printed."""
+
+
+#: A title's words for comparing two sheets' titles (`_SheetId.titles`): letters and digits.
+_TITLE_WORD: Final = re.compile(r"[A-Z0-9]+")
+
+
+def _sheet_ids(
+    index: Mapping[str, Mapping[str, Any]],
+    dims_pages: Mapping[tuple[str, int], Mapping[str, Any]],
+) -> dict[tuple[str, int], _SheetId]:
+    """Each page's own sheet number, by file and page: the set index's read of its title block
+    (checked printed on the page, `set_index`), when it is a sheet number (letters and a number,
+    `views.normal_sheet`: `A5.1`, `IN 2.0`; a bare `4` or `1/2` is none) and code's own read of
+    the sheet's largest sheet number (`views.sheet_number`) does not say another. With its titles
+    (the set index's views and item, checked printed)."""
+    out: dict[tuple[str, int], _SheetId] = {}
+    for one in index.values():
+        if not isinstance(one, Mapping) or not isinstance(one.get("page"), int):
+            continue
+        key = (str(one.get("file")), int(one["page"]))
+        printed = _plain(one.get("sheet"))
+        number = views_module.normal_sheet(printed) if printed else None
+        if number is None:
+            continue
+        own = views_module.sheet_number(views_module.phrases_of(dims_pages.get(key)))
+        if own is not None and own != number:
+            continue  # the title block's largest number says another sheet: not sure which
+        titles = [
+            str(v.get("title") or "") for v in one.get("views") or [] if isinstance(v, Mapping)
+        ]
+        words = {
+            found: _plain(title)
+            for title in (*titles, str(one.get("item") or ""))
+            if (found := frozenset(_TITLE_WORD.findall(title.upper())))
+        }
+        out[key] = _SheetId(number, printed, words)
+    return out
+
+
+def _sheet_twins(
+    vendor_file: str,
+    sheet_ids: Mapping[tuple[str, int], _SheetId],
+    architect_files: frozenset[str],
+) -> dict[tuple[str, int], tuple[tuple[str, int], ...]]:
+    """Each page of the vendor's file that prints the sheet number and a title of one or more of
+    the architect's pages (its copy of the architect's sheet), with those pages; only a number
+    no other page of the vendor's file prints. The project is checked when pairing
+    (`_sheet_pair`)."""
+    mine = Counter(
+        sheet.number for (file, _page), sheet in sheet_ids.items() if file == vendor_file
+    )
+    out: dict[tuple[str, int], tuple[tuple[str, int], ...]] = {}
+    for key, sheet in sheet_ids.items():
+        if key[0] != vendor_file or mine[sheet.number] != 1 or not sheet.titles:
+            continue
+        twins = tuple(
+            other
+            for other, theirs in sorted(sheet_ids.items())
+            if other[0] in architect_files
+            and theirs.number == sheet.number
+            and sheet.titles.keys() & theirs.titles.keys()
+        )
+        if twins:
+            out[key] = twins
+    return out
+
+
+def _sheet_pair(
+    vendor: Drawing,
+    everything: Sequence[AcrossCandidate],
+    project: str | None,
+    context: _Across,
+) -> AcrossPair | None:
+    """The architect page a vendor drawing is a copy of (2026-11-04: a key plan pairs by its
+    printed sheet number, never by page order): the vendor's page prints a sheet number and a
+    title (`_sheet_ids`), exactly one architect page of its project prints the same number under
+    the same title, and no other page of the vendor's file prints that number (`_sheet_twins`).
+    Code decides (the paid matcher is not asked), the whole sheet is compared, a key plan too:
+    its printed words (room tags, callouts) are what may differ. Else `None`."""
+    mine = context.sheet_ids.get((vendor.file, vendor.own_page))
+    if mine is None or (vendor.file, vendor.own_page) not in context.sheet_twins:
+        return None
+    twins = [
+        c
+        for c in everything
+        if not c.reference
+        and (theirs := context.sheet_ids.get((c.file, c.page))) is not None
+        and theirs.number == mine.number
+        and mine.titles.keys() & theirs.titles.keys()
+        and (project is None or _same_project(c, project, context))
+    ]
+    if len(twins) != 1:
+        return None
+    (twin,) = twins
+    theirs = context.sheet_ids[(twin.file, twin.page)]
+    shared = mine.titles.keys() & theirs.titles.keys()
+    title = min(theirs.titles[words] for words in shared)
+    context.sheet_paired[vendor.ref] = twin.id
+    words = (
+        f"both print the sheet number {theirs.printed} under the title {title}: the vendor's page "
+        "is a copy of the architect's sheet (it may be an older issue), compared whole"
+    )
+    why = f"paired with {twin.id}: {words}"
+    return AcrossPair(
+        vendor=vendor,
+        candidates=(twin.model_copy(update={"score": 0.0, "evidence": (words,), "strong": True}),),
+        code_pick=twin.id,
+        chosen=(twin.id,),
+        why=_human_ids(why, everything, context),
+        code_paired=True,
+        sheet=theirs.printed,
+    )
 
 
 @dataclass(slots=True)
@@ -1484,6 +1650,21 @@ class _Across:
     room_paired: dict[str, str] = field(default_factory=dict)
     """The vendor drawings the room numbers paired (`_room_numbers_page`), with the architect item:
     like a pair by the printed item tag, the swap audit doubts them only on strong evidence."""
+    sheet_ids: dict[tuple[str, int], _SheetId] = field(default_factory=dict)
+    """Each page's own sheet number and titles (`_sheet_ids`), by file and page."""
+    sheet_twins: dict[tuple[str, int], tuple[tuple[str, int], ...]] = field(default_factory=dict)
+    """The vendor's pages that are copies of an architect's sheet (`_sheet_twins`)."""
+    sheet_paired: dict[str, str] = field(default_factory=dict)
+    """The vendor drawings paired by the sheet number both print (`_sheet_pair`), with the
+    architect item: the swap audit never undoes them."""
+    vendor_items: dict[str, _VendorItem] = field(default_factory=dict)
+    """Each of the vendor's drawings with an item title (the page's one), by ref
+    (`_misleading_tag`)."""
+    misled: dict[str, WrongTag] = field(default_factory=dict)
+    """The vendor drawings whose item number does not fit (`_misleading_tag`), by ref."""
+    room_names: dict[str, str] | None = None
+    """The rooms the architect's plans place item tags in (`_tag_rooms`), each room's letters
+    (`_room_key`) to its name as printed; worked out once."""
 
     def item_tags(self) -> frozenset[str]:
         """The vendor's item tags (`ITEM_TAG_SHARE`): every item-like tag it prints on few of its
@@ -1775,6 +1956,7 @@ def _enrich(
                 project=_project_of(item),
                 tags=tuple(printed_tags),
                 marks=views_module.callouts(phrases[item.id], (), sheets),
+                file=item.file,
             )
         )
     for item in out:
@@ -2023,6 +2205,11 @@ def _pair_across(
     if not everything:
         return None
     project, refused = _vendor_project(vendor, context)
+    if refused is None:
+        # The vendor's copy of an architect's sheet (its sheet number and title): that sheet.
+        copied = _sheet_pair(vendor, everything, project, context)
+        if copied is not None:
+            return copied
     pool = [
         c
         for c in everything
@@ -2032,6 +2219,17 @@ def _pair_across(
         and refused is None
     ]
     item_tags = (mine_facts.item_tags or frozenset()) & context.item_tags()
+    # The vendor's item number that does not fit (2026-11-04): the number its own other sheet of
+    # the item prints pairs it instead when the architect prints that one in the room the vendor
+    # names; else neither number does.
+    misled = _misleading_tag(vendor, item_tags, project, context) if refused is None else None
+    if misled is not None:
+        context.misled[vendor.ref] = misled
+        item_tags = (
+            pairing_module.item_tags_in([misled.other or ""]) & context.item_tags()
+            if misled.confirmed
+            else frozenset()
+        )
     # An item-like tag the vendor prints on many of its drawings is a material (`LM-004`, a
     # laminate on a third of a real set's drawings): no evidence of which piece this one is.
     common = (mine_facts.item_tags or frozenset()) - item_tags
@@ -2177,6 +2375,9 @@ def _pair_across(
             if not chosen
             else None
         )
+        if _held_weakly(held_room, ranked, misled):
+            why = f"{why}; {_NOT_HELD.format(page=held_room)}"
+            held_room = None
         others = tuple(c for c in (*chosen, held_room) if c is not None and c != tag_pair.item)
         if not others:
             # The paid matcher is still asked (a page it is sure of is held against the room's).
@@ -2461,6 +2662,9 @@ def _pair_across(
         if tag_plan is not None and not chosen
         else None
     )
+    if _held_weakly(held, ranked, misled):
+        why = f"{why}; {_NOT_HELD.format(page=held)}"
+        held = None
     if not chosen and not rivals and DRAWING_NEEDED not in why and tag_plan is not None:
         if held is None:
             # The architect's only page printing the vendor's item tag is a plan of tags, and no
@@ -2703,7 +2907,11 @@ def _swap_audit(
                 )
                 strong = pairing_module.swap_is_strong(first, second)
                 for ref, other in ((one, two), (two, one)):
-                    printed = {context.tag_paired.get(ref), context.room_paired.get(ref)}
+                    printed = {
+                        context.tag_paired.get(ref),
+                        context.room_paired.get(ref),
+                        context.sheet_paired.get(ref),
+                    }
                     if strong or not printed & set(pairs[ref].chosen):
                         crossed.setdefault(ref, (other, why))
     for ref, (other, why) in crossed.items():
@@ -3312,6 +3520,252 @@ def _room_page(
     )
 
 
+# ---- a vendor's item number that does not fit (2026-11-04) --------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _VendorItem:
+    """One of the vendor's drawings, for `_misleading_tag` (the page's one vendor drawing)."""
+
+    page: int
+    """Its page in its own file."""
+    title: str
+    """The item title the set index read on its page (checked printed)."""
+    words: frozenset[str]
+    """The title's words that name the item (`_item_words`): empty when it names none."""
+    tags: frozenset[str]
+    """The item tags it prints (normalised, `pairing.item_tags_in`; the vendor's item tags)."""
+
+
+#: Words of a vendor's sheet title that name its kind of drawing or part, never which item it is:
+#: "COFFEE BAR B - MILLWORK" and "XX-512 COFFEE BAR B" (its cabinets' and its top's sheets) are one
+#: item.
+_KIND_WORDS: Final = frozenset(
+    {
+        "AT",
+        "AND",
+        "BASE",
+        "BY",
+        "CABINET",
+        "CABINETS",
+        "CASEWORK",
+        "COUNTER",
+        "COUNTERS",
+        "COUNTERTOP",
+        "COUNTERTOPS",
+        "DETAIL",
+        "DETAILS",
+        "DRAWING",
+        "FOR",
+        "MILLWORK",
+        "OF",
+        "QUARTZ",
+        "SHOP",
+        "STONE",
+        "THE",
+        "TOP",
+        "TOPS",
+        "UPPER",
+        "UPPERS",
+        "WITH",
+    }
+)
+#: An item tag inside a title (`XX-512`, `XX512T`, numbered as an item: three or four digits, as
+#: `pairing.item_tags_in` reads it): never a word of the item's name ("TYPE 12" stays).
+_TITLE_TAG: Final = re.compile(r"\b[A-Z]{1,4}[-_]?\d{3,4}[A-Z]{0,3}\b")
+
+
+def _item_words(title: str, project: str | None) -> frozenset[str]:
+    """The words of a vendor sheet's item title that name its item: its tags, the words of its
+    kind of drawing or part (`_KIND_WORDS`) and of the job's name left out ("COFFEE BAR B -
+    MILLWORK" and "XX-512 Coffee Bar B" are both COFFEE, BAR, B). Empty unless a word of 4 letters or more is left:
+    a title naming only its kind names no item."""
+    plain = _TITLE_TAG.sub(" ", dashes_to_hyphen(title).upper())
+    job = set(_TITLE_WORD.findall((project or "").upper()))
+    words = frozenset(
+        w for w in _TITLE_WORD.findall(plain) if w not in _KIND_WORDS and w not in job
+    )
+    return words if any(len(w) >= 4 and w.isalpha() for w in words) else frozenset()
+
+
+def _spot_rooms(plan: str, box: Box, context: _Across) -> list[tuple[float, str]]:
+    """The room names a plan prints within `ROOM_REACH_PT` of a spot (`_room_labels`), nearest
+    first, with how far."""
+    return sorted(
+        (gap, text)
+        for text, label in _room_labels(context.printed.get(plan, ()))
+        if (gap := views_module.gap(box, label)) <= ROOM_REACH_PT
+    )
+
+
+def _clear_room(near: Sequence[tuple[float, str]]) -> str | None:
+    """The room a spot is in (`_room_page`'s rule): the nearest room name, when the next other
+    room's name is `ROOM_CLEAR` times as far or more; else `None`."""
+    if not near:
+        return None
+    distance, name = near[0]
+    rival = next((d for d, t in near[1:] if _room_key(t) != _room_key(name)), None)
+    return name if rival is None or rival >= ROOM_CLEAR * max(distance, 1.0) else None
+
+
+def _tag_spots(tag: str, project: str | None, context: _Across) -> list[tuple[_KeyPlan, str, Box]]:
+    """Where the architect's plans of the vendor's project print an item tag: (the plan, the tag
+    as printed, where)."""
+    return [
+        (plan, printed, box)
+        for plan in context.plans
+        if project is None
+        or plan.project is None
+        or projects_module.same_job(plan.project, project, context.projects)
+        for key, printed, box in plan.tags
+        if key == tag
+    ]
+
+
+def _named_room(title: str, context: _Across) -> str | None:
+    """The room a vendor sheet's title names: a room the architect's plans place an item tag in
+    (`_clear_room`), its words printed in the title side by side ("CABINETS @ COFFEE BAR" names
+    COFFEE BAR). The longest when one name holds another; `None` when the title names none, or two.
+    """
+    if context.room_names is None:
+        context.room_names = {}
+        for plan in context.plans:
+            for _key, _printed, box in plan.tags:
+                found = _clear_room(_spot_rooms(plan.item, box, context))
+                if found is not None:
+                    context.room_names.setdefault(_room_key(found), found)
+    words = _TITLE_WORD.findall(dashes_to_hyphen(title).upper())
+    named = [
+        name
+        for name in context.room_names.values()
+        if (room := _TITLE_WORD.findall(name.upper()))
+        and any(words[i : i + len(room)] == room for i in range(len(words) - len(room) + 1))
+    ]
+    longest = [n for n in named if not any(n != o and _room_key(n) in _room_key(o) for o in named)]
+    return longest[0] if len({_room_key(n) for n in longest}) == 1 else None
+
+
+def _printed_tag(tag: str, texts: Iterable[str]) -> str:
+    """A normalised item tag (`XX512`) as `texts` print it (`XX-512`), else with a hyphen."""
+    found = pairing_module.printed_item_tag(texts, tag)
+    if found is not None:
+        return found
+    parts = re.match(r"([A-Z]+)(\d+)$", tag)
+    return f"{parts.group(1)}-{parts.group(2)}" if parts else tag
+
+
+def _misleading_tag(
+    vendor: Drawing, item_tags: frozenset[str], project: str | None, context: _Across
+) -> WrongTag | None:
+    """The vendor's item number that points to an architect item that does not fit (Anant,
+    2026-11-04: "pairing must survive a vendor's wrong item number"), or `None`. Three things
+    printed on the drawings must agree, so the number is never doubted on one of them alone:
+
+    1. **It does not fit.** The vendor's sheet title names a room (`_named_room`), and the
+       architect's plans print the vendor's number only away from it (no room name within reach
+       of it is that room), or the vendor prints the same number on its sheet of another item in
+       another room.
+    2. **The vendor's own other sheet of the same item** (its title names the same item,
+       `_item_words`) prints one other item number.
+    3. **The architect prints that other number in the room** the vendor's title names (the
+       room nearest it, clearly, `_clear_room`), and in no other room: `confirmed`, and the
+       pairing goes by the other number.
+
+    With 1 and 2 and not 3, the vendor's two numbers for one item stay in doubt (`confirmed`
+    false): neither number pairs it. With 1 alone (a vendor naming the room its own way, its
+    sheets of the item agreeing on the number), nothing changes."""
+    mine = context.vendor_items.get(vendor.ref)
+    if len(item_tags) != 1 or mine is None or not mine.words:
+        return None
+    (tag,) = item_tags
+    room = _named_room(mine.title, context)
+    if room is None:
+        return None
+    spots = _tag_spots(tag, project, context)
+    near = [(plan, _spot_rooms(plan.item, box, context)) for plan, _p, box in spots]
+    tag_rooms = tuple(dict.fromkeys(name for _plan, found in near for _d, name in found[:2]))
+    if any(_room_key(name) == _room_key(room) for _plan, found in near for _d, name in found):
+        return None  # the architect prints it in the room the vendor names: it fits
+    elsewhere = tuple(
+        sorted(
+            other.page
+            for ref, other in context.vendor_items.items()
+            if ref != vendor.ref
+            and tag in other.tags
+            and other.words != mine.words
+            and (theirs := _named_room(other.title, context)) is not None
+            and _room_key(theirs) != _room_key(room)
+        )
+    )
+    if not (tag_rooms or elsewhere):
+        return None
+    same = [
+        other
+        for ref, other in context.vendor_items.items()
+        if ref != vendor.ref and other.words == mine.words
+    ]
+    others = {t for other in same for t in other.tags} - {tag}
+    if len(others) != 1:
+        return None
+    (right,) = others
+    pages = tuple(sorted({o.page for o in same if right in o.tags}))
+    printed = _printed_tag(
+        tag, [mine.title, *vendor.tags, *vendor.notes, *(p for _pl, p, _b in spots)]
+    )
+    shown = _printed_tag(right, [o.title for o in same if right in o.tags])
+    places = [
+        (plan, box, _clear_room(_spot_rooms(plan.item, box, context)))
+        for plan, _p, box in _tag_spots(right, project, context)
+    ]
+    confirmed = bool(places) and all(
+        found is not None and _room_key(found) == _room_key(room) for _plan, _box, found in places
+    )
+    rooms_on: dict[int, list[str]] = {}
+    for plan, found in near:
+        for _d, name in found[:2]:
+            if name not in rooms_on.setdefault(plan.page, []):
+                rooms_on[plan.page].append(name)
+    where = [
+        f"the architect's plan (page {page}) prints it near the {' and the '.join(names)}"
+        for page, names in rooms_on.items()
+        if names
+    ]
+    if elsewhere:
+        where.append(
+            f"the vendor prints it on its {'page' if len(elsewhere) == 1 else 'pages'} "
+            f"{', '.join(str(p) for p in elsewhere)} of another item"
+        )
+    theirs = next(o.title for o in same if right in o.tags)
+    why = (
+        f"the vendor's item number {printed} does not fit: this sheet names the room {room}, but "
+        f"{'; '.join(where)}; the vendor's own {'page' if len(pages) == 1 else 'pages'} "
+        f"{', '.join(str(p) for p in pages)} of the same item (\"{theirs}\") "
+        f"{'prints' if len(pages) == 1 else 'print'} {shown}"
+    )
+    first = places[0] if confirmed else None
+    why += (
+        f", and the architect's plan (page {first[0].page}) prints {shown} in the {room}: code "
+        f"goes by {shown}"
+        if first is not None
+        else f", which code does not find in the {room} on the architect's plans: code goes by "
+        "neither number"
+    )
+    return WrongTag(
+        printed=printed,
+        room=room,
+        tag_rooms=tag_rooms,
+        tag_page=next((plan.page for plan, found in near if found), None),
+        elsewhere=elsewhere,
+        other=shown,
+        other_pages=pages,
+        confirmed=confirmed,
+        arch_file=first[0].file if first is not None else None,
+        arch_page=first[0].page if first is not None else None,
+        arch_box=first[1] if first is not None else None,
+        why=why,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _RoomPair:
     """The architect page the vendor's printed room numbers pair a drawing with
@@ -3479,6 +3933,31 @@ def _rooms_words(paired: _RoomPair) -> str:
         f"it prints the vendor's room numbers {rooms}, every one, and they are {len(paired.rooms)} "
         f"of the {paired.printed} room numbers it prints (no other architect page of the project "
         "is about these rooms; a schedule or plan listing many rooms says nothing)"
+    )
+
+
+#: Why a page is not held against the architect's page the vendor's other item number names
+#: (`_held_weakly`).
+_NOT_HELD: Final = (
+    "{page} is not held for it: code's own evidence for it is weak, and the AI page matcher "
+    "picked it from the sheet that prints the wrong item number"
+)
+
+
+def _held_weakly(
+    held: str | None, ranked: Sequence[pairing_module.Scored], misled: WrongTag | None
+) -> bool:
+    """Whether a page held against the item's architect page (`_held_page`) is let go: the
+    vendor's printed number did not fit, and its own other sheet of the item and the architect's
+    plan (the room) agree on another (`_misleading_tag`, `confirmed`), while code's own evidence
+    for the held page is weak (no `strong` evidence). The hold is there because a vendor's number
+    may be wrong (owner's rule, 25 Oct); here code found the right one on three printed things,
+    and the matcher picked the held page from the sheet printing the wrong one."""
+    return (
+        held is not None
+        and misled is not None
+        and misled.confirmed
+        and not any(s.ref == held and s.strong for s in ranked)
     )
 
 
