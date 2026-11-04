@@ -440,10 +440,26 @@ def test_two_dimensions_code_proved_unlike_stay_not_compared() -> None:
 
 
 @pytest.mark.usefixtures("flag")
-def test_a_missing_job_value_stays_not_compared() -> None:
+def test_a_missing_job_value_no_longer_hides_a_printed_difference() -> None:
+    """Changed by the verdict table (Phase 2, 2026-11-04). A job value nobody entered is a reason
+    the *reference* has no value; it is not a reason to ignore one it does have. The architect
+    prints 24" here and the vendor 23", so the answer is a problem, and the reason stays on the
+    item. On the audited flag run this one rule accounted for several of the real differences
+    filed as Not compared (a vanity top depth against the architect's printed depth).
+
+    A job value still keeps an answer Not compared where the architect prints nothing: the
+    reference is then really missing (`test_verdict_adapter`)."""
     finding = _wrong(status="check", keep_reason="needs_job_value", why="front overhang")
     assert proof.classified(finding).reason == "missing_setting"
-    assert proof.proof_group(finding) == "not_compared"
+    assert proof.proof_group(finding) == "likely_problem"
+    nothing = _wrong(
+        status="check",
+        keep_reason="needs_job_value",
+        why="front overhang",
+        architect="not shown",
+        inches={"architect": None, "vendor": "23", "difference": None},
+    )
+    assert proof.proof_group(nothing) == "not_compared"
 
 
 # ---- right: kept, never counted or listed -------------------------------------------------------------
@@ -478,8 +494,11 @@ def test_a_short_value_code_did_not_read_is_never_green(monkeypatch: pytest.Monk
 
 @pytest.mark.usefixtures("flag")
 def test_the_same_number_on_an_unsure_pairing_is_no_problem() -> None:
+    # The figures move with the values: `inches` is the pair the comparison worked out, and the
+    # verdict table reads it rather than the reading's words (`verdict_adapter`).
     finding = _ai_only(status="check", check_reason="pairing_not_certain", vendor='36"',
-                       architect='36"')  # fmt: skip
+                       architect='36"', inches={"architect": "36", "vendor": "36",
+                                                "difference": "0"})  # fmt: skip
     assert classification.same_unsure(finding)
     assert proof.proof_group(finding) == "right"
 
