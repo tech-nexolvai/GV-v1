@@ -30,7 +30,13 @@ import pytest
 
 from app.review.assistant import call_log as calls
 from app.review.assistant.call_log import CallFacts, CallLog, Part
-from app.review.assistant.chat_request import MODELS, call_params, thinking_config
+from app.review.assistant.chat_request import (
+    LEGACY_CACHE,
+    MODELS,
+    CachePlan,
+    call_params,
+    thinking_config,
+)
 from app.review.assistant.chat_timings import Timings
 from app.review.assistant.simple_check import run as simple_run
 from app.review.assistant.simple_check.compare import CompareSettings, Tried, compare_item
@@ -324,6 +330,9 @@ def _params(
         messages=[{"role": "user", "content": content}],
         final=False,
         max_tokens=100,
+        # A 1-hour breakpoint must come before every 5-minute one (Anthropic's rule, which
+        # `call_params` holds since the cache layouts): the tools' and the system's too.
+        cache=CachePlan(tools="1h", system="1h") if ttl == "1h" else LEGACY_CACHE,
     )
 
 

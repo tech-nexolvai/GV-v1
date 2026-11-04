@@ -1455,6 +1455,8 @@ class MessageJob:
     whole_look_model: str | None = None
     """The whole-drawing look's model (`whole_look`); `None`: off."""
     whole_look_effort: str = "medium"
+    cache_layout: str = "legacy"
+    """How the prompts are laid out for the prompt cache (`GV_ASSISTANT_CACHE_LAYOUT`)."""
     page_reviewer: Any = None
     """The page reviewer's options (`page_reviewer.Options`); `None`: off."""
     set_index_model: str | None = None
@@ -1911,6 +1913,7 @@ def _run_message(job: MessageJob, run: RunningMessage, emit: Emit) -> None:
             run_anyway=job.run_anyway,
             whole_look_model=job.whole_look_model,
             whole_look_effort=job.whole_look_effort,
+            cache_layout=job.cache_layout,
             page_reviewer=job.page_reviewer,
             set_index_model=job.set_index_model,
             identity=job.identity,

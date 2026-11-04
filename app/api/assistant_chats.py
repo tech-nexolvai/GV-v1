@@ -1824,6 +1824,7 @@ def _message(
                 else settings.assistant_whole_look_model
             ),
             whole_look_effort=settings.assistant_whole_look_effort,
+            cache_layout=settings.assistant_cache_layout,
             page_reviewer=page_reviewer_options(settings),
             set_index_model=(
                 None
