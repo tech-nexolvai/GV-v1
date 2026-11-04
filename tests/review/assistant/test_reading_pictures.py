@@ -67,7 +67,7 @@ def _label(
 def _finding(label: dict[str, Any], side: str = "architect", page: int = 3) -> dict[str, Any]:
     box = label["box"]
     key = "arch_box" if side == "architect" else "vendor_box"
-    return {
+    finding = {
         "id": "F56",
         "item": "Buffet: upper outlet height",
         "source": "architect",
@@ -77,6 +77,10 @@ def _finding(label: dict[str, Any], side: str = "architect", page: int = 3) -> d
         key: {"page": page, "x0": box[0], "y0": box[1], "x1": box[2], "y1": box[3], "file": FILE},
         "dims": {side: {"id": label["id"], "box": box, "page": page, "file": FILE}},
     }
+    # The finding names the value its label prints: a label printing another is never read
+    # (`read_spots`, 2026-11-04).
+    finding[side] = label["text"]
+    return finding
 
 
 def _size(region: tuple[float, float, float, float]) -> tuple[float, float]:

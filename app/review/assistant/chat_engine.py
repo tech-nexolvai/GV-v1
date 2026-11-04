@@ -6217,13 +6217,14 @@ def _failure_why(failure: ProviderFailure) -> str:
 
 
 def _asked_words(read: Callable[..., Any], drawn: read_spots.ReadPictures) -> dict[str, bool]:
-    """What the reading's question may say of its pictures (`read_spots`): the centre and the
-    overall, for a reader that takes them (a module loaded by name may be an older one)."""
+    """What the reading's question may say of its pictures (`read_spots`): the centre, the
+    overall and the part, for a reader that takes them (a module loaded by name may be an older
+    one)."""
     try:
         named = inspect.signature(read).parameters
     except (TypeError, ValueError):
         return {}
-    words = {"centred": drawn.centred, "overall": drawn.overall}
+    words = {"centred": drawn.centred, "overall": drawn.overall, "part": drawn.part}
     return {name: value for name, value in words.items() if name in named}
 
 

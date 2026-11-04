@@ -287,20 +287,22 @@ def third_read_job(
     def job() -> None:
         if engine.cancel.is_set():
             return
-        centred, overall = True, False
+        centred, overall, part = True, False, False
         pictures = getattr(engine, "reading_pictures", None)
         crops: dict[str, read_adjudication.SideCrops] = {}
         if callable(pictures):
             # The readings' own pictures (`read_spots`): GV's markup removed, the item's label at
-            # the centre, a vendor string's overall; the centre is said only for one value.
+            # the centre, a vendor string's overall or the part its finding names; the centre is
+            # said only for one value.
             drawn = pictures(finding)
             crops = dict(drawn.crops)
             centred, overall = drawn.centred, drawn.overall
+            part = bool(getattr(drawn, "part", False))
         if not crops:
             drawing = import_module("app.review.assistant.chat_drawing")
             with drawing._PDFIUM_LOCK:
                 crops = _adjudication_crops(module, finding, pdf_paths)
-            centred, overall = False, False
+            centred, overall, part = False, False, False
         if crops:
             _third_read_job(
                 engine,
@@ -312,6 +314,7 @@ def third_read_job(
                 update,
                 centred=centred,
                 overall=overall,
+                part=part,
             )()
 
     return job
@@ -412,10 +415,13 @@ def _third_read_job(
     *,
     centred: bool = False,
     overall: bool = False,
+    part: bool = False,
 ) -> Callable[[], None]:
     def job() -> None:
         if engine.cancel.is_set():
             return
+        # The part's words only when said: a module loaded by name may be an older one.
+        words = {"part": True} if part else {}
         try:
             result = adjudication_module.adjudicate(
                 finding,
@@ -425,6 +431,7 @@ def _third_read_job(
                 second_model=_SECOND_READ_MODEL,
                 centred=centred,
                 overall=overall,
+                **words,
             )
         except Exception as failed:  # noqa: BLE001 - not run: no room, cancelled or a failure
             if not isinstance(failed, NoRoom):

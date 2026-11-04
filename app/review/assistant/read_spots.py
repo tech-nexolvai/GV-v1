@@ -60,8 +60,25 @@ picture showed the overall and one part, and the third reading was unsure where 
 on the whole string). Its region reaches the box of its printed overall and of every part code
 places (`string_spots.spots_of`: the labels the finding names, else the row along the overall's
 dimension line, else inside the area the reading is shown), padded, whatever the card's box.
-The card's box (what GV sees clouded) is not changed; only the reading's picture shows more. Pure
-code here, but for the drawing (the renderer is loaded by name).
+The card's box (what GV sees clouded) is not changed; only the reading's picture shows more.
+
+**A reading is asked about the number its finding names** (2026-11-04, after a real upload's two
+proved reds were held: the drawing's scale named a part of each string as the wrong number, so the
+finding's vendor value was that part, but the readings were asked for the string's overall, read
+it, and code compared the overall with the part). The label a side's picture is centred on prints
+that side's value (`finding[side]`, what `second_read.compare_read` compares), else no label is
+used and the finding's box is read:
+
+- a vendor string whose finding names its printed overall is read at the overall's label, its
+  overall asked (as above);
+- a vendor string whose finding names one of its parts (`wrong_part`) is read at that part's own
+  label, like any one dimension (its line's ends and close-up around it, the centre said), and
+  that part is asked (`part`, `second_read.PART_WORDS`), never the overall;
+- any other finding's label is used unless it prints another value than the finding names.
+
+The question never says the value: the readers stay blind. `ReadSpot.label` names the label read,
+so a test can hold every finding kind to this. Pure code here, but for the drawing (the renderer is
+loaded by name).
 """
 
 from __future__ import annotations
@@ -143,6 +160,12 @@ class ReadSpot:
     """The printed values code finds in the box the reading reads (a label's own box: 1)."""
     overall: bool = False
     """A vendor string's printed overall: the question asks for the overall."""
+    part: bool = False
+    """A vendor string's part its finding names (`wrong_part`): the question asks for that part,
+    never the overall (`second_read.PART_WORDS`)."""
+    label: str | None = None
+    """The id of the set pack's label the region is centred on, which prints the side's value;
+    `None` when the finding's box is read."""
     tall: bool = False
     """Written sideways: a turned copy helps. The label's own direction decides (`sideways`); only
     a box whose direction code does not know is judged by its shape (taller than wide)."""
@@ -303,6 +326,13 @@ def _same_value(label: Mapping[str, Any], value: object) -> bool:
     return a is not None and a == b
 
 
+def _differ(a: object, b: object) -> bool:
+    """Both values read in inches, and they differ (a value code cannot read differs from none)."""
+    x = to_inches(a) if isinstance(a, str) else None
+    y = to_inches(b) if isinstance(b, str) else None
+    return x is not None and y is not None and x != y
+
+
 def sideways(label: Mapping[str, Any], box: Box) -> bool:
     """Whether a label's value is written sideways: its own direction when code read one
     (`orientation`: `h` along the page, `v` up it), whatever its box's shape (2026-10-28: a short
@@ -366,6 +396,10 @@ def spots(finding: Mapping[str, Any], labels_of: LabelsOf | None = None) -> dict
     out: dict[str, ReadSpot] = {}
     string = finding.get("source") == "vendor_arithmetic"
     dims = finding.get("dims") if isinstance(finding.get("dims"), Mapping) else {}
+    total = finding.get("printed_total") or finding.get("vendor")
+    # A vendor string whose finding names one of its parts, not its printed overall: that part is
+    # read (`wrong_part`, see the module).
+    part = string and _differ(finding.get("vendor"), total)
     for side, key in _KEYS.items():
         raw = finding.get(key)
         box = _four(raw)
@@ -393,12 +427,20 @@ def spots(finding: Mapping[str, Any], labels_of: LabelsOf | None = None) -> dict
             and (given.get("file") in (None, file))
         ):
             label = _pack_label(given, labels)
-            # A vendor string's label is its printed overall's: else the whole string is read.
-            if string and not _same_value(label, finding.get("printed_total") or finding.get(side)):
+            # The label prints the number the reading is asked for, or it is not used: a vendor
+            # string's printed overall (else the whole string is read) or the part its finding
+            # names; any other finding's own value, unless it prints another.
+            if string:
+                kept = _same_value(label, finding.get(side) if part else total)
+            else:
+                kept = not _differ(label.get("text"), finding.get(side))
+            if not kept:
                 label = None
         # A vendor string's picture reaches its overall and every part code places (see the
-        # module): the card's box may be snapped tight around one of its numbers.
-        numbers = string_boxes(finding, around(box), page, file, labels) if string else []
+        # module): the card's box may be snapped tight around one of its numbers. A part's picture
+        # is centred on the part alone, as any one dimension's.
+        whole = string and not part
+        numbers = string_boxes(finding, around(box), page, file, labels) if whole else []
         if label is not None:
             own = _four(label.get("box"))
             assert own is not None
@@ -413,7 +455,9 @@ def spots(finding: Mapping[str, Any], labels_of: LabelsOf | None = None) -> dict
                 page=page,
                 region=region,
                 values=1,
-                overall=string,
+                overall=whole,
+                part=part,
+                label=str(label.get("id")),
                 tall=tall,
                 upright_only=known and tall,
                 # A close-up only where it fits two pictures a side (`SideCrops.pictures`): not
@@ -429,7 +473,8 @@ def spots(finding: Mapping[str, Any], labels_of: LabelsOf | None = None) -> dict
             page=page,
             region=around(read),
             values=values_in(read, labels),
-            overall=string,
+            overall=whole,
+            part=part,
             tall=(y1 - y0) > (x1 - x0),
         )
     return out
@@ -478,6 +523,11 @@ class ReadPictures:
     def overall(self) -> bool:
         """The vendor's picture is a string's printed overall: its overall is asked."""
         return any(self.spots[side].overall for side in self.crops)
+
+    @property
+    def part(self) -> bool:
+        """The vendor's picture is the string's part its finding names: that part is asked."""
+        return any(self.spots[side].part for side in self.crops)
 
     def upright(self) -> dict[str, bytes]:
         return {side: bytes(crop.upright) for side, crop in self.crops.items()}
