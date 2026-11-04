@@ -118,6 +118,7 @@ from app.review.assistant import (
     page_reviewer,
     pick_cache,
     round_picks,
+    slot_look,
     spot_pool,
     verify_value,
     whole_look,
@@ -1751,6 +1752,10 @@ class _Run:
     proof_reads_lock: threading.Lock = field(default_factory=threading.Lock)
     #: The whole-drawing looks of this run and what code did with their claims (`whole_look`).
     looked: whole_look.WholeLooks = field(default_factory=whole_look.WholeLooks)
+    #: The fixed-question slot calls of this run (`slot_look`, Step 4; none unless
+    #: `GV_ASSISTANT_SLOTS=on`) and what code did with their answers.
+    slotted: slot_look.SlotRuns = field(default_factory=slot_look.SlotRuns)
+    _slots_lock: threading.Lock = field(default_factory=threading.Lock)
     #: The page reviews of this run (`page_reviewer`, Anant 2026-10-29) and their own money
     #: (millionths of $): added to the fixed price, never any other step's (`counted_spent`).
     reviews: page_reviewer.Reviews = field(default_factory=page_reviewer.Reviews)
@@ -2918,6 +2923,11 @@ class _Run:
             self, sorted(whole_plan), page_map, matching, self.looked, done=carried
         )
         agents += looks
+        # The fixed questions as slots (Step 4), one call per paired vendor page; none when off.
+        slotted = slot_look.roster_agents(
+            self, sorted(whole_plan), page_map, matching, self.slotted, done=carried
+        )
+        agents += slotted
         # One page reviewer per vendor page (Anant, 2026-10-29), first: its money is its own, and
         # a step that starts late gets nothing done.
         reviews = page_reviewer.roster_agents(self, review_pages, self.review_money, self.reviews)
@@ -2942,7 +2952,15 @@ class _Run:
             # only the set-wide steps below wait for all. `by_job` was taken before the sort
             # above (the agents that wait for the page matcher last), so each job keeps its agent.
             tags = [a for a in agents if a.lens == "tags"]
-            self._run_bands(by_job, tags, ceiling, page_map, matching, looks=looks, reviews=reviews)
+            self._run_bands(
+                by_job,
+                tags,
+                ceiling,
+                page_map,
+                matching,
+                looks=[*looks, *slotted],
+                reviews=reviews,
+            )
             self._finish_bands(plan, page_map)
             return self._finish("cancelled" if engine.cancel.is_set() else None)
         engine.helper_ceiling = ceiling
@@ -2961,6 +2979,7 @@ class _Run:
                 _log.exception("assistant roster could not settle the unpaired pages")
             tag_reports: list[tuple[Any, str, str | None]] = []
             looked: list[tuple[Any, Mapping[str, Any]]] = []
+            slot_answers: list[tuple[Any, Mapping[str, Any]]] = []
             for agent, entry in zip(agents, entries, strict=True):
                 if agent.lens == "tags":
                     tag_reports.append(
@@ -2969,6 +2988,9 @@ class _Run:
                     continue
                 if agent.lens == whole_look.LENS:
                     looked.append((agent, entry))
+                    continue
+                if agent.lens == slot_look.LENS:
+                    slot_answers.append((agent, entry))
                     continue
                 if agent.lens == page_reviewer.LENS:
                     continue  # it recorded its items as it found them
@@ -2994,6 +3016,8 @@ class _Run:
                     self._note_unusable_look(where)
                 for where in self.looked.capped:
                     self._capped(f"Whole-drawing look of {where}")
+            if slot_answers:
+                self._apply_slots(slot_answers)
             engine._queue_second_reads(engine.book.live())
             if not self._halted():
                 self._read_ahead()
@@ -3107,6 +3131,7 @@ class _Run:
                 ]
             )
             apply_looks([(a, e) for a, e in done if a.lens == whole_look.LENS])
+            self._apply_slots([(a, e) for a, e in done if a.lens == slot_look.LENS])
 
         def chain(index: int, band: Band) -> None:
             mine = [by_job[job.number] for job in band.jobs if job.number in by_job]
@@ -3116,13 +3141,14 @@ class _Run:
             finally:
                 final_pairs()
             for agent, entry in done:
-                if agent.lens in (whole_look.LENS, page_reviewer.LENS):
+                if agent.lens in (whole_look.LENS, page_reviewer.LENS, slot_look.LENS):
                     continue
                 self._salvage(agent, entry)
                 if entry.get("stopped") == "cost_cap":
                     self._capped(agent.description, "; the pages it left are listed")
             # Each look's claims, by code, before the band's gap closers (as in one chain).
             apply_looks([(a, e) for a, e in done if a.lens == whole_look.LENS])
+            self._apply_slots([(a, e) for a, e in done if a.lens == slot_look.LENS])
             engine._queue_second_reads([f for f in engine.book.live() if band.holds(f.get("page"))])
             if self._halted():
                 return
@@ -3168,6 +3194,16 @@ class _Run:
             self._note_unusable_look(where)
         for where in self.looked.capped:
             self._capped(f"Whole-drawing look of {where}")
+
+    def _apply_slots(self, done: Sequence[tuple[Any, Mapping[str, Any]]]) -> None:
+        """The slot calls' answers, by code (`slot_look.apply_roster`); nothing when none ran."""
+        if not done:
+            return
+        with self._slots_lock:
+            try:
+                slot_look.apply_roster(self, done, self.slotted)
+            except Exception:  # noqa: BLE001 - the other findings stand
+                _log.exception("assistant roster could not apply the slot answers")
 
     def _finish_bands(self, plan: Any, page_map: Mapping[str, Any] | None) -> None:
         """What one chain does after its look-again, once for every band (#1874)."""

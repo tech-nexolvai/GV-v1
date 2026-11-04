@@ -20,9 +20,10 @@ The AI named marks (`slot_answers`); everything after that is code's:
    published rule through the isolated verdict engine (`slot_rules`); a job value exactly.
 5. **Facts and the verdict**: each side becomes a `verdict_facts` fact (`Present` with its value,
    page, box and method; `Missing` with one of the review's reasons), the pair's comparability is
-   decided (a vendor width is never held against an architect height; a string's overall that runs another way bars its red), and the six-row table gives the verdict. What
-   bars a red is listed on the outcome (`red_barred`), and `proof` reads it: nothing listed there
-   is ever clouded.
+   decided (a vendor width is never held against an architect height; a string's overall that
+   runs another way bars its red), and the six-row table gives the verdict. What bars a red is
+   listed on the outcome (`red_barred`), and `proof` reads it: nothing listed there is ever
+   clouded.
 
 Pure: no I/O, no AI call (the rule engine reads the rulebook files once).
 Verification: tests/review/assistant/test_slot_maths.py (made-up labels and values).

@@ -54,9 +54,11 @@ from app.review.assistant.question_list import questions as all_questions
 __all__ = [
     "CONFIDENCE",
     "GAPS",
+    "SLOT_STATUSES",
     "Cell",
     "Item",
     "Ledger",
+    "SlotRow",
     "answers_to",
     "grid",
     "items_from_run",
@@ -65,6 +67,8 @@ __all__ = [
     "lines",
     "main",
     "never_asked",
+    "slot_summary",
+    "with_slot_answers",
 ]
 
 #: How firm an answer is, strongest first. A cell takes the strongest answer it has.
@@ -75,7 +79,19 @@ GAPS: Final[Mapping[str, str]] = {
     "unidentified": "the item was never identified, so nothing could be asked about it",
     "silent": "nothing at all came back on this item's pages",
     "not_asked": "the item was identified and answered, but nobody asked this question",
+    "not_shown": "the question was asked as a slot and the drawings do not show it",
     "": "",
+}
+
+#: What a slot answer reports for one item and one question (`SlotRow`): answered (marks named
+#: and decided by code), not shown (asked; the drawings do not show it, with a fixed reason), or not
+#: asked (the slot was due and no answer came back for it).
+SLOT_STATUSES: Final[tuple[str, ...]] = ("answered", "not_shown", "not_asked")
+#: A slot answer's outcome (`slot_maths.SlotOutcome`) mapped to how firm the cell's answer is.
+_SLOT_CONFIDENCE: Final[Mapping[str, str]] = {
+    "differs": "proved",
+    "same": "proved",
+    "not_compared": "not_compared",
 }
 
 #: A finding's group, as `stuck_report.group_of` names it, mapped to how firm its answer is.
@@ -425,6 +441,69 @@ def ledger_for(
         matched=len(matched),
         unmatched=unmatched,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class SlotRow:
+    """One slot asked about one item (Step 4): what came back, from the slot path's own record."""
+
+    item: str
+    question: str
+    status: str
+    reason: str = ""
+    outcome: str = ""
+    """`same`, `differs` or `not_compared` when answered."""
+    red_barred: bool = False
+    finding: str = ""
+    """The finding's id when the answer was recorded."""
+
+
+def with_slot_answers(ledger: Ledger, rows: Sequence[SlotRow]) -> Ledger:
+    """The ledger with the slot path's answers laid on its cells.
+
+    An answered slot fills its cell (made by `slots`): a decided answer is `proved`, one whose red
+    code barred is `flagged`, one code could not compare is `not_compared`. A slot asked and not
+    shown leaves the cell unanswered with the gap `not_shown`. A row for an item or a question the
+    grid does not hold is left out: the grid is the question list's, never the slot path's."""
+    cells = {(cell.item, cell.question): cell for cell in ledger.cells}
+    for row in rows:
+        if row.status not in SLOT_STATUSES:
+            raise ValueError(f"slot status {row.status!r} is not one of {SLOT_STATUSES}")
+        cell = cells.get((row.item, row.question))
+        if cell is None:
+            continue
+        if row.status == "answered":
+            firm = _SLOT_CONFIDENCE.get(row.outcome, "not_compared")
+            if firm == "proved" and row.red_barred:
+                firm = "flagged"
+            cells[(row.item, row.question)] = Cell(
+                item=cell.item,
+                question=cell.question,
+                findings=cell.findings + (row.finding or f"slot:{row.question}",),
+                answered_by=cell.answered_by
+                + (("slots",) if "slots" not in cell.answered_by else ()),
+                confidence=_best(cell.confidence, firm),
+            )
+        elif row.status == "not_shown" and not cell.answered:
+            cells[(row.item, row.question)] = Cell(
+                item=cell.item, question=cell.question, confidence="none", gap="not_shown"
+            )
+    return Ledger(
+        job=ledger.job,
+        items=ledger.items,
+        cells=tuple(cells.values()),
+        findings=ledger.findings,
+        matched=ledger.matched,
+        unmatched=ledger.unmatched,
+    )
+
+
+def slot_summary(rows: Sequence[SlotRow]) -> dict[str, int]:
+    """How many slot rows are answered, not shown and not asked."""
+    counted = {status: 0 for status in SLOT_STATUSES}
+    for row in rows:
+        counted[row.status] = counted.get(row.status, 0) + 1
+    return counted
 
 
 def never_asked(ledger: Ledger) -> tuple[str, ...]:
