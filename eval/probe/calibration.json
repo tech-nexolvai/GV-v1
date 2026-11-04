@@ -1,0 +1,24 @@
+{
+  "note": "What a check has actually cost and taken, so a probe can be priced before it is approved. Neutral job tags only; no file path, no client name. 'picked' runs were given a page list (the shape a probe uses) and are what the estimate is fitted to; whole-set runs are kept for the upper bound. A real probe appends its own row through eval.probe.cost.append_point, so the estimate corrects itself after the first one.",
+  "fields": {
+    "run": "a neutral tag",
+    "pages": "vendor pages the check was given",
+    "cost_usd": "what the run itself reported spending",
+    "seconds": "wall time of the message",
+    "picked": "true when the run was given a page list rather than the whole set",
+    "note": "anything that makes the row unusual"
+  },
+  "points": [
+    {"run": "setD-pick-3", "pages": 3, "cost_usd": 3.95, "seconds": 371, "picked": true, "note": ""},
+    {"run": "setD-pick-4a", "pages": 4, "cost_usd": 4.01, "seconds": 351, "picked": true, "note": ""},
+    {"run": "setD-pick-4b", "pages": 4, "cost_usd": 6.29, "seconds": 456, "picked": true, "note": ""},
+    {"run": "setD-pick-5", "pages": 5, "cost_usd": 5.74, "seconds": 874, "picked": true, "note": ""},
+    {"run": "setC-run1", "pages": 18, "cost_usd": 12.59, "seconds": 838, "picked": false, "note": ""},
+    {"run": "setC-run0", "pages": 18, "cost_usd": 10.35, "seconds": 536, "picked": false, "note": ""},
+    {"run": "setB-run2", "pages": 18, "cost_usd": 13.22, "seconds": 1291, "picked": false, "note": ""},
+    {"run": "setB-run3", "pages": 18, "cost_usd": 14.02, "seconds": 1196, "picked": false, "note": ""},
+    {"run": "setA-run1", "pages": 52, "cost_usd": 24.69, "seconds": 1640, "picked": false, "note": ""},
+    {"run": "setA-run2", "pages": 52, "cost_usd": 25.97, "seconds": 1788, "picked": false, "note": ""},
+    {"run": "setA-flag", "pages": 52, "cost_usd": 37.43, "seconds": 5459, "picked": false, "note": "flag mode: the topic helpers and the whole-page look ran at scale, which no other row has"}
+  ]
+}
