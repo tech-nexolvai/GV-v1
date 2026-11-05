@@ -32,13 +32,14 @@ from typing import Final, Literal
 
 from rules.parameters import ParameterLayer, ParameterValue, Provenance, ResolvedParameter
 from rules.schema import Quantity, Rule
+from rules.semantic_types import SemanticType
 from rules.snapshot import RuleSnapshot, publish
 from units.measurement import Measurement, Unit
 from verdict.engine import execute
 from verdict.operands import EvidenceStatus, VerdictOperand
 from verdict.outcomes import Outcome
 
-__all__ = ["RULEBOOK", "RuleResult", "Value", "run_rule", "snapshot", "wall_config"]
+__all__ = ["RULEBOOK", "RuleResult", "Value", "layout_of", "run_rule", "snapshot"]
 
 #: Where the published rules are authored.
 RULEBOOK: Final = Path(__file__).resolve().parents[3] / "rules" / "rulebook"
@@ -97,7 +98,7 @@ def _registered() -> None:
         register_all()
 
 
-def wall_config(ends: Mapping[str, str]) -> str | None:
+def layout_of(ends: Mapping[str, str]) -> str | None:
     """The engine's `wall_config` from which ends of a top meet a wall; `None` when an end is not
     named (wall or free), so the engine abstains instead of guessing."""
     left, right = ends.get("left"), ends.get("right")
@@ -180,9 +181,9 @@ def run_rule(
     rule = found.rule
     operands = {name: _operand(name, value) for name, value in values.items() if value.inches}
     discriminators: dict[str, str] = {}
-    config = wall_config(ends or {})
+    config = layout_of(ends or {})
     if config is not None:
-        discriminators["wall_config"] = config
+        discriminators[SemanticType.WALL_CONFIG.value] = config
     decided = execute(
         found,
         operands,

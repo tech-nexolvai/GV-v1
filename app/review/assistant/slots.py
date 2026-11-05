@@ -37,6 +37,7 @@ from typing import Final, Literal
 
 from app.review.assistant import question_list
 from app.review.assistant.question_list import Question
+from rules.semantic_types import SemanticType
 
 __all__ = [
     "MEASURES",
@@ -149,7 +150,8 @@ _HOW: Final[Mapping[str, _How]] = {
     "cabinet_depth": _How("architect", ("overall_depth",)),
     "toe_kick": _How("architect", ("part_height", "height_above_floor")),
     "appliance_openings_sized": _How("architect", ("opening_width",), many=True),
-    "filler_width": _How("architect", ("part_width",), many=True),
+    # The question's key is the same word as the semantic type (`SemanticType.FILLER_WIDTH`).
+    SemanticType.FILLER_WIDTH.value: _How("architect", ("part_width",), many=True),
     "clear_width_at_an_accessible_item": _How(
         "architect", ("clear_width", "clear_height"), many=True
     ),
