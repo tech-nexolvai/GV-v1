@@ -45,6 +45,7 @@ __all__ = [
     "find_views",
     "gap",
     "is_scale",
+    "keynote_code",
     "normal_sheet",
     "owner",
     "phrases_of",
@@ -115,6 +116,19 @@ def _inside(point: tuple[float, float], box: Box) -> bool:
 
 def _plain(text: object) -> str:
     return " ".join(str(text or "").split())
+
+
+#: A keynote or model code printed like a sheet number (`D-388`, `M500`, `M-101.2`): an `M` or `D`
+#: and a number of three digits (`keynote_code`).
+_KEYNOTE: Final = re.compile(r"[MD]-?\d{3}(?:\.\d{1,2})?[A-Z]?")
+
+
+def keynote_code(text: str) -> bool:
+    """Whether a code the page map read as a sheet number (`set_pack._sheet_numbers`) is one of
+    the codes it no longer reads as one: an `M` or a `D` and a three-digit number (`D-388`,
+    `M500`). On a millwork set these are keynotes and model numbers, printed on many pages, so
+    they are dropped from the sheet numbers of a pack made before the page map left them out."""
+    return _KEYNOTE.fullmatch(" ".join(str(text or "").upper().split())) is not None
 
 
 def normal_sheet(text: str) -> str | None:

@@ -66,12 +66,15 @@ from app.review.assistant.full_check_plan import CrossPairs
 from app.review.assistant.reply_json import json_of_reply
 from app.review.assistant.simple_check.pairing import MatchAnswer, reuse
 from app.review.assistant.simple_check.schema import AcrossCandidate, AcrossPair, Drawing
-from app.review.assistant.simple_check.worklist import MATCH_FILE
+from app.review.assistant.simple_check.worklist import MATCH_FILE, ON_DRAWINGS
 
 if TYPE_CHECKING:
     from app.review.assistant.chat_engine import ChatEngine
 
 __all__ = [
+    "CITED",
+    "DRAWINGS_PROMPT_VERSION",
+    "DRAWING_TOKENS",
     "MATCH_FILE",
     "PROMPT_ID",
     "PROMPT_VERSION",
@@ -81,6 +84,7 @@ __all__ = [
     "MatchRun",
     "PictureMaker",
     "Pictures",
+    "cited",
     "engine_asker",
     "load_answers",
     "match_pairs",
@@ -97,11 +101,18 @@ _log = logging.getLogger(__name__)
 
 #: Changes when the question changes: an answer to an older question is asked again.
 PROMPT_VERSION: Final = 1
+#: The question on drawings one by one (rebuild plan Step 3, `AcrossPair.targets`): at most five
+#: single views, each cropped and captioned with what code reads on it, and an answer that cites
+#: what it matched on. Its answers are saved with `question: "drawings"` (`ON_DRAWINGS`).
+DRAWINGS_PROMPT_VERSION: Final = 2
 #: The call's prompt id on the Usage page.
 PROMPT_ID: Final = "review-assistant-chat-page-match-{provider}-{harness}"
 #: Each architect item's picture, and the vendor drawing's (visual tokens, `ceil(w/28) x ceil(h/28)`).
 ITEM_TOKENS: Final = 1_100
 VENDOR_TOKENS: Final = 3_200
+#: Each drawing's picture when the matcher is shown drawings (one view cropped: few are shown, so
+#: each is drawn larger than a whole sheet's picture).
+DRAWING_TOKENS: Final = 1_600
 #: The reply's room (thinking off: the form and one sentence).
 MAX_TOKENS: Final = 1_200
 #: The request's text (the system prompt, captions, the question) held for the runaway guard.
@@ -137,16 +148,32 @@ Answer with the JSON form only, using only the labels you were given."""
 # ---- the form ----------------------------------------------------------------------------------
 
 
-def reply_schema(labels: Sequence[str]) -> dict[str, Any]:
-    """The closed answer form for these labels: ids only."""
+#: What an answer on drawings must cite (`reply_schema(cite=True)`): the room name or tag, and the
+#: overall width, it matched on, as printed (or "none").
+CITED: Final = ("room_or_tag", "overall_width")
+
+
+def reply_schema(labels: Sequence[str], cite: bool = False) -> dict[str, Any]:
+    """The closed answer form for these labels: ids only. `cite` (shown drawings one by one): the
+    answer also says what it matched on (`CITED`)."""
+    properties: dict[str, Any] = {
+        "matches": {"type": "array", "items": {"type": "string", "enum": list(labels)}},
+        "confidence": {"type": "string", "enum": ["high", "low"]},
+        "reason": {"type": "string"},
+    }
+    required = ["matches", "confidence", "reason"]
+    if cite:
+        properties["matched_on"] = {
+            "type": "object",
+            "properties": {name: {"type": "string"} for name in CITED},
+            "required": list(CITED),
+            "additionalProperties": False,
+        }
+        required.append("matched_on")
     return {
         "type": "object",
-        "properties": {
-            "matches": {"type": "array", "items": {"type": "string", "enum": list(labels)}},
-            "confidence": {"type": "string", "enum": ["high", "low"]},
-            "reason": {"type": "string"},
-        },
-        "required": ["matches", "confidence", "reason"],
+        "properties": properties,
+        "required": required,
         "additionalProperties": False,
     }
 
@@ -157,17 +184,39 @@ def _json_of(text: str) -> object:
     return json_of_reply(text)
 
 
-def parse(text: str, labels: Sequence[str]) -> tuple[MatchAnswer | None, str | None]:
-    """The matcher's answer (labels, not ids yet), or why it is not the form."""
+def cited(text: str) -> dict[str, str]:
+    """What an answer on drawings says it matched on (`CITED`), as it wrote it; empty when the
+    answer holds none (`parse` refuses such an answer)."""
+    try:
+        document = _json_of(text)
+    except ValueError:
+        return {}
+    found = document.get("matched_on") if isinstance(document, Mapping) else None
+    if not isinstance(found, Mapping):
+        return {}
+    return {name: " ".join(str(found.get(name) or "").split())[:_MAX_REASON] for name in CITED}
+
+
+def parse(
+    text: str, labels: Sequence[str], cite: bool = False
+) -> tuple[MatchAnswer | None, str | None]:
+    """The matcher's answer (labels, not ids yet), or why it is not the form. `cite`: the answer
+    must also say what it matched on (`CITED`, each a non-empty string)."""
     try:
         document = _json_of(text)
     except ValueError:
         return None, "the answer is not JSON"
     if not isinstance(document, Mapping):
         return None, "the answer is not a JSON object"
-    extra = set(document) - {"matches", "confidence", "reason"}
+    extra = set(document) - {"matches", "confidence", "reason", *(("matched_on",) if cite else ())}
     if extra:
         return None, f"the answer has fields the form does not have: {', '.join(sorted(extra))}"
+    if cite:
+        found = document.get("matched_on")
+        if not isinstance(found, Mapping) or set(found) != set(CITED):
+            return None, "matched_on must give room_or_tag and overall_width"
+        if not all(isinstance(found[n], str) and found[n].strip() for n in CITED):
+            return None, "matched_on must say what was matched on, or none"
     matches = document.get("matches")
     if not isinstance(matches, list) or not all(isinstance(m, str) for m in matches):
         return None, "matches must be a list of labels"
@@ -191,11 +240,18 @@ def parse(text: str, labels: Sequence[str]) -> tuple[MatchAnswer | None, str | N
     )
 
 
-def _repair_text(problem: str, labels: Sequence[str]) -> str:
+def _repair_text(problem: str, labels: Sequence[str], cite: bool = False) -> str:
     return (
         f"That answer could not be used: {problem}. Answer again with the JSON form only: "
         '{"matches": [labels from ' + ", ".join(labels) + '], "confidence": "high" or "low", '
-        '"reason": "one short sentence"}.'
+        '"reason": "one short sentence"'
+        + (
+            ', "matched_on": {"room_or_tag": "as printed, or none", "overall_width": "as '
+            'printed, or none"}'
+            if cite
+            else ""
+        )
+        + "}."
     )
 
 
@@ -276,14 +332,26 @@ def _image(png: bytes) -> dict[str, Any]:
 
 
 def _labels(pair: AcrossPair) -> dict[str, AcrossCandidate]:
-    """The items the matcher is shown, labelled A1, A2... in page order."""
-    shown = [c for c in pair.candidates if c.id in set(pair.asked)]
+    """The items the matcher is shown, labelled A1, A2... in page order: the drawings of
+    `pair.targets` when it is shown drawings one by one, else whole pages."""
+    asked = set(pair.asked)
+    shown = [c for c in (pair.targets or pair.candidates) if c.id in asked]
     shown.sort(key=lambda c: (c.file, c.page, c.id))
     return {f"A{n}": item for n, item in enumerate(shown, start=1)}
 
 
 def _item_caption(label: str, item: AcrossCandidate) -> str:
-    words = f"Architect item {label}: the architect's file, page {item.page}"
+    """An item's caption: its page, GV's title and section; for a drawing target (one view of a
+    sheet, or a page of none), also its printed view title and what code reads on it
+    (`AcrossCandidate.signature`: room words, unit type, the accessible marker, tags)."""
+    if item.page_id is None:
+        words = f"Architect item {label}: the architect's file, page {item.page}"
+    else:
+        words = f"Architect drawing {label}: the architect's file, page {item.page}"
+        titles = item.drawings[0].titles if item.page_id != item.id and item.drawings else ()
+        words += f'; its view titled "{titles[0]}"' if titles else "; the whole page"
+        if item.signature:
+            words += f"; code reads on it: {', '.join(item.signature)}"
     if item.title:
         words += f'; GV\'s title "{item.title}"'
     if item.section:
@@ -297,12 +365,20 @@ def question(
     """The user message's content and its picture tokens: every architect item's picture after
     its caption (a cache breakpoint after the last: the same bytes for every vendor drawing
     shown these items), then the vendor drawing, then the question."""
+    drawings = bool(pair.targets)
     content: list[dict[str, Any]] = [
-        {"type": "text", "text": f"The architect's items ({len(labels)}):"}
+        {
+            "type": "text",
+            "text": (
+                f"The architect's drawings ({len(labels)}), each one view cropped from its sheet:"
+                if drawings
+                else f"The architect's items ({len(labels)}):"
+            ),
+        }
     ]
     tokens = 0
     for label, item in labels.items():
-        png, width, height = pictures.picture(item.drawings, ITEM_TOKENS)
+        png, width, height = pictures.picture(item.drawings, _item_tokens(pair))
         tokens += math.ceil(width / 28) * math.ceil(height / 28)
         content.append({"type": "text", "text": _item_caption(label, item)})
         content.append(_image(png))
@@ -319,11 +395,28 @@ def question(
             "type": "text",
             "text": (
                 "Which architect item or items show the same piece of millwork as this vendor "
-                f"drawing? Labels: {', '.join(labels)}. Answer with the JSON form only."
+                f"drawing? Labels: {', '.join(labels)}. "
+                + (
+                    "In matched_on, give the room name or tag and the overall width you matched "
+                    'on, as printed on the drawings ("none" when nothing printed matched). '
+                    if drawings
+                    else ""
+                )
+                + "Answer with the JSON form only."
             ),
         }
     )
     return content, tokens
+
+
+def _item_tokens(pair: AcrossPair) -> int:
+    """Each architect picture's size in tokens: a cropped drawing's, or a whole page's."""
+    return DRAWING_TOKENS if pair.targets else ITEM_TOKENS
+
+
+def _version(pair: AcrossPair) -> int:
+    """The question's version for this pair: on drawings, or on whole pages."""
+    return DRAWINGS_PROMPT_VERSION if pair.targets else PROMPT_VERSION
 
 
 # ---- asking ------------------------------------------------------------------------------------
@@ -372,7 +465,8 @@ def ask_one(
     if not labels:
         return None, "code rules out every architect item", 0.0
     content, _tokens = question(pair, labels, pictures)
-    schema = reply_schema(list(labels))
+    cite = bool(pair.targets)
+    schema = reply_schema(list(labels), cite)
     messages: list[dict[str, Any]] = [{"role": "user", "content": content}]
     usage: dict[str, int] = {}
     cost = 0.0
@@ -389,7 +483,7 @@ def ask_one(
             problem: str | None = "the answer was cut off"
             answer = None
         else:
-            answer, problem = parse(reply.text, list(labels))
+            answer, problem = parse(reply.text, list(labels), cite)
         if answer is not None:
             break
         if repaired:
@@ -400,7 +494,9 @@ def ask_one(
             {"role": "assistant", "content": [{"type": "text", "text": reply.text or "{}"}]},
             {
                 "role": "user",
-                "content": [{"type": "text", "text": _repair_text(str(problem), list(labels))}],
+                "content": [
+                    {"type": "text", "text": _repair_text(str(problem), list(labels), cite)}
+                ],
             },
         ]
     return (
@@ -414,7 +510,8 @@ def ask_one(
             "usage": usage,
             "cost_usd": round(cost, 6),
             "repaired": repaired,
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": _version(pair),
+            **({"question": ON_DRAWINGS, "matched_on": cited(reply.text)} if cite else {}),
             "asked_at": datetime.now(UTC).isoformat(timespec="seconds"),
         },
         "",
@@ -453,7 +550,9 @@ def _save(folder: Path, ref: str, entry: Mapping[str, Any]) -> None:
 def _still_good(entry: Mapping[str, Any] | None, pair: AcrossPair) -> bool:
     """A saved answer still answers this drawing's question: the same question, and the same
     candidates or fewer with its picks among them (`pairing.reuse`: code since rules some out)."""
-    if entry is None or entry.get("prompt_version") != PROMPT_VERSION:
+    if entry is None or entry.get("prompt_version") != _version(pair):
+        return False
+    if (entry.get("question") == ON_DRAWINGS) != bool(pair.targets):
         return False
     answer = MatchAnswer(
         tuple(str(m) for m in entry.get("matches") or []), bool(entry.get("confident"))
@@ -510,7 +609,7 @@ def match_pairs(
             with lock:
                 report.failed.append((pair.vendor.ref, "the check was stopped"))
             return
-        tokens = _TEXT_TOKENS + VENDOR_TOKENS + ITEM_TOKENS * len(pair.asked)
+        tokens = _TEXT_TOKENS + VENDOR_TOKENS + _item_tokens(pair) * len(pair.asked)
         if fits is not None and not fits(tokens):
             with lock:
                 report.skipped_for_money += 1

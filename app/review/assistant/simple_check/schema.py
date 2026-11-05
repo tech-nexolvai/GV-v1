@@ -470,6 +470,12 @@ class AcrossCandidate(_Frozen):
     contradicts: str | None = None
     strong: bool = False
     """Code holds strong evidence for it (`pairing.Scored.strong`)."""
+    page_id: str | None = None
+    """Per-drawing pairing (rebuild plan Step 3): the page item this drawing target is on (its own
+    id for a page with no titled views). `None` on a page item."""
+    signature: tuple[str, ...] = ()
+    """A drawing target's page signature in words (`signature.Signature`: its room words, unit
+    type, accessible marker and tags), for the AI page matcher's caption."""
 
 
 class WrongTag(_Frozen):
@@ -557,6 +563,15 @@ class AcrossPair(_Frozen):
     """Flag mode (Anant, 2026-11-04, `worklist._best_guesses`): `chosen` is a best guess, the
     first of `unsure` (the AI page matcher's pick, sure or not, else code's own), not a pair code
     and the matcher confirmed; it is compared, and every finding on it says so."""
+    targets: tuple[AcrossCandidate, ...] = ()
+    """Per-drawing pairing (rebuild plan Step 3): the architect's drawings the AI page matcher is
+    shown (`asked` holds their ids), code's best first: each one titled view of a sheet (or a
+    whole page with no titled views), at most `worklist.MATCH_TARGETS`. Empty when pairing by
+    whole pages."""
+    page_views: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    """Per-drawing pairing: for each page item, the views of it a pair or a best guess with that
+    page is compared with (the matcher's picks on it, else code's best view and the views of the
+    same piece beside it)."""
 
 
 class WorkList(_Frozen):

@@ -195,9 +195,13 @@ _ROUND_NUMBER: Final = {
 }
 _AREA: Final = re.compile(r"^\s*\d{1,3}\s*[.)]\s*\S")
 _FONT_SIZE: Final = re.compile(r"(\d+(?:\.\d+)?)\s+Tf")
+#: A page's sheet number: after its label (`SHEET NO. A-401A`), or a sheet code of its own. `M-` and
+#: `D-` codes without a label are left out (`views.keynote_code`): on a millwork set they are
+#: keynotes and model numbers printed on many pages, never the page's sheet.
 _SHEET: Final = re.compile(
-    r"\b(?:SHEET|DWG|DRAWING)\s*(?:NO\.?|NUMBER|#)\s*[:.]?\s*([A-Z]{0,4}-?\d{1,4}(?:\.\d{1,3})?)\b"
-    r"|\b((?:A|ID|SD|SH|MW|M|D)-?\d{3}(?:\.\d{1,2})?[A-Z]?)\b"
+    r"\b(?:SHEET|DWG|DRAWING)\s*(?:NO\.?|NUMBER|#)\s*[:.]?\s*"
+    r"([A-Z]{0,4}-?\d{1,4}(?:\.\d{1,3})?[A-Z]?)\b"
+    r"|\b((?:A|ID|SD|SH|MW)-?\d{3}(?:\.\d{1,2})?[A-Z]?)\b"
 )
 _ROLES: Final = {
     HeadingMeaning.ARCH: "architect",

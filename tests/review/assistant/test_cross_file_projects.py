@@ -599,11 +599,17 @@ def test_two_brands_in_one_building_and_a_scheme_suffix_are_one_job() -> None:
 # ---- the work list: projects, reference sets, views, key plans, tables ------------------------------
 
 
-def test_a_vendor_drawing_is_paired_only_within_its_project_by_view() -> None:
+def test_a_vendor_drawing_is_paired_only_within_its_project_by_view(monkeypatch: Any) -> None:
     work = _work(_index())
     desk = _across(work, 2)
     # Never the brand prototype (R1), never the key plan: one candidate, the NORTH elevation sheet.
     assert desk.asked == ("p1004",)
+    # With per-drawing pairing switched on, the matcher is shown that sheet's two titled views.
+    monkeypatch.setenv(worklist.PAIRING_TARGETS_ENV, "view")
+    desk = _across(_work(_index()), 2)
+    assert desk.asked == ("p1004.a1.view1", "p1004.a1.view2")
+    assert {c.id for c in desk.candidates if c.contradicts is None} == {"p1004"}
+    monkeypatch.delenv(worklist.PAIRING_TARGETS_ENV)
     # The key plan prints RD-101 beside a callout to view 1 of A5.0: with the matcher naming the
     # sheet (even unsure), the pair is that view, not the whole sheet.
     work = _work(_index(), _answers(["p1004"], ["p1004"], sure=False))
