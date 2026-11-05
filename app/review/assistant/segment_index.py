@@ -2,7 +2,7 @@
 
 A big architect's sheet has 100,000 to 250,000 straight pieces of line work (`dim_labels._parse`).
 The text route asked, for every printed dimension, about every one of them several times (its row,
-its cuts, its ticks, its extension lines): about 95 million distance sums on one Portage sheet,
+its cuts, its ticks, its extension lines): about 95 million distance sums on one real job's sheet,
 four minutes of plain Python (profiled 2026-11-03).
 
 `near(segments, x0, y0, x1, y1)` gives the segments whose bounding box meets that box (widened by
