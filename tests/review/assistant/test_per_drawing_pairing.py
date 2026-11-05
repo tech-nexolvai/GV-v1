@@ -334,15 +334,18 @@ def test_an_accessible_view_is_ruled_out_for_a_standard_vendor_drawing_and_back(
     assert dict(accessible.page_views)["p1001"] == (ACCESSIBLE,)
 
 
-def test_whole_sheets_remain_behind_the_setting(monkeypatch: Any) -> None:
+def test_per_drawing_pairing_is_opt_in_and_whole_sheets_stay_the_default(monkeypatch: Any) -> None:
     page = _pair(_work(_set("SAMPLE KITCHENETTE"), per_view=False))
     assert page.targets == () and page.page_views == () and "p1001" in page.asked
     monkeypatch.setenv(worklist.PAIRING_TARGETS_ENV, "page")
     assert not worklist.per_view_pairing()
     monkeypatch.setenv(worklist.PAIRING_TARGETS_ENV, "view")
     assert worklist.per_view_pairing()
+    monkeypatch.setenv(worklist.PAIRING_TARGETS_ENV, "anything else")
+    assert not worklist.per_view_pairing()
+    # No setting: whole sheets, until a paid run has measured the matcher's new question.
     monkeypatch.delenv(worklist.PAIRING_TARGETS_ENV)
-    assert worklist.per_view_pairing()
+    assert not worklist.per_view_pairing()
 
 
 def _page_answer(work: Any, pick: str, sure: bool = False) -> dict[str, Any]:

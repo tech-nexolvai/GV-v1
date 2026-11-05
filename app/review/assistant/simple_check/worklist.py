@@ -4724,9 +4724,10 @@ def _ranked_across(
 
 # ---- per-drawing pairing (rebuild plan Step 3, 2026-11-05) ---------------------------------------
 
-#: The setting that says what a vendor drawing is paired with: `view` (the default: each titled
-#: view of an architect sheet is a target of its own, `_ranked_by_view`) or `page` (the whole
-#: sheet, as before Step 3; kept for the before-and-after replay).
+#: The setting that says what a vendor drawing is paired with: `page` (the default: the whole
+#: sheet, as before Step 3) or `view` (each titled view of an architect sheet is a target of its
+#: own, `_ranked_by_view`). `view` stays opt-in until a paid run has measured the AI matcher's new
+#: question (owner rule, 2026-11-05: nothing changes a live run before it is measured).
 PAIRING_TARGETS_ENV: Final = "GV_PAIRING_TARGETS"
 #: The AI page matcher is shown at most this many of the architect's drawings: code's best by the
 #: ranking and the page signature, at most `MATCH_PER_PAGE` of one sheet (so it sees several).
@@ -4735,10 +4736,10 @@ MATCH_PER_PAGE: Final = 2
 
 
 def per_view_pairing() -> bool:
-    """Whether pairing ranks the architect's drawings one by one (`GV_PAIRING_TARGETS`: anything
-    but `page`), read from the environment as `full_check_plan.flag_mode` is, so every work-list
-    build in the process pairs alike."""
-    return os.environ.get(PAIRING_TARGETS_ENV, "view").strip().lower() != "page"
+    """Whether pairing ranks the architect's drawings one by one (`GV_PAIRING_TARGETS` = `view`;
+    anything else, or no setting, pairs whole sheets), read from the environment as
+    `full_check_plan.flag_mode` is, so every work-list build in the process pairs alike."""
+    return os.environ.get(PAIRING_TARGETS_ENV, "page").strip().lower() == "view"
 
 
 @dataclass(frozen=True, slots=True)
