@@ -38,6 +38,7 @@ from fractions import Fraction
 from typing import Final
 
 from app.review.assistant.simple_check import pairing
+from vocabulary.dashes import DASH
 
 __all__ = [
     "MAX_ROOM",
@@ -124,8 +125,9 @@ _BEDROOMS: Final = re.compile(
     r"(?:\b|(?<=K))(ONE|TWO|THREE|[1-3])\s*-?\s*(?:BDRMS?|BEDROOMS?|BED|BR)\b"
 )
 _NUMBER: Final = {"ONE": "1", "TWO": "2", "THREE": "3"}
-#: A vendor's own type code ("TYPE-2", "Type 4 (Left)", "type-1Left").
-_TYPE_CODE: Final = re.compile(r"\bTYPE\s*-?\s*(\d{1,2}(?!\d)|[A-Z](?![A-Z]))")
+#: A vendor's own type code ("TYPE-2", "Type 4 (Left)", "type-1Left"), any look-alike dash read as
+#: the hyphen (`vocabulary.dashes`).
+_TYPE_CODE: Final = re.compile(rf"\bTYPE\s*{DASH}?\s*(\d{{1,2}}(?!\d)|[A-Z](?![A-Z]))")
 #: A fixture's words, each to the fixture it names (`fixture_order`).
 _FIXTURES: Final = (
     ("SINK", re.compile(r"\bSINK\b|\bSNK\b")),

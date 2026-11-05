@@ -14,6 +14,7 @@ from typing import Any
 
 from app.review.assistant import page_match, set_pack
 from app.review.assistant.simple_check import pairing, signature, views, worklist
+from app.review.assistant.simple_check.schema import AcrossCandidate, AcrossPair, Drawing
 
 F = Fraction
 
@@ -70,6 +71,10 @@ def test_a_vendors_own_type_code_takes_the_unit_type_its_other_titles_give() -> 
     # The kitchenette's code 7 is printed beside "2BR"; a vanity of code 7 is another room, and
     # a code never printed beside a unit type gives none.
     assert signature.unit_aliases(titles) == {"b": "2-BEDROOM", "c": "2-BEDROOM"}
+    # A code printed with a look-alike dash (a minus sign) is the same code.
+    assert signature.unit_aliases({"a": "Sample Kitchenette Type\u22127 2BR", "b": "Type-7"}) == {
+        "b": "2-BEDROOM"
+    }
 
 
 def test_fixtures_are_read_left_to_right_and_notes_are_not_fixtures() -> None:
@@ -476,3 +481,59 @@ def test_an_answer_that_never_cites_is_refused_and_a_whole_page_answer_is_asked_
     assert not page_match._still_good(old, pair)
     new = {**old, "prompt_version": page_match.DRAWINGS_PROMPT_VERSION, "question": "drawings"}
     assert page_match._still_good(new, pair)
+
+
+def _drawn(ref: str, file: str, role: str) -> Drawing:
+    box = (0.0, 0.0, 600.0, 400.0)
+    return Drawing(ref=ref, file=file, page=1, half=0, role=role, box=box, crop_box=box)
+
+
+def test_two_crossed_best_guesses_swap_and_stay_guesses() -> None:
+    """The swap audit on guesses: two look-alike vendor drawings whose sizes fit each other's
+    guessed drawing better, on both sides, swap their guesses; both stay best guesses."""
+    items = {
+        page: AcrossCandidate(
+            id=page,
+            file=ARCH,
+            page=n,
+            drawings=(_drawn(f"{page}.a1", ARCH, "architect"),),
+        )
+        for n, page in ((1, "p1001"), (2, "p1002"))
+    }
+    sizes = {
+        "p1.v0": (96, 30),
+        "p2.v0": (60, 24),
+        "p1001.a1": (60, 24),
+        "p1002.a1": (96, 30),
+    }
+
+    def facts_of(drawing: Drawing) -> pairing.Facts:
+        return pairing.Facts(drawing.ref, tuple(F(v) for v in sizes[drawing.ref]))
+
+    pairs = {
+        f"p{n}.v0": AcrossPair(
+            vendor=_drawn(f"p{n}.v0", SHOP, "vendor"),
+            candidates=tuple(items.values()),
+            chosen=(page,),
+            unsure=(page,),
+            guess=True,
+            why=f"best guess: architect page {n} (not confirmed): the matcher's pick",
+        )
+        for n, page in ((1, "p1001"), (2, "p1002"))
+    }
+    context = worklist._Across()
+    look_alike = signature.Signature("x", rooms=frozenset({"KITCHEN"}))
+    context.signatures = {"p1.v0": look_alike, "p2.v0": look_alike}
+    worklist._swap_guesses(pairs, facts_of, items, context)
+    assert pairs["p1.v0"].chosen == ("p1002",) and pairs["p2.v0"].chosen == ("p1001",)
+    assert all(p.guess for p in pairs.values())
+    assert pairs["p1.v0"].why.startswith("best guess: architect page 2 (not confirmed): the swap")
+    # Now each fits its own guess better: the audit again changes nothing.
+    again = dict(pairs)
+    worklist._swap_guesses(again, facts_of, items, context)
+    assert again == pairs
+    # Drawings of unlike signatures (another room) are never swapped.
+    context.signatures["p2.v0"] = signature.Signature("y", rooms=frozenset({"VANITY"}))
+    kept = dict(pairs)
+    worklist._swap_guesses(kept, facts_of, items, context)
+    assert kept == pairs
