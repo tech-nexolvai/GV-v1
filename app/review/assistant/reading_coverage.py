@@ -13,7 +13,10 @@ look at it. It only COUNTS: it never makes, changes or drops a label, a finding 
   a note that became no label (`24 1/4"W x 18"D`: reason "inside a note");
 - pen-stroke numbers: every drawn label, plus the stroke ink on a drawing that looks like a
   number and became no label (`reading_ink`: an inch mark or millimetres over [inches] of its
-  own, or a glyph shaped like a digit this set's vendor drew in a number code did read);
+  own, or every glyph shaped like a digit this set's vendor drew in a number code did read;
+  never ink the page's typed text sits on, which the typed count already holds, nor a tag, a
+  word or line work). Ink code cannot tell is not counted, so the count can miss a number but
+  does not take a tag or a symbol for one;
 - numbers in pasted pictures: every picture label, plus every number two OCR engines did not
   confirm there (`pictures.unconfirmed`);
 - numbers in text with no letter map (Type3, or Type0 with no `ToUnicode`; #1750): every label
