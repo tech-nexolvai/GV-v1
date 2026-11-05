@@ -118,6 +118,7 @@ __all__ = [
     "classified",
     "code_proved",
     "could_not_compare_reason",
+    "decided",
     "ends_unconfirmed",
     "ends_words",
     "flag_checked",
@@ -141,6 +142,7 @@ __all__ = [
     "proof_group",
     "proof_line",
     "proof_of",
+    "proof_rules_group",
     "proved_wrong",
     "reading_held",
     "reading_words",
@@ -149,6 +151,7 @@ __all__ = [
     "reviewer_value_refusal",
     "reviewer_wrong",
     "rule_line",
+    "says_differs",
     "scaled",
     "should_be",
     "should_be_value",
@@ -331,6 +334,12 @@ def _decided(finding: Mapping[str, Any]) -> str | None:
     if isinstance(decision, Mapping) and decision.get("decision"):
         return str(decision["decision"])
     return None
+
+
+def decided(finding: Mapping[str, Any]) -> str | None:
+    """The reviewer's own decision on the item (`agree`, `not_a_problem`), or `None`: the public
+    name of `_decided`, for `verdict_adapter`."""
+    return _decided(finding)
 
 
 def reviewer_should_be(finding: Mapping[str, Any]) -> str | None:
@@ -859,10 +868,23 @@ def proved_wrong(finding: Mapping[str, Any]) -> bool:
 
 def proof_group(finding: Mapping[str, Any]) -> ProofGroup:
     """Where the finding goes on the zero-click drawing (see the module's rule). The reviewer's
-    decision, when there is one, overrides: agreed = clouded, not a problem = dismissed. In flag
-    mode, flag mode's rule (`_flag_group`)."""
+    decision, when there is one, overrides: agreed = clouded, not a problem = dismissed.
+
+    In flag mode the **verdict table** decides (Phase 2, 2026-11-04): `verdict_adapter.group_of`
+    reads each side as a fact and runs the six rows over them, and the screen's groups are
+    unchanged. `_flag_group` below is the rule it replaces, kept while the $0 replay over the
+    saved runs proves the two agree on every red; deleting it is a separate decision.
+    """
     if flag_mode():
-        return _flag_group(finding)
+        found: ProofGroup = import_module("app.review.assistant.verdict_adapter").group_of(finding)
+        return found
+    return _proof_group(finding)
+
+
+def proof_rules_group(finding: Mapping[str, Any]) -> ProofGroup:
+    """Where the finding goes under the **proof** rules, whatever mode the server runs: the public
+    name of `_proof_group`, for `verdict_adapter`, which keeps flag mode's promise that what the
+    proof rules show as a problem is never hidden."""
     return _proof_group(finding)
 
 
@@ -1158,6 +1180,12 @@ def _says_differs(finding: Mapping[str, Any]) -> bool:
         or classification.differing_values(finding) is not None
         or maths_result(finding) == "differs"
     )
+
+
+def says_differs(finding: Mapping[str, Any]) -> bool:
+    """Whether the item itself says something differs or is wrong: the public name of
+    `_says_differs`, for `verdict_adapter`'s maths step on words and tags."""
+    return _says_differs(finding)
 
 
 def _flag_group(finding: Mapping[str, Any]) -> ProofGroup:
