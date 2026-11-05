@@ -64,6 +64,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.review.assistant.cache_layout import one_off
 from app.review.assistant.full_check_advocate import Check
 from app.review.assistant.reply_json import json_of_reply, log_unreadable
 from app.review.assistant.simple_check.prompts import kinds_sentence
@@ -2050,6 +2051,7 @@ class EngineProposer:
                 prompt_id=PROMPT_ID.format(provider=engine.provider.name, harness=HARNESS_ID),
                 display=None,
                 output_format=PROPOSAL_SCHEMA,
+                cache=one_off(engine),
             )
         except Exception as failed:  # noqa: BLE001 - not answered: the item stays Not compared
             if engine.cancel.is_set():

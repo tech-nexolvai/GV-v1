@@ -145,8 +145,9 @@ def _blocks(message: Mapping[str, Any]) -> list[Any]:
 
 def _cached_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The messages up to and including the last block with a cache breakpoint other than the
-    newest block (the last block of the last message, where `chat_request` always puts one):
-    whole messages before it, its own message cut after it. None such: no message."""
+    newest block (the last block of the last message, where `chat_request` puts one unless the
+    call is a one-off, `chat_request.SINGLE_SHOT`): whole messages before it, its own message cut
+    after it. None such: no message."""
     newest = None
     if messages and _blocks(messages[-1]):
         newest = (len(messages) - 1, len(_blocks(messages[-1])) - 1)
@@ -194,10 +195,10 @@ def prefix_hash(params: Mapping[str, Any]) -> str:
     The prefix is, in the order the API reads it: the `tools` (an empty list when the call sends
     none), the `system` prompt, and the `messages` up to and including the LAST block that carries
     a cache breakpoint other than the newest block (the last block of the last message, where
-    `chat_request.call_params` always puts one); with no such block, no message. It is written
-    as JSON with sorted keys and no spaces, with every `cache_control` left out (a breakpoint's
-    place or lifetime is not part of the content) and every base64 `data` (a picture) replaced by
-    the sha256 of its decoded bytes.
+    `chat_request.call_params` puts one unless the call is a one-off); with no such block, no
+    message. It is written as JSON with sorted keys and no spaces, with every `cache_control` left
+    out (a breakpoint's place or lifetime is not part of the content) and every base64 `data` (a
+    picture) replaced by the sha256 of its decoded bytes.
 
     So two calls with the same tools, system prompt and cached blocks have the same hash whatever
     their newest block, and a change to any of those three changes it. The model, the thinking

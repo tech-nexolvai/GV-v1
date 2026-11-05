@@ -246,6 +246,12 @@ class Settings(BaseSettings):
         "claude-opus-5-5"
     )
     assistant_whole_look_effort: Literal["low", "medium", "high"] = "medium"
+    # How the assistant's prompts are laid out for the prompt cache (rebuild plan Step 5):
+    # `legacy` sends today's requests unchanged; `shared` gives the full check's roster
+    # specialists one prefix per model (fixed tools and system prompt, each kind's job in its
+    # first message), warms each shared prefix once on either route, keeps a wrap-up's tool
+    # choice, and puts no cache breakpoint on a one-off call's newest block.
+    assistant_cache_layout: Literal["legacy", "shared"] = "legacy"
     # The page reviewer (Anant, 2026-10-29, `page_reviewer`): one careful reviewer per vendor page
     # beside the roster's helpers, Opus 5.5 at high effort with a short brief, the text layer first,
     # the whole page, every tile, tight zooms, a coverage check and a self-check. Its construction,

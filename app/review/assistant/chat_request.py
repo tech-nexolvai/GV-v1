@@ -38,9 +38,22 @@ search tool, and a deferred tool reaches the model only when its search finds it
 inside Anthropic's API (its `server_tool_use` and `tool_search_tool_result` blocks are kept in the
 history as received). OpenRouter gets every tool loaded and no search tool.
 
-**Prompt caching.** Three cache breakpoints: the last loaded tool (so the tool list is cached), the system
-prompt, and the newest message's last block. Each turn re-sends the whole conversation unchanged,
-so everything before the newest message is read from the cache.
+**Prompt caching.** By default (`LEGACY_CACHE`) three cache breakpoints: the last loaded tool (so the
+tool list is cached), the system prompt, and the newest message's last block. Each turn re-sends the
+whole conversation unchanged, so everything before the newest message is read from the cache. A
+caller may say where the breakpoints go instead (`CachePlan`, rebuild plan Step 5): on the tools, on
+the system prompt, on the newest block, each on or off, and on any message block it marks itself
+(`cache_mark`), each with a 5-minute or 1-hour lifetime. Anthropic's rules (prompt-caching docs):
+at most 4 breakpoints in one request, and a 1-hour one must come before every 5-minute one; a plan
+that breaks either is refused (`CacheRefused`) before anything is sent. A one-off call
+(`SINGLE_SHOT`) puts none on its newest block: a cache nobody reads again costs 1.25 times the
+input price to write.
+
+**A wrap-up may keep its tools (`final_choice="keep"`).** The old forced final answer sends
+`tool_choice: {"type": "none"}`; a `tool_choice` change makes the API drop the messages cache, so
+the whole history is written again. With "keep", the final call's `tool_choice` stays `auto` and
+the caller asks for the final answer in plain words; the caller never runs a tool the wrap-up
+reply asks for (`chat_engine`).
 
 **Models from outside Claude (comparison tests, 2026-10-25).** `EXTRA_MODELS` (GPT-6 Astra,
 GPT-6.1 Sol, GPT-6 Luna on Azure; Gemini 4 Argon on Google Vertex global) run only through
@@ -71,6 +84,7 @@ from app.review.assistant.chat_context import CONTEXT_BETA
 
 __all__ = [
     "BINDING_BETA",
+    "CACHE_LAYOUTS",
     "DEFAULT_EFFORT",
     "DEFAULT_MODEL",
     "EFFORTS",
@@ -79,12 +93,19 @@ __all__ = [
     "HELPER_MAX_EFFORT",
     "HELPER_MAX_TOKENS",
     "LEAD_MAX_TOKENS",
+    "LEGACY_CACHE",
+    "MAX_BREAKPOINTS",
     "MODELS",
     "OPENROUTER_BASE_URL",
+    "SINGLE_SHOT",
     "TOOL_SEARCH",
+    "CachePlan",
+    "CacheRefused",
     "ChatModel",
     "ChoiceRefused",
     "Provider",
+    "breakpoints",
+    "cache_mark",
     "cache_shared",
     "call_params",
     "check_choice",
@@ -123,6 +144,81 @@ _BLOCK_BINDING: Final[Mapping[str, str]] = {"prefix_mismatch_behavior": "drop_bl
 #: OpenRouter's Anthropic-compatible endpoint; the SDK adds `/v1/messages`.
 OPENROUTER_BASE_URL: Final = "https://openrouter.ai/api"
 _EPHEMERAL: Final[Mapping[str, str]] = {"type": "ephemeral"}
+
+type Ttl = Literal["5m", "1h"]
+#: The prompt layouts (`GV_ASSISTANT_CACHE_LAYOUT`): `legacy`, today's requests; `shared`, one
+#: canonical prefix per model for the roster's specialists (rebuild plan Step 5).
+CACHE_LAYOUTS: Final = ("legacy", "shared")
+#: Anthropic's limit: "You can define up to 4 cache breakpoints" (prompt-caching docs).
+MAX_BREAKPOINTS: Final = 4
+
+
+class CacheRefused(ValueError):
+    """A cache plan the API would refuse (more than 4 breakpoints, or a 1-hour one after a
+    5-minute one), found before anything is sent."""
+
+
+@dataclass(frozen=True, slots=True)
+class CachePlan:
+    """Where a call's cache breakpoints go, besides the message blocks its caller marked itself
+    (`cache_mark`): on the last loaded tool, on the system prompt, on the newest message's last
+    block; each `None` (none there), "5m" or "1h"."""
+
+    tools: Ttl | None = "5m"
+    system: Ttl | None = "5m"
+    newest: Ttl | None = "5m"
+
+
+#: Today's three breakpoints (the default: `legacy` requests are unchanged).
+LEGACY_CACHE: Final = CachePlan()
+#: A one-off call: nothing on its newest block (it is never sent again).
+SINGLE_SHOT: Final = CachePlan(newest=None)
+
+
+def _control(ttl: str) -> dict[str, str]:
+    """A breakpoint's `cache_control`: the 5-minute one exactly as before (no `ttl` key)."""
+    if ttl == "5m":
+        return dict(_EPHEMERAL)
+    if ttl == "1h":
+        return {"type": "ephemeral", "ttl": "1h"}
+    raise CacheRefused(f"a cache lifetime is 5m or 1h, not {ttl!r}")
+
+
+def cache_mark(block: Mapping[str, Any], ttl: Ttl = "5m") -> dict[str, Any]:
+    """`block` with a cache breakpoint on it: a caller's own breakpoint after a shared part (GV's
+    reference pictures, a page pair's pictures)."""
+    return {**block, "cache_control": _control(ttl)}
+
+
+def breakpoints(params: Mapping[str, Any]) -> list[str]:
+    """Each breakpoint of a request in the order the API reads them (tools, system, messages):
+    its lifetime, "5m" or "1h"."""
+    found: list[str] = []
+
+    def take(block: object) -> None:
+        if isinstance(block, Mapping) and isinstance(block.get("cache_control"), Mapping):
+            found.append(str(block["cache_control"].get("ttl") or "5m"))
+
+    for tool in params.get("tools") or ():
+        take(tool)
+    system = params.get("system")
+    for block in system if isinstance(system, list) else ():
+        take(block)
+    for message in params.get("messages") or ():
+        content = message.get("content") if isinstance(message, Mapping) else None
+        for block in content if isinstance(content, list) else ():
+            take(block)
+    return found
+
+
+def _check_breakpoints(params: Mapping[str, Any]) -> None:
+    found = breakpoints(params)
+    if len(found) > MAX_BREAKPOINTS:
+        raise CacheRefused(
+            f"{len(found)} cache breakpoints; the API takes at most {MAX_BREAKPOINTS}"
+        )
+    if "1h" in found and "5m" in found[: len(found) - found[::-1].index("1h")]:
+        raise CacheRefused("a 1-hour cache breakpoint must come before every 5-minute one")
 
 
 @dataclass(frozen=True, slots=True)
@@ -415,7 +511,8 @@ def inline_pictures(
     messages: Sequence[Mapping[str, Any]], read: Callable[[str], bytes]
 ) -> list[dict[str, Any]]:
     """The messages with each picture reference replaced by the picture's bytes (base64), read with
-    `read(picture_id)`. Every other value is copied as it is."""
+    `read(picture_id)`; a reference's other keys (a cache breakpoint) are kept after its source.
+    Every other value is copied as it is."""
 
     def walk(value: Any) -> Any:
         if _is_picture_ref(value):
@@ -427,6 +524,7 @@ def inline_pictures(
                     "media_type": "image/png",
                     "data": base64.b64encode(read(str(source["picture_id"]))).decode("ascii"),
                 },
+                **{key: item for key, item in value.items() if key not in ("type", "source")},
             }
         if isinstance(value, Mapping):
             return {key: walk(item) for key, item in value.items()}
@@ -460,7 +558,7 @@ def picture_sizes(messages: Sequence[Mapping[str, Any]]) -> list[tuple[int, int]
 # ---- the call ------------------------------------------------------------------------------------
 
 
-def _with_breakpoint(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _with_breakpoint(messages: list[dict[str, Any]], ttl: str = "5m") -> list[dict[str, Any]]:
     """The messages with a cache breakpoint on the newest block, copied only where it changes."""
     if not messages:
         return messages
@@ -468,9 +566,23 @@ def _with_breakpoint(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     content = last.get("content")
     if isinstance(content, list) and content and isinstance(content[-1], Mapping):
         blocks = list(content)
-        blocks[-1] = {**blocks[-1], "cache_control": dict(_EPHEMERAL)}
+        blocks[-1] = {**blocks[-1], "cache_control": _control(ttl)}
         last["content"] = blocks
     return [*messages[:-1], last]
+
+
+def _with_first_note(messages: list[dict[str, Any]], note: str) -> list[dict[str, Any]]:
+    """The messages with `note` as one more text block at the end of the first message: the
+    conversation's own first message, the same on every turn, so the note never moves."""
+    if not messages:
+        return [{"role": "user", "content": [{"type": "text", "text": note}]}]
+    first = dict(messages[0])
+    content = first.get("content")
+    blocks = (
+        [{"type": "text", "text": content}] if isinstance(content, str) else list(content or [])
+    )
+    first["content"] = [*blocks, {"type": "text", "text": note}]
+    return [first, *messages[1:]]
 
 
 def _openrouter_routing() -> dict[str, object]:
@@ -525,6 +637,9 @@ def call_params(
     context_management: Mapping[str, Any] | None = None,
     output_format: Mapping[str, Any] | None = None,
     enforce_format: bool = False,
+    cache: CachePlan = LEGACY_CACHE,
+    final_choice: Literal["none", "keep"] = "none",
+    schema_in: Literal["system", "first_message"] = "system",
 ) -> dict[str, Any]:
     """The keyword arguments of one streamed call (`client.beta.messages.create(stream=True)` on
     Anthropic's API with a beta, else `client.messages.create(stream=True)`): everything that
@@ -536,7 +651,14 @@ def call_params(
     `output_config.format` (OpenRouter's Messages API takes it, and with `require_parameters` the
     route only runs on a host that enforces it). Only the readings ask for that (2026-10-28: their
     third reader wrapped its JSON in words on 30 of 48 calls of a real upload); every other call
-    with a schema is unchanged."""
+    with a schema is unchanged. `schema_in="first_message"`: on OpenRouter the schema goes as the
+    last block of the first message instead, so the system prompt stays the same for calls with
+    and without a reply shape.
+
+    `cache`: where the breakpoints go (`CachePlan`; blocks the caller marked keep theirs);
+    refused (`CacheRefused`) when the request would have more than 4 or a 1-hour one after a
+    5-minute one; `LEGACY_CACHE` is sent exactly as before. `final_choice`: what a final call's
+    `tool_choice` is, `none` (as before) or `keep` (`auto`, as every other call)."""
     listed = [dict(tool) for tool in tools]
     if provider != "anthropic":
         # Tool search is Anthropic's: every tool goes loaded elsewhere.
@@ -550,21 +672,29 @@ def call_params(
         for n, tool in enumerate(listed)
         if "input_schema" in tool and not tool.get("defer_loading")
     ]
-    if loaded:
-        listed[loaded[-1]]["cache_control"] = dict(_EPHEMERAL)
+    if loaded and cache.tools is not None:
+        listed[loaded[-1]]["cache_control"] = _control(cache.tools)
+    sent = [dict(message) for message in messages]
     if output_format is not None and provider != "anthropic":
-        system = f"{system}\n\n{schema_note(output_format)}"
+        if schema_in == "first_message":
+            sent = _with_first_note(sent, schema_note(output_format))
+        else:
+            system = f"{system}\n\n{schema_note(output_format)}"
+    system_block: dict[str, Any] = {"type": "text", "text": system}
+    if cache.system is not None:
+        system_block["cache_control"] = _control(cache.system)
     params: dict[str, Any] = {
         "model": model.id if provider == "anthropic" else model.openrouter,
         "max_tokens": max_tokens,
-        "system": [{"type": "text", "text": system, "cache_control": dict(_EPHEMERAL)}],
-        "messages": _with_breakpoint([dict(message) for message in messages]),
+        "system": [system_block],
+        "messages": sent if cache.newest is None else _with_breakpoint(sent, cache.newest),
         "tools": listed,
         # Never `any` or `tool`: forced tool use is a 400 on Fable 5.1 and the 5.5 models.
-        "tool_choice": {"type": "none"} if final else {"type": "auto"},
+        "tool_choice": {"type": "none"} if final and final_choice == "none" else {"type": "auto"},
         "thinking": dict(thinking),
         "output_config": {"effort": effort},
     }
+    _check_breakpoints(params)
     if not listed:
         # A call without tools (a finding's second read) sends neither field.
         del params["tools"], params["tool_choice"]

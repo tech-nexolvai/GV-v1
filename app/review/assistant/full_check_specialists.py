@@ -25,7 +25,7 @@ Pure code and plain file reads; no AI call. Source: the prompts and specialists 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -174,9 +174,11 @@ def _clip(text: str, most: int) -> str:
     return text if len(text) <= most else text[: most - 1].rstrip() + "…"
 
 
-def local_extras(kind: str, local: Path | None = None) -> str:
-    """GV's local worked examples for this kind (`examples/*.md` whose first line names it) and
-    the approved lessons (`lessons.md`, while it holds any), when the local folder has them."""
+def local_extras(kind: str | Collection[str], local: Path | None = None) -> str:
+    """GV's local worked examples for this kind (`examples/*.md` whose first line names it; with
+    several kinds, one that names any of them, each example once) and the approved lessons
+    (`lessons.md`, while it holds any), when the local folder has them."""
+    wanted = {kind} if isinstance(kind, str) else set(kind)
     folder = local_skills_folder() if local is None else local
     if not folder.is_dir() or folder.is_symlink():
         return ""
@@ -192,7 +194,7 @@ def local_extras(kind: str, local: Path | None = None) -> str:
         first, _, rest = text.partition("\n")
         found = _FOR.match(first.strip())
         kinds = {word.strip().lower() for word in found.group(1).split(",")} if found else set()
-        if kind not in kinds and not (kind == "both" and kinds & {"numbers", "drawn"}):
+        if not wanted & kinds and not ("both" in wanted and kinds & {"numbers", "drawn"}):
             continue
         if shown + len(rest) > _LOCAL_EXAMPLES_CHARS:
             break

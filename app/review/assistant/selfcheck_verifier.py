@@ -56,6 +56,7 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final
 
 from app.review.assistant import likely_problems
+from app.review.assistant.cache_layout import one_off
 from app.review.assistant.reply_json import object_of_reply
 
 if TYPE_CHECKING:
@@ -316,6 +317,7 @@ def _ask(run: _Run, batch: Sequence[Draft]) -> dict[int, Answer]:
             prompt_id=PROMPT_ID.format(provider=engine.provider.name, harness=HARNESS_ID),
             display=None,
             own_share=True,
+            cache=one_off(engine),
         )
     except _Cancelled:
         return {}

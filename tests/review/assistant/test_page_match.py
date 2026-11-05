@@ -539,6 +539,12 @@ def test_the_helper_brief_names_the_pairs(tmp_path: Path) -> None:
         and "uploads/arch.pdf p.2" in brief
     )
     assert "NOT PAIRED" in brief and "p.2: not paired" in brief
+    assert "view your pages' overview pictures, all in one reply" in brief
+    # Under the `shared` layout its pages' overview pictures come in its message (rebuild plan
+    # Step 5, `ChatEngine.page_group`): it is told to start from them, not to view them.
+    given = ChatEngine._job_brief(_Engine(), job, "", 1, True, _page_map(), True)  # type: ignore[arg-type]
+    assert "look at your pages' overview pictures, above in this message" in given
+    assert "view your pages' overview pictures" not in given
 
 
 # ---- a vendor's CAD page under GV's pasted snapshot and heading ---------------------------------

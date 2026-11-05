@@ -132,6 +132,7 @@ from app.review.assistant import (
     title_block,
     view_questions,
 )
+from app.review.assistant.cache_layout import is_shared
 from app.review.assistant.set_context import SetContext, family_of, tags_in
 from app.review.assistant.untrusted import fence
 
@@ -1889,8 +1890,9 @@ class _Run:
         except Exception:  # noqa: BLE001 - the other pages' reviews go on
             _log.exception("page reviewer p%s: the page could not be read", review.page)
             return f"Page {review.page} could not be read for the page review.", False, "error"
-        if self.reviews.warm is not None:
+        if self.reviews.warm is not None and not is_shared(engine):
             # Its first call reads the brief, tools and GV's pictures from the warmed cache.
+            # (Under `shared` it waited before it took its place: `ChatEngine._await_warm`.)
             self.reviews.warm.wait(WARM_WAIT_S)
         messages: list[dict[str, Any]] = [{"role": "user", "content": opening}]
         cached = previous = 0
@@ -3538,7 +3540,13 @@ def _reference_blocks(engine: Any, folder: Path) -> list[dict[str, Any]]:
     return blocks
 
 
-def prewarm(engine: Any, reviews: Reviews, model: Any, options: Options) -> None:
+def prewarm(
+    engine: Any,
+    reviews: Reviews,
+    model: Any,
+    options: Options,
+    on_start: Callable[[], None] | None = None,
+) -> None:
     """One tiny call with the page reviewers' exact model, thinking, effort, tools, brief and GV's
     reference pictures (their first message's opening blocks, the same picture ids), before they
     start together: each then reads that prefix from the prompt cache instead of all of them
@@ -3547,7 +3555,8 @@ def prewarm(engine: Any, reviews: Reviews, model: Any, options: Options) -> None
     cache (`chat_request.cache_shared`: Anthropic's own API, or OpenRouter's one pinned host, the
     live route since 2026-10-29). It starts with the reviewers, after the credit pre-check (the
     helpers' warm-up, which runs before it, stays on Anthropic's own API: a paused check spends
-    nothing). A failure is only logged."""
+    nothing). A failure is only logged. `on_start`: called when its reply starts (the cache entry
+    can be read from then on: `ChatEngine.warm_prefix`)."""
     from app.review.assistant.chat_engine import HARNESS_ID, _Cancelled
     from app.review.assistant.chat_provider import ProviderFailure
     from app.review.assistant.chat_request import cache_shared, thinking_config
@@ -3584,6 +3593,7 @@ def prewarm(engine: Any, reviews: Reviews, model: Any, options: Options) -> None
                 display=None,
                 context_management=review_context(messages),
                 own_share=True,
+                on_start=on_start,
             )
         except (_Cancelled, ProviderFailure) as failed:
             _log.info("page reviewer: prompt cache not warmed: %s", type(failed).__name__)
@@ -3659,7 +3669,8 @@ class Reviews:
     #: GV's reference pictures as message blocks (`_Run.reference_blocks`), made once per check so
     #: every page's first message starts with the same blocks (the prompt cache pays for them once).
     reference: list[dict[str, Any]] | None = None
-    #: Set when the cache warm-up's call has ended (`prewarm`); `None`: no warm-up this check.
+    #: Set when the cache warm-up's call has ended (`prewarm`; under `shared` already when its reply
+    #: starts); `None`: no warm-up this check.
     warm: threading.Event | None = None
     #: The sizes lens after each page's reviewer (`sizes_lens`), by page, and what each spent:
     #: kept apart from `pages` and `spent`, logged in its page's row.
@@ -3851,10 +3862,19 @@ def roster_agents(run: Any, pages: Sequence[int], money: int, reviews: Reviews) 
     if agents and reviews.warm is None:
         # The shared prefix written to the prompt cache once, while the reviewers read their pages.
         warm = reviews.warm = threading.Event()
+        shared = is_shared(engine)
+        if shared:
+            # The likely race of 2026-11-04 (page 5 wrote the whole prefix again): the reviewers
+            # waited at most 60 s, inside their places of the model's limiter, for the warm-up
+            # to END, and the warm-up needs a place of its own. Under `shared` each waits BEFORE it takes a
+            # place (`ChatEngine._await_warm`), only until the warm-up's reply STARTS (the API's
+            # point from which the entry can be read) or the warm-up ends.
+            for agent in agents:
+                agent.warm_event = warm
 
         def warm_up() -> None:
             try:
-                prewarm(engine, reviews, model, options)
+                prewarm(engine, reviews, model, options, warm.set if shared else None)
             except Exception:  # noqa: BLE001 - the reviewers start all the same
                 _log.exception("page reviewer: the cache warm-up failed")
             finally:
