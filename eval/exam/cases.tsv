@@ -1,0 +1,792 @@
+run	finding_id	page	by	category	label	stored_group	verdict	audit
+setA-flag	F6	1	helper	countertop	finish tag	likely_problem	TRUE_MINOR	fA
+setA-flag	F9	1	helper	countertop	sink detail	likely_problem	FALSE	fA
+setA-flag	F11	1	helper	countertop	cut-out	likely_problem	FALSE	fA
+setA-flag	F129	1	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fA
+setA-flag	F130	1	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fA
+setA-flag	F131	1	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fA
+setA-flag	F545	1	helper	countertop	top length	not_compared	NC_B	fA
+setA-flag	F588	1	helper	other	quantity or room list	not_compared	NC_A	fA
+setA-flag	F15	2	helper	countertop	quantity or room list	likely_problem	FALSE	fA
+setA-flag	F140	2	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fA
+setA-flag	F289	2	whole_look	other	sink detail	likely_problem	FALSE	fA
+setA-flag	F2	3	helper	countertop	sink detail	not_compared	NC_A	fA
+setA-flag	F49	3	helper	countertop	splash	likely_problem	FALSE	fA
+setA-flag	F126	3	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fA
+setA-flag	F496	3	helper	countertop	depth	likely_problem	TRUE	fA
+setA-flag	F502	3	helper	countertop	depth	not_compared	NC_B	fA
+setA-flag	F566	3	helper	countertop	thickness	likely_problem	TRUE	fA
+setA-flag	F47	4	helper	countertop	sink detail	not_compared	NC_A	fA
+setA-flag	F137	4	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fA
+setA-flag	F290	4	whole_look	other	quantity or room list	likely_problem	TRUE	fA
+setA-flag	F291	4	whole_look	other	quantity or room list	likely_problem	FALSE	fA
+setA-flag	F10	5	helper	countertop	sink detail	likely_problem	FALSE	fA
+setA-flag	F12	5	helper	countertop	overall size	not_compared	NC_B	fA
+setA-flag	F14	5	helper	countertop	cut-out	likely_problem	FALSE	fA
+setA-flag	F119	5	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fA
+setA-flag	F120	5	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fA
+setA-flag	F121	5	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fA
+setA-flag	F292	5	whole_look	other	cut-out	likely_problem	FALSE	fA
+setA-flag	F17	6	helper	countertop	sink detail	likely_problem	FALSE	fA
+setA-flag	F38	6	helper	countertop	overall size	not_compared	NC_B	fA
+setA-flag	F146	6	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fA
+setA-flag	F148	6	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fA
+setA-flag	F150	6	page_reviewer	other	top length	likely_problem	TRUE	fA
+setA-flag	F293	6	whole_look	other	sink detail	likely_problem	TRUE_MINOR	fA
+setA-flag	F123	7	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fA
+setA-flag	F124	7	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fA
+setA-flag	F393	7	helper	countertop	top length	likely_problem	TRUE	fA
+setA-flag	F394	7	helper	countertop	depth	not_compared	NC_B	fA
+setA-flag	F395	7	helper	countertop	sink detail	not_compared	NC_B	fA
+setA-flag	F397	7	helper	countertop	splash	likely_problem	TRUE_MINOR	fA
+setA-flag	F399	7	helper	countertop	depth	likely_problem	FALSE	fA
+setA-flag	F19	8	helper	countertop	sink detail	not_compared	NC_A	fA
+setA-flag	F35	8	helper	countertop	top length	likely_problem	TRUE_MINOR	fA
+setA-flag	F143	8	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fA
+setA-flag	F144	8	page_reviewer	other	other	likely_problem	TRUE	fA
+setA-flag	F407	8	helper	countertop	depth	not_compared	NC_B	fA
+setA-flag	F408	8	helper	countertop	sink detail	not_compared	NC_B	fA
+setA-flag	F410	8	helper	countertop	splash	likely_problem	TRUE_MINOR	fA
+setA-flag	F412	8	helper	countertop	depth	likely_problem	FALSE	fA
+setA-flag	F22	9	helper	countertop	sink detail	not_compared	NC_A	fA
+setA-flag	F33	9	helper	countertop	splash	not_compared	NC_A	fA
+setA-flag	F48	9	helper	countertop	overall size	likely_problem	FALSE	fA
+setA-flag	F151	9	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fA
+setA-flag	F153	9	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fA
+setA-flag	F219	9	page_reviewer	other	overall size	likely_problem	TRUE	fA
+setA-flag	F431	9	helper	countertop	depth	not_compared	NC_C	fA
+setA-flag	F433	9	helper	countertop	sink detail	likely_problem	FALSE	fA
+setA-flag	F435	9	helper	countertop	sink detail	likely_problem	FALSE	fA
+setA-flag	F37	10	helper	countertop	cut-out	not_compared	NC_A	fA
+setA-flag	F63	10	helper	countertop	cut-out	likely_problem	FALSE	fA
+setA-flag	F122	10	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fA
+setA-flag	F132	10	page_reviewer	other	title block	likely_problem	TRUE_MINOR	fA
+setA-flag	F295	10	whole_look	other	cut-out	likely_problem	FALSE	fA
+setA-flag	F296	10	whole_look	other	quantity or room list	likely_problem	TRUE	fA
+setA-flag	F572	10	helper	countertop	cut-out	not_compared	NC_A	fA
+setA-flag	F577	10	helper	countertop	cut-out	not_compared	NC_A	fA
+setA-flag	F579	10	helper	countertop	cut-out	not_compared	NC_A	fA
+setA-flag	F4	11	helper	countertop	sink detail	likely_problem	FALSE	fA
+setA-flag	F133	11	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fA
+setA-flag	F135	11	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fA
+setA-flag	F156	11	page_reviewer	other	title block	likely_problem	TRUE_MINOR	fA
+setA-flag	F297	11	whole_look	other	other	likely_problem	FALSE	fA
+setA-flag	F567	11	helper	other	cut-out	not_compared	NC_B	fA
+setA-flag	F5	12	helper	countertop	cut-out	likely_problem	FALSE	fA
+setA-flag	F127	12	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fA
+setA-flag	F128	12	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fA
+setA-flag	F138	12	page_reviewer	other	title block	likely_problem	TRUE_MINOR	fA
+setA-flag	F568	12	helper	countertop	cut-out	not_compared	NC_A	fA
+setA-flag	F569	12	helper	countertop	cut-out	not_compared	NC_A	fA
+setA-flag	F8	13	helper	countertop	sink detail	not_compared	NC_A	fA
+setA-flag	F39	13	helper	countertop	edge or joint	likely_problem	FALSE	fA
+setA-flag	F164	13	page_reviewer	other	cut-out	likely_problem	TRUE	fA
+setA-flag	F165	13	page_reviewer	other	depth	likely_problem	TRUE_MINOR	fA
+setA-flag	F166	13	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fA
+setA-flag	F175	13	page_reviewer	other	title block	likely_problem	TRUE_MINOR	fA
+setA-flag	F366	13	helper	countertop	cut-out	likely_problem	TRUE	fA
+setA-flag	F513	13	helper	countertop	cut-out	not_compared	NC_B	fA
+setA-flag	F514	13	helper	countertop	cut-out	not_compared	NC_B	fA
+setA-flag	F515	13	helper	countertop	faucet	not_compared	NC_A	fA
+setA-flag	F516	13	helper	countertop	faucet	not_compared	NC_A	fA
+setA-flag	F517	13	helper	countertop	other	not_compared	NC_A	fA
+setA-flag	F518	13	helper	countertop	other	not_compared	NC_A	fA
+setA-flag	F519	13	helper	countertop	thickness	not_compared	NC_C	fA
+setA-flag	F520	13	helper	countertop	edge or joint	not_compared	NC_A	fA
+setA-flag	F521	13	helper	countertop	edge or joint	not_compared	NC_A	fA
+setA-flag	F51	18	helper	countertop	other	not_compared	NC_A	fA
+setA-flag	F170	18	page_reviewer	other	cut-out	likely_problem	TRUE	fA
+setA-flag	F171	18	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fA
+setA-flag	F172	18	page_reviewer	other	other	likely_problem	TRUE_MINOR	fA
+setA-flag	F209	18	page_reviewer	other	title block	likely_problem	TRUE_MINOR	fA
+setA-flag	F298	18	whole_look	other	quantity or room list	likely_problem	FALSE	fA
+setA-flag	F1	22	helper	other	sink detail	likely_problem	FALSE	fA
+setA-flag	F3	22	helper	cabinet	shelf	likely_problem	FALSE	fA
+setA-flag	F179	22	page_reviewer	other	top length	likely_problem	TRUE	fA
+setA-flag	F180	22	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fA
+setA-flag	F181	22	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	fA
+setA-flag	F182	22	page_reviewer	other	title block	likely_problem	FALSE	fA
+setA-flag	F299	22	whole_look	other	shelf	likely_problem	FALSE	fA
+setA-flag	F23	23	helper	cabinet	shelf	likely_problem	FALSE	fA
+setA-flag	F26	23	helper	other	finish tag	likely_problem	FALSE	fA
+setA-flag	F207	23	page_reviewer	other	splash	likely_problem	FALSE	fA
+setA-flag	F218	23	page_reviewer	other	overall size	likely_problem	FALSE	fA
+setA-flag	F455	23	helper	cabinet	cabinet piece	likely_problem	TRUE	fA
+setA-flag	F458	23	helper	cabinet	appliance	likely_problem	TRUE	fA
+setA-flag	F459	23	helper	cabinet	cabinet piece	likely_problem	TRUE_MINOR	fA
+setA-flag	F460	23	helper	cabinet	shelf	likely_problem	TRUE_MINOR	fA
+setA-flag	F462	23	helper	cabinet	filler	likely_problem	TRUE_MINOR	fA
+setA-flag	F463	23	helper	cabinet	filler	likely_problem	TRUE_MINOR	fA
+setA-flag	F464	23	helper	countertop	thickness	likely_problem	TRUE_MINOR	fA
+setA-flag	F466	23	helper	cabinet	toe kick	likely_problem	TRUE	fA
+setA-flag	F467	23	helper	cabinet	toe kick	likely_problem	TRUE_MINOR	fA
+setA-flag	F473	23	helper	other	height above floor	likely_problem	TRUE_MINOR	fA
+setA-flag	F476	23	helper	cabinet	shelf	likely_problem	TRUE	fA
+setA-flag	F477	23	helper	cabinet	shelf	likely_problem	TRUE_MINOR	fA
+setA-flag	F478	23	helper	other	appliance	likely_problem	TRUE_MINOR	fA
+setA-flag	F27	24	helper	other	shelf	likely_problem	FALSE	fA
+setA-flag	F168	24	page_reviewer	other	view title	likely_problem	TRUE	fA
+setA-flag	F169	24	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	fA
+setA-flag	F481	24	helper	cabinet	toe kick	likely_problem	TRUE_MINOR	fA
+setA-flag	F482	24	helper	countertop	thickness	likely_problem	TRUE_MINOR	fA
+setA-flag	F483	24	helper	other	height above floor	not_compared	NC_C	fA
+setA-flag	F160	25	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fA
+setA-flag	F217	25	page_reviewer	other	material table	likely_problem	TRUE_MINOR	fA
+setA-flag	F300	25	whole_look	other	appliance	likely_problem	FALSE	fA
+setA-flag	F16	26	helper	cabinet	appliance	not_compared	NC_C	fA
+setA-flag	F20	26	helper	cabinet	finish tag	likely_problem	FALSE	fA
+setA-flag	F21	26	helper	cabinet	shelf	not_compared	NC_C	fA
+setA-flag	F25	26	helper	cabinet	cabinet piece	not_compared	NC_C	fA
+setA-flag	F56	26	helper	cabinet	finish tag	not_compared	NC_C	fA
+setA-flag	F58	26	helper	cabinet	toe kick	likely_problem	TRUE	fA
+setA-flag	F60	26	helper	cabinet	appliance	not_compared	NC_C	fA
+setA-flag	F62	26	helper	cabinet	appliance	not_compared	NC_C	fA
+setA-flag	F65	26	helper	cabinet	appliance	not_compared	NC_C	fA
+setA-flag	F66	26	helper	cabinet	appliance	not_compared	NC_C	fA
+setA-flag	F70	26	helper	cabinet	finish tag	likely_problem	FALSE	fA
+setA-flag	F187	26	page_reviewer	other	filler	likely_problem	FALSE	fA
+setA-flag	F189	26	page_reviewer	other	filler	likely_problem	FALSE	fA
+setA-flag	F222	26	page_reviewer	other	overall size	likely_problem	FALSE	fA
+setA-flag	F331	26	helper	cabinet	filler	likely_problem	FALSE	fA
+setA-flag	F77	27	helper	cabinet	hardware	not_compared	NC_A	fA
+setA-flag	F79	27	helper	cabinet	quantity or room list	not_compared	NC_A	fA
+setA-flag	F173	27	page_reviewer	other	view title	likely_problem	TRUE_MINOR	fA
+setA-flag	F387	27	helper	countertop	view title	not_compared	NC_C	fA
+setA-flag	F389	27	helper	cabinet	view title	not_compared	NC_C	fA
+setA-flag	F31	28	helper	countertop	overall size	likely_problem	FALSE	fA
+setA-flag	F82	28	helper	cabinet	sink detail	likely_problem	FALSE	fA
+setA-flag	F202	28	page_reviewer	other	overall size	likely_problem	FALSE	fA
+setA-flag	F203	28	page_reviewer	other	material table	likely_problem	TRUE_MINOR	fA
+setA-flag	F204	28	page_reviewer	other	view title	likely_problem	TRUE_MINOR	fA
+setA-flag	F13	29	helper	cabinet	shelf	likely_problem	FALSE	fA
+setA-flag	F18	29	helper	cabinet	appliance	likely_problem	FALSE	fA
+setA-flag	F32	29	helper	cabinet	overall size	likely_problem	FALSE	fA
+setA-flag	F69	29	helper	other	appliance	not_compared	NC_C	fA
+setA-flag	F71	29	helper	other	appliance	not_compared	NC_C	fA
+setA-flag	F72	29	helper	other	appliance	not_compared	NC_C	fA
+setA-flag	F74	29	helper	other	appliance	not_compared	NC_C	fA
+setA-flag	F75	29	helper	other	appliance	likely_problem	FALSE	fA
+setA-flag	F76	29	helper	other	cabinet piece	likely_problem	TRUE_MINOR	fA
+setA-flag	F78	29	helper	cabinet	appliance	likely_problem	FALSE	fA
+setA-flag	F205	29	page_reviewer	other	overall size	likely_problem	FALSE	fA
+setA-flag	F348	29	helper	cabinet	overall size	likely_problem	FALSE	fA
+setA-flag	F353	29	helper	cabinet	cabinet piece	likely_problem	FALSE	fA
+setA-flag	F356	29	helper	cabinet	cabinet piece	likely_problem	FALSE	fA
+setA-flag	F359	29	helper	cabinet	cabinet piece	likely_problem	FALSE	fA
+setA-flag	F83	30	helper	cabinet	finish tag	likely_problem	FALSE	fA
+setA-flag	F84	30	helper	other	sink detail	likely_problem	FALSE	fA
+setA-flag	F176	30	page_reviewer	other	view title	likely_problem	TRUE_MINOR	fA
+setA-flag	F178	30	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fA
+setA-flag	F304	30	whole_look	other	cabinet piece	likely_problem	FALSE	fA
+setA-flag	F498	30	helper	cabinet	height above floor	not_compared	NC_C	fA
+setA-flag	F500	30	helper	cabinet	cabinet piece	not_compared	NC_C	fA
+setA-flag	F86	31	helper	other	shelf	likely_problem	FALSE	fB
+setA-flag	F145	31	page_reviewer	other	shelf	likely_problem	TRUE	fB
+setA-flag	F147	31	page_reviewer	other	shelf	wrong	TRUE	fB
+setA-flag	F163	31	page_reviewer	other	view title	likely_problem	FALSE	fB
+setA-flag	F93	32	helper	cabinet	overall size	likely_problem	FALSE	fB
+setA-flag	F94	32	helper	cabinet	overall size	likely_problem	FALSE	fB
+setA-flag	F199	32	page_reviewer	other	top length	likely_problem	TRUE_MINOR	fB
+setA-flag	F200	32	page_reviewer	other	view title	likely_problem	TRUE_MINOR	fB
+setA-flag	F215	32	page_reviewer	other	material table	likely_problem	TRUE_MINOR	fB
+setA-flag	F306	32	whole_look	other	shelf	likely_problem	FALSE	fB
+setA-flag	F54	33	helper	cabinet	overall size	likely_problem	FALSE	fB
+setA-flag	F210	33	page_reviewer	other	overall size	likely_problem	TRUE_MINOR	fB
+setA-flag	F212	33	page_reviewer	other	filler	likely_problem	FALSE	fB
+setA-flag	F307	33	whole_look	other	shelf	likely_problem	FALSE	fB
+setA-flag	F308	33	whole_look	other	appliance	likely_problem	FALSE	fB
+setA-flag	F192	34	page_reviewer	other	view title	likely_problem	TRUE	fB
+setA-flag	F196	34	page_reviewer	other	title block	likely_problem	FALSE	fB
+setA-flag	F220	34	page_reviewer	other	view title	likely_problem	FALSE	fB
+setA-flag	F311	34	whole_look	other	cabinet piece	likely_problem	FALSE	fB
+setA-flag	F155	35	page_reviewer	other	hardware	likely_problem	TRUE_MINOR	fB
+setA-flag	F167	35	page_reviewer	other	shelf	likely_problem	FALSE	fB
+setA-flag	F183	36	page_reviewer	other	filler	likely_problem	FALSE	fB
+setA-flag	F186	36	page_reviewer	other	material table	likely_problem	TRUE_MINOR	fB
+setA-flag	F188	36	page_reviewer	other	title block	likely_problem	FALSE	fB
+setA-flag	F213	36	page_reviewer	other	cabinet piece	wrong	TRUE	fB
+setA-flag	F312	36	whole_look	other	shelf	likely_problem	FALSE	fB
+setA-flag	F452	36	helper	cabinet	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F453	36	helper	cabinet	cabinet piece	likely_problem	TRUE	fB
+setA-flag	F454	36	helper	cabinet	cabinet piece	likely_problem	TRUE	fB
+setA-flag	F620	36	run_fit	cabinet	cabinet piece	likely_problem	FALSE	fB
+setA-flag	F621	36	run_fit	cabinet	cabinet piece	likely_problem	FALSE	fB
+setA-flag	F622	36	run_fit	cabinet	cabinet piece	wrong	FALSE	fB
+setA-flag	F623	36	run_fit	cabinet	cabinet piece	likely_problem	FALSE	fB
+setA-flag	F29	37	helper	cabinet	cabinet piece	not_compared	NC_C	fB
+setA-flag	F30	37	helper	cabinet	appliance	not_compared	NC_C	fB
+setA-flag	F95	37	helper	other	appliance	likely_problem	FALSE	fB
+setA-flag	F96	37	helper	other	appliance	not_compared	NC_C	fB
+setA-flag	F97	37	helper	other	sink detail	likely_problem	FALSE	fB
+setA-flag	F98	37	helper	other	appliance	not_compared	NC_C	fB
+setA-flag	F99	37	helper	other	appliance	not_compared	NC_C	fB
+setA-flag	F100	37	helper	other	appliance	not_compared	NC_C	fB
+setA-flag	F101	37	helper	other	appliance	not_compared	NC_C	fB
+setA-flag	F102	37	helper	cabinet	finish tag	not_compared	NC_C	fB
+setA-flag	F104	37	helper	countertop	finish tag	likely_problem	FALSE	fB
+setA-flag	F105	37	helper	cabinet	quantity or room list	not_compared	NC_B	fB
+setA-flag	F106	37	helper	cabinet	cabinet piece	likely_problem	FALSE	fB
+setA-flag	F107	37	helper	cabinet	hardware	not_compared	NC_A	fB
+setA-flag	F190	37	page_reviewer	other	cabinet piece	wrong	TRUE	fB
+setA-flag	F191	37	page_reviewer	other	title block	likely_problem	TRUE	fB
+setA-flag	F214	37	page_reviewer	other	splash	likely_problem	FALSE	fB
+setA-flag	F221	37	page_reviewer	other	filler	likely_problem	FALSE	fB
+setA-flag	F313	37	whole_look	other	cabinet piece	likely_problem	FALSE	fB
+setA-flag	F351	37	helper	cabinet	overall size	likely_problem	FALSE	fB
+setA-flag	F486	37	helper	other	cabinet piece	not_compared	NC_B	fB
+setA-flag	F538	37	helper	cabinet	filler	not_compared	NC_A	fB
+setA-flag	F540	37	helper	cabinet	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F341	38	helper	countertop	view title	likely_problem	TRUE	fB
+setA-flag	F342	38	helper	cabinet	view title	likely_problem	CANT_TELL	fB
+setA-flag	F343	38	helper	cabinet	view title	likely_problem	FALSE	fB
+setA-flag	F246	39	page_reviewer	other	view title	likely_problem	FALSE	fB
+setA-flag	F247	39	page_reviewer	other	view title	likely_problem	TRUE_MINOR	fB
+setA-flag	F248	39	page_reviewer	other	view title	wrong	TRUE	fB
+setA-flag	F249	39	page_reviewer	other	view title	wrong	TRUE	fB
+setA-flag	F344	39	helper	other	view title	not_compared	NC_C	fB
+setA-flag	F250	40	page_reviewer	other	filler	likely_problem	FALSE	fB
+setA-flag	F251	40	page_reviewer	other	filler	likely_problem	TRUE_MINOR	fB
+setA-flag	F252	40	page_reviewer	other	material table	likely_problem	TRUE_MINOR	fB
+setA-flag	F253	40	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fB
+setA-flag	F254	40	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	fB
+setA-flag	F256	40	page_reviewer	other	overall size	likely_problem	TRUE_MINOR	fB
+setA-flag	F314	40	whole_look	other	cabinet piece	likely_problem	TRUE	fB
+setA-flag	F334	40	helper	cabinet	appliance	likely_problem	TRUE	fB
+setA-flag	F335	40	helper	cabinet	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F336	40	helper	countertop	other	likely_problem	FALSE	fB
+setA-flag	F337	40	helper	cabinet	cabinet piece	likely_problem	TRUE	fB
+setA-flag	F338	40	helper	cabinet	filler	likely_problem	FALSE	fB
+setA-flag	F110	41	helper	cabinet	overall size	not_compared	NC_C	fB
+setA-flag	F112	41	helper	cabinet	cabinet piece	not_compared	NC_C	fB
+setA-flag	F113	41	helper	cabinet	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F261	41	page_reviewer	other	cabinet piece	wrong	TRUE	fB
+setA-flag	F263	41	page_reviewer	other	supplier note	likely_problem	FALSE	fB
+setA-flag	F264	41	page_reviewer	other	splash	likely_problem	TRUE_MINOR	fB
+setA-flag	F265	41	page_reviewer	other	filler	likely_problem	TRUE_MINOR	fB
+setA-flag	F266	41	page_reviewer	other	filler	likely_problem	FALSE	fB
+setA-flag	F267	41	page_reviewer	other	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F274	41	page_reviewer	other	appliance	likely_problem	TRUE_MINOR	fB
+setA-flag	F275	41	page_reviewer	other	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F276	41	page_reviewer	other	shelf	likely_problem	TRUE	fB
+setA-flag	F315	41	whole_look	other	quantity or room list	likely_problem	FALSE	fB
+setA-flag	F316	41	whole_look	other	cabinet piece	likely_problem	FALSE	fB
+setA-flag	F352	41	helper	cabinet	overall size	likely_problem	FALSE	fB
+setA-flag	F116	42	helper	cabinet	view title	not_compared	NC_C	fB
+setA-flag	F117	42	helper	cabinet	view title	not_compared	NC_C	fB
+setA-flag	F118	42	helper	cabinet	view title	not_compared	NC_C	fB
+setA-flag	F259	42	page_reviewer	other	view title	likely_problem	TRUE	fB
+setA-flag	F260	42	page_reviewer	other	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F272	42	page_reviewer	other	supplier note	likely_problem	FALSE	fB
+setA-flag	F318	42	whole_look	other	appliance	likely_problem	FALSE	fB
+setA-flag	F319	42	whole_look	other	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F375	42	helper	cabinet	cabinet piece	not_compared	NC_C	fB
+setA-flag	F376	42	helper	cabinet	cabinet piece	not_compared	NC_C	fB
+setA-flag	F377	42	helper	cabinet	other	not_compared	NC_C	fB
+setA-flag	F378	42	helper	cabinet	other	not_compared	NC_C	fB
+setA-flag	F379	42	helper	cabinet	overall size	not_compared	NC_C	fB
+setA-flag	F108	43	helper	countertop	height above floor	likely_problem	FALSE	fB
+setA-flag	F223	43	page_reviewer	other	view title	likely_problem	TRUE	fB
+setA-flag	F224	43	page_reviewer	other	view title	likely_problem	TRUE_MINOR	fB
+setA-flag	F231	43	page_reviewer	other	view title	wrong	TRUE	fB
+setA-flag	F24	50	helper	cabinet	cabinet piece	likely_problem	TRUE	fB
+setA-flag	F57	50	helper	countertop	overall size	likely_problem	TRUE	fB
+setA-flag	F59	50	helper	countertop	depth	not_compared	NC_B	fB
+setA-flag	F61	50	helper	cabinet	quantity or room list	likely_problem	FALSE	fB
+setA-flag	F227	50	page_reviewer	other	depth	wrong	TRUE	fB
+setA-flag	F229	50	page_reviewer	other	cut-out	likely_problem	TRUE	fB
+setA-flag	F242	50	page_reviewer	other	cut-out	likely_problem	TRUE	fB
+setA-flag	F243	50	page_reviewer	other	finish tag	likely_problem	FALSE	fB
+setA-flag	F244	50	page_reviewer	other	splash	likely_problem	FALSE	fB
+setA-flag	F245	50	page_reviewer	other	thickness	likely_problem	TRUE_MINOR	fB
+setA-flag	F255	50	page_reviewer	other	filler	likely_problem	FALSE	fB
+setA-flag	F257	50	page_reviewer	other	dimension string	wrong	TRUE	fB
+setA-flag	F258	50	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fB
+setA-flag	F320	50	whole_look	other	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F321	50	whole_look	other	cabinet piece	likely_problem	TRUE	fB
+setA-flag	F322	50	whole_look	other	splash	likely_problem	FALSE	fB
+setA-flag	F323	50	whole_look	other	hardware	likely_problem	TRUE	fB
+setA-flag	F418	50	helper	countertop	depth	not_compared	NC_B	fB
+setA-flag	F419	50	helper	countertop	depth	likely_problem	TRUE	fB
+setA-flag	F421	50	helper	cabinet	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F52	51	helper	cabinet	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F88	51	helper	countertop	overall size	likely_problem	TRUE_MINOR	fB
+setA-flag	F89	51	helper	countertop	depth	not_compared	NC_B	fB
+setA-flag	F91	51	helper	cabinet	quantity or room list	likely_problem	FALSE	fB
+setA-flag	F269	51	page_reviewer	other	cabinet piece	wrong	TRUE	fB
+setA-flag	F277	51	page_reviewer	other	quantity or room list	likely_problem	TRUE	fB
+setA-flag	F279	51	page_reviewer	other	splash	likely_problem	TRUE_MINOR	fB
+setA-flag	F280	51	page_reviewer	other	overall size	likely_problem	TRUE_MINOR	fB
+setA-flag	F281	51	page_reviewer	other	finish tag	likely_problem	FALSE	fB
+setA-flag	F282	51	page_reviewer	other	shelf	likely_problem	TRUE_MINOR	fB
+setA-flag	F283	51	page_reviewer	other	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F284	51	page_reviewer	other	layout	likely_problem	TRUE_MINOR	fB
+setA-flag	F286	51	page_reviewer	other	title block	likely_problem	FALSE	fB
+setA-flag	F287	51	page_reviewer	other	depth	wrong	TRUE	fB
+setA-flag	F288	51	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fB
+setA-flag	F324	51	whole_look	other	hardware	likely_problem	TRUE	fB
+setA-flag	F325	51	whole_look	other	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F326	51	whole_look	other	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F404	51	helper	cabinet	hardware	likely_problem	TRUE	fB
+setA-flag	F413	51	helper	cabinet	cabinet piece	likely_problem	TRUE_MINOR	fB
+setA-flag	F414	51	helper	cabinet	cabinet piece	likely_problem	TRUE	fB
+setA-flag	F85	52	helper	countertop	splash	likely_problem	FALSE	fB
+setA-flag	F87	52	helper	cabinet	other	likely_problem	FALSE	fB
+setA-flag	F90	52	helper	other	other	likely_problem	FALSE	fB
+setA-flag	F103	52	helper	countertop	overall size	likely_problem	FALSE	fB
+setA-flag	F233	52	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fB
+setA-flag	F234	52	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	fB
+setA-flag	F235	52	page_reviewer	other	finish tag	likely_problem	FALSE	fB
+setA-flag	F236	52	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	fB
+setA-flag	F237	52	page_reviewer	other	other	likely_problem	FALSE	fB
+setA-flag	F238	52	page_reviewer	other	title block	likely_problem	TRUE	fB
+setA-flag	F239	52	page_reviewer	other	top length	likely_problem	TRUE	fB
+setA-flag	F240	52	page_reviewer	other	splash	likely_problem	FALSE	fB
+setA-flag	F327	52	whole_look	other	shelf	likely_problem	FALSE	fB
+setA-flag	F415	52	helper	countertop	overall size	likely_problem	FALSE	fB
+setA-run1	F23	1	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	pB
+setA-run1	F24	1	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	pB
+setA-run1	F47	2	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	pB
+setA-run1	F48	2	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	pB
+setA-run1	F44	3	page_reviewer	other	title block	likely_problem	TRUE_MINOR	pB
+setA-run1	F16	4	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	pB
+setA-run1	F55	5	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	pB
+setA-run1	F58	5	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	pB
+setA-run1	F60	5	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	pB
+setA-run1	F62	5	page_reviewer	other	top length	likely_problem	FALSE	pB
+setA-run1	F63	5	page_reviewer	other	splash	likely_problem	FALSE	pB
+setA-run1	F28	6	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	pB
+setA-run1	F29	6	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	pB
+setA-run1	F84	6	page_reviewer	other	title block	likely_problem	TRUE	pB
+setA-run1	F85	6	page_reviewer	other	splash	likely_problem	TRUE	pB
+setA-run1	F45	7	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	pB
+setA-run1	F46	7	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	pB
+setA-run1	F43	8	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	pB
+setA-run1	F140	9	page_reviewer	other	other	likely_problem	TRUE	pB
+setA-run1	F21	10	page_reviewer	other	title block	likely_problem	TRUE_MINOR	pB
+setA-run1	F19	11	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	pB
+setA-run1	F22	11	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	pB
+setA-run1	F130	12	page_reviewer	other	title block	likely_problem	TRUE_MINOR	pB
+setA-run1	F144	12	helper	countertop	cut-out	not_compared	TRUE	pB
+setA-run1	F264	12	helper	countertop	cut-out	not_compared	TRUE	pB
+setA-run1	F265	12	helper	countertop	cut-out	not_compared	TRUE	pB
+setA-run1	F38	13	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	pB
+setA-run1	F39	13	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	pB
+setA-run1	F41	13	page_reviewer	other	cut-out	likely_problem	TRUE	pB
+setA-run1	F131	13	page_reviewer	other	title block	likely_problem	FALSE	pB
+setA-run1	F66	18	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	pB
+setA-run1	F67	18	page_reviewer	other	cut-out	likely_problem	TRUE	pB
+setA-run1	F135	18	page_reviewer	other	title block	likely_problem	TRUE_MINOR	pB
+setA-run1	F219	18	page_reviewer	other	other	likely_problem	FALSE	pB
+setA-run1	F95	21	page_reviewer	other	title block	likely_problem	TRUE_MINOR	pB
+setA-run1	F202	21	page_reviewer	other	lighting or power	likely_problem	TRUE	pB
+setA-run1	F203	21	page_reviewer	other	lighting or power	likely_problem	TRUE	pB
+setA-run1	F86	22	page_reviewer	other	top length	likely_problem	TRUE	pB
+setA-run1	F88	22	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	pB
+setA-run1	F89	22	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	pB
+setA-run1	F90	22	page_reviewer	other	title block	likely_problem	FALSE	pB
+setA-run1	F126	22	page_reviewer	other	cabinet piece	likely_problem	TRUE	pB
+setA-run1	F70	23	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	pB
+setA-run1	F118	23	page_reviewer	other	overall size	likely_problem	FALSE	pB
+setA-run1	F267	23	consistency	cabinet	dimension string	wrong	TRUE	pA
+setA-run1	F107	24	page_reviewer	other	view title	likely_problem	TRUE	pB
+setA-run1	F113	24	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	pB
+setA-run1	F115	24	page_reviewer	other	splash	likely_problem	FALSE	pB
+setA-run1	F116	24	page_reviewer	other	cabinet piece	likely_problem	FALSE	pB
+setA-run1	F268	24	consistency	countertop	dimension string	wrong	TRUE	pA
+setA-run1	F269	24	consistency	countertop	dimension string	wrong	TRUE	pA
+setA-run1	F76	25	page_reviewer	other	material table	likely_problem	TRUE_MINOR	pB
+setA-run1	F77	25	page_reviewer	other	cut-out	likely_problem	TRUE	pB
+setA-run1	F78	25	page_reviewer	other	appliance	likely_problem	TRUE_MINOR	pB
+setA-run1	F79	25	page_reviewer	other	title block	likely_problem	FALSE	pB
+setA-run1	F100	26	page_reviewer	other	filler	likely_problem	FALSE	pB
+setA-run1	F101	26	page_reviewer	other	appliance	likely_problem	FALSE	pB
+setA-run1	F102	26	page_reviewer	other	splash	likely_problem	FALSE	pB
+setA-run1	F103	26	page_reviewer	other	cut-out	likely_problem	FALSE	pB
+setA-run1	F193	26	page_reviewer	other	view title	likely_problem	FALSE	pB
+setA-run1	F270	26	consistency	cabinet	dimension string	wrong	TRUE	pA
+setA-run1	F54	27	page_reviewer	other	view title	likely_problem	TRUE	pB
+setA-run1	F57	27	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	pB
+setA-run1	F271	27	consistency	countertop	dimension string	wrong	TRUE	pA
+setA-run1	F272	27	consistency	countertop	dimension string	wrong	TRUE	pA
+setA-run1	F74	28	page_reviewer	other	view title	likely_problem	TRUE_MINOR	pB
+setA-run1	F117	28	page_reviewer	other	material table	likely_problem	TRUE_MINOR	pB
+setA-run1	F108	29	page_reviewer	other	overall size	likely_problem	FALSE	pB
+setA-run1	F110	29	page_reviewer	other	title block	likely_problem	FALSE	pB
+setA-run1	F112	29	page_reviewer	other	filler	likely_problem	FALSE	pB
+setA-run1	F114	29	page_reviewer	other	splash	likely_problem	FALSE	pB
+setA-run1	F266	29	ledger	cabinet	dimension string	not_compared	FALSE	pB
+setA-run1	F273	29	consistency	cabinet	dimension string	wrong	TRUE	pA
+setA-run1	F64	30	page_reviewer	other	view title	likely_problem	TRUE	pB
+setA-run1	F274	30	consistency	countertop	dimension string	wrong	TRUE	pA
+setA-run1	F18	31	page_reviewer	other	shelf	likely_problem	TRUE	pC
+setA-run1	F20	31	page_reviewer	other	shelf	likely_problem	TRUE	pC
+setA-run1	F35	31	page_reviewer	other	shelf	likely_problem	FALSE	pC
+setA-run1	F93	32	page_reviewer	other	view title	likely_problem	TRUE_MINOR	pC
+setA-run1	F204	32	page_reviewer	other	top length	likely_problem	TRUE_MINOR	pC
+setA-run1	F120	33	page_reviewer	other	overall size	likely_problem	TRUE_MINOR	pC
+setA-run1	F121	33	page_reviewer	other	filler	likely_problem	FALSE	pC
+setA-run1	F122	33	page_reviewer	other	filler	likely_problem	FALSE	pC
+setA-run1	F124	33	page_reviewer	other	material table	likely_problem	FALSE	pC
+setA-run1	F275	33	consistency	cabinet	dimension string	wrong	TRUE	pA
+setA-run1	F80	34	page_reviewer	other	view title	likely_problem	TRUE	pC
+setA-run1	F83	34	page_reviewer	other	title block	likely_problem	FALSE	pC
+setA-run1	F194	34	page_reviewer	other	supplier note	likely_problem	FALSE	pC
+setA-run1	F276	34	consistency	countertop	dimension string	wrong	TRUE	pA
+setA-run1	F36	35	page_reviewer	other	shelf	likely_problem	TRUE	pC
+setA-run1	F53	36	page_reviewer	other	top length	likely_problem	TRUE	pC
+setA-run1	F56	36	page_reviewer	other	filler	likely_problem	FALSE	pC
+setA-run1	F59	36	page_reviewer	other	material table	likely_problem	TRUE_MINOR	pC
+setA-run1	F61	36	page_reviewer	other	title block	likely_problem	TRUE	pC
+setA-run1	F94	37	page_reviewer	other	dimension string	likely_problem	TRUE	pC
+setA-run1	F146	37	page_reviewer	other	filler	likely_problem	FALSE	pC
+setA-run1	F147	37	page_reviewer	other	supplier note	likely_problem	FALSE	pC
+setA-run1	F105	38	page_reviewer	other	view title	likely_problem	FALSE	pC
+setA-run1	F132	38	page_reviewer	other	view title	likely_problem	TRUE	pC
+setA-run1	F133	38	page_reviewer	other	view title	likely_problem	TRUE	pC
+setA-run1	F134	38	page_reviewer	other	view title	likely_problem	TRUE	pC
+setA-run1	F277	38	consistency	countertop	dimension string	wrong	TRUE	pA
+setA-run1	F278	38	consistency	countertop	dimension string	wrong	TRUE	pA
+setA-run1	F217	39	page_reviewer	other	view title	likely_problem	FALSE	pC
+setA-run1	F218	39	page_reviewer	other	view title	likely_problem	TRUE_MINOR	pC
+setA-run1	F221	39	page_reviewer	other	view title	likely_problem	TRUE	pC
+setA-run1	F222	39	page_reviewer	other	view title	likely_problem	TRUE	pC
+setA-run1	F224	39	page_reviewer	other	view title	likely_problem	FALSE	pC
+setA-run1	F279	39	consistency	countertop	dimension string	wrong	TRUE	pA
+setA-run1	F280	39	consistency	countertop	dimension string	wrong	TRUE	pA
+setA-run1	F226	40	page_reviewer	other	other	likely_problem	TRUE	pC
+setA-run1	F231	40	page_reviewer	other	filler	likely_problem	FALSE	pC
+setA-run1	F246	40	page_reviewer	other	depth	likely_problem	TRUE_MINOR	pC
+setA-run1	F247	40	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	pC
+setA-run1	F248	40	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	pC
+setA-run1	F253	40	page_reviewer	other	cabinet piece	likely_problem	TRUE	pC
+setA-run1	F254	40	page_reviewer	other	material table	likely_problem	TRUE_MINOR	pC
+setA-run1	F229	41	page_reviewer	other	filler	likely_problem	FALSE	pC
+setA-run1	F230	41	page_reviewer	other	supplier note	likely_problem	FALSE	pC
+setA-run1	F232	41	page_reviewer	other	overall size	likely_problem	TRUE_MINOR	pC
+setA-run1	F250	41	page_reviewer	other	other	likely_problem	TRUE	pC
+setA-run1	F251	41	page_reviewer	other	quantity or room list	likely_problem	TRUE	pC
+setA-run1	F242	42	page_reviewer	other	view title	likely_problem	TRUE	pC
+setA-run1	F243	42	page_reviewer	other	view title	likely_problem	TRUE_MINOR	pC
+setA-run1	F245	42	page_reviewer	other	supplier note	likely_problem	FALSE	pC
+setA-run1	F205	43	page_reviewer	other	view title	likely_problem	TRUE	pC
+setA-run1	F206	43	page_reviewer	other	view title	likely_problem	FALSE	pC
+setA-run1	F216	43	page_reviewer	other	view title	likely_problem	TRUE	pC
+setA-run1	F223	43	page_reviewer	other	view title	likely_problem	TRUE_MINOR	pC
+setA-run1	F281	43	consistency	countertop	dimension string	wrong	TRUE	pA
+setA-run1	F210	50	page_reviewer	other	depth	likely_problem	TRUE	pC
+setA-run1	F213	50	page_reviewer	other	cut-out	likely_problem	TRUE	pC
+setA-run1	F214	50	page_reviewer	other	splash	likely_problem	FALSE	pC
+setA-run1	F215	50	page_reviewer	other	title block	likely_problem	FALSE	pC
+setA-run1	F225	50	page_reviewer	other	dimension string	likely_problem	TRUE	pC
+setA-run1	F228	50	page_reviewer	other	overall size	likely_problem	TRUE_MINOR	pC
+setA-run1	F233	51	page_reviewer	other	finish tag	likely_problem	FALSE	pC
+setA-run1	F236	51	page_reviewer	other	splash	likely_problem	TRUE_MINOR	pC
+setA-run1	F238	51	page_reviewer	other	cut-out	likely_problem	TRUE	pC
+setA-run1	F239	51	page_reviewer	other	cabinet piece	likely_problem	TRUE_MINOR	pC
+setA-run1	F240	51	page_reviewer	other	shelf	likely_problem	TRUE_MINOR	pC
+setA-run1	F241	51	page_reviewer	other	quantity or room list	likely_problem	TRUE	pC
+setA-run1	F249	51	page_reviewer	other	overall size	likely_problem	TRUE_MINOR	pC
+setA-run1	F255	51	page_reviewer	other	dimension string	likely_problem	TRUE	pC
+setA-run1	F196	52	page_reviewer	other	title block	likely_problem	TRUE	pC
+setA-run1	F197	52	page_reviewer	other	cut-out	likely_problem	TRUE	pC
+setA-run1	F198	52	page_reviewer	other	cut-out	likely_problem	TRUE	pC
+setA-run1	F220	52	page_reviewer	other	other	likely_problem	FALSE	pC
+setB-run2	F16	3	page_reviewer	other	other	likely_problem	TRUE_MINOR	h1
+setB-run2	F17	6	page_reviewer	other	quantity or room list	likely_problem	TRUE_MINOR	h4
+setB-run2	F84	6	whole_look	other	quantity or room list	likely_problem	TRUE_MINOR	h4
+setB-run2	F85	6	whole_look	other	quantity or room list	likely_problem	TRUE_MINOR	h4
+setB-run2	F93	6	helper	cabinet	quantity or room list	not_compared	NC_A	h4
+setB-run2	F94	6	helper	cabinet	quantity or room list	not_compared	NC_C	h4
+setB-run2	F141	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	h4
+setB-run2	F142	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	h4
+setB-run2	F143	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	h4
+setB-run2	F144	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	h4
+setB-run2	F145	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	h4
+setB-run2	F146	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	h4
+setB-run2	F147	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	h4
+setB-run2	F148	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	h4
+setB-run2	F149	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	h4
+setB-run2	F10	7	helper	other	finish tag	not_compared	NC_B	h1
+setB-run2	F12	7	helper	other	other	not_compared	NC_B	h1
+setB-run2	F13	7	helper	other	other	not_compared	NC_B	h1
+setB-run2	F4	11	helper	cabinet	shelf	right	RIGHT_OK	h1
+setB-run2	F5	11	helper	cabinet	finish tag	not_compared	NC_A	h1
+setB-run2	F66	11	page_reviewer	other	dimension string	likely_problem	TRUE	h1
+setB-run2	F67	11	page_reviewer	other	dimension string	likely_problem	TRUE	h1
+setB-run2	F68	11	page_reviewer	other	dimension string	likely_problem	TRUE	h1
+setB-run2	F69	11	page_reviewer	other	other	likely_problem	TRUE	h1
+setB-run2	F72	11	page_reviewer	other	view title	likely_problem	TRUE	h1
+setB-run2	F73	11	page_reviewer	other	cut-out	likely_problem	TRUE	h1
+setB-run2	F74	11	page_reviewer	other	view title	likely_problem	TRUE	h1
+setB-run2	F75	11	page_reviewer	other	cut-out	likely_problem	TRUE	h1
+setB-run2	F76	11	page_reviewer	other	cut-out	likely_problem	TRUE	h1
+setB-run2	F80	11	page_reviewer	other	view title	likely_problem	TRUE_MINOR	h1
+setB-run2	F81	11	page_reviewer	other	shelf	likely_problem	TRUE	h1
+setB-run2	F82	11	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	h1
+setB-run2	F83	11	page_reviewer	other	title block	likely_problem	FALSE	h1
+setB-run2	F99	11	helper	cabinet	other	not_compared	NC_C	h1
+setB-run2	F130	11	ledger	countertop	dimension string	likely_problem	TRUE	h1
+setB-run2	F131	11	ledger	countertop	dimension string	likely_problem	TRUE	h1
+setB-run2	F18	12	page_reviewer	other	dimension string	likely_problem	TRUE	h2
+setB-run2	F20	12	page_reviewer	other	faucet	likely_problem	TRUE_MINOR	h2
+setB-run2	F21	12	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	h2
+setB-run2	F22	12	page_reviewer	other	view title	likely_problem	TRUE_MINOR	h2
+setB-run2	F28	12	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	h2
+setB-run2	F29	12	page_reviewer	other	material table	likely_problem	TRUE_MINOR	h2
+setB-run2	F30	12	page_reviewer	other	title block	likely_problem	FALSE	h2
+setB-run2	F104	12	ledger	countertop	dimension string	likely_problem	TRUE	h2
+setB-run2	F137	12	sink_offset	countertop	cut-out	not_compared	NC_B	h2
+setB-run2	F3	13	helper	cabinet	other	not_compared	NC_A	h2
+setB-run2	F42	13	page_reviewer	other	dimension string	wrong	TRUE	h2
+setB-run2	F50	13	page_reviewer	other	depth	wrong	TRUE	h2
+setB-run2	F51	13	page_reviewer	other	dimension string	likely_problem	TRUE	h2
+setB-run2	F52	13	page_reviewer	other	dimension string	likely_problem	TRUE_MINOR	h2
+setB-run2	F53	13	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	h2
+setB-run2	F97	13	helper	cabinet	other	not_compared	NC_A	h2
+setB-run2	F98	13	helper	cabinet	other	not_compared	NC_A	h2
+setB-run2	F126	13	ledger	cabinet	dimension string	wrong	TRUE	h2
+setB-run2	F2	14	helper	countertop	finish tag	not_compared	NC_A	h3
+setB-run2	F8	14	helper	other	finish tag	not_compared	NC_A	h3
+setB-run2	F9	14	helper	cabinet	cabinet piece	not_compared	NC_C	h3
+setB-run2	F11	14	helper	other	finish tag	not_compared	NC_A	h3
+setB-run2	F47	14	page_reviewer	other	dimension string	likely_problem	TRUE	h3
+setB-run2	F54	14	page_reviewer	other	dimension string	likely_problem	TRUE	h3
+setB-run2	F61	14	page_reviewer	other	other	likely_problem	TRUE	h3
+setB-run2	F63	14	page_reviewer	other	other	likely_problem	TRUE	h3
+setB-run2	F64	14	page_reviewer	other	faucet	likely_problem	TRUE_MINOR	h3
+setB-run2	F65	14	page_reviewer	other	splash	likely_problem	TRUE_MINOR	h3
+setB-run2	F77	14	page_reviewer	other	other	likely_problem	TRUE	h3
+setB-run2	F78	14	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	h3
+setB-run2	F79	14	page_reviewer	other	title block	likely_problem	FALSE	h3
+setB-run2	F123	14	ledger	countertop	dimension string	likely_problem	TRUE	h3
+setB-run2	F124	14	ledger	countertop	dimension string	likely_problem	TRUE	h3
+setB-run2	F138	14	sink_offset	countertop	cut-out	not_compared	NC_B	h3
+setB-run2	F40	15	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	h3
+setB-run2	F57	15	page_reviewer	other	dimension string	likely_problem	TRUE	h3
+setB-run2	F58	15	page_reviewer	other	dimension string	likely_problem	TRUE	h3
+setB-run2	F59	15	page_reviewer	other	depth	likely_problem	TRUE	h3
+setB-run2	F60	15	page_reviewer	other	dimension string	likely_problem	TRUE	h3
+setB-run2	F105	15	ledger	cabinet	dimension string	not_compared	NC_B	h3
+setB-run2	F106	15	ledger	cabinet	dimension string	not_compared	NC_B	h3
+setB-run2	F107	15	ledger	cabinet	dimension string	not_compared	NC_B	h3
+setB-run2	F117	15	ledger	cabinet	dimension string	not_compared	NC_B	h3
+setB-run2	F23	16	page_reviewer	other	cut-out	likely_problem	TRUE	h4
+setB-run2	F24	16	page_reviewer	other	other	likely_problem	TRUE	h4
+setB-run2	F25	16	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	h4
+setB-run2	F26	16	page_reviewer	other	title block	likely_problem	TRUE_MINOR	h4
+setB-run2	F27	16	page_reviewer	other	view title	likely_problem	TRUE_MINOR	h4
+setB-run2	F150	16	set_check	other	finish tag	likely_problem	FALSE	h4
+setB-run2	F1	17	helper	countertop	finish tag	not_compared	NC_B	h5
+setB-run2	F6	17	helper	countertop	top length	not_compared	NC_A	h5
+setB-run2	F31	17	page_reviewer	other	other	likely_problem	TRUE	h5
+setB-run2	F32	17	page_reviewer	other	cut-out	likely_problem	TRUE	h5
+setB-run2	F33	17	page_reviewer	other	supplier note	likely_problem	FALSE	h5
+setB-run2	F87	17	whole_look	other	splash	likely_problem	FALSE	h5
+setB-run2	F96	17	helper	countertop	splash	not_compared	NC_A	h5
+setB-run2	F139	17	sink_offset	countertop	cut-out	likely_problem	TRUE	h5
+setB-run2	F151	17	sink_sheets	countertop	cut-out	likely_problem	TRUE_MINOR	h5
+setB-run2	F152	17	sink_sheets	countertop	cut-out	likely_problem	TRUE_MINOR	h5
+setB-run2	F153	17	sink_sheets	countertop	cut-out	likely_problem	TRUE	h5
+setB-run2	F7	18	helper	countertop	finish tag	not_compared	NC_B	h5
+setB-run2	F14	18	helper	countertop	top length	not_compared	NC_A	h5
+setB-run2	F15	18	helper	countertop	top length	not_compared	NC_C	h5
+setB-run2	F34	18	page_reviewer	other	cut-out	likely_problem	TRUE	h5
+setB-run2	F35	18	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	h5
+setB-run2	F36	18	page_reviewer	other	faucet	likely_problem	TRUE	h5
+setB-run2	F37	18	page_reviewer	other	faucet	likely_problem	TRUE	h5
+setB-run2	F88	18	whole_look	other	splash	likely_problem	TRUE	h5
+setB-run2	F140	18	sink_offset	countertop	cut-out	not_compared	NC_A	h5
+setB-run2	F154	18	sink_sheets	countertop	cut-out	likely_problem	TRUE_MINOR	h5
+setB-run2	F155	18	sink_sheets	countertop	cut-out	likely_problem	TRUE_MINOR	h5
+setB-run2	F156	18	sink_sheets	countertop	cut-out	likely_problem	TRUE	h5
+setB-run3	F11	3	page_reviewer	other	other	likely_problem	TRUE_MINOR	hB
+setB-run3	F12	6	page_reviewer	other	quantity or room list	likely_problem	TRUE_MINOR	hC
+setB-run3	F74	6	whole_look	other	quantity or room list	likely_problem	TRUE_MINOR	hC
+setB-run3	F75	6	whole_look	other	quantity or room list	likely_problem	TRUE_MINOR	hC
+setB-run3	F95	6	helper	cabinet	quantity or room list	not_compared	NC_A	hC
+setB-run3	F96	6	helper	cabinet	quantity or room list	not_compared	NC_A	hC
+setB-run3	F200	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	hC
+setB-run3	F201	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	hC
+setB-run3	F202	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	hC
+setB-run3	F203	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	hC
+setB-run3	F204	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	hC
+setB-run3	F205	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	hC
+setB-run3	F206	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	hC
+setB-run3	F207	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	hC
+setB-run3	F208	6	room_matrix	other	quantity or room list	likely_problem	TRUE_MINOR	hC
+setB-run3	F10	10	helper	other	finish tag	not_compared	FALSE	hB
+setB-run3	F110	10	helper	other	date or revision	right	RIGHT_BAD	hB
+setB-run3	F130	10	helper	other	other	likely_problem	FALSE	hB
+setB-run3	F1	11	helper	cabinet	shelf	not_compared	NC_C	hA
+setB-run3	F7	11	helper	cabinet	appliance	not_compared	NC_C	hA
+setB-run3	F8	11	helper	countertop	finish tag	not_compared	NC_A	hA
+setB-run3	F9	11	helper	other	hardware	not_compared	NC_A	hA
+setB-run3	F48	11	page_reviewer	other	dimension string	likely_problem	TRUE	hA
+setB-run3	F49	11	page_reviewer	other	top length	likely_problem	TRUE	hA
+setB-run3	F50	11	page_reviewer	other	cabinet piece	likely_problem	TRUE	hA
+setB-run3	F51	11	page_reviewer	other	dimension string	likely_problem	TRUE	hA
+setB-run3	F52	11	page_reviewer	other	other	wrong	TRUE	hA
+setB-run3	F53	11	page_reviewer	other	view title	wrong	TRUE	hA
+setB-run3	F54	11	page_reviewer	other	view title	likely_problem	TRUE	hA
+setB-run3	F55	11	page_reviewer	other	cut-out	likely_problem	TRUE	hA
+setB-run3	F56	11	page_reviewer	other	cut-out	likely_problem	TRUE	hA
+setB-run3	F57	11	page_reviewer	other	material table	likely_problem	TRUE	hA
+setB-run3	F58	11	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	hA
+setB-run3	F59	11	page_reviewer	other	splash	likely_problem	TRUE_MINOR	hA
+setB-run3	F94	11	helper	cabinet	overall size	not_compared	NC_C	hA
+setB-run3	F37	12	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	hA
+setB-run3	F38	12	page_reviewer	other	view title	likely_problem	TRUE_MINOR	hA
+setB-run3	F39	12	page_reviewer	other	faucet	likely_problem	TRUE_MINOR	hA
+setB-run3	F40	12	page_reviewer	other	splash	likely_problem	TRUE_MINOR	hA
+setB-run3	F45	12	page_reviewer	other	cut-out	likely_problem	TRUE	hA
+setB-run3	F140	12	ledger	countertop	dimension string	wrong	TRUE	hA
+setB-run3	F141	12	ledger	countertop	dimension string	wrong	TRUE	hA
+setB-run3	F196	12	sink_offset	countertop	cut-out	likely_problem	TRUE	hA
+setB-run3	F22	13	page_reviewer	other	dimension string	wrong	TRUE	hA
+setB-run3	F23	13	page_reviewer	other	dimension string	wrong	TRUE	hA
+setB-run3	F24	13	page_reviewer	other	depth	wrong	TRUE	hA
+setB-run3	F34	13	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	hA
+setB-run3	F35	13	page_reviewer	other	other	likely_problem	TRUE_MINOR	hA
+setB-run3	F36	13	page_reviewer	other	other	likely_problem	TRUE_MINOR	hA
+setB-run3	F177	13	ledger	cabinet	dimension string	likely_problem	TRUE	hA
+setB-run3	F4	14	helper	countertop	finish tag	likely_problem	FALSE	hB
+setB-run3	F5	14	helper	cabinet	finish tag	not_compared	NC_A	hB
+setB-run3	F62	14	page_reviewer	other	other	likely_problem	TRUE	hB
+setB-run3	F63	14	page_reviewer	other	cut-out	likely_problem	TRUE	hB
+setB-run3	F64	14	page_reviewer	other	cut-out	likely_problem	TRUE	hB
+setB-run3	F65	14	page_reviewer	other	cut-out	likely_problem	TRUE	hB
+setB-run3	F67	14	page_reviewer	other	dimension string	likely_problem	TRUE	hB
+setB-run3	F68	14	page_reviewer	other	other	wrong	TRUE	hB
+setB-run3	F69	14	page_reviewer	other	other	likely_problem	TRUE	hB
+setB-run3	F70	14	page_reviewer	other	faucet	likely_problem	TRUE_MINOR	hB
+setB-run3	F71	14	page_reviewer	other	splash	likely_problem	TRUE_MINOR	hB
+setB-run3	F72	14	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	hB
+setB-run3	F73	14	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	hB
+setB-run3	F142	14	ledger	countertop	dimension string	wrong	TRUE	hB
+setB-run3	F143	14	ledger	countertop	dimension string	wrong	TRUE	hB
+setB-run3	F173	14	ledger	countertop	dimension string	likely_problem	TRUE	hB
+setB-run3	F197	14	sink_offset	countertop	cut-out	likely_problem	TRUE	hB
+setB-run3	F28	15	page_reviewer	other	dimension string	wrong	TRUE	hB
+setB-run3	F41	15	page_reviewer	other	dimension string	wrong	TRUE	hB
+setB-run3	F42	15	page_reviewer	other	depth	wrong	TRUE	hB
+setB-run3	F44	15	page_reviewer	other	dimension string	likely_problem	TRUE_MINOR	hB
+setB-run3	F46	15	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	hB
+setB-run3	F149	15	ledger	cabinet	dimension string	wrong	TRUE	hB
+setB-run3	F13	16	page_reviewer	other	cut-out	likely_problem	TRUE	hB
+setB-run3	F14	16	page_reviewer	other	quantity or room list	likely_problem	TRUE	hB
+setB-run3	F15	16	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	hB
+setB-run3	F16	16	page_reviewer	other	supplier note	likely_problem	FALSE	hB
+setB-run3	F17	16	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	hB
+setB-run3	F18	16	page_reviewer	other	title block	likely_problem	FALSE	hB
+setB-run3	F2	17	helper	countertop	finish tag	not_compared	NC_A	hC
+setB-run3	F30	17	page_reviewer	other	cut-out	likely_problem	TRUE	hC
+setB-run3	F31	17	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	hC
+setB-run3	F32	17	page_reviewer	other	cut-out	likely_problem	TRUE	hC
+setB-run3	F76	17	helper	countertop	top length	not_compared	NC_A	hC
+setB-run3	F77	17	helper	countertop	depth	not_compared	NC_A	hC
+setB-run3	F78	17	helper	countertop	thickness	not_compared	NC_A	hC
+setB-run3	F84	17	helper	countertop	splash	not_compared	NC_A	hC
+setB-run3	F87	17	helper	countertop	splash	not_compared	NC_A	hC
+setB-run3	F88	17	helper	countertop	cut-out	not_compared	NC_A	hC
+setB-run3	F198	17	sink_offset	countertop	cut-out	likely_problem	TRUE	hC
+setB-run3	F209	17	sink_sheets	countertop	cut-out	likely_problem	TRUE_MINOR	hC
+setB-run3	F210	17	sink_sheets	countertop	cut-out	likely_problem	TRUE_MINOR	hC
+setB-run3	F211	17	sink_sheets	countertop	cut-out	likely_problem	TRUE	hC
+setB-run3	F6	18	helper	countertop	finish tag	not_compared	NC_A	hC
+setB-run3	F19	18	page_reviewer	other	cut-out	likely_problem	TRUE	hC
+setB-run3	F20	18	page_reviewer	other	cut-out	likely_problem	TRUE	hC
+setB-run3	F29	18	page_reviewer	other	faucet	likely_problem	TRUE_MINOR	hC
+setB-run3	F109	18	helper	other	cut-out	not_compared	NC_A	hC
+setB-run3	F199	18	sink_offset	countertop	cut-out	likely_problem	TRUE	hC
+setB-run3	F212	18	sink_sheets	countertop	cut-out	likely_problem	TRUE_MINOR	hC
+setB-run3	F213	18	sink_sheets	countertop	cut-out	likely_problem	TRUE_MINOR	hC
+setB-run3	F214	18	sink_sheets	countertop	cut-out	likely_problem	TRUE	hC
+setC-run1	F18	1	page_reviewer	other	other	likely_problem	TRUE	c1
+setC-run1	F19	1	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	c1
+setC-run1	F20	1	page_reviewer	other	title block	likely_problem	TRUE_MINOR	c1
+setC-run1	F8	2	page_reviewer	other	edge or joint	likely_problem	TRUE	c1
+setC-run1	F91	2	page_reviewer	other	splash	likely_problem	TRUE_MINOR	c1
+setC-run1	F24	3	page_reviewer	other	overall size	likely_problem	TRUE_MINOR	c1
+setC-run1	F27	3	page_reviewer	other	title block	likely_problem	TRUE	c1
+setC-run1	F30	3	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	c1
+setC-run1	F33	3	page_reviewer	other	edge or joint	likely_problem	TRUE_MINOR	c1
+setC-run1	F36	3	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	c1
+setC-run1	F10	4	page_reviewer	other	title block	likely_problem	TRUE_MINOR	c1
+setC-run1	F12	4	page_reviewer	other	top length	likely_problem	TRUE	c1
+setC-run1	F5	5	page_reviewer	other	title block	likely_problem	TRUE_MINOR	c1
+setC-run1	F6	5	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	c1
+setC-run1	F129	5	helper	other	cut-out	not_compared	FALSE	c1
+setC-run1	F13	6	page_reviewer	other	title block	likely_problem	TRUE_MINOR	c1
+setC-run1	F14	6	page_reviewer	other	cut-out	likely_problem	TRUE	c1
+setC-run1	F15	6	page_reviewer	other	splash	likely_problem	FALSE	c1
+setC-run1	F93	7	page_reviewer	other	other	likely_problem	TRUE	c1
+setC-run1	F94	7	page_reviewer	other	title block	likely_problem	TRUE	c1
+setC-run1	F73	8	page_reviewer	other	dimension string	likely_problem	TRUE	c2
+setC-run1	F74	8	page_reviewer	other	dimension string	likely_problem	TRUE	c2
+setC-run1	F75	8	page_reviewer	other	material table	likely_problem	TRUE_MINOR	c2
+setC-run1	F76	8	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	c2
+setC-run1	F77	8	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	c2
+setC-run1	F78	8	page_reviewer	other	splash	likely_problem	FALSE	c2
+setC-run1	F79	8	page_reviewer	other	other	likely_problem	TRUE_MINOR	c2
+setC-run1	F80	8	page_reviewer	other	title block	likely_problem	TRUE_MINOR	c2
+setC-run1	F23	9	page_reviewer	other	dimension string	likely_problem	TRUE	c2
+setC-run1	F25	9	page_reviewer	other	dimension string	likely_problem	TRUE	c2
+setC-run1	F28	9	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	c2
+setC-run1	F31	9	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	c2
+setC-run1	F34	9	page_reviewer	other	title block	likely_problem	TRUE_MINOR	c2
+setC-run1	F42	9	page_reviewer	other	view title	likely_problem	TRUE_MINOR	c2
+setC-run1	F55	10	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	c2
+setC-run1	F58	10	page_reviewer	other	material table	likely_problem	TRUE_MINOR	c2
+setC-run1	F60	10	page_reviewer	other	edge or joint	likely_problem	TRUE	c2
+setC-run1	F62	10	page_reviewer	other	title block	likely_problem	TRUE_MINOR	c2
+setC-run1	F89	10	page_reviewer	other	dimension string	likely_problem	TRUE	c2
+setC-run1	F90	10	page_reviewer	other	cabinet piece	likely_problem	TRUE	c2
+setC-run1	F54	11	page_reviewer	other	dimension string	likely_problem	TRUE	c2
+setC-run1	F57	11	page_reviewer	other	dimension string	likely_problem	TRUE	c2
+setC-run1	F59	11	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	c2
+setC-run1	F61	11	page_reviewer	other	material table	likely_problem	TRUE_MINOR	c2
+setC-run1	F63	11	page_reviewer	other	other	likely_problem	FALSE	c2
+setC-run1	F64	11	page_reviewer	other	title block	likely_problem	TRUE_MINOR	c2
+setC-run1	F65	12	page_reviewer	other	dimension string	likely_problem	TRUE	c2
+setC-run1	F66	12	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	c2
+setC-run1	F67	12	page_reviewer	other	cut-out	likely_problem	TRUE_MINOR	c2
+setC-run1	F69	12	page_reviewer	other	supplier note	likely_problem	TRUE_MINOR	c2
+setC-run1	F71	12	page_reviewer	other	top length	likely_problem	TRUE	c2
+setC-run1	F72	12	page_reviewer	other	title block	likely_problem	TRUE	c2
+setC-run1	F88	12	page_reviewer	other	dimension string	likely_problem	TRUE	c2
+setC-run1	F121	12	page_reviewer	other	cabinet piece	likely_problem	TRUE	c2
+setC-run1	F81	13	page_reviewer	other	view title	likely_problem	TRUE	c2
+setC-run1	F82	13	page_reviewer	other	view title	likely_problem	TRUE	c2
+setC-run1	F84	13	page_reviewer	other	view title	likely_problem	TRUE_MINOR	c2
+setC-run1	F85	13	page_reviewer	other	view title	likely_problem	TRUE_MINOR	c2
+setC-run1	F86	13	page_reviewer	other	title block	likely_problem	TRUE	c2
+setC-run1	F87	13	page_reviewer	other	edge or joint	likely_problem	TRUE_MINOR	c2
+setC-run1	F92	13	page_reviewer	other	dimension string	likely_problem	TRUE	c2
+setC-run1	F45	14	page_reviewer	other	other	likely_problem	TRUE_MINOR	c3
+setC-run1	F108	14	helper	cabinet	shelf	not_compared	NC_C	c3
+setC-run1	F117	14	helper	cabinet	finish tag	not_compared	NC_A	c3
+setC-run1	F118	14	helper	cabinet	hardware	not_compared	NC_A	c3
+setC-run1	F124	14	whole_look	other	overall size	likely_problem	TRUE	c3
+setC-run1	F137	14	helper	cabinet	other	not_compared	NC_C	c3
+setC-run1	F138	14	helper	countertop	depth	not_compared	NC_A	c3
+setC-run1	F39	15	page_reviewer	other	dimension string	likely_problem	TRUE	c3
+setC-run1	F43	15	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	c3
+setC-run1	F52	15	page_reviewer	other	material table	likely_problem	TRUE_MINOR	c3
+setC-run1	F96	15	page_reviewer	other	filler	likely_problem	TRUE_MINOR	c3
+setC-run1	F112	15	helper	cabinet	shelf	not_compared	NC_C	c3
+setC-run1	F119	15	helper	cabinet	finish tag	not_compared	NC_A	c3
+setC-run1	F120	15	helper	cabinet	hardware	not_compared	NC_A	c3
+setC-run1	F125	15	whole_look	other	cabinet piece	not_compared	NC_B	c3
+setC-run1	F130	15	helper	other	other	not_compared	FALSE	c3
+setC-run1	F131	15	helper	other	depth	not_compared	FALSE	c3
+setC-run1	F35	16	page_reviewer	other	date or revision	likely_problem	TRUE	c3
+setC-run1	F53	16	page_reviewer	other	dimension string	likely_problem	TRUE	c3
+setC-run1	F56	16	page_reviewer	other	dimension string	likely_problem	TRUE	c3
+setC-run1	F95	16	page_reviewer	other	material table	likely_problem	TRUE_MINOR	c3
+setC-run1	F38	17	page_reviewer	other	dimension string	likely_problem	TRUE	c3
+setC-run1	F41	17	page_reviewer	other	finish tag	likely_problem	TRUE_MINOR	c3
+setC-run1	F49	17	page_reviewer	other	other	likely_problem	TRUE	c3
+setC-run1	F51	17	page_reviewer	other	title block	likely_problem	TRUE	c3
+setC-run1	F22	18	page_reviewer	other	title block	likely_problem	TRUE_MINOR	c3
+setC-run1	F147	18	consistency	cabinet	dimension string	likely_problem	TRUE	c3
+setC-run1	F148	18	consistency	cabinet	dimension string	not_compared	NC_B	c3

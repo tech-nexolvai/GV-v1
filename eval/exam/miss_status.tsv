@@ -1,0 +1,122 @@
+miss_id	run	status	note
+setA-m01	setA-flag	missed	
+setA-m01	setA-run1	missed	
+setA-m02	setA-flag	missed	
+setA-m02	setA-run1	missed	
+setA-m03	setA-flag	missed	
+setA-m03	setA-run1	missed	
+setA-m04	setA-flag	missed	
+setA-m04	setA-run1	missed	
+setA-m05	setA-flag	partly	the size gap came out as a Not-compared answer, not a please-check
+setA-m05	setA-run1	missed	
+setA-m06	setA-flag	missed	
+setA-m06	setA-run1	missed	
+setA-m07	setA-flag	partly	caught on one of the four sheets
+setA-m07	setA-run1	missed	
+setA-m08	setA-flag	missed	
+setA-m08	setA-run1	missed	
+setA-m09	setA-flag	partly	caught on one of the two pairs
+setA-m09	setA-run1	missed	
+setA-m10	setA-flag	missed	
+setA-m10	setA-run1	missed	
+setA-m11	setA-flag	missed	
+setA-m11	setA-run1	missed	
+setA-m12	setA-flag	missed	
+setA-m12	setA-run1	missed	
+setA-m13	setA-flag	partly	caught on one sheet, not on the other two
+setA-m13	setA-run1	missed	
+setA-m14	setA-flag	found	
+setA-m14	setA-run1	missed	
+setA-m15	setA-flag	missed	
+setA-m15	setA-run1	missed	
+setA-m16	setA-flag	missed	
+setA-m16	setA-run1	missed	
+setA-m17	setA-flag	missed	
+setA-m17	setA-run1	missed	
+setA-m18	setA-flag	missed	
+setA-m18	setA-run1	missed	
+setA-m19	setA-flag	partly	one of the four upper differences is raised
+setA-m19	setA-run1	missed	
+setA-m20	setA-flag	missed	
+setA-m20	setA-run1	missed	
+setA-m21	setA-flag	found	
+setA-m21	setA-run1	missed	
+setA-m22	setA-flag	missed	
+setA-m22	setA-run1	missed	
+setA-m23	setA-flag	missed	
+setA-m23	setA-run1	missed	
+setA-m24	setA-flag	missed	
+setA-m24	setA-run1	missed	
+setA-m25	setA-flag	missed	
+setA-m25	setA-run1	missed	
+setA-m26	setA-flag	missed	
+setA-m26	setA-run1	missed	
+setA-m27	setA-flag	missed	
+setA-m27	setA-run1	missed	
+setA-m28	setA-flag	missed	
+setA-m28	setA-run1	missed	
+setA-m29	setA-flag	missed	
+setA-m29	setA-run1	missed	
+setA-m30	setA-flag	missed	
+setA-m30	setA-run1	missed	
+setA-m31	setA-flag	missed	found in the earlier run and lost
+setA-m31	setA-run1	found	raised here and lost in the later run
+setA-m32	setA-flag	missed	found in the earlier run and lost
+setA-m32	setA-run1	found	raised here and lost in the later run
+setA-m33	setA-flag	missed	found in the earlier run and lost
+setA-m33	setA-run1	found	raised here and lost in the later run
+setA-m34	setA-flag	missed	found in the earlier run and lost; the sheet has no answers at all
+setA-m34	setA-run1	found	raised here and lost in the later run
+setA-m35	setA-flag	missed	found in the earlier run and lost
+setA-m35	setA-run1	found	raised here and lost in the later run
+setA-m36	setA-flag	missed	found in the earlier run and lost
+setA-m36	setA-run1	found	raised here and lost in the later run
+setA-m37	setA-flag	missed	hidden by the wrong architect page
+setA-m37	setA-run1	missed	
+setA-m38	setA-flag	missed	hidden by the wrong architect page
+setA-m38	setA-run1	missed	
+setA-m39	setA-flag	missed	hidden by the wrong architect page
+setA-m39	setA-run1	missed	
+setB-m01	setB-run2	found	both values were raised in the earlier run
+setB-m01	setB-run3	missed	
+setB-m02	setB-run2	found	listed in the earlier run
+setB-m02	setB-run3	missed	
+setB-m03	setB-run3	missed	
+setB-m04	setB-run3	missed	
+setB-m05	setB-run3	missed	
+setB-m06	setB-run2	partly	raised as Not compared in the earlier run, dropped in the later one
+setB-m06	setB-run3	missed	
+setB-m07	setB-run3	missed	the sheet has no answers at all
+setB-m08	setB-run3	missed	the sheet has no answers at all
+setB-m09	setB-run3	partly	one answer is on the sheet but makes the wrong comparison
+setB-m10	setB-run3	missed	
+setB-m11	setB-run3	partly	survives only as a note on another page's answer
+setB-m12	setB-run2	missed	missed by both runs
+setB-m12	setB-run3	missed	
+setB-m13	setB-run2	found	flagged in the earlier run and dropped
+setB-m13	setB-run3	missed	
+setB-m14	setB-run3	missed	
+setB-m15	setB-run2	found	flagged in the earlier run and dropped
+setB-m15	setB-run3	missed	
+setB-m16	setB-run2	found	flagged in the earlier run and dropped
+setB-m16	setB-run3	missed	
+setB-m17	setB-run2	missed	missed by both runs
+setB-m17	setB-run3	missed	
+setC-m01	setC-run1	missed	
+setC-m02	setC-run1	missed	
+setC-m03	setC-run1	missed	
+setC-m04	setC-run1	missed	
+setC-m05	setC-run1	missed	
+setC-m06	setC-run1	missed	
+setC-m07	setC-run1	partly	each string is raised on its own sheet; the cross-sheet conflict is never stated
+setC-m08	setC-run1	partly	two answers hint at it without naming it
+setC-m09	setC-run1	missed	
+setC-m10	setC-run1	missed	
+setC-m11	setC-run1	missed	
+setC-m12	setC-run1	partly	raised as please-checks; the arithmetic check could have proved them
+setC-m13	setC-run1	partly	raised as please-checks; the arithmetic check could have proved them
+setC-m14	setC-run1	missed	
+setC-m15	setC-run1	partly	the answer exists but quotes a scaled size
+setC-m16	setC-run1	missed	
+setC-m17	setC-run1	missed	
+setC-m18	setC-run1	missed	
