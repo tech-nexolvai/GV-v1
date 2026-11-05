@@ -338,6 +338,11 @@ class Settings(BaseSettings):
     # Flag mode (Anant, 2026-11-04): `proof` (default) keeps the proof rules; `flag` is the simple
     # mode: every problem found is flagged, code does the maths, only no-comparison is Not compared.
     assistant_flag_mode: Literal["proof", "flag"] = "proof"
+    # The fixed questions as slots (Step 4 of the rebuild plan, 2026-11-05): `on` adds one call
+    # per paired vendor page that answers the code-decided size questions by naming numbered
+    # marks; code reads the values and decides (`slot_look`). `off` (default): nothing changes.
+    # Read from the environment (`GV_ASSISTANT_SLOTS`) by `slots.slots_on`, as flag mode is.
+    assistant_slots: Literal["off", "on"] = "off"
     # One sandbox command's time limit, and which sandbox runs it (`auto` and `docker`: the Docker
     # image `gv-assistant-sandbox` when built and Docker answers, else no shell: the chat says the
     # secure sandbox is not running; `macos`: `sandbox-exec`, only for tests on a Mac, never a
