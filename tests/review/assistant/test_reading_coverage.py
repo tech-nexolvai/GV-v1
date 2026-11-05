@@ -17,7 +17,7 @@ from app.review.assistant import not_compared
 from app.review.assistant import reading_coverage as rc
 from app.review.assistant import reading_ink as ri
 from tests.review.assistant.stroke_text import StrokeReader, stroke_ops
-from tests.review.assistant.test_dim_labels import HALVES, _dimension, _line, _pdf
+from tests.review.assistant.test_dim_labels import HALVES, _dimension, _line, _pdf, _text
 
 # ---- the pen-stroke count on an invented page ---------------------------------------------------
 
@@ -26,10 +26,13 @@ def _engines() -> list[Any]:
     return [StrokeReader("RapidOCR"), StrokeReader("Tesseract")]
 
 
-def _page(tmp_path: Path, body: bytes) -> tuple[Path, dl.PageLabels]:
+def _page(tmp_path: Path, body: bytes, read: bool = True) -> tuple[Path, dl.PageLabels]:
+    """The page's drawn labels and its ink count; `read=False`: the drawn route has no reader,
+    so every number stays unread (`READ`'s `36"` too)."""
     path = tmp_path / "set.pdf"
     path.write_bytes(_pdf([body]))
-    found = dl.drawn_labels(path, 1, HALVES, [], budget_s=60, readers=_engines(), count_ink=True)
+    readers = _engines() if read else []
+    found = dl.drawn_labels(path, 1, HALVES, [], budget_s=60, readers=readers, count_ink=True)
     return path, found
 
 
@@ -99,6 +102,135 @@ def test_a_stacked_fraction_says_so(tmp_path: Path) -> None:
     _, found = _page(tmp_path, READ + stroke_ops('3{1/2}"', 450, 150))
     (spot,) = _spots(found)
     assert "stacked_fraction" in spot["reasons"]
+
+
+# ---- what counts as a printed number (2026-11-05: tags, words, symbols and scale notes were) ---
+
+
+def _poly(*points: tuple[float, float]) -> bytes:
+    """One stroked polyline (PDF space, y up)."""
+    moves = " ".join(f"{x} {y} {'m' if n == 0 else 'l'}" for n, (x, y) in enumerate(points))
+    return f"0 0 0 RG 0.3 w {moves} S ".encode()
+
+
+def _bold_tag(x: float, y: float) -> bytes:
+    """An invented tag `TA-36` lettered the way an architect's CAD font draws it: every bar drawn
+    twice to look bold, each stroke its own path (the shape a real sheet's tag had)."""
+
+    def at(ax: float, ay: float, bx: float, by: float) -> bytes:
+        return _poly((x + ax, y + ay), (x + bx, y + by))
+
+    body = at(0, 9.3, 5.6, 9.3) + at(0, 8.6, 5.6, 8.6) + at(2.8, 9.9, 2.8, 0)  # T
+    body += at(7.3, 0, 11.6, 9.9) + at(11.6, 9.9, 15.8, 0)  # the A's legs
+    body += at(7.9, 2.6, 15.8, 2.6) + at(7.9, 2.0, 15.8, 2.0)  # the A's bar, twice
+    body += at(18.7, 4.0, 21.7, 4.0) + at(18.7, 3.3, 21.7, 3.3)  # the dash, twice
+    return body + stroke_ops("36", x + 26.5, y, height=9.2)
+
+
+def _ink_at(path: Path, found: dl.PageLabels, x0: float) -> Any:
+    """The page's unlabelled ink group starting at shown `x0` (as `reading_ink` groups it)."""
+    near = ri._Near(dl._parse(path, 0).page.paths)
+    taken = [tuple(label["box"]) for label in found.labels]
+    groups = ri._page_labels(near, ~ri._covered(near.boxes, taken, 0.5))
+    (ink,) = [g for g in groups if abs(g.box[0] - x0) < 0.5]
+    return ink
+
+
+def _candidate_at(found: dl.PageLabels, x0: float) -> ri.Candidate:
+    assert found.ink is not None
+    found_ink: ri.PageInk = found.ink
+    (candidate,) = [c for c in found_ink.candidates if abs(c.box[0] - x0) < 0.5]
+    return candidate
+
+
+def test_a_bold_tag_is_no_number_and_reads_upright(tmp_path: Path) -> None:
+    path, found = _page(tmp_path, READ + _bold_tag(420, 150))
+    # The trap: read up the page, the dash drawn twice ends a row as two ticks, which the drawn
+    # reader's own test takes for an inch mark; the counter filed the tag "sideways" by it.
+    ink = _ink_at(path, found, 420)
+    assert dl._marked_turns(ink) == (90,)
+    # The two strokes are too close for an inch mark's ticks: no mark, and the tag reads upright.
+    assert ri._mark_turns(ink) == ()
+    tag = _candidate_at(found, 420)
+    assert not tag.marked and "sideways" not in tag.reasons
+    # Its 3 and 6 are digits the set knows, but its T's top and A's legs are a letter's strokes.
+    assert ri._digit_shapes(ink, 0, max(g.size for g in ink.glyphs)) is None
+    assert _spots(found) == []
+
+
+def test_a_number_beside_a_tag_still_counts_by_the_sets_digit_shapes(tmp_path: Path) -> None:
+    _, found = _page(tmp_path, READ + _bold_tag(420, 150) + stroke_ops("63", 300, 80))
+    (spot,) = _spots(found)
+    assert spot["box"][0] == 300 and spot["reasons"] == ["no_inch_mark"]
+
+
+def test_the_vendors_digit_shapes_say_nothing_of_the_architects_ink(tmp_path: Path) -> None:
+    # The same unmarked `63` on the architect's drawing: the vendor's hand is no evidence there.
+    _, found = _page(tmp_path, READ + stroke_ops("63", 300, 80) + stroke_ops("63", 100, 80))
+    assert _candidate_at(found, 100).side == "architect"
+    assert [spot["box"][0] for spot in _spots(found)] == [300]
+
+
+def test_straight_strokes_ending_in_two_ticks_are_line_work(tmp_path: Path) -> None:
+    # Three bars of hatching and two short strokes after them: the drawn reader's twin ticks,
+    # but no glyph in it is more than one straight stroke.
+    hatch = b"".join(_poly((x, 150), (x, 156)) for x in (450, 452.5, 455))
+    ticks = _poly((457.5, 156), (457.5, 154)) + _poly((459, 156), (459, 154))
+    path, found = _page(tmp_path, READ + hatch + ticks)
+    assert dl._marked_turns(_ink_at(path, found, 450)) == (0,)
+    assert _candidate_at(found, 450).shaped == 0
+    assert _spots(found) == []
+
+
+def test_ink_the_pages_typed_text_sits_on_is_counted_by_the_typed_half(tmp_path: Path) -> None:
+    # A scale note typed and drawn again as strokes at the same place (an AutoCAD sheet does):
+    # the typed text already said what it is, and its `"` is the typed text's, no mark of the ink.
+    note = _text(450, 150, '48" = 1', size=8) + stroke_ops('48"', 450, 150)
+    _, found = _page(tmp_path, READ + note, read=False)
+    candidate = _candidate_at(found, 450)
+    assert candidate.typed and not candidate.marked
+    assert [spot["box"][0] for spot in _spots(found)] == [340]  # the unread 36" alone
+    # The same strokes with no typed text over them are a marked number, counted.
+    _, alone = _page(tmp_path, READ + stroke_ops('48"', 450, 150), read=False)
+    assert _candidate_at(alone, 450).marked
+    assert [spot["box"][0] for spot in _spots(alone)] == [340, 450]
+
+
+def test_a_number_inside_a_tags_box_is_a_tag(tmp_path: Path) -> None:
+    # `63` (digits the set knows) in a closed box the size of a tag: a tag, never a dimension.
+    boxed = stroke_ops("63", 300, 80) + b"0 0 0 RG 0.3 w 297 77 15 12 re S "
+    _, found = _page(tmp_path, READ + boxed)
+    assert _candidate_at(found, 300).tagged
+    assert _spots(found) == []
+
+
+def _bracket(x: float, y: float, opening: bool) -> bytes:
+    foot = 0.8 if opening else -0.8
+    return _poly((x + foot, y + 6), (x, y + 6), (x, y - 0.5), (x + foot, y - 0.5))
+
+
+def test_millimetres_over_inches_count_and_round_bars_do_not(tmp_path: Path) -> None:
+    mm = stroke_ops("305", 450, 160) + stroke_ops("12", 452, 150)
+    mm += _bracket(450.6, 150, True) + _bracket(462.4, 150, False)
+    _, found = _page(tmp_path, READ + mm)
+    (spot,) = _spots(found)
+    assert spot["reasons"][0] == "mm_row"
+    # The same rows between two arcs (a sink's drain drawn round): no bracket's straight back.
+    arcs = stroke_ops("305", 450, 160) + stroke_ops("12", 452, 150)
+    arcs += _poly((451.4, 156), (450.4, 153), (450.4, 152), (451.4, 149.5))
+    arcs += _poly((461.6, 156), (462.6, 153), (462.6, 152), (461.6, 149.5))
+    _, round_ = _page(tmp_path, READ + arcs)
+    assert _spots(round_) == []
+
+
+def test_a_drawn_number_with_its_inch_mark_and_a_stacked_fraction_still_count(
+    tmp_path: Path,
+) -> None:
+    body = READ + stroke_ops('48"', 450, 150) + stroke_ops('3{1/2}"', 450, 100)
+    _, found = _page(tmp_path, body)
+    spots = _spots(found)
+    assert [spot["box"][0] for spot in spots] == [450, 450]
+    assert "stacked_fraction" in spots[1]["reasons"]
 
 
 def test_counting_never_changes_the_labels(tmp_path: Path) -> None:
@@ -357,6 +489,48 @@ def test_the_set_pack_writes_the_coverage_beside_its_labels(
         "Numbers read: 2 of about 3 printed on the vendor's drawings (67%)"
     )
     assert coverage["seconds"] >= 0
+
+
+@pytest.mark.parametrize("counts", [True, False])
+def test_what_the_count_takes_for_a_number_changes_nothing_but_the_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, counts: bool
+) -> None:
+    # The counter only counts: whether it takes every candidate for a number or none, the pack's
+    # labels and every fact made from them (what a check's findings come from) are the same.
+    from app.review.assistant import set_pack
+
+    def pack(name: str) -> Path:
+        uploads, folder = tmp_path / name / "uploads", tmp_path / name / "pack"
+        uploads.mkdir(parents=True)
+        folder.mkdir()
+        body = READ + stroke_ops('48"', 450, 150) + stroke_ops("63", 300, 80) + _bold_tag(420, 30)
+        (uploads / "set.pdf").write_bytes(_pdf([body]))
+        pages = [{"file": "set.pdf", "page": 1, "halves": HALVES}]
+        set_pack.write_dims(folder, uploads, ["set.pdf"], pages)
+        return folder
+
+    monkeypatch.setattr(set_pack, "_drawn_budget", lambda: 60.0)
+    monkeypatch.setattr(dl, "drawn_readers", _engines)
+    plain = pack("plain")
+    monkeypatch.setattr(ri, "looks_like_number", lambda *_args: counts)
+    forced = pack("forced")
+
+    def timeless(value: Any) -> Any:
+        """The value without the clock's readings (how many seconds a step took)."""
+        if isinstance(value, dict):
+            return {k: timeless(v) for k, v in value.items() if k != "seconds"}
+        if isinstance(value, list):
+            return [timeless(v) for v in value]
+        return value
+
+    facts = ("dims.json", "pairs.json", "notes.json", "scales.json", "page_map.json")
+    for name in facts:
+        if (plain / name).exists() or (forced / name).exists():
+            assert timeless(json.loads((plain / name).read_text())) == timeless(
+                json.loads((forced / name).read_text())
+            ), name
+    assert (plain / "dims.json").exists()
+    assert rc.load(plain) != rc.load(forced)  # only the count moved
 
 
 def test_a_broken_count_leaves_the_pack_without_it(

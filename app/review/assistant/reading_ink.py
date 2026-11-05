@@ -7,12 +7,31 @@ It only COUNTS: nothing here makes, changes or drops a label, a finding or a ver
 **How a spot is found** (the method of the stroke research's funnel, in a cheap form): the
 page's character-sized paths outside every label are grouped by closeness (as the drawn route's
 clusters, with no page limit), each group split into rows of glyphs (`ink_labels`), and a row on
-a drawing (`dim_labels._side`) is a candidate. A candidate **looks like a number** when its own
-strokes end a row in an inch mark (two twin ticks), when it is millimetres over inches in brackets
-(`305` over `[12]`), or when one of its glyphs has the shape of a digit this set's vendor drew in a
-number code DID read (the set's own "alphabet", learned from its confirmed drawn labels: a shape
-match, never a reading). Anything else (words, tags, symbols, ticks) is not counted. The count is
-"about": a word with a digit-shaped letter can count, a number touching other ink can be missed.
+a drawing (`dim_labels._side`) is a candidate.
+
+A candidate **looks like a number** only when its own strokes say so, and code is unsure of
+everything else, so it is not counted (`looks_like_number`):
+
+- it ends a row in an inch mark: two twin ticks standing apart (`_TICKS_APART`), in ink holding a
+  glyph that is not one straight stroke (`_mark_turns`); a stroke drawn twice to look bold (an `A`'s bar, a
+  `T`'s top) is no inch mark, nor is the typed text's own `"` beside it;
+- it is millimetres over inches in brackets (`305` over `[12]`), the millimetres more than
+  straight strokes, the brackets with corners, neither row one shape repeated (`_mm_turn`);
+- two glyphs of it that are more than a straight stroke are centred on a dimension line, on a
+  page code read almost nothing of (`Candidate.on_line`);
+- on the vendor's drawings only, every one of its glyphs that is more than a straight stroke has
+  the shape of a digit this set's vendor drew in a number code DID read (the set's own "alphabet", learned from its confirmed drawn labels: a shape match,
+  never a reading), and none of its digit-sized straight strokes lies flat or slants (an upright
+  one may be a `1`): a word or a tag (`TA-109`), whose letters are no digit, is not counted
+  (`_digit_shapes`).
+
+Never counted, whatever its strokes: ink with no glyph that is more than one straight stroke
+(hatching, a wall's corner: `Candidate.shaped`), ink the page's own typed text sits on
+(`Candidate.typed`: an AutoCAD sheet types its text and draws it again as strokes; the typed half
+of the count already counted that text, as a label, as a number in a note, or not at all when it
+is a tag, a word or a scale note), and ink inside a closed tag-sized shape (a bubble or a tag's
+box, `dim_labels._Parsed.rings`). The count is "about": a number touching other ink, a lone `1"`,
+or a number drawn only in straight strokes can be missed.
 
 **Why it was not read**, the first that applies: GV's sticker over it, millimetres over
 [inches], a stacked fraction, sideways, no inch mark of its own, lines drawn through it, too
@@ -24,6 +43,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import pairwise
 from time import process_time
 from typing import Any, Final
 
@@ -66,6 +86,25 @@ _SAME_SHAPE: Final = 0.75
 _MAX_SHAPED: Final = 40
 #: A label overlapping a candidate by this share (either way) means the candidate was read.
 _READ_SHARE: Final = 0.3
+#: An inch mark's two ticks stand apart (centre to centre, along the row) by at least this share
+#: of their length. Measured 2026-11-05: a vendor's drawn marks 0.92 to 1.12, an architect's
+#: lettering 0.50 to 0.68, the stroke-lettering tests 0.47; one stroke drawn twice to look bold
+#: (an `A`'s bar, a foot mark) 0.11 to 0.30.
+_TICKS_APART: Final = 0.35
+#: Ink is the page's typed text drawn again when more than this share of its glyphs have their
+#: centre inside one of the page's typed characters.
+_TYPED_SHARE: Final = 0.5
+#: A ring (`dim_labels._Parsed.rings`) holds a candidate when the candidate lies inside it with
+#: this slack (points).
+_RING_SLACK: Final = 0.5
+#: A stacked fraction's digit is at least this tall (points) for the alphabet test: a screw's
+#: countersink drawn small over a bar is no fraction.
+_FRACTION_DIGIT_PT: Final = 1.5
+#: A straight stroke stands upright (a `1`) when it is no wider than this share of its height,
+#: in the reading direction.
+_UPRIGHT: Final = 0.3
+#: A bracket's straight back runs at least this share of its height.
+_BRACKET_BACK: Final = 0.6
 #: A page where code read fewer labels than this is looked at for numbers drawn on dimension
 #: lines (`PageInk.stroke_numbers`): the set pack's own threshold for a whole-page drawing.
 FEW_LABELS: Final = 3
@@ -90,15 +129,29 @@ class Candidate:
     box: Box
     side: str
     marked: bool
-    """Its own strokes say "dimension": an inch mark, or millimetres over [inches]."""
+    """Its own strokes say "dimension": an inch mark (`_mark_turns`), or millimetres over
+    [inches] (`_mm_turn`)."""
     reasons: tuple[str, ...]
     """Every reason that applies, in `REASON_ORDER`."""
-    shapes: tuple[Shape, ...] = ()
-    """Its digit-sized glyphs' shapes in each direction it may read (for the alphabet test)."""
+    shapes: tuple[tuple[Shape, ...], ...] = ()
+    """Groups of glyph shapes for the alphabet test, every shape of one group to be a digit's:
+    its glyphs that are not one straight stroke, one group per direction it may read in which it
+    has no letter's straight stroke (`_digit_shapes`); then each stacked fraction's numerator and denominator glyphs that are not one
+    straight stroke, one group per fraction and direction, when each of them is at least
+    `_FRACTION_DIGIT_PT` tall."""
     on_line: bool = False
     """Two glyphs or more centred on a dimension line (`dim_labels.dimension_line`): a number
     drawn as pen strokes in a dimension's place. Looked for only on a page where code read fewer
     than `FEW_LABELS` labels (`PageInk.stroke_numbers`)."""
+    typed: bool = False
+    """The page's own typed text sits on it (`_TYPED_SHARE`): that text drawn again as strokes,
+    counted by the typed half of the count, never here."""
+    tagged: bool = False
+    """It lies inside a closed tag-sized shape (a bubble, a tag's box): a tag, never a
+    dimension."""
+    shaped: int = 0
+    """How many of its glyphs are not one straight stroke (`_straight`): none is line work
+    (hatching, a wall's corner), never a number."""
 
 
 @dataclass(slots=True)
@@ -187,12 +240,22 @@ class _Alphabet:
 
 
 def looks_like_number(candidate: Candidate, alphabet: _Alphabet | None) -> bool:
-    """Whether a candidate counts as a printed number: marked as a dimension by its own strokes,
-    centred on a dimension line (on a page code read almost nothing of), or one of its glyphs
-    shaped as a digit of the set's alphabet."""
-    if candidate.marked or candidate.on_line:
+    """Whether a candidate counts as a printed number: never when typed text sits on it, when a
+    tag's ring holds it or when no glyph of it is more than one straight stroke; else when its
+    own strokes mark it as a dimension, when two of its glyphs that are more than a straight
+    stroke are centred on a dimension line (on a page code read almost nothing of), or, on the
+    vendor's drawings, when one of its groups of glyph shapes (`Candidate.shapes`: the whole of
+    it read in one direction, or one of its stacked fractions) is all shaped as digits of the
+    set's alphabet: the vendor's own hand, which says nothing of another drawing's lettering
+    (a wall's corner on the architect's plan can match a vendor's 7). Anything else is ink
+    code cannot tell, and is not counted."""
+    if candidate.typed or candidate.tagged or not candidate.shaped:
+        return False
+    if candidate.marked or (candidate.on_line and candidate.shaped >= 2):
         return True
-    return bool(alphabet) and any(alphabet.knows(s) for s in candidate.shapes)  # type: ignore[union-attr]
+    if alphabet is None or not alphabet or candidate.side != "vendor":
+        return False
+    return any(shapes and all(alphabet.knows(s) for s in shapes) for shapes in candidate.shapes)
 
 
 def alphabet_of(pages: Sequence[PageInk]) -> _Alphabet:
@@ -524,6 +587,8 @@ def page_ink(
     ]
     index_of = {id(path): i for i, path in enumerate(near.paths)}
     taken = np.array(read, dtype=float) if read else np.zeros((0, 4))
+    typed = _Typed(page.chars)
+    rings = np.array(getattr(parsed, "rings", ()) or np.zeros((0, 4)), dtype=float)
     few = sum(1 for label in labels if not label.get("derived")) < FEW_LABELS
     for ink in _page_labels(near, free):
         row = list(ink.glyphs)
@@ -539,7 +604,9 @@ def page_ink(
             continue
         if int(near.mask(box, il.GATHER_PT).sum()) > _BUSY_PATHS:
             continue  # hatching or a dotted fill
-        found = _candidate(ink, side, near, lines, stickers, index_of)
+        found = _candidate(ink, side, near, lines, stickers, index_of, typed)
+        found.typed = typed.over(row)
+        found.tagged = _in_ring(box, rings)
         if (
             few
             and len(row) >= 2
@@ -638,6 +705,169 @@ def _framed(box: Box, segments: Sequence[Any], wide: bool, font: float) -> bool:
     return False
 
 
+class _Typed:
+    """The page's typed characters by box, for "does typed text sit on this ink"."""
+
+    def __init__(self, chars: Sequence[Any]) -> None:
+        boxes = [c.box for c in chars if str(getattr(c, "text", "")).strip()]
+        self.boxes = np.array(boxes, dtype=float) if boxes else np.zeros((0, 4))
+
+    def over(self, glyphs: Sequence[il.Glyph]) -> bool:
+        """Whether more than `_TYPED_SHARE` of the glyphs have their centre inside a typed
+        character's box."""
+        if not len(self.boxes) or not glyphs:
+            return False
+        centres = np.array(
+            [((g.box[0] + g.box[2]) / 2, (g.box[1] + g.box[3]) / 2) for g in glyphs], dtype=float
+        )
+        x0, y0 = centres.min(axis=0)
+        x1, y1 = centres.max(axis=0)
+        b = self.boxes
+        near = b[(b[:, 2] >= x0) & (b[:, 0] <= x1) & (b[:, 3] >= y0) & (b[:, 1] <= y1)]
+        if not len(near):
+            return False
+        inside = (
+            (centres[:, None, 0] >= near[None, :, 0])
+            & (centres[:, None, 0] <= near[None, :, 2])
+            & (centres[:, None, 1] >= near[None, :, 1])
+            & (centres[:, None, 1] <= near[None, :, 3])
+        ).any(axis=1)
+        return bool(inside.mean() > _TYPED_SHARE)
+
+
+def _in_ring(box: Box, rings: np.ndarray) -> bool:
+    """Whether the ink lies inside one of the page's closed tag-sized shapes."""
+    if not len(rings):
+        return False
+    s = _RING_SLACK
+    return bool(
+        (
+            (rings[:, 0] <= box[0] + s)
+            & (rings[:, 1] <= box[1] + s)
+            & (rings[:, 2] >= box[2] - s)
+            & (rings[:, 3] >= box[3] - s)
+        ).any()
+    )
+
+
+def _straight(glyph: il.Glyph) -> bool:
+    """A speck, or one straight stroke (`ink_labels._ends`) maybe drawn twice side by side to
+    look bold (every path of it straight and parallel): no digit but a `1` is one."""
+    if glyph.size < 0.5:
+        return True
+    directions = []
+    for path in glyph.paths:
+        ends = il._ends(il.Glyph((path,), path.box))
+        if ends is None:
+            return False
+        along = ends[1] - ends[0]
+        directions.append(along / float(np.linalg.norm(along)))
+    return all(abs(il._cross(directions[0], d)) < 0.08 for d in directions[1:])
+
+
+def _tall(glyph: il.Glyph, turn: il.Turn) -> float:
+    """The glyph's height read as `turn`."""
+    frame = il._frame(glyph.box, turn)
+    return frame[3] - frame[1]
+
+
+def _bracket(glyph: il.Glyph, turn: il.Turn) -> bool:
+    """Whether the glyph has a bracket's straight back: one straight piece of its strokes, along
+    its height, at least `_BRACKET_BACK` of it (a `[` has one, a circle's arc has none)."""
+    height = _tall(glyph, turn)
+    if height <= 0:
+        return False
+    for path in glyph.paths:
+        for line in path.polylines:
+            points = [il._point(x, y, turn) for x, y in line]
+            for (ax, ay), (bx, by) in pairwise(points):
+                if abs(by - ay) >= _BRACKET_BACK * height and abs(bx - ax) <= 0.15 * abs(by - ay):
+                    return True
+    return False
+
+
+def _alike(glyphs: Sequence[il.Glyph]) -> bool:
+    """Whether the glyphs are one shape repeated (the same size, to a tenth of a point, and the
+    same number of points): a pattern (chairs round a table, a fence), never a written value."""
+    if len(glyphs) < 2:
+        return False
+    first = glyphs[0]
+    points = [sum(len(line) for p in g.paths for line in p.polylines) for g in glyphs]
+    return all(
+        abs(g.wide - first.wide) <= 0.1 and abs(g.tall - first.tall) <= 0.1 and n == points[0]
+        for g, n in zip(glyphs, points, strict=True)
+    )
+
+
+def _ticks_apart(row: Sequence[il.Token], count: int, turn: il.Turn) -> bool:
+    """Whether the two ticks ending the row (its last `count` tokens) stand apart by at least
+    `_TICKS_APART` of their length, along the row: an inch mark's two strokes, not one stroke
+    drawn twice to look bold."""
+    strokes = [
+        [il._point(x, y, turn) for x, y in line]
+        for token in row[len(row) - count :]
+        for path in token.glyphs[0].paths
+        for line in path.polylines
+        if line
+    ]
+    if len(strokes) != 2:
+        return False
+    boxes = [
+        (min(x for x, _ in s), min(y for _, y in s), max(x for x, _ in s), max(y for _, y in s))
+        for s in strokes
+    ]
+    length = max(max(b[2] - b[0], b[3] - b[1]) for b in boxes)
+    apart = abs((boxes[1][0] + boxes[1][2]) / 2 - (boxes[0][0] + boxes[0][2]) / 2)
+    return length > 0 and apart >= _TICKS_APART * length
+
+
+def _mark_turns(ink: il.Label, typed: _Typed | None = None) -> tuple[il.Turn, ...]:
+    """The reading directions in which a row of the ink ends in an inch mark
+    (`dim_labels._twin_ticks`) whose ticks stand apart (`_ticks_apart`), the ink holding a glyph
+    besides them that is not one straight stroke (`_straight`): a written number's inch mark. A mark the
+    page's typed text sits on (`typed`) is that text's, never this ink's. When the glyphs' own
+    neighbours (`ink_labels.turns`) agree with some of those directions, only those."""
+    found: list[il.Turn] = []
+    for turn in (0, 90, 270):
+        for row in il.rows(ink, turn):
+            count = il.inch_mark_at_end(row, turn)
+            if not count or not dl._twin_ticks(row, turn) or not _ticks_apart(row, count, turn):
+                continue
+            ticks = [g for token in row[len(row) - count :] for g in token.glyphs]
+            if typed is not None and typed.over(ticks):
+                continue
+            if any(not _straight(g) for g in ink.glyphs if not any(g is t for t in ticks)):
+                found.append(turn)
+                break
+    if len(found) > 1:
+        agreed = [turn for turn in found if turn in il.turns(ink)]
+        return tuple(agreed or found)
+    return tuple(found)
+
+
+def _mm_turn(ink: il.Label) -> il.Turn | None:
+    """`dim_labels._mm_rows`' direction when its rows are written values: the millimetres hold a
+    glyph that is not one straight stroke (`_straight`), the brackets ending the lower row are
+    not straight strokes either (a bracket has corners) but each has a bracket's straight back
+    (`_bracket`: a circle's arcs do not), and neither row is one shape repeated (`_alike`: a
+    pattern); else `None`."""
+    turn = dl._mm_rows(ink)
+    if turn is None:
+        return None
+    rows = il.rows(ink, turn)
+    if len(rows) != 2:
+        return None
+    upper = [g for token in rows[0] for g in token.glyphs]
+    lower = [g for token in rows[1] if token.kind != "mark" for g in token.glyphs]
+    if not lower or all(_straight(g) for g in upper):
+        return None
+    if _straight(lower[0]) or _straight(lower[-1]) or _alike(upper) or _alike(lower):
+        return None
+    if not (_bracket(lower[0], turn) and _bracket(lower[-1], turn)):
+        return None
+    return turn
+
+
 def _candidate(
     ink: il.Label,
     side: str,
@@ -645,14 +875,15 @@ def _candidate(
     lines: _Lines,
     stickers: Sequence[Sequence[float]],
     index_of: Mapping[int, int],
+    typed: _Typed | None = None,
 ) -> Candidate:
     """A candidate's flags (`REASON_ORDER`) and, when its strokes do not mark it as a dimension,
     its digit-sized glyphs' shapes. An unmarked one's first reason is decided before "lines
     through", "too small" or "crowded" (it has no inch mark of its own), so those are not looked
     for: the count stays cheap."""
     box = ink.box
-    marked_turns = dl._marked_turns(ink)
-    mm = None if marked_turns else dl._mm_rows(ink)
+    marked_turns = _mark_turns(ink, typed)
+    mm = None if marked_turns else _mm_turn(ink)
     marked = bool(marked_turns) or mm is not None
     turns = marked_turns or ((mm,) if mm is not None else il.turns(ink))
     rows = il.rows(ink, turns[0])
@@ -665,7 +896,7 @@ def _candidate(
         "sideways": all(turn != 0 for turn in turns),
         "no_inch_mark": not marked,
     }
-    shapes: tuple[Shape, ...] = ()
+    shapes: tuple[tuple[Shape, ...], ...] = ()
     if marked:
         heights = sorted(
             il._frame(g.box, turns[0])[3] - il._frame(g.box, turns[0])[1] for g in digit_sized
@@ -676,10 +907,47 @@ def _candidate(
         flags["too_small"] = 0 < height < _SMALL_PT
         flags["crowded"] = _crowded(box, own, near, turns[0])
     elif len(digit_sized) <= _MAX_SHAPED:
-        shapes = tuple(_shape(g, turn) for turn in turns[:2] for g in digit_sized)
+        shapes = tuple(
+            group for turn in turns[:2] if (group := _digit_shapes(ink, turn, tallest)) is not None
+        )
+        # Each stacked fraction on its own (a bar with glyphs above and below), whatever other
+        # ink touches it: its digits alone.
+        shapes += tuple(
+            tuple(_shape(g, turn) for g in digits)
+            for turn in turns[:2]
+            for row in il.rows(ink, turn)
+            for token in row
+            if token.kind == "fraction"
+            and (digits := [g for g in (*token.glyphs, *token.below) if not _straight(g)])
+            and all(_tall(g, turn) >= _FRACTION_DIGIT_PT for g in digits)
+        )
     reasons = tuple(r for r in REASON_ORDER if flags.get(r)) or ("other",)
     x0, y0, x1, y1 = (round(v, 2) for v in box)
-    return Candidate((x0, y0, x1, y1), side, marked, reasons, shapes)
+    shaped = sum(1 for g in ink.glyphs if not _straight(g))
+    return Candidate((x0, y0, x1, y1), side, marked, reasons, shapes, shaped=shaped)
+
+
+def _digit_shapes(ink: il.Label, turn: il.Turn, tallest: float) -> tuple[Shape, ...] | None:
+    """The shapes the alphabet test matches, read as `turn`: every glyph of its rows (a stacked
+    fraction's numerator and denominator, never its bar; never a mark) that is not one straight
+    stroke. A straight stroke standing upright (a `1`) or smaller than a digit tells nothing; one
+    lying flat or slanting at a digit's size is a letter's stroke (a `T`'s top, an `A`'s leg) or a
+    dash: `None`, no number."""
+    out: list[Shape] = []
+    for row in il.rows(ink, turn):
+        for token in row:
+            if token.kind == "mark":
+                continue
+            parts = (*token.glyphs, *token.below) if token.kind == "fraction" else token.glyphs
+            for glyph in parts:
+                if not _straight(glyph):
+                    out.append(_shape(glyph, turn))
+                    continue
+                frame = il._frame(glyph.box, turn)
+                wide, tall = frame[2] - frame[0], frame[3] - frame[1]
+                if glyph.size >= 0.42 * tallest and wide > _UPRIGHT * tall:
+                    return None
+    return tuple(out)
 
 
 def _meets(a: Sequence[float], b: Sequence[float]) -> bool:
