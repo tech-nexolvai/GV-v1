@@ -225,9 +225,12 @@ def test_numbers_drawn_as_pen_strokes_are_said_unread(tmp_path: Path) -> None:
     vendor = ((outcome.coverage or {}).get("sides") or {}).get("vendor") or {}
     roles = {role for _f, _p, role, _h in outcome.roles()}
     # Never silently a general page ("flag everything", 2026-10-23): a vendor drawing whose
-    # numbers are counted as printed and not read, and the page says why.
+    # numbers cannot be read, and the page says why.
     assert "vendor" in roles, outcome.roles()
-    assert vendor.get("printed", 0) > vendor.get("read", 0), vendor
+    # These digits are loose straight lines (seven-segment, each line its own path): the reading
+    # count cannot tell them from line work, so it does not count them as missed numbers
+    # (2026-11-05: unsure ink is never counted), and never as read either.
+    assert vendor.get("read", 0) == 0, vendor
     assert _says(outcome, "can't be read (drawn as lines, not text)")
     assert outcome.work is not None
     assert not any("a table, notes or pictures page" in s.reason for s in outcome.work.skipped)
